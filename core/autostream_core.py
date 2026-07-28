@@ -687,6 +687,7 @@ def update_live_silence_seconds(
                     monitor.silence_threshold_dbfs,
                     live_silence_seconds,
                     monitor.track_change_silence_seconds,
+                    monitor.minimum_playback_seconds,
                 ):
                     logging.warning(
                         "Live silence timeout update failed for input %d.",
@@ -1927,6 +1928,7 @@ class MonitorClient:
         silence_threshold_dbfs: float,
         silence_seconds: int,
         track_change_silence_seconds: float = 1.25,
+        minimum_playback_seconds: int = 30,
     ) -> bool:
         with self._lock:
             resp = self._command({
@@ -1936,6 +1938,7 @@ class MonitorClient:
                 "silence_threshold_dbfs": silence_threshold_dbfs,
                 "silence_seconds": silence_seconds,
                 "track_change_silence_seconds": track_change_silence_seconds,
+                "minimum_playback_seconds": minimum_playback_seconds,
             })
             ok = bool(resp and resp.get("ok"))
             if not ok:
@@ -2162,6 +2165,7 @@ class AudioMonitor:
         owntone_output_name: str,
         owntone_volume_percent: int,
         track_change_silence_seconds: float = 1.25,
+        minimum_playback_seconds: int = 30,
         owntone_output_offsets_ms: Optional[dict[str, int]] = None,
         owntone_output_airplay_modes: Optional[dict[str, str]] = None,
         gain_db: float = 0.0,
@@ -2174,6 +2178,7 @@ class AudioMonitor:
         self.silence_threshold_dbfs = silence_threshold_dbfs
         self.silence_seconds = silence_seconds
         self.track_change_silence_seconds = track_change_silence_seconds
+        self.minimum_playback_seconds = minimum_playback_seconds
         self.fifo_path = fifo_path
         self.owntone_base_url = owntone_base_url
         self.owntone_output_name = owntone_output_name
@@ -3263,6 +3268,7 @@ def _resync_monitor_daemon(
             m.silence_threshold_dbfs,
             m.silence_seconds,
             m.track_change_silence_seconds,
+            m.minimum_playback_seconds,
         ):
             logging.warning(
                 "configure_input(%d, %r) failed after reconnect; will retry full resync.",
@@ -3351,6 +3357,7 @@ def _configure_startup_monitors(
         cfg.audio1.silence_threshold_dbfs,
         cfg.general.silence_seconds,
         cfg.track_identification.track_change_silence_seconds,
+        cfg.general.minimum_playback_seconds,
     ):
         logging.warning(
             "configure_input(1, %r) failed during startup; will retry.",
@@ -3386,6 +3393,7 @@ def _configure_startup_monitors(
         owntone_output_name=cfg.owntone.output_name,
         owntone_volume_percent=cfg.owntone.volume_percent,
         track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
+        minimum_playback_seconds=cfg.general.minimum_playback_seconds,
         owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
         owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
         gain_db=cfg.audio1.gain_db,
@@ -3407,6 +3415,7 @@ def _configure_startup_monitors(
             cfg.audio2.silence_threshold_dbfs,
             cfg.general.silence_seconds,
             cfg.track_identification.track_change_silence_seconds,
+            cfg.general.minimum_playback_seconds,
         ):
             logging.error(
                 "configure_input(2, %r) failed; skipping second input.",
@@ -3443,6 +3452,7 @@ def _configure_startup_monitors(
                 owntone_output_name=cfg.owntone.output_name,
                 owntone_volume_percent=cfg.owntone.volume_percent,
                 track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
+                minimum_playback_seconds=cfg.general.minimum_playback_seconds,
                 owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
                 owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
                 gain_db=cfg.audio2.gain_db,

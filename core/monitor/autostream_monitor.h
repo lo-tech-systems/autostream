@@ -94,6 +94,7 @@ struct InputConfig
     float       silence_threshold_dbfs       = -66.0f; // dBFS level below which is silent
     int         silence_seconds              = 30;      // silence duration before stopping
     float       track_change_silence_seconds = 1.25f;  // gap duration (s) that marks a track boundary [0.5, 5.0]
+    int         minimum_playback_seconds     = 30;      // minimum playback hold, seconds; 0 disables [0, 300]
 };
 
 
@@ -1384,6 +1385,27 @@ struct RepeatEventCtx
                                         // _pending_interrupt_input taken by
                                         // the caller before it clears it
     bool has_hold_bytes      = false;  // ReplaySessionEnded: _buffer.total_bytes() > 0
+
+    // CaptureStarted, minimum playback hold: true when the active replay (or
+    // its fade-out) is still within its minimum-playback window, computed by
+    // the caller from _replay_start_time and the origin input's configured
+    // minimum_playback_seconds. While true, a live-input transient arriving
+    // during Replaying/FadingOut is ignored outright -- no state change, no
+    // pending-interrupt latch -- instead of starting the usual fade-out/
+    // takeover sequence. Meaningless (left false) for any other event or
+    // state; decide_repeat_transition() only consults it in the
+    // CaptureStarted x {Replaying, FadingOut} cells.
+    //
+    // This is a per-CALL decision, not a per-session latch: because
+    // notify_capture_started() is invoked both on the should_capture
+    // false->true edge AND, while capturing persists unrecorded, by
+    // InputChannel's bounded re-notify (see compute_should_
+    // renotify_capture_started(), autostream_monitor_utils.h), an Ignored
+    // outcome here is naturally revisited roughly once a second for as long
+    // as the input keeps capturing -- the hold's OWN expiry (or the replay
+    // ending by another route) is what changes the outcome on some later
+    // call, not anything remembered from this one.
+    bool replay_hold_active  = false;
 };
 
 // Which specific LOG_* call (if any) a decision corresponds to. Chosen by
@@ -1402,6 +1424,7 @@ enum class RepeatLogTag
     ReenabledRestoringLiveInterrupt,      // EnabledOn, Discard+restorable
     CaptureStartIgnoredFadeInProgress,    // CaptureStarted, Ignored (LiveInterrupt pending)
     CaptureStartIgnoredDiscardPending,    // CaptureStarted, Ignored (Discard pending)
+    CaptureStartIgnoredReplayHoldActive,  // CaptureStarted, Ignored (minimum playback hold)
     LiveInterruptFadingOutReplay,         // CaptureStarted, Replaying -> FadingOut
     LiveInterruptUpgradingDisarmFade,     // CaptureStarted, FadingOut upgrade
     CaptureStoppedPendingCancelled,       // CaptureStopped, Pending -> Idle
@@ -1531,13 +1554,32 @@ struct RepeatDecision
 // │            │   RequestPendingStart                                       │
 // │ Replaying  │ pending==LiveInterrupt -> Ignored (retrigger, already going)│
 // │            │ pending==Discard       -> Ignored (discard already pending) │
+// │            │ ctx.replay_hold_active -> Ignored (minimum playback hold;   │
+// │            │   NO state change, NO pending latch)                        │
 // │            │ else -> Apply: pending->LiveInterrupt(input),               │
 // │            │   state->FadingOut, RequestFadeOut                          │
-// │ FadingOut  │ (same Ignored branches); else -> Apply: pending->            │
-// │            │   LiveInterrupt(input), NO state change, no RequestFadeOut  │
-// │            │   ("upgrade" -- the fade already running is untouched)      │
+// │ FadingOut  │ (same Ignored branches, incl. replay_hold_active); else ->  │
+// │            │   Apply: pending->LiveInterrupt(input), NO state change,   │
+// │            │   no RequestFadeOut ("upgrade" -- the fade already running │
+// │            │   is untouched)                                             │
 // │ Pending    │ NoOp ("should not happen")                                  │
 // └────────────┴────────────────────────────────────────────────────────────┘
+//
+// CaptureStarted delivery, minimum playback hold: notify_capture_started()
+// (autostream_repeat.cpp) is called by InputChannel both on the should_
+// capture false->true EDGE and, while capturing persists and this input is
+// not yet the one actually being recorded (RepeatController::recording_
+// wanted() false), by a bounded ~1/s RE-NOTIFY (compute_should_renotify_
+// capture_started(), autostream_monitor_utils.h). This is what lets an
+// Ignored outcome above (replay_hold_active, or a fade/discard already in
+// flight) get revisited automatically once the blocking condition clears --
+// without it, a session that arrived mid-hold would never start for as
+// long as it kept capturing. Every cell this can repeat into is either a
+// defensive NoOp (Recording/Pending), an Ignored no-op cell that already
+// tolerates repeats by design (fade/discard/hold-active), or an Apply cell
+// that flips state_fast in a way that makes recording_wanted() true on its
+// very next check (Idle/Hold -> Pending) -- so no cell fires its side
+// effects more than once per actual admission.
 //
 // ┌────────────┬────────────────────────────────────────────────────────────┐
 // │ state      │ CaptureStopped (input_index; wrapper already matched origin)│
@@ -1683,6 +1725,24 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
                 {
                     d.kind = RepeatDecision::Kind::Ignored;
                     d.log_tag = RepeatLogTag::CaptureStartIgnoredDiscardPending;
+                    return d;
+                }
+                // Minimum playback hold: the active replay (or its fade-out)
+                // still owns playback. Ignore this live transient outright --
+                // no state change, no pending-interrupt latch -- rather than
+                // starting the usual fade-out/takeover sequence. Nothing is
+                // latched here to remember the transient: InputChannel's
+                // bounded re-notify (compute_should_renotify_capture_
+                // started(), autostream_monitor_utils.h) keeps calling
+                // notify_capture_started() roughly once a second for as
+                // long as this input keeps capturing unrecorded, so once
+                // ctx.replay_hold_active goes false on some later call --
+                // the hold expired, or the replay ended by another route --
+                // that later call is what actually starts the takeover.
+                if (ctx.replay_hold_active)
+                {
+                    d.kind = RepeatDecision::Kind::Ignored;
+                    d.log_tag = RepeatLogTag::CaptureStartIgnoredReplayHoldActive;
                     return d;
                 }
 
@@ -1901,6 +1961,11 @@ public:
     {
         int   silence_threshold_sample        = 0;
         float track_change_silence_seconds    = 1.25f;
+        // Minimum playback hold in effect for this input at recording start,
+        // seconds; 0 disables the hold. Snapshotted the same way as the
+        // fields above and used to gate replay-hold takeover suppression
+        // (see decide_repeat_transition()'s CaptureStarted cell).
+        int   minimum_playback_seconds        = 30;
     };
     void set_input_params_query(std::function<InputParams(int)> query)
     {
@@ -1968,6 +2033,18 @@ public:
     // Fast, lock-free check for the audio-thread tap call site. Must stay
     // cheap: a single relaxed atomic load in the common disabled case.
     bool recording_wanted(int input_index) const;
+
+    // Fast, lock-free "is the repeat feature on at all" check -- a single
+    // relaxed atomic load, the same mirror recording_wanted() itself
+    // consults first. Exposed separately because InputChannel's
+    // re-notify decision (see compute_should_renotify_capture_started(),
+    // autostream_monitor_utils.h) needs to distinguish "disabled" from
+    // "enabled but not recording ME" -- recording_wanted() alone collapses
+    // both to false.
+    bool enabled() const
+    {
+        return _enabled_fast.load(std::memory_order_relaxed);
+    }
 
     // Fast, lock-free check for the live FIFO-write gate (autostream_monitor_
     // io.cpp): true while ReplayEngine owns the pipe, meaning the live
@@ -2209,6 +2286,12 @@ private:
     // InputChannel.
     int          _origin_silence_threshold_sample     = 0;
     float        _origin_track_change_silence_seconds = 1.25f;
+    // Minimum playback hold configured for the origin input at recording
+    // start, seconds; 0 disables. Used only to gate replay-hold takeover
+    // suppression (see _replay_start_time and the CaptureStarted handling
+    // in notify_capture_started()) -- it plays no part in the recording
+    // side of the hold, which InputChannel enforces on its own.
+    int          _origin_minimum_playback_seconds     = 30;
 #ifdef AUTOSTREAM_REPEAT_TEST_CHUNK_BYTES
     // Test-only: overrides RepeatBuffer's default 16 MiB chunk size so
     // memory-guard/sliding-window scenarios can be exercised
@@ -2222,6 +2305,12 @@ private:
     SilenceTrimAccountant           _trim;
     std::unique_ptr<RepeatEncoder>  _encoder;
     double       _last_mem_check_time    = 0.0;
+    // Monotonic timestamp set at begin_replay_locked(); 0.0 when no replay
+    // has started this Hold cycle. Used with _origin_minimum_playback_seconds
+    // to compute whether an active replay is still within its minimum
+    // playback hold (see notify_capture_started()'s replay_hold_active
+    // computation, passed to decide_repeat_transition() via RepeatEventCtx).
+    double       _replay_start_time      = 0.0;
     uint64_t     _dropped_frames_baseline = 0;
     std::vector<uint8_t> _encode_scratch;
 
@@ -2285,9 +2374,10 @@ public:
 
     // Store the configuration.
     // If the channel is stopped: stores all fields.
-    // If the channel is running: only silence_threshold_dbfs and silence_seconds
-    //   are applied immediately; changes to alsa_device are rejected (caller
-    //   must stop the channel first).
+    // If the channel is running: every field except alsa_device is applied
+    //   immediately (silence_threshold_dbfs, silence_seconds,
+    //   track_change_silence_seconds, minimum_playback_seconds); changes to
+    //   alsa_device are rejected (caller must stop the channel first).
     // Returns true on success, false if alsa_device was changed while running.
     bool configure(const InputConfig& cfg);
 
@@ -2358,6 +2448,16 @@ public:
     {
         std::lock_guard<std::mutex> lock(_config_mutex);
         return _config.track_change_silence_seconds;
+    }
+
+    // Minimum playback hold configured for this input, seconds. Snapshotted
+    // by RepeatController at recording start the same way as
+    // track_change_silence_seconds() above, so a replay session uses the
+    // hold duration that was in effect when its recording began.
+    int minimum_playback_seconds() const
+    {
+        std::lock_guard<std::mutex> lock(_config_mutex);
+        return _config.minimum_playback_seconds;
     }
 
     // ── Live DSP pull-model accessors ─────────────────────────────────────
@@ -2601,6 +2701,33 @@ private:
 
     // ── Silence tracking (process thread only) ────────────────────────────────
     double _last_above_threshold_time = 0.0;   // monotonic seconds; 0 = never
+
+    // Minimum playback hold (session-end suppression): monotonic
+    // timestamp the current capture session started, 0.0 when not capturing.
+    // Set by handle_session_edges() on the should-capture false->true edge;
+    // read by update_silence_state() via compute_should_capture_with_hold()
+    // (autostream_monitor_utils.h) to decide whether an elapsed-silence
+    // session-end should be suppressed. Does not affect is_above_threshold,
+    // is_silent status, or track-change gap detection -- all three keep
+    // using the raw debounced/per-block values, unaffected by the hold.
+    double _capture_start_time     = 0.0;
+
+    // Minimum playback hold (replay-takeover re-notify delivery):
+    // monotonic timestamp of the most recent notify_capture_started() call
+    // for the current capture session (the original start-edge call, or a
+    // bounded re-notify -- see compute_should_renotify_capture_started(),
+    // autostream_monitor_utils.h). 0.0 when not capturing. Re-notifying
+    // recovers a session the repeat controller Ignored while a replay hold
+    // was active (or otherwise dropped): once the controller is no longer
+    // ignoring it, the very next re-notify is what actually starts it.
+    double _last_notify_capture_started_time = 0.0;
+
+    // Minimum spacing between minimum-playback-hold re-notify attempts
+    // while a capture session persists unrecorded. 1 s is frequent enough
+    // that the worst-case delay after a hold expires or a replay ends by
+    // another route is one interval, and infrequent enough to be pure
+    // noise against a ~30 s hold.
+    static constexpr double MINIMUM_PLAYBACK_RENOTIFY_INTERVAL_SECONDS = 1.0;
 
     // ── Track-gap detection (process thread only) ─────────────────────────────
     TrackGapDetector       _track_gap_detector;

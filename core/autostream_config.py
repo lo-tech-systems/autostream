@@ -40,6 +40,14 @@ DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
 MIN_MDNS_GRACE_PERIOD_SECONDS = 60
 MAX_MDNS_GRACE_PERIOD_SECONDS = 900
 
+# Minimum playback hold: once a source (live input or replay) starts
+# playback it owns playback for this many seconds before a silence timeout
+# can end its session or a live-input transient can take over an active
+# replay. 0 disables the hold entirely.
+DEFAULT_MINIMUM_PLAYBACK_SECONDS = 30
+MIN_MINIMUM_PLAYBACK_SECONDS = 0
+MAX_MINIMUM_PLAYBACK_SECONDS = 300
+
 DEFAULT_LOG_LEVEL_CHANGED_BY = "user"
 VALID_LOG_LEVEL_CHANGED_BY = ("user", "system")
 
@@ -213,6 +221,18 @@ def normalize_mdns_grace_period_seconds(value: object) -> int:
     return max(MIN_MDNS_GRACE_PERIOD_SECONDS, min(MAX_MDNS_GRACE_PERIOD_SECONDS, seconds))
 
 
+def normalize_minimum_playback_seconds(value: object) -> int:
+    """Return the minimum playback hold in seconds, clamped to its valid range.
+
+    0 is valid and disables the hold. Invalid input falls back to the default.
+    """
+    try:
+        seconds = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return DEFAULT_MINIMUM_PLAYBACK_SECONDS
+    return max(MIN_MINIMUM_PLAYBACK_SECONDS, min(MAX_MINIMUM_PLAYBACK_SECONDS, seconds))
+
+
 def normalize_log_level_changed_by(value: object) -> str:
     """Return a valid changed_by value, defaulting to 'user' for invalid/missing input."""
     text = str(value or "").strip().lower()
@@ -347,6 +367,7 @@ class GeneralConfig:
     log_file: str
     log_level: str
     silence_seconds: int
+    minimum_playback_seconds: int
     fifo_path: str
     mdns_grace_period_seconds: int
     log_level_changed_by: str
@@ -624,6 +645,9 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         log_file=str(general_d.get("log_file", "/var/log/autostream/autostream.log") or ""),
         log_level=normalize_log_level(general_d.get("log_level", DEFAULT_LOG_LEVEL)),
         silence_seconds=int(general_d.get("silence_seconds", 30) or 30),
+        minimum_playback_seconds=normalize_minimum_playback_seconds(
+            general_d.get("minimum_playback_seconds", DEFAULT_MINIMUM_PLAYBACK_SECONDS)
+        ),
         # Fixed appliance path: any value carried in the config is ignored, and
         # autostream_migrate.py rewrites it. See FIFO_PATH.
         fifo_path=FIFO_PATH,

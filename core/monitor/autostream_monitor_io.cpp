@@ -927,8 +927,10 @@ bool InputChannel::start(std::string* error_out)
     _rate_estimator.reset(_alsa.actual_rate(), AudioMonitor::output_rate_hz());
 
     // Reset silence tracking and capture-thread private state.
-    _last_above_threshold_time   = 0.0;
-    _ring_overflow_last_log_time = 0.0;
+    _last_above_threshold_time        = 0.0;
+    _capture_start_time               = 0.0;
+    _last_notify_capture_started_time = 0.0;
+    _ring_overflow_last_log_time      = 0.0;
 
     // Ensure the ramp starts fresh; it will be armed when the first capture
     // session begins inside process_thread_func().
@@ -1519,10 +1521,12 @@ bool InputChannel::update_silence_state(float   peak_sample,
     // _silence_threshold_sample is published atomically by configure(), so
     // we only need to lock here to read silence_seconds and track_change_silence_seconds.
     int silence_seconds;
+    int minimum_playback_seconds;
     {
         std::lock_guard<std::mutex> lock(_config_mutex);
         silence_seconds              = _config.silence_seconds;
         track_change_silence_seconds = _config.track_change_silence_seconds;
+        minimum_playback_seconds     = _config.minimum_playback_seconds;
     }
     silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
 
@@ -1530,12 +1534,21 @@ bool InputChannel::update_silence_state(float   peak_sample,
     if (peak_sample >= silence_threshold_sample)
         _last_above_threshold_time = now;
 
+    // Raw debounced "signal present" state -- unaffected by the minimum
+    // playback hold below. Callers use this for is_silent status/VU
+    // reporting and must keep doing so; only should_capture (the
+    // session start/stop decision) is gated by the hold.
     is_above_threshold = (_last_above_threshold_time > 0.0)
                        && ((now - _last_above_threshold_time)
                            < static_cast<double>(silence_seconds));
 
-    bool should_capture = is_above_threshold
-                       && _allow_capture.load(std::memory_order_relaxed);
+    bool should_capture = compute_should_capture_with_hold(
+        is_above_threshold,
+        _allow_capture.load(std::memory_order_relaxed),
+        _capturing.load(std::memory_order_relaxed),
+        _capture_start_time,
+        now,
+        minimum_playback_seconds);
 
     return should_capture;
 }
@@ -1579,7 +1592,11 @@ void InputChannel::handle_session_edges(bool   should_capture,
         _prefill_buf.clear();
         _prefill_buf.reserve(static_cast<size_t>(_prefill_duration_frames) * 2);
         _capturing.store(true);
+        // Minimum playback hold: this session now owns playback from this
+        // instant (see compute_should_capture_with_hold()).
+        _capture_start_time = now;
         _repeat_controller.notify_capture_started(_index);
+        _last_notify_capture_started_time = now;
         LOG_INFO("[input%d] Capture session started (peak=%.4f, threshold=%.4f)",
                  _index, peak_sample, silence_threshold_sample);
     }
@@ -1587,8 +1604,36 @@ void InputChannel::handle_session_edges(bool   should_capture,
     {
         _repeat_controller.notify_capture_stopped(_index);
         _capturing.store(false);
+        _capture_start_time = 0.0;
+        _last_notify_capture_started_time = 0.0;
         LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
                  _index, now - _last_above_threshold_time);
+    }
+    else if (should_capture && _capturing.load())
+    {
+        // Steady state while capturing: notify_capture_started() is an EDGE
+        // notification (only called on the false->true transition above),
+        // so a session the repeat controller Ignored while a replay hold
+        // was active -- or otherwise dropped -- would never be retried on
+        // its own. Re-notify at a bounded cadence, using only the
+        // lock-free fast mirrors (no _repeat_mutex taken per slice; the one
+        // notify_capture_started() actually issues takes it once, same as
+        // the edge call above). See compute_should_renotify_capture_started()
+        // (autostream_monitor_utils.h) for exactly which cases this is safe
+        // and useful for -- it is a no-op once the controller is already
+        // recording this input, and skipped entirely while the feature is
+        // disabled.
+        if (compute_should_renotify_capture_started(
+                /*capturing=*/true,
+                _repeat_controller.enabled(),
+                _repeat_controller.recording_wanted(_index),
+                now,
+                _last_notify_capture_started_time,
+                MINIMUM_PLAYBACK_RENOTIFY_INTERVAL_SECONDS))
+        {
+            _repeat_controller.notify_capture_started(_index);
+            _last_notify_capture_started_time = now;
+        }
     }
 
     // ── Track-gap detection ───────────────────────────────────────────────

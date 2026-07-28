@@ -247,6 +247,97 @@ static void test_capture_started()
 }
 
 // ---------------------------------------------------------------------------
+// CaptureStarted -- minimum playback hold (replay-takeover suppression)
+//
+// ctx.replay_hold_active gates ONLY the Replaying/FadingOut takeover cells.
+// Every other (state, event) cell in the matrix never reads this field, so
+// leaving it at its default (false) -- which every other test function in
+// this file does, via RepeatEventCtx{} -- reproduces today's behaviour
+// exactly. That default-false coverage across the whole rest of the suite
+// IS the "minimum_playback_seconds=0 => identical to today" regression
+// check for this cell; the cases below additionally pin down the "hold
+// active" behaviour itself.
+// ---------------------------------------------------------------------------
+
+static void test_capture_started_replay_hold()
+{
+    RepeatEventCtx ctx;
+    ctx.input_index = 1;
+    ctx.replay_hold_active = true;
+
+    for (RepeatState s : {RepeatState::Replaying, RepeatState::FadingOut})
+    {
+        // Hold active, no fade/discard already pending: ignored outright,
+        // no state change, no pending-interrupt latch.
+        RepeatDecision held = decide_repeat_transition(
+            s, false, true, PendingAction::None, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(held.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        CHECK(held.log_tag == RepeatLogTag::CaptureStartIgnoredReplayHoldActive, state_name(s));
+        CHECK(!held.change_state, state_name(s));
+        CHECK(!held.set_pending_action, state_name(s));
+        CHECK(!held.set_pending_interrupt_input, state_name(s));
+        CHECK(!held.set_pending_restorable, state_name(s));
+
+        // Hold active but a fade/discard is already in flight: those cells
+        // are checked first and still win (unaffected by the hold).
+        RepeatDecision held_over_fade = decide_repeat_transition(
+            s, false, true, PendingAction::LiveInterrupt, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(held_over_fade.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        CHECK(held_over_fade.log_tag == RepeatLogTag::CaptureStartIgnoredFadeInProgress, state_name(s));
+
+        RepeatDecision held_over_discard = decide_repeat_transition(
+            s, false, true, PendingAction::Discard, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(held_over_discard.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        CHECK(held_over_discard.log_tag == RepeatLogTag::CaptureStartIgnoredDiscardPending, state_name(s));
+
+        // Delivery-mechanism simulation: InputChannel's bounded re-notify
+        // (compute_should_renotify_capture_started()) calls
+        // notify_capture_started() -> this same CaptureStarted event
+        // repeatedly, roughly once a second, for as long as the input keeps
+        // capturing unrecorded. Simulate several such calls while the hold
+        // is still active: every one must independently land on the exact
+        // same Ignored/no-mutation outcome (this function is pure and
+        // stateless, so "repeated calls" is "the same inputs produce the
+        // same output" -- which is exactly the property that makes the
+        // real re-notify loop safe to fire unconditionally at that cadence).
+        for (int repeat = 0; repeat < 5; ++repeat)
+        {
+            RepeatDecision r = decide_repeat_transition(
+                s, false, true, PendingAction::None, false,
+                RepeatEvent::CaptureStarted, ctx);
+            CHECK(r.kind == RepeatDecision::Kind::Ignored, state_name(s));
+            CHECK(r.log_tag == RepeatLogTag::CaptureStartIgnoredReplayHoldActive, state_name(s));
+            CHECK(!r.change_state, state_name(s));
+            CHECK(!r.set_pending_action, state_name(s));
+        }
+
+        // Hold expired (replay_hold_active=false): the very next re-notify
+        // call after expiry is what actually applies the takeover --
+        // identical to test_capture_started()'s "trigger" case above.
+        RepeatEventCtx ctx_expired = ctx;
+        ctx_expired.replay_hold_active = false;
+        RepeatDecision expired = decide_repeat_transition(
+            s, false, true, PendingAction::None, false,
+            RepeatEvent::CaptureStarted, ctx_expired);
+        CHECK(expired.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(expired.set_pending_action &&
+              expired.pending_action == PendingAction::LiveInterrupt, state_name(s));
+    }
+
+    // Idle/Hold/Recording/Pending never consult replay_hold_active at all --
+    // spot-check Idle behaves exactly as the non-hold test above with the
+    // field simply set to true.
+    RepeatDecision idle = decide_repeat_transition(
+        RepeatState::Idle, false, true, PendingAction::None, false,
+        RepeatEvent::CaptureStarted, ctx);
+    CHECK(idle.kind == RepeatDecision::Kind::Apply, "Idle unaffected by replay_hold_active");
+    CHECK(idle.change_state && idle.next_state == RepeatState::Pending, "Idle unaffected by replay_hold_active");
+}
+
+// ---------------------------------------------------------------------------
 // CaptureStopped
 // ---------------------------------------------------------------------------
 
@@ -488,13 +579,18 @@ static void test_full_matrix_smoke()
                     for (PendingAction pa : {PendingAction::None, PendingAction::Discard,
                                               PendingAction::LiveInterrupt})
                     {
-                        RepeatDecision d = decide_repeat_transition(
-                            s, armed, enabled_cfg, pa, false, e, RepeatEventCtx{});
-                        CHECK(d.kind == RepeatDecision::Kind::Apply ||
-                              d.kind == RepeatDecision::Kind::Ignored ||
-                              d.kind == RepeatDecision::Kind::NoOp ||
-                              d.kind == RepeatDecision::Kind::Impossible,
-                              "every cell returns a well-defined Kind");
+                        for (bool replay_hold_active : {false, true})
+                        {
+                            RepeatEventCtx ctx;
+                            ctx.replay_hold_active = replay_hold_active;
+                            RepeatDecision d = decide_repeat_transition(
+                                s, armed, enabled_cfg, pa, false, e, ctx);
+                            CHECK(d.kind == RepeatDecision::Kind::Apply ||
+                                  d.kind == RepeatDecision::Kind::Ignored ||
+                                  d.kind == RepeatDecision::Kind::NoOp ||
+                                  d.kind == RepeatDecision::Kind::Impossible,
+                                  "every cell returns a well-defined Kind");
+                        }
                     }
                 }
             }
@@ -506,6 +602,7 @@ int main()
 {
     test_enabled_on_off();
     test_capture_started();
+    test_capture_started_replay_hold();
     test_capture_stopped();
     test_armed_disarmed();
     test_input_stopped();

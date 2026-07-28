@@ -683,6 +683,11 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         float raw_tcs = json_get_float(json_command, "track_change_silence_seconds", -1.0f);
         if (raw_tcs >= 0.0f)
             cfg.track_change_silence_seconds = raw_tcs;
+        // minimum_playback_seconds is optional; -1 sentinel means "not provided"
+        // (older clients / tests that omit it keep today's 30 s default).
+        int raw_mps = json_get_int(json_command, "minimum_playback_seconds", -1);
+        if (raw_mps >= 0)
+            cfg.minimum_playback_seconds = raw_mps;
         return _monitor.api_configure_input(idx, cfg);
     }
     else if (type == "set_fifo")
@@ -834,6 +839,7 @@ AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabl
         {
             p.silence_threshold_sample     = ch->silence_threshold_sample();
             p.track_change_silence_seconds = ch->track_change_silence_seconds();
+            p.minimum_playback_seconds     = ch->minimum_playback_seconds();
         }
         return p;
     });
@@ -1200,6 +1206,9 @@ static std::string validate_input_config(const InputConfig& cfg,
         cfg.track_change_silence_seconds < 0.5f ||
         cfg.track_change_silence_seconds > 5.0f)
         return "track_change_silence_seconds must be in the range [0.5, 5.0]";
+
+    if (cfg.minimum_playback_seconds < 0 || cfg.minimum_playback_seconds > 300)
+        return "minimum_playback_seconds must be in the range [0, 300]";
 
     return "";
 }

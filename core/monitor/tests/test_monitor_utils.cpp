@@ -331,6 +331,158 @@ static void test_widen_s16_to_s32_left_justifies()
 }
 
 // ---------------------------------------------------------------------------
+// compute_should_capture_with_hold: minimum playback hold
+// (suppression point (a) -- live-input silence-timeout session-end
+// suppression). Pure decision function factored out of InputChannel::
+// update_silence_state() so it is testable here without a running capture
+// channel.
+// ---------------------------------------------------------------------------
+
+static void test_hold_disabled_matches_pre_hold_behaviour()
+{
+    // minimum_playback_seconds == 0 must reproduce exactly
+    // (is_above_threshold && allow_capture) regardless of timestamps --
+    // this is the "hold=0 => today's behaviour, byte for byte" contract.
+    CHECK(compute_should_capture_with_hold(true, true, true, 0.0, 100.0, 0) == true,
+          "hold disabled, above threshold, capturing -> true");
+    CHECK(compute_should_capture_with_hold(false, true, true, 100.0, 100.5, 0) == false,
+          "hold disabled, below threshold just after session start -> false (no hold)");
+    CHECK(compute_should_capture_with_hold(false, true, true, 100.0, 129.999, 0) == false,
+          "hold disabled, below threshold well within what would be a 30s hold -> still false");
+    CHECK(compute_should_capture_with_hold(true, false, true, 100.0, 100.5, 0) == false,
+          "hold disabled, allow_capture false always wins");
+}
+
+static void test_hold_suppresses_session_end_within_window()
+{
+    // Session started at t=100, 30 s hold, now t=115 (15 s in): elapsed
+    // silence alone (is_above_threshold=false) must NOT end the session.
+    CHECK(compute_should_capture_with_hold(
+              /*is_above_threshold=*/false, /*allow_capture=*/true,
+              /*capturing=*/true, /*capture_start_time=*/100.0,
+              /*now=*/115.0, /*minimum_playback_seconds=*/30) == true,
+          "silence within hold window is suppressed (should_capture stays true)");
+
+    // Exactly at the boundary (elapsed == minimum_playback_seconds): hold
+    // has just expired (strict less-than), so silence now ends the session.
+    CHECK(compute_should_capture_with_hold(
+              false, true, true, 100.0, 130.0, 30) == false,
+          "hold boundary (elapsed == minimum_playback_seconds) is expired");
+
+    // Comfortably after the hold: normal silence-timeout behaviour resumes.
+    CHECK(compute_should_capture_with_hold(
+              false, true, true, 100.0, 200.0, 30) == false,
+          "silence well after hold expiry ends the session normally");
+
+    // Signal present during the hold: unaffected either way (true or-ed
+    // with true is still true).
+    CHECK(compute_should_capture_with_hold(
+              true, true, true, 100.0, 115.0, 30) == true,
+          "signal present during hold -> still capturing");
+}
+
+static void test_hold_never_overrides_explicit_stop()
+{
+    // allow_capture=false must always win, hold active or not -- the hold
+    // only suppresses the SILENCE-TIMEOUT reason for ending a session, never
+    // an explicit stop (set_allow_capture(false), stop_input, a device/
+    // config change).
+    CHECK(compute_should_capture_with_hold(
+              true, /*allow_capture=*/false, true, 100.0, 105.0, 30) == false,
+          "explicit stop wins even with signal present and hold active");
+    CHECK(compute_should_capture_with_hold(
+              false, /*allow_capture=*/false, true, 100.0, 105.0, 30) == false,
+          "explicit stop wins with silence and hold active");
+}
+
+static void test_hold_requires_an_active_session()
+{
+    // Not currently capturing (capturing=false): the hold cannot apply --
+    // there is nothing to hold open. Guards against a stale non-zero
+    // capture_start_time surviving into the next (unrelated) evaluation.
+    CHECK(compute_should_capture_with_hold(
+              false, true, /*capturing=*/false, /*capture_start_time=*/100.0,
+              105.0, 30) == false,
+          "not capturing -> hold never applies, even with a stale start time");
+
+    // capture_start_time == 0.0 (no session ever recorded) also never holds,
+    // even if capturing were somehow true.
+    CHECK(compute_should_capture_with_hold(
+              false, true, true, /*capture_start_time=*/0.0, 105.0, 30) == false,
+          "capture_start_time == 0.0 -> hold never applies");
+}
+
+// ---------------------------------------------------------------------------
+// compute_should_renotify_capture_started: minimum playback hold
+// (suppression point (b) delivery mechanism) -- decides whether InputChannel
+// should re-invoke notify_capture_started() this iteration to recover a
+// session the repeat controller Ignored (or otherwise dropped) while this
+// input kept capturing. Factored out the same way as
+// compute_should_capture_with_hold() above.
+// ---------------------------------------------------------------------------
+
+static void test_renotify_never_fires_when_not_capturing()
+{
+    CHECK(compute_should_renotify_capture_started(
+              /*capturing=*/false, /*repeat_enabled=*/true, /*recording_wanted=*/false,
+              /*now=*/100.0, /*last_notify_time=*/0.0, /*interval_seconds=*/1.0) == false,
+          "not capturing -> never re-notifies, regardless of cadence");
+}
+
+static void test_renotify_never_fires_when_repeat_disabled()
+{
+    CHECK(compute_should_renotify_capture_started(
+              true, /*repeat_enabled=*/false, false,
+              100.0, 0.0, 1.0) == false,
+          "repeat feature disabled -> never re-notifies");
+    // Distinguishes "disabled" from "enabled but not recording me" -- both
+    // collapse to recording_wanted()==false on their own, but only the
+    // disabled case must suppress the re-notify unconditionally.
+    CHECK(compute_should_renotify_capture_started(
+              true, /*repeat_enabled=*/false, /*recording_wanted=*/false,
+              100.0, 90.0, 1.0) == false,
+          "disabled wins even when the interval has long since elapsed");
+}
+
+static void test_renotify_never_fires_once_already_recording() {
+    CHECK(compute_should_renotify_capture_started(
+              true, true, /*recording_wanted=*/true,
+              100.0, 0.0, 1.0) == false,
+          "already recording this input -> re-notify is pure overhead, never fires");
+    CHECK(compute_should_renotify_capture_started(
+              true, true, /*recording_wanted=*/true,
+              1000.0, 1.0, 1.0) == false,
+          "recording_wanted=true wins even with a very stale last_notify_time");
+}
+
+static void test_renotify_respects_cadence_bound()
+{
+    // Never fired yet this session (last_notify_time <= 0.0): fires
+    // immediately -- but in production this state is transient, since the
+    // start-edge call always sets last_notify_time before the next
+    // iteration's check runs.
+    CHECK(compute_should_renotify_capture_started(
+              true, true, false, 100.0, 0.0, 1.0) == true,
+          "no prior notify this session -> fires immediately");
+
+    // Just notified: must not fire again before the interval elapses.
+    CHECK(compute_should_renotify_capture_started(
+              true, true, false, /*now=*/100.4, /*last_notify_time=*/100.0,
+              /*interval_seconds=*/1.0) == false,
+          "within the interval -> does not re-fire");
+
+    // Exactly at the boundary: fires (>=, not strictly >).
+    CHECK(compute_should_renotify_capture_started(
+              true, true, false, 101.0, 100.0, 1.0) == true,
+          "exactly at the interval boundary -> fires");
+
+    // Comfortably past the interval: fires.
+    CHECK(compute_should_renotify_capture_started(
+              true, true, false, 105.0, 100.0, 1.0) == true,
+          "well past the interval -> fires");
+}
+
+// ---------------------------------------------------------------------------
 // Logger queue: ordering + byte format preserved
 // ---------------------------------------------------------------------------
 
@@ -586,6 +738,18 @@ int main()
 
     // widen_s16_to_s32
     test_widen_s16_to_s32_left_justifies();
+
+    // compute_should_capture_with_hold
+    test_hold_disabled_matches_pre_hold_behaviour();
+    test_hold_suppresses_session_end_within_window();
+    test_hold_never_overrides_explicit_stop();
+    test_hold_requires_an_active_session();
+
+    // compute_should_renotify_capture_started
+    test_renotify_never_fires_when_not_capturing();
+    test_renotify_never_fires_when_repeat_disabled();
+    test_renotify_never_fires_once_already_recording();
+    test_renotify_respects_cadence_bound();
 
     test_logger_ordering_and_format();
     test_logger_drop_counting();

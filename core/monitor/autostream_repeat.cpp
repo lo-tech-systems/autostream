@@ -733,6 +733,21 @@ std::deque<RepeatBuffer::Chunk> RepeatController::handle_event_locked(RepeatEven
             LOG_DEBUG("[repeat] Ignoring capture-start on input %d; a discard is already "
                       "pending for this fade", ctx.input_index);
             break;
+        case RepeatLogTag::CaptureStartIgnoredReplayHoldActive:
+            // DEBUG + identical message text on every repeat (same
+            // ctx.input_index each time): relies on logger_log()'s built-in
+            // duplicate-suppression (autostream_monitor_utils.cpp,
+            // DUPLICATE_LOG_LIMIT) to collapse the ~once/second re-notify
+            // stream (see compute_should_renotify_capture_started(),
+            // autostream_monitor_utils.h) into a handful of lines plus a
+            // "(suppressed N duplicate entries)" summary, rather than one
+            // line per second for up to a ~30 s hold. Identical convention
+            // to the two Ignored cells immediately above, which already
+            // rely on the same mechanism for the same reason (repeated
+            // CaptureStarted events on a still-open fade/discard).
+            LOG_DEBUG("[repeat] Ignoring capture-start on input %d; minimum playback "
+                      "hold active on the current replay", ctx.input_index);
+            break;
         case RepeatLogTag::LiveInterruptFadingOutReplay:
             LOG_INFO("[repeat] Live interrupt on input %d: fading out replay (input %d)",
                      ctx.input_index, origin_before);
@@ -909,6 +924,17 @@ void RepeatController::notify_capture_started(int input_index)
 
     RepeatEventCtx ctx;
     ctx.input_index = input_index;
+    // Minimum playback hold: only meaningful while a replay (or its
+    // fade-out) is actually in flight, and only while _origin_minimum_
+    // playback_seconds (snapshotted from the origin input's config at
+    // recording start) is non-zero. 0 must reproduce today's behaviour
+    // exactly, so this stays false whenever the hold is disabled.
+    if ((_state == RepeatState::Replaying || _state == RepeatState::FadingOut) &&
+        _origin_minimum_playback_seconds > 0 && _replay_start_time > 0.0)
+    {
+        double elapsed = get_monotonic_time() - _replay_start_time;
+        ctx.replay_hold_active = elapsed < static_cast<double>(_origin_minimum_playback_seconds);
+    }
     handle_event_locked(RepeatEvent::CaptureStarted, ctx);
 }
 
@@ -971,6 +997,7 @@ void RepeatController::perform_pending_start()
     {
         _origin_silence_threshold_sample     = params.silence_threshold_sample;
         _origin_track_change_silence_seconds = params.track_change_silence_seconds;
+        _origin_minimum_playback_seconds     = params.minimum_playback_seconds;
     }
 
     _unavailable_reason.clear();
@@ -1163,6 +1190,10 @@ void RepeatController::begin_replay_locked()
         ? static_cast<double>(_buffer.total_bytes()) / static_cast<double>(rate) : 0.0;
 
     transition_locked(RepeatState::Replaying);
+
+    // Minimum playback hold: replay owns playback from this instant. See
+    // notify_capture_started()'s replay_hold_active computation.
+    _replay_start_time = get_monotonic_time();
 
     // FifoOwner flips to Replay BEFORE the engine's thread is told to start,
     // so the very next live-path FIFO write (should one somehow race in)

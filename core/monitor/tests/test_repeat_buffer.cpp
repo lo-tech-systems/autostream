@@ -546,6 +546,109 @@ static void test_u9_silence_trim_accounting()
 }
 
 // ---------------------------------------------------------------------------
+// Tail trim end-to-end — SilenceTrimAccountant + RepeatBuffer::truncate_tail()
+// wired together the same way RepeatController::notify_capture_stopped()
+// (autostream_repeat.cpp) uses them at session close: accumulate
+// bytes_since_last_loud() as blocks are appended, compute_trim_bytes() at
+// close, then truncate_tail() with the result. U9/U3 above test each piece
+// in isolation with hand-picked numbers; this exercises them together so a
+// mismatch in how the two APIs compose (units, ordering, off-by-one at a
+// chunk boundary) would show up here even if each piece's own unit tests
+// still pass.
+// ---------------------------------------------------------------------------
+
+static void test_tail_trim_end_to_end()
+{
+    const size_t kChunk = 16;
+    const size_t kFrameBytes = 4;
+
+    // A session that recorded 16 bytes of "loud" content, then a trailing
+    // silence run of 24 bytes (the silence-timeout window's worth) before
+    // the session closed. 1 s pad worth of bytes is kept back.
+    {
+        RepeatBuffer buf(kChunk);
+        SilenceTrimAccountant trim;
+
+        auto loud = make_pattern(16, /*start=*/0);
+        buf.append(loud.data(), loud.size());
+        trim.on_block_appended(/*above_threshold=*/true, loud.size());
+
+        auto quiet = make_pattern(24, /*start=*/16);
+        buf.append(quiet.data(), quiet.size());
+        trim.on_block_appended(/*above_threshold=*/false, quiet.size());
+
+        CHECK(buf.total_bytes() == 40, "tail trim e2e: 16 loud + 24 quiet appended");
+        CHECK(trim.bytes_since_last_loud() == 24, "tail trim e2e: trailing quiet tracked exactly");
+
+        const size_t pad_bytes = 8;  // e.g. ~1 s pad at this test's byte rate
+        size_t trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
+            trim.bytes_since_last_loud(), pad_bytes, kFrameBytes, buf.total_bytes());
+        // Raw trim = 24 - 8 = 16, already frame-aligned (multiple of 4).
+        CHECK(trim_bytes == 16, "tail trim e2e: computed trim matches quiet run minus pad");
+
+        buf.truncate_tail(trim_bytes);
+        CHECK(buf.total_bytes() == 24, "tail trim e2e: buffer shrinks by exactly trim_bytes");
+
+        // Surviving content is the original 16 loud bytes plus the first
+        // 8 bytes of the quiet pad -- nothing from the trimmed tail, nothing
+        // from the head.
+        RepeatBuffer::Reader reader(buf);
+        std::vector<uint8_t> out(24);
+        size_t n = reader.next(out.data(), out.size());
+        CHECK(n == 24, "tail trim e2e: reader sees exactly the surviving bytes");
+        std::vector<uint8_t> expected;
+        expected.insert(expected.end(), loud.begin(), loud.end());
+        expected.insert(expected.end(), quiet.begin(), quiet.begin() + pad_bytes);
+        CHECK(std::memcmp(out.data(), expected.data(), 24) == 0,
+              "tail trim e2e: surviving bytes are loud content + untouched pad, byte-exact");
+    }
+
+    // Chunk-boundary edge case: the quiet run crosses a chunk boundary and
+    // the trim removes an entire chunk plus part of another, mirroring U3's
+    // cross-boundary case but driven by compute_trim_bytes() this time.
+    {
+        RepeatBuffer buf(kChunk);
+        SilenceTrimAccountant trim;
+
+        auto loud = make_pattern(16, 0);   // exactly one full chunk
+        buf.append(loud.data(), loud.size());
+        trim.on_block_appended(true, loud.size());
+
+        auto quiet = make_pattern(24, 16);  // spans into a second and third chunk
+        buf.append(quiet.data(), quiet.size());
+        trim.on_block_appended(false, quiet.size());
+
+        CHECK(buf.chunk_count() == 3, "tail trim e2e (boundary): 16+16+8 == 3 chunks before trim");
+
+        size_t trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
+            trim.bytes_since_last_loud(), /*pad_bytes=*/0, kFrameBytes, buf.total_bytes());
+        CHECK(trim_bytes == 24, "tail trim e2e (boundary): zero pad trims the whole quiet run");
+
+        buf.truncate_tail(trim_bytes);
+        CHECK(buf.total_bytes() == 16, "tail trim e2e (boundary): only the loud content survives");
+        CHECK(buf.chunk_count() == 1, "tail trim e2e (boundary): trailing chunks fully dropped");
+    }
+
+    // Never trims below zero / never exceeds total_bytes even for a
+    // recording that is entirely silence (degenerate but must not underflow
+    // RepeatBuffer::truncate_tail(), which itself clamps -- this confirms
+    // the pair composes safely at that extreme).
+    {
+        RepeatBuffer buf(kChunk);
+        SilenceTrimAccountant trim;
+
+        auto quiet = make_pattern(10, 0);
+        buf.append(quiet.data(), quiet.size());
+        trim.on_block_appended(false, quiet.size());
+
+        size_t trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
+            trim.bytes_since_last_loud(), /*pad_bytes=*/0, kFrameBytes, buf.total_bytes());
+        buf.truncate_tail(trim_bytes);
+        CHECK(buf.total_bytes() <= 10, "tail trim e2e (all-silent): never underflows total_bytes");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // U12 — steal_chunks (detach-under-lock / free-after-unlock support)
 // ---------------------------------------------------------------------------
 
@@ -673,6 +776,7 @@ int main()
     test_u14_byte_rate_for_new_tiers();
     test_u8_meminfo_parse();
     test_u9_silence_trim_accounting();
+    test_tail_trim_end_to_end();
     test_u12_steal_chunks();
     test_u13_total_bytes_invariant();
 

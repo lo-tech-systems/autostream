@@ -128,6 +128,7 @@ class TestParseConfigDefaults:
         # Resting log level defaults to "warning".
         assert cfg.general.log_level == "warning"
         assert cfg.general.silence_seconds == 30
+        assert cfg.general.minimum_playback_seconds == 30
         assert cfg.general.fifo_path == c.FIFO_PATH
         assert cfg.owntone.base_url == "http://localhost:3689"
         assert cfg.owntone.volume_percent == 20
@@ -209,6 +210,50 @@ class TestParseConfigDefaults:
     def test_update_channel_normalised_to_stable_for_unknown(self):
         cfg = c.parse_config({"updates": {"update_channel": "nightly"}})
         assert cfg.updates.update_channel == "stable"
+
+
+class TestMinimumPlaybackSeconds:
+    """general.minimum_playback_seconds: default, clamp, and invalid-input
+    handling, mirroring the output_usage_poll_interval_seconds tests above
+    and normalize_mdns_grace_period_seconds's own clamp contract."""
+
+    def test_default_when_omitted(self):
+        cfg = c.parse_config({})
+        assert cfg.general.minimum_playback_seconds == 30
+
+    def test_explicit_valid_value(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": 8}})
+        assert cfg.general.minimum_playback_seconds == 8
+
+    def test_zero_is_valid_and_disables_hold(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": 0}})
+        assert cfg.general.minimum_playback_seconds == 0
+
+    def test_below_min_clamps_to_min(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": -5}})
+        assert cfg.general.minimum_playback_seconds == c.MIN_MINIMUM_PLAYBACK_SECONDS
+
+    def test_above_max_clamps_to_max(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": 9999}})
+        assert cfg.general.minimum_playback_seconds == c.MAX_MINIMUM_PLAYBACK_SECONDS
+
+    def test_string_invalid_normalizes_to_default(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": "bad"}})
+        assert cfg.general.minimum_playback_seconds == c.DEFAULT_MINIMUM_PLAYBACK_SECONDS
+
+    def test_min_boundary(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": c.MIN_MINIMUM_PLAYBACK_SECONDS}})
+        assert cfg.general.minimum_playback_seconds == c.MIN_MINIMUM_PLAYBACK_SECONDS
+
+    def test_max_boundary(self):
+        cfg = c.parse_config({"general": {"minimum_playback_seconds": c.MAX_MINIMUM_PLAYBACK_SECONDS}})
+        assert cfg.general.minimum_playback_seconds == c.MAX_MINIMUM_PLAYBACK_SECONDS
+
+    def test_normalize_function_clamps_to_min(self):
+        assert c.normalize_minimum_playback_seconds(-100) == c.MIN_MINIMUM_PLAYBACK_SECONDS
+
+    def test_normalize_function_clamps_to_max(self):
+        assert c.normalize_minimum_playback_seconds(100000) == c.MAX_MINIMUM_PLAYBACK_SECONDS
 
     def test_update_channel_dev_accepted(self):
         cfg = c.parse_config({"updates": {"update_channel": "dev"}})

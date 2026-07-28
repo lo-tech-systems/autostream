@@ -136,6 +136,91 @@ extern OutputFormatDescriptor g_output_format;
 // changes do not affect silence detection timing.
 double get_monotonic_time();
 
+// Minimum playback hold: live-input session-end suppression
+// (suppression point (a)). Pure decision function factored out of
+// InputChannel::update_silence_state() so it is unit-testable without a
+// running capture channel.
+//
+// Once a source starts playback it owns playback for minimum_playback_seconds;
+// during that window an elapsed-silence session-end is suppressed even
+// though is_above_threshold has already gone false. This affects ONLY the
+// should_capture value used for the session start/stop decision -- callers
+// must keep reporting the raw is_above_threshold (unaffected) for is_silent
+// status/VU purposes, and must keep feeding TrackGapDetector the raw
+// per-block peak independently of this function's result, so the hold never
+// touches track-change detection.
+//
+// is_above_threshold: raw debounced "signal present" state, already
+//   accounting for silence_seconds (see update_silence_state()).
+// allow_capture: explicit capture gate (set_allow_capture()); the hold never
+//   overrides an explicit stop -- if this is false the result is always false.
+// capturing: whether a capture session is currently active (pre-edge state).
+// capture_start_time: monotonic timestamp the current session started, or
+//   0.0 if there is no active session.
+// now: current monotonic time.
+// minimum_playback_seconds: configured hold duration; 0 disables the hold
+//   entirely, in which case this function returns exactly
+//   (is_above_threshold && allow_capture), matching pre-hold behaviour.
+inline bool compute_should_capture_with_hold(bool is_above_threshold,
+                                              bool allow_capture,
+                                              bool capturing,
+                                              double capture_start_time,
+                                              double now,
+                                              int minimum_playback_seconds)
+{
+    bool hold_active = capturing
+                     && minimum_playback_seconds > 0
+                     && capture_start_time > 0.0
+                     && (now - capture_start_time) < static_cast<double>(minimum_playback_seconds);
+    return (is_above_threshold || hold_active) && allow_capture;
+}
+
+// Minimum playback hold: replay-takeover re-notify (the delivery side of
+// suppression point (b)). RepeatController::notify_capture_started()
+// is an EDGE notification -- InputChannel calls it exactly once, on the
+// should_capture false->true transition. If that single call lands while an
+// active replay's minimum-playback hold is still in effect, decide_repeat_
+// transition() Ignores it (see RepeatEventCtx::replay_hold_active) with no
+// pending state latched, by design -- but that means nothing re-raises
+// CaptureStarted once the hold expires, or if the replay ends by some other
+// route (disable/re-enable, discard) while this input is still capturing:
+// the swallowed session would otherwise never start.
+//
+// This pure function decides whether InputChannel's capture loop -- the
+// same thread that already calls handle_session_edges() once per processed
+// audio block -- should call notify_capture_started() AGAIN this iteration,
+// while capturing continues, at a bounded cadence, so the controller keeps
+// getting a chance to admit the session as soon as it is able to.
+//
+// capturing: this input's current _capturing state.
+// repeat_enabled: RepeatController::enabled() fast mirror. Checked
+//   separately from recording_wanted (which folds "disabled" into its own
+//   false) so a disabled controller never re-notifies.
+// recording_wanted: RepeatController::recording_wanted(this input) fast
+//   mirror -- true once the controller is actually Recording/Pending for
+//   this input, at which point re-notifying would be pure overhead (every
+//   matrix cell it could hit is a defensive/idempotent NoOp -- see the
+//   CaptureStarted state x event table comment above decide_repeat_
+//   transition() in autostream_monitor.h).
+// now: current monotonic time.
+// last_notify_time: monotonic timestamp of the most recent
+//   notify_capture_started() call for this input's current session (the
+//   original edge call, or a previous re-notify), 0.0 if none this session.
+// interval_seconds: minimum spacing between re-notify attempts.
+//
+// Returns true when a re-notify should fire now.
+inline bool compute_should_renotify_capture_started(bool capturing,
+                                                      bool repeat_enabled,
+                                                      bool recording_wanted,
+                                                      double now,
+                                                      double last_notify_time,
+                                                      double interval_seconds)
+{
+    if (!capturing || !repeat_enabled || recording_wanted)
+        return false;
+    return (last_notify_time <= 0.0) || ((now - last_notify_time) >= interval_seconds);
+}
+
 
 // =============================================================================
 // Logging

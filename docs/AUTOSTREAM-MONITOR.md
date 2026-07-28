@@ -249,7 +249,8 @@ Request:
   "device":"hw:1,0",
   "silence_threshold_dbfs":-66.0,
   "silence_seconds":30,
-  "track_change_silence_seconds":1.25
+  "track_change_silence_seconds":1.25,
+  "minimum_playback_seconds":30
 }
 ```
 
@@ -275,11 +276,20 @@ Request fields:
   - default if omitted: `1.25`
   - a runtime configuration change to this value clears any in-progress gap
     candidate but does not reset the `track_change_seq` counter
+- `minimum_playback_seconds`
+  - minimum playback hold: once this input starts a capture session, or once
+    a repeat-feature replay sourced from this input starts, that session/
+    replay owns playback for this many seconds
+  - valid range: `[0, 300]`
+  - default if omitted: `30`
+  - `0` disables the hold entirely
+  - see "Minimum playback hold" below for the exact suppression semantics
 
 Important behavior:
 
 - if the input is stopped, all fields are applied
-- if the input is already running, only silence settings are runtime-tunable
+- if the input is already running, every field except `device` is
+  runtime-tunable, including `minimum_playback_seconds`
 - changing `device` while running is rejected; the caller must stop the input
   first
 
@@ -296,7 +306,71 @@ Typical errors:
 - `device must be in ALSA hw:* format (e.g. hw:1,0)`
 - `silence_threshold_dbfs must be in the range [-120.0, 0.0]`
 - `silence_seconds must be in the range [1, 3600]`
+- `track_change_silence_seconds must be in the range [0.5, 5.0]`
+- `minimum_playback_seconds must be in the range [0, 300]`
 - `stop the input before changing device`
+
+#### Minimum playback hold
+
+Once a source (live input or repeat-feature replay) starts playback, it owns
+playback for `minimum_playback_seconds` (default 30 s, 0 disables). This
+exists so a short `silence_seconds` timeout (tuned for e.g. an automatic
+turntable's music-to-music gaps) does not also trip on a source's own
+start-up transient: a turntable's start-button thump followed by 15-20 s of
+sub-threshold spin-up rumble before the groove is reached would otherwise end
+the session (and, with repeat armed, immediately replay a two-second
+recording of the thump) well before real music arrives.
+
+Two independent suppression points, both gated on elapsed time since the
+session/replay started:
+
+- **Live input session-end.** While a capture session is within its hold
+  window, an elapsed-silence session-end is suppressed even though the
+  debounced above-threshold state has already gone false: the session (and,
+  if the repeat feature is recording, its recording) stays open through the
+  quiet spell. The hold never overrides an explicit stop (`set_allow_capture`
+  going false, `stop_input`, a config/device change) -- only the
+  silence-timeout reason is held back.
+- **Replay takeover.** While an active repeat-feature replay (or its
+  fade-out) is within its hold window, a live-input transient that would
+  otherwise interrupt it (crossfade to the live source) is ignored outright:
+  no state change, no pending interrupt is latched. Nothing about the
+  transient is stored to be replayed later; instead, for as long as that
+  input keeps capturing without yet being the one actually recorded, the
+  daemon re-checks roughly once a second (a bounded re-notify alongside the
+  original start edge) whether it can now be admitted. Once the hold
+  expires -- or the replay ends by some other route (e.g. disable/re-enable)
+  while the input is still capturing -- the very next one of those checks is
+  what actually starts the takeover or the recording, normally within about
+  a second. Worst case, a legitimate takeover during the hold is deferred
+  until the hold expires and the new source is still live.
+
+What the hold does **not** affect:
+
+- `is_silent` status and VU/level reporting always reflect the true
+  above-threshold state, unaffected by the hold.
+- Counters (wear/total hours) gate on the instantaneous `is_silent` flag, so
+  a held-but-silent session does not inflate accrued time.
+- Track-change detection (`track_change_silence_seconds`) runs its own,
+  independent, much shorter silence window on both the live and replay
+  paths and is never suppressed by the hold.
+- `minimum_playback_seconds=0` reproduces pre-hold behaviour exactly on both
+  suppression points.
+
+### Silence-timeout tail trim
+
+When a repeat-feature recording session ends because the input's own
+`silence_seconds` timeout elapsed (as opposed to a manual stop, a config
+change, or shutdown), the trailing silence captured while the timeout was
+counting down is silence by definition and is dropped from the RAM buffer at
+session close, before replay of that recording can begin. The trim removes
+whatever amount of trailing below-threshold audio was actually measured for
+that session (not a fixed `silence_seconds`-sized cut), minus a small fixed
+pad so the trim never bites into the last audible moment. `recording.seconds`
+/ `recording.bytes` and replay `duration_seconds` in status responses
+reflect the trimmed length. The trim is chunk-based (whole buffer chunks
+removed from the tail, with the final partial chunk truncated to its exact
+byte boundary) so it is byte-exact, not merely chunk-granular.
 
 ### `set_fifo`
 
