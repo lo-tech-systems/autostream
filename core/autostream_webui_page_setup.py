@@ -876,6 +876,17 @@ def send_setup_page(
         for v, label in _repeat_target_options
     )
 
+    # Guidance under the silence slider: with the minimum playback hold
+    # active, short timeouts are safe even for automatic turntables whose
+    # start button causes a transient long before music. Hidden when the
+    # hold is disabled in the config file.
+    _min_hold = parsed.general.minimum_playback_seconds
+    _silence_hold_note_html = (
+        f'<div class="helptext">Once playback starts it continues for at least '
+        f'{_min_hold}s, so short settings (7-10s) work well even for automatic '
+        f'turntables.</div>'
+    ) if _min_hold > 0 else ""
+
     # Fieldset fragments shared by both layout paths
     playback_inner_html = f"""
           <label>Default Speakers:
@@ -891,6 +902,7 @@ def send_setup_page(
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
+          {_silence_hold_note_html}
           <div class="setup-customise-row" style="margin-top:0.75rem;">
             <label class="output-toggle" style="margin:0;">
               <input type="checkbox" name="repeat_enabled" id="repeat_enabled"{'  checked' if parsed.repeat.enabled else ''} onchange="onRepeatEnabledToggle(this.checked)">

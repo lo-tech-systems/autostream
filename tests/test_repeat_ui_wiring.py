@@ -57,10 +57,12 @@ def _minimal_cfg(
     repeat_enabled: bool = False,
     repeat_codec: str = "auto",
     repeat_target_minutes: int = 33,
+    minimum_playback_seconds: int = 30,
 ) -> Path:
     cfg = tmp_path / "autostream.json"
     cfg.write_text(json.dumps({
-        "general": {"log_level": "info", "silence_seconds": 30},
+        "general": {"log_level": "info", "silence_seconds": 30,
+                    "minimum_playback_seconds": minimum_playback_seconds},
         "owntone": {
             "base_url": "http://localhost:3689",
             "output_name": "Test Speaker",
@@ -100,6 +102,7 @@ def _render_setup_page(
     repeat_enabled: bool = False,
     repeat_codec: str = "auto",
     repeat_target_minutes: int = 33,
+    minimum_playback_seconds: int = 30,
 ) -> str:
     from autostream_webui_page_setup import send_setup_page
     from autostream_settings import SettingsStore
@@ -111,6 +114,7 @@ def _render_setup_page(
         repeat_enabled=repeat_enabled,
         repeat_codec=repeat_codec,
         repeat_target_minutes=repeat_target_minutes,
+        minimum_playback_seconds=minimum_playback_seconds,
     )
     store = SettingsStore(str(cfg), _save_interval_seconds=9999)
     state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
@@ -659,3 +663,22 @@ class TestEqualiserRepeatLock:
         html = _render_equaliser_page(repeat_enabled=False)
         assert "_pollRepeatLockState" not in html
         assert "applyRepeatReplayLock" not in html
+
+
+class TestSilenceSliderHoldGuidance:
+    """The silence slider carries guidance that short timeouts are safe when
+    the minimum playback hold is active; hidden when the hold is disabled."""
+
+    def test_note_present_with_hold_value(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        assert "continues for at least 30s" in html
+        assert "short settings (7-10s)" in html
+
+    def test_note_reflects_configured_hold(self, tmp_path):
+        html = _render_setup_page(tmp_path, minimum_playback_seconds=45)
+        assert "continues for at least 45s" in html
+
+    def test_note_hidden_when_hold_disabled(self, tmp_path):
+        html = _render_setup_page(tmp_path, minimum_playback_seconds=0)
+        assert "continues for at least" not in html
+        assert "short settings (7-10s)" not in html
