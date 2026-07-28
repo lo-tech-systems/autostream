@@ -246,3 +246,90 @@ class TestRemoveCachedDevices:
     def test_empty_result_when_no_cached_devices(self):
         client = self._client_with_objects({}, removed=[])
         assert client.remove_cached_devices(keep_macs=set()) == 0
+
+
+# ---------------------------------------------------------------------------
+# decode_transport_codec() / transport_codec_and_rate(): pure A2DP
+# Codec/Configuration decoding, no dbus involved.
+# ---------------------------------------------------------------------------
+
+class TestDecodeTransportCodec:
+    def test_sbc_44_1khz_joint_stereo(self):
+        result = bluez_mod.decode_transport_codec(0x00, bytes([0x21]))
+        assert result == {"codec": "SBC", "sample_rate": 44100, "channel_mode": "joint_stereo"}
+
+    def test_sbc_48khz_stereo(self):
+        result = bluez_mod.decode_transport_codec(0x00, bytes([0x12]))
+        assert result == {"codec": "SBC", "sample_rate": 48000, "channel_mode": "stereo"}
+
+    def test_sbc_16khz_mono(self):
+        result = bluez_mod.decode_transport_codec(0x00, bytes([0x88]))
+        assert result["sample_rate"] == 16000
+        assert result["channel_mode"] == "mono"
+
+    def test_sbc_32khz_dual(self):
+        result = bluez_mod.decode_transport_codec(0x00, bytes([0x44]))
+        assert result["sample_rate"] == 32000
+        assert result["channel_mode"] == "dual"
+
+    def test_mpeg_codec_byte(self):
+        result = bluez_mod.decode_transport_codec(0x01, bytes([0x00]))
+        assert result["codec"] == "MPEG-1/2"
+        assert result["sample_rate"] is None
+
+    def test_aac_codec_byte(self):
+        result = bluez_mod.decode_transport_codec(0x02, bytes([0x00]))
+        assert result["codec"] == "AAC"
+        assert result["sample_rate"] is None
+
+    def test_vendor_codec_byte(self):
+        result = bluez_mod.decode_transport_codec(0xFF, bytes([0x00]))
+        assert result["codec"] == "Vendor"
+        assert result["sample_rate"] is None
+
+    def test_unknown_codec_byte_renders_hex(self):
+        result = bluez_mod.decode_transport_codec(0x05, bytes([0x00]))
+        assert result["codec"] == "Unknown (0x05)"
+
+    def test_empty_configuration_blob_does_not_raise(self):
+        result = bluez_mod.decode_transport_codec(0x00, b"")
+        assert result == {"codec": "SBC", "sample_rate": None, "channel_mode": None}
+
+    def test_none_configuration_blob_does_not_raise(self):
+        result = bluez_mod.decode_transport_codec(0x00, None)
+        assert result["sample_rate"] is None
+
+    def test_garbage_configuration_blob_does_not_raise(self):
+        result = bluez_mod.decode_transport_codec(0x00, "not-bytes")
+        assert result["sample_rate"] is None
+
+    def test_none_codec_byte_does_not_raise(self):
+        result = bluez_mod.decode_transport_codec(None, bytes([0x21]))
+        assert result["codec"] == "Unknown"
+        assert result["sample_rate"] is None
+
+    def test_list_of_ints_accepted_as_configuration(self):
+        """dbus.Array/_plain() conversion yields a plain list of ints, not a
+        bytes object -- the decoder must accept either."""
+        result = bluez_mod.decode_transport_codec(0x00, [0x21])
+        assert result["sample_rate"] == 44100
+
+
+class TestTransportCodecAndRate:
+    def test_configuration_decode_wins_over_rate_property(self):
+        props = {"Codec": 0x00, "Configuration": [0x21], "Rate": 48000}
+        result = bluez_mod.transport_codec_and_rate(props)
+        assert result == {"codec": "SBC", "sample_rate": 44100}
+
+    def test_falls_back_to_rate_property_when_configuration_undecodable(self):
+        props = {"Codec": 0xFF, "Configuration": [0x00], "Rate": 44100}
+        result = bluez_mod.transport_codec_and_rate(props)
+        assert result == {"codec": "Vendor", "sample_rate": 44100}
+
+    def test_no_codec_property_falls_back_to_rate_only(self):
+        props = {"Rate": 44100}
+        result = bluez_mod.transport_codec_and_rate(props)
+        assert result == {"codec": None, "sample_rate": 44100}
+
+    def test_nothing_determinable_returns_none_none(self):
+        assert bluez_mod.transport_codec_and_rate({}) == {"codec": None, "sample_rate": None}

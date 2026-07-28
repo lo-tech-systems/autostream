@@ -162,6 +162,13 @@ class LoopbackPump:
         with self._lock:
             return self._active_capture_device is not None and self._capture_pcm is not None
 
+    def get_negotiated_rate(self) -> Optional[int]:
+        """The rate the playback PCM is currently open at (thread-safe) --
+        the ground truth of what BlueALSA negotiated. Meaningful only while
+        streaming; callers should gate on ``is_streaming()``."""
+        with self._lock:
+            return self._playback_rate
+
     def has_active_source(self) -> bool:
         """True once a capture device has been *set* (``set_active_source``),
         even before the pump thread has actually opened it — distinct from

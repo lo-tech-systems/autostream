@@ -696,12 +696,16 @@ class BluetoothService:
         # finished?" after the fact.
         self._last_transport_active = False
         self._last_transport_rate: Optional[int] = None
+        self._last_transport_codec: Optional[str] = None
 
-    def _on_transport_changed(self, active: bool, rate: Optional[int] = None) -> None:
+    def _on_transport_changed(
+        self, active: bool, rate: Optional[int] = None, codec: Optional[str] = None,
+    ) -> None:
         assert self.state_machine is not None and self.pump is not None
         self.state_machine.on_transport_changed(active)
         self._last_transport_active = active
         self._last_transport_rate = rate
+        self._last_transport_codec = codec
         if active:
             # During the *first* pairing of a device, the
             # transport can appear while pair_and_trust() is still in flight
@@ -769,7 +773,9 @@ class BluetoothService:
             self.state_machine.on_link_state_changed(mac, True)
         if snapshot.get("transport_active"):
             logger.info("bluetooth service: startup sync found an active MediaTransport1 object")
-            self._on_transport_changed(True, snapshot.get("transport_rate"))
+            self._on_transport_changed(
+                True, snapshot.get("transport_rate"), snapshot.get("transport_codec"),
+            )
 
     def _get_status(self) -> dict:
         """Wraps the state machine's status with the pump's actual state and
@@ -778,11 +784,28 @@ class BluetoothService:
         armed — ``pump_source_active`` lets callers tell the two apart
         without guessing — and ``adapter_present`` alone cannot distinguish
         "no adapter" from "adapter found but could not be powered on"; the
-        additive ``adapter_blocked`` key carries that distinction."""
+        additive ``adapter_blocked`` key carries that distinction.
+
+        ``codec``/``sample_rate`` are additive and present only while a
+        transport is active: the codec name and sample rate decoded from the
+        transport's negotiated Configuration (falling back to a plain Rate
+        property, then — only when a capture PCM is actually open — the
+        pump's own negotiated rate, the ground truth of what was opened).
+        """
         status = self.state_machine.get_status()
         status["pump_source_active"] = self.pump.is_streaming() if self.pump is not None else False
         status["adapter_blocked"] = self._adapter_blocked
         status["version"] = BLUETOOTH_SERVICE_VERSION
+        if self._last_transport_active:
+            sample_rate = self._last_transport_rate
+            if not sample_rate and self.pump is not None and self.pump.is_streaming():
+                pump_rate = self.pump.get_negotiated_rate()
+                if isinstance(pump_rate, int) and pump_rate > 0:
+                    sample_rate = pump_rate
+            if self._last_transport_codec:
+                status["codec"] = self._last_transport_codec
+            if sample_rate:
+                status["sample_rate"] = sample_rate
         return status
 
     def _on_props_changed(self, mac: str, changed: dict) -> None:

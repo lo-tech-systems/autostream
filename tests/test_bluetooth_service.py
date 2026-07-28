@@ -851,6 +851,9 @@ class FakePump:
         self.clears = 0
         self.buffer_ms_set: list[int] = []
         self.stopped = False
+        # Mirrors the real pump's negotiated playback rate -- only
+        # meaningful once a capture PCM is open.
+        self.negotiated_rate: int | None = None
 
     def set_active_source(self, capture_device, rate=None) -> None:
         self.active_source = capture_device
@@ -858,12 +861,16 @@ class FakePump:
             self.clears += 1
         if rate:
             self.active_rate = rate
+            self.negotiated_rate = rate
 
     def has_active_source(self) -> bool:
         return self.active_source is not None
 
     def is_streaming(self) -> bool:
         return self.active_source is not None
+
+    def get_negotiated_rate(self) -> int | None:
+        return self.negotiated_rate
 
     def set_buffer_ms(self, buffer_ms: int) -> None:
         self.buffer_ms_set.append(buffer_ms)
@@ -1058,6 +1065,67 @@ class TestGetStatusWrapsPumpState:
     def test_get_status_reports_service_version(self, tmp_path):
         service, _ = _make_service(tmp_path)
         assert service._get_status()["version"] == svc.BLUETOOTH_SERVICE_VERSION
+
+
+class TestGetStatusCodecAndRate:
+    """codec/sample_rate: additive fields on the service-level status,
+    present only while a transport is active."""
+
+    def test_absent_when_no_transport_active(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        status = service._get_status()
+        assert "codec" not in status
+        assert "sample_rate" not in status
+
+    def test_present_when_transport_active(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        service._on_transport_changed(True, rate=44100, codec="SBC")
+        status = service._get_status()
+        assert status["codec"] == "SBC"
+        assert status["sample_rate"] == 44100
+
+    def test_absent_again_once_transport_inactive(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        service._on_transport_changed(True, rate=44100, codec="SBC")
+        service._on_transport_changed(False, rate=None, codec=None)
+        status = service._get_status()
+        assert "codec" not in status
+        assert "sample_rate" not in status
+
+    def test_falls_back_to_pump_rate_when_transport_rate_undetermined(self, tmp_path):
+        """The transport decode yielded no rate, but the pump has an open
+        capture PCM with a known negotiated rate -- report that instead."""
+        service, _ = _make_service(tmp_path)
+        service._on_transport_changed(True, rate=None, codec="SBC")
+        service.pump.set_active_source("bluealsa:DEV=x,PROFILE=a2dp", rate=48000)
+        status = service._get_status()
+        assert status["codec"] == "SBC"
+        assert status["sample_rate"] == 48000
+
+    def test_sample_rate_absent_when_neither_transport_nor_pump_know_it(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        service._on_transport_changed(True, rate=None, codec="SBC")
+        status = service._get_status()
+        assert status["codec"] == "SBC"
+        assert "sample_rate" not in status
+
+    def test_codec_absent_when_transport_did_not_report_one(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        service._on_transport_changed(True, rate=44100, codec=None)
+        status = service._get_status()
+        assert "codec" not in status
+        assert status["sample_rate"] == 44100
+
+    def test_startup_sync_carries_codec_through(self, tmp_path):
+        machine, ops, _ = _make_machine(tmp_path)
+        machine.start_pairing(MAC_A)
+        service, _ = _make_service(tmp_path, machine=machine, ops=ops)
+        bluez = FakeBluezForSync(devices={MAC_A: True}, transport_active=True, transport_rate=44100)
+        bluez._snapshot["transport_codec"] = "SBC"
+        service._sync_startup_state(bluez)
+        status = service._get_status()
+        assert status["codec"] == "SBC"
+        assert status["sample_rate"] == 44100
 
 
 # ---------------------------------------------------------------------------

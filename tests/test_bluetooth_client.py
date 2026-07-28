@@ -30,8 +30,11 @@ from autostream_bluetooth_client import (
     BLUETOOTH_SERVICE_VERSION,
     BluetoothClient,
     bluetooth_capture_label,
+    bluetooth_card_summary,
+    bluetooth_input_fragment_text,
     bluetooth_installed,
     bluetooth_onboard_enabled,
+    bluetooth_paired_row_text,
     bluetooth_services_enabled,
     classify_loopback_hw,
     get_bluetooth_socket_path,
@@ -410,3 +413,89 @@ class TestBluetoothCaptureLabel:
     def test_paired_with_blank_name_falls_back(self):
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "  "}}
         assert bluetooth_capture_label(status) == "Bluetooth (not paired)"
+
+
+# ---------------------------------------------------------------------------
+# Setup-card codec/rate presentation: bluetooth_card_summary() /
+# bluetooth_paired_row_text() append the negotiated format when the daemon
+# status carries codec/sample_rate, and are unchanged when it doesn't.
+# ---------------------------------------------------------------------------
+
+_CONNECTED_STATUS = {
+    "adapter_present": True,
+    "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Turntable"},
+    "link": "connected",
+}
+
+
+class TestCardSummaryCodecRate:
+    def test_no_codec_fields_leaves_text_unchanged(self):
+        assert bluetooth_card_summary(True, _CONNECTED_STATUS) == "Enabled · My Turntable connected"
+
+    def test_codec_and_rate_appended_when_present(self):
+        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=44100)
+        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - SBC 44.1 kHz"
+
+    def test_48khz_rendered_without_decimal(self):
+        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=48000)
+        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - SBC 48 kHz"
+
+    def test_codec_only_no_rate(self):
+        status = dict(_CONNECTED_STATUS, codec="SBC")
+        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - SBC"
+
+    def test_rate_only_no_codec(self):
+        status = dict(_CONNECTED_STATUS, sample_rate=44100)
+        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - 44.1 kHz"
+
+    def test_not_connected_state_never_gets_suffix_even_with_fields(self):
+        status = {
+            "adapter_present": True,
+            "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Turntable"},
+            "link": "disconnected", "codec": "SBC", "sample_rate": 44100,
+        }
+        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable (not connected)"
+
+    def test_disabled_state_never_gets_suffix(self):
+        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=44100)
+        assert bluetooth_card_summary(False, status) == "Disabled"
+
+
+class TestPairedRowCodecRate:
+    def test_no_codec_fields_leaves_text_unchanged(self):
+        assert bluetooth_paired_row_text(_CONNECTED_STATUS) == "My Turntable · Connected"
+
+    def test_codec_and_rate_appended_when_present(self):
+        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=44100)
+        assert bluetooth_paired_row_text(status) == "My Turntable · Connected - SBC 44.1 kHz"
+
+    def test_not_connected_never_gets_suffix(self):
+        status = {
+            "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Turntable"},
+            "link": "disconnected", "codec": "SBC", "sample_rate": 44100,
+        }
+        assert bluetooth_paired_row_text(status) == "My Turntable · Not Connected"
+
+    def test_no_device_paired_unaffected_by_fields(self):
+        status = {"paired": None, "codec": "SBC", "sample_rate": 44100}
+        assert bluetooth_paired_row_text(status) == "No device paired"
+
+
+class TestHomePageFragmentNeverShowsCodecRate:
+    """Scope guard: bluetooth_input_fragment_text() feeds the home page's
+    input-card summary and must never render codec/rate text, even when the
+    daemon status carries the fields -- that surface is setup-card-only."""
+
+    def test_connected_with_codec_fields_shows_no_codec_or_rate_text(self):
+        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=44100)
+        text = bluetooth_input_fragment_text(status)
+        assert text == "My Turntable"
+        for needle in ("SBC", "kHz", "AAC", "MPEG", "44.1", "48"):
+            assert needle not in text
+
+    def test_disconnected_with_codec_fields_shows_no_codec_or_rate_text(self):
+        status = {
+            "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Turntable"},
+            "link": "disconnected", "codec": "SBC", "sample_rate": 44100,
+        }
+        assert bluetooth_input_fragment_text(status) == "Not Connected"

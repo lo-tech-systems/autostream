@@ -101,20 +101,85 @@ def transport_sample_rate(props: dict) -> Optional[int]:
     """Best-effort A2DP sample rate from a MediaTransport1 property set
     (pragmatic rate negotiation).
 
-    BlueZ's MediaTransport1 does not expose a plain sample-rate property —
-    only a codec ID and a codec-specific ``Configuration`` byte blob that
-    would need full A2DP SBC/AAC bit-layout decoding to interpret reliably.
-    That decoding is deliberately out of scope as overkill for this use case:
-    this reads whatever the transport object reports under a plain numeric
+    Reads whatever the transport object reports under a plain numeric
     property (``Rate``/``SampleRate`` — present on some BlueZ/BlueALSA
-    configurations) and returns ``None`` when it isn't determinable, so the
-    caller (the pump) falls back to its own default/negotiated rate.
+    configurations) and returns ``None`` when it isn't determinable. Callers
+    should prefer the decoded ``Configuration`` blob (see
+    ``transport_codec_and_rate``) and treat this as the fallback.
     """
     for key in ("Rate", "SampleRate"):
         rate = props.get(key)
         if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0:
             return int(rate)
     return None
+
+
+# A2DP codec ID, per the Bluetooth Assigned Numbers "Media Codec Type"
+# table used in MediaTransport1's ``Codec`` property. Vendor-specific codecs
+# (aptX etc.) all share 0xFF and are not decoded further by this stack.
+_CODEC_NAMES = {0x00: "SBC", 0x01: "MPEG-1/2", 0x02: "AAC", 0xFF: "Vendor"}
+
+# SBC codec-specific-information-elements, octet 0: upper nibble = sampling
+# frequency, lower nibble = channel mode (A2DP spec, single bit set for a
+# negotiated Configuration rather than a Capabilities bitmask).
+_SBC_SAMPLE_RATE_HZ = {0b1000: 16000, 0b0100: 32000, 0b0010: 44100, 0b0001: 48000}
+_SBC_CHANNEL_MODES = {0b1000: "mono", 0b0100: "dual", 0b0010: "stereo", 0b0001: "joint_stereo"}
+
+
+def decode_transport_codec(codec_byte, configuration_bytes) -> dict:
+    """Decode an A2DP ``Codec`` id + ``Configuration`` blob into
+    ``{"codec": str, "sample_rate": int | None, "channel_mode": str | None}``.
+
+    Pure, dbus-free, and never raises: a missing/short/malformed
+    *configuration_bytes* (any indexable sequence of ints, or ``None``)
+    yields ``sample_rate``/``channel_mode`` of ``None`` rather than an
+    exception. Only SBC's Configuration layout is decoded; other codecs
+    report their name with ``sample_rate``/``channel_mode`` left ``None``.
+    """
+    try:
+        codec_int = int(codec_byte)
+    except (TypeError, ValueError):
+        codec_int = None
+
+    if codec_int is None:
+        codec_name = "Unknown"
+    else:
+        codec_name = _CODEC_NAMES.get(codec_int) or f"Unknown (0x{codec_int:02X})"
+
+    sample_rate = None
+    channel_mode = None
+    if codec_int == 0x00:  # SBC
+        try:
+            first_byte = int(configuration_bytes[0])
+        except (TypeError, IndexError, ValueError, KeyError):
+            first_byte = None
+        if first_byte is not None:
+            sample_rate = _SBC_SAMPLE_RATE_HZ.get((first_byte >> 4) & 0x0F)
+            channel_mode = _SBC_CHANNEL_MODES.get(first_byte & 0x0F)
+
+    return {"codec": codec_name, "sample_rate": sample_rate, "channel_mode": channel_mode}
+
+
+def transport_codec_and_rate(props: dict) -> dict:
+    """Best-effort codec name + sample rate for a MediaTransport1 property
+    set, combining the decoded ``Configuration`` blob with the plain
+    ``Rate``/``SampleRate`` fallback.
+
+    Returns ``{"codec": str | None, "sample_rate": int | None}``. Rate
+    precedence: decoded ``Configuration`` > plain ``Rate``/``SampleRate``
+    property > ``None``. ``codec`` is ``None`` only when the transport
+    exposes no ``Codec`` property at all.
+    """
+    codec_byte = props.get("Codec")
+    codec_name = None
+    sample_rate = None
+    if codec_byte is not None:
+        decoded = decode_transport_codec(codec_byte, props.get("Configuration") or ())
+        codec_name = decoded["codec"]
+        sample_rate = decoded["sample_rate"]
+    if sample_rate is None:
+        sample_rate = transport_sample_rate(props)
+    return {"codec": codec_name, "sample_rate": sample_rate}
 
 
 def parse_device_props(path: str, props: dict) -> dict:
@@ -254,7 +319,7 @@ class BluezClient:
 
         self._on_device_found: Optional[Callable[[dict], None]] = None
         self._on_props_changed: Optional[Callable[[str, dict], None]] = None
-        self._on_transport_changed: Optional[Callable[[bool, Optional[int]], None]] = None
+        self._on_transport_changed: Optional[Callable[[bool, Optional[int], Optional[str]], None]] = None
 
     # ---- setup ----
 
@@ -438,7 +503,7 @@ class BluezClient:
         without this the service would be stuck reporting "disconnected"
         and zero-filling forever after a restart. Returns
         ``{"devices": {MAC: connected_bool}, "transport_active": bool,
-        "transport_rate": Optional[int]}``.
+        "transport_rate": Optional[int], "transport_codec": Optional[str]}``.
         """
         objects = self._object_manager().GetManagedObjects(
             dbus_interface=OBJECT_MANAGER_IFACE, timeout=self._call_timeout
@@ -446,6 +511,7 @@ class BluezClient:
         devices: dict = {}
         transport_active = False
         transport_rate = None
+        transport_codec = None
         for path, ifaces in objects.items():
             if DEVICE_IFACE in ifaces:
                 props = _plain(ifaces[DEVICE_IFACE])
@@ -454,11 +520,14 @@ class BluezClient:
                     devices[str(mac).upper()] = bool(props.get("Connected", False))
             if MEDIA_TRANSPORT_IFACE in ifaces:
                 transport_active = True
-                transport_rate = transport_sample_rate(_plain(ifaces[MEDIA_TRANSPORT_IFACE]))
+                info = transport_codec_and_rate(_plain(ifaces[MEDIA_TRANSPORT_IFACE]))
+                transport_rate = info["sample_rate"]
+                transport_codec = info["codec"]
         return {
             "devices": devices,
             "transport_active": transport_active,
             "transport_rate": transport_rate,
+            "transport_codec": transport_codec,
         }
 
     # ---- signals ----
@@ -467,7 +536,7 @@ class BluezClient:
         self,
         on_device_found: Callable[[dict], None],
         on_props_changed: Callable[[str, dict], None],
-        on_transport_changed: Callable[[bool, Optional[int]], None],
+        on_transport_changed: Callable[[bool, Optional[int], Optional[str]], None],
     ) -> None:
         """Register InterfacesAdded/InterfacesRemoved/PropertiesChanged
         handlers feeding the state machine.
@@ -475,12 +544,12 @@ class BluezClient:
         ``on_device_found(device_dict)`` fires for newly discovered Device1
         objects (scan results, already filtered to audio-capable devices);
         ``on_props_changed(mac, changed_props)`` fires for Device1 property
-        changes (link state); ``on_transport_changed(active, rate)`` fires
-        when a MediaTransport1 object appears/disappears (A2DP stream
-        start/stop) — driving the pump, never polled. ``rate`` is the
-        transport's negotiated sample rate when determinable (see
-        ``transport_sample_rate()``), else ``None`` on both appear and
-        disappear.
+        changes (link state); ``on_transport_changed(active, rate, codec)``
+        fires when a MediaTransport1 object appears/disappears (A2DP stream
+        start/stop) — driving the pump, never polled. ``rate``/``codec`` are
+        the transport's negotiated sample rate/codec name when determinable
+        (see ``transport_codec_and_rate()``), else ``None`` on both appear
+        and disappear.
         """
         self._on_device_found = on_device_found
         self._on_props_changed = on_props_changed
@@ -511,12 +580,12 @@ class BluezClient:
             if device["audio_capable"]:
                 self._on_device_found(device)
         if MEDIA_TRANSPORT_IFACE in interfaces and self._on_transport_changed:
-            rate = transport_sample_rate(_plain(interfaces[MEDIA_TRANSPORT_IFACE]))
-            self._on_transport_changed(True, rate)
+            info = transport_codec_and_rate(_plain(interfaces[MEDIA_TRANSPORT_IFACE]))
+            self._on_transport_changed(True, info["sample_rate"], info["codec"])
 
     def _handle_interfaces_removed(self, path, interfaces) -> None:
         if MEDIA_TRANSPORT_IFACE in interfaces and self._on_transport_changed:
-            self._on_transport_changed(False, None)
+            self._on_transport_changed(False, None, None)
 
     def _handle_props_changed(self, interface, changed, invalidated, path=None) -> None:
         if interface != DEVICE_IFACE or not self._on_props_changed:
