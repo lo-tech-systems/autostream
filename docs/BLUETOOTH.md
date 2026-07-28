@@ -105,6 +105,10 @@ much audio autostream holds in reserve before playing it:
 The default works well for most setups — only adjust it if you're hearing dropouts
 (try a bigger buffer) or the start-up delay bothers you (try a smaller one).
 
+While audio is streaming, the Bluetooth card also shows the negotiated audio
+format — for example "Connected - SBC 44.1 kHz" — so you can see exactly what
+the turntable is sending.
+
 ## Everyday use
 
 Once paired, there's nothing to do beyond normal use:

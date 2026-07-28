@@ -162,6 +162,11 @@ The UI offers common presets for stylus and belt life, but you can type in any p
 
 Counters are updated while playback is active, so the **Service** page reflects live values including the current session.
 
+Wear counters accrue only while the turntable is actually playing: repeat
+playback (replaying the in-memory recording) does not add stylus, belt, or
+bearing hours, since the turntable itself is idle. Total playback hours do
+include repeat playback.
+
 ### Warning banners and indicators
 
 When a component is approaching or has exceeded its set life, a banner appears at the top of the Home Screen and a dot indicator appears next to the **Service** navigation item.
