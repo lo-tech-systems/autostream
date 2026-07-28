@@ -9,6 +9,13 @@ from autostream.json. User-editable settings such as "turntable" and
 at runtime. Counters are driven by audible playback activity, not by the
 full capture window, so trailing silence used to detect end-of-playback is
 not counted.
+
+total_playback_seconds and the stylus/belt/bearing wear counters are driven
+by two independent activity clocks. The total clock covers all audible
+playback, including repeat-buffer replay of a previously captured
+recording. The wear clock covers only real input capture, since replay is
+buffered audio played back with no corresponding physical wear on the
+source turntable.
 """
 
 from __future__ import annotations
@@ -628,7 +635,14 @@ class PlaybackTracker:
         self._lock = threading.RLock()
         self._configs: dict[int, PlaybackInputConfig] = {}
         self._states: dict[int, PlaybackInputState] = {}
+        # Two independent per-input activity clocks: _active_since drives
+        # total_playback_seconds (audible playback, including buffer
+        # replay); _wear_active_since drives the stylus/belt/bearing wear
+        # counters (real input capture only). Wear activity is always a
+        # subset of playback activity, but the two clocks are tracked and
+        # accrued separately so replay time never counts as wear.
         self._active_since: dict[int, float] = {}
+        self._wear_active_since: dict[int, float] = {}
         self._dirty = False
         self._last_persist_at = self._time_fn()
         self._last_save_error_log_at = 0.0
@@ -657,6 +671,7 @@ class PlaybackTracker:
             for idx, cfg in self._configs.items():
                 if not cfg.enabled:
                     self._active_since.pop(idx, None)
+                    self._wear_active_since.pop(idx, None)
 
     def update_input_config(
         self,
@@ -686,9 +701,14 @@ class PlaybackTracker:
             self._configs[idx] = cfg
             if not cfg.enabled:
                 self._active_since.pop(idx, None)
+                self._wear_active_since.pop(idx, None)
 
     def on_playback_started(self, input_index: int) -> None:
-        """Mark an input as actively playing audible audio."""
+        """Mark an input as actively playing audible audio (total-hours clock).
+
+        Covers both real input capture and repeat-buffer replay; does not
+        by itself accrue stylus/belt/bearing wear -- see on_wear_started().
+        """
         idx = self._normalize_input_index(input_index)
         with self._lock:
             cfg = self._configs.get(idx, PlaybackInputConfig())
@@ -699,13 +719,37 @@ class PlaybackTracker:
             self._active_since.setdefault(idx, self._time_fn())
 
     def on_playback_stopped(self, input_index: int) -> None:
-        """Mark an input as no longer playing audible audio."""
+        """Mark an input as no longer playing audible audio (total-hours clock)."""
         idx = self._normalize_input_index(input_index)
         with self._lock:
             self._accrue_input_locked(idx, self._time_fn())
             self._active_since.pop(idx, None)
             if self._dirty:
                 self._save_best_effort_locked(force=True, context="playback stop")
+
+    def on_wear_started(self, input_index: int) -> None:
+        """Mark an input as actively wearing (real input capture only).
+
+        Drives the stylus/belt/bearing counters only -- never
+        total_playback_seconds, which is tracked by on_playback_started().
+        """
+        idx = self._normalize_input_index(input_index)
+        with self._lock:
+            cfg = self._configs.get(idx, PlaybackInputConfig())
+            if not cfg.enabled:
+                self._wear_active_since.pop(idx, None)
+                return
+            self._ensure_input_state_locked(idx)
+            self._wear_active_since.setdefault(idx, self._time_fn())
+
+    def on_wear_stopped(self, input_index: int) -> None:
+        """Mark an input as no longer actively wearing."""
+        idx = self._normalize_input_index(input_index)
+        with self._lock:
+            self._accrue_input_locked(idx, self._time_fn())
+            self._wear_active_since.pop(idx, None)
+            if self._dirty:
+                self._save_best_effort_locked(force=True, context="wear stop")
 
     def _reset_item_locked(
         self,
@@ -723,6 +767,8 @@ class PlaybackTracker:
         setattr(state, date_attr, now_iso)
         if idx in self._active_since:
             self._active_since[idx] = now
+        if idx in self._wear_active_since:
+            self._wear_active_since[idx] = now
         self._dirty = True
         try:
             self._save_locked(force=True)
@@ -777,13 +823,17 @@ class PlaybackTracker:
         """Return the current in-memory view including active sessions."""
         with self._lock:
             now = self._time_fn()
-            indices = sorted(set(self._states) | set(self._configs) | set(self._active_since))
+            indices = sorted(
+                set(self._states) | set(self._configs)
+                | set(self._active_since) | set(self._wear_active_since)
+            )
             inputs: dict[int, InputPlaybackSnapshot] = {}
 
             for idx in indices:
                 cfg = self._configs.get(idx, PlaybackInputConfig())
                 state = self._states.get(idx, PlaybackInputState())
                 active_since = None if not cfg.enabled else self._active_since.get(idx)
+                wear_since = None if not cfg.enabled else self._wear_active_since.get(idx)
 
                 total_seconds = int(state.total_playback_seconds)
                 stylus_seconds = int(state.stylus_playback_seconds)
@@ -795,12 +845,16 @@ class PlaybackTracker:
                     elapsed = int(now - active_since)
                     if elapsed > 0:
                         total_seconds += elapsed
+
+                if wear_since is not None and now > wear_since:
+                    elapsed_wear = int(now - wear_since)
+                    if elapsed_wear > 0:
                         if cfg.is_turntable and cfg.stylus_life_hours > 0:
-                            stylus_seconds += elapsed
+                            stylus_seconds += elapsed_wear
                         if cfg.is_turntable and cfg.belt_life_hours > 0:
-                            belt_seconds += elapsed
+                            belt_seconds += elapsed_wear
                         if cfg.is_turntable and cfg.bearing_life_hours > 0:
-                            bearing_seconds += elapsed
+                            bearing_seconds += elapsed_wear
 
                 # --- Stylus calculations ---
                 _turntable = cfg.is_turntable
@@ -1037,11 +1091,23 @@ class PlaybackTracker:
         return state
 
     def _accrue_all_active_locked(self, now: float) -> None:
-        for idx in list(self._active_since):
+        for idx in list(set(self._active_since) | set(self._wear_active_since)):
             self._accrue_input_locked(idx, now)
 
     def _accrue_input_locked(self, input_index: int, now: float) -> None:
+        """Advance both the total-hours clock and the wear clock for one input.
+
+        The two clocks are independent: total_playback_seconds accrues
+        whenever this input is audibly playing (including buffer replay);
+        the stylus/belt/bearing counters accrue only while the wear clock
+        is running (real input capture). Either clock may be running
+        without the other.
+        """
         idx = self._normalize_input_index(input_index)
+        self._accrue_total_locked(idx, now)
+        self._accrue_wear_locked(idx, now)
+
+    def _accrue_total_locked(self, idx: int, now: float) -> None:
         active_since = self._active_since.get(idx)
         if active_since is None or now <= active_since:
             return
@@ -1051,9 +1117,24 @@ class PlaybackTracker:
             return
 
         state = self._ensure_input_state_locked(idx)
+        state.total_playback_seconds += elapsed
+
+        # Preserve any sub-second remainder so repeated accrual does not drift.
+        self._active_since[idx] = active_since + elapsed
+        self._dirty = True
+
+    def _accrue_wear_locked(self, idx: int, now: float) -> None:
+        wear_since = self._wear_active_since.get(idx)
+        if wear_since is None or now <= wear_since:
+            return
+
+        elapsed = int(now - wear_since)
+        if elapsed <= 0:
+            return
+
+        state = self._ensure_input_state_locked(idx)
         cfg = self._configs.get(idx, PlaybackInputConfig())
 
-        state.total_playback_seconds += elapsed
         if cfg.is_turntable and cfg.stylus_life_hours > 0:
             state.stylus_playback_seconds += elapsed
         if cfg.is_turntable and cfg.belt_life_hours > 0:
@@ -1062,7 +1143,7 @@ class PlaybackTracker:
             state.bearing_playback_seconds += elapsed
 
         # Preserve any sub-second remainder so repeated accrual does not drift.
-        self._active_since[idx] = active_since + elapsed
+        self._wear_active_since[idx] = wear_since + elapsed
         self._dirty = True
 
     @staticmethod

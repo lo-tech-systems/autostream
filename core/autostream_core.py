@@ -2234,6 +2234,7 @@ class AudioMonitor:
         self._replay_origin: bool = False
         self._last_active_time: Optional[float] = None
         self._tracker_playback_active: bool = False
+        self._tracker_wear_active: bool = False
         self.track_change_seq: int = 0           # last seq from daemon; monotonically increasing
         self._track_change_seq_baseline: int = 0  # seq at capture session start (baselined on "started" transition)
         # Latest VU history block from the daemon (passed through as-is).
@@ -2364,6 +2365,7 @@ class AudioMonitor:
     def stop(self) -> None:
         """Release resources (call at shutdown)."""
         self._tracker_playback_active = False
+        self._tracker_wear_active = False
         try:
             # Release this monitor's reference to the shared publisher
             # rather than closing it directly: another
@@ -2375,18 +2377,24 @@ class AudioMonitor:
             pass
 
     def _sync_playback_tracker_state(self, repeat_status: Optional[dict] = None) -> None:
-        """Keep playback-hour tracking aligned to audible activity.
+        """Keep playback-hour tracking aligned to activity, split by purpose.
 
-        *repeat_status* is the same-poll top-level "repeat" block:
-        while repeat.replay.active, the origin input's recording is audibly
-        playing even though that input itself is not capturing, so hours must
-        keep accruing against repeat.recording.origin_input. Track-ID/now-
-        playing metadata are unaffected here -- they keep flowing from the
-        daemon's replay-path track-change events independently.
+        total_playback_seconds accrues for all audible playback, including
+        repeat-buffer replay: *repeat_status* is the same-poll top-level
+        "repeat" block, and while repeat.replay.active, the origin input's
+        recording is audibly playing even though that input itself is not
+        capturing, so total hours keep accruing against
+        repeat.recording.origin_input. Stylus/belt/bearing wear counters
+        accrue only for real input capture -- capturing and not silent --
+        since replay is buffered audio with no corresponding physical wear
+        on the source turntable. Track-ID/now-playing metadata are
+        unaffected here -- they keep flowing from the daemon's replay-path
+        track-change events independently.
         """
         tracker = _playback_tracker
         if tracker is None:
             self._tracker_playback_active = False
+            self._tracker_wear_active = False
             return
 
         replaying_this_input = False
@@ -2397,15 +2405,22 @@ class AudioMonitor:
                 origin_input = recording.get("origin_input") if isinstance(recording, dict) else None
                 replaying_this_input = origin_input == self.input_index
 
-        playback_active = (self.is_capturing and not self.is_silent) or replaying_this_input
-        if playback_active == self._tracker_playback_active:
-            return
+        wear_active = self.is_capturing and not self.is_silent
+        playback_active = wear_active or replaying_this_input
 
-        if playback_active:
-            tracker.on_playback_started(self.input_index)
-        else:
-            tracker.on_playback_stopped(self.input_index)
-        self._tracker_playback_active = playback_active
+        if playback_active != self._tracker_playback_active:
+            if playback_active:
+                tracker.on_playback_started(self.input_index)
+            else:
+                tracker.on_playback_stopped(self.input_index)
+            self._tracker_playback_active = playback_active
+
+        if wear_active != self._tracker_wear_active:
+            if wear_active:
+                tracker.on_wear_started(self.input_index)
+            else:
+                tracker.on_wear_stopped(self.input_index)
+            self._tracker_wear_active = wear_active
 
     # ── Capture transitions ──────────────────────────────────────────────────
 
@@ -3927,6 +3942,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             for m in monitors:
                 if tracker is not None:
                     tracker.on_playback_stopped(m.input_index)
+                    tracker.on_wear_stopped(m.input_index)
                 client.stop_input(m.input_index)
                 m.stop()
             if tracker is not None:

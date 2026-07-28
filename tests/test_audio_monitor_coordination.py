@@ -69,6 +69,8 @@ def _make_fake_tracker():
     t = MagicMock()
     t.on_playback_started.return_value = None
     t.on_playback_stopped.return_value = None
+    t.on_wear_started.return_value = None
+    t.on_wear_stopped.return_value = None
     return t
 
 
@@ -326,11 +328,13 @@ class TestSyncPlaybackTrackerState:
     def test_no_tracker_sets_inactive(self):
         mon = _make_monitor()
         mon._tracker_playback_active = True
+        mon._tracker_wear_active = True
         original = core._playback_tracker
         core._playback_tracker = None
         try:
             mon._sync_playback_tracker_state()
             assert mon._tracker_playback_active is False
+            assert mon._tracker_wear_active is False
         finally:
             core._playback_tracker = original
 
@@ -339,11 +343,15 @@ class TestSyncPlaybackTrackerState:
         mon.is_capturing = True
         mon.is_silent = False
         mon._tracker_playback_active = False
+        mon._tracker_wear_active = False
         tracker, original = self._with_tracker()
         try:
             mon._sync_playback_tracker_state()
             tracker.on_playback_started.assert_called_once_with(mon.input_index)
             assert mon._tracker_playback_active is True
+            # Real input capture (audible, not silent) drives wear too.
+            tracker.on_wear_started.assert_called_once_with(mon.input_index)
+            assert mon._tracker_wear_active is True
         finally:
             self._restore_tracker(original)
 
@@ -352,11 +360,14 @@ class TestSyncPlaybackTrackerState:
         mon.is_capturing = True
         mon.is_silent = True
         mon._tracker_playback_active = True
+        mon._tracker_wear_active = True
         tracker, original = self._with_tracker()
         try:
             mon._sync_playback_tracker_state()
             tracker.on_playback_stopped.assert_called_once_with(mon.input_index)
             assert mon._tracker_playback_active is False
+            tracker.on_wear_stopped.assert_called_once_with(mon.input_index)
+            assert mon._tracker_wear_active is False
         finally:
             self._restore_tracker(original)
 
@@ -365,11 +376,14 @@ class TestSyncPlaybackTrackerState:
         mon.is_capturing = True
         mon.is_silent = False
         mon._tracker_playback_active = True   # already active
+        mon._tracker_wear_active = True
         tracker, original = self._with_tracker()
         try:
             mon._sync_playback_tracker_state()
             tracker.on_playback_started.assert_not_called()
             tracker.on_playback_stopped.assert_not_called()
+            tracker.on_wear_started.assert_not_called()
+            tracker.on_wear_stopped.assert_not_called()
         finally:
             self._restore_tracker(original)
 
@@ -378,10 +392,12 @@ class TestSyncPlaybackTrackerState:
         mon.is_capturing = False
         mon.is_silent = False   # audible but not capturing
         mon._tracker_playback_active = True
+        mon._tracker_wear_active = True
         tracker, original = self._with_tracker()
         try:
             mon._sync_playback_tracker_state()
             tracker.on_playback_stopped.assert_called_once_with(mon.input_index)
+            tracker.on_wear_stopped.assert_called_once_with(mon.input_index)
         finally:
             self._restore_tracker(original)
 
@@ -421,8 +437,10 @@ class TestStop:
     def test_stop_sets_tracker_inactive(self):
         mon = _make_monitor()
         mon._tracker_playback_active = True
+        mon._tracker_wear_active = True
         mon.stop()
         assert mon._tracker_playback_active is False
+        assert mon._tracker_wear_active is False
 
 
 # ---------------------------------------------------------------------------

@@ -1113,8 +1113,30 @@ class TestP8PlaybackHoursDuringReplay:
         }
         try:
             mon._sync_playback_tracker_state(repeat_status)
+            # Playback was already active (via replay) -- no redundant call.
+            tracker.on_playback_started.assert_not_called()
+            assert mon._tracker_playback_active is True
+            # Wear turns on now that real capture is audible.
+            tracker.on_wear_started.assert_called_once_with(1)
+            assert mon._tracker_wear_active is True
+        finally:
+            self._restore(original)
+
+    def test_live_capture_accrues_both_without_replay(self):
+        """Ordinary live capture (no repeat replay in play): both total and
+        wear accrue together."""
+        mon = _make_monitor(input_index=1)
+        mon.is_capturing = True
+        mon.is_silent = False
+        mon._tracker_playback_active = False
+        mon._tracker_wear_active = False
+        tracker, original = self._with_tracker()
+        try:
+            mon._sync_playback_tracker_state(None)
             tracker.on_playback_started.assert_called_once_with(1)
             assert mon._tracker_playback_active is True
+            tracker.on_wear_started.assert_called_once_with(1)
+            assert mon._tracker_wear_active is True
         finally:
             self._restore(original)
 
@@ -1123,6 +1145,57 @@ class TestP8PlaybackHoursDuringReplay:
         mon.is_capturing = False
         mon.is_silent = True
         mon._tracker_playback_active = False
+        mon._tracker_wear_active = False
+        tracker, original = self._with_tracker()
+        repeat_status = {
+            "replay": {"active": True},
+            "recording": {"origin_input": 1, "bytes": 100},
+        }
+        try:
+            mon._sync_playback_tracker_state(repeat_status)
+            # Total playback hours accrue for replay of the origin input...
+            tracker.on_playback_started.assert_called_once_with(1)
+            assert mon._tracker_playback_active is True
+            # ...but wear (stylus/belt/bearing) does not: replay is buffered
+            # audio, not physical turntable activity.
+            tracker.on_wear_started.assert_not_called()
+            assert mon._tracker_wear_active is False
+        finally:
+            self._restore(original)
+
+    def test_replay_with_silent_adc_accrues_total_not_wear(self):
+        """Mixed case: replay active while the ADC on the origin input hears
+        silence (e.g. a quiet passage on the physical turntable, or the
+        turntable simply idle). Total hours must keep accruing from the
+        replay; wear must not accrue since there is no real input capture."""
+        mon = _make_monitor(input_index=1)
+        mon.is_capturing = False
+        mon.is_silent = True
+        mon._tracker_playback_active = False
+        mon._tracker_wear_active = False
+        tracker, original = self._with_tracker()
+        repeat_status = {
+            "replay": {"active": True},
+            "recording": {"origin_input": 1, "bytes": 100},
+        }
+        try:
+            mon._sync_playback_tracker_state(repeat_status)
+            tracker.on_playback_started.assert_called_once_with(1)
+            assert mon._tracker_playback_active is True
+            tracker.on_wear_started.assert_not_called()
+            assert mon._tracker_wear_active is False
+        finally:
+            self._restore(original)
+
+    def test_live_capture_during_replay_accrues_both(self):
+        """Real input capture resumes on the origin input while replay is
+        still reported active (e.g. the daemon has not yet cut the replay
+        over). Both total and wear must accrue since real audio is present."""
+        mon = _make_monitor(input_index=1)
+        mon.is_capturing = True
+        mon.is_silent = False
+        mon._tracker_playback_active = True   # already accruing via replay
+        mon._tracker_wear_active = False
         tracker, original = self._with_tracker()
         repeat_status = {
             "replay": {"active": True},

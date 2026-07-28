@@ -198,6 +198,24 @@ class TestTurntableCounters:
         assert snap.stylus_playback_seconds == 0  # not a turntable
 
     def test_turntable_accrues_stylus_belt_bearing(self, tmp_path):
+        """Real capture -- both clocks running -- accrues total and wear."""
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _turntable_config()})
+        tr.on_playback_started(1)
+        tr.on_wear_started(1)
+        clk.advance(100)
+        tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
+        snap = tr.snapshot().inputs[1]
+        assert snap.total_playback_seconds == 100
+        assert snap.stylus_playback_seconds == 100
+        assert snap.belt_playback_seconds == 100
+        assert snap.bearing_playback_seconds == 100
+
+    def test_replay_only_accrues_total_not_wear(self, tmp_path):
+        """Buffer replay drives only the total clock, never wear -- the
+        source turntable is not physically active during replay."""
         clk = FakeClock()
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config()})
@@ -206,17 +224,19 @@ class TestTurntableCounters:
         tr.on_playback_stopped(1)
         snap = tr.snapshot().inputs[1]
         assert snap.total_playback_seconds == 100
-        assert snap.stylus_playback_seconds == 100
-        assert snap.belt_playback_seconds == 100
-        assert snap.bearing_playback_seconds == 100
+        assert snap.stylus_playback_seconds == 0
+        assert snap.belt_playback_seconds == 0
+        assert snap.bearing_playback_seconds == 0
 
     def test_disabled_input_does_not_accrue(self, tmp_path):
         clk = FakeClock()
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _disabled_config()})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(100)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         # Disabled input: no state created
         snap = tr.snapshot().inputs.get(1)
         if snap is not None:
@@ -230,10 +250,64 @@ class TestTurntableCounters:
         )
         tr.replace_input_configs({1: cfg})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(100)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         snap = tr.snapshot().inputs[1]
         assert snap.stylus_playback_seconds == 0
+
+
+# ---------------------------------------------------------------------------
+# Wear clock independence from the total-hours clock
+# ---------------------------------------------------------------------------
+
+class TestWearClockIndependence:
+    def test_wear_active_without_playback_accrues_wear_only(self, tmp_path):
+        """The clocks are independent: on_wear_started() alone accrues wear
+        without promoting anything to the total clock."""
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _turntable_config()})
+        tr.on_wear_started(1)
+        clk.advance(50)
+        tr.on_wear_stopped(1)
+        snap = tr.snapshot().inputs[1]
+        assert snap.total_playback_seconds == 0
+        assert snap.stylus_playback_seconds == 50
+
+    def test_wear_starts_after_playback_already_active(self, tmp_path):
+        """Replay in progress (total clock running), then real capture
+        starts mid-session (wear clock starts later): total accrues for
+        the whole span, wear only for the portion after it started."""
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _turntable_config()})
+        tr.on_playback_started(1)
+        clk.advance(30)          # replay-only portion
+        tr.on_wear_started(1)
+        clk.advance(20)          # real capture portion
+        tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
+        snap = tr.snapshot().inputs[1]
+        assert snap.total_playback_seconds == 50
+        assert snap.stylus_playback_seconds == 20
+
+    def test_wear_stops_before_playback_ends(self, tmp_path):
+        """Real capture ends but replay of the buffered recording keeps the
+        total clock running: wear stops accruing while total continues."""
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _turntable_config()})
+        tr.on_playback_started(1)
+        tr.on_wear_started(1)
+        clk.advance(20)           # real capture portion
+        tr.on_wear_stopped(1)
+        clk.advance(30)           # replay-only portion
+        tr.on_playback_stopped(1)
+        snap = tr.snapshot().inputs[1]
+        assert snap.total_playback_seconds == 50
+        assert snap.stylus_playback_seconds == 20
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +320,13 @@ class TestConfigReplacementWhilePlaying:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config(stylus_life_hours=500)})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(60)
         # Switch to non-turntable mid-session
         tr.replace_input_configs({1: _line_config()})
         clk.advance(60)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         snap = tr.snapshot().inputs[1]
         # 60 s under turntable config; then 60 more under line config
         assert snap.total_playback_seconds == 120
@@ -268,8 +344,10 @@ class TestJsonRoundTrip:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config()})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(7200)  # 2 hours
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         tr.save()
 
         # Reload from disk
@@ -398,8 +476,10 @@ class TestMaintenanceResets:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config(stylus_life_hours=500)})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(3600)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         result = tr.reset_stylus(1)
         assert result.applied is True
         assert result.persisted is True
@@ -413,6 +493,7 @@ class TestMaintenanceResets:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config(stylus_life_hours=500)})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(3600)
         result = tr.reset_stylus(1)
         # After reset, stylus is 0 but total should include the 3600 s pre-reset
@@ -425,8 +506,10 @@ class TestMaintenanceResets:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config()})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(3600)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         tr.reset_belt(1)
         snap = tr.snapshot().inputs[1]
         assert snap.belt_playback_seconds == 0
@@ -437,8 +520,10 @@ class TestMaintenanceResets:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config()})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(3600)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         with patch(
             "autostream_playback_stats._atomic_write_json",
             side_effect=OSError("disk full"),
@@ -457,8 +542,10 @@ class TestWarningOverdueBoundaries:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable_config(stylus_life_hours=500)})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(seconds)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         return tr
 
     def test_below_warning_threshold_no_warning(self, tmp_path):
@@ -506,12 +593,16 @@ class TestMultiInputSnapshot:
         })
         # Input 1: overdue
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(life_secs + 1)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         # Input 2: in warning zone (remaining must be < STYLUS_WARNING_SECONDS)
         tr.on_playback_started(2)
+        tr.on_wear_started(2)
         clk.advance(life_secs - STYLUS_WARNING_SECONDS + 1)
         tr.on_playback_stopped(2)
+        tr.on_wear_stopped(2)
 
         snap = tr.snapshot()
         assert 1 in snap.stylus_overdue_indices

@@ -118,8 +118,10 @@ class TestBeltHoursWarningBoundary:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable(belt_life_hours=belt_life_hours)})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(used_seconds)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         return tr.snapshot().inputs[1]
 
     def test_well_below_warning_threshold_no_warning(self, tmp_path):
@@ -163,8 +165,10 @@ class TestBeltHoursWarningBoundary:
         tr = _tracker(tmp_path, clock=clk)
         tr.replace_input_configs({1: _turntable(belt_life_hours=0, belt_life_years=0)})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(99999 * 3600)  # far beyond any threshold
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         snap = tr.snapshot().inputs[1]
         assert snap.belt_hours_overdue is False
         assert snap.belt_hours_warning is False
@@ -280,8 +284,10 @@ class TestBearingHoursWarningBoundary:
             bearing_life_hours=bearing_life_hours, bearing_life_years=0,
         )})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(used_seconds)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         return tr.snapshot().inputs[1]
 
     def test_just_inside_bearing_warning_zone(self, tmp_path):
@@ -307,8 +313,10 @@ class TestBearingHoursWarningBoundary:
             bearing_life_hours=0, bearing_life_years=0,
         )})
         tr.on_playback_started(1)
+        tr.on_wear_started(1)
         clk.advance(99999 * 3600)
         tr.on_playback_stopped(1)
+        tr.on_wear_stopped(1)
         snap = tr.snapshot().inputs[1]
         assert snap.bearing_hours_overdue is False
         assert snap.bearing_hours_warning is False
