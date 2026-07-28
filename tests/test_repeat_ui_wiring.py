@@ -51,7 +51,13 @@ if _CORE not in sys.path:
 # test_wp4c_setup_ui_wiring.py so parsed.repeat comes from real parse_config().
 # ---------------------------------------------------------------------------
 
-def _minimal_cfg(tmp_path: Path, *, repeat_enabled: bool = False, repeat_codec: str = "auto") -> Path:
+def _minimal_cfg(
+    tmp_path: Path,
+    *,
+    repeat_enabled: bool = False,
+    repeat_codec: str = "auto",
+    repeat_target_minutes: int = 33,
+) -> Path:
     cfg = tmp_path / "autostream.json"
     cfg.write_text(json.dumps({
         "general": {"log_level": "info", "silence_seconds": 30},
@@ -79,18 +85,33 @@ def _minimal_cfg(tmp_path: Path, *, repeat_enabled: bool = False, repeat_codec: 
             "output_usage_poll_interval_seconds": 3,
         },
         "updates": {"auto_update": False, "update_channel": "stable"},
-        "repeat": {"enabled": repeat_enabled, "codec": repeat_codec},
+        "repeat": {
+            "enabled": repeat_enabled,
+            "codec": repeat_codec,
+            "target_minutes": repeat_target_minutes,
+        },
     }), encoding="utf-8")
     return cfg
 
 
-def _render_setup_page(tmp_path: Path, *, repeat_enabled: bool = False, repeat_codec: str = "auto") -> str:
+def _render_setup_page(
+    tmp_path: Path,
+    *,
+    repeat_enabled: bool = False,
+    repeat_codec: str = "auto",
+    repeat_target_minutes: int = 33,
+) -> str:
     from autostream_webui_page_setup import send_setup_page
     from autostream_settings import SettingsStore
     from autostream_webui_state import WebUIState
     from autostream_players import ListOutputsResult
 
-    cfg = _minimal_cfg(tmp_path, repeat_enabled=repeat_enabled, repeat_codec=repeat_codec)
+    cfg = _minimal_cfg(
+        tmp_path,
+        repeat_enabled=repeat_enabled,
+        repeat_codec=repeat_codec,
+        repeat_target_minutes=repeat_target_minutes,
+    )
     store = SettingsStore(str(cfg), _save_interval_seconds=9999)
     state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
 
@@ -213,6 +234,83 @@ class TestSetupCustomiseRepeatControls:
         assert "Number.isFinite(maxSecs) && maxSecs > 0" in html
         # The note logic must not gate on recording state at all.
         assert "repeat.recording.active" not in html
+
+
+class TestSetupBufferTargetSelect:
+    """The buffer-target dropdown (Vinyl 33 / CD 80) added under the "Enable
+    repeat playback" toggle row."""
+
+    def test_select_present_with_both_options(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        assert 'id="repeat_target_minutes"' in html
+        assert 'name="repeat_target_minutes"' in html
+        assert '<option value="33"' in html
+        assert 'Vinyl (33 minutes)' in html
+        assert '<option value="80"' in html
+        assert 'CD (80 minutes)' in html
+
+    def test_vinyl_selected_for_default_33(self, tmp_path):
+        html = _render_setup_page(tmp_path, repeat_target_minutes=33)
+        select_html = html.split('id="repeat_target_minutes"', 1)[1].split('</select>', 1)[0]
+        assert '<option value="33" selected>' in select_html
+        assert '<option value="80" selected>' not in select_html
+
+    def test_cd_selected_for_80(self, tmp_path):
+        html = _render_setup_page(tmp_path, repeat_target_minutes=80)
+        select_html = html.split('id="repeat_target_minutes"', 1)[1].split('</select>', 1)[0]
+        assert '<option value="80" selected>' in select_html
+        assert '<option value="33" selected>' not in select_html
+
+    def test_custom_option_rendered_for_out_of_band_config_value(self, tmp_path):
+        """A config-file value outside {33, 80} must still render (selected)
+        as a third "Custom" option -- config-file freedom stays visible
+        without offering a way to pick a custom value from the UI itself."""
+        html = _render_setup_page(tmp_path, repeat_target_minutes=45)
+        select_html = html.split('id="repeat_target_minutes"', 1)[1].split('</select>', 1)[0]
+        assert '<option value="45" selected>Custom (45 minutes)</option>' in select_html
+        assert '<option value="33"' in select_html
+        assert '<option value="33" selected>' not in select_html
+        assert '<option value="80"' in select_html
+        assert '<option value="80" selected>' not in select_html
+
+    def test_select_disabled_when_repeat_disabled(self, tmp_path):
+        html = _render_setup_page(tmp_path, repeat_enabled=False)
+        select_tag = html.split('<select id="repeat_target_minutes"', 1)[1].split('>', 1)[0]
+        assert 'disabled' in select_tag
+
+    def test_select_enabled_when_repeat_enabled(self, tmp_path):
+        html = _render_setup_page(tmp_path, repeat_enabled=True)
+        select_tag = html.split('<select id="repeat_target_minutes"', 1)[1].split('>', 1)[0]
+        assert 'disabled' not in select_tag
+
+    def test_row_dimmed_when_repeat_disabled(self, tmp_path):
+        html = _render_setup_page(tmp_path, repeat_enabled=False)
+        assert 'id="repeat-target-row"' in html
+        row_tag = html.split('id="repeat-target-row"', 1)[1].split('>', 1)[0]
+        assert 'opacity:0.4' in row_tag
+
+    def test_onchange_saves_field(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        assert 'onchange="onRepeatTargetChange(this.value)"' in html
+        assert "function onRepeatTargetChange(value)" in html
+        assert "settingsSaveField('repeat.target_minutes', parseInt(value, 10))" in html
+
+    def test_onchange_reuses_shared_poll_helper(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        assert "function pollRepeatNote()" in html
+        change_start = html.find("function onRepeatTargetChange(value)")
+        assert change_start != -1
+        change_body = html[change_start:change_start + 200]
+        assert "pollRepeatNote()" in change_body
+
+    def test_toggle_handler_flips_select_disabled_state(self, tmp_path):
+        html = _render_setup_page(tmp_path)
+        toggle_start = html.find("function onRepeatEnabledToggle(checked)")
+        assert toggle_start != -1
+        toggle_body = html[toggle_start:toggle_start + 800]
+        assert "getElementById('repeat_target_minutes')" in toggle_body
+        assert "targetSelect.disabled = !checked" in toggle_body
+        assert "getElementById('repeat-target-row')" in toggle_body
 
 
 class TestSetupAudioControlsRepeatLock:

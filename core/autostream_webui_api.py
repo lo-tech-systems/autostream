@@ -1343,6 +1343,31 @@ def _validate_repeat_codec(value: object) -> str:
     return normalize_repeat_codec(v)
 
 
+# Browser-editable buffer-target choices: Vinyl / CD. Direct config-file
+# edits still accept any value in [REPEAT_TARGET_MINUTES_MIN,
+# REPEAT_TARGET_MINUTES_MAX] via normalize_repeat_target_minutes(); this
+# validator only guards the Settings-page field.
+_REPEAT_TARGET_MINUTES_CHOICES = (33, 80)
+
+
+def _validate_repeat_target_minutes(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Value must be one of {', '.join(str(c) for c in _REPEAT_TARGET_MINUTES_CHOICES)}"
+        )
+    try:
+        v = int(float(str(value).strip()))
+    except Exception:
+        raise ValueError(
+            f"Value must be one of {', '.join(str(c) for c in _REPEAT_TARGET_MINUTES_CHOICES)}"
+        )
+    if v not in _REPEAT_TARGET_MINUTES_CHOICES:
+        raise ValueError(
+            f"Value must be one of {', '.join(str(c) for c in _REPEAT_TARGET_MINUTES_CHOICES)}"
+        )
+    return v
+
+
 def _live_repeat_enabled(state: object, value: object) -> bool:
     from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
@@ -1359,6 +1384,60 @@ def _live_repeat_codec(state: object, value: object) -> bool:
         return False
     snap = settings.snapshot()
     return bool(set_live_repeat_enabled(snap.repeat.enabled, str(value), snap.repeat.target_minutes))
+
+
+def _live_repeat_target_minutes(state: object, value: object) -> bool:
+    """Apply a buffer-target change while repeat is enabled.
+
+    By the time a live_fn runs, send_settings_post_json has already
+    committed the new value to the settings store (settings.update() runs
+    before live_fn is called) -- snap.repeat.target_minutes here is already
+    the NEW value, not the one the daemon is currently running with. The
+    daemon's own last-reported target (get_repeat_status()) is used as the
+    "previous value" instead: it reflects what is actually live, independent
+    of settings-store write timing, so it is the only value that can
+    correctly answer "did this change from what's running".
+
+    If repeat is currently disabled, the new target just persists -- the
+    enable path forwards the stored value, so there is nothing to push now.
+    If enabled and the daemon-reported target differs from the new value,
+    pulse the policy off then on so the daemon frees any held buffer
+    (including an active replay) and re-arms at the new target. If the
+    daemon-reported target already matches, no daemon traffic is sent.
+
+    Known bounded staleness: the daemon status cache refreshes on the
+    coordinator's poll cycle, so two target changes inside one poll
+    interval can compare against a pre-pulse reading and skip a push,
+    leaving the daemon on the earlier target until the next repeat policy
+    push (enable/codec change or reconnect resync). The buffer note
+    reflects the daemon's actual target, so the mismatch is visible and
+    recoverable by re-selecting the target.
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    if not snap.repeat.enabled:
+        return True
+
+    try:
+        new_target = int(value)
+    except Exception:
+        return False
+
+    status = get_repeat_status() or {}
+    try:
+        previous_target = int(status.get("target_minutes"))
+    except (TypeError, ValueError):
+        previous_target = None
+
+    if previous_target == new_target:
+        return True
+
+    off_ok = set_live_repeat_enabled(False, snap.repeat.codec, new_target)
+    on_ok = set_live_repeat_enabled(True, snap.repeat.codec, new_target)
+    return bool(off_ok) and bool(on_ok)
 
 
 # ---------------------------------------------------------------------------
@@ -1579,6 +1658,7 @@ _SETTINGS_FIELDS: dict = {
     # -- toggling this must not tear down the playback it governs)
     "repeat.enabled":                           ("repeat",  "enabled",                            _validate_bool,                   _live_repeat_enabled),
     "repeat.codec":                             ("repeat",  "codec",                              _validate_repeat_codec,           _live_repeat_codec),
+    "repeat.target_minutes":                    ("repeat",  "target_minutes",                     _validate_repeat_target_minutes,  _live_repeat_target_minutes),
 }
 
 
@@ -1599,6 +1679,7 @@ def send_settings_get_json(handler, state) -> None:
         "updates.update_channel":                  parsed.updates.update_channel,
         "repeat.enabled":                          parsed.repeat.enabled,
         "repeat.codec":                            parsed.repeat.codec,
+        "repeat.target_minutes":                   parsed.repeat.target_minutes,
     }
     send_json(handler, 200, {"ok": True, "values": values})
 

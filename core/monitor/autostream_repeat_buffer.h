@@ -374,7 +374,7 @@ private:
 // =============================================================================
 
 // Recording quality tier. The tier is chosen to GUARANTEE a target recording
-// duration (default 80 minutes -- RepeatController::_target_minutes_cfg /
+// duration (default 33 minutes -- RepeatController::_target_minutes_cfg /
 // the socket API's "target_minutes" field) in whatever free RAM is currently
 // usable, rather than from fixed free-RAM thresholds. See
 // pick_codec_for_target() below. A pinned codec (config) still skips the
@@ -404,7 +404,7 @@ inline constexpr int kMp2BitrateFloorKbps    = 160;   // hard floor: never selec
 
 // Target-duration knob (RepeatController::_target_minutes_cfg / the
 // "target_minutes" field of {"type":"set_repeat_enabled",...}).
-inline constexpr int kDefaultRepeatTargetMinutes = 80;
+inline constexpr int kDefaultRepeatTargetMinutes = 33;
 inline constexpr int kMinRepeatTargetMinutes     = 10;
 inline constexpr int kMaxRepeatTargetMinutes     = 600;
 

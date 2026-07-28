@@ -51,6 +51,7 @@ from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
     _validate_repeat_codec,
+    _validate_repeat_target_minutes,
     send_repeat_post_json,
     send_settings_get_json,
     send_settings_post_json,
@@ -169,11 +170,13 @@ class TestP1ConfigDefaults:
 
 
 class TestP1TargetMinutes:
-    """repeat.target_minutes -- config-level only, no web-UI control."""
+    """repeat.target_minutes -- config-level clamp [10, 600]; the browser-
+    editable Settings-page field is narrower (33 or 80 only, see
+    TestP1SettingsFieldsPresent / TestTargetMinutesValidator)."""
 
     def test_default_when_section_missing(self):
         cfg = parse_config({})
-        assert cfg.repeat.target_minutes == REPEAT_TARGET_MINUTES_DEFAULT == 80
+        assert cfg.repeat.target_minutes == REPEAT_TARGET_MINUTES_DEFAULT == 33
 
     def test_reads_persisted_value(self):
         cfg = parse_config({"repeat": {"target_minutes": 45}})
@@ -191,19 +194,36 @@ class TestP1TargetMinutes:
         assert normalize_repeat_target_minutes("not-a-number") == REPEAT_TARGET_MINUTES_DEFAULT
         assert normalize_repeat_target_minutes(None) == REPEAT_TARGET_MINUTES_DEFAULT
 
-    def test_not_in_browser_editable_settings_fields(self):
-        """Config-level only for now -- no Settings-page control, so it must
-        NOT appear in the browser-editable schema."""
-        assert "repeat.target_minutes" not in _SETTINGS_FIELDS
+    def test_is_in_browser_editable_settings_fields(self):
+        """The buffer-target dropdown (Vinyl 33 / CD 80) makes this field
+        browser-editable, unlike before."""
+        assert "repeat.target_minutes" in _SETTINGS_FIELDS
+
+
+class TestTargetMinutesValidator:
+    """Browser-side validator: only 33 or 80, unlike the wider config-file
+    clamp exercised by TestP1TargetMinutes above."""
+
+    @pytest.mark.parametrize("value", [33, 80, "33", "80", 33.0])
+    def test_accepts_33_or_80(self, value):
+        result = _validate_repeat_target_minutes(value)
+        assert result in (33, 80)
+        assert result == int(float(value))
+
+    @pytest.mark.parametrize("value", [45, 0, -1, 600, "garbage", None, [], {}, True, False])
+    def test_rejects_everything_else(self, value):
+        with pytest.raises(ValueError):
+            _validate_repeat_target_minutes(value)
 
 
 class TestP1SettingsFieldsPresent:
     def test_enabled_and_codec_present(self):
         assert "repeat.enabled" in _SETTINGS_FIELDS
         assert "repeat.codec" in _SETTINGS_FIELDS
+        assert "repeat.target_minutes" in _SETTINGS_FIELDS
 
     def test_entries_are_4_tuples_with_live_fn(self):
-        for f in ("repeat.enabled", "repeat.codec"):
+        for f in ("repeat.enabled", "repeat.codec", "repeat.target_minutes"):
             entry = _SETTINGS_FIELDS[f]
             assert len(entry) == 4
             assert entry[3] is not None, f"{f} must have a live_fn"
@@ -231,6 +251,7 @@ class TestP1GetApiSettings:
         assert body["ok"] is True
         assert body["values"]["repeat.enabled"] is False
         assert body["values"]["repeat.codec"] == "auto"
+        assert body["values"]["repeat.target_minutes"] == 33
 
 
 class TestP1StoreRoundTrip:
@@ -255,6 +276,20 @@ class TestP1StoreRoundTrip:
         assert code == 400  # validation failure (API-ERROR-CONTRACT: non-intercepted native 4xx)
         assert store.snapshot().repeat.codec == "auto"
 
+    def test_target_minutes_round_trip(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True):
+            resp, code = _post_settings(state, "repeat.target_minutes", 80)
+        assert resp["ok"] is True
+        assert store.snapshot().repeat.target_minutes == 80
+
+    def test_target_minutes_round_trip_rejects_bad_value(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        resp, code = _post_settings(state, "repeat.target_minutes", 45)
+        assert resp["ok"] is False
+        assert code == 400
+        assert store.snapshot().repeat.target_minutes == 33
+
 
 # ── P2: Live apply, not reload ────────────────────────────────────────────────
 
@@ -263,7 +298,7 @@ class TestP2LiveApplyNotReload:
         state, _ = _make_state(str(tmp_path))
         with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.enabled", True)
-        m.assert_called_once_with(True, "auto", 80)
+        m.assert_called_once_with(True, "auto", 33)
         assert resp["live"] is True
 
     def test_codec_calls_live_setter_with_current_enabled(self, tmp_path):
@@ -271,7 +306,7 @@ class TestP2LiveApplyNotReload:
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
-        m.assert_called_once_with(True, "pcm", 80)
+        m.assert_called_once_with(True, "pcm", 33)
         assert resp["live"] is True
 
     def test_enabled_does_not_debounce_coordinator_reload(self, tmp_path):
@@ -300,6 +335,75 @@ class TestP2LiveApplyNotReload:
         assert resp["live"] is False
         assert "live_error" in resp
         assert store.snapshot().repeat.enabled is True
+
+
+class TestP2LiveTargetMinutesPulse:
+    """_live_repeat_target_minutes: the daemon-reported target_minutes
+    (get_repeat_status()) is used as the "previous value" for the
+    changed/unchanged comparison, because by the time this live_fn runs the
+    settings store already holds the NEW value (send_settings_post_json
+    commits the store before calling live_fn) -- comparing against the
+    snapshot would always see "no change"."""
+
+    def test_disabled_makes_no_daemon_calls(self, tmp_path):
+        """Repeat currently off: the new target just persists; the enable
+        path forwards it later, so nothing should be pushed now."""
+        state, _ = _make_state(str(tmp_path))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+            resp, _ = _post_settings(state, "repeat.target_minutes", 80)
+        assert resp["ok"] is True
+        assert resp["live"] is True
+        m.assert_not_called()
+
+    def test_unchanged_value_makes_no_daemon_calls(self, tmp_path):
+        """Enabled, and the daemon already reports the same target the
+        browser just saved: no pulse."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+            resp, _ = _post_settings(state, "repeat.target_minutes", 80)
+        assert resp["ok"] is True
+        assert resp["live"] is True
+        m.assert_not_called()
+
+    def test_changed_value_pulses_off_then_on_exactly_once_each(self, tmp_path):
+        """Enabled, and the daemon-reported target differs from the newly
+        saved value: exactly one off call followed by exactly one on call,
+        both carrying the new target and the current codec."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True, "codec": "mp2_224"}))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+            resp, _ = _post_settings(state, "repeat.target_minutes", 33)
+        assert resp["ok"] is True
+        assert resp["live"] is True
+        assert m.call_count == 2
+        assert m.call_args_list[0].args == (False, "mp2_224", 33)
+        assert m.call_args_list[1].args == (True, "mp2_224", 33)
+
+    def test_pulse_failure_reports_live_error(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+             patch("autostream_webui_api.set_live_repeat_enabled", side_effect=[True, False]):
+            resp, _ = _post_settings(state, "repeat.target_minutes", 33)
+        assert resp["ok"] is True
+        assert resp["live"] is False
+        assert "live_error" in resp
+
+    def test_unknown_daemon_status_treated_as_changed(self, tmp_path):
+        """No cached daemon status (old binary / never polled yet): the
+        safer default is to pulse rather than silently skip the daemon
+        push."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
+        with patch("autostream_webui_api.get_repeat_status", return_value=None), \
+             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+            resp, _ = _post_settings(state, "repeat.target_minutes", 33)
+        assert resp["live"] is True
+        assert m.call_count == 2
 
 
 # ── P3: /api/repeat endpoint ───────────────────────────────────────────────────
@@ -1106,45 +1210,6 @@ class TestP8PlaybackHoursDuringReplay:
         mon.is_capturing = False
         mon.is_silent = True
         mon._tracker_playback_active = False
-        tracker, original = self._with_tracker()
-        repeat_status = {
-            "replay": {"active": True},
-            "recording": {"origin_input": 1, "bytes": 100},
-        }
-        try:
-            mon._sync_playback_tracker_state(repeat_status)
-            # Playback was already active (via replay) -- no redundant call.
-            tracker.on_playback_started.assert_not_called()
-            assert mon._tracker_playback_active is True
-            # Wear turns on now that real capture is audible.
-            tracker.on_wear_started.assert_called_once_with(1)
-            assert mon._tracker_wear_active is True
-        finally:
-            self._restore(original)
-
-    def test_live_capture_accrues_both_without_replay(self):
-        """Ordinary live capture (no repeat replay in play): both total and
-        wear accrue together."""
-        mon = _make_monitor(input_index=1)
-        mon.is_capturing = True
-        mon.is_silent = False
-        mon._tracker_playback_active = False
-        mon._tracker_wear_active = False
-        tracker, original = self._with_tracker()
-        try:
-            mon._sync_playback_tracker_state(None)
-            tracker.on_playback_started.assert_called_once_with(1)
-            assert mon._tracker_playback_active is True
-            tracker.on_wear_started.assert_called_once_with(1)
-            assert mon._tracker_wear_active is True
-        finally:
-            self._restore(original)
-
-    def test_does_not_accrue_for_non_origin_input_during_replay(self):
-        mon = _make_monitor(input_index=2)
-        mon.is_capturing = False
-        mon.is_silent = True
-        mon._tracker_playback_active = False
         mon._tracker_wear_active = False
         tracker, original = self._with_tracker()
         repeat_status = {
@@ -1196,6 +1261,45 @@ class TestP8PlaybackHoursDuringReplay:
         mon.is_silent = False
         mon._tracker_playback_active = True   # already accruing via replay
         mon._tracker_wear_active = False
+        tracker, original = self._with_tracker()
+        repeat_status = {
+            "replay": {"active": True},
+            "recording": {"origin_input": 1, "bytes": 100},
+        }
+        try:
+            mon._sync_playback_tracker_state(repeat_status)
+            # Playback was already active (via replay) -- no redundant call.
+            tracker.on_playback_started.assert_not_called()
+            assert mon._tracker_playback_active is True
+            # Wear turns on now that real capture is audible.
+            tracker.on_wear_started.assert_called_once_with(1)
+            assert mon._tracker_wear_active is True
+        finally:
+            self._restore(original)
+
+    def test_live_capture_accrues_both_without_replay(self):
+        """Ordinary live capture (no repeat replay in play): both total and
+        wear accrue together."""
+        mon = _make_monitor(input_index=1)
+        mon.is_capturing = True
+        mon.is_silent = False
+        mon._tracker_playback_active = False
+        mon._tracker_wear_active = False
+        tracker, original = self._with_tracker()
+        try:
+            mon._sync_playback_tracker_state(None)
+            tracker.on_playback_started.assert_called_once_with(1)
+            assert mon._tracker_playback_active is True
+            tracker.on_wear_started.assert_called_once_with(1)
+            assert mon._tracker_wear_active is True
+        finally:
+            self._restore(original)
+
+    def test_does_not_accrue_for_non_origin_input_during_replay(self):
+        mon = _make_monitor(input_index=2)
+        mon.is_capturing = False
+        mon.is_silent = True
+        mon._tracker_playback_active = False
         tracker, original = self._with_tracker()
         repeat_status = {
             "replay": {"active": True},

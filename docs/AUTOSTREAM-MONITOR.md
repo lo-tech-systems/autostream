@@ -56,7 +56,7 @@ for higher-level orchestration, UI, settings, and playback-backend control.
   - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
     pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
     The codec/bitrate tier is chosen to GUARANTEE a target recording
-    duration (`target_minutes`, default 80) in whatever RAM is usable
+    duration (`target_minutes`, default 33) in whatever RAM is usable
     (available minus the 64 MiB free-RAM floor) -- PCM if it fits, else the
     highest legal MP2 bitrate (160/192/224/256/320/384 kbps) that fits,
     never below the 160 kbps floor. The sliding window itself still has no
@@ -670,7 +670,7 @@ audio into an in-RAM buffer, and loop it back once armed -- see
 Request:
 
 ```json
-{"type":"set_repeat_enabled","enabled":true,"codec":"auto","target_minutes":80}
+{"type":"set_repeat_enabled","enabled":true,"codec":"auto","target_minutes":33}
 ```
 
 Request fields:
@@ -690,8 +690,8 @@ Request fields:
     usable RAM; else the highest legal MP2 stereo bitrate
     (160/192/224/256/320/384 kbps) whose footprint fits, never below
     160 kbps. If omitted entirely, the currently-configured value is left
-    unchanged (defaults to 80 minutes the first time the daemon is started,
-    never reset back to 80 by a later call that simply doesn't mention it).
+    unchanged (defaults to 33 minutes the first time the daemon is started,
+    never reset back to 33 by a later call that simply doesn't mention it).
     Out-of-range values are clamped to [10, 600]. `target_minutes` is a
     SELECTION goal only, not an admission gate or a hard cap: once a session
     starts, the sliding window still behaves exactly as before (bounded only
@@ -700,9 +700,10 @@ Request fields:
     memory pressure (head truncation), and if even 160 kbps's target
     footprint doesn't fit, the session still starts at 160 kbps rather than
     being refused.
-  - **No web-UI control exists for this yet** -- config-level only (set via
-    the persisted `repeat.target_minutes` setting; see
-    `core/autostream_config.py`'s `RepeatConfig`).
+  - The web UI's Settings page offers a "Vinyl (33 minutes)" / "CD (80
+    minutes)" choice (set via the persisted `repeat.target_minutes` setting;
+    see `core/autostream_config.py`'s `RepeatConfig`). Direct config-file
+    edits still accept any value in [10, 600].
 
 Behavior:
 
@@ -712,7 +713,16 @@ Behavior:
   buffer immediately (a finished-but-unreplayed recording is freed too)
 - changing `codec` or `target_minutes` while `enabled` stays `true` does not
   affect a recording already in progress; both are read fresh at the next
-  session start
+  session start. This is the raw socket-command contract: a single
+  `set_repeat_enabled` call with `enabled` unchanged never itself tears down
+  a session. The web UI's buffer-target dropdown gets an immediate effect on
+  top of this contract by issuing two calls -- `enabled:false` then
+  `enabled:true` with the new `target_minutes` -- so the `enabled:false` edge
+  frees any held buffer (including hard-aborting an active replay, per the
+  `enabled` **off** behavior above) and the `enabled:true` edge re-arms at
+  the new target. Direct config-file edits to `target_minutes` are not
+  live-applied at all; they take effect only at the next daemon start or
+  reconnect resync.
 
 Success response:
 
@@ -1026,7 +1036,7 @@ Top-level fields:
     not persisted, reset by a daemon restart
   - `codec`: current codec policy (`auto`|`mp2_160`|`mp2_192`|`mp2_224`|
     `mp2_256`|`mp2_320`|`mp2_384`|`pcm`)
-  - `target_minutes`: current target-duration goal (default 80; see
+  - `target_minutes`: current target-duration goal (default 33; see
     `set_repeat_enabled` above) -- what the `auto` ladder tries to
     guarantee, not a hard cap on the sliding window
   - `max_recording_seconds`: sliding-window size in seconds, computed from free

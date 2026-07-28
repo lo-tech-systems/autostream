@@ -863,6 +863,19 @@ def send_setup_page(
         other_capture_device=parsed.audio1.capture_device,
     )
 
+    # Buffer-target select: Vinyl (33) / CD (80), plus a third "Custom" option
+    # that surfaces (selected) only when the config file holds some other
+    # value -- direct config-file edits keep their freedom without exposing a
+    # way to pick a custom value from the UI itself.
+    _repeat_target = parsed.repeat.target_minutes
+    _repeat_target_options = [(33, "Vinyl (33 minutes)"), (80, "CD (80 minutes)")]
+    if _repeat_target not in (33, 80):
+        _repeat_target_options.append((_repeat_target, f"Custom ({_repeat_target} minutes)"))
+    repeat_target_options_html = "".join(
+        f'<option value="{v}"{" selected" if v == _repeat_target else ""}>{html.escape(label)}</option>'
+        for v, label in _repeat_target_options
+    )
+
     # Fieldset fragments shared by both layout paths
     playback_inner_html = f"""
           <label>Default Speakers:
@@ -884,6 +897,13 @@ def send_setup_page(
               <span class="switch"></span>
             </label>
             <span>Enable repeat playback</span>
+          </div>
+          <div class="setup-customise-row" id="repeat-target-row" style="margin-top:0.4rem;{'opacity:0.4;' if not parsed.repeat.enabled else ''}">
+            <label style="margin:0;">Buffer target:
+              <select id="repeat_target_minutes" name="repeat_target_minutes"{'' if parsed.repeat.enabled else ' disabled'} onchange="onRepeatTargetChange(this.value)">
+                {repeat_target_options_html}
+              </select>
+            </label>
           </div>
           <div class="helptext" id="repeat-max-time-note">Buffer: —</div>
           <div class="helptext" id="repeat-unavailable-note" style="display:none;color:var(--color-status-danger);"></div>
@@ -2647,10 +2667,31 @@ def send_setup_page(
           return populated;
         }}
         var _repeatToggleToken = 0;
+        // The daemon takes a few seconds to compute the buffer estimate after
+        // repeat is (re-)enabled or its target changes, and the status cache
+        // backing /api/status only refreshes on its own ~1-2s poll -- retry
+        // briefly rather than leaving the note stale until the panel is reopened.
+        function pollRepeatNote() {{
+          var myToken = ++_repeatToggleToken;
+          var attempts = 0;
+          var maxAttempts = 8;
+          (function poll() {{
+            if (myToken !== _repeatToggleToken) return;  // superseded by a later change
+            attempts++;
+            refreshRepeatSetupNote().then(function(ok) {{
+              if (ok || myToken !== _repeatToggleToken || attempts >= maxAttempts) return;
+              setTimeout(poll, 1000);
+            }});
+          }})();
+        }}
         function onRepeatEnabledToggle(checked) {{
           settingsSaveField('repeat.enabled', checked);
-          var myToken = ++_repeatToggleToken;
+          var targetSelect = document.getElementById('repeat_target_minutes');
+          var targetRow = document.getElementById('repeat-target-row');
+          if (targetSelect) targetSelect.disabled = !checked;
+          if (targetRow) targetRow.style.opacity = checked ? '' : '0.4';
           if (!checked) {{
+            _repeatToggleToken++;  // cancel any in-flight poll
             var noteEl = document.getElementById('repeat-max-time-note');
             var unavailEl = document.getElementById('repeat-unavailable-note');
             if (noteEl) noteEl.textContent = '';
@@ -2660,20 +2701,11 @@ def send_setup_page(
             }}
             return;
           }}
-          // The daemon takes a few seconds to compute the buffer estimate
-          // after enabling, and the status cache backing /api/status only
-          // refreshes on its own ~1-2s poll -- retry briefly rather than
-          // leaving the note empty until the panel is reopened.
-          var attempts = 0;
-          var maxAttempts = 8;
-          (function poll() {{
-            if (myToken !== _repeatToggleToken) return;  // superseded by a later toggle
-            attempts++;
-            refreshRepeatSetupNote().then(function(ok) {{
-              if (ok || myToken !== _repeatToggleToken || attempts >= maxAttempts) return;
-              setTimeout(poll, 1000);
-            }});
-          }})();
+          pollRepeatNote();
+        }}
+        function onRepeatTargetChange(value) {{
+          settingsSaveField('repeat.target_minutes', parseInt(value, 10));
+          pollRepeatNote();
         }}
         function onHostnameToggle(checked) {{
           var cb = document.getElementById('webui_control_other_appliances');

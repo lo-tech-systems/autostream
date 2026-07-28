@@ -435,8 +435,9 @@ REPEAT_CODEC_DEFAULT = "auto"
 # Target-duration goal (minutes) the "auto" codec ladder tries to guarantee
 # in currently-usable RAM (core/monitor/autostream_repeat_buffer.h's
 # pick_codec_for_target(), kMinRepeatTargetMinutes/kMaxRepeatTargetMinutes).
-# Config-level only for now -- no Settings-page control yet.
-REPEAT_TARGET_MINUTES_DEFAULT = 80
+# The Settings-page dropdown offers only 33 (Vinyl) / 80 (CD); direct
+# config-file edits keep the wider clamped range below.
+REPEAT_TARGET_MINUTES_DEFAULT = 33
 REPEAT_TARGET_MINUTES_MIN = 10
 REPEAT_TARGET_MINUTES_MAX = 600
 
@@ -451,7 +452,7 @@ def normalize_repeat_codec(value: object) -> str:
 
 
 def normalize_repeat_target_minutes(value: object) -> int:
-    """Clamp the target-duration setting to [10, 600]; default 80 on invalid input."""
+    """Clamp the target-duration setting to [10, 600]; default 33 on invalid input."""
     try:
         v = int(float(str(value)))  # type: ignore[arg-type]
     except Exception:
@@ -464,8 +465,9 @@ class RepeatConfig:
     """Repeat-recording feature settings (JSON section repeat).
 
     All three fields are live-applied (set_repeat_enabled) rather than
-    driving a coordinator reload. target_minutes is config-level only for
-    now -- no Settings-page control.
+    driving a coordinator reload. The Settings page offers target_minutes
+    as a Vinyl (33) / CD (80) choice; direct config-file edits accept any
+    value in [10, 600].
     """
     enabled: bool
     codec: str
