@@ -767,3 +767,24 @@ class TestBluetoothServicesButtonFeedback:
     def test_button_ids_referenced_for_lookup(self, html):
         assert "getElementById('btnBtEnableServices')" in html
         assert "getElementById('btnBtDisableServices')" in html
+
+
+class TestUnconfiguredInputPlaceholder:
+    """An input with no saved capture device must render an explicit disabled
+    placeholder as the selected option. Without it the browser displays the
+    first device in the list as chosen (no save has happened), and selecting
+    that same device fires no change event -- making it unsaveable."""
+
+    def test_placeholder_rendered_when_unconfigured(self, tmp_path):
+        html_out = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, audio2_capture_device="",
+        )
+        assert "select input device" in html_out
+        assert "value='' selected disabled" in html_out
+
+    def test_no_placeholder_when_configured(self, tmp_path):
+        html_out = _SetupRenderer().render(
+            tmp_path, bt_enabled=True,
+        )
+        # both inputs configured in the default fixture: no placeholder
+        assert "select input device" not in html_out

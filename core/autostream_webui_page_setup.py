@@ -530,8 +530,21 @@ def send_setup_page(
     def build_opts(cur, other_value: Optional[str] = None):
         opts = ""
         found = False
-        cur_str = str(cur).strip()
+        cur_str = str(cur).strip() if cur else ""
         other_str = str(other_value or "").strip()
+        if not cur_str:
+            # An unconfigured input must not implicitly display the first
+            # device in the list as selected: the browser would show it as
+            # chosen without any save having happened, and re-selecting the
+            # displayed option fires no change event, so the user could never
+            # actually save that device. An explicit disabled placeholder
+            # keeps the displayed state truthful and makes any real choice a
+            # change event.
+            opts += (
+                "<option value='' selected disabled>"
+                "&#8212; select input device &#8212;</option>"
+            )
+            found = True
         for dev in monitor_devices:
             hw = str(dev.get("hw") or "").strip()
             if not hw:
