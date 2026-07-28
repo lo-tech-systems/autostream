@@ -165,6 +165,16 @@ def send_first_boot_appliance_page(
     def _build_device_opts(cur: str) -> str:
         opts = ""
         found = False
+        if not (cur or "").strip():
+            # Without a saved value the browser would display the first
+            # device as selected and the form submit would silently persist
+            # it; an explicit disabled placeholder forces a deliberate
+            # choice (the submit validator rejects an empty value with a
+            # clear message).
+            opts += (
+                "<option value='' selected disabled>"
+                "&#8212; select input device &#8212;</option>"
+            )
         for dev in monitor_devices:
             hw = str(dev.get("hw") or "").strip()
             if not hw:
