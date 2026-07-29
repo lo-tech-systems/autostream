@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -71,6 +72,119 @@ const char* output_format_mode_name(OutputFormatMode mode)
         case OutputFormatMode::Compatible: return "compatible";
     }
     return "native";   // unreachable; keeps -Wreturn-type happy on all compilers
+}
+
+// =============================================================================
+// SRC quality tier
+//
+// See the section comment in autostream_monitor_utils.h for the full design
+// (scope, no-runtime-switching rationale, cross-reference to owntone-mini's
+// aac_coder_select()).
+// =============================================================================
+
+SrcQualityState g_src_quality;
+
+const char* src_quality_tier_name(SrcQualityTier tier)
+{
+    switch (tier)
+    {
+        case SrcQualityTier::Fast:   return "fast";
+        case SrcQualityTier::Medium: return "medium";
+        case SrcQualityTier::Best:   return "best";
+    }
+    return "medium";   // unreachable; keeps -Wreturn-type happy on all compilers
+}
+
+const char* src_quality_source_name(SrcQualitySource source)
+{
+    switch (source)
+    {
+        case SrcQualitySource::Auto: return "auto";
+        case SrcQualitySource::Flag: return "flag";
+    }
+    return "auto";   // unreachable; keeps -Wreturn-type happy on all compilers
+}
+
+bool parse_src_quality_tier(const std::string& text, SrcQualityTier* out_tier)
+{
+    if (text == "fast")
+    {
+        *out_tier = SrcQualityTier::Fast;
+        return true;
+    }
+    if (text == "medium")
+    {
+        *out_tier = SrcQualityTier::Medium;
+        return true;
+    }
+    if (text == "best")
+    {
+        *out_tier = SrcQualityTier::Best;
+        return true;
+    }
+    return false;
+}
+
+SrcAutoDetectResult classify_src_tier_from_cpuinfo(const std::string& cpuinfo_content)
+{
+    // Same "CPU part\t: 0x.." line scan as owntone-mini's aac_coder_select()
+    // (src/transcode.c) -- sscanf's literal spaces in the format string
+    // match any run of whitespace, so both the tab-separated real file and
+    // a hand-written test fixture using plain spaces parse identically.
+    std::istringstream in(cpuinfo_content);
+    std::string line;
+    bool saw_high_perf_part = false;
+    bool saw_any_part       = false;
+
+    while (std::getline(in, line))
+    {
+        unsigned int part = 0;
+        if (std::sscanf(line.c_str(), "CPU part : %x", &part) != 1)
+            continue;
+
+        saw_any_part = true;
+        switch (part)
+        {
+            case 0xd08: // Cortex-A72 (Pi 4)
+            case 0xd0b: // Cortex-A76 (Pi 5)
+                saw_high_perf_part = true;
+                break;
+            default:
+                // Cortex-A53 (0xd03, Pi 3 / Zero 2 W) and anything else
+                // recognised or not -- Medium, per the header comment.
+                break;
+        }
+        if (saw_high_perf_part)
+            break;
+    }
+
+    if (saw_high_perf_part)
+        return { SrcQualityTier::Best, "cortex-a72/a76" };
+    if (saw_any_part)
+        return { SrcQualityTier::Medium, "cortex-a53" };
+    return { SrcQualityTier::Medium, "unknown" };
+}
+
+SrcAutoDetectResult detect_src_tier_from_proc_cpuinfo()
+{
+    std::ifstream in("/proc/cpuinfo");
+    if (!in.is_open())
+        return { SrcQualityTier::Medium, "unknown" };
+
+    std::ostringstream contents;
+    contents << in.rdbuf();
+    return classify_src_tier_from_cpuinfo(contents.str());
+}
+
+int src_converter_type_for_tier(SrcQualityTier tier)
+{
+    switch (tier)
+    {
+        case SrcQualityTier::Fast:   return SRC_SINC_FASTEST;
+        case SrcQualityTier::Medium: return SRC_SINC_MEDIUM_QUALITY;
+        case SrcQualityTier::Best:   return SRC_SINC_BEST_QUALITY;
+    }
+    return SRC_SINC_FASTEST;   // unreachable; keeps -Wreturn-type happy
 }
 
 // Replaces OutputDumpWriter's hardcoded 44.1 kHz/16-bit WAV_PLACEHOLDER_HEADER
@@ -585,4 +699,38 @@ bool logger_test_wait_drained(int timeout_ms)
             return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+}
+
+// =============================================================================
+// CLI --help text
+// =============================================================================
+
+std::string monitor_help_text(const std::string& default_socket_path)
+{
+    std::ostringstream oss;
+    oss << "Usage: autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]\n"
+        << "                           [--compatible] [--src LEVEL]\n"
+        << "\n"
+        << "  --socket PATH   Unix domain socket path (default: " << default_socket_path << ")\n"
+        << "  --log-level L   Override log level: warn|warning|info|debug|spam\n"
+        << "  --test-hooks    Enable test-only socket commands (debug_fail_input).\n"
+        << "                  Never used in production; dev/test harnesses only.\n"
+        << "  --test-pin-src-ratio\n"
+        << "                  Pin the SRC ratio to nominal (disables rate-drift\n"
+        << "                  correction) for deterministic golden-reference runs.\n"
+        << "                  Requires --test-hooks. Never used in production.\n"
+        << "  --compatible    Output the FIFO as 44.1kHz/16-bit stereo, for stock\n"
+        << "                  (upstream) OwnTone or a pre-48k owntone-mini -- both\n"
+        << "                  have a named-pipe input fixed at 44.1kHz/16-bit.\n"
+        << "                  Default (this flag absent) is native 48kHz/32-bit.\n"
+        << "  --src LEVEL     Sample-rate-converter quality for the main FIFO output\n"
+        << "                  path: fast|medium|best. Default (this flag absent) is\n"
+        << "                  auto-detected from the CPU (Cortex-A72/A76-class ->\n"
+        << "                  best, else medium). An invalid LEVEL falls back to\n"
+        << "                  auto-detect with a warning instead of exiting.\n"
+        << "\n"
+        << "The monitor starts with no audio device connected.\n"
+        << "Configure it via the socket using JSON commands.\n"
+        << "See autostream_monitor.h for the full protocol.\n";
+    return oss.str();
 }
