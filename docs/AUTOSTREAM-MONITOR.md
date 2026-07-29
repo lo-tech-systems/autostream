@@ -363,31 +363,46 @@ When a repeat-feature recording session ends because the input's own
 `silence_seconds` timeout elapsed (as opposed to a manual stop, a config
 change, or shutdown), the trailing silence captured while the timeout was
 counting down is silence by definition and is dropped from the RAM buffer at
-session close, before replay of that recording can begin. The trim removes
-whatever amount of trailing below-threshold audio was actually measured for
-that session (not a fixed `silence_seconds`-sized cut), minus a small fixed
-pad so the trim never bites into the last audible moment. `recording.seconds`
+session close, before replay of that recording can begin. `recording.seconds`
 / `recording.bytes` and replay `duration_seconds` in status responses
 reflect the trimmed length. The trim is chunk-based (whole buffer chunks
 removed from the tail, with the final partial chunk truncated to its exact
 byte boundary) so it is byte-exact, not merely chunk-granular.
 
-### Onset-gated recording and the inter-loop gap
+Two different cuts can produce this trim, depending on whether the tail
+offset gate (below) has a valid marker for the session:
 
-Two further refinements on top of the tail trim above, separating the
+- **Marker-based cut (the normal case, once onset has confirmed).** The
+  buffer is cut back to the tail offset gate's last-sustained-run-end
+  position plus a 1.0 s pad. This is what excludes lead-out crackle and a
+  tonearm clunk from the recording -- see "Onset-gated recording and the
+  tail offset gate" below.
+- **Silence-timeout fallback cut (no valid marker).** Removes whatever
+  amount of trailing below-threshold audio was actually measured for that
+  session (not a fixed `silence_seconds`-sized cut), minus the same 1.0 s
+  pad. In practice this only applies when onset never confirmed, in which
+  case the buffer is empty anyway (nothing was ever committed) and the trim
+  is a no-op either way.
+
+Both cuts use the same 1.0 s pad so the trim never bites into the last
+audible moment, whichever cut applies.
+
+### Onset-gated recording and the tail offset gate
+
+Further refinements on top of the tail trim above, separating the
 repeat-feature SESSION (still starts on the first above-threshold transient,
 pre-warming the streaming pipeline during spin-up) from what the RECORDER
-actually commits to the RAM buffer:
+actually commits to the RAM buffer, at both ends of the recording:
 
-- **Onset gate.** The recorder does not commit any audio to the buffer until
-  onset is confirmed: 2.5 s of continuous above-threshold signal, measured
-  against the same per-input silence threshold used elsewhere. A mechanical
-  start thump cannot sustain 2.5 s, so it is never committed; spin-up rumble
-  that sits below the threshold does not advance the count either. A single
-  below-threshold block anywhere in an otherwise-sustained run resets the
-  count to zero -- the window must be unbroken. A CD player (or any source
-  with no start transient) confirms onset the same way, roughly 2.5 s after
-  its first note.
+- **Onset gate (head).** The recorder does not commit any audio to the
+  buffer until onset is confirmed: 2.5 s of continuous above-threshold
+  signal, measured against the same per-input silence threshold used
+  elsewhere. A mechanical start thump cannot sustain 2.5 s, so it is never
+  committed; spin-up rumble that sits below the threshold does not advance
+  the count either. A single below-threshold block anywhere in an otherwise-
+  sustained run resets the count to zero -- the window must be unbroken. A
+  CD player (or any source with no start transient) confirms onset the same
+  way, roughly 2.5 s after its first note.
 - **Pre-roll ring.** While onset is unconfirmed, raw audio is held in a
   rolling ~5 s ring instead of being discarded outright. Once onset confirms,
   the ring's contents are spliced into the buffer (in original order) ahead
@@ -398,9 +413,25 @@ actually commits to the RAM buffer:
   A session that ends before onset ever confirms (a thump with no following
   music) commits nothing at all: the buffer stays empty and there is nothing
   to replay.
+- **Tail offset gate (tail).** The onset gate protects the head only; left
+  alone, the silence-timeout tail trim keeps everything up to and including
+  any lead-out transient (run-out crackle, a tonearm clunk) since each one
+  is itself above-threshold and resets the trim's own trailing-silence
+  count. The tail offset gate tracks, as audio is committed to the buffer,
+  the position at the end of the most recent sustained (>= 2.5 s
+  continuous above-threshold, the same window and reset rule as the onset
+  gate) run. At session close this position -- plus the same 1.0 s pad used
+  by the tail trim -- replaces the measured-trailing-silence cut (see
+  "Silence-timeout tail trim" above), so a run-out pop or clunk that cannot
+  itself sustain 2.5 s is excluded from the recording, whatever the input's
+  own moment-to-moment silence test made of it. The mark only exists once a
+  sustained run has actually been committed, which in practice means onset
+  has confirmed; a session that never reaches onset falls back to the
+  silence-timeout cut, which trims nothing from the (already empty) buffer
+  either way.
 - **Inter-loop gap.** Since a repeat recording no longer contains its own
-  start transient (onset gate) or its own trailing silence (tail trim,
-  above), consecutive replay loops would otherwise wrap directly from the
+  start transient (onset gate) or its own trailing run-out (tail offset
+  gate), consecutive replay loops would otherwise wrap directly from the
   last note back into the first with no separation. Each loop wrap inserts a
   fixed 1.5 s silence gap before resuming from the start. The gap is not
   recorded content: `replay.position_seconds` holds steady at the

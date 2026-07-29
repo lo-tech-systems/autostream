@@ -6,11 +6,17 @@
 // Unit tests for the header-only, pure repeat-feature core:
 // autostream_repeat_buffer.h (RepeatBuffer/Reader, codec ladder,
 // max_recording_seconds, /proc/meminfo parse, silence-trim accounting,
-// onset-gated recording's OnsetGate/PreRollRing).
+// onset-gated recording's SustainTracker/OnsetGate/PreRollRing, and the tail
+// offset gate's TailMarker).
 //
 // Test IDs correspond to the repeat feature's unit-test numbering (U1-U9,
-// U12-U16). U15/U16 plus the unnumbered onset-gated-recording composition
-// test cover onset-gated recording (OnsetGate + PreRollRing + splice).
+// U12-U17). U15/U16/U17 plus the two unnumbered composition tests cover
+// onset-gated recording (OnsetGate + PreRollRing + splice) and the tail
+// offset gate (TailMarker + the marker-vs-fallback close-time cut) end to
+// end. SustainTracker itself has no dedicated unit test -- U15's OnsetGate
+// vectors exercise its run-accumulation core directly (OnsetGate is now a
+// thin latch-once wrapper around it), and U17/the tail composition test
+// exercise its is_sustained()/reset semantics via TailMarker.
 // No ALSA / libsamplerate / link deps — this is a pure C++17 standard-library
 // test, buildable with a bare g++.
 //
@@ -936,6 +942,103 @@ static void test_u16_preroll_ring()
 }
 
 // ---------------------------------------------------------------------------
+// U17 — TailMarker (last-sustained-run-end position bookkeeping)
+// ---------------------------------------------------------------------------
+
+static void test_u17_tail_marker()
+{
+    // Fresh marker has no mark; below-threshold blocks alone never create one.
+    {
+        TailMarker marker;
+        CHECK(!marker.has_mark(), "U17: fresh marker has no mark");
+        marker.on_block_committed(false, 1.0, 1000);
+        marker.on_block_committed(false, 1.0, 2000);
+        CHECK(!marker.has_mark(), "U17: below-threshold blocks alone never create a mark");
+    }
+
+    // A run short of kSustainSeconds does not create a mark yet; the block
+    // that pushes it to exactly kSustainSeconds does, at THAT block's
+    // committed position.
+    {
+        TailMarker marker;
+        marker.on_block_committed(true, 1.0, 1000);
+        CHECK(!marker.has_mark(), "U17: 1.0 s of 2.5 s -> no mark yet");
+        marker.on_block_committed(true, 1.4, 2400);
+        CHECK(!marker.has_mark(), "U17: 2.4 s of 2.5 s -> still no mark");
+        marker.on_block_committed(true, 0.1, 2500);
+        CHECK(marker.has_mark(), "U17: block reaching exactly 2.5 s creates the mark");
+        CHECK(marker.mark_bytes() == 2500, "U17: mark lands at that block's committed position");
+    }
+
+    // Once sustained, the mark keeps advancing to each further committed
+    // position while the run continues.
+    {
+        TailMarker marker;
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        CHECK(marker.has_mark() && marker.mark_bytes() == 5000, "U17: sanity -- sustained at 5000");
+        marker.on_block_committed(true, 1.0, 6000);
+        CHECK(marker.mark_bytes() == 6000, "U17: mark advances with the still-sustained run");
+        marker.on_block_committed(true, 1.0, 7000);
+        CHECK(marker.mark_bytes() == 7000, "U17: mark keeps advancing block after block");
+    }
+
+    // A below-threshold block freezes the mark exactly where it was -- it
+    // does not move backward, forward, or clear has_mark().
+    {
+        TailMarker marker;
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        marker.on_block_committed(true, 1.0, 6000);
+        marker.on_block_committed(false, 1.0, 6500);
+        CHECK(marker.has_mark(), "U17: has_mark() survives a below-threshold block");
+        CHECK(marker.mark_bytes() == 6000, "U17: mark frozen at the last sustained position");
+
+        // Further below-threshold blocks (isolated pop/clunk region) do not
+        // move it either, regardless of how many follow.
+        marker.on_block_committed(false, 1.0, 7500);
+        marker.on_block_committed(false, 1.0, 8500);
+        CHECK(marker.mark_bytes() == 6000, "U17: stays frozen across further quiet blocks");
+    }
+
+    // A transient (above-threshold burst well short of kSustainSeconds,
+    // surrounded by below-threshold blocks) never advances a frozen mark --
+    // the pop/clunk case.
+    {
+        TailMarker marker;
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        marker.on_block_committed(false, 1.0, 5500);   // freeze at 5000
+        marker.on_block_committed(true, 0.2, 5700);    // pop: far short of 2.5 s
+        marker.on_block_committed(false, 1.0, 6700);   // resets the run again
+        CHECK(marker.mark_bytes() == 5000, "U17: an isolated transient never advances the mark");
+        CHECK(marker.has_mark(), "U17: has_mark() still true (frozen, not cleared)");
+    }
+
+    // A later run that itself reaches kSustainSeconds again re-arms the
+    // mark and jumps it forward to the new run's position -- the mark
+    // tracks the MOST RECENT sustained run, not just the first one.
+    {
+        TailMarker marker;
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        marker.on_block_committed(false, 1.0, 5500);   // freeze at 5000 (track gap)
+        marker.on_block_committed(true, 1.5, 6500);    // second track starts, not yet 2.5 s
+        CHECK(marker.mark_bytes() == 5000, "U17: still frozen mid-way through the second run");
+        marker.on_block_committed(true, 1.0, 7000);    // 1.5 + 1.0 == 2.5 s: sustains again
+        CHECK(marker.mark_bytes() == 7000, "U17: mark jumps forward once the new run itself sustains");
+    }
+
+    // reset() clears both has_mark() and the internal run accumulator (a
+    // fresh session reuse must not inherit a stale mark or a partial run).
+    {
+        TailMarker marker;
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        CHECK(marker.has_mark(), "U17: sanity -- has a mark before reset()");
+        marker.reset();
+        CHECK(!marker.has_mark(), "U17: reset() clears has_mark()");
+        marker.on_block_committed(true, 1.0, 1000);
+        CHECK(!marker.has_mark(), "U17: reset() cleared the run accumulator too (not still sustained)");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Onset-gated recording, composed end-to-end — OnsetGate + PreRollRing +
 // RepeatBuffer + SilenceTrimAccountant wired together the same way
 // RepeatController::process_recorder_samples() (autostream_repeat.cpp) uses
@@ -1011,6 +1114,51 @@ void feed_block(OnsetGate& onset, PreRollRing& ring, RepeatBuffer& buf,
     auto encoded = fake_encode(frames, tag);
     buf.append(encoded.data(), encoded.size());
     trim.on_block_appended(above_threshold, encoded.size());
+}
+
+// Same composition as feed_block() above, plus TailMarker wired in exactly
+// as RepeatController::encode_and_append_locked() drives it: fed once per
+// block actually committed to the buffer (both via the ring-drain splice and
+// the steady-state direct write), with the buffer's post-append total_bytes()
+// as the committed position. Used by the tail-offset-gate end-to-end tests
+// below, which need the full head-to-tail pipeline (onset confirmation still
+// gates what reaches the buffer at all) rather than TailMarker in isolation.
+void feed_block_full(OnsetGate& onset, PreRollRing& ring, RepeatBuffer& buf,
+                      SilenceTrimAccountant& trim, TailMarker& tail_marker,
+                      int frames, bool above_threshold, uint8_t tag, double sample_rate_hz)
+{
+    double block_seconds = static_cast<double>(frames) / sample_rate_hz;
+    bool block_in_ring = false;
+
+    if (!onset.is_confirmed())
+    {
+        std::vector<float> raw(static_cast<size_t>(frames) * 2u, static_cast<float>(tag));
+        ring.push(raw.data(), frames, above_threshold);
+        block_in_ring = true;
+        onset.on_block(above_threshold, block_seconds);
+        if (!onset.is_confirmed())
+            return;
+    }
+
+    PreRollRing::Block blk;
+    while (ring.pop_front(blk))
+    {
+        int blk_frames = static_cast<int>(blk.samples.size() / 2u);
+        uint8_t blk_tag = static_cast<uint8_t>(blk.samples[0]);
+        double blk_seconds = static_cast<double>(blk_frames) / sample_rate_hz;
+        auto encoded = fake_encode(blk_frames, blk_tag);
+        buf.append(encoded.data(), encoded.size());
+        trim.on_block_appended(blk.above_threshold, encoded.size());
+        tail_marker.on_block_committed(blk.above_threshold, blk_seconds, buf.total_bytes());
+    }
+
+    if (block_in_ring)
+        return;
+
+    auto encoded = fake_encode(frames, tag);
+    buf.append(encoded.data(), encoded.size());
+    trim.on_block_appended(above_threshold, encoded.size());
+    tail_marker.on_block_committed(above_threshold, block_seconds, buf.total_bytes());
 }
 
 }   // namespace
@@ -1142,6 +1290,208 @@ static void test_onset_gated_recording_end_to_end()
 }
 
 // ---------------------------------------------------------------------------
+// Tail offset gate, composed end-to-end — OnsetGate + PreRollRing +
+// RepeatBuffer + SilenceTrimAccountant + TailMarker wired together the same
+// way RepeatController::notify_capture_stopped() (autostream_repeat.cpp)
+// uses them at session close: the marker-based cut (last-sustained-run-end
+// + pad) replaces the measured-trailing-silence cut whenever a mark exists;
+// the silence-based cut remains the fallback when it does not (onset never
+// confirmed). Mirrors the "tail trim end-to-end" / "onset-gated recording,
+// composed end-to-end" tests above, one level further down the pipeline.
+// ---------------------------------------------------------------------------
+
+// Mirrors notify_capture_stopped()'s tail-cut branch exactly: marker-based
+// when the marker has a mark, the silence-timeout fallback otherwise.
+static size_t compute_tail_offset_trim(const TailMarker& tail_marker,
+                                        const SilenceTrimAccountant& trim,
+                                        size_t total_bytes, size_t pad_bytes,
+                                        size_t frame_bytes)
+{
+    if (tail_marker.has_mark())
+    {
+        size_t bytes_past_mark = (total_bytes > tail_marker.mark_bytes())
+            ? (total_bytes - tail_marker.mark_bytes()) : 0;
+        return SilenceTrimAccountant::compute_trim_bytes(bytes_past_mark, pad_bytes,
+                                                           frame_bytes, total_bytes);
+    }
+    return SilenceTrimAccountant::compute_trim_bytes(trim.bytes_since_last_loud(), pad_bytes,
+                                                       frame_bytes, total_bytes);
+}
+
+static void test_tail_offset_gate_end_to_end()
+{
+    const double kRate = 48000.0;
+    const int    kBlockFrames = static_cast<int>(kRate / 10.0);        // 100 ms blocks
+    const size_t kBlockBytes  = static_cast<size_t>(kBlockFrames) * 2u; // fake encoder: 2 bytes/frame
+    const size_t kFrameBytes  = 2u;
+    const size_t kPadBytes    = 10u * kBlockBytes;                     // 1.0 s pad
+
+    const uint8_t kTagMusic2 = 0xAA;
+    const uint8_t kTagQuiet2 = 0x22;
+    const uint8_t kTagPop    = 0x33;
+    const uint8_t kTagClunk  = 0x44;
+    const uint8_t kTagFade   = 0x55;
+
+    // music -> run-out crackle (isolated pops) -> tonearm clunk -> trailing
+    // silence -> close: the buffer must end ~1 s (the pad) after the last
+    // sustained music, with the pops and clunk excluded from the committed
+    // tail entirely -- the behavioural outcome the whole feature exists for.
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+        RepeatBuffer buf(1u << 20);
+        SilenceTrimAccountant trim;
+        TailMarker tail_marker;
+
+        // 3 s of continuous sustained music (CD-style immediate onset, no
+        // thump): onset confirms at 2.5 s in, and the tail marker -- driven
+        // by the same committed stream -- reaches its own first mark at
+        // that same point, then keeps advancing through the rest of the
+        // music.
+        const int kMusicBlocks = 30;
+        for (int i = 0; i < kMusicBlocks; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagMusic2, kRate);
+        CHECK(onset.is_confirmed(), "tail gate e2e: onset confirms on the sustained music");
+        CHECK(tail_marker.has_mark(), "tail gate e2e: tail marker has a mark once music has committed");
+        CHECK(tail_marker.mark_bytes() == static_cast<size_t>(kMusicBlocks) * kBlockBytes,
+              "tail gate e2e: mark sits at the end of the uninterrupted music run");
+
+        // 2.5 s of true silence right after the last note -- comfortably
+        // longer than the 1.0 s pad, so the pad below lands entirely inside
+        // this silence, nowhere near the crackle that follows.
+        for (int i = 0; i < 25; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, false, kTagQuiet2, kRate);
+        CHECK(tail_marker.mark_bytes() == static_cast<size_t>(kMusicBlocks) * kBlockBytes,
+              "tail gate e2e: mark still frozen at end-of-music after the silence");
+
+        // Run-out crackle: three isolated single-block pops (100 ms each,
+        // far short of the 2.5 s sustain window), each separated by more
+        // silence -- none of them can ever re-sustain the run.
+        for (int pop = 0; pop < 3; ++pop)
+        {
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagPop, kRate);
+            for (int i = 0; i < 5; ++i)
+                feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, false, kTagQuiet2, kRate);
+        }
+
+        // Tonearm clunk: a slightly longer transient (200 ms), still far
+        // short of 2.5 s.
+        for (int i = 0; i < 2; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagClunk, kRate);
+
+        // Trailing silence until the session's silence timeout closes it.
+        for (int i = 0; i < 10; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, false, kTagQuiet2, kRate);
+
+        CHECK(tail_marker.mark_bytes() == static_cast<size_t>(kMusicBlocks) * kBlockBytes,
+              "tail gate e2e: crackle and clunk never moved the mark off end-of-music");
+
+        size_t trim_bytes = compute_tail_offset_trim(tail_marker, trim, buf.total_bytes(),
+                                                       kPadBytes, kFrameBytes);
+        buf.truncate_tail(trim_bytes);
+
+        CHECK(buf.total_bytes() == static_cast<size_t>(kMusicBlocks) * kBlockBytes + kPadBytes,
+              "tail gate e2e: buffer ends at exactly last-sustained-music-end + the 1.0 s pad");
+        CHECK(count_tag_bytes(buf, kTagMusic2) == static_cast<size_t>(kMusicBlocks) * kBlockBytes,
+              "tail gate e2e: every music block survives, untouched");
+        CHECK(count_tag_bytes(buf, kTagPop) == 0, "tail gate e2e: the run-out pops are excluded entirely");
+        CHECK(count_tag_bytes(buf, kTagClunk) == 0, "tail gate e2e: the tonearm clunk is excluded entirely");
+    }
+
+    // Fade-out tail preserved within the pad: music sustains, then fades
+    // below the threshold for less than the pad's own duration before true
+    // silence resumes -- the whole fade tail must survive the cut, since it
+    // falls entirely inside the pad window right after the mark.
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+        RepeatBuffer buf(1u << 20);
+        SilenceTrimAccountant trim;
+        TailMarker tail_marker;
+
+        const int kMusicBlocks = 30;
+        for (int i = 0; i < kMusicBlocks; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagMusic2, kRate);
+
+        // 0.5 s fade tail (below threshold, but musically real content) --
+        // well inside the 1.0 s pad.
+        const int kFadeBlocks = 5;
+        for (int i = 0; i < kFadeBlocks; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, false, kTagFade, kRate);
+
+        // True silence for well beyond the pad, until close.
+        for (int i = 0; i < 20; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, false, kTagQuiet2, kRate);
+
+        size_t trim_bytes = compute_tail_offset_trim(tail_marker, trim, buf.total_bytes(),
+                                                       kPadBytes, kFrameBytes);
+        buf.truncate_tail(trim_bytes);
+
+        CHECK(count_tag_bytes(buf, kTagFade) == static_cast<size_t>(kFadeBlocks) * kBlockBytes,
+              "tail gate e2e (fade): the entire fade tail survives the cut, inside the pad");
+        CHECK(buf.total_bytes() == static_cast<size_t>(kMusicBlocks) * kBlockBytes + kPadBytes,
+              "tail gate e2e (fade): buffer still ends at exactly mark + pad");
+    }
+
+    // Signal never drops during the session (a CD stopping abruptly
+    // mid-music, straight into silence, with no dip in between): the mark
+    // tracks all the way to the very last committed music byte, so the cut
+    // removes only the trailing silence beyond the pad -- no music is ever
+    // lost, and if the session closes with no silence beyond the pad at all
+    // nothing is trimmed.
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+        RepeatBuffer buf(1u << 20);
+        SilenceTrimAccountant trim;
+        TailMarker tail_marker;
+
+        const int kMusicBlocks = 30;
+        for (int i = 0; i < kMusicBlocks; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagMusic2, kRate);
+
+        CHECK(tail_marker.mark_bytes() == static_cast<size_t>(kMusicBlocks) * kBlockBytes,
+              "tail gate e2e (abrupt stop): mark reaches the very last committed music byte");
+
+        size_t trim_bytes = compute_tail_offset_trim(tail_marker, trim, buf.total_bytes(),
+                                                       kPadBytes, kFrameBytes);
+        CHECK(trim_bytes == 0,
+              "tail gate e2e (abrupt stop): nothing to trim when the session ends without trailing silence");
+        buf.truncate_tail(trim_bytes);
+        CHECK(count_tag_bytes(buf, kTagMusic2) == static_cast<size_t>(kMusicBlocks) * kBlockBytes,
+              "tail gate e2e (abrupt stop): every music byte is preserved");
+    }
+
+    // Onset never confirms (thump-only session): the buffer stays empty by
+    // construction, so the tail marker never has a mark and the fallback
+    // (silence-based) cut path is exercised -- but there is nothing to trim
+    // either way, since nothing was ever committed.
+    {
+        OnsetGate onset;
+        PreRollRing ring;
+        ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+        RepeatBuffer buf(1u << 20);
+        SilenceTrimAccountant trim;
+        TailMarker tail_marker;
+
+        feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagPop, kRate);
+        for (int i = 0; i < 20; ++i)
+            feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, false, kTagQuiet2, kRate);
+
+        CHECK(!onset.is_confirmed(), "tail gate e2e (never confirms): onset never confirms");
+        CHECK(!tail_marker.has_mark(), "tail gate e2e (never confirms): tail marker never gets a mark");
+        CHECK(buf.total_bytes() == 0, "tail gate e2e (never confirms): buffer stays empty");
+
+        size_t trim_bytes = compute_tail_offset_trim(tail_marker, trim, buf.total_bytes(),
+                                                       kPadBytes, kFrameBytes);
+        CHECK(trim_bytes == 0, "tail gate e2e (never confirms): fallback cut trims nothing from an empty buffer");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1162,7 +1512,9 @@ int main()
     test_u13_total_bytes_invariant();
     test_u15_onset_gate();
     test_u16_preroll_ring();
+    test_u17_tail_marker();
     test_onset_gated_recording_end_to_end();
+    test_tail_offset_gate_end_to_end();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
