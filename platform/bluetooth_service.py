@@ -794,6 +794,11 @@ class BluetoothService:
         """
         status = self.state_machine.get_status()
         status["pump_source_active"] = self.pump.is_streaming() if self.pump is not None else False
+        # Additive: whether the pump currently holds a verified open on the
+        # loopback playback end. The monitor-side coordinator gates its own
+        # capture open on this, so the shared cable always carries the
+        # pump's rate/format by the time the capture side negotiates.
+        status["loopback_held"] = self.pump.holds_loopback() if self.pump is not None else False
         status["adapter_blocked"] = self._adapter_blocked
         status["version"] = BLUETOOTH_SERVICE_VERSION
         if self._last_transport_active:

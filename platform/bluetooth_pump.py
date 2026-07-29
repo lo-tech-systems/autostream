@@ -69,6 +69,19 @@ MAX_BUFFER_MS = 500
 # read/write pointer.
 PLAYBACK_RING_HEADROOM_PERIODS = 4
 
+# Retry pacing for a loopback playback open refused over a parameter
+# mismatch (see _open_playback): the shared snd-aloop cable takes its
+# rate/format from whichever end opened first, so if the capture side is
+# currently holding it at parameters other than the pump's, reopening is
+# pointless until that side releases/reopens. Retrying on this pace keeps
+# the pump responsive to the cable freeing up without busy-spinning.
+PLAYBACK_PIN_RETRY_SECONDS = 2.0
+
+# ALSA rate negotiation can report a timer-derived neighbour of the real
+# rate (e.g. 47999 for a 48000 cable); treat rates within this distance as
+# equal when verifying granted parameters.
+RATE_MATCH_TOLERANCE_HZ = 2
+
 
 def compute_prefill_periods(buffer_ms: int, rate: int, period_frames: int) -> int:
     """Whole ALSA periods needed to cover *buffer_ms* at *rate*, rounded up.
@@ -136,6 +149,12 @@ class LoopbackPump:
         self._playback_pcm = None
         self._capture_pcm = None
         self._last_stall_log = 0.0
+        # Parameter-mismatch retry state: monotonic time before which
+        # _write_playback() must not attempt another open after a refused
+        # one (see PLAYBACK_PIN_RETRY_SECONDS), and a separate log throttle
+        # so the mismatch warning stays visible without spamming.
+        self._playback_retry_at = 0.0
+        self._last_pin_log = 0.0
 
     # ---- control surface (called from bluetooth_service on bluez callbacks) ----
 
@@ -168,6 +187,15 @@ class LoopbackPump:
         streaming; callers should gate on ``is_streaming()``."""
         with self._lock:
             return self._playback_rate
+
+    def holds_loopback(self) -> bool:
+        """True while the pump holds a verified open on the loopback
+        playback end (thread-safe) -- i.e. the shared cable currently
+        carries the pump's rate/format, so a capture-side open will
+        negotiate to matching parameters. False during startup, and while
+        a parameter mismatch has the pump paused/retrying."""
+        with self._lock:
+            return self._playback_pcm is not None
 
     def has_active_source(self) -> bool:
         """True once a capture device has been *set* (``set_active_source``),
@@ -224,7 +252,70 @@ class LoopbackPump:
             return periods
         return None
 
+    def _verify_playback_params(self, pcm, granted_rate, granted_format, alsaaudio):
+        """Compare what the device actually granted against what was
+        requested. Ground truth is ``pcm.info()`` where available (same
+        graceful-degradation contract as _query_negotiated_periods()); the
+        ``setrate()``/``setformat()`` return values are the fallback for
+        pyalsaaudio builds whose ``info()`` lacks rate/format fields. When
+        neither source can prove a mismatch, the open is trusted.
+
+        Returns a human-readable mismatch description, or None when the
+        parameters match. This matters specifically on the shared snd-aloop
+        cable: rate and format there are pinned by whichever end opened
+        first, and ALSA grants the pinned values rather than failing the
+        open -- S16-framed writes into a cable pinned at another rate or a
+        wider format come out the capture side as noise, so a mismatched
+        open must never be written to.
+        """
+        actual_rate: Optional[int] = None
+        format_matches: Optional[bool] = None
+
+        info = None
+        try:
+            info = pcm.info()
+        except Exception:
+            pass
+        if isinstance(info, dict):
+            r = info.get("rate")
+            if isinstance(r, int) and not isinstance(r, bool) and r > 0:
+                actual_rate = r
+            fname = info.get("format_name")
+            if isinstance(fname, str) and fname:
+                format_matches = fname == "S16_LE"
+
+        if actual_rate is None and isinstance(granted_rate, int) \
+                and not isinstance(granted_rate, bool) and granted_rate > 0:
+            actual_rate = granted_rate
+        if format_matches is None and granted_format is not None:
+            format_matches = granted_format == alsaaudio.PCM_FORMAT_S16_LE
+
+        problems = []
+        if actual_rate is not None and abs(actual_rate - self._rate) > RATE_MATCH_TOLERANCE_HZ:
+            problems.append(f"rate {actual_rate} Hz (wanted {self._rate} Hz)")
+        if format_matches is False:
+            problems.append("format not S16_LE")
+        return "; ".join(problems) if problems else None
+
+    def _log_pin(self, msg: str, *args) -> None:
+        now = time.monotonic()
+        if now - self._last_pin_log >= STALL_LOG_THROTTLE_SECONDS:
+            logger.warning(msg, *args)
+            self._last_pin_log = now
+
     def _open_playback(self, alsaaudio):
+        """Open, verify, and prefill the loopback playback PCM.
+
+        Returns the open PCM, or None when the device would not grant the
+        requested rate/format (the shared cable is currently pinned by its
+        other end at incompatible parameters). None means "do not write":
+        the caller-visible pump state is 'not holding the loopback', and
+        _write_playback() retries on PLAYBACK_PIN_RETRY_SECONDS pacing until
+        the cable frees up. This is the one deliberate exception to the
+        never-close-DEV=0 rule -- writing through a mismatched open would
+        deliver noise to the capture side, which is strictly worse than the
+        capture clock pausing until parameters agree.
+        """
         with self._lock:
             buffer_ms = self._buffer_ms
         prefill_periods = compute_prefill_periods(buffer_ms, self._rate, self._period_frames)
@@ -234,10 +325,31 @@ class LoopbackPump:
             alsaaudio.PCM_PLAYBACK, alsaaudio.PCM_NORMAL,
             device=self._playback_device, periods=requested_periods,
         )
-        pcm.setchannels(self._channels)
-        pcm.setrate(self._rate)
-        pcm.setformat(alsaaudio.PCM_FORMAT_S16_LE)
-        pcm.setperiodsize(self._period_frames)
+        try:
+            # Channel count is not verified: both loopback substream ends
+            # are stereo by construction (the monitor's capture open is
+            # hardcoded to 2 channels), so a channel pin cannot differ.
+            pcm.setchannels(self._channels)
+            granted_rate = pcm.setrate(self._rate)
+            granted_format = pcm.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+            pcm.setperiodsize(self._period_frames)
+            mismatch = self._verify_playback_params(pcm, granted_rate, granted_format, alsaaudio)
+        except Exception as e:
+            mismatch = f"parameter negotiation failed ({e})"
+
+        if mismatch:
+            self._log_pin(
+                "bluetooth pump: loopback playback open refused -- %s on '%s'; "
+                "the loopback is held at incompatible parameters by its other "
+                "end; retrying every %.0fs (audio is paused, not garbled)",
+                mismatch, self._playback_device, PLAYBACK_PIN_RETRY_SECONDS,
+            )
+            try:
+                pcm.close()
+            except Exception:
+                pass
+            self._playback_retry_at = time.monotonic() + PLAYBACK_PIN_RETRY_SECONDS
+            return None
 
         # If the device negotiated a smaller ring than requested, clamp the
         # prefill to what actually fits rather than write into the read
@@ -271,7 +383,10 @@ class LoopbackPump:
         """Reopen the playback PCM after an unrecoverable write error
         (typically an EPIPE underrun).  The brief close/reopen stalls the
         loopback capture clock for a few ms — unavoidable, and far better
-        than the pump thread dying."""
+        than the pump thread dying.  The reopen may itself be refused on a
+        parameter mismatch (None), in which case the pump drops into the
+        paused/retrying state instead of holding a handle it must not
+        write to."""
         try:
             if self._playback_pcm is not None:
                 self._playback_pcm.close()
@@ -282,12 +397,26 @@ class LoopbackPump:
     def _write_playback(self, data: bytes) -> None:
         """Write to the loopback, recovering (reopen + prefill) on ALSA
         errors such as underrun EPIPE instead of letting the exception kill
-        the pump thread."""
+        the pump thread.
+
+        While no verified playback handle exists (open refused over a
+        parameter mismatch), this drops the period instead: a retry open is
+        attempted no more often than PLAYBACK_PIN_RETRY_SECONDS, and the
+        drop sleeps for roughly one period so the surrounding loop keeps
+        real-time pace without busy-spinning."""
+        if self._playback_pcm is None:
+            if time.monotonic() >= self._playback_retry_at:
+                self._playback_pcm = self._open_playback(self._alsaaudio)
+            if self._playback_pcm is None:
+                time.sleep(self._period_frames / float(self._rate or DEFAULT_RATE))
+                return
         try:
             self._playback_pcm.write(data)
         except Exception as e:
             self._log_stall("loopback playback write failed (%s); reopening", e)
             self._recover_playback()
+            if self._playback_pcm is None:
+                return
             try:
                 self._playback_pcm.write(data)
             except Exception:
@@ -348,7 +477,8 @@ class LoopbackPump:
             pass
         self._rate = rate
         self._playback_pcm = self._open_playback(self._alsaaudio)
-        self._playback_rate = rate
+        if self._playback_pcm is not None:
+            self._playback_rate = rate
 
     def _close_capture(self) -> None:
         if self._capture_pcm is not None:

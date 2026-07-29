@@ -42,6 +42,7 @@ from autostream_config import (
 )
 from autostream_artwork import ArtworkFileCache
 from autostream_bluetooth_client import (
+    BluetoothClient,
     bluetooth_capture_label,
     bluetooth_installed,
     classify_loopback_hw,
@@ -3418,6 +3419,55 @@ def _resync_monitor_daemon(
     return True
 
 
+# How long the coordinator will wait for the Bluetooth pump to hold the
+# loopback before starting a monitor input on that device, and the poll
+# interval while waiting. The pump normally holds the loopback within a
+# couple of seconds of the Bluetooth service starting; the ceiling only
+# matters when that service is broken, where starting the input anyway (at
+# whatever the unheld loopback negotiates) beats never starting it.
+BLUETOOTH_LOOPBACK_WAIT_SECONDS = 10.0
+BLUETOOTH_LOOPBACK_POLL_SECONDS = 0.5
+
+
+def _wait_for_bluetooth_loopback(capture_device: str) -> None:
+    """Hold off opening a monitor capture on the Bluetooth loopback until the
+    pump reports it holds the playback end.
+
+    The shared snd-aloop cable takes its rate/format from whichever end
+    opens first. The pump's end carries the source's real parameters, so the
+    monitor's capture open must come second — it then auto-negotiates to
+    match, exactly as it would against a hardware device with those native
+    parameters. Opening first would instead pin the cable at the monitor's
+    own negotiation ceiling and force the pump into its paused/retrying
+    state (no audio).
+
+    Best-effort by design: not the Bluetooth device, Bluetooth not
+    installed, or a status surface without the field all fall through
+    immediately; a pump that never reports readiness falls through after
+    BLUETOOTH_LOOPBACK_WAIT_SECONDS with a warning.
+    """
+    if classify_loopback_hw(capture_device) != "capture":
+        return
+    if not bluetooth_installed():
+        return
+
+    bt_client = BluetoothClient()
+    deadline = time.monotonic() + BLUETOOTH_LOOPBACK_WAIT_SECONDS
+    while time.monotonic() < deadline and not stop_flag.is_set():
+        status = bt_client.status()
+        if status is not None and "loopback_held" not in status:
+            return   # older bluetooth service without the field; nothing to wait on
+        if status is not None and status.get("loopback_held"):
+            return
+        if stop_flag.wait(BLUETOOTH_LOOPBACK_POLL_SECONDS):
+            return   # shutting down; the caller's own stop_flag checks take over
+    logging.warning(
+        "Bluetooth pump did not report holding the loopback within %.0fs; "
+        "starting input on %r anyway.",
+        BLUETOOTH_LOOPBACK_WAIT_SECONDS, capture_device,
+    )
+
+
 def _configure_startup_monitors(
     client: MonitorClient,
     cfg,
@@ -3450,6 +3500,7 @@ def _configure_startup_monitors(
         )
         return None
 
+    _wait_for_bluetooth_loopback(cfg.audio1.capture_device)
     if not client.start_input(1):
         logging.warning("start_input(1) failed during startup; will retry.")
         return None
@@ -3508,6 +3559,8 @@ def _configure_startup_monitors(
             )
             audio2_ok = False
 
+        if audio2_ok:
+            _wait_for_bluetooth_loopback(cfg.audio2.capture_device)
         if audio2_ok and not client.start_input(2):
             logging.error("start_input(2) failed; skipping second input.")
             audio2_ok = False

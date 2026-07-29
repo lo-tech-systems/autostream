@@ -1249,11 +1249,63 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         send_log_level_put_json(self, STATE, json_obj, "user")
 
 
+def _bluetooth_input_configured(state) -> bool:
+    """True when either monitor input is configured on the Bluetooth
+    loopback's capture side."""
+    from autostream_bluetooth_client import classify_loopback_hw
+    from autostream_webui_common import _config_snapshot
+    try:
+        cfg = _config_snapshot(state)
+    except Exception:
+        return False
+    return any(
+        classify_loopback_hw(dev) == "capture"
+        for dev in (cfg.audio1.capture_device, cfg.audio2.capture_device)
+        if dev
+    )
+
+
+def _rate_follow_check(state, bluetooth_status: Optional[dict],
+                       last_cable_rate: Optional[int]) -> Optional[int]:
+    """One rate-follow step: returns the updated last-seen cable rate.
+
+    The loopback cable's rate follows the Bluetooth transport, and the
+    monitor's capture side can only renegotiate by being reopened -- so a
+    rate change while a Bluetooth input is configured triggers a
+    coordinator config reload, which bounces the inputs through the same
+    gated start-up path used at boot (the monitor reopens after the pump
+    already holds the cable at the new rate).
+
+    ``sample_rate`` is only present in the status while a transport is
+    active; polls without it (transport gaps, unreachable service) leave
+    the last-seen value untouched, so a plain reconnect at the same rate
+    never triggers a reload -- only an observed rate CHANGE does.
+    """
+    rate = (bluetooth_status or {}).get("sample_rate")
+    if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
+        return last_cable_rate
+    if (
+        last_cable_rate is not None
+        and rate != last_cable_rate
+        and _bluetooth_input_configured(state)
+    ):
+        from autostream_core import request_config_reload
+        logging.info(
+            "Bluetooth transport rate changed %d Hz -> %d Hz; "
+            "reloading monitor inputs to renegotiate the loopback.",
+            last_cable_rate, rate,
+        )
+        request_config_reload()
+    return rate
+
+
 def _scan_monitor_devices_loop() -> None:
     """Background loop: refresh visible ALSA capture devices (and, when
     the Bluetooth-input subsystem is installed, the autostream_bluetooth
-    daemon status) every 15 s.
+    daemon status) every 15 s. Each poll also runs the Bluetooth
+    rate-follow step (_rate_follow_check).
     """
+    last_cable_rate: Optional[int] = None
     while not stop_flag.is_set():
         bluetooth_status: Optional[dict] = None
         if bluetooth_installed():
@@ -1276,6 +1328,12 @@ def _scan_monitor_devices_loop() -> None:
         state = STATE
         if state is None:
             return
+
+        try:
+            last_cable_rate = _rate_follow_check(state, bluetooth_status, last_cable_rate)
+        except Exception:
+            logging.debug("bluetooth rate-follow check failed", exc_info=True)
+
         state.set_monitor_devices(devices)
         state.set_bluetooth_status(bluetooth_status)
         time.sleep(15)

@@ -866,6 +866,12 @@ class FakePump:
     def has_active_source(self) -> bool:
         return self.active_source is not None
 
+    def holds_loopback(self) -> bool:
+        # The fake never simulates a parameter-mismatch pause; the real
+        # pump reports False only during startup or while its loopback
+        # open is refused (see LoopbackPump.holds_loopback()).
+        return True
+
     def is_streaming(self) -> bool:
         return self.active_source is not None
 
@@ -1060,7 +1066,9 @@ class TestGetStatusWrapsPumpState:
         service, _ = _make_service(tmp_path)
         base_keys = set(service.state_machine.get_status().keys())
         wrapped = service._get_status()
-        assert set(wrapped.keys()) == base_keys | {"pump_source_active", "adapter_blocked", "version"}
+        assert set(wrapped.keys()) == base_keys | {
+            "pump_source_active", "loopback_held", "adapter_blocked", "version",
+        }
 
     def test_get_status_reports_service_version(self, tmp_path):
         service, _ = _make_service(tmp_path)

@@ -42,6 +42,14 @@ class FakePcm:
         self.periods_requested = periods
         self.negotiated_periods = periods
         self.info_supported = True
+        # Granted-parameter simulation: None means "honour the request
+        # silently" (the legacy pyalsaaudio contract the existing tests
+        # rely on); a value simulates a device whose negotiation granted
+        # something else -- e.g. a loopback cable pinned by its other end.
+        # granted_rate feeds both info()["rate"] and setrate()'s return;
+        # granted_format_name feeds info()["format_name"].
+        self.granted_rate = None
+        self.granted_format_name = None
         # read() queue: each item is either a (len, bytes) tuple or an
         # exception instance to raise.
         self._read_queue: list = []
@@ -49,13 +57,19 @@ class FakePcm:
     def info(self) -> dict:
         if not self.info_supported:
             raise AttributeError("info() not supported on this pyalsaaudio version")
-        return {"periods": self.negotiated_periods}
+        d = {"periods": self.negotiated_periods}
+        if self.granted_rate is not None:
+            d["rate"] = self.granted_rate
+        if self.granted_format_name is not None:
+            d["format_name"] = self.granted_format_name
+        return d
 
     def setchannels(self, n):
         self.channels = n
 
     def setrate(self, r):
         self.rate = r
+        return self.granted_rate
 
     def setformat(self, f):
         self.fmt = f
@@ -103,11 +117,19 @@ class FakeAlsaAudio:
     def __init__(self) -> None:
         self.opened: list[FakePcm] = []
         self.open_capture_should_fail: Exception | None = None
+        # Applied to every playback PCM this module hands out, simulating a
+        # loopback cable pinned at these parameters by its other end (see
+        # FakePcm.granted_rate / granted_format_name).
+        self.playback_grant_rate = None
+        self.playback_grant_format_name = None
 
     def PCM(self, kind, mode, device, periods=None):
         if kind == self.PCM_CAPTURE and self.open_capture_should_fail is not None:
             raise self.open_capture_should_fail
         pcm = FakePcm(kind, mode, device, periods=periods)
+        if kind == self.PCM_PLAYBACK:
+            pcm.granted_rate = self.playback_grant_rate
+            pcm.granted_format_name = self.playback_grant_format_name
         self.opened.append(pcm)
         return pcm
 
@@ -547,3 +569,130 @@ def _raise_once(pcm):
         return original(pcm, data)
 
     return _write
+
+
+class TestGrantedParamVerification:
+    """A loopback cable pinned by its other end grants different parameters
+    than requested; the pump must refuse the open (pause, no writes) rather
+    than write S16/44.1k-framed data through it."""
+
+    def _make_blocked_pump(self, **grants) -> tuple[pump_mod.LoopbackPump, FakeAlsaAudio]:
+        fake = FakeAlsaAudio()
+        for k, v in grants.items():
+            setattr(fake, k, v)
+        pump = pump_mod.LoopbackPump(
+            period_frames=4, rate=44100, buffer_ms=1, alsaaudio_module=fake,
+        )
+        pump._playback_pcm = pump._open_playback(fake)
+        return pump, fake
+
+    def test_rate_mismatch_refuses_open_and_closes_pcm(self):
+        pump, fake = self._make_blocked_pump(playback_grant_rate=48000)
+        assert pump._playback_pcm is None
+        assert not pump.holds_loopback()
+        refused = fake.opened[0]
+        assert refused.closed
+        assert refused.writes == []   # nothing written through a mismatched open
+
+    def test_format_mismatch_refuses_open(self):
+        pump, _ = self._make_blocked_pump(playback_grant_format_name="S32_LE")
+        assert pump._playback_pcm is None
+        assert not pump.holds_loopback()
+
+    def test_rate_within_tolerance_is_accepted(self):
+        # snd-aloop reports timer-derived neighbours (e.g. 44099 for 44100).
+        pump, _ = self._make_blocked_pump(playback_grant_rate=44099)
+        assert pump._playback_pcm is not None
+        assert pump.holds_loopback()
+
+    def test_exact_grant_is_accepted(self):
+        pump, _ = self._make_blocked_pump(
+            playback_grant_rate=44100, playback_grant_format_name="S16_LE",
+        )
+        assert pump._playback_pcm is not None
+        assert pump.holds_loopback()
+
+    def test_setter_return_used_when_info_lacks_rate(self):
+        # Older pyalsaaudio: info() has no rate field, but setrate() still
+        # returns the granted value -- the fallback must catch the mismatch.
+        fake = FakeAlsaAudio()
+        fake.playback_grant_rate = 48000
+        pump = pump_mod.LoopbackPump(
+            period_frames=4, rate=44100, buffer_ms=1, alsaaudio_module=fake,
+        )
+        original_pcm_factory = fake.PCM
+
+        def _pcm_no_info_rate(kind, mode, device, periods=None):
+            pcm = original_pcm_factory(kind, mode, device, periods=periods)
+            if kind == fake.PCM_PLAYBACK:
+                real_info = pcm.info
+
+                def _info_without_rate():
+                    d = real_info()
+                    d.pop("rate", None)
+                    d.pop("format_name", None)
+                    return d
+
+                pcm.info = _info_without_rate  # type: ignore[method-assign]
+            return pcm
+
+        fake.PCM = _pcm_no_info_rate  # type: ignore[method-assign]
+        pump._playback_pcm = pump._open_playback(fake)
+        assert pump._playback_pcm is None
+
+    def test_setformat_return_used_when_info_lacks_format(self):
+        # Older pyalsaaudio again, format flavour: info() has no
+        # format_name, but setformat() returns a granted format other than
+        # the S16_LE that was requested -- the fallback must refuse.
+        fake = FakeAlsaAudio()
+        pump = pump_mod.LoopbackPump(
+            period_frames=4, rate=44100, buffer_ms=1, alsaaudio_module=fake,
+        )
+        original_pcm_factory = fake.PCM
+
+        def _pcm_s32_granted(kind, mode, device, periods=None):
+            pcm = original_pcm_factory(kind, mode, device, periods=periods)
+            if kind == fake.PCM_PLAYBACK:
+                pcm.setformat = lambda f: "s32le"  # type: ignore[method-assign]
+            return pcm
+
+        fake.PCM = _pcm_s32_granted  # type: ignore[method-assign]
+        pump._playback_pcm = pump._open_playback(fake)
+        assert pump._playback_pcm is None
+        assert not pump.holds_loopback()
+
+    def test_zero_fill_drops_periods_while_blocked_without_dying(self):
+        pump, fake = self._make_blocked_pump(playback_grant_rate=48000)
+        pump._playback_retry_at = float("inf")   # keep the blocked state for this test
+        for _ in range(3):
+            pump._step()   # zero-fill path; must neither write nor raise
+        assert all(p.writes == [] for p in fake.opened if p.kind == "playback")
+
+    def test_reopen_succeeds_once_cable_frees_up(self):
+        pump, fake = self._make_blocked_pump(playback_grant_rate=48000)
+        assert not pump.holds_loopback()
+        # Cable freed: subsequent opens grant the requested parameters.
+        fake.playback_grant_rate = None
+        pump._playback_retry_at = 0.0   # retry pacing elapsed
+        pump._step()
+        assert pump.holds_loopback()
+        playback = fake.opened[-1]
+        assert len(playback.writes) > 0   # prefill + zero-fill resumed
+
+    def test_recover_after_write_error_can_enter_blocked_state(self):
+        # A healthy open followed by a write error whose recovery reopen is
+        # refused (cable re-pinned meanwhile) must leave the pump paused,
+        # not writing through a mismatched handle.
+        pump, fake = self._make_blocked_pump()   # healthy initial open
+        assert pump.holds_loopback()
+        fake.playback_grant_rate = 48000          # re-pin before recovery
+        first_playback = fake.opened[0]
+
+        def _always_raise(data):
+            raise RuntimeError("Broken pipe [hw:CARD=ASBT,DEV=0]")
+
+        first_playback.write = _always_raise  # type: ignore[method-assign]
+        pump._write_playback(b"\x01\x02\x03\x04")
+        assert not pump.holds_loopback()
+        refused = fake.opened[-1]
+        assert refused.closed and refused.writes == []
