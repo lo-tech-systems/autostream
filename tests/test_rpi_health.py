@@ -289,3 +289,54 @@ class TestCPULicenseCache:
 
         result = rpi.cpu_is_licensed(cpu_matcher=raising_matcher)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# classify_high_performance_pi() / is_high_performance_pi(): audio-path
+# hardware classification (§2.2)
+# ---------------------------------------------------------------------------
+
+class TestClassifyHighPerformancePi:
+    @pytest.mark.parametrize("model", [
+        "Raspberry Pi 4 Model B Rev 1.4",
+        "Raspberry Pi 400 Rev 1.0",
+        "Raspberry Pi Compute Module 4 Rev 1.0",
+        "Raspberry Pi 5 Model B Rev 1.0",
+        "Raspberry Pi 500 Rev 1.0",
+        "Raspberry Pi Compute Module 5 Rev 1.0",
+    ])
+    def test_high_performance_models_classify_true(self, model):
+        assert rpi.classify_high_performance_pi(model) is True
+
+    @pytest.mark.parametrize("model", [
+        "Raspberry Pi Zero 2 W Rev 1.0",
+        "Raspberry Pi 3 Model B Plus Rev 1.3",
+        "Raspberry Pi 3 Model B Rev 1.2",
+        "Raspberry Pi Zero W Rev 1.1",
+        "Raspberry Pi Model B Rev 2",
+        "unknown",
+        "",
+        "Some Unrecognised Board",
+    ])
+    def test_small_or_unknown_models_classify_false(self, model):
+        assert rpi.classify_high_performance_pi(model) is False
+
+    def test_case_insensitive(self):
+        assert rpi.classify_high_performance_pi("RASPBERRY PI 5 MODEL B") is True
+
+    def test_none_input_classifies_false(self):
+        assert rpi.classify_high_performance_pi(None) is False
+
+
+class TestIsHighPerformancePi:
+    def test_reads_model_via_get_raspberry_pi_model(self):
+        with patch.object(rpi, "get_raspberry_pi_model", return_value="Raspberry Pi 5 Model B"):
+            assert rpi.is_high_performance_pi() is True
+
+    def test_false_when_model_unreadable(self):
+        with patch.object(rpi, "get_raspberry_pi_model", return_value="unknown"):
+            assert rpi.is_high_performance_pi() is False
+
+    def test_false_on_zero_2w(self):
+        with patch.object(rpi, "get_raspberry_pi_model", return_value="Raspberry Pi Zero 2 W Rev 1.0"):
+            assert rpi.is_high_performance_pi() is False

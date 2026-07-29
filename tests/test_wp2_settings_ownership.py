@@ -447,6 +447,9 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_core.setup_logging"),
+            patch("autostream_core.is_high_performance_pi", return_value=False),
+            patch("autostream_core.push_resample_quality"),
+            patch("autostream_core.sync_monitor_args_for_audio_path"),
             patch("autostream_core.reconcile_fifo_with_backend") as rf,
             patch("autostream_core.reconcile_monitor_format") as monfmt,
             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt,
@@ -476,6 +479,7 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
             "http://localhost:3689",
             {"output_format": "native"},
             timeout=3.0,
+            audio_path="balanced",
         )
 
     def test_startup_monitor_format_reconcile_runs_before_pipe_format_reconcile(self, tmp_path):
@@ -491,4 +495,6 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
         monfmt, fmt, manager = self._run_to_first_startup_iteration(
             tmp_path, get_status_return=None,
         )
-        monfmt.assert_called_once_with("http://localhost:3689", None, timeout=3.0)
+        monfmt.assert_called_once_with(
+            "http://localhost:3689", None, timeout=3.0, audio_path="balanced",
+        )

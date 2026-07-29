@@ -114,7 +114,7 @@ The daemon listens on a Unix domain socket and speaks newline-delimited JSON.
 The daemon binary supports:
 
 ```text
-autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks] [--compatible]
+autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks] [--compatible] [--src LEVEL]
 ```
 
 - `--socket PATH`
@@ -137,6 +137,33 @@ autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks] [--compati
     repeat/replay path's pipe-format conversion -- so `--compatible` is a
     complete, byte-correct 44.1kHz/16-bit wire, safe to run against stock
     OwnTone or a pre-48k owntone-mini.
+- `--src LEVEL`
+  - sample-rate-converter quality for the main FIFO output path.
+    `LEVEL` is one of `fast`, `medium`, `best`, mapping to libsamplerate's
+    `SRC_SINC_FASTEST` / `SRC_SINC_MEDIUM_QUALITY` / `SRC_SINC_BEST_QUALITY`.
+  - default (this flag absent): auto-detected from `/proc/cpuinfo` CPU part
+    ids -- Cortex-A72/A76-class (Pi 4/5) -> `best`, everything else
+    (Cortex-A53-class, unknown, unreadable) -> `medium`. The auto-detect
+    default is `medium`, never `fast` -- `fast` is reachable only via an
+    explicit `--src fast`.
+  - an invalid `LEVEL` logs a warning and falls back to the same
+    auto-detect used when the flag is absent, rather than exiting -- the
+    appliance must not stay down over a bad env file. This differs from an
+    unrecognised *flag*, which still exits with usage.
+  - scope: only the main stereo FIFO-output converter. The internal
+    track-ID/fingerprint resampler always runs at `SRC_SINC_FASTEST`
+    regardless of this setting.
+  - the tier is fixed for the process's lifetime at converter-creation time
+    (libsamplerate has no API to re-type a converter after `src_new()`) --
+    there is no runtime/adaptive tier switching. A changed tier takes
+    effect the next time an input is (re)started, in practice a monitor
+    restart.
+  - startup logs the resolved tier and its provenance, e.g.
+    `[monitor] SRC quality: medium (auto: cortex-a53)` or
+    `[monitor] SRC quality: best (--src override)`. The resolved tier and
+    source are also reported at runtime in `get_status`'s `src_quality` /
+    `src_source` fields (see below) so the Python layer reads them instead
+    of assuming them.
 
 ## General Response Shape
 
@@ -1050,6 +1077,8 @@ Success response:
   "output_bits":32,
   "output_channels":2,
   "output_format":"native",
+  "src_quality":"medium",
+  "src_source":"auto",
   "output_clip_dbfs":0.0,
   "output_gain_db":0.0,
   "output_auto_trim_enabled":true,
@@ -1136,6 +1165,14 @@ Top-level fields:
 - `output_format`
   - `"native"` or `"compatible"` -- a readable label for the same choice the
     three numeric fields above encode
+- `src_quality`
+  - `"fast"`, `"medium"`, or `"best"` -- the sample-rate-converter tier the
+    main FIFO-output converter was created with (see `--src` under
+    Command-Line Options above). Fixed for the process's lifetime; a
+    changed tier only takes effect on the next monitor restart
+- `src_source`
+  - `"flag"` if `--src` selected the tier, `"auto"` if it came from the
+    CPU-part auto-detect fallback
 - `output_clip_dbfs`
   - maximum post-EQ, post-gain overshoot above 0 dBFS since the previous
     `get_status` call

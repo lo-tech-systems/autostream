@@ -329,3 +329,140 @@ class TestSetupPageLiveEnabled:
         html = handler.wfile.getvalue().decode("utf-8", errors="replace")
         assert "const liveEnabled = true;" in html
         assert "window.settingsSaveField" in html
+
+
+# ---------------------------------------------------------------------------
+# Audio Path card split
+# ---------------------------------------------------------------------------
+
+class TestPlaybackPanelCardSplit:
+    """The old single playback fieldset is now four cards inside
+    id="panel-playback": playback defaults, silence detection, repeat
+    playback, and audio processing (Audio Path dropdown). Existing element
+    ids/handlers must survive unchanged (see TestAudioControlsCardHtml etc.
+    elsewhere in this file for the ids this must not disturb)."""
+
+    def _playback_panel(self, html: str) -> str:
+        return html.split('id="panel-playback"', 1)[1].split('id="panel-track-id"', 1)[0]
+
+    def test_four_cards_render_in_playback_panel(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        # Four distinct settings_card_html() divs (identified by their
+        # unique static content) inside the playback panel.
+        assert 'id="owntone_output_select"' in panel
+        assert 'id="sil_val"' in panel
+        assert 'id="repeat_enabled"' in panel
+        assert 'id="general_audio_path"' in panel
+
+    def test_owntone_button_moved_below_cards(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        # The button must appear after the Audio Path select in document
+        # order (i.e. below all four cards, not embedded inside one).
+        button_idx = panel.index("More Owntone Settings")
+        audio_path_idx = panel.index('id="general_audio_path"')
+        assert button_idx > audio_path_idx
+
+    def test_audio_path_dropdown_offers_maximum_quality_on_high_perf(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
+        assert "Maximum Quality" in select_html
+        assert "Balanced" in select_html
+        assert "Fast" in select_html
+
+    def test_audio_path_dropdown_omits_maximum_quality_on_small_hardware(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=False):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
+        assert "Maximum Quality" not in select_html
+        assert "Balanced" in select_html
+        assert "Fast" in select_html
+
+    def test_audio_path_select_reflects_parsed_value(self, tmp_path):
+        # _SetupRenderer always (re)writes a fresh minimal config, so this
+        # test drives send_setup_page() directly against a config carrying
+        # an explicit audio_path instead.
+        from autostream_webui_page_setup import send_setup_page
+        from autostream_settings import SettingsStore
+        from autostream_webui_state import WebUIState
+        from autostream_players import ListOutputsResult
+
+        cfg = _minimal_cfg(tmp_path)
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+        data.setdefault("general", {})["audio_path"] = "fast"
+        cfg.write_text(json.dumps(data), encoding="utf-8")
+
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
+        state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
+
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        auth = MagicMock()
+        auth.ensure_session.return_value = "test-csrf"
+        auth.get_csrf_token.return_value = "test-csrf"
+        auth.get_boot_pin_value.return_value = "1234"
+
+        with patch.multiple(
+            "autostream_webui_page_setup",
+            get_system_hostname=MagicMock(return_value="autostream"),
+            list_outputs=MagicMock(return_value=ListOutputsResult(ok=False, error="unreachable")),
+            get_ap_ssid=MagicMock(return_value="autostream_AP"),
+            get_app_version=MagicMock(return_value="1.0.0"),
+            _get_dial_sightings=MagicMock(return_value=[]),
+            parse_dial_entries=MagicMock(return_value=[]),
+            suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
+            build_top_banner_html=MagicMock(return_value=("", "")),
+            _set_flash_cookie=MagicMock(),
+            is_high_performance_pi=MagicMock(return_value=True),
+        ):
+            with patch.object(state, "get_monitor_devices", return_value=[]):
+                send_setup_page(handler, state, auth, flash_msg="")
+
+        store.close(save=False)
+        html = handler.wfile.getvalue().decode("utf-8", errors="replace")
+        panel = self._playback_panel(html)
+        select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
+        fast_option = select_html.split('value="fast"', 1)[1].split(">", 1)[0]
+        assert "selected" in fast_option
+
+    def test_audio_path_onchange_wired_to_settings_save_field(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
+        assert "settingsSaveField('general.audio_path', this.value)" in select_html
+
+    def test_helptext_present(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        assert "Applies immediately" in panel
+        assert "playback stops and resumes automatically after a few seconds" in panel
+
+    def test_existing_playback_panel_ids_survive_the_split(self, tmp_path):
+        """Structural-only split: every id the pre-existing wiring tests
+        depend on (repeat toggle, buffer target select, notes, volume
+        slider) must still be present and inside the panel."""
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        for expected_id in (
+            "owntone_output_select",
+            "owntone_output_hint",
+            "vol_val",
+            "owntone_volume_percent",
+            "sil_val",
+            "repeat_enabled",
+            "repeat-target-row",
+            "repeat_target_minutes",
+            "repeat-max-time-note",
+            "repeat-unavailable-note",
+            "general_audio_path",
+        ):
+            assert f'id="{expected_id}"' in panel, expected_id

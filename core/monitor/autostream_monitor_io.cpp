@@ -888,10 +888,18 @@ bool InputChannel::start(std::string* error_out)
     }
 
     // Create a libsamplerate state for the main stereo output conversion.
-    // SRC_SINC_FASTEST provides good quality with moderate CPU usage.
-    // On a Pi Zero, SRC_LINEAR can be substituted if CPU becomes a bottleneck.
+    // Converter type is read from the process-wide g_src_quality tier
+    // (--src flag, or CPU-part auto-detect -- see autostream_monitor_utils.h
+    // and main()'s startup log line), published once before AudioMonitor
+    // is constructed and therefore fixed by the time any input can start.
+    // libsamplerate has no API to re-type a converter after src_new(), so
+    // there is no runtime tier switching: a changed tier only takes effect
+    // the next time this input is (re)started (in practice, a monitor
+    // restart), same as a changed --compatible mode. Doubles as the
+    // clock-drift servo (ratio fed per-block from RateEstimator), so
+    // whichever tier is selected runs on every block of every session.
     int src_error = 0;
-    _src_state = src_new(SRC_SINC_FASTEST, /*channels=*/2, &src_error);
+    _src_state = src_new(src_converter_type_for_tier(g_src_quality.tier), /*channels=*/2, &src_error);
     if (!_src_state)
     {
         LOG_WARN("[input%d] src_new failed: %s",
@@ -903,10 +911,14 @@ bool InputChannel::start(std::string* error_out)
     }
 
     // Create the 48000 → 16000 Hz ID-tap resampler (shared, filtered
-    // SRC_SINC_FASTEST helper -- see autostream_id_tap.h). MAX_SRC_OUTPUT
-    // (process_thread_func()'s local constant, 4096) is the largest block
-    // the process thread will ever hand it, so that is what pre-sizes its
-    // scratch.
+    // SRC_SINC_FASTEST helper -- see autostream_id_tap.h). Unlike
+    // _src_state above, this is NOT affected by g_src_quality: the
+    // fingerprint path stays SRC_SINC_FASTEST unconditionally regardless of
+    // the main output tier -- its job is anti-aliasing ahead of a fixed
+    // 16 kHz fingerprinting target, not output fidelity, so it has no
+    // quality knob. MAX_SRC_OUTPUT (process_thread_func()'s local constant,
+    // 4096) is the largest block the process thread will ever hand it, so
+    // that is what pre-sizes its scratch.
     _id_tap = std::make_unique<IdTapResampler>(
         AudioMonitor::output_rate_hz(), static_cast<int>(ID_BUF_RATE), 4096);
     if (!_id_tap->valid())

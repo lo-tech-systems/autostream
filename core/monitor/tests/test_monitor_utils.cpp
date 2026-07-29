@@ -483,6 +483,203 @@ static void test_renotify_respects_cadence_bound()
 }
 
 // ---------------------------------------------------------------------------
+// SRC quality tier: --src flag parsing
+// ---------------------------------------------------------------------------
+
+static void test_parse_src_quality_tier_valid_values()
+{
+    SrcQualityTier tier;
+
+    CHECK(parse_src_quality_tier("fast", &tier), "parse 'fast'");
+    CHECK(tier == SrcQualityTier::Fast, "'fast' maps to Fast");
+
+    CHECK(parse_src_quality_tier("medium", &tier), "parse 'medium'");
+    CHECK(tier == SrcQualityTier::Medium, "'medium' maps to Medium");
+
+    CHECK(parse_src_quality_tier("best", &tier), "parse 'best'");
+    CHECK(tier == SrcQualityTier::Best, "'best' maps to Best");
+}
+
+static void test_parse_src_quality_tier_invalid_and_absent()
+{
+    SrcQualityTier tier;
+
+    CHECK(!parse_src_quality_tier("", &tier), "empty string is invalid");
+    CHECK(!parse_src_quality_tier("Fast", &tier), "wrong case is invalid (case-sensitive)");
+    CHECK(!parse_src_quality_tier("medium ", &tier), "trailing whitespace is invalid (no trimming)");
+    CHECK(!parse_src_quality_tier("ultra", &tier), "unrecognised level is invalid");
+    CHECK(!parse_src_quality_tier("fastest", &tier), "near-miss level is invalid");
+}
+
+static void test_src_quality_tier_name_round_trips()
+{
+    SrcQualityTier tiers[] = {
+        SrcQualityTier::Fast, SrcQualityTier::Medium, SrcQualityTier::Best,
+    };
+    for (auto t : tiers)
+    {
+        const char* name = src_quality_tier_name(t);
+        CHECK(name != nullptr && name[0] != '\0', "tier name is non-empty");
+        SrcQualityTier parsed;
+        CHECK(parse_src_quality_tier(name, &parsed), "tier name round-trips through parse_src_quality_tier");
+        CHECK(parsed == t, "round-tripped tier matches original");
+    }
+
+    CHECK(std::string(src_quality_source_name(SrcQualitySource::Auto)) == "auto",
+          "Auto source name is 'auto'");
+    CHECK(std::string(src_quality_source_name(SrcQualitySource::Flag)) == "flag",
+          "Flag source name is 'flag'");
+}
+
+// ---------------------------------------------------------------------------
+// SRC quality tier: CPU-part auto-detect classifier
+// (classify_src_tier_from_cpuinfo -- pure function over cpuinfo *content*,
+// so this table is exercised without a real /proc filesystem)
+// ---------------------------------------------------------------------------
+
+static void test_classify_cortex_a76_is_best()
+{
+    // Real /proc/cpuinfo uses a tab before the colon; the format string's
+    // literal spaces match any run of whitespace, so this is representative.
+    std::string cpuinfo =
+        "processor\t: 0\n"
+        "model name\t: ARMv8 Processor rev 1 (v8l)\n"
+        "CPU implementer\t: 0x41\n"
+        "CPU part\t: 0xd0b\n";
+    auto result = classify_src_tier_from_cpuinfo(cpuinfo);
+    CHECK(result.tier == SrcQualityTier::Best, "Cortex-A76 (0xd0b) classifies as Best");
+}
+
+static void test_classify_cortex_a72_is_best()
+{
+    std::string cpuinfo =
+        "processor\t: 0\n"
+        "CPU part\t: 0xd08\n";
+    auto result = classify_src_tier_from_cpuinfo(cpuinfo);
+    CHECK(result.tier == SrcQualityTier::Best, "Cortex-A72 (0xd08) classifies as Best");
+}
+
+static void test_classify_cortex_a53_is_medium()
+{
+    std::string cpuinfo =
+        "processor\t: 0\n"
+        "CPU part\t: 0xd03\n";
+    auto result = classify_src_tier_from_cpuinfo(cpuinfo);
+    CHECK(result.tier == SrcQualityTier::Medium, "Cortex-A53 (0xd03) classifies as Medium");
+}
+
+static void test_classify_unknown_part_is_medium()
+{
+    // A recognised line format but a part id this classifier does not
+    // special-case (e.g. Cortex-A55, 0xd05) -- Medium, per the "everything
+    // else is Medium" contract; there is no path to Fast from auto-detect.
+    std::string cpuinfo = "CPU part\t: 0xd05\n";
+    auto result = classify_src_tier_from_cpuinfo(cpuinfo);
+    CHECK(result.tier == SrcQualityTier::Medium, "unrecognised CPU part classifies as Medium");
+}
+
+static void test_classify_garbage_content_is_medium()
+{
+    // No "CPU part" line at all -- malformed/unexpected /proc/cpuinfo
+    // content (e.g. a non-ARM host, or a stripped-down container).
+    std::string cpuinfo = "this is not cpuinfo at all\nrandom text\n12345\n";
+    auto result = classify_src_tier_from_cpuinfo(cpuinfo);
+    CHECK(result.tier == SrcQualityTier::Medium, "garbage content classifies as Medium (fail-open)");
+    CHECK(result.label == "unknown", "garbage content labels as 'unknown'");
+}
+
+static void test_classify_empty_content_is_medium()
+{
+    auto result = classify_src_tier_from_cpuinfo("");
+    CHECK(result.tier == SrcQualityTier::Medium, "empty content classifies as Medium (fail-open)");
+    CHECK(result.label == "unknown", "empty content labels as 'unknown'");
+}
+
+static void test_classify_big_little_one_big_core_is_enough()
+{
+    // Mirrors aac_coder_select()'s "on big.LITTLE one big core is enough"
+    // note (src/transcode.c) -- a mix of small and big cores should still
+    // classify as Best as soon as one high-performance part id is seen.
+    std::string cpuinfo =
+        "processor\t: 0\n"
+        "CPU part\t: 0xd03\n"        // Cortex-A53 (LITTLE)
+        "processor\t: 1\n"
+        "CPU part\t: 0xd0b\n";       // Cortex-A76 (big)
+    auto result = classify_src_tier_from_cpuinfo(cpuinfo);
+    CHECK(result.tier == SrcQualityTier::Best, "one big core among small cores still classifies as Best");
+}
+
+static void test_detect_src_tier_from_proc_cpuinfo_does_not_crash()
+{
+    // Whatever the actual host CPU is (the CI/dev box, not a Pi), this must
+    // return *some* valid classification without throwing or crashing --
+    // the real integration point for the fail-open contract when the file
+    // is readable but the classifier is asked to reason about it.
+    auto result = detect_src_tier_from_proc_cpuinfo();
+    CHECK(result.tier == SrcQualityTier::Medium || result.tier == SrcQualityTier::Best,
+          "detect_src_tier_from_proc_cpuinfo() returns a valid tier");
+    CHECK(!result.label.empty(), "detect_src_tier_from_proc_cpuinfo() returns a non-empty label");
+}
+
+// ---------------------------------------------------------------------------
+// SRC quality tier: mapping to libsamplerate converter type constants
+// ---------------------------------------------------------------------------
+
+static void test_src_converter_type_for_tier_mapping()
+{
+    CHECK(src_converter_type_for_tier(SrcQualityTier::Fast) == SRC_SINC_FASTEST,
+          "Fast maps to SRC_SINC_FASTEST");
+    CHECK(src_converter_type_for_tier(SrcQualityTier::Medium) == SRC_SINC_MEDIUM_QUALITY,
+          "Medium maps to SRC_SINC_MEDIUM_QUALITY");
+    CHECK(src_converter_type_for_tier(SrcQualityTier::Best) == SRC_SINC_BEST_QUALITY,
+          "Best maps to SRC_SINC_BEST_QUALITY");
+}
+
+// ---------------------------------------------------------------------------
+// SRC quality tier: process-wide g_src_quality default
+//
+// A test binary never calls main(), so it never publishes a real --src /
+// auto-detect result -- it must still see the documented fail-open default
+// (Medium, Auto) rather than an arbitrary or zero-initialised value. Same
+// contract as g_output_format defaulting to native (48000/32/2).
+// ---------------------------------------------------------------------------
+
+static void test_g_src_quality_default_is_medium_auto()
+{
+    CHECK(g_src_quality.tier == SrcQualityTier::Medium,
+          "g_src_quality.tier defaults to Medium when main() never ran");
+    CHECK(g_src_quality.source == SrcQualitySource::Auto,
+          "g_src_quality.source defaults to Auto when main() never ran");
+}
+
+// ---------------------------------------------------------------------------
+// CLI --help text: docs/CLI sync check
+//
+// No existing test asserted the in-binary --help text and docs/
+// AUTOSTREAM-MONITOR.md's usage block stay in sync (checked: no such test
+// exists anywhere under core/monitor/tests or tests/). This is a cheap
+// substitute -- it cannot exercise main()'s actual --help branch without
+// linking ALSA/libsamplerate/AudioMonitor, but monitor_help_text() is the
+// exact string main() prints (factored out for this reason), so asserting
+// its content here is equivalent to asserting the real --help output.
+// ---------------------------------------------------------------------------
+
+static void test_help_text_mentions_every_flag()
+{
+    std::string help = monitor_help_text("/tmp/autostream_monitor.sock");
+
+    CHECK(help.find("--socket PATH") != std::string::npos, "--help mentions --socket");
+    CHECK(help.find("--log-level") != std::string::npos, "--help mentions --log-level");
+    CHECK(help.find("--test-hooks") != std::string::npos, "--help mentions --test-hooks");
+    CHECK(help.find("--compatible") != std::string::npos, "--help mentions --compatible");
+    CHECK(help.find("--src LEVEL") != std::string::npos, "--help mentions --src LEVEL");
+    CHECK(help.find("fast|medium|best") != std::string::npos,
+          "--help enumerates the --src vocabulary");
+    CHECK(help.find("/tmp/autostream_monitor.sock") != std::string::npos,
+          "--help interpolates the given default socket path");
+}
+
+// ---------------------------------------------------------------------------
 // Logger queue: ordering + byte format preserved
 // ---------------------------------------------------------------------------
 
@@ -750,6 +947,30 @@ int main()
     test_renotify_never_fires_when_repeat_disabled();
     test_renotify_never_fires_once_already_recording();
     test_renotify_respects_cadence_bound();
+
+    // --src flag parsing
+    test_parse_src_quality_tier_valid_values();
+    test_parse_src_quality_tier_invalid_and_absent();
+    test_src_quality_tier_name_round_trips();
+
+    // CPU-part auto-detect classifier
+    test_classify_cortex_a76_is_best();
+    test_classify_cortex_a72_is_best();
+    test_classify_cortex_a53_is_medium();
+    test_classify_unknown_part_is_medium();
+    test_classify_garbage_content_is_medium();
+    test_classify_empty_content_is_medium();
+    test_classify_big_little_one_big_core_is_enough();
+    test_detect_src_tier_from_proc_cpuinfo_does_not_crash();
+
+    // Tier -> libsamplerate converter type mapping
+    test_src_converter_type_for_tier_mapping();
+
+    // g_src_quality default (no main() ever ran)
+    test_g_src_quality_default_is_medium_auto();
+
+    // --help text / docs sync
+    test_help_text_mentions_every_flag();
 
     test_logger_ordering_and_format();
     test_logger_drop_counting();

@@ -30,10 +30,12 @@ from pathlib import Path
 from typing import Optional
 
 from autostream_config import (
+    AUDIO_PATH_DEFAULT,
     DEFAULT_LOG_LEVEL,
     OutputEqConfig,
     load_and_parse,
     normalize_airplay_mode,
+    normalize_audio_path,
     normalize_log_level,
     python_log_level_value,
     unconfigured,
@@ -56,6 +58,7 @@ from autostream_player_service import (
     config_airplay_mode_to_backend,
     ensure_pipe_source_ready,
     list_outputs,
+    push_resample_quality,
     reconcile_fifo_with_backend,
     reconcile_monitor_format,
     reconcile_pipe_format_with_backend,
@@ -63,8 +66,10 @@ from autostream_player_service import (
     retry_pending_format_reconcile,
     set_selected_outputs,
     stop_and_disable_all,
+    sync_monitor_args_for_audio_path,
     update_output,
 )
+from autostream_rpi import is_high_performance_pi
 from autostream_playback_stats import (
     DEFAULT_STYLUS_LIFE_HOURS,
     InputPlaybackSnapshot,
@@ -3126,6 +3131,77 @@ class AudioMonitor:
 # Top-level entry points                                                       #
 # --------------------------------------------------------------------------- #
 
+def _reconcile_audio_path_startup(settings) -> None:
+    """One-time (per stored-value transition) audio_path write-back.
+
+    Runs at every pass through the startup phase, sequenced before the
+    first monitor-format reconcile call site below -- cheap and idempotent,
+    so repeated passes (connection retries, config reloads) after the first
+    successful write are no-ops. Two independent corrections share this one
+    slot and mechanism (SettingsStore.save_now(), standard logging):
+
+      - FILL-MISSING: the key is entirely absent (upgraded install whose
+        settings predate this feature) -- write the hardware-mapped default
+        (max on Pi 4/5-class hardware, else balanced) once, at INFO.
+      - DEMOTE-ONLY: the key is present but normalizes to something lower
+        (an SD card carrying "max" moved from a Pi 5 to a Zero 2 W) --
+        persist the demotion once, at WARN. A present "balanced" on
+        high-perf hardware normalizes to itself and is therefore never
+        touched -- this can only ever lower a stored value, never raise one.
+    """
+    high_perf = is_high_performance_pi()
+    raw = settings.raw_snapshot()
+    general_raw = raw.get("general") or {}
+
+    if "audio_path" not in general_raw:
+        hardware_default = "max" if high_perf else AUDIO_PATH_DEFAULT
+        settings.update(
+            lambda r: r.setdefault("general", {}).update({"audio_path": hardware_default})
+        )
+        settings.save_now()
+        logging.info(
+            "audio_path setting was absent; writing hardware default %r.",
+            hardware_default,
+        )
+        return
+
+    stored = general_raw.get("audio_path")
+    normalized = normalize_audio_path(stored, high_perf=high_perf)
+    if str(stored).strip().lower() == normalized:
+        return
+
+    settings.update(
+        lambda r: r.setdefault("general", {}).update({"audio_path": normalized})
+    )
+    settings.save_now()
+    logging.warning(
+        "audio_path %r is not valid for this hardware; demoted to %r.",
+        stored, normalized,
+    )
+
+
+def _sync_audio_path_backend(base_url: str, audio_path: str) -> None:
+    """Push the resample_quality knob and recompose/restart monitor args for
+    *audio_path*, tolerating any backend/transport failure (both callees
+    already log and self-limit; neither ever raises).
+
+    Called from the same startup/reconnect call sites as
+    reconcile_pipe_format_with_backend()/reconcile_monitor_format() above so
+    a boot-time audio_path correction (see _reconcile_audio_path_startup())
+    or an out-of-band config edit converges without requiring a Web UI visit.
+    """
+    if not base_url:
+        return
+    try:
+        push_resample_quality(base_url, audio_path, timeout=3.0)
+    except Exception:
+        logging.debug("resample_quality push raised", exc_info=True)
+    try:
+        sync_monitor_args_for_audio_path(base_url, audio_path, timeout=3.0)
+    except Exception:
+        logging.debug("sync_monitor_args_for_audio_path raised", exc_info=True)
+
+
 def _push_repeat_policy(
     client: MonitorClient,
     enabled: bool,
@@ -3163,6 +3239,7 @@ def _resync_monitor_daemon(
     repeat_enabled: bool = False,
     repeat_codec: str = "auto",
     repeat_target_minutes: Optional[int] = None,
+    audio_path: str = AUDIO_PATH_DEFAULT,
 ) -> bool:
     """Re-send the full daemon state after reconnect.
 
@@ -3208,7 +3285,7 @@ def _resync_monitor_daemon(
     # docstring above).
     format_status = client.get_status()
     monitor_format_result = reconcile_monitor_format(
-        owntone_base_url, format_status, timeout=3.0,
+        owntone_base_url, format_status, timeout=3.0, audio_path=audio_path,
     )
     if monitor_format_result.error or monitor_format_result.error_code:
         logging.debug(
@@ -3237,6 +3314,14 @@ def _resync_monitor_daemon(
             "Pipe-format reconcile during monitor-daemon reconnect: %s",
             format_result.message,
         )
+
+    # audio_path backend sync: same tolerant, never-fails-the-caller
+    # treatment as the reconciles above -- see _sync_audio_path_backend().
+    # Gated on format_status like reconcile_monitor_format()'s own no-op
+    # path above: a monitor that cannot report status right now must not be
+    # used as a reason to contact the playback backend at all.
+    if format_status:
+        _sync_audio_path_backend(owntone_base_url, audio_path)
 
     if not client.set_fifo(fifo_path):
         logging.warning("set_fifo failed after reconnect; will retry.")
@@ -3566,6 +3651,13 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 cfg = settings.snapshot()
                 continue
 
+            # SD-swap / fill-missing audio_path write-back, sequenced before
+            # the first monitor-format reconcile call site below. Idempotent
+            # (see _reconcile_audio_path_startup()'s docstring), so re-running
+            # it on every lap of this loop -- including connect-retry laps --
+            # settles to a no-op after the first successful correction.
+            _reconcile_audio_path_startup(settings)
+
             cfg = settings.snapshot()
             fifo_path = cfg.general.fifo_path
             _ensure_playback_tracker(cfg)
@@ -3600,6 +3692,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             format_status = client.get_status()
             monitor_format_result = reconcile_monitor_format(
                 cfg.owntone.base_url, format_status, timeout=3.0,
+                audio_path=cfg.general.audio_path,
             )
             if monitor_format_result.error or monitor_format_result.error_code:
                 logging.debug(
@@ -3622,6 +3715,15 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     "Pipe-format reconcile during startup: %s",
                     format_result.message,
                 )
+
+            # audio_path backend sync: same tolerant, never-fails-startup
+            # treatment as the reconciles above -- see _sync_audio_path_backend().
+            # Gated on format_status like reconcile_monitor_format()'s own
+            # no-op path above: a monitor that cannot report status right
+            # now must not be used as a reason to contact the playback
+            # backend at all.
+            if format_status:
+                _sync_audio_path_backend(cfg.owntone.base_url, cfg.general.audio_path)
 
             if not client.set_fifo(fifo_path):
                 logging.warning("set_fifo(%r) failed during startup; retrying in 5 s.", fifo_path)
@@ -3724,6 +3826,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                         cfg.repeat.enabled,
                         cfg.repeat.codec,
                         cfg.repeat.target_minutes,
+                        cfg.general.audio_path,
                     ):
                         _set_monitor_runtime_info(connected=False)
                         reconnect_at = time.time() + 5.0

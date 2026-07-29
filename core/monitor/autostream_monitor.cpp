@@ -1060,6 +1060,12 @@ std::string AudioMonitor::api_get_status()
         << ",\"output_bits\":"                  << g_output_format.bits
         << ",\"output_channels\":"              << g_output_format.channels
         << ",\"output_format\":\""              << output_format_mode_name(g_output_format.mode) << "\""
+        // SRC quality tier is fixed at startup (--src flag or CPU-part
+        // auto-detect, never switched at runtime -- see g_src_quality's doc
+        // comment in autostream_monitor_utils.h) and reported here so the
+        // Python layer can surface it without re-deriving it.
+        << ",\"src_quality\":\""                << src_quality_tier_name(g_src_quality.tier) << "\""
+        << ",\"src_source\":\""                 << src_quality_source_name(g_src_quality.source) << "\""
         << ",\"output_clip_dbfs\":"           << clip_dbfs
         << ",\"output_gain_db\":"               << gs.manual_gain_db
         << ",\"output_auto_trim_enabled\":"     << (gs.auto_trim_enabled ? "true" : "false")
@@ -1921,8 +1927,10 @@ int main(int argc, char* argv[])
 {
     // Parse command-line arguments.
     // Usage: autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]
+    //                            [--compatible] [--src LEVEL]
     std::string socket_path = "/tmp/autostream_monitor.sock";
     std::string log_level_arg;
+    std::string src_arg;
     bool test_hooks_enabled = false;
     bool pin_src_ratio      = false;
     bool compatible_mode    = false;
@@ -1962,29 +1970,17 @@ int main(int argc, char* argv[])
             // and cannot be reconfigured. See the interim-guard note below.
             compatible_mode = true;
         }
+        else if (strcmp(argv[i], "--src") == 0 && i + 1 < argc)
+        {
+            // Validated below, after logger_init() so the invalid-value
+            // WARN actually reaches the log sink; an unparseable value
+            // fails open to auto-detect rather than exiting (see below) --
+            // unlike an unrecognised flag, which still exits with usage.
+            src_arg = argv[++i];
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
         {
-            fprintf(stdout,
-                    "Usage: autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks]\n"
-                    "                           [--compatible]\n"
-                    "\n"
-                    "  --socket PATH   Unix domain socket path (default: %s)\n"
-                    "  --log-level L   Override log level: warn|warning|info|debug|spam\n"
-                    "  --test-hooks    Enable test-only socket commands (debug_fail_input).\n"
-                    "                  Never used in production; dev/test harnesses only.\n"
-                    "  --test-pin-src-ratio\n"
-                    "                  Pin the SRC ratio to nominal (disables rate-drift\n"
-                    "                  correction) for deterministic golden-reference runs.\n"
-                    "                  Requires --test-hooks. Never used in production.\n"
-                    "  --compatible    Output the FIFO as 44.1kHz/16-bit stereo, for stock\n"
-                    "                  (upstream) OwnTone or a pre-48k owntone-mini -- both\n"
-                    "                  have a named-pipe input fixed at 44.1kHz/16-bit.\n"
-                    "                  Default (this flag absent) is native 48kHz/32-bit.\n"
-                    "\n"
-                    "The monitor starts with no audio device connected.\n"
-                    "Configure it via the socket using JSON commands.\n"
-                    "See autostream_monitor.h for the full protocol.\n",
-                    socket_path.c_str());
+            fputs(monitor_help_text(socket_path).c_str(), stdout);
             return 0;
         }
         else
@@ -2045,6 +2041,43 @@ int main(int argc, char* argv[])
              protocol_log_level_name(log_level),
              log_level_arg.empty() ? "default" : "command line");
 
+    // Resolve the SRC quality tier: --src override if given and valid,
+    // otherwise CPU-part auto-detect. An invalid --src value fails open to
+    // auto-detect (with a WARN) rather than exiting -- the appliance must
+    // not stay down because of a bad env file (see the parse_src_quality_
+    // tier() doc comment in autostream_monitor_utils.h). Unknown *flags*
+    // still exit with usage above; this is validation of a flag's *value*.
+    SrcQualityTier  src_tier;
+    SrcQualitySource src_source;
+    std::string     src_auto_label;
+    if (!src_arg.empty() && parse_src_quality_tier(src_arg, &src_tier))
+    {
+        src_source = SrcQualitySource::Flag;
+    }
+    else
+    {
+        if (!src_arg.empty())
+        {
+            LOG_WARN("[monitor] Invalid --src value '%s' (expected fast|medium|best); "
+                      "falling back to CPU auto-detect", src_arg.c_str());
+        }
+        SrcAutoDetectResult detected = detect_src_tier_from_proc_cpuinfo();
+        src_tier       = detected.tier;
+        src_source     = SrcQualitySource::Auto;
+        src_auto_label = detected.label;
+    }
+
+    if (src_source == SrcQualitySource::Flag)
+    {
+        LOG_INFO("[monitor] SRC quality: %s (--src override)",
+                 src_quality_tier_name(src_tier));
+    }
+    else
+    {
+        LOG_INFO("[monitor] SRC quality: %s (auto: %s)",
+                 src_quality_tier_name(src_tier), src_auto_label.c_str());
+    }
+
     if (test_hooks_enabled)
         LOG_WARN("[monitor] --test-hooks enabled: debug_fail_input is active (dev/test only)");
 
@@ -2085,6 +2118,13 @@ int main(int argc, char* argv[])
                  "44100 Hz / 16-bit / stereo (native default is 48000 Hz / "
                  "32-bit)");
     }
+
+    // Publish the process-wide SRC quality state -- same publication
+    // argument as g_output_format immediately above: written here, strictly
+    // before AudioMonitor (and therefore InputChannel::start()'s src_new()
+    // call) exists, then read-only for the rest of the process.
+    g_src_quality.tier   = src_tier;
+    g_src_quality.source = src_source;
 
     AudioMonitor monitor(socket_path, test_hooks_enabled);
     monitor.run();

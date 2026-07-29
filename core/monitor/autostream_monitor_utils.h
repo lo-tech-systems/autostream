@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <samplerate.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -125,6 +127,124 @@ struct OutputFormatDescriptor
 // (the same happens-before argument the C++ standard gives std::thread
 // construction). Defined in autostream_monitor_utils.cpp.
 extern OutputFormatDescriptor g_output_format;
+
+
+// =============================================================================
+// SRC (sample-rate converter) quality tier
+//
+// Selects the libsamplerate converter used for the main stereo FIFO-output
+// conversion (InputChannel::start(), autostream_monitor_io.cpp -- the
+// _src_state created at src_new()). Three tiers, trading CPU for passband:
+// fast (SRC_SINC_FASTEST, today's fixed behaviour), medium
+// (SRC_SINC_MEDIUM_QUALITY), best (SRC_SINC_BEST_QUALITY). The mono
+// ID-tap/fingerprint resampler (autostream_id_tap.h) is a separate
+// converter instance and stays SRC_SINC_FASTEST unconditionally regardless
+// of this tier -- it is not in scope.
+//
+// No runtime switching: the tier is read once, at src_new() time, when an
+// input starts. libsamplerate has no notion of changing a converter's type
+// after construction, so a tier change only takes effect the next time an
+// input is (re)started -- in practice, a monitor restart. See the
+// src_converter_type_for_tier() call site in autostream_monitor_io.cpp.
+// =============================================================================
+
+enum class SrcQualityTier
+{
+    Fast,
+    Medium,
+    Best,
+};
+
+// Where the active tier came from -- an explicit --src flag, or the
+// CPU-part auto-detect fallback. Reported in status JSON's "src_source"
+// field and the startup log line so field logs show provenance without
+// guessing.
+enum class SrcQualitySource
+{
+    Auto,
+    Flag,
+};
+
+// "fast" / "medium" / "best" -- used in --src parsing, the startup log
+// line, and the status JSON "src_quality" field.
+const char* src_quality_tier_name(SrcQualityTier tier);
+
+// "auto" / "flag" -- status JSON "src_source" field.
+const char* src_quality_source_name(SrcQualitySource source);
+
+// Parse a --src LEVEL token ("fast"/"medium"/"best", case-sensitive --
+// matches the vocabulary the backend composes into monitor_args.env
+// verbatim, no alias table needed). Returns true and sets *out_tier on
+// success; returns false (leaving *out_tier untouched) if text is anything
+// else. Callers fail OPEN on false: WARN and fall back to auto-detect
+// rather than exiting, so a corrupted env file never keeps the appliance
+// down (see main()'s --src handling in autostream_monitor.cpp). Unrelated
+// to parse_monitor_log_level()'s alias handling above -- there is no
+// legacy --src vocabulary to stay compatible with.
+bool parse_src_quality_tier(const std::string& text, SrcQualityTier* out_tier);
+
+// Auto-detect result: the chosen tier plus a short provenance label for the
+// startup log line and (informally) for debugging -- e.g. "cortex-a72",
+// "cortex-a53", "unknown".
+struct SrcAutoDetectResult
+{
+    SrcQualityTier tier;
+    std::string    label;
+};
+
+// Pure classifier: given the *contents* of /proc/cpuinfo (or any text using
+// the same "CPU part\t: 0x.." line format), decide the auto-detect SRC
+// tier. Factored out from file I/O specifically so the CPU-part table is
+// unit-testable against fixed strings without a real /proc filesystem.
+//
+// Cortex-A72 (0xd08) / Cortex-A76 (0xd0b) -> Best. Every other recognised
+// part id (including Cortex-A53 0xd03 and the small in-order cores
+// enumerated by owntone-mini's aac_coder_select(), src/transcode.c), any
+// content with no "CPU part" line at all (unknown/garbage), and empty
+// content all classify as Medium -- there is no path to Fast here; Fast is
+// reachable only via an explicit --src override (see the header comment on
+// the SRC quality tier section above). This mirrors the general shape of
+// aac_coder_select()'s /proc/cpuinfo scan (same line format, same
+// first-match-wins-the-question idiom) but answers a different question
+// (big out-of-order cores -> higher SRC quality here, vs. small in-order
+// cores -> the fast AAC coder there) and is independent of the autostream
+// Python hardware classifier (is_high_performance_pi(), core/
+// autostream_rpi.py), which keys on the device-tree model string instead of
+// CPU part ids. The two classifiers must agree in spirit (both should call
+// a Pi 4/5 "high tier") but are deliberately separate mechanisms with no
+// shared code -- this one has no device-tree dependency, that one has no
+// cpuinfo dependency.
+SrcAutoDetectResult classify_src_tier_from_cpuinfo(const std::string& cpuinfo_content);
+
+// Reads /proc/cpuinfo and applies classify_src_tier_from_cpuinfo() to its
+// contents. An unreadable file (permissions, non-Linux host, container
+// without /proc) is treated exactly like empty content -- Medium tier,
+// "unknown" label -- fail-open, never a hard failure or exception.
+SrcAutoDetectResult detect_src_tier_from_proc_cpuinfo();
+
+// Maps a tier to the libsamplerate converter type constant (SRC_SINC_
+// FASTEST/MEDIUM_QUALITY/BEST_QUALITY) passed to src_new() for the main
+// stereo FIFO-output converter. Kept as a pure mapping (no I/O, no
+// src_new() call) so it is unit-testable without linking libsamplerate's
+// library -- only its header, for the SRC_SINC_* constants.
+int src_converter_type_for_tier(SrcQualityTier tier);
+
+// Process-wide SRC quality state. Same publication argument as
+// g_output_format above and g_test_pin_src_ratio in
+// autostream_monitor_dsp.cpp: main() writes this exactly once, from
+// command-line parsing / auto-detect, strictly before AudioMonitor (and
+// therefore InputChannel::start()'s src_new() call) is reachable. From that
+// point on it is read-only. Default-constructed to {Medium, Auto} -- the
+// same fail-open default a fresh process would auto-detect to on
+// unreadable /proc/cpuinfo -- so a test binary that never calls main() (and
+// therefore never publishes a real value) still sees a sane, documented
+// default rather than an arbitrary one.
+struct SrcQualityState
+{
+    SrcQualityTier   tier   = SrcQualityTier::Medium;
+    SrcQualitySource source = SrcQualitySource::Auto;
+};
+extern SrcQualityState g_src_quality;
 
 
 // =============================================================================
@@ -319,3 +439,16 @@ bool logger_test_wait_drained(int timeout_ms = 1000);
 #define LOG_INFO(...)  logger_log(MonitorLogLevel::Info,  __VA_ARGS__)
 #define LOG_DEBUG(...) logger_log(MonitorLogLevel::Debug, __VA_ARGS__)
 #define LOG_SPAM(...)  logger_log(MonitorLogLevel::Spam,  __VA_ARGS__)
+
+
+// =============================================================================
+// CLI --help text
+// =============================================================================
+
+// Full "autostream_monitor --help" text, with default_socket_path
+// interpolated into the --socket line. Factored out of main() (rather than
+// left as an inline fprintf format string) purely so a unit test can assert
+// its content -- e.g. that it mentions every flag main() actually parses --
+// without linking ALSA/libsamplerate/AudioMonitor. main() is still the only
+// production caller; this is not a general-purpose formatting utility.
+std::string monitor_help_text(const std::string& default_socket_path);

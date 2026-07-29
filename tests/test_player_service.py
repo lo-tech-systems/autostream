@@ -921,7 +921,7 @@ class TestReconcileMonitorFormat(_MonitorFormatReconcileTestHelpers):
         assert result.ok is True
         assert result.changed is True
         assert result.restart_requested is True
-        write_mock.assert_called_once_with("compatible")
+        write_mock.assert_called_once_with("compatible", "balanced")
         restart_mock.assert_called_once_with("compatible", "native")
 
     def test_env_write_failure_no_restart_and_retried_next_pass(self):
@@ -1102,7 +1102,7 @@ class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestH
             )
         assert result.changed is True
         assert result.restart_requested is True
-        write_mock2.assert_called_once_with("native")
+        write_mock2.assert_called_once_with("native", "balanced")
         restart_mock2.assert_called_once_with("native", "compatible")
 
     def test_confident_full_owntone_still_enforces_compatible(self):
@@ -1118,7 +1118,7 @@ class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestH
             )
         assert result.changed is True
         assert result.restart_requested is True
-        write_mock.assert_called_once_with("compatible")
+        write_mock.assert_called_once_with("compatible", "balanced")
         restart_mock.assert_called_once_with("compatible", "native")
 
 
@@ -1128,14 +1128,21 @@ class TestWriteMonitorArgsEnvFile:
         with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
             ok = svc._write_monitor_args_env_file("compatible")
         assert ok is True
-        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible\n"
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible --src medium\n"
 
-    def test_writes_empty_args_for_native(self, tmp_path):
+    def test_writes_src_only_args_for_native(self, tmp_path):
         target = tmp_path / "monitor_args.env"
         with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
             ok = svc._write_monitor_args_env_file("native")
         assert ok is True
-        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=\n"
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src medium\n"
+
+    def test_writes_audio_path_src_tier(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            ok = svc._write_monitor_args_env_file("compatible", "max")
+        assert ok is True
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible --src best\n"
 
     def test_write_failure_returns_false(self, tmp_path):
         target = tmp_path / "monitor_args.env"
