@@ -305,6 +305,7 @@ class Mp2Decoder
 {
 public:
     explicit Mp2Decoder(int sample_rate_hz)
+        : _sample_rate_hz(sample_rate_hz)
     {
         static std::once_flag once;
         std::call_once(once, []() { mpg123_init(); });   // process-wide; safe to call once ever
@@ -329,6 +330,29 @@ public:
             mpg123_delete(_mh);
             _mh = nullptr;
         }
+    }
+
+    // Discards all buffered bitstream state -- any fed-but-undecoded bytes
+    // (including a trailing partial frame) and the decoder's own frame
+    // history -- and reopens the feed stream, so the next feed_and_decode()
+    // starts bit-exact fresh. The accepted-format table is re-forced the
+    // same way the constructor forces it. Returns false (decoder unusable,
+    // ok() also false from then on) only if the reopen itself fails.
+    bool reset()
+    {
+        if (!_mh)
+            return false;
+
+        mpg123_close(_mh);
+        mpg123_format_none(_mh);
+        if (mpg123_format(_mh, _sample_rate_hz, MPG123_STEREO, MPG123_ENC_SIGNED_16) != MPG123_OK
+            || mpg123_open_feed(_mh) != MPG123_OK)
+        {
+            mpg123_delete(_mh);
+            _mh = nullptr;
+            return false;
+        }
+        return true;
     }
 
     ~Mp2Decoder()
@@ -380,6 +404,7 @@ public:
 
 private:
     mpg123_handle* _mh = nullptr;
+    int            _sample_rate_hz = 0;
 };
 
 }   // namespace
@@ -1013,7 +1038,18 @@ void RepeatController::perform_pending_start()
     // _sample_rate_hz on this (pre-DSP) tap, regardless of which codec was
     // just chosen above for the eventual encoded output.
     _onset.reset();
-    _tail_marker.reset();
+    // Tail marker pad: the quiet left in place between the last music and
+    // the loop point. The byte-rate figure only sizes the pad's TARGET --
+    // the recorded cut itself always lands on a committed block boundary
+    // (see TailMarker::on_block_committed()), so encoded-frame alignment
+    // never depends on this estimate being exact.
+    {
+        long tail_byte_rate = byte_rate_for(codec, _sample_rate_hz);
+        size_t tail_pad_bytes = (tail_byte_rate > 0)
+            ? static_cast<size_t>(static_cast<double>(tail_byte_rate) * kSilenceTrimPadSeconds)
+            : 0;
+        _tail_marker.reset(tail_pad_bytes);
+    }
     _preroll_ring.set_capacity_frames(
         static_cast<size_t>(kPreRollSeconds * static_cast<double>(_sample_rate_hz)));
     _encoder = std::move(encoder);
@@ -1159,30 +1195,28 @@ void RepeatController::notify_capture_stopped(int input_index)
         }
     }
 
-    // Tail cut. byte_rate/pad_bytes/frame_bytes are shared by both cuts
-    // below -- only which "bytes past the cut point" figure feeds
-    // compute_trim_bytes() differs.
-    long byte_rate = byte_rate_for(_active_codec, _sample_rate_hz);
-    size_t pad_bytes = (byte_rate > 0)
-        ? static_cast<size_t>(static_cast<double>(byte_rate) * kSilenceTrimPadSeconds)
-        : 0;
-    int frame_bytes = _encoder ? _encoder->frame_bytes() : 1;
-
+    // Tail cut.
     size_t trim_bytes;
     if (_tail_marker.has_mark())
     {
         // Normal case: onset confirmed and at least one sustained run was
-        // committed. Cut everything past last-sustained-run-end + pad --
-        // this is what excludes lead-out crackle and a tonearm clunk (each
-        // a transient that reset the tail's own SustainTracker without ever
-        // re-sustaining) regardless of whether the input's own silence test
-        // ever actually saw them as "quiet" moment to moment.
-        size_t bytes_past_mark = (_buffer.total_bytes() > _tail_marker.mark_bytes())
-            ? (_buffer.total_bytes() - _tail_marker.mark_bytes())
+        // committed. Cut everything past the marker's recorded cut position
+        // (the first committed block boundary at least the pad past the last
+        // sustained run's end -- see TailMarker) -- this is what excludes
+        // lead-out crackle and a tonearm clunk (each a transient that reset
+        // the tail's own SustainTracker without ever re-sustaining)
+        // regardless of whether the input's own silence test ever actually
+        // saw them as "quiet" moment to moment. Because the cut is a
+        // committed block boundary, the kept tail always ends on a whole
+        // encoded frame; the encoder flush tail appended above lies past
+        // the cut and is removed with the rest of the run-out. When no cut
+        // was recorded, the session ended within the pad of the last
+        // sustained run -- the recording already ends close enough to the
+        // music that nothing needs cutting.
+        trim_bytes = (_tail_marker.has_cut()
+                      && _buffer.total_bytes() >= _tail_marker.cut_bytes())
+            ? (_buffer.total_bytes() - _tail_marker.cut_bytes())
             : 0;
-        trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
-            bytes_past_mark, pad_bytes, static_cast<size_t>(frame_bytes),
-            _buffer.total_bytes());
     }
     else
     {
@@ -1193,6 +1227,11 @@ void RepeatController::notify_capture_stopped(int input_index)
         // future edge case that leaves _tail_marker without a mark still
         // gets the pre-existing measured-trailing-silence behaviour instead
         // of silently keeping an untrimmed tail.
+        long byte_rate = byte_rate_for(_active_codec, _sample_rate_hz);
+        size_t pad_bytes = (byte_rate > 0)
+            ? static_cast<size_t>(static_cast<double>(byte_rate) * kSilenceTrimPadSeconds)
+            : 0;
+        int frame_bytes = _encoder ? _encoder->frame_bytes() : 1;
         trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
             _trim.bytes_since_last_loud(), pad_bytes, static_cast<size_t>(frame_bytes),
             _buffer.total_bytes());
@@ -1493,12 +1532,15 @@ void RepeatController::process_recorder_samples(const float* interleaved, int fr
     //
     // block_in_ring tracks whether THIS call's own block was pushed into the
     // ring below, so the tail of this function knows whether the block still
-    // needs writing directly (steady state, onset long since confirmed) or
-    // has already been folded into the ring-drain loop's backlog (onset
-    // pending, or just confirmed on this very call -- either way this call's
+    // needs writing directly (steady state: onset confirmed AND the ring
+    // fully drained) or has already been folded into the ring-drain loop's
+    // backlog (onset pending, just confirmed on this very call, or confirmed
+    // earlier with backlog still queued -- in every ring case this call's
     // block is the ring's newest entry, and the drain loop below walks the
     // ring oldest-first, so it is written in its correct chronological
-    // position, not duplicated).
+    // position, not duplicated). Committed buffer order therefore always
+    // equals arrival order: a block is only ever written directly when no
+    // older block is still queued ahead of it.
     bool block_in_ring = false;
 
     if (!_onset.is_confirmed())
@@ -1514,6 +1556,15 @@ void RepeatController::process_recorder_samples(const float* interleaved, int fr
         // Onset just confirmed: fall through to drain the ring (amortized
         // below), which now includes this call's own block as its newest
         // entry.
+    }
+    else if (!_preroll_ring.empty())
+    {
+        // Onset confirmed on an earlier call but the amortized drain below
+        // has not yet emptied the backlog: this block must queue BEHIND the
+        // ring's older entries, not bypass them -- writing it directly here
+        // would commit it ahead of audio that precedes it chronologically.
+        _preroll_ring.push(interleaved, frames, above_threshold);
+        block_in_ring = true;
     }
 
     // ── Amortized pre-roll splice ────────────────────────────────────────
@@ -2054,6 +2105,17 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
         // recording into its own beginning.
         ctx.replay_filters.clear();
         ctx.replay_eq_bands_cache.reset();
+
+        // The decoder's buffered bitstream state must not carry across the
+        // seam either: the recording's final bytes may end mid-frame, and a
+        // decoder still holding them would prepend them to the head's first
+        // frame after the rewind, desyncing the decode at the very start of
+        // every loop. PCM has no decoder (ctx.decoder is null on that tier).
+        if (ctx.decoder && !ctx.decoder->reset())
+        {
+            LOG_WARN("[repeat] ReplayEngine: decoder reset failed at loop wrap; aborting replay");
+            return SliceBatchOutcome::DecodeError;
+        }
         return SliceBatchOutcome::Wrapped;
     }
 

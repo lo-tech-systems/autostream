@@ -1036,6 +1036,58 @@ static void test_u17_tail_marker()
         marker.on_block_committed(true, 1.0, 1000);
         CHECK(!marker.has_mark(), "U17: reset() cleared the run accumulator too (not still sustained)");
     }
+
+    // Cut position: recorded at the first committed block boundary at least
+    // pad_bytes past the mark, latched there, and always exactly one of the
+    // committed_bytes_after values fed in (block-aligned by construction).
+    {
+        TailMarker marker;
+        marker.reset(1000);   // pad
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        CHECK(marker.has_mark() && !marker.has_cut(),
+              "U17: no cut while the sustained run is still live");
+        marker.on_block_committed(false, 1.0, 5500);   // 5500 < 5000 + 1000
+        CHECK(!marker.has_cut(), "U17: no cut before pad_bytes of post-run audio have committed");
+        marker.on_block_committed(false, 1.0, 6200);   // first boundary >= 6000
+        CHECK(marker.has_cut(), "U17: cut recorded once the pad is covered");
+        CHECK(marker.cut_bytes() == 6200,
+              "U17: cut lands on the first committed boundary at least pad past the mark");
+        marker.on_block_committed(false, 1.0, 7000);
+        CHECK(marker.cut_bytes() == 6200, "U17: cut latched -- later quiet blocks do not move it");
+        marker.on_block_committed(true, 0.2, 7200);    // transient: run never sustains
+        marker.on_block_committed(false, 1.0, 8000);
+        CHECK(marker.cut_bytes() == 6200, "U17: an isolated transient does not move the cut either");
+    }
+
+    // A new sustained run invalidates the recorded cut (the mark has moved
+    // past it); the cut is re-recorded once the new run has itself ended and
+    // the pad is covered again.
+    {
+        TailMarker marker;
+        marker.reset(1000);
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        marker.on_block_committed(false, 1.0, 6200);
+        CHECK(marker.has_cut() && marker.cut_bytes() == 6200, "U17: sanity -- cut at 6200");
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 9000);   // second track
+        CHECK(!marker.has_cut(), "U17: a new sustained run clears the stale cut");
+        CHECK(marker.mark_bytes() == 9000, "U17: mark tracks the new run");
+        marker.on_block_committed(false, 1.0, 9500);
+        CHECK(!marker.has_cut(), "U17: pad not yet covered after the new run");
+        marker.on_block_committed(false, 1.0, 10100);
+        CHECK(marker.has_cut() && marker.cut_bytes() == 10100,
+              "U17: cut re-recorded past the new run's own pad");
+    }
+
+    // Session ends while the run is live or within the pad: no cut is ever
+    // recorded, so close-time has nothing to truncate.
+    {
+        TailMarker marker;
+        marker.reset(1000);
+        marker.on_block_committed(true, SustainTracker::kSustainSeconds, 5000);
+        marker.on_block_committed(false, 1.0, 5800);   // still inside the pad
+        CHECK(marker.has_mark() && !marker.has_cut(),
+              "U17: no cut when the committed stream ends within the pad of the last run");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,6 +1342,125 @@ static void test_onset_gated_recording_end_to_end()
 }
 
 // ---------------------------------------------------------------------------
+// Amortized ring drain, composed end-to-end — same composition as
+// feed_block() above, but with a bounded per-call drain (the production
+// shape: kOnsetRingDrainBlocksPerCall in autostream_repeat.cpp), so several
+// calls arrive while the backlog is still queued. The property under test:
+// committed buffer order equals arrival order regardless of how the drain is
+// amortized -- a post-onset block arriving while older blocks are still
+// queued must join the ring behind them, never bypass them.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// Drives one raw block through the onset-gated recording algorithm with a
+// bounded drain, mirroring process_recorder_samples() exactly: push-to-ring
+// while onset is pending OR while a confirmed session's backlog is still
+// draining; drain up to drain_cap of the oldest ring blocks; write the live
+// block directly only when it never entered the ring (steady state, ring
+// empty).
+void feed_block_capped(OnsetGate& onset, PreRollRing& ring, RepeatBuffer& buf,
+                        SilenceTrimAccountant& trim, int frames, bool above_threshold,
+                        uint8_t tag, double sample_rate_hz, int drain_cap)
+{
+    bool block_in_ring = false;
+
+    if (!onset.is_confirmed())
+    {
+        std::vector<float> raw(static_cast<size_t>(frames) * 2u, static_cast<float>(tag));
+        ring.push(raw.data(), frames, above_threshold);
+        block_in_ring = true;
+        onset.on_block(above_threshold, static_cast<double>(frames) / sample_rate_hz);
+        if (!onset.is_confirmed())
+            return;
+    }
+    else if (!ring.empty())
+    {
+        std::vector<float> raw(static_cast<size_t>(frames) * 2u, static_cast<float>(tag));
+        ring.push(raw.data(), frames, above_threshold);
+        block_in_ring = true;
+    }
+
+    PreRollRing::Block blk;
+    for (int i = 0; i < drain_cap && ring.pop_front(blk); ++i)
+    {
+        int blk_frames = static_cast<int>(blk.samples.size() / 2u);
+        uint8_t blk_tag = static_cast<uint8_t>(blk.samples[0]);
+        auto encoded = fake_encode(blk_frames, blk_tag);
+        buf.append(encoded.data(), encoded.size());
+        trim.on_block_appended(blk.above_threshold, encoded.size());
+    }
+
+    if (block_in_ring)
+        return;
+
+    auto encoded = fake_encode(frames, tag);
+    buf.append(encoded.data(), encoded.size());
+    trim.on_block_appended(above_threshold, encoded.size());
+}
+
+}   // namespace
+
+static void test_amortized_drain_ordering_end_to_end()
+{
+    const double kRate = 48000.0;
+    const int    kBlockFrames = static_cast<int>(kRate / 10.0);        // 100 ms blocks
+    const size_t kBlockBytes  = static_cast<size_t>(kBlockFrames) * 2u; // fake encoder: 2 bytes/frame
+    const int    kDrainCap    = 8;   // production kOnsetRingDrainBlocksPerCall
+
+    OnsetGate onset;
+    PreRollRing ring;
+    ring.set_capacity_frames(static_cast<size_t>(kPreRollSeconds * kRate));
+    RepeatBuffer buf(1u << 20);
+    SilenceTrimAccountant trim;
+
+    // Continuous music from the very first block (CD-style immediate onset),
+    // one distinct tag per block so committed order is fully observable.
+    // Onset confirms on block 25 (2.5 s at 100 ms/block) with blocks 1..25
+    // queued in the ring; the backlog then drains 8 blocks per call while
+    // blocks 26.. keep arriving, so ordering is only preserved if arriving
+    // blocks queue behind the backlog until it is empty.
+    const int kTotalBlocks = 60;
+    for (int i = 1; i <= kTotalBlocks; ++i)
+        feed_block_capped(onset, ring, buf, trim, kBlockFrames, true,
+                           static_cast<uint8_t>(i), kRate, kDrainCap);
+
+    CHECK(onset.is_confirmed(), "drain order e2e: onset confirms on sustained music");
+
+    // Drain whatever backlog remains after the last arrival (session
+    // continuing with no new blocks -- e.g. the recorder worker's later
+    // calls), so every block is committed before the order check.
+    while (!ring.empty())
+        feed_block_capped(onset, ring, buf, trim, kBlockFrames, false,
+                           0 /* tag unused: block joins the ring and is not part of the check */,
+                           kRate, kDrainCap);
+
+    // Every block committed exactly once, in strict arrival order.
+    std::vector<uint8_t> committed(buf.total_bytes());
+    RepeatBuffer::Reader reader(buf);
+    size_t n = reader.next(committed.data(), committed.size());
+    CHECK(n >= static_cast<size_t>(kTotalBlocks) * kBlockBytes,
+          "drain order e2e: every arrived block reaches the buffer");
+
+    bool in_order = true;
+    bool counts_exact = true;
+    for (int i = 1; i <= kTotalBlocks; ++i)
+    {
+        size_t expect_begin = static_cast<size_t>(i - 1) * kBlockBytes;
+        for (size_t b = 0; b < kBlockBytes && in_order; ++b)
+            if (committed[expect_begin + b] != static_cast<uint8_t>(i))
+                in_order = false;
+        if (count_tag_bytes(buf, static_cast<uint8_t>(i)) != kBlockBytes)
+            counts_exact = false;
+    }
+    CHECK(in_order,
+          "drain order e2e: committed order equals arrival order across the amortized drain");
+    CHECK(counts_exact,
+          "drain order e2e: every block is committed exactly once (none lost, none doubled)");
+}
+
+// ---------------------------------------------------------------------------
 // Tail offset gate, composed end-to-end — OnsetGate + PreRollRing +
 // RepeatBuffer + SilenceTrimAccountant + TailMarker wired together the same
 // way RepeatController::notify_capture_stopped() (autostream_repeat.cpp)
@@ -1301,7 +1472,11 @@ static void test_onset_gated_recording_end_to_end()
 // ---------------------------------------------------------------------------
 
 // Mirrors notify_capture_stopped()'s tail-cut branch exactly: marker-based
-// when the marker has a mark, the silence-timeout fallback otherwise.
+// when the marker has a mark (truncate back to the marker's recorded
+// block-boundary cut position; nothing to cut when the session ended within
+// the pad of the last sustained run), the silence-timeout fallback
+// otherwise. pad_bytes/frame_bytes feed only the fallback -- the marker
+// path's pad is configured on the marker itself via reset(pad_bytes).
 static size_t compute_tail_offset_trim(const TailMarker& tail_marker,
                                         const SilenceTrimAccountant& trim,
                                         size_t total_bytes, size_t pad_bytes,
@@ -1309,10 +1484,9 @@ static size_t compute_tail_offset_trim(const TailMarker& tail_marker,
 {
     if (tail_marker.has_mark())
     {
-        size_t bytes_past_mark = (total_bytes > tail_marker.mark_bytes())
-            ? (total_bytes - tail_marker.mark_bytes()) : 0;
-        return SilenceTrimAccountant::compute_trim_bytes(bytes_past_mark, pad_bytes,
-                                                           frame_bytes, total_bytes);
+        return (tail_marker.has_cut() && total_bytes >= tail_marker.cut_bytes())
+            ? (total_bytes - tail_marker.cut_bytes())
+            : 0;
     }
     return SilenceTrimAccountant::compute_trim_bytes(trim.bytes_since_last_loud(), pad_bytes,
                                                        frame_bytes, total_bytes);
@@ -1343,6 +1517,7 @@ static void test_tail_offset_gate_end_to_end()
         RepeatBuffer buf(1u << 20);
         SilenceTrimAccountant trim;
         TailMarker tail_marker;
+        tail_marker.reset(kPadBytes);
 
         // 3 s of continuous sustained music (CD-style immediate onset, no
         // thump): onset confirms at 2.5 s in, and the tail marker -- driven
@@ -1410,6 +1585,7 @@ static void test_tail_offset_gate_end_to_end()
         RepeatBuffer buf(1u << 20);
         SilenceTrimAccountant trim;
         TailMarker tail_marker;
+        tail_marker.reset(kPadBytes);
 
         const int kMusicBlocks = 30;
         for (int i = 0; i < kMusicBlocks; ++i)
@@ -1448,6 +1624,7 @@ static void test_tail_offset_gate_end_to_end()
         RepeatBuffer buf(1u << 20);
         SilenceTrimAccountant trim;
         TailMarker tail_marker;
+        tail_marker.reset(kPadBytes);
 
         const int kMusicBlocks = 30;
         for (int i = 0; i < kMusicBlocks; ++i)
@@ -1476,6 +1653,7 @@ static void test_tail_offset_gate_end_to_end()
         RepeatBuffer buf(1u << 20);
         SilenceTrimAccountant trim;
         TailMarker tail_marker;
+        tail_marker.reset(kPadBytes);
 
         feed_block_full(onset, ring, buf, trim, tail_marker, kBlockFrames, true, kTagPop, kRate);
         for (int i = 0; i < 20; ++i)
@@ -1514,6 +1692,7 @@ int main()
     test_u16_preroll_ring();
     test_u17_tail_marker();
     test_onset_gated_recording_end_to_end();
+    test_amortized_drain_ordering_end_to_end();
     test_tail_offset_gate_end_to_end();
 
     if (g_failed == 0) {

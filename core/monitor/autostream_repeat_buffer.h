@@ -843,17 +843,34 @@ private:
 class TailMarker
 {
 public:
-    void reset()
+    // pad_bytes configures the cut position recorded by on_block_committed():
+    // the cut lands on the first committed block boundary at least pad_bytes
+    // past the mark. Zero is valid (cut at the first post-run block) -- used
+    // by the teardown/idle reset call sites, where no recording is active and
+    // the value never matters.
+    void reset(size_t pad_bytes = 0)
     {
         _run.reset();
         _mark_bytes = 0;
         _has_mark   = false;
+        _pad_bytes  = pad_bytes;
+        _cut_bytes  = 0;
+        _has_cut    = false;
     }
 
     // Called once per block actually committed to the RepeatBuffer, in
     // buffer order. committed_bytes_after is the buffer's total_bytes()
     // AFTER this block was appended -- the position the mark advances to
     // when this block keeps (or newly reaches) a sustained run.
+    //
+    // Alongside the mark, this records the CUT position session close
+    // truncates back to: the first committed block boundary at least
+    // _pad_bytes past the mark. Because every committed block is a whole
+    // number of encoder frames, the cut is always encoder-frame-aligned by
+    // construction -- no byte-rate arithmetic is involved. A new sustained
+    // run invalidates any recorded cut (the mark has moved past it); the cut
+    // is then re-recorded once the new run has itself ended and pad_bytes of
+    // post-run audio have been committed.
     void on_block_committed(bool above_threshold, double block_seconds,
                              size_t committed_bytes_after)
     {
@@ -862,6 +879,13 @@ public:
         {
             _mark_bytes = committed_bytes_after;
             _has_mark   = true;
+            _has_cut    = false;
+        }
+        else if (_has_mark && !_has_cut
+                 && committed_bytes_after >= _mark_bytes + _pad_bytes)
+        {
+            _cut_bytes = committed_bytes_after;
+            _has_cut   = true;
         }
     }
 
@@ -874,10 +898,26 @@ public:
     bool   has_mark() const   { return _has_mark; }
     size_t mark_bytes() const { return _mark_bytes; }
 
+    // True once a cut position has been recorded for the CURRENT last
+    // sustained run: the session ran on for at least _pad_bytes of committed
+    // audio past the run's end. False while a run is still live, and false
+    // when the session ended within the pad of the last run (nothing needs
+    // cutting -- the recording already ends close enough to the music).
+    // Callers must treat cut_bytes() as meaningless while this is false.
+    bool   has_cut() const    { return _has_cut; }
+
+    // A committed append boundary (hence a whole number of encoder frames
+    // from the start of the recording), at least _pad_bytes past mark_bytes().
+    // Session close truncates the buffer back to exactly this position.
+    size_t cut_bytes() const  { return _cut_bytes; }
+
 private:
     SustainTracker _run;
     size_t         _mark_bytes = 0;
     bool           _has_mark   = false;
+    size_t         _pad_bytes  = 0;
+    size_t         _cut_bytes  = 0;
+    bool           _has_cut    = false;
 };
 
 
