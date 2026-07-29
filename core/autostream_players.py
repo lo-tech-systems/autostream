@@ -62,6 +62,14 @@ SETTING_DEVICE_REMOVAL_GRACE_PERIOD = "device_removal_grace_period"
 # straight through without a name translation layer.
 SETTING_PIPE_SAMPLE_RATE = "pipe_sample_rate"
 SETTING_PIPE_BITS_PER_SAMPLE = "pipe_bits_per_sample"
+# Output-resampler quality knob, an owntone-mini extension (no restart
+# required -- read at filtergraph creation, so a change takes effect on the
+# next playback session). Full/stock OwnTone has no normalized-settings
+# surface at all (see OwnToneBackend.get_setting/save_setting), so a push
+# against it is naturally absorbed as "unsupported" by the same mechanism
+# that already covers every other setting key on that backend.
+SETTING_RESAMPLE_QUALITY = "resample_quality"
+SETTING_RESAMPLE_QUALITY_ALLOWED = ("high", "standard")
 
 # Valid range and UI step for SETTING_START_BUFFER_MS.
 SETTING_START_BUFFER_MS_MIN = 300

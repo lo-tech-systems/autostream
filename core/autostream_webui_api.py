@@ -45,6 +45,7 @@ from autostream_bluetooth_client import (
     is_loopback_playback,
 )
 from autostream_config import (
+    AUDIO_PATH_CHOICES,
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
@@ -65,6 +66,7 @@ from autostream_config import (
     save_state,
     set_input_mode,
 )
+from autostream_rpi import is_high_performance_pi
 from autostream_dials import is_dial_authorized
 from autostream_core import (
     any_monitor_capturing,
@@ -100,7 +102,13 @@ from autostream_appliance_models import (
     build_equaliser_state,
     build_home_state,
 )
-from autostream_player_service import list_outputs, save_setting, update_output
+from autostream_player_service import (
+    list_outputs,
+    push_resample_quality,
+    save_setting,
+    sync_monitor_args_for_audio_path,
+    update_output,
+)
 from autostream_sysutils import (
     bt_onboard_set,
     bt_services_disable,
@@ -1440,6 +1448,46 @@ def _live_repeat_target_minutes(state: object, value: object) -> bool:
     return bool(off_ok) and bool(on_ok)
 
 
+def _validate_audio_path(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"Value must be one of {', '.join(AUDIO_PATH_CHOICES)}")
+    v = value.strip().lower()
+    if v not in AUDIO_PATH_CHOICES:
+        raise ValueError(f"Value must be one of {', '.join(AUDIO_PATH_CHOICES)}")
+    if v == "max" and not is_high_performance_pi():
+        # Defends against a stale browser tab (Maximum Quality is filtered
+        # out of the rendered options on this hardware, see settings_card_html
+        # in autostream_webui_page_setup.py) or a hand-crafted request.
+        raise ValueError("Maximum Quality is only available on Pi 4/5-class hardware")
+    return v
+
+
+def _live_audio_path(state: object, value: object) -> bool:
+    """Web UI change flow: persist happens before this runs (send_settings_
+    post_json commits via settings.update() first, same as every other live
+    function here); this pushes the two derived knobs.
+
+    Both steps are individually tolerant of backend/transport failure (see
+    push_resample_quality()/sync_monitor_args_for_audio_path()'s own
+    docstrings -- stock OwnTone, an old owntone-mini, or a transient error
+    are all logged and left for the next reconcile pass, never raised), so
+    this always reports success once the setting itself is saved -- matching
+    the tolerated-to-fail treatment already used for the daemon-side repeat
+    policy push elsewhere in this codebase.
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    base_url = snap.owntone.base_url
+    audio_path = str(value)
+
+    push_resample_quality(base_url, audio_path, timeout=3.0)
+    sync_monitor_args_for_audio_path(base_url, audio_path, timeout=3.0)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # WP4B — validators, debounce helpers, and live functions
 # ---------------------------------------------------------------------------
@@ -1641,6 +1689,8 @@ _SETTINGS_FIELDS: dict = {
     "owntone.volume_percent":                   ("owntone", "volume_percent",                     _validate_volume_percent,  _live_owntone_volume),
     # WP4A — silence detection (live: monitor)
     "general.silence_seconds":                  ("general", "silence_seconds",                    _validate_silence_seconds,        _live_silence),
+    # Audio Path (live: owntone resample_quality push + monitor --src args)
+    "general.audio_path":                       ("general", "audio_path",                         _validate_audio_path,             _live_audio_path),
     # WP4B — audio input capture device (live: coordinator reload debounce)
     "audio1.capture_device":                    ("audio1",  "capture_device",                     _validate_capture_device,         _live_capture_1),
     "audio2.capture_device":                    ("audio2",  "capture_device",                     _validate_capture_device,         _live_capture_2),
@@ -1677,6 +1727,7 @@ def send_settings_get_json(handler, state) -> None:
         "webui.control_other_appliances":          parsed.webui.control_other_appliances,
         "webui.output_usage_poll_interval_seconds": parsed.webui.output_usage_poll_interval_seconds,
         "updates.update_channel":                  parsed.updates.update_channel,
+        "general.audio_path":                      parsed.general.audio_path,
         "repeat.enabled":                          parsed.repeat.enabled,
         "repeat.codec":                            parsed.repeat.codec,
         "repeat.target_minutes":                   parsed.repeat.target_minutes,

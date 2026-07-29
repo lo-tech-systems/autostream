@@ -31,6 +31,7 @@ from autostream_players import (
     SETTING_PIPE_BITS_PER_SAMPLE,
     SETTING_PIPE_PATH,
     SETTING_PIPE_SAMPLE_RATE,
+    SETTING_RESAMPLE_QUALITY,
     SettingDescriptor,
     SettingValueResult,
     create_backend,
@@ -845,6 +846,15 @@ def retry_pending_format_reconcile(
 # supervisor/autostream_admin, invoked via run_admin_cmd(), authorized by a
 # new Cmnd_Alias in system/sudoers/autostream_admin modeled on
 # AUTOSTREAM_ADMIN_OWNTONE.
+#
+# AUTOSTREAM_MONITOR_ARGS carries two independent knobs composed together by
+# _monitor_args_for_format(): the pipe-format token ("--compatible" or
+# nothing, driven by the backend-declared required_monitor_format() as
+# described above) and the SRC quality tier ("--src {fast,medium,best}",
+# driven by the audio_path setting -- see autostream_config.normalize_
+# audio_path and the audio_path -> tier table below). Both are always
+# written together as one line; there is no partial-rewrite path, matching
+# the "wholesale single-writer rewrite" contract for this file.
 _monitor_format_reconcile_state_lock = threading.Lock()
 _monitor_format_reconcile_state: dict[str, dict[str, Any]] = {}
 
@@ -900,14 +910,70 @@ def _extract_reported_monitor_format(monitor_status: Optional[dict]) -> Optional
     return None
 
 
-def _monitor_args_for_format(desired_format: str) -> str:
-    return "--compatible" if desired_format == "compatible" else ""
+# audio_path -> monitor --src tier. Kept adjacent to
+# _monitor_args_for_format() since both AUTOSTREAM_MONITOR_ARGS knobs are
+# composed there. Unrecognised/missing audio_path falls back to "medium",
+# matching autostream_config.AUDIO_PATH_DEFAULT ("balanced").
+_AUDIO_PATH_SRC_TIER = {
+    "max": "best",
+    "balanced": "medium",
+    "fast": "fast",
+}
+_AUDIO_PATH_SRC_TIER_DEFAULT = "medium"
+
+# audio_path -> owntone-mini resample_quality. "max" and "balanced" share
+# the soxr-VHQ tier deliberately (its cost is trivial, so no middle tier is
+# needed); "fast" reproduces pre-change swr-default behaviour.
+_AUDIO_PATH_RESAMPLE_QUALITY = {
+    "max": "high",
+    "balanced": "high",
+    "fast": "standard",
+}
+_AUDIO_PATH_RESAMPLE_QUALITY_DEFAULT = "high"
 
 
-def _write_monitor_args_env_file(desired_format: str) -> bool:
+def _src_tier_for_audio_path(audio_path: str) -> str:
+    return _AUDIO_PATH_SRC_TIER.get(str(audio_path or "").strip().lower(), _AUDIO_PATH_SRC_TIER_DEFAULT)
+
+
+def _resample_quality_for_audio_path(audio_path: str) -> str:
+    return _AUDIO_PATH_RESAMPLE_QUALITY.get(
+        str(audio_path or "").strip().lower(), _AUDIO_PATH_RESAMPLE_QUALITY_DEFAULT
+    )
+
+
+def _monitor_args_for_format(desired_format: str, audio_path: str = "balanced") -> str:
+    parts = []
+    if desired_format == "compatible":
+        parts.append("--compatible")
+    parts.append("--src")
+    parts.append(_src_tier_for_audio_path(audio_path))
+    return " ".join(parts)
+
+
+def _read_current_monitor_args() -> Optional[str]:
+    """Return the AUTOSTREAM_MONITOR_ARGS value currently persisted at
+    MONITOR_ARGS_ENV_PATH, or None if the file is absent/unreadable or does
+    not contain the line -- callers must treat None as "unknown", never as
+    an empty composed string (an actually-empty native/no-tier value is
+    represented by the line being present with nothing after '=').
+    """
+    try:
+        with open(MONITOR_ARGS_ENV_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    prefix = "AUTOSTREAM_MONITOR_ARGS="
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return None
+
+
+def _write_monitor_args_env_file(desired_format: str, audio_path: str = "balanced") -> bool:
     from autostream_sysutils import atomic_write_file
 
-    args = _monitor_args_for_format(desired_format)
+    args = _monitor_args_for_format(desired_format, audio_path)
     try:
         atomic_write_file(
             MONITOR_ARGS_ENV_PATH,
@@ -960,12 +1026,19 @@ def reconcile_monitor_format(
     monitor_status: Optional[dict],
     *,
     timeout: float = 3.0,
+    audio_path: str = "balanced",
 ) -> FormatReconcileResult:
     """Align the monitor's --compatible startup arg with what the active
     playback backend declares it needs.
 
     desired = resolve_backend(base_url).backend.required_monitor_format()
     reported = _extract_reported_monitor_format(monitor_status)
+
+    *audio_path* only affects the composed --src tier written on a mismatch
+    pass (see _monitor_args_for_format()); it plays no part in the
+    native/compatible comparison below. A same-format --src-only change (the
+    Audio Path dropdown, with the pipe format unchanged) does not flow
+    through here -- see sync_monitor_args_for_audio_path() for that path.
 
     Guarantees (mirrors reconcile_pipe_format_with_backend()'s above):
       - Idempotent: a matching pass never writes the env file or restarts.
@@ -1052,7 +1125,7 @@ def reconcile_monitor_format(
             state["needs_retry"] = False
         return FormatReconcileResult(ok=True)
 
-    if not _write_monitor_args_env_file(desired_format):
+    if not _write_monitor_args_env_file(desired_format, audio_path):
         with _monitor_format_reconcile_state_lock:
             already_logged = state.get("last_logged_state") == log_key
             state["last_logged_state"] = log_key
@@ -1084,6 +1157,106 @@ def reconcile_monitor_format(
         )
     _restart_monitor_async(desired_format, reported_format)
     return FormatReconcileResult(ok=True, changed=True, restart_requested=True)
+
+
+def sync_monitor_args_for_audio_path(
+    base_url: str,
+    audio_path: str,
+    *,
+    timeout: float = 3.0,
+) -> bool:
+    """Recompose AUTOSTREAM_MONITOR_ARGS for the current backend-declared
+    pipe format and *audio_path*; write it and request a monitor restart
+    only if the composed line actually differs from what is currently
+    persisted. Returns True iff a restart was requested.
+
+    This is the Web UI change-flow half of monitor-arg maintenance:
+    reconcile_monitor_format() above only reacts to a native/compatible
+    mismatch reported by the running monitor, so a same-format --src-tier-
+    only change (e.g. the Audio Path dropdown) never reaches its write path.
+    This function instead compares the composed args string itself, so it
+    reacts correctly regardless of whether the pipe format also changed.
+    Safe to call from any reconcile/resync pass -- a no-op once the
+    persisted line already matches, per _read_current_monitor_args().
+    """
+    base_url_text = str(base_url or "").strip()
+    if not base_url_text:
+        return False
+
+    resolved = resolve_backend(base_url_text, timeout=timeout)
+    if not resolved.detection_confident:
+        # Same fallback-guess deferral as reconcile_monitor_format() above --
+        # an unconfirmed backend identity is not evidence of what format it
+        # actually needs.
+        return False
+
+    try:
+        desired_format = resolved.backend.required_monitor_format()
+    except Exception:
+        LOG.exception(
+            "sync_monitor_args_for_audio_path: required_monitor_format() "
+            "raised for %s", base_url_text,
+        )
+        return False
+    if desired_format not in ("native", "compatible"):
+        return False
+
+    new_args = _monitor_args_for_format(desired_format, audio_path)
+    current_args = _read_current_monitor_args()
+    if current_args is not None and current_args == new_args:
+        return False
+
+    if not _write_monitor_args_env_file(desired_format, audio_path):
+        LOG.warning(
+            "audio_path change: failed to write %s for %s (will retry on "
+            "the next reconcile pass).",
+            MONITOR_ARGS_ENV_PATH, base_url_text,
+        )
+        return False
+
+    LOG.warning(
+        "audio_path change: wrote %s (%r) for %s and requesting a monitor "
+        "restart.",
+        MONITOR_ARGS_ENV_PATH, new_args, base_url_text,
+    )
+    _restart_monitor_async(desired_format, f"audio_path={audio_path}")
+    return True
+
+
+def push_resample_quality(
+    base_url: str,
+    audio_path: str,
+    *,
+    timeout: float = 3.0,
+) -> SaveSettingResult:
+    """Push the owntone-mini resample_quality knob derived from *audio_path*.
+
+    Capability-aware, same idiom as the pipe-format keys in
+    reconcile_pipe_format_with_backend(): a backend that reports the setting
+    as unsupported -- stock/full OwnTone (no normalized-settings surface at
+    all) or an owntone-mini build that predates this key (404) -- is a
+    debug-logged no-op here, never a failure. A genuine save rejection
+    (backend reachable, key recognised, value refused, or a transient
+    transport error) is logged at INFO and left for the caller to retry on
+    the next reconcile pass -- the same tolerated-to-fail rule
+    set_repeat_enabled uses against an old monitor binary.
+    """
+    quality = _resample_quality_for_audio_path(audio_path)
+    result = save_setting(base_url, SETTING_RESAMPLE_QUALITY, quality, timeout=timeout)
+    if result.unsupported:
+        LOG.debug(
+            "resample_quality push skipped for %s: backend does not expose "
+            "this setting (stock OwnTone, or an owntone-mini build "
+            "predating the key).",
+            base_url,
+        )
+    elif not result.ok:
+        LOG.info(
+            "resample_quality push (%r) not accepted for %s: %s (will "
+            "retry on the next reconcile pass).",
+            quality, base_url, result.message or "save failed",
+        )
+    return result
 
 
 def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:

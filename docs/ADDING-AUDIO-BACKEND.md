@@ -256,6 +256,7 @@ Normalized settings currently defined in `autostream_players.py`:
 - `SETTING_PIPE_PATH`
 - `SETTING_PIPE_SAMPLE_RATE`
 - `SETTING_PIPE_BITS_PER_SAMPLE`
+- `SETTING_RESAMPLE_QUALITY`
 - `SETTING_START_BUFFER_MS`
 - `SETTING_UNCOMPRESSED_ALAC`
 - `SETTING_IPV6`
@@ -337,6 +338,32 @@ rather than by instance — `resolve_backend()` in
 every call, so an instance attribute would never actually be reused across
 calls. See the module-level comment above `_monitor_format_probe_cache` in
 `autostream_owntone_mini.py` for the full rationale and TTL.
+
+## Step 9a: The Output Resampler Quality Setting Is Optional
+
+`SETTING_RESAMPLE_QUALITY` (`"high"` / `"standard"`) is an owntone-mini
+extension, not part of the core contract: it is only meaningful for a
+backend whose output stage inserts a resampler on format-mismatched output
+paths and exposes a tunable quality knob for it. Most backends have no such
+knob, and that is fine.
+
+The push side (`push_resample_quality()` in
+`core/autostream_player_service.py`) is capability-aware by construction, the
+same way `reconcile_pipe_format_with_backend()` handles the pipe-format keys:
+it calls the normalized `save_setting()` path and treats an `unsupported`
+result (whatever `get_setting()`/`save_setting()` return for a key your
+adapter does not recognise) as a debug-logged no-op, never a failure. A
+backend that simply omits `SETTING_RESAMPLE_QUALITY` from its setting specs
+(or, like `OwnToneBackend`, has no normalized-settings surface at all) is
+automatically covered — **stock/full OwnTone keeps its stock resampling
+behaviour regardless of the selected Audio Path tier**, and no adapter code
+is needed to make that true.
+
+If your backend does implement this key, a value save can also fail because
+the deployed build predates the key (e.g. an older owntone-mini) — treat
+that the same as any other unrecognised-key rejection: log it and let the
+caller retry on the next reconcile pass rather than treating it as fatal
+(the `set_repeat_enabled` old-binary rule).
 
 ## Step 10: Preserve Result Semantics
 

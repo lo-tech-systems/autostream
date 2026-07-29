@@ -42,6 +42,7 @@ from autostream_players import (
     SETTING_PIPE_BITS_PER_SAMPLE,
     SETTING_PIPE_PATH,
     SETTING_PIPE_SAMPLE_RATE,
+    SETTING_RESAMPLE_QUALITY,
     SETTING_START_BUFFER_MS,
     SETTING_UNCOMPRESSED_ALAC,
 )
@@ -166,6 +167,15 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         requires_restart_on_change=True,
         min_value=16,
         max_value=32,
+    ),
+    # Output-resampler quality: read at filtergraph creation, so unlike the
+    # pipe-format pair above this is NOT restart-required -- it takes effect
+    # on the next playback session.
+    SETTING_RESAMPLE_QUALITY: _MiniSettingSpec(
+        category="player",
+        option="resample_quality",
+        value_type="string",
+        requires_restart_on_change=False,
     ),
 }
 
@@ -674,12 +684,15 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             SETTING_BUFFERED_AUDIO_ENABLED: "AirPlay 2 Buffered Audio",
             SETTING_PIPE_SAMPLE_RATE: "Pipe Sample Rate",
             SETTING_PIPE_BITS_PER_SAMPLE: "Pipe Bit Depth",
+            SETTING_RESAMPLE_QUALITY: "Output Resample Quality",
         }
         return labels.get(key, key)
 
     def _setting_allowed_values(self, key: str) -> tuple[str, ...]:
         if key == SETTING_LOG_LEVEL:
             return ("fatal", "log", "warning", "info", "debug", "spam")
+        if key == SETTING_RESAMPLE_QUALITY:
+            return ("high", "standard")
         return ()
 
 REGISTRY.register(OwnToneMiniBackend)

@@ -109,6 +109,29 @@ VALID_MAINTENANCE_LIFE_HOURS = (0, 1000, 2000, 3000)        # drive belt
 VALID_BEARING_LIFE_HOURS = (0, 200, 500, 1000, 2000)        # main bearing oil
 VALID_MAINTENANCE_LIFE_YEARS = (0, 1, 2, 3, 4, 5)
 
+AUDIO_PATH_CHOICES = ("max", "balanced", "fast")
+AUDIO_PATH_DEFAULT = "balanced"
+
+
+def normalize_audio_path(value: object, *, high_perf: bool) -> str:
+    """Return a valid audio_path value for this hardware.
+
+    Invalid/unrecognised input clamps to "balanced". "max" additionally
+    demotes to "balanced" when *high_perf* is False -- BEST-tier monitor SRC
+    is unaffordable on A53-class hardware (see autostream_rpi.
+    is_high_performance_pi()). Pure: callers supply the hardware
+    classification rather than this function probing it, so every consumer
+    (monitor-args composition, owntone resample-quality push, webui render)
+    stays in lockstep with a single is_high_performance_pi() read.
+    """
+    text = str(value or "").strip().lower()
+    if text not in AUDIO_PATH_CHOICES:
+        return AUDIO_PATH_DEFAULT
+    if text == "max" and not high_perf:
+        return AUDIO_PATH_DEFAULT
+    return text
+
+
 # Silence-detection presets by input type. Turntable ADC noise floors sit
 # well above line-level sources, so a turntable input needs a less sensitive
 # (higher) threshold to avoid reading its own noise as continuous playback.
@@ -372,6 +395,7 @@ class GeneralConfig:
     mdns_grace_period_seconds: int
     log_level_changed_by: str
     log_level_changed_at: Optional[str]
+    audio_path: str
 
 
 @dataclass(frozen=True)
@@ -630,15 +654,33 @@ def set_input_mode(raw: dict, index: int, is_turntable: bool) -> float:
     return threshold
 
 
-def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
+def parse_config(
+    data: dict,
+    state: Optional[dict] = None,
+    *,
+    high_perf: Optional[bool] = None,
+) -> AutostreamConfig:
     """Parse a config dict (and optional state dict) into typed dataclasses.
 
     *data* is loaded from /etc/autostream/autostream.json.
     *state* is optionally loaded from /var/lib/autostream/autostream-state.json
     and provides known_outputs. Callers that do not need known_outputs may omit it.
+
+    *high_perf* feeds normalize_audio_path()'s hardware gate. Deliberately
+    kept optional and keyword-only rather than threaded through every
+    existing caller (SettingsStore.snapshot(), load_and_parse(), the many
+    direct parse_config(data) call sites in tests): when omitted, it is
+    computed lazily via autostream_rpi.is_high_performance_pi() (a cheap,
+    already-uncached device-tree read, same idiom as get_raspberry_pi_model()
+    itself). Tests and any caller that already knows the hardware class may
+    pass it explicitly to avoid the extra read or to force a hardware class.
     """
     if state is None:
         state = {}
+
+    if high_perf is None:
+        from autostream_rpi import is_high_performance_pi as _is_high_performance_pi
+        high_perf = _is_high_performance_pi()
 
     general_d = data.get("general") or {}
     general = GeneralConfig(
@@ -656,6 +698,7 @@ def parse_config(data: dict, state: Optional[dict] = None) -> AutostreamConfig:
         ),
         log_level_changed_by=normalize_log_level_changed_by(general_d.get("log_level_changed_by")),
         log_level_changed_at=normalize_log_level_changed_at(general_d.get("log_level_changed_at")),
+        audio_path=normalize_audio_path(general_d.get("audio_path"), high_perf=high_perf),
     )
 
     audio1 = _parse_audio_input_config(data.get("audio1") or {})

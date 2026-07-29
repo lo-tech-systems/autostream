@@ -185,6 +185,49 @@ def get_raspberry_pi_model() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Hardware performance classification (audio-path SRC tier selection)
+# ---------------------------------------------------------------------------
+#
+# Coupling note: the monitor's own flag-absent SRC-tier auto-detect keys on
+# CPU part IDs read from /proc/cpuinfo (Cortex-A72/A76 vs A53-class), not on
+# this model string. The two tables classify the same hardware split by
+# different signals and must agree in effect: Pi 4/400/CM4 and Pi 5/500/CM5
+# are Cortex-A72/A76 respectively; everything this table classifies False
+# (Zero 2 W, Pi 3, unknown/unreadable) is Cortex-A53-class or unrecognised.
+_HIGH_PERFORMANCE_MODEL_MARKERS = (
+    "raspberry pi 4",
+    "raspberry pi 400",
+    "raspberry pi compute module 4",
+    "raspberry pi 5",
+    "raspberry pi 500",
+    "raspberry pi compute module 5",
+)
+
+
+def classify_high_performance_pi(model: str) -> bool:
+    """Pure classifier: True for a Pi 4/400/CM4/5/500/CM5-class model string.
+
+    Matches by substring against the model text (case-insensitive) rather
+    than exact equality, since the device-tree string carries extra detail
+    (e.g. "Raspberry Pi 4 Model B Rev 1.4"). Anything not matching one of
+    the allowlisted markers -- including "unknown" -- classifies False.
+    """
+    text = str(model or "").strip().lower()
+    return any(marker in text for marker in _HIGH_PERFORMANCE_MODEL_MARKERS)
+
+
+def is_high_performance_pi() -> bool:
+    """Return True on Pi 4/400/CM4/Pi 5/500/CM5-class hardware, else False.
+
+    Drives the audio-path Maximum Quality gate: that tier is filtered from
+    the Web UI, rejected server-side, and demoted on smaller hardware
+    (Zero 2 W, Pi 3, unknown) because it is unaffordable there. See
+    classify_high_performance_pi() for the pure matching logic.
+    """
+    return classify_high_performance_pi(get_raspberry_pi_model())
+
+
+# ---------------------------------------------------------------------------
 # CPU serial number functions. Used to discourage copying the SD-Card.
 # ---------------------------------------------------------------------------
 

@@ -1088,6 +1088,8 @@ class TestMonitorFormatReconcileWiring:
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
              patch("autostream_core.reconcile_monitor_format") as monfmt, \
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core.push_resample_quality"), \
+             patch("autostream_core.sync_monitor_args_for_audio_path"), \
              patch("autostream_core.apply_input_gain", return_value=True), \
              patch("autostream_core.apply_input_eq", return_value=True), \
              patch("autostream_core._apply_output_eq_config", return_value=True):
@@ -1099,7 +1101,9 @@ class TestMonitorFormatReconcileWiring:
                 MagicMock(), repeat_enabled=True, repeat_codec="mp2_224",
             )
         assert ok is True
-        monfmt.assert_called_once_with("http://localhost:3689", status_dict, timeout=3.0)
+        monfmt.assert_called_once_with(
+            "http://localhost:3689", status_dict, timeout=3.0, audio_path="balanced",
+        )
 
     def test_resync_monitor_format_reconcile_runs_before_pipe_format_reconcile(self):
         """Ordering proof: monitor_format must be called strictly before
@@ -1110,6 +1114,8 @@ class TestMonitorFormatReconcileWiring:
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
              patch("autostream_core.reconcile_monitor_format") as monfmt, \
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core.push_resample_quality"), \
+             patch("autostream_core.sync_monitor_args_for_audio_path"), \
              patch("autostream_core.apply_input_gain", return_value=True), \
              patch("autostream_core.apply_input_eq", return_value=True), \
              patch("autostream_core._apply_output_eq_config", return_value=True):

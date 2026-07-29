@@ -44,6 +44,7 @@ from autostream_players import (
 from autostream_playback_stats import (
     suggested_silence_threshold_dbfs,
 )
+from autostream_rpi import is_high_performance_pi
 from autostream_sysutils import get_ap_ssid, get_system_hostname
 from autostream_webui_assets import (
     A2HS_SCRIPT,
@@ -887,23 +888,47 @@ def send_setup_page(
         f'turntables.</div>'
     ) if _min_hold > 0 else ""
 
-    # Fieldset fragments shared by both layout paths
-    playback_inner_html = f"""
+    # Audio Path options: Maximum Quality is filtered out of the rendered
+    # list on non-Pi4/5-class hardware -- mandatory, not cosmetic, since the
+    # top SRC tier is unaffordable there;
+    # the server-side validator (_validate_audio_path in
+    # autostream_webui_api.py) is the enforcement backstop for a stale
+    # browser tab or a hand-crafted request.
+    _audio_path_options = []
+    if is_high_performance_pi():
+        _audio_path_options.append(("max", "Maximum Quality"))
+    _audio_path_options.append(("balanced", "Balanced"))
+    _audio_path_options.append(("fast", "Fast"))
+    audio_path_options_html = "".join(
+        f'<option value="{v}"{" selected" if v == parsed.general.audio_path else ""}>{html.escape(label)}</option>'
+        for v, label in _audio_path_options
+    )
+
+    # Fieldset fragments shared by both layout paths -- split into four
+    # untitled cards (playback defaults / silence detection / repeat
+    # playback / audio processing) rather than one combined fieldset;
+    # structural split only, every existing element id/handler below is
+    # unchanged so existing wiring (JS + tests) keeps working.
+    playback_defaults_inner_html = f"""
           <label>Default Speakers:
             <select id="owntone_output_select" name="owntone_output_name" onchange="refreshPlaybackCardSub(); if(liveEnabled) settingsSaveField('owntone.output_name', this.value);">
               {owntone_outputs_html}
             </select>
             <div id="owntone_output_hint" class="helptext" style="display:none;">
-              Looking for speakers\u2026
+              Looking for speakers…
             </div>
           </label>
           <label><div class="slider-header"><span>Default Volume:</span><span id="vol_val">{parsed.owntone.volume_percent}%</span></div>
           <input type="range" min="0" max="100" value="{parsed.owntone.volume_percent}" oninput="syncVol(this.value)">
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
+        """
+    silence_detection_inner_html = f"""
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
           <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
           {_silence_hold_note_html}
-          <div class="setup-customise-row" style="margin-top:0.75rem;">
+        """
+    repeat_playback_inner_html = f"""
+          <div class="setup-customise-row">
             <label class="output-toggle" style="margin:0;">
               <input type="checkbox" name="repeat_enabled" id="repeat_enabled"{'  checked' if parsed.repeat.enabled else ''} onchange="onRepeatEnabledToggle(this.checked)">
               <span class="switch"></span>
@@ -919,9 +944,22 @@ def send_setup_page(
           </div>
           <div class="helptext" id="repeat-max-time-note">Buffer: —</div>
           <div class="helptext" id="repeat-unavailable-note" style="display:none;color:var(--color-status-danger);"></div>
-          {owntone_button_html}
         """
-    playback_fieldset_html = settings_card_html(playback_inner_html, margin_top="0")
+    audio_processing_inner_html = f"""
+          <label>Audio Path:
+            <select id="general_audio_path" name="general_audio_path" onchange="if(liveEnabled) settingsSaveField('general.audio_path', this.value);">
+              {audio_path_options_html}
+            </select>
+          </label>
+          <div class="helptext">Applies immediately — playback stops and resumes automatically after a few seconds.</div>
+        """
+    playback_fieldset_html = (
+        settings_card_html(playback_defaults_inner_html, margin_top="0")
+        + settings_card_html(silence_detection_inner_html)
+        + settings_card_html(repeat_playback_inner_html)
+        + settings_card_html(audio_processing_inner_html)
+        + owntone_button_html
+    )
     # Network card (Section 9.x): active-adapter information + Change Wi-Fi
     # Network action.  This is informational, not a selector; the active adapter
     # is fetched from the authenticated network-status API on panel open.
