@@ -2247,6 +2247,11 @@ private:
     // not for this base availability gate).
     static constexpr long   kMinAvailableMibForStart = 110;
     static constexpr double kMemCheckIntervalSeconds  = 30.0;
+    // Trailing pad kept ahead of the tail cut, shared by both close-time
+    // trims: the marker-based cut (last-sustained-run end + this pad, the
+    // normal case once onset has confirmed) and the silence-timeout
+    // fallback cut (measured trailing silence minus this pad). Same value,
+    // same purpose either way -- never bite into the last audible moment.
     static constexpr double kSilenceTrimPadSeconds     = 1.0;
     // Bounded drain wait in notify_capture_stopped() before finalizing;
     // on timeout, whatever is still queued is counted into dropped_frames
@@ -2361,6 +2366,17 @@ private:
     // for the full state machine.
     OnsetGate    _onset;
     PreRollRing  _preroll_ring;
+    // Tail offset gate: tracks the committed-buffer position at the end of
+    // the last sustained (music) run, fed once per block actually appended
+    // to _buffer (encode_and_append_locked()) -- same call site as _trim
+    // above. Drives notify_capture_stopped()'s tail cut whenever it has a
+    // mark (the normal case once onset has confirmed), taking over from the
+    // silence-timeout cut so run-out crackle and a tonearm clunk are
+    // excluded from the recording the same way the onset gate already
+    // excludes a start thump. (Re)initialised alongside _onset/_preroll_ring
+    // at session start and cleared at session end/discard -- see those
+    // members' own comment for the exact call sites.
+    TailMarker   _tail_marker;
     std::unique_ptr<RepeatEncoder>  _encoder;
     double       _last_mem_check_time    = 0.0;
     // Monotonic timestamp set at begin_replay_locked(); 0.0 when no replay

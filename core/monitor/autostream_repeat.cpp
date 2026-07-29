@@ -607,6 +607,7 @@ std::deque<RepeatBuffer::Chunk> RepeatController::free_recording_locked()
     std::deque<RepeatBuffer::Chunk> stolen = _buffer.steal_chunks();
     _trim.reset();
     _onset.reset();
+    _tail_marker.reset();
     _preroll_ring.clear();
     transition_locked(RepeatState::Idle);
     set_origin_locked(0);
@@ -1012,6 +1013,7 @@ void RepeatController::perform_pending_start()
     // _sample_rate_hz on this (pre-DSP) tap, regardless of which codec was
     // just chosen above for the eventual encoded output.
     _onset.reset();
+    _tail_marker.reset();
     _preroll_ring.set_capacity_frames(
         static_cast<size_t>(kPreRollSeconds * static_cast<double>(_sample_rate_hz)));
     _encoder = std::move(encoder);
@@ -1157,27 +1159,57 @@ void RepeatController::notify_capture_stopped(int input_index)
         }
     }
 
-    // Silence trim: remove the silence-timeout tail plus a 1 s pad.
+    // Tail cut. byte_rate/pad_bytes/frame_bytes are shared by both cuts
+    // below -- only which "bytes past the cut point" figure feeds
+    // compute_trim_bytes() differs.
     long byte_rate = byte_rate_for(_active_codec, _sample_rate_hz);
     size_t pad_bytes = (byte_rate > 0)
         ? static_cast<size_t>(static_cast<double>(byte_rate) * kSilenceTrimPadSeconds)
         : 0;
     int frame_bytes = _encoder ? _encoder->frame_bytes() : 1;
-    size_t trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
-        _trim.bytes_since_last_loud(), pad_bytes, static_cast<size_t>(frame_bytes),
-        _buffer.total_bytes());
+
+    size_t trim_bytes;
+    if (_tail_marker.has_mark())
+    {
+        // Normal case: onset confirmed and at least one sustained run was
+        // committed. Cut everything past last-sustained-run-end + pad --
+        // this is what excludes lead-out crackle and a tonearm clunk (each
+        // a transient that reset the tail's own SustainTracker without ever
+        // re-sustaining) regardless of whether the input's own silence test
+        // ever actually saw them as "quiet" moment to moment.
+        size_t bytes_past_mark = (_buffer.total_bytes() > _tail_marker.mark_bytes())
+            ? (_buffer.total_bytes() - _tail_marker.mark_bytes())
+            : 0;
+        trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
+            bytes_past_mark, pad_bytes, static_cast<size_t>(frame_bytes),
+            _buffer.total_bytes());
+    }
+    else
+    {
+        // Fallback: no valid marker, which in practice means onset never
+        // confirmed this session -- _buffer is empty (nothing was ever
+        // committed) so this trims nothing either way. Kept as the
+        // fallback path (rather than skipping the cut outright) so any
+        // future edge case that leaves _tail_marker without a mark still
+        // gets the pre-existing measured-trailing-silence behaviour instead
+        // of silently keeping an untrimmed tail.
+        trim_bytes = SilenceTrimAccountant::compute_trim_bytes(
+            _trim.bytes_since_last_loud(), pad_bytes, static_cast<size_t>(frame_bytes),
+            _buffer.total_bytes());
+    }
     _buffer.truncate_tail(trim_bytes);
 
     _encoder.reset();
-    // Onset gate: the session is over either way -- if onset never
-    // confirmed, _buffer is empty by construction (nothing was ever spliced
-    // in) and any thump/spin-up audio still sitting in the ring is discarded
-    // here rather than lingering in memory into HOLD; if onset did confirm,
-    // the ring was already fully drained during the recording (see
+    // Onset gate / tail marker: the session is over either way -- if onset
+    // never confirmed, _buffer is empty by construction (nothing was ever
+    // spliced in) and any thump/spin-up audio still sitting in the ring is
+    // discarded here rather than lingering in memory into HOLD; if onset did
+    // confirm, the ring was already fully drained during the recording (see
     // process_recorder_samples()) and is empty already. Either way, the next
-    // session's perform_pending_start() would re-initialise both anyway --
-    // this is purely prompt cleanup, not a correctness requirement.
+    // session's perform_pending_start() would re-initialise all three anyway
+    // -- this is purely prompt cleanup, not a correctness requirement.
     _onset.reset();
+    _tail_marker.reset();
     _preroll_ring.clear();
     // Recording -> Hold decision (CaptureStopped cell); _origin_input
     // / _origin_input_fast are left as-is by that cell (not one of the
@@ -1373,6 +1405,11 @@ void RepeatController::encode_and_append_locked(std::unique_lock<std::mutex>& lo
     if (n == 0)
         return;
 
+    // Pre-encode block duration, same domain OnsetGate/SustainTracker use
+    // elsewhere (frames / sample_rate_hz) -- computed once here since both
+    // append paths below feed it to _tail_marker after their own append.
+    double block_seconds = static_cast<double>(frames) / static_cast<double>(_sample_rate_hz);
+
     // "Before every chunk allocation" means before an append that
     // will actually need a new chunk, i.e. this call's n bytes would overflow
     // the space remaining in the current last chunk -- not merely "total
@@ -1423,6 +1460,7 @@ void RepeatController::encode_and_append_locked(std::unique_lock<std::mutex>& lo
             _buffer.append(_encode_scratch.data(), n);
         }
         _trim.on_block_appended(above_threshold, n);
+        _tail_marker.on_block_committed(above_threshold, block_seconds, _buffer.total_bytes());
         return;
     }
 
@@ -1432,6 +1470,7 @@ void RepeatController::encode_and_append_locked(std::unique_lock<std::mutex>& lo
         _buffer.append(_encode_scratch.data(), n);
     }
     _trim.on_block_appended(above_threshold, n);
+    _tail_marker.on_block_committed(above_threshold, block_seconds, _buffer.total_bytes());
 }
 
 void RepeatController::process_recorder_samples(const float* interleaved, int frames, bool above_threshold)

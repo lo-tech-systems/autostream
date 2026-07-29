@@ -682,6 +682,76 @@ private:
 
 
 // =============================================================================
+// SustainTracker — pure continuous above-threshold run accumulator
+//
+// The shared core of "has the signal been continuously above threshold for
+// long enough to count as music, not a transient". Driven in the
+// audio-block domain (block_seconds = frames / sample_rate_hz) rather than
+// wall-clock time, matching SilenceTrimAccountant's own per-appended-block
+// accounting style -- fed once per block, in order, pure so it is testable
+// without a running capture channel or a real clock.
+//
+// Used by OnsetGate (below) to decide when the recorder may start
+// committing audio at the HEAD of a recording, and by TailMarker (further
+// below) to track where the last sustained run ended, at the TAIL. Both
+// ends share this same accumulator definition -- one meaning of "sustained
+// signal", the same kSustainSeconds constant and the same unbroken-run reset
+// rule, for the whole recording.
+// =============================================================================
+
+class SustainTracker
+{
+public:
+    // Sustained above-threshold duration that counts as a genuine run
+    // (as opposed to a transient that cannot sustain this long). Internal
+    // constant, not user-configurable.
+    static constexpr double kSustainSeconds = 2.5;
+
+    void reset() { _above_seconds = 0.0; }
+
+    // Called once per block, in the order the blocks occurred.
+    // above_threshold is the block's own peak test against the origin
+    // input's snapshotted silence threshold; block_seconds is the block's
+    // duration.
+    //
+    // Reset semantics: any block whose above_threshold is false drops the
+    // continuous-above-threshold accumulator back to zero -- the sustain
+    // window must be UNBROKEN. A single below-threshold block anywhere
+    // inside an otherwise-sustained run restarts the count from that
+    // block's own (zero) contribution, not from whatever had already
+    // accumulated before it.
+    //
+    // Returns true exactly on the call whose block_seconds pushes the
+    // accumulated continuous-above-threshold duration from below
+    // kSustainSeconds to >= kSustainSeconds (the crossing edge of THIS run).
+    // Because the accumulator keeps running rather than latching, this can
+    // report the edge again for a later run, once a below-threshold block
+    // has reset it and a fresh run has itself reached kSustainSeconds --
+    // callers that only care about the first-ever edge (OnsetGate) latch
+    // that on top; callers that care about every run's edge (TailMarker) do
+    // not need to.
+    bool on_block(bool above_threshold, double block_seconds)
+    {
+        if (!above_threshold)
+        {
+            _above_seconds = 0.0;
+            return false;
+        }
+
+        bool was_sustained = _above_seconds >= kSustainSeconds;
+        _above_seconds += block_seconds;
+        return !was_sustained && _above_seconds >= kSustainSeconds;
+    }
+
+    bool   is_sustained() const   { return _above_seconds >= kSustainSeconds; }
+    double above_seconds() const  { return _above_seconds; }
+
+private:
+    double _above_seconds = 0.0;
+};
+
+
+// =============================================================================
 // OnsetGate — pure onset-sustain decision core
 //
 // The SESSION starts on the first above-threshold transient, exactly as
@@ -692,11 +762,9 @@ private:
 // music sustains from its first note, so it confirms almost immediately
 // once its own first note has run long enough.
 //
-// Driven in the audio-block domain (block_seconds = frames / sample_rate_hz)
-// rather than wall-clock time, matching SilenceTrimAccountant's own
-// per-appended-block accounting style -- both are fed once per recorder
-// block, in order, and both are pure so they are testable without a running
-// capture channel or a real clock.
+// Thin latch-once wrapper around SustainTracker: SustainTracker does the
+// run accumulation, OnsetGate adds "report the very first time this run
+// reaches sustain, and never again until reset()".
 // =============================================================================
 
 class OnsetGate
@@ -704,27 +772,17 @@ class OnsetGate
 public:
     // Sustained above-threshold duration required before the recorder starts
     // committing audio. Internal constant, not user-configurable.
-    static constexpr double kOnsetSustainSeconds = 2.5;
+    static constexpr double kOnsetSustainSeconds = SustainTracker::kSustainSeconds;
 
     void reset()
     {
-        _confirmed      = false;
-        _above_seconds  = 0.0;
+        _confirmed = false;
+        _core.reset();
     }
 
     // Called once per raw, pre-encode recorder block, in the order the
-    // blocks arrive. above_threshold is the block's own peak test against
-    // the origin input's snapshotted silence threshold (the same value
-    // already computed for the recorder's above_threshold flag -- this
-    // reuses it rather than re-testing samples). block_seconds is the
-    // block's duration.
-    //
-    // Reset semantics: any block whose above_threshold is false drops the
-    // continuous-above-threshold accumulator back to zero -- the sustain
-    // window must be UNBROKEN. A single below-threshold block anywhere
-    // inside an otherwise-sustained run restarts the count from that
-    // block's own (zero) contribution, not from whatever had already
-    // accumulated before it.
+    // blocks arrive. See SustainTracker::on_block() for the argument and
+    // reset-semantics contract.
     //
     // Returns true exactly once: on the call whose block_seconds pushes the
     // accumulated continuous-above-threshold duration to
@@ -733,15 +791,10 @@ public:
     // latches permanently until reset()).
     bool on_block(bool above_threshold, double block_seconds)
     {
+        bool edge = _core.on_block(above_threshold, block_seconds);
         if (_confirmed)
             return false;
-
-        if (above_threshold)
-            _above_seconds += block_seconds;
-        else
-            _above_seconds = 0.0;
-
-        if (_above_seconds >= kOnsetSustainSeconds)
+        if (edge)
         {
             _confirmed = true;
             return true;
@@ -752,8 +805,79 @@ public:
     bool is_confirmed() const { return _confirmed; }
 
 private:
-    bool   _confirmed     = false;
-    double _above_seconds = 0.0;
+    bool           _confirmed = false;
+    SustainTracker _core;
+};
+
+
+// =============================================================================
+// TailMarker — last-sustained-run-end position, in committed-buffer bytes
+//
+// Tracks where the RECORDER's committed output last saw a sustained (>=
+// SustainTracker::kSustainSeconds) above-threshold run end, so session close
+// can cut the trailing run-out (isolated pops, a tonearm clunk, silence)
+// while keeping everything up to the last real music.
+//
+// Fed once per block actually appended to the RepeatBuffer -- the same call
+// site and same (above_threshold, block_seconds) values SilenceTrimAccountant
+// already consumes -- so the byte position it records always lines up with a
+// real, already-committed buffer offset. Internally owns its own
+// SustainTracker: reusing the same accumulator definition as OnsetGate means
+// the tail uses the identical notion of "sustained" as the head (same
+// constant, same unbroken-run reset rule) without needing to reach back into
+// OnsetGate's own instance, which is fed in raw arrival order (ahead of the
+// pre-roll splice) rather than committed-buffer order -- replaying the
+// identical per-block stream through a second instance, in commit order,
+// gives the tail the buffer-position bookkeeping it needs while leaving
+// onset confirmation's own timing completely untouched.
+//
+// The mark only starts existing once the FIRST sustained run appears in the
+// committed stream -- for a normal recording that is exactly the run that
+// confirmed onset (nothing shorter than a sustained run is ever committed
+// before onset confirms), matching has_mark() to "onset has confirmed and
+// stayed on long enough to matter". A transient (pop/clunk) can never itself
+// sustain kSustainSeconds, so on its own it can only freeze the mark where it
+// already was, never advance it.
+// =============================================================================
+
+class TailMarker
+{
+public:
+    void reset()
+    {
+        _run.reset();
+        _mark_bytes = 0;
+        _has_mark   = false;
+    }
+
+    // Called once per block actually committed to the RepeatBuffer, in
+    // buffer order. committed_bytes_after is the buffer's total_bytes()
+    // AFTER this block was appended -- the position the mark advances to
+    // when this block keeps (or newly reaches) a sustained run.
+    void on_block_committed(bool above_threshold, double block_seconds,
+                             size_t committed_bytes_after)
+    {
+        _run.on_block(above_threshold, block_seconds);
+        if (_run.is_sustained())
+        {
+            _mark_bytes = committed_bytes_after;
+            _has_mark   = true;
+        }
+    }
+
+    // False until the committed stream has ever contained a sustained run
+    // (i.e. onset never confirmed, or confirmed but the session ended before
+    // any full run posted -- cannot happen in practice since the run that
+    // confirms onset IS the first thing committed, but kept as an explicit,
+    // checkable precondition rather than an assumption). Callers must treat
+    // mark_bytes() as meaningless while this is false.
+    bool   has_mark() const   { return _has_mark; }
+    size_t mark_bytes() const { return _mark_bytes; }
+
+private:
+    SustainTracker _run;
+    size_t         _mark_bytes = 0;
+    bool           _has_mark   = false;
 };
 
 
