@@ -112,11 +112,33 @@ class TestDispatchStatus:
             "streaming": False,
             "scanning": False,
             "pump_source_active": False,
+            "loopback_held": False,
             "buffer_ms": 200,
             "adapter_kind": "usb",
             "adapter_blocked": False,
             "version": "0.5.1",
         }
+
+    def test_status_loopback_held_passthrough(self):
+        srv = FakeServer()
+        srv._status["loopback_held"] = True
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["loopback_held"] is True
+
+    def test_status_codec_and_rate_forwarded_when_present(self):
+        # The daemon includes codec/sample_rate only while an A2DP transport
+        # is active; the envelope must forward them on the same terms.
+        srv = FakeServer()
+        srv._status["codec"] = "SBC"
+        srv._status["sample_rate"] = 44100
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["codec"] == "SBC"
+        assert r["sample_rate"] == 44100
+
+    def test_status_codec_and_rate_absent_when_idle(self):
+        r = dispatch(_req({"cmd": "status"}), FakeServer())
+        assert "codec" not in r
+        assert "sample_rate" not in r
 
     def test_status_version_passthrough(self):
         srv = FakeServer()

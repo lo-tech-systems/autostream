@@ -717,6 +717,16 @@ deploy_phase() {
   # Remove stale dependency lockfiles before copying — an old requirements.lock
   # can survive repo upgrades and reinstall packages no longer in the project.
   rm -f "${INSTALL_DIR}/requirements.lock"
+  # Remove stray root-level copies of the Bluetooth daemon modules. Their
+  # only supported home is ${INSTALL_DIR}/platform (installer/lib/
+  # bluetooth.sh); copies at the install root are never on any process's
+  # import path but read as live code to anyone inspecting the appliance,
+  # and a mixed-version set invites exactly that confusion.
+  local bt_mod
+  for bt_mod in bluetooth_service.py bluetooth_bluez.py bluetooth_agent.py \
+                bluetooth_socket.py bluetooth_pump.py; do
+    rm -f "${INSTALL_DIR}/${bt_mod}"
+  done
   cp -a "${AUTOSTREAM_DIR}/core/."     "${INSTALL_DIR}/"
   install -m 0755 -o root -g root \
       "${AUTOSTREAM_DIR}/platform/wifi_watcher.py" "${INSTALL_DIR}/autostream_wifi_watcher"

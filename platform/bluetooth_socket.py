@@ -197,18 +197,27 @@ def dispatch(raw: bytes, server: "BluetoothControlServer") -> dict:
 
 def _handle_status(server: "BluetoothControlServer") -> dict:
     st = server.get_status()
-    return _ok(
+    reply = _ok(
         adapter_present=bool(st.get("adapter_present", False)),
         paired=st.get("paired"),
         link=st.get("link", "disconnected"),
         streaming=bool(st.get("streaming", False)),
         scanning=bool(st.get("scanning", False)),
         pump_source_active=bool(st.get("pump_source_active", False)),
+        loopback_held=bool(st.get("loopback_held", False)),
         buffer_ms=int(st.get("buffer_ms", _DEFAULT_BUFFER_MS)),
         adapter_kind=st.get("adapter_kind"),
         adapter_blocked=bool(st.get("adapter_blocked", False)),
         version=str(st.get("version") or _DEFAULT_VERSION),
     )
+    # Transport-conditional fields: the daemon includes these only while an
+    # A2DP transport is active (the negotiated codec name and sample rate),
+    # so the wire envelope forwards them on the same terms rather than
+    # inventing placeholder values for the idle case.
+    for key in ("codec", "sample_rate"):
+        if key in st:
+            reply[key] = st[key]
+    return reply
 
 
 def _handle_pair(obj: dict, server: "BluetoothControlServer") -> dict:
