@@ -410,41 +410,15 @@ private:
 }   // namespace
 
 
-// =============================================================================
-// Pipe-format conversion (single function parameterised so the widening
-// convention below lives in exactly one place)
-//
-// The live path's FifoWriter writes 32-bit-container frames
-// (autostream_monitor_io.cpp deliver_output()); this function is the
-// matching s16 -> 24-in-32 container expansion on the replay side, so the
-// live writer and the replay writer never disagree about the wire format
-// written to the same FIFO.
-//
-// Every OTHER part of ReplayEngine stays s16 internally -- dsp_pcm_buf, the
-// decoder output, the replay-side ID tap, and replay_peak_sample() all
-// operate in the int16 domain; only this one conversion, at the very edge
-// before the bytes go on the wire, changes.
-//
-// Widening convention: left-shift each s16 sample by 16 bits to occupy the
-// full 32-bit dynamic range -- the same "left-justify the significant bits"
-// scaling AlsaCapture::read() uses for its own S16_LE fallback path
-// (autostream_monitor_io.cpp), so a receiver reading the FIFO sees
-// bit-identical scaling regardless of which writer (live or replay) is
-// currently active.
-// =============================================================================
-
-namespace
-{
-
-void convert_to_pipe_format(const int16_t* in_s16, size_t n_samples, std::vector<uint8_t>& out)
-{
-    out.resize(n_samples * sizeof(int32_t));
-    int32_t* out32 = reinterpret_cast<int32_t*>(out.data());
-    for (size_t i = 0; i < n_samples; ++i)
-        out32[i] = static_cast<int32_t>(in_s16[i]) << 16;
-}
-
-}   // namespace
+// Pipe-format conversion: convert_to_pipe_format() (autostream_repeat_buffer.h)
+// is the replay-side counterpart of the live path's deliver_output() wire
+// narrowing (autostream_monitor_io.cpp) -- both edges branch on
+// AudioMonitor::output_format_mode() so the wire layout never disagrees
+// between the two writers. Every OTHER part of ReplayEngine stays s16
+// internally -- dsp_pcm_buf, the decoder output, the replay-side ID tap, and
+// replay_peak_sample() all operate in the int16 domain; only this one
+// conversion, at the very edge before the bytes go on the wire, changes
+// width. See the helper's own doc comment for both wire layouts.
 
 
 // =============================================================================
@@ -2273,7 +2247,10 @@ void ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, si
     }
 
     // ── Pipe-format conversion ─────────────────────────────────────────────
-    convert_to_pipe_format(ctx.dsp_pcm_buf.data(), slice_samples, ctx.pipe_bytes);
+    // widen_to_s32 mirrors deliver_output()'s own mode check so the replay
+    // writer and the live writer never disagree about the wire layout.
+    bool widen_to_s32 = AudioMonitor::output_format_mode() != OutputFormatMode::Compatible;
+    convert_to_pipe_format(ctx.dsp_pcm_buf.data(), slice_samples, ctx.pipe_bytes, widen_to_s32);
 }
 
 ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
@@ -2451,6 +2428,10 @@ bool ReplayEngine::write_loop_gap(ReplaySessionCtx& ctx, int rate_hz)
 
     std::vector<int16_t> silence(std::min(kSliceFrames * 2, gap_samples), 0);
 
+    // Same mode check as process_slice() -- the gap must land on the wire
+    // in the same layout as the content either side of it.
+    bool widen_to_s32 = AudioMonitor::output_format_mode() != OutputFormatMode::Compatible;
+
     size_t written_samples = 0;
     while (written_samples < gap_samples)
     {
@@ -2459,7 +2440,7 @@ bool ReplayEngine::write_loop_gap(ReplaySessionCtx& ctx, int rate_hz)
             return false;
 
         size_t slice_samples = std::min(silence.size(), gap_samples - written_samples);
-        convert_to_pipe_format(silence.data(), slice_samples, ctx.pipe_bytes);
+        convert_to_pipe_format(silence.data(), slice_samples, ctx.pipe_bytes, widen_to_s32);
         if (!write_slice_paced(ctx))
             return false;
         written_samples += slice_samples;

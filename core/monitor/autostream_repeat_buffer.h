@@ -371,6 +371,49 @@ private:
 
 
 // =============================================================================
+// convert_to_pipe_format — replay-side wire narrowing
+//
+// The FIFO wire runs in one of two layouts, selected once at process start
+// (AudioMonitor::output_format_mode(), autostream_monitor.h) and shared by
+// both producer edges (the live path's deliver_output(),
+// autostream_monitor_io.cpp, and this replay-side helper):
+//
+//   - widen_to_s32 == true  ("native", 48000 Hz / 32-bit / 2ch): each s16
+//     sample is left-shifted by 16 bits into a little-endian int32 container
+//     -- 4 bytes/sample, 8 bytes/frame -- the same "left-justify the
+//     significant bits" scaling AlsaCapture::read() uses for its own S16_LE
+//     fallback path.
+//   - widen_to_s32 == false ("compatible", 44100 Hz / 16-bit / 2ch): each
+//     s16 sample passes through unchanged as its native little-endian
+//     bytes -- 2 bytes/sample, 4 bytes/frame.
+//
+// Callers must pass the SAME mode the live writer is currently using for
+// this process (AudioMonitor::output_format_mode() != OutputFormatMode::
+// Compatible) -- a receiver reading the FIFO must see one consistent wire
+// layout regardless of which writer (live or replay) is currently active.
+// Pure and allocation-shaped only by n_samples (out is resized to exactly
+// fit), so it is unit-testable without any audio/link dependencies.
+// =============================================================================
+
+inline void convert_to_pipe_format(const int16_t* in_s16, size_t n_samples,
+                                    std::vector<uint8_t>& out, bool widen_to_s32)
+{
+    if (widen_to_s32)
+    {
+        out.resize(n_samples * sizeof(int32_t));
+        int32_t* out32 = reinterpret_cast<int32_t*>(out.data());
+        for (size_t i = 0; i < n_samples; ++i)
+            out32[i] = static_cast<int32_t>(in_s16[i]) << 16;
+    }
+    else
+    {
+        out.resize(n_samples * sizeof(int16_t));
+        std::memcpy(out.data(), in_s16, out.size());
+    }
+}
+
+
+// =============================================================================
 // Codec ladder and max_recording_seconds
 // =============================================================================
 

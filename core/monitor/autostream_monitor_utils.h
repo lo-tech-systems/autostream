@@ -81,10 +81,11 @@ inline constexpr std::int32_t widen_s16_to_s32(std::int16_t sample)
 // The wire-edge narrowing happens at both producer edges: deliver_output()
 // (autostream_monitor_io.cpp) branches once per block between float -> int32
 // (native) and float -> int16 (compatible, src_float_to_short_array), and
-// ReplayEngine's convert_to_pipe_format() (autostream_repeat.cpp) branches
-// the same way between <<16 widening (native) and s16 passthrough
-// (compatible). Both modes are fully functional -- --compatible starts and
-// produces a byte-correct 44.1kHz/16-bit wire.
+// the replay path's convert_to_pipe_format() (autostream_repeat_buffer.h,
+// called from autostream_repeat.cpp) branches the same way between <<16
+// widening (native) and s16 passthrough (compatible). Both modes are fully
+// functional -- --compatible starts and produces a byte-correct
+// 44.1kHz/16-bit wire.
 // =============================================================================
 
 enum class OutputFormatMode

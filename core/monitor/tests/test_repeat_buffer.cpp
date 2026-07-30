@@ -29,6 +29,7 @@
 #include "autostream_repeat_buffer.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -1670,6 +1671,71 @@ static void test_tail_offset_gate_end_to_end()
 }
 
 // ---------------------------------------------------------------------------
+// U18 — convert_to_pipe_format() wire layouts
+// ---------------------------------------------------------------------------
+
+static void test_u18_convert_to_pipe_format()
+{
+    // Widening layout ("native"): each s16 sample becomes a little-endian
+    // int32 equal to value << 16, 4 bytes/sample.
+    {
+        const int16_t in[] = { 0, 1, -1, 32767, -32768, 1234, -1234 };
+        const size_t n = sizeof(in) / sizeof(in[0]);
+        std::vector<uint8_t> out;
+        convert_to_pipe_format(in, n, out, /*widen_to_s32=*/true);
+
+        CHECK(out.size() == n * sizeof(int32_t), "U18: widened output is 4 bytes/sample");
+        const int32_t* out32 = reinterpret_cast<const int32_t*>(out.data());
+        for (size_t i = 0; i < n; ++i)
+            CHECK(out32[i] == (static_cast<int32_t>(in[i]) << 16),
+                  "U18: widened sample equals value << 16");
+    }
+
+    // Passthrough layout ("compatible"): bit-identical s16 bytes, 2
+    // bytes/sample -- no widening, no byte-order change.
+    {
+        const int16_t in[] = { 0, 1, -1, 32767, -32768, 1234, -1234 };
+        const size_t n = sizeof(in) / sizeof(in[0]);
+        std::vector<uint8_t> out;
+        convert_to_pipe_format(in, n, out, /*widen_to_s32=*/false);
+
+        CHECK(out.size() == n * sizeof(int16_t), "U18: passthrough output is 2 bytes/sample");
+        CHECK(std::memcmp(out.data(), in, out.size()) == 0,
+              "U18: passthrough output is bit-identical to the input s16 bytes");
+    }
+
+    // Zero-input: both modes resize to empty output, no crash.
+    {
+        std::vector<uint8_t> out_wide(5, 0xAA);
+        convert_to_pipe_format(nullptr, 0, out_wide, /*widen_to_s32=*/true);
+        CHECK(out_wide.empty(), "U18: zero-input widened output is empty");
+
+        std::vector<uint8_t> out_narrow(5, 0xAA);
+        convert_to_pipe_format(nullptr, 0, out_narrow, /*widen_to_s32=*/false);
+        CHECK(out_narrow.empty(), "U18: zero-input passthrough output is empty");
+    }
+
+    // Value sweep including the int16 extremes and the values immediately
+    // either side of zero, in both modes.
+    {
+        const int16_t sweep[] = { INT16_MIN, -1, 0, 1, INT16_MAX };
+        const size_t n = sizeof(sweep) / sizeof(sweep[0]);
+
+        std::vector<uint8_t> wide;
+        convert_to_pipe_format(sweep, n, wide, /*widen_to_s32=*/true);
+        const int32_t* wide32 = reinterpret_cast<const int32_t*>(wide.data());
+        for (size_t i = 0; i < n; ++i)
+            CHECK(wide32[i] == (static_cast<int32_t>(sweep[i]) << 16),
+                  "U18: sweep value widens to value << 16");
+
+        std::vector<uint8_t> narrow;
+        convert_to_pipe_format(sweep, n, narrow, /*widen_to_s32=*/false);
+        CHECK(std::memcmp(narrow.data(), sweep, narrow.size()) == 0,
+              "U18: sweep values pass through bit-identical");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1694,6 +1760,7 @@ int main()
     test_onset_gated_recording_end_to_end();
     test_amortized_drain_ordering_end_to_end();
     test_tail_offset_gate_end_to_end();
+    test_u18_convert_to_pipe_format();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
