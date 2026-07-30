@@ -148,19 +148,86 @@ class TestBluetoothFlagRetired:
 
 
 # ---------------------------------------------------------------------------
-# hardware.sh — update_pi_firmware_config always writes disable-bt
+# hardware.sh — update_pi_firmware_config: fresh installs write disable-bt;
+# updates preserve the line's current presence/absence (the line is the
+# onboard-radio setting's only store — the Setup toggle edits it in place)
 # ---------------------------------------------------------------------------
 
-class TestFirmwareConfigUnconditional:
-    # hardware.sh's update_pi_firmware_config() accepts an optional path
-    # argument (defaulting to the real /boot/firmware/config.txt for all
-    # production callsites) specifically so these tests can source and
-    # invoke the REAL function against a temp file, rather than maintaining
-    # a hand-copied duplicate of its logic that could silently drift out of
-    # sync with installer/lib/hardware.sh.
-    def _run_firmware_config(self, tmp_path, pre_existing: str = "") -> str:
+class TestFirmwareConfigOnboardBtStance:
+    # hardware.sh's update_pi_firmware_config() accepts optional path and
+    # mode arguments (defaulting to the real /boot/firmware/config.txt and
+    # the installer's INSTALL_MODE for all production callsites)
+    # specifically so these tests can source and invoke the REAL function
+    # against a temp file, rather than maintaining a hand-copied duplicate
+    # of its logic that could silently drift out of sync with
+    # installer/lib/hardware.sh.
+    def _run_firmware_config(self, tmp_path, pre_existing: str = "",
+                             mode: str = "install") -> str:
         cfg = tmp_path / "config.txt"
         cfg.write_text(pre_existing, encoding="utf-8")
+        script = f'''
+set -euo pipefail
+info() {{ :; }}
+warn() {{ :; }}
+error() {{ :; }}
+source "{HARDWARE_SH.as_posix()}"
+update_pi_firmware_config "{cfg.as_posix()}" "{mode}"
+cat "{cfg.as_posix()}"
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    @bash_capable
+    def test_install_all_section_present_writes_disable_bt(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "[all]\n", mode="install")
+        assert "dtoverlay=disable-bt" in out
+        assert "dtparam=watchdog=on" in out
+
+    @bash_capable
+    def test_install_all_section_absent_writes_disable_bt(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "", mode="install")
+        assert "dtoverlay=disable-bt" in out
+        assert "dtparam=watchdog=on" in out
+        assert "[all]" in out
+
+    @bash_capable
+    def test_pre_existing_disable_bt_line_deduplicated(self, tmp_path):
+        out = self._run_firmware_config(
+            tmp_path, "[all]\ndtparam=watchdog=on\ndtoverlay=disable-bt\n",
+            mode="install",
+        )
+        assert out.count("dtoverlay=disable-bt") == 1
+
+    @bash_capable
+    def test_update_preserves_present_disable_bt(self, tmp_path):
+        out = self._run_firmware_config(
+            tmp_path, "[all]\ndtoverlay=disable-bt\n", mode="update",
+        )
+        assert out.count("dtoverlay=disable-bt") == 1
+        assert "dtparam=watchdog=on" in out
+
+    @bash_capable
+    def test_update_preserves_absent_disable_bt(self, tmp_path):
+        # The appliance opted in to the onboard radio (Setup toggle removed
+        # the line); an update must not silently revert that choice.
+        out = self._run_firmware_config(tmp_path, "[all]\n", mode="update")
+        assert "dtoverlay=disable-bt" not in out
+        assert "dtparam=watchdog=on" in out
+
+    @bash_capable
+    def test_update_preserves_absence_without_all_section(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "arm_64bit=1\n", mode="update")
+        assert "dtoverlay=disable-bt" not in out
+        assert "dtparam=watchdog=on" in out
+        assert "[all]" in out
+
+    @bash_capable
+    def test_mode_defaults_to_install_semantics_when_unset(self, tmp_path):
+        # Production callsites pass no mode; with INSTALL_MODE unset the
+        # function falls back to the fresh-install stance.
+        cfg = tmp_path / "config.txt"
+        cfg.write_text("[all]\n", encoding="utf-8")
         script = f'''
 set -euo pipefail
 info() {{ :; }}
@@ -172,27 +239,27 @@ cat "{cfg.as_posix()}"
 '''
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
         assert r.returncode == 0, r.stderr
-        return r.stdout
+        assert "dtoverlay=disable-bt" in r.stdout
 
     @bash_capable
-    def test_all_section_present_writes_disable_bt(self, tmp_path):
-        out = self._run_firmware_config(tmp_path, "[all]\n")
-        assert "dtoverlay=disable-bt" in out
-        assert "dtparam=watchdog=on" in out
-
-    @bash_capable
-    def test_all_section_absent_writes_disable_bt(self, tmp_path):
-        out = self._run_firmware_config(tmp_path, "")
-        assert "dtoverlay=disable-bt" in out
-        assert "dtparam=watchdog=on" in out
-        assert "[all]" in out
-
-    @bash_capable
-    def test_pre_existing_disable_bt_line_deduplicated(self, tmp_path):
-        out = self._run_firmware_config(
-            tmp_path, "[all]\ndtparam=watchdog=on\ndtoverlay=disable-bt\n"
-        )
-        assert out.count("dtoverlay=disable-bt") == 1
+    def test_install_mode_env_update_preserves_absence(self, tmp_path):
+        # Production update callsites pass no arguments: the installer's own
+        # INSTALL_MODE global must select the preserving behaviour.
+        cfg = tmp_path / "config.txt"
+        cfg.write_text("[all]\n", encoding="utf-8")
+        script = f'''
+set -euo pipefail
+info() {{ :; }}
+warn() {{ :; }}
+error() {{ :; }}
+INSTALL_MODE="update"
+source "{HARDWARE_SH.as_posix()}"
+update_pi_firmware_config "{cfg.as_posix()}"
+cat "{cfg.as_posix()}"
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+        assert "dtoverlay=disable-bt" not in r.stdout
 
     def test_no_bluetooth_mode_conditional_in_source(self):
         src = _src(HARDWARE_SH)

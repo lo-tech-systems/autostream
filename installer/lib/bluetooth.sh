@@ -151,9 +151,10 @@ install_bluetooth_stack() {
 # remove_bluetooth_stack: remove the Bluetooth input subsystem. Used only by
 # autostream_uninstall.sh. Apt packages (bluez, bluez-alsa-utils, ...) are
 # deliberately KEPT, consistent with the uninstaller's existing light-touch
-# stance. No firmware work is needed: dtoverlay=disable-bt is written
-# unconditionally by update_pi_firmware_config() (installer/lib/hardware.sh)
-# regardless of whether this subsystem is present.
+# stance. No firmware work is needed: the dtoverlay=disable-bt line is
+# owned by update_pi_firmware_config() (installer/lib/hardware.sh) -- written
+# on fresh installs, preserved as-is on updates -- independently of whether
+# this subsystem is present.
 remove_bluetooth_stack() {
   info "=== Bluetooth input: removing subsystem ==="
 

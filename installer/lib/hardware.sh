@@ -12,17 +12,27 @@
 #############################################
 
 # update_pi_firmware_config: idempotent strip-then-insert of the watchdog and
-# disable-bt lines in /boot/firmware/config.txt. dtoverlay=disable-bt is
-# always written -- the onboard Bluetooth radio stays disabled by default on
-# every appliance; enabling it is a separate, later, opt-in runtime action
-# and is not part of installation.
+# disable-bt lines in /boot/firmware/config.txt.
 #
-# Accepts an optional path argument overriding the config.txt location, used
-# only by tests/test_bluetooth_installer.py to exercise this exact function
-# against a temp file; all production callsites pass no argument and keep
-# today's hardcoded /boot/firmware/config.txt.
+# dtoverlay=disable-bt doubles as the onboard-Bluetooth setting store: the
+# Setup page's onboard-radio toggle removes/reinserts the line in place
+# (autostream_admin bt-onboard-on/off) and no other record of the choice
+# exists. A FRESH install therefore writes the line (radio disabled by
+# default; enabling it is a separate, later, opt-in runtime action), while
+# an UPDATE preserves the line's current presence/absence -- re-asserting
+# the fresh-install default would silently revert the opt-in, with the
+# radio loss deferred to whenever the appliance next reboots. The watchdog
+# line is unconditional in both modes.
+#
+# Accepts an optional path argument overriding the config.txt location, and
+# an optional mode argument overriding INSTALL_MODE (install|update) -- both
+# used only by tests/test_bluetooth_installer.py to exercise this exact
+# function against a temp file; all production callsites pass no arguments
+# and keep today's hardcoded /boot/firmware/config.txt and the installer's
+# own INSTALL_MODE.
 update_pi_firmware_config() {
   local cfg="${1:-/boot/firmware/config.txt}"
+  local mode="${2:-${INSTALL_MODE:-install}}"
   if [[ ! -f "${cfg}" ]]; then
     warn "${cfg} not found; skipping firmware settings update."
     return 0
@@ -33,9 +43,14 @@ update_pi_firmware_config() {
   tmp="$(mktemp)"
 
   local bt_line="dtoverlay=disable-bt"
+  local write_bt=1
+  if [[ "${mode}" == "update" ]] && \
+     ! grep -qE '^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$' "${cfg}"; then
+    write_bt=0
+  fi
 
   if grep -qE '^\s*\[all\]\s*$' "${cfg}"; then
-    awk -v bt_line="${bt_line}" '
+    awk -v bt_line="${bt_line}" -v write_bt="${write_bt}" '
       BEGIN { inserted=0 }
       /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }
       /^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$/ { next }
@@ -43,7 +58,7 @@ update_pi_firmware_config() {
         print
         if (!inserted && $0 ~ /^[[:space:]]*\[all\][[:space:]]*$/) {
           print "dtparam=watchdog=on"
-          print bt_line
+          if (write_bt) print bt_line
           inserted=1
         }
       }
@@ -52,7 +67,9 @@ update_pi_firmware_config() {
     {
       echo "[all]"
       echo "dtparam=watchdog=on"
-      echo "${bt_line}"
+      if [[ "${write_bt}" == "1" ]]; then
+        echo "${bt_line}"
+      fi
       echo
       awk '
         /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }

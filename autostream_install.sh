@@ -882,8 +882,10 @@ configure_phase() {
   configure_cloud_init
 
   # Firmware / watchdog
-  # update_pi_firmware_config always writes dtoverlay=disable-bt; the onboard
-  # radio is opt-in via a later, separate runtime action.
+  # update_pi_firmware_config writes dtoverlay=disable-bt on fresh installs
+  # (the onboard radio is opt-in via a later, separate runtime action) and
+  # preserves the line's current presence/absence on updates -- the line is
+  # the onboard-radio setting's only store.
   update_pi_firmware_config
   install_bluetooth_stack
   cp -a "${AUTOSTREAM_DIR}/system/watchdog/watchdog.conf" /etc/watchdog.conf

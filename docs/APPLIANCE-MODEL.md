@@ -12,7 +12,7 @@ conflicts.
 | Setting | Effect |
 |---|---|
 | `dtparam=watchdog=on` | Enables BCM hardware watchdog; `watchdog.conf` is replaced with autostream's thresholds (load, free memory). Daemon will **reboot the Pi** autonomously when thresholds are exceeded. |
-| `dtoverlay=disable-bt` | Disables on-board Bluetooth, freeing the primary UART. `hciuart.service` becomes a no-op. |
+| `dtoverlay=disable-bt` | Disables on-board Bluetooth, freeing the primary UART. `hciuart.service` becomes a no-op. Written on fresh installs only: the line doubles as the persistent store for the Setup page's onboard-Bluetooth toggle (removed/reinserted by `autostream_admin bt-onboard-on/off`), so updates preserve its current presence/absence rather than re-asserting the default. |
 
 The uninstaller does **not** revert these; they persist on the SD card.
 
