@@ -1,5 +1,17 @@
 # Changelog
 
+## Version 0.5.0-beta.1
+
+- fix: Repeat playback no longer sounds muddled during the first few seconds
+  of each loop
+- fix: Bluetooth input could play garbled audio after a software update or
+  reboot
+- fix: the onboard-Bluetooth setting is now preserved across software updates
+- fix: the Setup page's Bluetooth card now shows the connected device's codec
+  and sample rate
+- fix: Repeat playback now produces correct audio when the output runs in the
+  44.1 kHz/16-bit compatible format
+
 ## Version 0.5.0-alpha.4
 
 - new: direct Bluetooth turntable input — pair a Bluetooth-equipped turntable and

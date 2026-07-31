@@ -64,7 +64,7 @@ class FakeServer:
             "pump_source_active": False,
             "buffer_ms": 200,
             "adapter_kind": "usb",
-            "version": "0.5.1",
+            "version": "0.5.2",
         }
         self._scan_results = []
         self._pair_status = {"state": "idle"}
@@ -116,7 +116,7 @@ class TestDispatchStatus:
             "buffer_ms": 200,
             "adapter_kind": "usb",
             "adapter_blocked": False,
-            "version": "0.5.1",
+            "version": "0.5.2",
         }
 
     def test_status_loopback_held_passthrough(self):
@@ -152,7 +152,7 @@ class TestDispatchStatus:
         srv = FakeServer()
         del srv._status["version"]
         r = dispatch(_req({"cmd": "status"}), srv)
-        assert r["version"] == "0.5.1"
+        assert r["version"] == "0.5.2"
 
     def test_status_adapter_blocked_passthrough(self):
         srv = FakeServer()

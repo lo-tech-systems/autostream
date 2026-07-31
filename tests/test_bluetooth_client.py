@@ -266,7 +266,7 @@ class TestBluetoothServiceVersionConstant:
         BLUETOOTH_SERVICE_VERSION copy -- this pins the current value so an
         accidental one-sided bump is caught here rather than only surfacing
         as a stale About-page version after the daemon is upgraded."""
-        assert BLUETOOTH_SERVICE_VERSION == "0.5.1"
+        assert BLUETOOTH_SERVICE_VERSION == "0.5.2"
 
     def test_is_a_string(self):
         assert isinstance(BLUETOOTH_SERVICE_VERSION, str)

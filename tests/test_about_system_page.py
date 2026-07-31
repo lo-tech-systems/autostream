@@ -411,7 +411,7 @@ class TestBluetoothServiceRow:
 
     def test_disabled_shows_fallback_version(self):
         result = self._collect(enabled=False, active_state="inactive")
-        assert self._bt_row(result)["version"] == "0.5.1"
+        assert self._bt_row(result)["version"] == "0.5.2"
 
     def test_disabled_uses_bluetooth_service_label(self):
         result = self._collect(enabled=False, active_state="inactive")
@@ -443,7 +443,7 @@ class TestBluetoothServiceRow:
 
     def test_enabled_and_active_falls_back_when_daemon_unreachable(self):
         result = self._collect(enabled=True, active_state="active", client_status=None)
-        assert self._bt_row(result)["version"] == "0.5.1"
+        assert self._bt_row(result)["version"] == "0.5.2"
 
     def test_row_absent_when_not_installed(self):
         result = self._collect(installed=False)

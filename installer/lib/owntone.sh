@@ -12,7 +12,7 @@ OWNTONE_MINI_REPO="https://github.com/lo-tech-systems/owntone-mini.git"
 # The owntone-mini release this autostream release is built against. Both
 # fresh installs and updates build exactly this tag; keep in sync with the
 # default ref in tools/owntone_mini_update.sh.
-OWNTONE_MINI_VERSION="1.1.0"
+OWNTONE_MINI_VERSION="1.1.1"
 
 configure_owntone_apt_repo() {
   info "Configuring OwnTone APT repository"

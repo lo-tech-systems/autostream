@@ -73,7 +73,7 @@ _DEFAULT_BUFFER_MS = 200
 # Default surfaced when a server implementation predates the version key
 # (kept in sync with bluetooth_service.BLUETOOTH_SERVICE_VERSION; not
 # imported for the same reason as _DEFAULT_BUFFER_MS above).
-_DEFAULT_VERSION = "0.5.1"
+_DEFAULT_VERSION = "0.5.2"
 
 
 def _ok(**kwargs) -> dict:
