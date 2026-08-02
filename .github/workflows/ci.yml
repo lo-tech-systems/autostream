@@ -33,7 +33,9 @@ jobs:
 
   # -----------------------------------------------------------------------
   # Environment-dependent suite — requires system tools that are absent on
-  # Windows and macOS.  Installs: nginx, nodejs, shellcheck, systemd tools.
+  # Windows and macOS.  Installs: nginx, nodejs, shellcheck, systemd tools,
+  # plus libsamplerate0-dev and libasound2-dev for the native monitor C++
+  # build tests.
   # Tests marked node_available, nginx_available, systemd_available,
   # visudo_available, shellcheck_available, and bash_capable now run.
   # -----------------------------------------------------------------------
@@ -59,7 +61,9 @@ jobs:
             nginx \
             nodejs \
             build-essential \
-            systemd
+            systemd \
+            libsamplerate0-dev \
+            libasound2-dev
 
       - name: Install Python dependencies
         run: pip install -r tests/requirements-ci.txt
@@ -71,7 +75,8 @@ jobs:
   # WSL-equivalent test suite — same Linux tools as env-dependent-tests but
   # explicitly named to mirror what `scripts/run_wsl_tests.sh` covers locally.
   # Unlocks tests skipped on Windows: Unix sockets, mkfifo, g++, shellcheck,
-  # nginx config validation, bash CGI scripts, fcntl-based concurrency.
+  # nginx config validation, bash CGI scripts, fcntl-based concurrency,
+  # native monitor C++ builds (libsamplerate0-dev, libasound2-dev).
   # -----------------------------------------------------------------------
   wsl-tests:
     name: WSL / Linux environment tests
@@ -95,7 +100,9 @@ jobs:
             nginx \
             nodejs \
             build-essential \
-            systemd
+            systemd \
+            libsamplerate0-dev \
+            libasound2-dev
 
       - name: Install Python dependencies
         run: pip install -r tests/requirements-ci.txt

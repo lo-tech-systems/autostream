@@ -7,7 +7,8 @@ The native tests exercise:
   - test_control_protocol: command names present in both Python and C++,
     response framing contract (length header, ok field).  No system libs needed.
   - test_monitor_utils:    parse_monitor_log_level, get_monotonic_time,
-    logger_get/set_level.  Needs libpthread.
+    logger_get/set_level.  Needs libsamplerate (autostream_monitor_utils.h
+    includes <samplerate.h>) plus libpthread for linking.
   - test_monitor_dsp:      BiquadFilter (0 dB passthrough, identity, zero
     input, nonzero gain, reset), EqChain (set/get bands), RateEstimator
     (initial ratio and rate, window update), OutputProcessor (initial state,
@@ -62,6 +63,11 @@ def _have_header(header: str) -> bool:
         return False
 
 
+_have_alsa       = lambda: _have_header("alsa/asoundlib.h")
+_have_samplerate = lambda: _have_header("samplerate.h")
+_have_twolame    = lambda: _have_header("twolame.h")
+_have_mpg123     = lambda: _have_header("mpg123.h")
+
 SKIP_PLATFORM = pytest.mark.skipif(
     sys.platform == "win32",
     reason="native monitor tests require Linux headers (libasound2-dev, libsamplerate0-dev)",
@@ -109,13 +115,17 @@ def test_control_protocol_source_consistency(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# test_monitor_utils — needs only libpthread; runs on Linux
+# test_monitor_utils — requires libsamplerate0-dev (autostream_monitor_utils.h
+# includes <samplerate.h>); links only against libpthread otherwise.
 # ---------------------------------------------------------------------------
 
 @SKIP_PLATFORM
 @SKIP_NO_GPP
 def test_monitor_utils(tmp_path):
     """Log level parsing, monotonic time, and logger set/get level."""
+    if not _have_samplerate():
+        pytest.skip("libsamplerate0-dev not installed (apt-get install libsamplerate0-dev)")
+
     exe = tmp_path / "test_monitor_utils"
     build = subprocess.run(
         [
@@ -148,11 +158,6 @@ def test_monitor_utils(tmp_path):
 # ---------------------------------------------------------------------------
 # test_monitor_dsp — requires libasound2-dev, libsamplerate0-dev
 # ---------------------------------------------------------------------------
-
-_have_alsa       = lambda: _have_header("alsa/asoundlib.h")
-_have_samplerate = lambda: _have_header("samplerate.h")
-_have_twolame    = lambda: _have_header("twolame.h")
-_have_mpg123     = lambda: _have_header("mpg123.h")
 
 @SKIP_PLATFORM
 @SKIP_NO_GPP

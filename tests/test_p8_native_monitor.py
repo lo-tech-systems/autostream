@@ -12,11 +12,14 @@ MonitorClient edge cases (not covered by test_monitor_client.py):
 C++ build suite (Linux with g++ only, skipped otherwise):
   Compile and run:
     test_control_protocol.cpp  — no ALSA/libsamplerate
-    test_monitor_utils.cpp     — no ALSA/libsamplerate, requires -lpthread
+    test_monitor_utils.cpp     — requires libsamplerate (autostream_monitor_utils.h
+                                 includes <samplerate.h>) and -lpthread
     test_monitor_dsp.cpp       — requires -lasound -lsamplerate -lpthread
 
-  The test for test_monitor_dsp.cpp is additionally skipped when the ALSA
-  and libsamplerate development headers are absent.
+  The tests for test_monitor_utils.cpp and test_monitor_dsp.cpp are
+  additionally skipped when the libsamplerate development headers are
+  absent, and test_monitor_dsp.cpp is also skipped when the ALSA
+  development headers are absent.
 """
 from __future__ import annotations
 
@@ -441,8 +444,13 @@ class TestCppControlProtocol:
 
 @linux_only
 @gpp_available
+@pytest.mark.skipif(
+    not _lib_ok("samplerate"),
+    reason="libsamplerate dev headers not installed (apt-get install libsamplerate0-dev)",
+)
 class TestCppMonitorUtils:
-    """Compile and run test_monitor_utils.cpp (requires -lpthread)."""
+    """Compile and run test_monitor_utils.cpp (requires -lpthread and
+    libsamplerate, since autostream_monitor_utils.h includes <samplerate.h>)."""
 
     def test_compile_and_run(self):
         ok, output = _compile_and_run(
@@ -459,12 +467,12 @@ class TestCppMonitorUtils:
 @linux_only
 @gpp_available
 @pytest.mark.skipif(
-    sys.platform == "linux" and (
-        not (shutil.which("pkg-config") and
-             subprocess.run(["pkg-config", "--exists", "alsa"],
-                            capture_output=True).returncode == 0)
-    ),
+    not _lib_ok("alsa"),
     reason="ALSA dev headers not installed (apt-get install libasound2-dev)",
+)
+@pytest.mark.skipif(
+    not _lib_ok("samplerate"),
+    reason="libsamplerate dev headers not installed (apt-get install libsamplerate0-dev)",
 )
 class TestCppMonitorDsp:
     """Compile and run test_monitor_dsp.cpp (requires ALSA + libsamplerate)."""
