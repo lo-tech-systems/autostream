@@ -97,6 +97,7 @@ LIBEXEC_DIR="/usr/local/libexec/autostream"
 
 STATE_FILE="${STAMP_DIR}/install-state.env"
 UPDATE_RESULT_FILE="${STAMP_DIR}/update-result.env"
+UPDATING_FLAG_FILE="/tmp/autostream-updating"
 
 PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
 
@@ -377,6 +378,29 @@ update_progress() {
   write_update_result "in_progress" "$1" "$2"
 }
 
+engage_update_page() {
+  # Switch the web UI to the nginx-served "updating" holding page before any
+  # destructive step runs, and confirm it is actually being served. If the
+  # holding page cannot be verified, the update must not proceed: continuing
+  # would stop services with no page left to explain why to anyone looking
+  # at the appliance's web UI at that moment.
+  local attempt code redirect
+
+  install -m 0644 /dev/null "${UPDATING_FLAG_FILE}"
+
+  for attempt in 1 2 3; do
+    read -r code redirect < <(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost/ || true)
+    if [[ "${code}" == "302" && "${redirect}" == *"/offline/updating"* ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  error "Update page not confirmed at http://localhost/ (last response: ${code:-none} ${redirect:-}); aborting before stopping services."
+  rm -f "${UPDATING_FLAG_FILE}"
+  return 1
+}
+
 
 #############################################
 # Error and exit traps
@@ -399,9 +423,10 @@ trap on_error ERR
 
 on_exit() {
   local exit_code=$?
-  # Remove the nginx redirect flag written by the boot-time retry service.
-  # This runs on both success and failure paths (trap on EXIT).
-  rm -f /tmp/autostream-updating || true
+  # Remove the nginx redirect flag written by the boot-time retry service and
+  # by engage_update_page. This runs on both success and failure paths (trap
+  # on EXIT).
+  rm -f "${UPDATING_FLAG_FILE}" || true
   if [[ ${PROMPT_REBOOT_ON_EXIT} -ne 1 ]]; then
     exit "${exit_code}"
   fi
@@ -1337,6 +1362,9 @@ run_update() {
   UPDATE_RUN_AT="$(date -Is)"
   CURRENT_PHASE="preflight"
   write_update_result "in_progress" "Starting update" 0
+
+  CURRENT_PHASE="update page"
+  engage_update_page
 
   stop_watchdog_if_ram_monitored
   check_network_manager
