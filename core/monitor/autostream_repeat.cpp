@@ -959,8 +959,11 @@ void RepeatController::perform_pending_start()
     // ── Everything below runs WITHOUT _repeat_mutex ──────────────────────────
     MemInfo mem = read_meminfo();
     CodecChoice codec = CodecChoice::Unavailable;
-    if (mem.ok() && mem.available_mib >= kMinAvailableMibForStart)
-        codec = codec_choice_from_config(_codec_cfg, mem.available_mib, _target_minutes_cfg, _sample_rate_hz);
+    // The admission gate and the tier pick both feed sizing decisions, so
+    // both use the swap-aware effective figure rather than raw MemAvailable.
+    long effective_mib = mem.effective_available_mib();
+    if (mem.ok() && effective_mib >= kMinAvailableMibForStart)
+        codec = codec_choice_from_config(_codec_cfg, effective_mib, _target_minutes_cfg, _sample_rate_hz);
 
     std::unique_ptr<RepeatEncoder> encoder;
     if (codec != CodecChoice::Unavailable)
@@ -1004,7 +1007,7 @@ void RepeatController::perform_pending_start()
 
     _unavailable_reason.clear();
     _active_codec = codec;
-    _max_recording_seconds = max_recording_seconds(codec, mem.available_mib, 0, _sample_rate_hz);
+    _max_recording_seconds = max_recording_seconds(codec, effective_mib, 0, _sample_rate_hz);
     _buffer.clear();
     _trim.reset();
     // Onset gate: fresh per session. The ring is sized from this
@@ -1032,8 +1035,10 @@ void RepeatController::perform_pending_start()
     // This session start already did a fresh /proc/meminfo read (mem, above)
     // -- fold it into the idle-status cache too so a status poll landing
     // right after this transition (before the next worker tick) still sees
-    // an up-to-date reading rather than a possibly-stale idle value.
-    _cached_available_mib   = mem.ok() ? mem.available_mib : -1;
+    // an up-to-date reading rather than a possibly-stale idle value. The
+    // cache stores the swap-aware effective figure (see _cached_available_mib's
+    // declaration comment), same as effective_mib computed above.
+    _cached_available_mib   = mem.ok() ? effective_mib : -1;
     _last_idle_mem_check_time = _last_mem_check_time;
 
     // Pending -> Recording decision (PendingStartSucceeded cell).
@@ -1084,7 +1089,7 @@ void RepeatController::maybe_refresh_idle_meminfo_cache()
         return;   // a session started while the read was in flight; that
                   // path now owns _max_recording_seconds/the fresh reading
     _last_idle_mem_check_time = now;
-    _cached_available_mib     = mem.ok() ? mem.available_mib : -1;
+    _cached_available_mib     = mem.ok() ? mem.effective_available_mib() : -1;
 }
 
 void RepeatController::notify_capture_stopped(int input_index)
@@ -1588,9 +1593,11 @@ void RepeatController::apply_memory_guard_locked(const MemInfo& mem)
     // /proc/meminfo after every single drop would be the precise approach but
     // is unnecessary I/O under sustained pressure; approximate the RAM
     // released by each 16 MiB chunk instead and re-verify for real on the
-    // next tick/allocation.
+    // next tick/allocation. Uses the swap-aware effective figure, not raw
+    // MemAvailable: on zram swap, MemAvailable alone under-reports how close
+    // the system already is to real exhaustion.
     long chunk_mib = static_cast<long>(_buffer.chunk_bytes() / (1024 * 1024));
-    long available = mem.available_mib;
+    long available = mem.effective_available_mib();
     while (available < kFreeRamFloorMib && _buffer.chunk_count() > 1)
     {
         _buffer.drop_oldest_chunk();

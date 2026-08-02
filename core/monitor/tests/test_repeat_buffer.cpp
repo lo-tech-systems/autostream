@@ -279,7 +279,8 @@ static long long pcm_target_bytes(long sample_rate_hz, int target_minutes)
 // usable_mib the selection function derives internally from available_mib
 // (available_mib - kFreeRamFloorMib, floored at 0) -- tests work forward from
 // a target usable_mib to the available_mib that produces it, so each case's
-// intent ("usable RAM this big") stays legible without hand-adding 64 twice.
+// intent ("usable RAM this big") stays legible without hand-adding
+// kFreeRamFloorMib's value twice.
 static long available_for_usable(long usable_mib)
 {
     return usable_mib + kFreeRamFloorMib;
@@ -325,8 +326,8 @@ static void test_u6_pick_codec_for_target()
     }
 
     // ── Worked example: 246 MiB available, 80 min target, 48k. usable =
-    //    246-64 = 182 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.75 MiB
-    //    (no), 256k needs ~147 MiB (yes) -> Mp2_256. ──
+    //    246-96 = 150 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.1 MiB
+    //    (no), 256k needs ~146.5 MiB (yes) -> Mp2_256. ──
     {
         CHECK(pick_codec_for_target(246, kTarget80, 48000) == CodecChoice::Mp2_256,
               "U6: worked example -- 246 MiB available, 80 min target, 48k -> Mp2_256");
@@ -373,13 +374,13 @@ static void test_u7_max_recording_seconds()
     // no min()-against-a-target step.
 
     // Fresh start, huge headroom: at 192k with 1000 MiB available, headroom
-    // = (1000-64) MiB = 936 MiB, giving a large-but-exact number of seconds
+    // = (1000-96) MiB = 904 MiB, giving a large-but-exact number of seconds
     // (no cap kicks in to truncate it to some fixed target).
     // MP2 byte rates are bitrate-derived and rate-independent (see
     // byte_rate_for()'s comment); 48000 is passed explicitly throughout this
     // test since byte_rate_for() takes no default sample_rate_hz argument.
     long rate192 = byte_rate_for(CodecChoice::Mp2_192, 48000);
-    long long expect_huge = (936LL * 1024 * 1024) / rate192;
+    long long expect_huge = (904LL * 1024 * 1024) / rate192;
     long s = max_recording_seconds(CodecChoice::Mp2_192, 1000, 0, 48000);
     CHECK(s == expect_huge, "U7: fresh start, huge headroom -> exact headroom/rate, uncapped");
 
@@ -388,20 +389,20 @@ static void test_u7_max_recording_seconds()
     size_t held = static_cast<size_t>(rate192) * 60;  // 60 s already held
     long s_mid = max_recording_seconds(CodecChoice::Mp2_192, 130 /*just above floor*/, held, 48000);
     CHECK(s_mid > 0, "U7: mid-recording with held bytes is > 0");
-    long long expect_mid = (66LL * 1024 * 1024 + static_cast<long long>(held)) / rate192;
+    long long expect_mid = (34LL * 1024 * 1024 + static_cast<long long>(held)) / rate192;
     CHECK(s_mid == expect_mid, "U7: mid-recording matches headroom+held/rate exactly");
 
-    // Below-floor: available_mib at/under the 64 MiB floor with nothing held
+    // Below-floor: available_mib at/under the 96 MiB floor with nothing held
     // yields zero (this is the condition that triggers drop_oldest_chunk in
     // the impure recorder).
-    long s_floor = max_recording_seconds(CodecChoice::Mp2_192, 64, 0, 48000);
+    long s_floor = max_recording_seconds(CodecChoice::Mp2_192, 96, 0, 48000);
     CHECK(s_floor == 0, "U7: at the free-RAM floor with held=0 -> 0 seconds");
     long s_below_floor = max_recording_seconds(CodecChoice::Mp2_192, 10, 0, 48000);
     CHECK(s_below_floor == 0, "U7: below the free-RAM floor with held=0 -> 0 seconds");
 
     // PCM tier: uses the sample-rate-dependent byte rate, still uncapped.
     long rate_pcm = byte_rate_for(CodecChoice::PcmS16, 48000);
-    long long expect_pcm = (936LL * 1024 * 1024) / rate_pcm;
+    long long expect_pcm = (904LL * 1024 * 1024) / rate_pcm;
     long s_pcm = max_recording_seconds(CodecChoice::PcmS16, 1000, 0, 48000);
     CHECK(s_pcm == expect_pcm, "U7: PCM tier headroom/rate, uncapped");
 
@@ -436,7 +437,7 @@ static void test_u14_byte_rate_for_new_tiers()
     // max_recording_seconds extends cleanly to the new tiers via the same
     // headroom/rate formula as every other tier.
     long rate320 = byte_rate_for(CodecChoice::Mp2_320, 48000);
-    long long expect = (936LL * 1024 * 1024) / rate320;
+    long long expect = (904LL * 1024 * 1024) / rate320;
     CHECK(max_recording_seconds(CodecChoice::Mp2_320, 1000, 0, 48000) == expect,
           "U14: max_recording_seconds works for a new tier (Mp2_320)");
 
@@ -490,6 +491,62 @@ static void test_u8_meminfo_parse()
     // Empty input.
     MemInfo info_empty = parse_meminfo_text("");
     CHECK(!info_empty.ok(), "U8: empty input -> not ok");
+
+    // SwapTotal/SwapFree parsed alongside MemAvailable, and
+    // effective_available_mib() deducts the swapped-out (used) amount.
+    {
+        const std::string with_swap =
+            "MemTotal:        3944232 kB\n"
+            "MemAvailable:     512000 kB\n"
+            "SwapTotal:        204800 kB\n"   // 200 MiB
+            "SwapFree:          51200 kB\n";  // 50 MiB -> 150 MiB used
+        MemInfo info_swap = parse_meminfo_text(with_swap);
+        CHECK(info_swap.ok(), "U8: swap: MemAvailable still parses ok");
+        CHECK(info_swap.swap_total_mib == 204800 / 1024, "U8: SwapTotal converted to MiB correctly");
+        CHECK(info_swap.swap_free_mib == 51200 / 1024, "U8: SwapFree converted to MiB correctly");
+        long expected_effective = (512000 / 1024) - (204800 / 1024 - 51200 / 1024);
+        CHECK(info_swap.effective_available_mib() == expected_effective,
+              "U8: effective_available_mib deducts swap_total - swap_free");
+    }
+
+    // Swap fields absent entirely: both default to 0, and
+    // effective_available_mib() equals available_mib exactly (no swap
+    // adjustment).
+    {
+        MemInfo info_no_swap = parse_meminfo_text(text);   // `text` above has no Swap* lines
+        CHECK(info_no_swap.swap_total_mib == 0, "U8: swap absent -> swap_total_mib is 0");
+        CHECK(info_no_swap.swap_free_mib == 0, "U8: swap absent -> swap_free_mib is 0");
+        CHECK(info_no_swap.effective_available_mib() == info_no_swap.available_mib,
+              "U8: swap absent -> effective_available_mib equals available_mib");
+    }
+
+    // Swap fields present but malformed: treated as absent (0), same as a
+    // missing MemAvailable line, and does not affect ok() or available_mib.
+    {
+        const std::string swap_malformed =
+            "MemAvailable:     512000 kB\n"
+            "SwapTotal: not-a-number kB\n"
+            "SwapFree: also-not-a-number kB\n";
+        MemInfo info_bad_swap = parse_meminfo_text(swap_malformed);
+        CHECK(info_bad_swap.ok(), "U8: malformed swap lines do not affect ok()");
+        CHECK(info_bad_swap.available_mib == 512000 / 1024,
+              "U8: malformed swap lines do not affect available_mib");
+        CHECK(info_bad_swap.swap_total_mib == 0, "U8: malformed SwapTotal -> 0");
+        CHECK(info_bad_swap.swap_free_mib == 0, "U8: malformed SwapFree -> 0");
+        CHECK(info_bad_swap.effective_available_mib() == info_bad_swap.available_mib,
+              "U8: malformed swap fields -> effective_available_mib equals available_mib");
+    }
+
+    // effective_available_mib() clamps at 0 when swap_used exceeds
+    // available_mib (heavy swap pressure on a small MemAvailable reading).
+    {
+        MemInfo info_over;
+        info_over.available_mib  = 50;
+        info_over.swap_total_mib = 500;
+        info_over.swap_free_mib  = 10;   // swap_used == 490, far exceeds available_mib
+        CHECK(info_over.effective_available_mib() == 0,
+              "U8: effective_available_mib clamps at 0 when swap_used exceeds available_mib");
+    }
 }
 
 // ---------------------------------------------------------------------------

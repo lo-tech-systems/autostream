@@ -488,12 +488,12 @@ inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
     }
 }
 
-// The free-RAM floor: the sliding window keeps (available_mib - 64 MiB)
+// The free-RAM floor: the sliding window keeps (available_mib - 96 MiB)
 // worth of headroom on top of what is already held, converted to a duration
 // at the codec's byte rate. The buffer has no fixed target-duration cap: it
 // is bounded ONLY by this floor and the codec ladder -- it buffers as much
 // as it can, for as long as free RAM allows.
-constexpr long kFreeRamFloorMib = 64;
+constexpr long kFreeRamFloorMib = 96;
 
 // Target-duration codec selection.
 //
@@ -560,7 +560,7 @@ inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
     return codec_choice_for_bitrate_kbps(kMp2BitrateFloorKbps);
 }
 
-// max_recording_seconds = ((available_mib - 64 MiB) + held_bytes) / byte_rate
+// max_recording_seconds = ((available_mib - 96 MiB) + held_bytes) / byte_rate
 //
 // held_bytes is the recording's current size (0 at a fresh begin_session(),
 // >0 mid-recording — the bytes already held don't need "new" headroom).  If
@@ -597,10 +597,11 @@ inline long max_recording_seconds(CodecChoice codec, long available_mib,
 //
 // Parses the MemAvailable field (the kernel's estimate of memory available
 // for new allocations without swapping — the correct field for this purpose,
-// since it accounts for reclaimable page cache). This function takes the
-// file's TEXT content as a string so it is fully unit-testable on canned
-// input with zero file I/O; the wrapper that actually reads /proc/meminfo
-// from disk is impure and lives in the daemon .cpp.
+// since it accounts for reclaimable page cache), plus SwapTotal/SwapFree.
+// This function takes the file's TEXT content as a string so it is fully
+// unit-testable on canned input with zero file I/O; the wrapper that
+// actually reads /proc/meminfo from disk is impure and lives in the daemon
+// .cpp.
 // =============================================================================
 
 // Sentinel returned in available_mib when the field could not be found/parsed
@@ -609,21 +610,91 @@ constexpr long kMemInfoParseError = -1;
 
 struct MemInfo
 {
-    long available_mib = kMemInfoParseError;
+    long available_mib  = kMemInfoParseError;
+    long swap_total_mib = 0;
+    long swap_free_mib  = 0;
 
     bool ok() const { return available_mib >= 0; }
+
+    // On zram swap, pages that have been swapped out stay resident in RAM in
+    // compressed form, so MemAvailable alone over-promises what a new
+    // allocation can actually claim before the system comes under real
+    // pressure. Deducting the (uncompressed) size of what is currently
+    // swapped out is deliberately conservative: it treats that memory as
+    // still spoken for, even though some of it is compressed smaller in
+    // practice. swap_used is swap_total_mib - swap_free_mib, clamped at >= 0
+    // (a malformed or absent swap line yields 0 for that field, so swap_used
+    // is 0 and this equals available_mib exactly).
+    long effective_available_mib() const
+    {
+        long swap_used = swap_total_mib - swap_free_mib;
+        if (swap_used < 0)
+            swap_used = 0;
+
+        long effective = available_mib - swap_used;
+        if (effective < 0)
+            effective = 0;
+        return effective;
+    }
 };
 
-// Parses lines of the form "MemAvailable:    123456 kB" (any run of
-// whitespace between the fields; the trailing unit is expected to be "kB"
-// per the kernel's documented format). Other lines are ignored. Malformed
-// candidate lines (field present but the numeric value doesn't parse) are
-// also ignored, as if the field were absent — this function never throws.
+namespace autostream_meminfo_detail
+{
+    // Attempts to parse one "<key><whitespace><digits> kB" line. Returns
+    // true iff `line` begins with `key` -- regardless of whether the numeric
+    // value itself went on to parse -- so the caller can tell "this was the
+    // field, done with it" from "not this field, keep scanning". On a
+    // malformed match (key present, digits missing/unparseable), out_mib is
+    // left untouched, exactly as if the field were absent.
+    inline bool try_parse_kib_field(const std::string& line, const char* key, long& out_mib)
+    {
+        size_t key_len = std::strlen(key);
+        if (line.compare(0, key_len, key) != 0)
+            return false;
+
+        size_t pos = key_len;
+        // Skip whitespace between the key and the numeric value.
+        while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos])))
+            ++pos;
+
+        size_t digits_start = pos;
+        while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos])))
+            ++pos;
+
+        if (pos == digits_start)
+            return true;  // key matched but no digits; malformed, leave out_mib as-is
+
+        try
+        {
+            long kib = std::stol(line.substr(digits_start, pos - digits_start));
+            out_mib = kib / 1024;
+        }
+        catch (const std::exception&)
+        {
+            // out-of-range or otherwise unparseable; leave out_mib as-is
+        }
+        return true;
+    }
+}
+
+// Parses lines of the form "MemAvailable:    123456 kB" / "SwapTotal:  ...
+// kB" / "SwapFree:  ... kB" (any run of whitespace between the fields; the
+// trailing unit is expected to be "kB" per the kernel's documented format).
+// Other lines are ignored. Malformed candidate lines (field present but the
+// numeric value doesn't parse) are also ignored, as if the field were
+// absent — this function never throws. Only MemAvailable governs ok():
+// SwapTotal/SwapFree missing or malformed yields 0 for that field without
+// affecting ok() or available_mib.
 inline MemInfo parse_meminfo_text(const std::string& text)
 {
+    using autostream_meminfo_detail::try_parse_kib_field;
+
     MemInfo result;
 
-    const std::string key = "MemAvailable:";
+    bool have_available  = false;
+    bool have_swap_total = false;
+    bool have_swap_free  = false;
+
     size_t search_from = 0;
     while (search_from < text.size())
     {
@@ -634,35 +705,35 @@ inline MemInfo parse_meminfo_text(const std::string& text)
         std::string line = text.substr(search_from, line_end - search_from);
         search_from = line_end + 1;
 
-        size_t key_pos = line.find(key);
-        if (key_pos != 0)
-            continue;  // must be the field name at the start of the line
-
-        size_t pos = key.size();
-        // Skip whitespace between the key and the numeric value.
-        while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos])))
-            ++pos;
-
-        size_t digits_start = pos;
-        while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos])))
-            ++pos;
-
-        if (pos == digits_start)
-            continue;  // no digits found; malformed line, ignore it
-
-        try
+        if (!have_available)
         {
-            long kib = std::stol(line.substr(digits_start, pos - digits_start));
-            result.available_mib = kib / 1024;
+            long mib = kMemInfoParseError;
+            if (try_parse_kib_field(line, "MemAvailable:", mib))
+            {
+                if (mib != kMemInfoParseError)
+                {
+                    result.available_mib = mib;
+                    have_available = true;
+                }
+                continue;  // first (and only expected) MemAvailable line wins
+            }
         }
-        catch (const std::exception&)
+
+        if (!have_swap_total && try_parse_kib_field(line, "SwapTotal:", result.swap_total_mib))
         {
-            continue;  // out-of-range or otherwise unparseable; ignore
+            have_swap_total = true;
+            continue;
         }
-        return result;  // first (and only expected) MemAvailable line wins
+
+        if (!have_swap_free && try_parse_kib_field(line, "SwapFree:", result.swap_free_mib))
+        {
+            have_swap_free = true;
+            continue;
+        }
     }
 
-    return result;  // field never found: available_mib stays kMemInfoParseError
+    return result;  // any field never found/parsed keeps its default (available_mib
+                     // stays kMemInfoParseError; swap_total_mib/swap_free_mib stay 0)
 }
 
 

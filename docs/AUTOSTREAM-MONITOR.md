@@ -57,11 +57,12 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
     The codec/bitrate tier is chosen to GUARANTEE a target recording
     duration (`target_minutes`, default 33) in whatever RAM is usable
-    (available minus the 64 MiB free-RAM floor) -- PCM if it fits, else the
-    highest legal MP2 bitrate (160/192/224/256/320/384 kbps) that fits,
-    never below the 160 kbps floor. The sliding window itself still has no
-    hard cap: once recording, it is bounded ONLY by the 64 MiB free-RAM
-    floor and the chosen tier's byte rate -- `target_minutes` is a goal for
+    (MemAvailable, minus whatever is currently swapped out, minus a 96 MiB
+    free-RAM floor) -- PCM if it fits, else the highest legal MP2 bitrate
+    (160/192/224/256/320/384 kbps) that fits, never below the 160 kbps
+    floor. The sliding window itself still has no hard cap: once recording,
+    it is bounded ONLY by that same 96 MiB free-RAM floor and the chosen
+    tier's byte rate -- `target_minutes` is a goal for
     tier SELECTION, not an admission gate or a truncation point; a session
     that can't even fit 160 kbps's target footprint still starts at 160 kbps
     and simply rolls past target_minutes and truncates its head sooner under
@@ -856,21 +857,22 @@ Request fields:
   - one of `auto` (target-duration selection picks a tier from free RAM at
     each recording start -- see below), `mp2_160`, `mp2_192`, `mp2_224`,
     `mp2_256`, `mp2_320`, `mp2_384`, or `pcm` (pinned; still subject to the
-    base 110 MiB availability gate and the 64 MiB floor/sliding window)
+    base 110 MiB availability gate and the 96 MiB floor/sliding window)
   - defaults to `auto` if omitted or empty
 - `target_minutes` (optional, integer, 10..600)
   - the recording duration the `auto` codec ladder tries to GUARANTEE in
-    currently-usable RAM (available MemAvailable minus the 64 MiB free-RAM
-    floor). Selection: PCM s16 if PCM's footprint for `target_minutes` fits
-    usable RAM; else the highest legal MP2 stereo bitrate
-    (160/192/224/256/320/384 kbps) whose footprint fits, never below
-    160 kbps. If omitted entirely, the currently-configured value is left
-    unchanged (defaults to 33 minutes the first time the daemon is started,
-    never reset back to 33 by a later call that simply doesn't mention it).
-    Out-of-range values are clamped to [10, 600]. `target_minutes` is a
-    SELECTION goal only, not an admission gate or a hard cap: once a session
-    starts, the sliding window still behaves exactly as before (bounded only
-    by the 64 MiB floor and the chosen tier's byte rate) -- a recording can
+    currently-usable RAM (MemAvailable, minus whatever is currently swapped
+    out, minus a 96 MiB free-RAM floor). Selection: PCM s16 if PCM's
+    footprint for `target_minutes` fits usable RAM; else the highest legal
+    MP2 stereo bitrate (160/192/224/256/320/384 kbps) whose footprint fits,
+    never below 160 kbps. If omitted entirely, the currently-configured
+    value is left unchanged (defaults to 33 minutes the first time the
+    daemon is started, never reset back to 33 by a later call that simply
+    doesn't mention it). Out-of-range values are clamped to [10, 600].
+    `target_minutes` is a SELECTION goal only, not an admission gate or a
+    hard cap: once a session starts, the sliding window still behaves
+    exactly as before (bounded only by that same 96 MiB floor and the
+    chosen tier's byte rate) -- a recording can
     run past `target_minutes` if RAM allows, or fall short of it under
     memory pressure (head truncation), and if even 160 kbps's target
     footprint doesn't fit, the session still starts at 160 kbps rather than
@@ -1224,10 +1226,12 @@ Top-level fields:
   - `target_minutes`: current target-duration goal (default 33; see
     `set_repeat_enabled` above) -- what the `auto` ladder tries to
     guarantee, not a hard cap on the sliding window
-  - `max_recording_seconds`: sliding-window size in seconds, computed from free
-    RAM and the resolved codec tier's byte rate -- the window itself still has
-    no fixed-duration cap (bounded only by the 64 MiB free-RAM floor + the
-    resolved tier's byte rate). Available whenever `enabled` is `true`, not just while a
+  - `max_recording_seconds`: sliding-window size in seconds, computed from
+    usable RAM (MemAvailable, minus whatever is currently swapped out, minus
+    a 96 MiB free-RAM floor) and the resolved codec tier's byte rate -- the
+    window itself still has no fixed-duration cap (bounded only by that same
+    96 MiB floor + the resolved tier's byte rate). Available whenever
+    `enabled` is `true`, not just while a
     recording is active: while recording, this is the value computed when
     that session started; while enabled but idle/holding, it is computed on
     demand from a periodically-refreshed free-RAM reading, reflecting what a

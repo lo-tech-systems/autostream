@@ -2392,7 +2392,10 @@ private:
     // maybe_refresh_idle_meminfo_cache(), called from RepeatRecorder's
     // worker thread -- never read from /proc/meminfo on get_status()'s own
     // call path. -1 means "no reading yet" (get_status() reports 0/
-    // unavailable in that window, e.g. briefly after daemon startup).
+    // unavailable in that window, e.g. briefly after daemon startup). Stores
+    // MemInfo::effective_available_mib() (swap-aware), not raw MemAvailable,
+    // since every consumer of this cache feeds it into sizing (get_status()'s
+    // idle max_recording_seconds/codec pick).
     long         _cached_available_mib     = -1;
     double       _last_idle_mem_check_time = 0.0;
 
