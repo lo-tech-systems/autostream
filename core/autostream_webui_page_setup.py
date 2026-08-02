@@ -979,7 +979,7 @@ def send_setup_page(
             <span>Enable repeat playback</span>
           </div>
           <div class="setup-customise-row" id="repeat-target-row" style="margin-top:0.4rem;{'opacity:0.4;' if not parsed.repeat.enabled else ''}">
-            <label style="margin:0;">Buffer target:
+            <label style="margin:0;flex:1;">Buffer target:
               <select id="repeat_target_minutes" name="repeat_target_minutes"{'' if parsed.repeat.enabled else ' disabled'} onchange="onRepeatTargetChange(this.value)">
                 {repeat_target_options_html}
               </select>
