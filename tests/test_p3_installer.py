@@ -128,6 +128,182 @@ class TestVibraMiniInstallContract:
         ) in installer
 
 
+class TestVibraMiniUpdateFastPath:
+    """update_vibra_from_source() must skip the fetch/build/deploy cycle when
+    the running daemon already reports the pinned release, mirroring
+    install_owntone_mini_from_source()'s version probe (installer/lib/owntone.sh)."""
+
+    VIBRA_SH = REPO_ROOT / "installer" / "lib" / "vibra.sh"
+
+    @staticmethod
+    def _serve_once(sock_path: str, reply: str | None) -> "threading.Thread":
+        """Bind a Unix socket, accept exactly one connection, optionally send
+        *reply*, then close. Runs in a background thread so the bash-side
+        client can connect to a real, live socket."""
+        import socket as socket_mod
+        import threading
+
+        srv = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        srv.bind(sock_path)
+        srv.listen(1)
+
+        def _run():
+            conn, _ = srv.accept()
+            try:
+                conn.recv(4096)
+                if reply is not None:
+                    conn.sendall((reply + "\n").encode())
+            finally:
+                conn.close()
+                srv.close()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return t
+
+    def _run_update(
+        self,
+        tmp_path,
+        sock_path: str,
+        stamp_path: str | None = None,
+        stamp_content: str | None = None,
+        binary_present: bool = False,
+    ) -> subprocess.CompletedProcess:
+        # Stamp path and install prefix are always pinned into tmp_path: a
+        # real stamp/binary left on the machine running these tests must
+        # never leak into the result.
+        stamp_path = stamp_path or str(tmp_path / "vibra-mini-version")
+        install_prefix = tmp_path / "vibra-install-prefix"
+        if binary_present:
+            bin_dir = install_prefix / "bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            binary = bin_dir / "vibra-mini"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(0o755)
+        if stamp_content is not None:
+            Path(stamp_path).write_text(stamp_content, encoding="utf-8")
+
+        script = f'''
+set -euo pipefail
+info() {{ echo "INFO: $*"; }}
+warn() {{ echo "WARN: $*"; }}
+error() {{ echo "ERROR: $*"; }}
+source "{self.VIBRA_SH.as_posix()}"
+VIBRA_SOCKET_PATH="{sock_path}"
+VIBRA_VERSION_STAMP="{Path(stamp_path).as_posix()}"
+VIBRA_INSTALL_PREFIX="{install_prefix.as_posix()}"
+build_and_install_vibra_from_source() {{ echo "BUILD_CALLED"; }}
+update_vibra_from_source
+'''
+        return subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=15,
+        )
+
+    @bash_capable
+    def test_matching_version_skips_build(self, tmp_path):
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "1.0.0"}')
+        result = self._run_update(tmp_path, sock_path)
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" in result.stdout
+        assert "(running daemon)" in result.stdout
+        assert "BUILD_CALLED" not in result.stdout
+
+    @bash_capable
+    def test_mismatched_version_runs_full_build(self, tmp_path):
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "0.9.0"}')
+        result = self._run_update(tmp_path, sock_path)
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" not in result.stdout
+        assert "BUILD_CALLED" in result.stdout
+        assert "Updating vibra-mini" in result.stdout
+
+    @bash_capable
+    def test_probe_failure_runs_full_build(self, tmp_path):
+        # Server accepts the connection but sends no reply: the handshake
+        # yields no usable version, so the probe must be treated as a miss.
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        self._serve_once(sock_path, None)
+        result = self._run_update(tmp_path, sock_path)
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" not in result.stdout
+        assert "BUILD_CALLED" in result.stdout
+
+    @bash_capable
+    def test_fresh_install_no_socket_runs_full_build(self, tmp_path):
+        # Nothing has ever been installed: no socket file exists at all.
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        result = self._run_update(tmp_path, sock_path)
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" not in result.stdout
+        assert "BUILD_CALLED" in result.stdout
+
+    @bash_capable
+    def test_socket_down_stamp_matches_and_binary_present_skips_build(self, tmp_path):
+        # The daemon was stopped ahead of this step (no socket at all), but
+        # a prior successful build's stamp plus its binary are still there.
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        result = self._run_update(
+            tmp_path, sock_path, stamp_content="v1.0.0", binary_present=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" in result.stdout
+        assert "(version stamp)" in result.stdout
+        assert "BUILD_CALLED" not in result.stdout
+
+    @bash_capable
+    def test_socket_down_stamp_matches_but_binary_missing_runs_full_build(self, tmp_path):
+        # Stamp says the pinned release was built, but the binary it names
+        # is gone -- do not trust the stamp alone.
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        result = self._run_update(
+            tmp_path, sock_path, stamp_content="v1.0.0", binary_present=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" not in result.stdout
+        assert "BUILD_CALLED" in result.stdout
+
+    @bash_capable
+    def test_socket_down_stamp_stale_runs_full_build(self, tmp_path):
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        result = self._run_update(
+            tmp_path, sock_path, stamp_content="v0.9.0", binary_present=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping" not in result.stdout
+        assert "BUILD_CALLED" in result.stdout
+
+    @bash_capable
+    def test_successful_build_writes_stamp(self, tmp_path):
+        # The stamp write is real function code, not stubbed away: only the
+        # network/compiler-dependent inner steps are replaced with no-ops.
+        stamp_path = tmp_path / "vibra-mini-version"
+        install_prefix = tmp_path / "vibra-install-prefix"
+        script = f'''
+set -euo pipefail
+info() {{ echo "INFO: $*"; }}
+warn() {{ echo "WARN: $*"; }}
+error() {{ echo "ERROR: $*"; }}
+source "{self.VIBRA_SH.as_posix()}"
+VIBRA_VERSION_STAMP="{stamp_path.as_posix()}"
+VIBRA_INSTALL_PREFIX="{install_prefix.as_posix()}"
+install_vibra_build_dependencies() {{ :; }}
+clone_vibra_source() {{ mkdir -p "$1"; }}
+cmake() {{
+  mkdir -p "${{VIBRA_INSTALL_PREFIX}}/bin"
+  : > "${{VIBRA_INSTALL_PREFIX}}/bin/vibra-mini"
+  chmod +x "${{VIBRA_INSTALL_PREFIX}}/bin/vibra-mini"
+}}
+build_and_install_vibra_from_source
+'''
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert stamp_path.read_text(encoding="utf-8") == "v1.0.0"
+
+
 class TestOwntoneMiniPinnedRelease:
     """The owntone-mini build is bound to a tagged release, for installs and
     updates alike, mirroring the vibra-mini pin."""
