@@ -133,7 +133,12 @@ class TestStartWebuiBackground:
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
 
         httpd_mock = MagicMock()
-        httpd_mock.serve_forever = MagicMock(side_effect=KeyboardInterrupt)
+        # Returns immediately (no side effect) so the background thread's
+        # target function runs to completion and exits cleanly; raising here
+        # would propagate past the production try/except Exception guard
+        # (BaseException is not caught) and surface as an unhandled
+        # thread exception.
+        httpd_mock.serve_forever = MagicMock()
 
         with (
             patch("autostream_webui.AuthManager"),
@@ -167,7 +172,12 @@ class TestStartWebuiBackground:
 
         cfg = _minimal_cfg(tmp_path)
         httpd_mock = MagicMock()
-        httpd_mock.serve_forever = MagicMock(side_effect=KeyboardInterrupt)
+        # Returns immediately (no side effect) so the background thread's
+        # target function runs to completion and exits cleanly; raising here
+        # would propagate past the production try/except Exception guard
+        # (BaseException is not caught) and surface as an unhandled
+        # thread exception.
+        httpd_mock.serve_forever = MagicMock()
 
         with (
             patch("autostream_webui.AuthManager"),
@@ -200,7 +210,12 @@ class TestStartWebuiBackground:
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
 
         httpd_mock = MagicMock()
-        httpd_mock.serve_forever = MagicMock(side_effect=KeyboardInterrupt)
+        # Returns immediately (no side effect) so the background thread's
+        # target function runs to completion and exits cleanly; raising here
+        # would propagate past the production try/except Exception guard
+        # (BaseException is not caught) and surface as an unhandled
+        # thread exception.
+        httpd_mock.serve_forever = MagicMock()
 
         with (
             patch("autostream_webui.AuthManager"),

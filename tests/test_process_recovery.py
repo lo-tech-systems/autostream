@@ -161,10 +161,14 @@ class TestWebuiBackgroundReturnsThread:
             instance.serve_forever.side_effect = lambda: time.sleep(0.05)
 
             result = start_webui_background(str(cfg_path))
-
-        assert isinstance(result, threading.Thread), (
-            "start_webui_background must return a threading.Thread"
-        )
+            assert isinstance(result, threading.Thread), (
+                "start_webui_background must return a threading.Thread"
+            )
+            # Join while ThreadingHTTPServer is still patched: the background
+            # thread constructs the server, and letting it outlive the patch
+            # would bind a real socket on the real config port.
+            result.join(timeout=2.0)
+            assert not result.is_alive()
 
     def test_dead_webui_thread_detected_by_check(self):
         t = threading.Thread(target=lambda: None, daemon=True)
@@ -253,7 +257,12 @@ class TestScannerWrappers:
             instance = MagicMock()
             mock_server.return_value = instance
             instance.serve_forever.side_effect = lambda: time.sleep(0.05)
-            start_webui_background(str(cfg_path))
+            webui_thread = start_webui_background(str(cfg_path))
+            # Join while ThreadingHTTPServer is still patched: the background
+            # thread constructs the server, and letting it outlive the patch
+            # would bind a real socket on the real config port.
+            webui_thread.join(timeout=2.0)
+            assert not webui_thread.is_alive()
 
         import autostream_core as _core
         assert "dial_event" in captured, "start_dial_scanner was not called"
