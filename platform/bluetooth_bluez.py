@@ -424,6 +424,123 @@ class BluezClient:
     def disconnect_device(self, mac: str, timeout: float = DEFAULT_CONNECT_TIMEOUT) -> None:
         self._device_iface(mac).Disconnect(timeout=timeout)
 
+    # ---- async device ops (loop-thread only) ----
+    #
+    # dbus-python's reply_handler=/error_handler= form: the call returns
+    # immediately, and the matching handler is invoked once the reply (or a
+    # D-Bus error/timeout) arrives on the GLib main loop these must be issued
+    # from. Every one of these still carries an explicit timeout -- the
+    # method call itself is non-blocking, but the *reply* is not guaranteed
+    # otherwise, and an unbounded op would defeat the point of moving off a
+    # worker thread.
+
+    def pair_async(
+        self,
+        mac: str,
+        on_success: Callable[[], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_PAIR_TIMEOUT,
+    ) -> None:
+        """Async Device1.Pair(). *on_success* takes no arguments (Pair()
+        has no return value); *on_error* takes the raised exception."""
+        self._device_iface(mac).Pair(
+            reply_handler=lambda: on_success(),
+            error_handler=on_error,
+            timeout=timeout,
+        )
+
+    def connect_async(
+        self,
+        mac: str,
+        on_success: Callable[[], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    ) -> None:
+        self._device_iface(mac).Connect(
+            reply_handler=lambda: on_success(),
+            error_handler=on_error,
+            timeout=timeout,
+        )
+
+    def disconnect_async(
+        self,
+        mac: str,
+        on_success: Callable[[], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    ) -> None:
+        self._device_iface(mac).Disconnect(
+            reply_handler=lambda: on_success(),
+            error_handler=on_error,
+            timeout=timeout,
+        )
+
+    def set_trusted_async(
+        self,
+        mac: str,
+        trusted: bool,
+        on_success: Callable[[], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_CALL_TIMEOUT,
+    ) -> None:
+        self._props_iface(self._device_path(mac)).Set(
+            DEVICE_IFACE, "Trusted", bool(trusted),
+            reply_handler=lambda: on_success(),
+            error_handler=on_error,
+            timeout=timeout,
+        )
+
+    def remove_device_async(
+        self,
+        mac: str,
+        on_success: Callable[[], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_CALL_TIMEOUT,
+    ) -> None:
+        """Async RemoveDevice(), idempotent like remove_device(): a
+        DoesNotExist error (device already gone) is reported through
+        *on_success*, not *on_error* -- an absent device is the goal state
+        either way."""
+        def _on_error(e: Exception) -> None:
+            if "DoesNotExist" in str(e).replace(" ", ""):
+                on_success()
+            else:
+                on_error(e)
+
+        self._adapter_iface().RemoveDevice(
+            self._device_path(mac),
+            reply_handler=lambda: on_success(),
+            error_handler=_on_error,
+            timeout=timeout,
+        )
+
+    def is_connected_async(
+        self,
+        mac: str,
+        on_result: Callable[[bool], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_CALL_TIMEOUT,
+    ) -> None:
+        """Async Device1.Connected getter (see is_connected() for why callers
+        want this). A DoesNotExist error is reported as not-connected through
+        *on_result*, mirroring the synchronous form, rather than through
+        *on_error*."""
+        def _on_reply(value) -> None:
+            on_result(bool(value))
+
+        def _on_error(e: Exception) -> None:
+            if "DoesNotExist" in str(e).replace(" ", ""):
+                on_result(False)
+            else:
+                on_error(e)
+
+        self._props_iface(self._device_path(mac)).Get(
+            DEVICE_IFACE, "Connected",
+            reply_handler=_on_reply,
+            error_handler=_on_error,
+            timeout=timeout,
+        )
+
     def remove_device(self, mac: str) -> None:
         """Idempotent: a device that is already absent is the goal state."""
         try:

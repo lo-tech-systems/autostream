@@ -44,6 +44,7 @@ if _HERE not in sys.path:
 
 import bluetooth_bluez as bluez_mod
 import bluetooth_agent as agent_mod
+import bluetooth_commands as cmd_mod
 import bluetooth_loop as loop_mod
 import bluetooth_pump as pump_mod
 import bluetooth_socket as socket_mod
@@ -157,10 +158,14 @@ def clear_persisted_state(path: str) -> None:
 # ---------------------------------------------------------------------------
 
 class BluetoothOps:
-    """Adapts a BluezClient to the handful of calls the state machine issues,
-    dispatching the ones that can block (Pair/Connect/Disconnect) onto a
-    worker thread so the GLib main loop / socket handlers never stall on a
-    D-Bus round-trip to the far end of an A2DP handshake.
+    """Adapts a BluezClient to the handful of calls the state machine issues.
+
+    Pair/Connect and the reconnect probe are multi-step chains driven
+    entirely on the GLib loop thread via the small operation classes in
+    ``bluetooth_commands.py`` (``start_pair_and_trust`` /
+    ``start_reconnect_probe``) rather than a worker thread, so the loop never
+    stalls on a D-Bus round-trip to the far end of an A2DP handshake.
+    Disconnect (the shutdown path) stays a plain synchronous BlueZ call.
 
     ``bluez`` may be ``None`` at construction (adapter-absent degradation):
     the state machine, pump, and control socket are
@@ -195,15 +200,27 @@ class BluetoothOps:
     def set_pairable(self, pairable: bool) -> None:
         self._require_bluez().set_pairable(pairable)
 
-    def pair_and_trust(self, mac: str) -> None:
-        """Pair, trust, and connect — runs on the calling (worker) thread."""
-        bluez = self._require_bluez()
-        bluez.pair(mac)
-        bluez.set_trusted(mac, True)
-        bluez.connect_device(mac)
+    def start_pair_and_trust(
+        self,
+        mac: str,
+        old_mac: Optional[str],
+        on_result: Callable[[str, bool, Optional[str]], None],
+        is_stale: Callable[[], bool],
+    ) -> None:
+        """Launch a ``PairAndTrustOp`` (pair -> trust -> connect -> remove
+        old device) against the bound BluezClient; loop-thread replacement
+        for the old synchronous pair_and_trust()."""
+        cmd_mod.PairAndTrustOp(self._require_bluez(), mac, old_mac, on_result, is_stale).start()
 
-    def connect(self, mac: str) -> None:
-        self._require_bluez().connect_device(mac)
+    def start_reconnect_probe(
+        self,
+        mac: str,
+        on_result: Callable[[str, bool], None],
+        is_stale: Callable[[], bool],
+    ) -> None:
+        """Launch a ``ReconnectProbeOp`` (is-connected probe, Connect() if
+        not) against the bound BluezClient."""
+        cmd_mod.ReconnectProbeOp(self._require_bluez(), mac, on_result, is_stale).start()
 
     def disconnect(self, mac: str) -> None:
         self._require_bluez().disconnect_device(mac)
@@ -226,12 +243,28 @@ class BluetoothOps:
     def is_connected(self, mac: str) -> bool:
         """Bounded Device1.Connected query. Unlike the other ops methods,
         this tolerates an unbound/absent BlueZ client by returning False
-        rather than raising — callers (reconnect supervisor, pair-success
-        hook) use it purely to decide whether to *skip* other work, and a
-        "not connected" answer is always a safe default for that."""
+        rather than raising — kept for the shutdown path and direct callers
+        that want a synchronous answer; a "not connected" answer is always a
+        safe default when nothing is bound yet."""
         if self._bluez is None:
             return False
         return self._bluez.is_connected(mac)
+
+    def is_connected_async(
+        self,
+        mac: str,
+        on_result: Callable[[bool], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        """Async Device1.Connected query (loop-thread only). Mirrors
+        ``is_connected()``'s unbound-safety: reports not-connected through
+        *on_result* immediately, rather than raising, when no BlueZ client is
+        bound yet -- used by the pair-success hook to decide whether the
+        pump needs (re)arming."""
+        if self._bluez is None:
+            on_result(False)
+            return
+        self._bluez.is_connected_async(mac, on_result, on_error)
 
 
 # ---------------------------------------------------------------------------
@@ -244,10 +277,12 @@ class BluetoothStateMachine:
     """Owns the scan/pairing state machine, single-paired-device policy, the
     reconnect supervisor, and presentation-state persistence.
 
-    Blocking BlueZ calls (Pair/Connect/Disconnect) are dispatched via
-    ``run_async`` (defaults to a daemon thread per call; tests inject a
-    synchronous stand-in) so state-machine methods called from the socket
-    server or the tick thread never block on D-Bus.
+    Pairing and the reconnect probe launch loop-thread-driven command
+    objects (``BluetoothOps.start_pair_and_trust`` /
+    ``start_reconnect_probe``, see ``bluetooth_commands.py``) rather than
+    spawning a worker thread. ``run_async``/``_default_run_async`` are no
+    longer used by either path but are kept for now (their removal, and the
+    lock's, is a separate follow-up).
     """
 
     def __init__(
@@ -438,30 +473,27 @@ class BluetoothStateMachine:
             self._ops.stop_discovery()
         self._ops.set_pairable(True)
 
-        def _work() -> None:
-            try:
-                # Pair the new device *before* removing the old one: if
-                # pair_and_trust() fails, the previously
-                # trusted device must remain paired/trusted rather than being
-                # stranded with BlueZ no longer bonding it. A remove_device()
-                # failure after a successful pair is logged but does not fail
-                # the pairing itself — the new device is already trusted and
-                # usable regardless of whether the old bond was cleaned up.
-                self._ops.pair_and_trust(mac)
-                if old_mac and old_mac != mac:
-                    try:
-                        self._ops.remove_device(old_mac)
-                    except Exception:
-                        logger.exception(
-                            "Failed to remove replaced device %s after pairing %s",
-                            old_mac, mac,
-                        )
-                self.on_pair_result(mac, True)
-            except Exception as e:
-                self.on_pair_result(mac, False, str(e))
-
-        self._run_async(_work)
+        # Pair (and trust, connect) the new device *before* removing the old
+        # one: if any of those steps fails, the previously-trusted device
+        # must remain paired/trusted rather than being stranded with BlueZ no
+        # longer bonding it. PairAndTrustOp enforces this ordering itself
+        # (old-device removal is its last step) and logs-and-swallows a
+        # remove failure rather than failing the pairing over it.
+        self._ops.start_pair_and_trust(
+            mac, old_mac, self.on_pair_result, lambda: self._pairing_is_stale(mac)
+        )
         return True
+
+    def _pairing_is_stale(self, mac: str) -> bool:
+        """Guard passed to the pair-and-trust op: once this pairing attempt
+        is no longer the in-flight target (a new pairing attempt started, or
+        the window closed/was forgotten), the op stops making further BlueZ
+        calls on its behalf. ``on_pair_result`` carries the same
+        ``mac != pairing_target_mac`` check as belt-and-braces, so this can
+        stay minimal -- a landed result was already safe to receive late,
+        this just avoids the wasted D-Bus round-trips."""
+        with self._lock:
+            return self._pairing_target_mac != mac
 
     def on_pair_result(self, mac: str, success: bool, error: Optional[str] = None) -> None:
         mac = mac.upper()
@@ -584,25 +616,31 @@ class BluetoothStateMachine:
                 return
             self._last_reconnect_attempt = now
 
-        def _work() -> None:
-            # Check actual connection state before hammering
-            # Connect() — a stale "disconnected" link (the PropertiesChanged
-            # subscription can miss a Connected=True that races pairing, or a
-            # daemon restart loses all signal history) must self-heal from a
-            # cheap property read instead of retrying Connect() against an
-            # already-connected device every RECONNECT_INTERVAL_SECONDS.
-            try:
-                if self._ops.is_connected(mac):
-                    self.on_link_state_changed(mac, True)
-                    return
-            except Exception as e:
-                logger.info("Reconnect supervisor: is_connected check failed for %s: %s", mac, e)
-            try:
-                self._ops.connect(mac)
-            except Exception as e:
-                logger.info("Reconnect attempt to %s failed: %s", mac, e)
+        # ReconnectProbeOp checks actual connection state before hammering
+        # Connect() — a stale "disconnected" link (the PropertiesChanged
+        # subscription can miss a Connected=True that races pairing, or a
+        # daemon restart loses all signal history) must self-heal from a
+        # cheap property read instead of retrying Connect() against an
+        # already-connected device every RECONNECT_INTERVAL_SECONDS.
+        # on_link_state_changed is passed directly as the completion
+        # callback: the op only ever calls it with (mac, True), for the
+        # already-connected probe outcome (a Connect() the op issues itself
+        # is never proactively reported; the ordinary PropertiesChanged
+        # subscription is what tells the state machine a link came up).
+        self._ops.start_reconnect_probe(
+            mac, self.on_link_state_changed, lambda: self._reconnect_is_stale(mac)
+        )
 
-        self._run_async(_work)
+    def _reconnect_is_stale(self, mac: str) -> bool:
+        """Guard passed to the reconnect probe: stale once *mac* is no longer
+        the paired device, or the link is no longer disconnected (a signal
+        already brought it up while the probe was in flight). Minimal by
+        design -- ``on_link_state_changed`` already no-ops for a MAC that
+        isn't the paired device and for a state that hasn't actually
+        changed, so a probe result landing late is already safe to receive;
+        this just avoids issuing a redundant Connect()."""
+        with self._lock:
+            return self._paired_mac != mac or self._link_state != LINK_DISCONNECTED
 
     # ---- window expiry (called by the tick thread) ----
 
@@ -711,8 +749,8 @@ class BluetoothService:
         self._last_transport_codec = codec
         if active:
             # During the *first* pairing of a device, the
-            # transport can appear while pair_and_trust() is still in flight
-            # — trusted_mac() is still None — so fall back to the in-flight
+            # transport can appear while the pair-and-trust op is still in
+            # flight — trusted_mac() is still None — so fall back to the in-flight
             # pairing target. Without this the pump was never armed and
             # nothing ever retried (BlueZ only signals once, on appearance).
             mac = self.state_machine.trusted_mac() or self.state_machine.pairing_target_mac()
@@ -736,15 +774,18 @@ class BluetoothService:
         actual BlueZ connection state — the PropertiesChanged subscription
         can race and miss a Connected=True that arrived mid-pairing — and, if
         a transport was already active by the time pairing landed but the
-        pump was never armed, arm it now."""
+        pump was never armed, arm it now. Runs entirely on the loop thread:
+        the connection-state query is the async form, continuing via
+        ``_finish_pair_success``/``_pair_success_probe_error`` rather than
+        blocking here for the answer."""
         assert self.state_machine is not None and self.pump is not None and self._ops is not None
-        try:
-            connected = self._ops.is_connected(mac)
-        except Exception:
-            logger.exception(
-                "bluetooth service: error querying connection state for %s after pairing", mac,
-            )
-            connected = False
+        self._ops.is_connected_async(
+            mac,
+            lambda connected: self._finish_pair_success(mac, connected),
+            lambda error: self._pair_success_probe_error(mac, error),
+        )
+
+    def _finish_pair_success(self, mac: str, connected: bool) -> None:
         if connected:
             logger.info("bluetooth service: %s already connected at pairing completion", mac)
         self.state_machine.on_link_state_changed(mac, connected)
@@ -756,6 +797,13 @@ class BluetoothService:
             self.pump.set_active_source(
                 pump_mod.bluealsa_capture_device(mac), rate=self._last_transport_rate,
             )
+
+    def _pair_success_probe_error(self, mac: str, error: Exception) -> None:
+        logger.warning(
+            "bluetooth service: error querying connection state for %s after pairing: %s",
+            mac, error,
+        )
+        self._finish_pair_success(mac, False)
 
     def _sync_startup_state(self, bluez: "bluez_mod.BluezClient") -> None:
         """Startup / adapter-(re)attach self-heal: BlueZ only

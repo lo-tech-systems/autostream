@@ -253,6 +253,191 @@ class TestRemoveCachedDevices:
 # Codec/Configuration decoding, no dbus involved.
 # ---------------------------------------------------------------------------
 
+class _FakeAsyncDeviceIface:
+    """Records the reply_handler/error_handler/timeout kwargs each async
+    method call receives, standing in for a dbus.Interface proxy."""
+
+    def __init__(self) -> None:
+        self.calls: dict = {}
+
+    def _record(self, method_name, timeout, **kwargs):
+        self.calls[method_name] = {"timeout": timeout, **kwargs}
+
+    def Pair(self, reply_handler=None, error_handler=None, timeout=None):
+        self._record("Pair", timeout, reply_handler=reply_handler, error_handler=error_handler)
+
+    def Connect(self, reply_handler=None, error_handler=None, timeout=None):
+        self._record("Connect", timeout, reply_handler=reply_handler, error_handler=error_handler)
+
+    def Disconnect(self, reply_handler=None, error_handler=None, timeout=None):
+        self._record("Disconnect", timeout, reply_handler=reply_handler, error_handler=error_handler)
+
+
+class _FakeAsyncPropsIface:
+    def __init__(self) -> None:
+        self.calls: dict = {}
+
+    def Set(self, iface, prop, value, reply_handler=None, error_handler=None, timeout=None):
+        self.calls["Set"] = {
+            "iface": iface, "prop": prop, "value": value, "timeout": timeout,
+            "reply_handler": reply_handler, "error_handler": error_handler,
+        }
+
+    def Get(self, iface, prop, reply_handler=None, error_handler=None, timeout=None):
+        self.calls["Get"] = {
+            "iface": iface, "prop": prop, "timeout": timeout,
+            "reply_handler": reply_handler, "error_handler": error_handler,
+        }
+
+
+class _FakeAsyncAdapterIface:
+    def __init__(self) -> None:
+        self.calls: dict = {}
+
+    def RemoveDevice(self, path, reply_handler=None, error_handler=None, timeout=None):
+        self.calls["RemoveDevice"] = {
+            "path": path, "timeout": timeout,
+            "reply_handler": reply_handler, "error_handler": error_handler,
+        }
+
+
+class TestAsyncDeviceOps:
+    """pair_async/connect_async/disconnect_async/set_trusted_async/
+    remove_device_async/is_connected_async: verify each passes
+    reply_handler=/error_handler=/an explicit timeout through to the
+    underlying dbus interface object, and that the DoesNotExist ->
+    "not an error" translations on remove/is_connected match their sync
+    counterparts."""
+
+    def _client(self):
+        client = bluez_mod.BluezClient()
+        client._dbus = _FakeDbusModuleForRemove
+        client._adapter_path = "/org/bluez/hci0"
+        return client
+
+    def test_pair_async_passes_handlers_and_default_timeout(self):
+        client = self._client()
+        fake_iface = _FakeAsyncDeviceIface()
+        client._device_iface = lambda mac: fake_iface
+
+        seen = []
+        client.pair_async(MAC_A, lambda: seen.append("ok"), lambda e: seen.append(e))
+        call = fake_iface.calls["Pair"]
+        assert call["timeout"] == bluez_mod.DEFAULT_PAIR_TIMEOUT
+        call["reply_handler"]()
+        assert seen == ["ok"]
+
+    def test_connect_async_passes_handlers_and_timeout(self):
+        client = self._client()
+        fake_iface = _FakeAsyncDeviceIface()
+        client._device_iface = lambda mac: fake_iface
+
+        errors = []
+        client.connect_async(MAC_A, lambda: None, lambda e: errors.append(e), timeout=5.0)
+        call = fake_iface.calls["Connect"]
+        assert call["timeout"] == 5.0
+        call["error_handler"](Exception("boom"))
+        assert len(errors) == 1
+
+    def test_disconnect_async_passes_handlers_and_default_timeout(self):
+        client = self._client()
+        fake_iface = _FakeAsyncDeviceIface()
+        client._device_iface = lambda mac: fake_iface
+
+        client.disconnect_async(MAC_A, lambda: None, lambda e: None)
+        assert fake_iface.calls["Disconnect"]["timeout"] == bluez_mod.DEFAULT_CONNECT_TIMEOUT
+
+    def test_set_trusted_async_passes_value_and_timeout(self):
+        client = self._client()
+        fake_props = _FakeAsyncPropsIface()
+        client._props_iface = lambda path: fake_props
+
+        client.set_trusted_async(MAC_A, True, lambda: None, lambda e: None)
+        call = fake_props.calls["Set"]
+        assert call["iface"] == bluez_mod.DEVICE_IFACE
+        assert call["prop"] == "Trusted"
+        assert call["value"] is True
+        assert call["timeout"] == bluez_mod.DEFAULT_CALL_TIMEOUT
+
+    def test_remove_device_async_success(self):
+        client = self._client()
+        fake_adapter = _FakeAsyncAdapterIface()
+        client._adapter_iface = lambda: fake_adapter
+
+        seen = []
+        client.remove_device_async(MAC_A, lambda: seen.append("ok"), lambda e: seen.append(e))
+        call = fake_adapter.calls["RemoveDevice"]
+        assert call["timeout"] == bluez_mod.DEFAULT_CALL_TIMEOUT
+        call["reply_handler"]()
+        assert seen == ["ok"]
+
+    def test_remove_device_async_does_not_exist_reports_success_not_error(self):
+        client = self._client()
+        fake_adapter = _FakeAsyncAdapterIface()
+        client._adapter_iface = lambda: fake_adapter
+
+        seen = []
+        client.remove_device_async(MAC_A, lambda: seen.append("ok"), lambda e: seen.append(("err", e)))
+        call = fake_adapter.calls["RemoveDevice"]
+        call["error_handler"](_FakeDbusExceptionsModule.DBusException(
+            "org.bluez.Error.DoesNotExist: Does Not Exist"
+        ))
+        assert seen == ["ok"]
+
+    def test_remove_device_async_other_error_reports_error(self):
+        client = self._client()
+        fake_adapter = _FakeAsyncAdapterIface()
+        client._adapter_iface = lambda: fake_adapter
+
+        seen = []
+        client.remove_device_async(MAC_A, lambda: seen.append("ok"), lambda e: seen.append(("err", e)))
+        call = fake_adapter.calls["RemoveDevice"]
+        call["error_handler"](_FakeDbusExceptionsModule.DBusException("org.bluez.Error.Failed"))
+        assert len(seen) == 1 and seen[0][0] == "err"
+
+    def test_is_connected_async_reports_bool_value(self):
+        client = self._client()
+        fake_props = _FakeAsyncPropsIface()
+        client._props_iface = lambda path: fake_props
+
+        seen = []
+        client.is_connected_async(MAC_A, lambda v: seen.append(v), lambda e: None)
+        call = fake_props.calls["Get"]
+        assert call["iface"] == bluez_mod.DEVICE_IFACE
+        assert call["prop"] == "Connected"
+        assert call["timeout"] == bluez_mod.DEFAULT_CALL_TIMEOUT
+        call["reply_handler"](True)
+        assert seen == [True]
+
+    def test_is_connected_async_does_not_exist_reports_false_not_error(self):
+        client = self._client()
+        fake_props = _FakeAsyncPropsIface()
+        client._props_iface = lambda path: fake_props
+
+        seen = []
+        errors = []
+        client.is_connected_async(MAC_A, lambda v: seen.append(v), lambda e: errors.append(e))
+        call = fake_props.calls["Get"]
+        call["error_handler"](_FakeDbusExceptionsModule.DBusException(
+            "org.bluez.Error.DoesNotExist"
+        ))
+        assert seen == [False]
+        assert errors == []
+
+    def test_is_connected_async_other_error_reports_error(self):
+        client = self._client()
+        fake_props = _FakeAsyncPropsIface()
+        client._props_iface = lambda path: fake_props
+
+        seen = []
+        errors = []
+        client.is_connected_async(MAC_A, lambda v: seen.append(v), lambda e: errors.append(e))
+        call = fake_props.calls["Get"]
+        call["error_handler"](_FakeDbusExceptionsModule.DBusException("org.bluez.Error.Failed"))
+        assert seen == []
+        assert len(errors) == 1
+
+
 class TestDecodeTransportCodec:
     def test_sbc_44_1khz_joint_stereo(self):
         result = bluez_mod.decode_transport_codec(0x00, bytes([0x21]))

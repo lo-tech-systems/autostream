@@ -39,9 +39,25 @@ class FakeClock:
 
 
 class FakeOps:
-    """Records every call the state machine issues; pair_and_trust/connect
-    can be made to raise via ``fail_pair``/``fail_connect`` to simulate a
-    BlueZ-side failure."""
+    """Records every call the state machine issues. ``start_pair_and_trust``/
+    ``start_reconnect_probe`` are the loop-thread op launchers
+    (``BluetoothOps``'s real methods, mirrored here without a real BluezClient
+    underneath): by default they resolve synchronously and immediately,
+    standing in for an op whose async D-Bus calls all landed straight away.
+
+    Setting ``resolve_pair``/``resolve_reconnect`` to False makes the launch
+    a no-op beyond recording the call -- simulating an op that is still
+    in-flight (never got its reply) -- for tests that need to exercise a
+    still-pairing/still-probing window.
+
+    ``fail_pair``/``fail_connect`` make the (simulated) op report failure,
+    exactly as a real PairAndTrustOp/ReconnectProbeOp would report a
+    Pair()/Connect() error -- the exact BlueZ-call step sequencing and
+    old-device-removal/is-connected-vs-connect distinctions are the real op
+    classes' own job and are covered in test_bluetooth_commands.py; this
+    fake only needs to stand in for "the op eventually calls on_result
+    with this outcome."
+    """
 
     def __init__(self) -> None:
         self.adapter_present = True
@@ -54,6 +70,8 @@ class FakeOps:
         self.purge_keep_macs: set[str] | None = None
         self.purge_result: int = 0
         self.purge_error: Exception | None = None
+        self.resolve_pair: bool = True
+        self.resolve_reconnect: bool = True
 
     def purge_cached_devices(self, keep_macs: set) -> int:
         self.calls.append(("purge_cached_devices", frozenset(keep_macs)))
@@ -72,15 +90,29 @@ class FakeOps:
         self.pairable_state = pairable
         self.calls.append(("set_pairable", pairable))
 
-    def pair_and_trust(self, mac: str) -> None:
-        self.calls.append(("pair_and_trust", mac))
+    def start_pair_and_trust(self, mac, old_mac, on_result, is_stale) -> None:
+        self.calls.append(("start_pair_and_trust", mac, old_mac))
+        if not self.resolve_pair:
+            return  # simulates an op still in flight
+        if is_stale():
+            return
         if self.fail_pair is not None:
-            raise self.fail_pair
+            on_result(mac, False, str(self.fail_pair))
+        elif self.fail_connect is not None:
+            on_result(mac, False, str(self.fail_connect))
+        else:
+            on_result(mac, True, None)
 
-    def connect(self, mac: str) -> None:
-        self.calls.append(("connect", mac))
-        if self.fail_connect is not None:
-            raise self.fail_connect
+    def start_reconnect_probe(self, mac, on_result, is_stale) -> None:
+        self.calls.append(("start_reconnect_probe", mac))
+        if not self.resolve_reconnect:
+            return  # simulates a probe still in flight
+        if is_stale():
+            return
+        if mac in self.connected_macs:
+            on_result(mac, True)
+        # else: matches ReconnectProbeOp -- a Connect() this issues itself is
+        # never proactively reported here either.
 
     def disconnect(self, mac: str) -> None:
         self.calls.append(("disconnect", mac))
@@ -91,6 +123,10 @@ class FakeOps:
     def is_connected(self, mac: str) -> bool:
         self.calls.append(("is_connected", mac))
         return mac in self.connected_macs
+
+    def is_connected_async(self, mac, on_result, on_error) -> None:
+        self.calls.append(("is_connected_async", mac))
+        on_result(mac in self.connected_macs)
 
 
 def _sync_run_async(fn):
@@ -222,7 +258,7 @@ class TestPairing:
         assert machine.get_pair_status() == {"state": svc.PAIR_STATE_DONE}
         assert machine.trusted_mac() == MAC_A
         assert machine.mode == svc.MODE_IDLE
-        assert ("pair_and_trust", MAC_A) in ops.calls
+        assert ("start_pair_and_trust", MAC_A, None) in ops.calls
         # Pairable toggled on then off around the attempt.
         assert ops.calls.count(("set_pairable", True)) == 1
         assert ops.calls[-1] == ("set_pairable", False)
@@ -240,6 +276,19 @@ class TestPairing:
         status = machine.get_pair_status()
         assert status["state"] == svc.PAIR_STATE_FAILED
         assert "boom" in status["error"]
+        assert machine.trusted_mac() is None
+
+    def test_failed_pairing_via_connect_leg_reports_failed(self, tmp_path):
+        """A Connect() failure (rather than a Pair()/trust failure) must
+        fail the pairing exactly the same way -- PairAndTrustOp's own
+        contract, exercised here through the launch site."""
+        ops = FakeOps()
+        ops.fail_connect = RuntimeError("org.bluez.Error.Failed")
+        machine, ops, _ = _make_machine(tmp_path, ops=ops)
+        machine.start_pairing(MAC_A)
+        status = machine.get_pair_status()
+        assert status["state"] == svc.PAIR_STATE_FAILED
+        assert "org.bluez.Error.Failed" in status["error"]
         assert machine.trusted_mac() is None
 
     def test_invalid_mac_rejected(self, tmp_path):
@@ -260,14 +309,14 @@ class TestPairing:
 
         ops.calls.clear()
         machine.start_pairing(MAC_B)
-        assert ("remove_device", MAC_A) in ops.calls
+        assert ("start_pair_and_trust", MAC_B, MAC_A) in ops.calls
         assert machine.trusted_mac() == MAC_B
 
     def test_pairing_window_times_out_after_30s(self, tmp_path):
-        # A run_async that never resolves (simulating a still-in-flight
-        # blocking D-Bus call) so tick()'s own timeout must fire the failure.
+        # An op that never resolves (simulating a still-in-flight pairing
+        # chain) so tick()'s own timeout must fire the failure.
         machine, ops, clock = _make_machine(tmp_path, clock=FakeClock())
-        machine._run_async = lambda fn: None  # never actually runs
+        ops.resolve_pair = False
         machine.start_pairing(MAC_A)
         assert machine.mode == svc.MODE_PAIRING
 
@@ -284,7 +333,7 @@ class TestPairing:
 
     def test_stale_pair_result_ignored(self, tmp_path):
         machine, ops, _ = _make_machine(tmp_path)
-        machine._run_async = lambda fn: None
+        ops.resolve_pair = False
         machine.start_pairing(MAC_A)
         # A result for a MAC that is no longer the in-flight target (e.g. a
         # slow callback racing a new pairing attempt) must not clobber state.
@@ -295,16 +344,32 @@ class TestPairing:
     def test_pairing_window_open_reflects_mode(self, tmp_path):
         machine, ops, _ = _make_machine(tmp_path)
         assert machine.pairing_window_open() is False
-        machine._run_async = lambda fn: None
+        ops.resolve_pair = False
         machine.start_pairing(MAC_A)
         assert machine.pairing_window_open() is True
         assert machine.pairing_target_mac() == MAC_A
 
+    def test_pairing_is_stale_once_a_new_pairing_attempt_starts(self, tmp_path):
+        """The is_stale guard passed to start_pair_and_trust must reflect a
+        new pairing attempt superseding an old one -- the op-level guard
+        that lets an abandoned op stop making BlueZ calls on its own behalf
+        (on_pair_result's mac-match guard is the belt-and-braces backstop,
+        covered separately)."""
+        machine, ops, _ = _make_machine(tmp_path)
+        ops.resolve_pair = False
+        machine.start_pairing(MAC_A)
+        assert ("start_pair_and_trust", MAC_A, None) in ops.calls
+        assert machine._pairing_is_stale(MAC_A) is False
+
+        machine.forget()  # abandons the in-flight attempt (clears the target)
+        assert machine._pairing_is_stale(MAC_A) is True
+
     def test_replacement_pair_failure_leaves_old_device_paired(self, tmp_path):
-        """pair_and_trust(new) must run before
-        remove_device(old), so a failed replacement pairing never strands
-        the previously-trusted device un-bonded in BlueZ while state still
-        claims it is paired."""
+        """A failed replacement pairing (Pair() or Connect() raising inside
+        PairAndTrustOp) must never strand the previously-trusted device:
+        the op's own step ordering (pair/trust/connect all succeed *before*
+        the old device is touched, tested in test_bluetooth_commands.py)
+        means a failure here never removes the old device."""
         machine, ops, _ = _make_machine(tmp_path)
         machine.start_pairing(MAC_A)
         assert machine.trusted_mac() == MAC_A
@@ -316,24 +381,23 @@ class TestPairing:
         status = machine.get_pair_status()
         assert status["state"] == svc.PAIR_STATE_FAILED
         assert machine.trusted_mac() == MAC_A
-        assert ("remove_device", MAC_A) not in ops.calls
-        assert ("pair_and_trust", MAC_B) in ops.calls
+        assert ("start_pair_and_trust", MAC_B, MAC_A) in ops.calls
 
         persisted = svc.load_persisted_state(str(tmp_path / "bluetooth.json"))
         assert persisted["paired_mac"] == MAC_A
 
-    def test_successful_replacement_removes_old_device_after_pairing_new(self, tmp_path):
-        """The happy path still removes the old device, but only after the
-        new one is pair_and_trust()-ed (call ordering)."""
+    def test_successful_replacement_launches_op_with_old_mac(self, tmp_path):
+        """The happy path replaces the old device -- pair/trust/connect
+        before remove is PairAndTrustOp's own ordering guarantee (see
+        test_bluetooth_commands.py); this just checks the launch site passes
+        the right (mac, old_mac) pair."""
         machine, ops, _ = _make_machine(tmp_path)
         machine.start_pairing(MAC_A)
         ops.calls.clear()
 
         machine.start_pairing(MAC_B)
         assert machine.trusted_mac() == MAC_B
-        pair_idx = ops.calls.index(("pair_and_trust", MAC_B))
-        remove_idx = ops.calls.index(("remove_device", MAC_A))
-        assert pair_idx < remove_idx
+        assert ("start_pair_and_trust", MAC_B, MAC_A) in ops.calls
 
     def test_pair_success_callback_fires_only_on_success(self, tmp_path):
         machine, ops, _ = _make_machine(tmp_path)
@@ -394,11 +458,11 @@ class TestForget:
 
     def test_forget_mid_pairing_ignores_late_result_and_persists_nothing(self, tmp_path):
         """forget() must clear _pairing_target_mac so
-        a pairing worker thread already in flight (e.g. a replacement pairing
+        a pair-and-trust op already in flight (e.g. a replacement pairing
         started before this forget()) cannot land its result late and
         re-persist state the user just asked to clear."""
         machine, ops, _ = _make_machine(tmp_path)
-        machine._run_async = lambda fn: None  # never actually runs -> simulates in-flight worker
+        ops.resolve_pair = False  # simulates an in-flight op
         machine.start_pairing(MAC_A)
         assert machine.pairing_target_mac() == MAC_A
         assert machine.mode == svc.MODE_PAIRING
@@ -520,7 +584,7 @@ class TestReconnectSupervisor:
         # Pairing leaves link disconnected (no PropertiesChanged simulated).
         ops.calls.clear()
         machine.reconnect_tick()
-        assert ("connect", MAC_A) in ops.calls
+        assert ("start_reconnect_probe", MAC_A) in ops.calls
 
     def test_reconnect_bounded_to_30s_interval(self, tmp_path):
         machine, ops, clock = _make_machine(tmp_path)
@@ -528,15 +592,15 @@ class TestReconnectSupervisor:
         ops.calls.clear()
 
         machine.reconnect_tick()
-        assert ops.calls.count(("connect", MAC_A)) == 1
+        assert ops.calls.count(("start_reconnect_probe", MAC_A)) == 1
 
         clock.advance(svc.RECONNECT_INTERVAL_SECONDS - 1)
         machine.reconnect_tick()
-        assert ops.calls.count(("connect", MAC_A)) == 1  # still bounded
+        assert ops.calls.count(("start_reconnect_probe", MAC_A)) == 1  # still bounded
 
         clock.advance(2)
         machine.reconnect_tick()
-        assert ops.calls.count(("connect", MAC_A)) == 2
+        assert ops.calls.count(("start_reconnect_probe", MAC_A)) == 2
 
     def test_reconnect_resets_after_reconnection(self, tmp_path):
         machine, ops, clock = _make_machine(tmp_path)
@@ -549,39 +613,62 @@ class TestReconnectSupervisor:
         ops.calls.clear()
         # Immediately due again since the reconnect timer was cleared on reconnect.
         machine.reconnect_tick()
-        assert ("connect", MAC_A) in ops.calls
+        assert ("start_reconnect_probe", MAC_A) in ops.calls
 
     def test_tick_drives_reconnect_supervisor(self, tmp_path):
         machine, ops, clock = _make_machine(tmp_path)
         machine.start_pairing(MAC_A)
         ops.calls.clear()
         machine.tick()
-        assert ("connect", MAC_A) in ops.calls
+        assert ("start_reconnect_probe", MAC_A) in ops.calls
 
-    def test_reconnect_tick_skips_connect_when_already_connected(self, tmp_path):
+    def test_reconnect_tick_reports_connected_when_probe_finds_it_already_up(self, tmp_path):
         """BlueZ can show Connected:yes for a device the state
         machine still believes "disconnected" (a PropertiesChanged the
-        subscription raced/missed). The supervisor must self-heal from a
-        cheap is_connected() read instead of hammering Connect() against an
-        already-connected device every 30s."""
+        subscription raced/missed). The supervisor must self-heal from the
+        probe's already-connected outcome instead of hammering Connect()
+        against an already-connected device every 30s -- the probe-vs-Connect
+        distinction itself is ReconnectProbeOp's job, covered in
+        test_bluetooth_commands.py; here we only check the launch and its
+        on_result wiring."""
         machine, ops, clock = _make_machine(tmp_path)
         machine.start_pairing(MAC_A)
         ops.calls.clear()
         ops.connected_macs.add(MAC_A)
 
         machine.reconnect_tick()
-        assert ("connect", MAC_A) not in ops.calls
-        assert ("is_connected", MAC_A) in ops.calls
+        assert ("start_reconnect_probe", MAC_A) in ops.calls
         assert machine.get_status()["link"] == svc.LINK_CONNECTED
 
-    def test_reconnect_tick_still_connects_when_not_connected(self, tmp_path):
+    def test_reconnect_tick_still_disconnected_when_probe_reports_not_connected(self, tmp_path):
+        """Matches ReconnectProbeOp's semantics: a Connect() the probe issues
+        itself is never proactively reported -- only the ordinary
+        PropertiesChanged subscription brings the link up -- so the link
+        state stays disconnected until that arrives."""
         machine, ops, clock = _make_machine(tmp_path)
         machine.start_pairing(MAC_A)
         ops.calls.clear()
 
         machine.reconnect_tick()
-        assert ("connect", MAC_A) in ops.calls
+        assert ("start_reconnect_probe", MAC_A) in ops.calls
         assert machine.get_status()["link"] == svc.LINK_DISCONNECTED
+
+    def test_reconnect_is_stale_once_link_no_longer_disconnected(self, tmp_path):
+        machine, ops, clock = _make_machine(tmp_path)
+        machine.start_pairing(MAC_A)
+        assert machine._reconnect_is_stale(MAC_A) is False
+
+        machine.on_link_state_changed(MAC_A, True)
+        assert machine._reconnect_is_stale(MAC_A) is True
+
+    def test_reconnect_is_stale_once_a_different_device_is_paired(self, tmp_path):
+        machine, ops, clock = _make_machine(tmp_path)
+        machine.start_pairing(MAC_A)
+        assert machine._reconnect_is_stale(MAC_A) is False
+
+        machine.forget()
+        machine.start_pairing(MAC_B)
+        assert machine._reconnect_is_stale(MAC_A) is True
 
 
 # ---------------------------------------------------------------------------
@@ -695,8 +782,11 @@ class TestPersistenceRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# BluetoothOps dispatch shape (no real dbus; verifies BluetoothOps composes
-# the expected BluezClient calls in the expected order for pair_and_trust)
+# BluetoothOps dispatch shape (no real dbus; verifies BluetoothOps launches
+# the real PairAndTrustOp/ReconnectProbeOp command objects against the bound
+# BluezClient, resolving synchronously here since every async call below
+# fires its handler immediately -- the step ordering/staleness/error-leg
+# details of the ops themselves are covered in test_bluetooth_commands.py).
 # ---------------------------------------------------------------------------
 
 class FakeBluezClient:
@@ -704,6 +794,8 @@ class FakeBluezClient:
         self.adapter_present = True
         self.adapter_kind: str | None = "usb"
         self.calls: list[tuple] = []
+        self.fail_pair: Exception | None = None
+        self.fail_connect: Exception | None = None
 
     def start_discovery(self):
         self.calls.append(("start_discovery",))
@@ -713,15 +805,6 @@ class FakeBluezClient:
 
     def set_pairable(self, pairable):
         self.calls.append(("set_pairable", pairable))
-
-    def pair(self, mac):
-        self.calls.append(("pair", mac))
-
-    def set_trusted(self, mac, trusted=True):
-        self.calls.append(("set_trusted", mac, trusted))
-
-    def connect_device(self, mac):
-        self.calls.append(("connect_device", mac))
 
     def disconnect_device(self, mac):
         self.calls.append(("disconnect_device", mac))
@@ -741,17 +824,88 @@ class FakeBluezClient:
 
     is_connected_result = False
 
+    # ---- async forms used by PairAndTrustOp/ReconnectProbeOp; every one
+    # resolves synchronously (immediate reply_handler/error_handler call) so
+    # BluetoothOps.start_pair_and_trust/start_reconnect_probe can be tested
+    # here without a real GLib loop. ----
+
+    def pair_async(self, mac, on_success, on_error, timeout=None):
+        self.calls.append(("pair_async", mac))
+        if self.fail_pair is not None:
+            on_error(self.fail_pair)
+        else:
+            on_success()
+
+    def set_trusted_async(self, mac, trusted, on_success, on_error, timeout=None):
+        self.calls.append(("set_trusted_async", mac, trusted))
+        on_success()
+
+    def connect_async(self, mac, on_success, on_error, timeout=None):
+        self.calls.append(("connect_async", mac))
+        if self.fail_connect is not None:
+            on_error(self.fail_connect)
+        else:
+            on_success()
+
+    def remove_device_async(self, mac, on_success, on_error, timeout=None):
+        self.calls.append(("remove_device_async", mac))
+        on_success()
+
+    def is_connected_async(self, mac, on_result, on_error, timeout=None):
+        self.calls.append(("is_connected_async", mac))
+        on_result(self.is_connected_result)
+
 
 class TestBluetoothOps:
-    def test_pair_and_trust_calls_pair_then_trust_then_connect(self):
+    def test_start_pair_and_trust_runs_pair_trust_connect_in_order(self):
         client = FakeBluezClient()
         ops = svc.BluetoothOps(client)
-        ops.pair_and_trust(MAC_A)
-        assert client.calls == [
-            ("pair", MAC_A),
-            ("set_trusted", MAC_A, True),
-            ("connect_device", MAC_A),
-        ]
+        results: list = []
+        ops.start_pair_and_trust(
+            MAC_A, None, lambda mac, ok, err: results.append((mac, ok, err)), lambda: False
+        )
+        assert results == [(MAC_A, True, None)]
+        assert [c[0] for c in client.calls] == ["pair_async", "set_trusted_async", "connect_async"]
+
+    def test_start_pair_and_trust_removes_old_device_after_connect(self):
+        client = FakeBluezClient()
+        ops = svc.BluetoothOps(client)
+        results: list = []
+        ops.start_pair_and_trust(
+            MAC_B, MAC_A, lambda mac, ok, err: results.append((mac, ok, err)), lambda: False
+        )
+        assert results == [(MAC_B, True, None)]
+        assert ("remove_device_async", MAC_A) in client.calls
+
+    def test_start_pair_and_trust_connect_failure_reports_pairing_failure(self):
+        client = FakeBluezClient()
+        client.fail_connect = Exception("org.bluez.Error.Failed")
+        ops = svc.BluetoothOps(client)
+        results: list = []
+        ops.start_pair_and_trust(
+            MAC_A, None, lambda mac, ok, err: results.append((mac, ok, err)), lambda: False
+        )
+        assert results == [(MAC_A, False, "org.bluez.Error.Failed")]
+
+    def test_start_reconnect_probe_connects_when_not_connected(self):
+        client = FakeBluezClient()
+        ops = svc.BluetoothOps(client)
+        results: list = []
+        ops.start_reconnect_probe(
+            MAC_A, lambda mac, connected: results.append((mac, connected)), lambda: False
+        )
+        assert results == []
+        assert ("connect_async", MAC_A) in client.calls
+
+    def test_start_reconnect_probe_reports_true_when_already_connected(self):
+        client = FakeBluezClient()
+        client.is_connected_result = True
+        ops = svc.BluetoothOps(client)
+        results: list = []
+        ops.start_reconnect_probe(
+            MAC_A, lambda mac, connected: results.append((mac, connected)), lambda: False
+        )
+        assert results == [(MAC_A, True)]
 
     def test_adapter_present_reflects_client(self):
         client = FakeBluezClient()
@@ -768,7 +922,7 @@ class TestBluetoothOps:
         with pytest.raises(RuntimeError):
             ops.start_discovery()
         with pytest.raises(RuntimeError):
-            ops.pair_and_trust(MAC_A)
+            ops.start_pair_and_trust(MAC_A, None, lambda *a: None, lambda: False)
 
     def test_set_bluez_binds_a_client_later(self):
         ops = svc.BluetoothOps()
@@ -782,7 +936,7 @@ class TestBluetoothOps:
     def test_is_connected_false_when_bluez_unbound(self):
         """Unlike the other ops methods, is_connected()
         tolerates an absent BlueZ client by returning False rather than
-        raising — the reconnect supervisor and pair-success hook use it only
+        raising — the shutdown path and other direct callers use it only
         to decide whether to skip other work."""
         ops = svc.BluetoothOps()
         assert ops.is_connected(MAC_A) is False
@@ -793,6 +947,21 @@ class TestBluetoothOps:
         ops = svc.BluetoothOps(client)
         assert ops.is_connected(MAC_A) is True
         assert ("is_connected", MAC_A) in client.calls
+
+    def test_is_connected_async_reports_false_when_bluez_unbound(self):
+        ops = svc.BluetoothOps()
+        seen: list = []
+        ops.is_connected_async(MAC_A, lambda v: seen.append(v), lambda e: None)
+        assert seen == [False]
+
+    def test_is_connected_async_dispatches_to_client(self):
+        client = FakeBluezClient()
+        client.is_connected_result = True
+        ops = svc.BluetoothOps(client)
+        seen: list = []
+        ops.is_connected_async(MAC_A, lambda v: seen.append(v), lambda e: None)
+        assert seen == [True]
+        assert ("is_connected_async", MAC_A) in client.calls
 
     def test_adapter_kind_passthrough_when_bound(self):
         client = FakeBluezClient()
@@ -912,11 +1081,11 @@ def _make_service(tmp_path, machine=None, ops=None) -> tuple[svc.BluetoothServic
 
 class TestTransportDuringPairingDeadArmFix:
     def test_transport_during_pairing_uses_pairing_target_mac(self, tmp_path):
-        """Primary fix: the transport can appear while pair_and_trust() is
-        still in flight (trusted_mac() is None) — it must be attributed to
+        """Primary fix: the transport can appear while the pair-and-trust op
+        is still in flight (trusted_mac() is None) — it must be attributed to
         the in-flight pairing target, not dropped."""
         machine, ops, _ = _make_machine(tmp_path)
-        machine._run_async = lambda fn: None  # keep pairing in-flight
+        ops.resolve_pair = False  # keep pairing in-flight
         machine.start_pairing(MAC_A)
         assert machine.trusted_mac() is None
         assert machine.pairing_target_mac() == MAC_A
