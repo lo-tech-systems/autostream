@@ -99,6 +99,7 @@ STATE_FILE="${STAMP_DIR}/install-state.env"
 UPDATE_RESULT_FILE="${STAMP_DIR}/update-result.env"
 UPDATING_FLAG_FILE="/tmp/autostream-updating"
 STOPPED_SERVICES_FILE="${STAMP_DIR}/update-stopped-services.env"
+SWAPPINESS_SYSCTL_CONF="/etc/sysctl.d/90-autostream-swappiness.conf"
 
 PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
 
@@ -987,6 +988,9 @@ configure_phase() {
   # cloud-init
   configure_cloud_init
 
+  # Memory/swap tuning
+  tune_memory_behaviour
+
   # Firmware / watchdog
   # update_pi_firmware_config writes dtoverlay=disable-bt on fresh installs
   # (the onboard radio is opt-in via a later, separate runtime action) and
@@ -1069,6 +1073,38 @@ configure_cloud_init() {
     info "Resetting cloud-init state to apply updated user-data"
     cloud-init clean --logs || true
   fi
+}
+
+# tune_memory_behaviour: converge the appliance's swap/zram tuning on every
+# install and update. Best-effort only -- tuning must never fail an install.
+#
+# - Masks rpi-zram-writeback.timer: on this small-RAM, swap-heavy appliance
+#   the timer pushes compressed zram pages out to microSD, trading sustained
+#   card wear for no benefit. `systemctl mask --now` both stops it if active
+#   and masks it; masking a unit that is not installed still succeeds and
+#   the mask persists, so a package that later installs the timer comes up
+#   masked rather than active.
+# - Drops /etc/sysctl.d/90-autostream-swappiness.conf setting
+#   vm.swappiness=20, so zram is used as a spike absorber rather than a
+#   working-set host, and applies it immediately with `sysctl -p`.
+tune_memory_behaviour() {
+  info "Tuning memory/swap behaviour for the appliance"
+
+  systemctl mask --now rpi-zram-writeback.timer || \
+    warn "Could not mask rpi-zram-writeback.timer; continuing."
+
+  local conf="${SWAPPINESS_SYSCTL_CONF}"
+  local tmp
+  tmp="$(mktemp)"
+  cat > "${tmp}" <<'EOF'
+# zram is a spike absorber, not a working-set host, on this small-RAM
+# realtime-audio appliance.
+vm.swappiness=20
+EOF
+  install -m 0644 -o root -g root "${tmp}" "${conf}"
+  rm -f "${tmp}"
+
+  sysctl -p "${conf}" || warn "sysctl -p ${conf} failed to apply; will take effect on next boot."
 }
 
 permissions_pass() {
