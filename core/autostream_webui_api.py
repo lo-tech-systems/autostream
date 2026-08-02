@@ -1260,8 +1260,8 @@ def _validate_silence_seconds(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("Value must be a number")
     v = int(value)
-    if v < 10 or v > 300:
-        raise ValueError("Value must be between 10 and 300")
+    if v < 5 or v > 300:
+        raise ValueError("Value must be between 5 and 300")
     return v
 
 

@@ -672,7 +672,7 @@ class TestSilenceSliderHoldGuidance:
     def test_note_present_with_hold_value(self, tmp_path):
         html = _render_setup_page(tmp_path)
         assert "continues for at least 30s" in html
-        assert "short settings (7-10s)" in html
+        assert "short settings (5-10s)" in html
 
     def test_note_reflects_configured_hold(self, tmp_path):
         html = _render_setup_page(tmp_path, minimum_playback_seconds=45)
@@ -681,4 +681,4 @@ class TestSilenceSliderHoldGuidance:
     def test_note_hidden_when_hold_disabled(self, tmp_path):
         html = _render_setup_page(tmp_path, minimum_playback_seconds=0)
         assert "continues for at least" not in html
-        assert "short settings (7-10s)" not in html
+        assert "short settings (5-10s)" not in html

@@ -187,7 +187,7 @@ class TestValidateSilenceSeconds:
 
     def test_below_minimum_raises(self):
         with pytest.raises(ValueError):
-            _validate_silence_seconds(9)
+            _validate_silence_seconds(4)
 
     def test_above_maximum_raises(self):
         with pytest.raises(ValueError):
@@ -428,7 +428,7 @@ class TestWp4aValidationRejection:
 
     def test_silence_too_small_rejected(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        resp = _post(state, "general.silence_seconds", 5)
+        resp = _post(state, "general.silence_seconds", 4)
         assert resp["ok"] is False
 
     def test_output_name_empty_rejected(self, tmp_path):

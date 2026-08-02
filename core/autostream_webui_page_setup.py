@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 
 from datetime import datetime, timezone
 from typing import Optional
@@ -66,6 +67,46 @@ from autostream_webui_common import (
     settings_card_html,
 )
 from autostream_webui_state import WebUIState
+
+
+# -----------------------------------------------------------------------------
+# Silence-detection slider — logarithmic position<->seconds mapping.
+#
+# The slider's on-screen position (0-100) is exponential in seconds so that
+# dragging near the low end gives fine control (short, turntable-friendly
+# timeouts) while the high end covers a wide range in fewer, coarser steps.
+# The submitted/persisted value is always plain whole seconds; only the
+# handle's position on the track is nonlinear.
+# -----------------------------------------------------------------------------
+
+SILENCE_SECONDS_MIN = 5
+SILENCE_SECONDS_MAX = 300
+
+
+def _silence_pos_to_seconds(pos: float) -> int:
+    """Map a 0-100 slider position to whole seconds (exponential curve).
+
+    Snaps to coarser steps as the value grows, since a 1s difference matters
+    much less at 200s than it does at 6s.
+    """
+    pos = max(0.0, min(100.0, pos))
+    seconds = SILENCE_SECONDS_MIN * ((SILENCE_SECONDS_MAX / SILENCE_SECONDS_MIN) ** (pos / 100.0))
+    if seconds < 30:
+        seconds = round(seconds)
+    elif seconds < 120:
+        seconds = round(seconds / 5) * 5
+    else:
+        seconds = round(seconds / 10) * 10
+    return int(max(SILENCE_SECONDS_MIN, min(SILENCE_SECONDS_MAX, seconds)))
+
+
+def _silence_seconds_to_pos(seconds: float) -> float:
+    """Inverse of _silence_pos_to_seconds(), used to position the slider for
+    an already-saved value (including values that don't fall on a snap
+    point, e.g. a config file edited by hand or carried over from an older
+    build)."""
+    seconds = max(SILENCE_SECONDS_MIN, min(SILENCE_SECONDS_MAX, seconds))
+    return 100.0 * math.log(seconds / SILENCE_SECONDS_MIN) / math.log(SILENCE_SECONDS_MAX / SILENCE_SECONDS_MIN)
 
 
 # -----------------------------------------------------------------------------
@@ -884,7 +925,7 @@ def send_setup_page(
     _min_hold = parsed.general.minimum_playback_seconds
     _silence_hold_note_html = (
         f'<div class="helptext">Once playback starts it continues for at least '
-        f'{_min_hold}s, so short settings (7-10s) work well even for automatic '
+        f'{_min_hold}s, so short settings (5-10s) work well even for automatic '
         f'turntables.</div>'
     ) if _min_hold > 0 else ""
 
@@ -922,9 +963,11 @@ def send_setup_page(
           <input type="range" min="0" max="100" value="{parsed.owntone.volume_percent}" oninput="syncVol(this.value)">
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
         """
+    _sil_pos = _silence_seconds_to_pos(parsed.general.silence_seconds)
     silence_detection_inner_html = f"""
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
-          <input type="range" name="silence_seconds" min="10" max="300" value="{parsed.general.silence_seconds}" oninput="syncSil(this.value)"></label>
+          <input type="range" id="sil_range" min="0" max="100" step="0.5" value="{_sil_pos:.1f}" oninput="syncSil(this.value)">
+          <input type="hidden" name="silence_seconds" id="silence_seconds" value="{parsed.general.silence_seconds}"></label>
           {_silence_hold_note_html}
         """
     repeat_playback_inner_html = f"""
@@ -1488,10 +1531,14 @@ def send_setup_page(
       .bt-scan-row:hover{background:var(--color-surface-raised);}
       .bt-scan-empty{color:var(--color-text-muted,#888);font-style:italic;}
     """
+    # Extra clearance below the "More Owntone Settings" button so it doesn't
+    # sit behind the fixed bottom nav bar -- same mechanism as the About
+    # page's license panel (.about-license-text's padding-bottom:4.5rem).
+    _playback_panel_bottom_pad_css = "#panel-playback { padding-bottom: 4.5rem; }\n"
     _extra_css = (
         f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}"
         f"\n{factory_reset_modal_css}\n{_dial_badge_css}\n{DIAL_LOCKED_SECTION_CSS}"
-        f"\n{_bt_pairing_modal_css}"
+        f"\n{_bt_pairing_modal_css}\n{_playback_panel_bottom_pad_css}"
     )
     _pin_modal_div = """\
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
@@ -2396,9 +2443,23 @@ def send_setup_page(
           if (valueEl) valueEl.textContent = value + ' dB';
           if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.eq_' + band + '_db', Number(value), 120);
         }}
+        function silSecondsFromPos(pos){{
+          // Mirrors _silence_pos_to_seconds() in autostream_webui_page_setup.py --
+          // exponential position->seconds curve, snapped to coarser steps as
+          // the value grows.
+          var minS = 5, maxS = 300;
+          pos = Math.max(0, Math.min(100, Number(pos)));
+          var s = minS * Math.pow(maxS / minS, pos / 100);
+          if (s < 30) s = Math.round(s);
+          else if (s < 120) s = Math.round(s / 5) * 5;
+          else s = Math.round(s / 10) * 10;
+          return Math.max(minS, Math.min(maxS, s));
+        }}
         function syncSil(v){{
-          document.getElementById('sil_val').textContent=v+'s';
-          if (liveEnabled) settingsSaveFieldDebounced('general.silence_seconds', parseInt(v, 10), 500);
+          var s = silSecondsFromPos(v);
+          document.getElementById('sil_val').textContent=s+'s';
+          document.getElementById('silence_seconds').value=s;
+          if (liveEnabled) settingsSaveFieldDebounced('general.silence_seconds', s, 500);
         }}
         let mdnsGraceTimer = null;
         function syncMdnsGracePeriod(v){{
