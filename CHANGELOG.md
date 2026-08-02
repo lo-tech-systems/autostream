@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- fix: the Bluetooth service no longer crashes and restarts repeatedly while
+  the paired device is switched off or out of range
+- fix: Bluetooth input now recovers by itself when the internal audio link is
+  left at incompatible settings (previously it could stay silent until a
+  restart)
+
 ## Version 0.5.0-beta.1
 
 - fix: Repeat playback no longer sounds muddled during the first few seconds
