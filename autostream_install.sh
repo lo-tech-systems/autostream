@@ -98,6 +98,7 @@ LIBEXEC_DIR="/usr/local/libexec/autostream"
 STATE_FILE="${STAMP_DIR}/install-state.env"
 UPDATE_RESULT_FILE="${STAMP_DIR}/update-result.env"
 UPDATING_FLAG_FILE="/tmp/autostream-updating"
+STOPPED_SERVICES_FILE="${STAMP_DIR}/update-stopped-services.env"
 
 PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
 
@@ -464,6 +465,72 @@ check_network_manager() {
     error "Please disable other network managers (e.g. dhcpcd, ifupdown). Aborting."
     exit 1
   fi
+}
+
+# stop_services_for_update: stop the audio-path consumers and the
+# coordinator before /opt is overwritten and apt/builds compete for RAM
+# during an update. Audio consumers are stopped before the coordinator so
+# nothing is left trying to feed a coordinator that is about to disappear.
+#
+# autostream_wifi_watcher, nginx, NetworkManager and ssh are deliberately
+# never touched here: the wifi watcher is the appliance's network recovery
+# path and must keep running through the whole update, and the others are
+# needed to keep the update page and remote access reachable.
+#
+# Each unit is stopped only if currently active; a unit that is already
+# stopped or not present is skipped silently. Units successfully stopped are
+# recorded, one per line, in STOPPED_SERVICES_FILE so restore_stopped_services
+# can bring back exactly what was taken down. A failure to stop an individual
+# unit is logged and does not abort the update; the reboot at the end of a
+# successful update, or restore_stopped_services on the failure path, settles
+# service state either way.
+stop_services_for_update() {
+  local units=(
+    autostream_monitor
+    autostream_bluetooth
+    owntone
+    vibra-mini
+    autostream
+  )
+  local unit
+
+  install -m 0600 -o root -g root /dev/null "${STOPPED_SERVICES_FILE}"
+
+  for unit in "${units[@]}"; do
+    if ! systemctl is-active --quiet "${unit}"; then
+      continue
+    fi
+    if systemctl stop "${unit}"; then
+      echo "${unit}" >> "${STOPPED_SERVICES_FILE}"
+    else
+      warn "Failed to stop ${unit} before update; continuing."
+    fi
+  done
+}
+
+# restore_stopped_services: used by the update failure path to bring back
+# whatever stop_services_for_update took down, in reverse order (coordinator
+# first, then the audio consumers). Tolerates a missing or empty state file.
+# An individual start failure is logged and does not stop the restore of the
+# remaining units. Removes the state file once restore has been attempted.
+restore_stopped_services() {
+  if [[ ! -f "${STOPPED_SERVICES_FILE}" ]]; then
+    return 0
+  fi
+
+  local units=() unit
+  while IFS= read -r unit || [[ -n "${unit}" ]]; do
+    [[ -n "${unit}" ]] || continue
+    units+=("${unit}")
+  done < "${STOPPED_SERVICES_FILE}"
+
+  local i
+  for (( i=${#units[@]}-1; i>=0; i-- )); do
+    unit="${units[i]}"
+    systemctl start "${unit}" || warn "Failed to restart ${unit} after update failure."
+  done
+
+  rm -f "${STOPPED_SERVICES_FILE}"
 }
 
 require_rpi_os_trixie() {
@@ -1368,6 +1435,10 @@ run_update() {
 
   stop_watchdog_if_ram_monitored
   check_network_manager
+
+  CURRENT_PHASE="stopping services"
+  update_progress "Stopping services..." 8
+  stop_services_for_update
 
   system_upgrade_phase
 
