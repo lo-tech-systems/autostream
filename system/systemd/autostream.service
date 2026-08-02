@@ -40,6 +40,10 @@ Environment=PYTHONUNBUFFERED=1
 # logs that it cannot open it.
 Environment=AUTOSTREAM_ENABLE_PIPE_METADATA=1
 
+# Threaded CPython on a small-memory (415 MB) system: caps glibc malloc
+# arenas to curb fragmentation-driven RSS growth.
+Environment=MALLOC_ARENA_MAX=2
+
 # Let script handle its own logging, but also capture stdout/stderr in journal
 StandardOutput=journal
 StandardError=journal

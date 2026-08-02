@@ -36,6 +36,10 @@ ExecStart=/opt/autostream/venv/bin/python /opt/autostream/platform/bluetooth_ser
 # sit in the buffer and journalctl shows nothing.
 Environment=PYTHONUNBUFFERED=1
 
+# Threaded CPython on a small-memory (415 MB) system: caps glibc malloc
+# arenas to curb fragmentation-driven RSS growth.
+Environment=MALLOC_ARENA_MAX=2
+
 Restart=on-failure
 RestartSec=3
 

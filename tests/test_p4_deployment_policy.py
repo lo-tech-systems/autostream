@@ -192,6 +192,34 @@ class TestSystemdUnitStructure:
                 )
 
 
+class TestMallocArenaCap:
+    """autostream.service and autostream_bluetooth.service run multi-threaded
+    CPython daemons on a 415 MB appliance; MALLOC_ARENA_MAX=2 caps glibc's
+    per-thread malloc arenas to curb fragmentation-driven RSS growth. The
+    wifi watcher unit is deliberately excluded (not a threaded CPython
+    daemon)."""
+
+    CAPPED_UNITS = [
+        SYSTEMD_DIR / "autostream.service",
+        SYSTEMD_DIR / "autostream_bluetooth.service",
+    ]
+
+    @pytest.mark.parametrize("unit", CAPPED_UNITS, ids=lambda u: u.name)
+    def test_malloc_arena_max_set(self, unit):
+        env = _unit_section(unit, "Service").get("Environment", [])
+        assert "MALLOC_ARENA_MAX=2" in env, (
+            f"{unit.name}: missing Environment=MALLOC_ARENA_MAX=2"
+        )
+
+    def test_wifi_watcher_not_arena_capped(self):
+        """The wifi watcher is deliberately excluded from the arena cap."""
+        unit = SYSTEMD_DIR / "autostream_wifi_watcher.service"
+        env = _unit_section(unit, "Service").get("Environment", [])
+        assert "MALLOC_ARENA_MAX=2" not in env, (
+            f"{unit.name}: unexpectedly has MALLOC_ARENA_MAX=2"
+        )
+
+
 class TestWifiWatcherProcessRecovery:
     """D-WP0 — with Phase D (autoconnect=no) the watcher is the sole reconnection
     agent, so its unit must survive crash *and* clean exit and never give up."""
