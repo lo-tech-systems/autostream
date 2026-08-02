@@ -983,19 +983,38 @@ class TestBluetoothOps:
 # SIGTERM handling
 # ---------------------------------------------------------------------------
 
-class TestMakeSigtermHandler:
-    def test_handler_invokes_stop(self):
+class TestSigtermHandling:
+    def test_on_sigterm_invokes_stop_and_removes_itself(self):
+        service = svc.BluetoothService()
         calls = []
-        handler = svc.make_sigterm_handler(lambda: calls.append(True))
-        handler(15, None)
+        service.stop = lambda: calls.append(True)
+        assert service._on_sigterm() is False  # one shot: source removes itself
         assert calls == [True]
 
-    def test_handler_swallows_exceptions_from_stop(self):
+    def test_on_sigterm_swallows_exceptions_from_stop(self):
+        service = svc.BluetoothService()
+
         def _boom():
             raise RuntimeError("boom")
 
-        handler = svc.make_sigterm_handler(_boom)
-        handler(15, None)  # must not raise
+        service.stop = _boom
+        assert service._on_sigterm() is False  # must not raise
+
+    def test_stop_is_idempotent(self):
+        service = svc.BluetoothService()
+
+        class _CountingServer:
+            def __init__(self):
+                self.stops = 0
+
+            def stop(self):
+                self.stops += 1
+
+        server = _CountingServer()
+        service.control_server = server
+        service.stop()
+        service.stop()
+        assert server.stops == 1
 
 
 # ---------------------------------------------------------------------------

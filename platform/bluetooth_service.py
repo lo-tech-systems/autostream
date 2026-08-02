@@ -718,6 +718,9 @@ class BluetoothService:
         self._tick_source_id: Optional[int] = None
         self._glib_loop = None
         self.bridge = loop_mod.LoopBridge()
+        # stop() must be idempotent: the SIGTERM source calls it on the loop
+        # thread, and main()'s finally: calls it again once the loop exits.
+        self._stop_started = False
 
         # Last transport signal seen: recorded
         # on *every* call to _on_transport_changed, independent of whether we
@@ -1004,6 +1007,14 @@ class BluetoothService:
 
         self._tick_source_id = GLib.timeout_add_seconds(int(TICK_INTERVAL_SECONDS), self._on_tick)
 
+        # SIGTERM is delivered as a GLib source rather than a Python-level
+        # signal.signal handler: the latter only runs when the interpreter
+        # executes bytecode between GLib dispatches, whereas a unix signal
+        # source is dispatched by the loop itself, on the loop thread —
+        # shutdown then runs under the same threading contract as everything
+        # else.
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._on_sigterm)
+
         self._glib_loop = GLib.MainLoop()
         logger.info("autostream_bluetooth %s started (adapter_present=%s)",
                     BLUETOOTH_SERVICE_VERSION, self._bluez_ready)
@@ -1028,7 +1039,27 @@ class BluetoothService:
                 "bluetooth service: error disconnecting %s during shutdown", mac,
             )
 
+    def _on_sigterm(self) -> bool:
+        """GLib unix-signal callback (loop thread). systemd sends SIGTERM on
+        stop/restart; without this the process would die without unlinking
+        the control socket, stopping the pump thread, or dropping the A2DP
+        link. Returns False: one shot, the source removes itself."""
+        logger.info("bluetooth service: received SIGTERM, shutting down")
+        try:
+            self.stop()
+        except Exception:
+            logger.exception("bluetooth service: error during signal shutdown")
+        return False
+
     def stop(self) -> None:
+        """Orderly shutdown; idempotent. Runs on the loop thread when
+        triggered by SIGTERM. Bounded: the shutdown Disconnect is capped by
+        its D-Bus timeout, and a socket command caught mid-flight resolves
+        within the bridge's call_sync timeout (the loop is quitting, so the
+        marshalled call can only time out)."""
+        if self._stop_started:
+            return
+        self._stop_started = True
         if self._tick_source_id is not None:
             from gi.repository import GLib
             GLib.source_remove(self._tick_source_id)
@@ -1042,30 +1073,9 @@ class BluetoothService:
             self._glib_loop.quit()
 
 
-def make_sigterm_handler(stop: Callable[[], None]) -> Callable[[int, object], None]:
-    """Build a ``signal.signal``-compatible handler that runs *stop*.
-    systemd sends SIGTERM on stop/restart; without a
-    handler the process dies without unlinking the control socket, stopping
-    the pump thread, or unregistering the pairing agent — this makes SIGTERM
-    trigger the same clean shutdown as Ctrl-C. Kept as a small, independently
-    testable factory rather than inlined so a test can invoke the handler
-    against a fake ``stop`` without touching real signal delivery.
-    """
-
-    def _handler(signum, frame) -> None:
-        logger.info("bluetooth service: received signal %s, shutting down", signum)
-        try:
-            stop()
-        except Exception:
-            logger.exception("bluetooth service: error during signal shutdown")
-
-    return _handler
-
-
 def main() -> None:
     _setup_logging()
     service = BluetoothService()
-    signal.signal(signal.SIGTERM, make_sigterm_handler(service.stop))
     try:
         service.start()
     except KeyboardInterrupt:
