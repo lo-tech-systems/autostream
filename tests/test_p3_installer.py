@@ -210,6 +210,17 @@ update_vibra_from_source
         assert "BUILD_CALLED" not in result.stdout
 
     @bash_capable
+    def test_matching_version_daemon_skip_writes_stamp(self, tmp_path):
+        # Seeding the stamp here lets a subsequent update converge to the
+        # (version stamp) fast path even if the daemon is stopped first.
+        sock_path = str(tmp_path / "vibra-mini.sock")
+        stamp_path = str(tmp_path / "vibra-mini-version")
+        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "1.0.0"}')
+        result = self._run_update(tmp_path, sock_path, stamp_path=stamp_path)
+        assert result.returncode == 0, result.stderr
+        assert Path(stamp_path).read_text(encoding="utf-8") == "v1.0.0"
+
+    @bash_capable
     def test_mismatched_version_runs_full_build(self, tmp_path):
         sock_path = str(tmp_path / "vibra-mini.sock")
         self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "0.9.0"}')
@@ -347,6 +358,141 @@ class TestOwntoneMiniPinnedRelease:
             "tools/owntone_mini_update.sh DEFAULT_REF must match "
             "installer/lib/owntone.sh OWNTONE_MINI_VERSION"
         )
+
+
+class TestOwntoneMiniUpdateFastPath:
+    """install_owntone_mini_from_source() must skip the fetch/build/deploy
+    cycle both when the running daemon already reports the pinned release
+    and, when that probe misses (e.g. the daemon was stopped ahead of an
+    update), when a prior build's version stamp plus its binary confirm the
+    pinned release is still in place; mirrors update_vibra_from_source()
+    (installer/lib/vibra.sh)."""
+
+    OWNTONE_SH = REPO_ROOT / "installer" / "lib" / "owntone.sh"
+
+    def _run_install(
+        self,
+        tmp_path,
+        reported_identity: str = "",
+        stamp_path: str | None = None,
+        stamp_content: str | None = None,
+        binary_present: bool = False,
+    ) -> subprocess.CompletedProcess:
+        # Stamp path and binary path are always pinned into tmp_path: a real
+        # stamp/binary left on the machine running these tests must never
+        # leak into the result.
+        stamp_path = stamp_path or str(tmp_path / "owntone-mini-version")
+        binary_path = tmp_path / "owntone-binary" / "owntone"
+        if binary_present:
+            binary_path.parent.mkdir(parents=True, exist_ok=True)
+            binary_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary_path.chmod(0o755)
+        if stamp_content is not None:
+            Path(stamp_path).write_text(stamp_content, encoding="utf-8")
+
+        script = f'''
+set -euo pipefail
+info() {{ echo "INFO: $*"; }}
+warn() {{ echo "WARN: $*"; }}
+error() {{ echo "ERROR: $*"; }}
+update_progress() {{ :; }}
+apt_install() {{ echo "APT_INSTALL $*"; }}
+dpkg() {{ return 1; }}
+systemctl() {{ echo "SYSTEMCTL $*"; }}
+git() {{
+  if [[ "$1" == "clone" ]]; then
+    local dest="${{@: -1}}"
+    mkdir -p "$dest"
+    printf '#!/bin/sh\\nexit 0\\n' > "$dest/configure"
+    chmod +x "$dest/configure"
+    return 0
+  elif [[ "$1" == "-C" ]]; then
+    echo "${{OWNTONE_MINI_VERSION}}"
+    return 0
+  fi
+}}
+autoreconf() {{ :; }}
+make() {{ echo "MAKE_CALLED $*"; }}
+source "{self.OWNTONE_SH.as_posix()}"
+OWNTONE_MINI_VERSION_STAMP="{Path(stamp_path).as_posix()}"
+OWNTONE_MINI_BINARY="{binary_path.as_posix()}"
+owntone_mini_reported_identity() {{ printf '%s' "{reported_identity}"; }}
+install_owntone_mini_from_source
+'''
+        return subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=15,
+        )
+
+    @bash_capable
+    def test_daemon_reports_pinned_version_skips_build(self, tmp_path):
+        result = self._run_install(
+            tmp_path, reported_identity="owntone-mini 1.1.1",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping source rebuild" in result.stdout
+        assert "(running daemon)" in result.stdout
+        assert "MAKE_CALLED" not in result.stdout
+
+    @bash_capable
+    def test_daemon_reports_pinned_version_skip_writes_stamp(self, tmp_path):
+        # Seeding the stamp here lets a subsequent update converge to the
+        # (version stamp) fast path even if the daemon is stopped first.
+        stamp_path = str(tmp_path / "owntone-mini-version")
+        result = self._run_install(
+            tmp_path, reported_identity="owntone-mini 1.1.1", stamp_path=stamp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(stamp_path).read_text(encoding="utf-8") == "1.1.1"
+
+    @bash_capable
+    def test_daemon_down_stamp_matches_and_binary_present_skips_build(self, tmp_path):
+        # The daemon was stopped ahead of this step (empty probe reply), but
+        # a prior successful build's stamp plus its binary are still there.
+        result = self._run_install(
+            tmp_path, reported_identity="", stamp_content="1.1.1", binary_present=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping source rebuild" in result.stdout
+        assert "(version stamp)" in result.stdout
+        assert "MAKE_CALLED" not in result.stdout
+
+    @bash_capable
+    def test_stamp_matches_but_binary_missing_runs_full_build(self, tmp_path):
+        # Stamp says the pinned release was built, but the binary it names
+        # is gone -- do not trust the stamp alone.
+        result = self._run_install(
+            tmp_path, reported_identity="", stamp_content="1.1.1", binary_present=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping source rebuild" not in result.stdout
+        assert "MAKE_CALLED" in result.stdout
+        assert "Installing OwnTone Mini" in result.stdout
+
+    @bash_capable
+    def test_stamp_stale_runs_full_build(self, tmp_path):
+        result = self._run_install(
+            tmp_path, reported_identity="", stamp_content="1.1.0", binary_present=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping source rebuild" not in result.stdout
+        assert "MAKE_CALLED" in result.stdout
+
+    @bash_capable
+    def test_no_stamp_no_daemon_runs_full_build(self, tmp_path):
+        # Nothing has ever been installed: no daemon answers, no stamp exists.
+        result = self._run_install(tmp_path, reported_identity="")
+        assert result.returncode == 0, result.stderr
+        assert "already installed; skipping source rebuild" not in result.stdout
+        assert "MAKE_CALLED" in result.stdout
+
+    @bash_capable
+    def test_successful_build_writes_stamp(self, tmp_path):
+        # The stamp write is real function code, not stubbed away: only the
+        # network/compiler-dependent inner steps are replaced with no-ops.
+        result = self._run_install(tmp_path, reported_identity="")
+        assert result.returncode == 0, result.stderr
+        stamp_path = tmp_path / "owntone-mini-version"
+        assert stamp_path.read_text(encoding="utf-8") == "1.1.1"
 
 
 # ---------------------------------------------------------------------------

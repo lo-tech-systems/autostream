@@ -13,6 +13,14 @@ OWNTONE_MINI_REPO="https://github.com/lo-tech-systems/owntone-mini.git"
 # fresh installs and updates build exactly this tag; keep in sync with the
 # default ref in tools/owntone_mini_update.sh.
 OWNTONE_MINI_VERSION="1.1.1"
+# Version stamp written at the end of a successful build; the fallback
+# fast-path check when the running-daemon probe misses (e.g. the service was
+# stopped ahead of an update). /var/lib/autostream is the installer's
+# existing root-only stamp/state area (see autostream_install.sh's
+# STAMP_DIR).
+OWNTONE_MINI_VERSION_STAMP="/var/lib/autostream/owntone-mini-version"
+# Binary the source build installs; also removed by the uninstaller.
+OWNTONE_MINI_BINARY="/usr/sbin/owntone"
 
 configure_owntone_apt_repo() {
   info "Configuring OwnTone APT repository"
@@ -57,15 +65,44 @@ owntone_mini_reported_identity() {
     || true
 }
 
+owntone_mini_stamp_reports_pinned_version() {
+  # Fallback evidence for when the API probe is unreachable, e.g. the daemon
+  # was stopped ahead of this step: a stamp file this same script writes on
+  # a successful build, cross-checked against the installed binary still
+  # actually being present (so a stamp left behind by a since-removed
+  # install can't produce a false skip). Any read failure -- no stamp, no
+  # binary -- is treated as "not matching".
+  local stamped
+  stamped="$(cat "${OWNTONE_MINI_VERSION_STAMP}" 2>/dev/null)" || return 1
+  [[ "${stamped}" == "${OWNTONE_MINI_VERSION}" && -x "${OWNTONE_MINI_BINARY}" ]]
+}
+
+write_owntone_mini_version_stamp() {
+  mkdir -p "$(dirname "${OWNTONE_MINI_VERSION_STAMP}")" 2>/dev/null || true
+  printf '%s' "${OWNTONE_MINI_VERSION}" > "${OWNTONE_MINI_VERSION_STAMP}" 2>/dev/null || true
+}
+
 install_owntone_mini_from_source() {
-  # Fast path: the running owntone-mini already reports the pinned release,
-  # so there is nothing to rebuild (a source build costs ~10 minutes on
-  # Pi-class hardware). Any probe failure -- service down, stock OwnTone,
-  # an older mini -- falls through to the full pinned-source build.
+  # Fast path, primary: the running owntone-mini already reports the pinned
+  # release, so there is nothing to rebuild (a source build costs ~10 minutes
+  # on Pi-class hardware). Any probe failure -- service down, stock OwnTone,
+  # an older mini -- falls through to the fallback probe, then the full
+  # pinned-source build.
   local reported
   reported="$(owntone_mini_reported_identity)"
   if [[ "${reported}" == "owntone-mini ${OWNTONE_MINI_VERSION}" ]]; then
-    info "OwnTone Mini ${OWNTONE_MINI_VERSION} already installed; skipping source rebuild"
+    info "OwnTone Mini ${OWNTONE_MINI_VERSION} already installed; skipping source rebuild (running daemon)"
+    write_owntone_mini_version_stamp
+    systemctl enable avahi-daemon
+    systemctl enable owntone
+    return 0
+  fi
+
+  # Fast path, fallback: the API is unreachable (daemon stopped ahead of
+  # this step), but the last successful build's stamp plus the binary it
+  # produced still confirm the pinned release is in place.
+  if owntone_mini_stamp_reports_pinned_version; then
+    info "OwnTone Mini ${OWNTONE_MINI_VERSION} already installed; skipping source rebuild (version stamp)"
     systemctl enable avahi-daemon
     systemctl enable owntone
     return 0
@@ -117,6 +154,7 @@ install_owntone_mini_from_source() {
     make install
   )
   rm -rf "${tmpdir}"
+  write_owntone_mini_version_stamp
 
   systemctl daemon-reload
   systemctl enable avahi-daemon

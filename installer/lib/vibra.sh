@@ -131,6 +131,7 @@ update_vibra_from_source() {
   # release, so there is nothing to rebuild.
   if vibra_mini_daemon_reports_pinned_version; then
     info "vibra-mini ${VIBRA_VERSION} already installed; skipping rebuild (running daemon)"
+    write_vibra_version_stamp
     return 0
   fi
 
