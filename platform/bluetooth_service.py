@@ -6,9 +6,11 @@ Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 Entry point / main loop / thread orchestration for the autostream_bluetooth
 daemon. Runs on the system Python as the unprivileged ``autostream`` user
 (groups ``bluetooth``,
-``audio``). Single process, three threads: GLib main loop (D-Bus), the
-control-socket server, and the loopback pump — plus a lightweight tick thread
-driving the scan/pairing window timers and the reconnect supervisor.
+``audio``). Single process, three threads: GLib main loop (D-Bus, and the
+scan/pairing window timers and reconnect supervisor via a
+``GLib.timeout_add_seconds`` tick), the control-socket server, and the
+loopback pump. ``bluetooth_loop.LoopBridge`` is the one point where a call
+crosses from another thread onto the loop thread.
 
 Follows wifi_watcher.py's module-layout conventions: this module owns the
 state machine, persistence, and startup wiring; ``bluetooth_bluez.py`` is the
@@ -42,6 +44,7 @@ if _HERE not in sys.path:
 
 import bluetooth_bluez as bluez_mod
 import bluetooth_agent as agent_mod
+import bluetooth_loop as loop_mod
 import bluetooth_pump as pump_mod
 import bluetooth_socket as socket_mod
 
@@ -685,9 +688,9 @@ class BluetoothService:
         # not power on/prepare (distinct from no adapter being found at all).
         self._adapter_blocked = False
 
-        self._tick_stop = threading.Event()
-        self._tick_thread: Optional[threading.Thread] = None
+        self._tick_source_id: Optional[int] = None
         self._glib_loop = None
+        self.bridge = loop_mod.LoopBridge()
 
         # Last transport signal seen: recorded
         # on *every* call to _on_transport_changed, independent of whether we
@@ -817,18 +820,23 @@ class BluetoothService:
         if "Connected" in changed:
             self.state_machine.on_link_state_changed(mac, bool(changed["Connected"]))
 
-    def _tick_loop(self) -> None:
-        while not self._tick_stop.wait(TICK_INTERVAL_SECONDS):
-            try:
-                self.state_machine.tick()
-            except Exception:
-                logger.exception("bluetooth service: error in tick loop")
-            if not self._bluez_ready:
-                self._maybe_retry_adapter()
+    def _on_tick(self) -> bool:
+        """``GLib.timeout_add_seconds`` callback: drives the scan/pairing
+        window timers and the reconnect supervisor. Runs on the loop thread,
+        same as every other D-Bus touch point. Must return True to stay
+        armed -- GLib disarms a timeout source whose callback returns
+        False/None."""
+        try:
+            self.state_machine.tick()
+        except Exception:
+            logger.exception("bluetooth service: error in tick loop")
+        if not self._bluez_ready:
+            self._maybe_retry_adapter()
+        return True
 
     def _maybe_retry_adapter(self) -> None:
         """Adapter-absent degradation: retried from
-        the tick thread every ADAPTER_RETRY_INTERVAL_SECONDS until an adapter
+        the tick callback every ADAPTER_RETRY_INTERVAL_SECONDS until an adapter
         appears — a missing/late-starting adapter must not crash-loop the
         unit; the control socket and zero-fill pump are already up."""
         now = time.monotonic()
@@ -918,6 +926,9 @@ class BluetoothService:
 
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self._dbus = dbus
+        # start() runs on the thread that goes on to call self._glib_loop.run()
+        # below -- i.e. this thread *becomes* the loop thread from here on.
+        self.bridge.mark_loop_thread()
 
         # ops/state-machine/pump/control-socket all come up regardless of
         # whether BlueZ (or an adapter) is reachable yet — the systemd unit
@@ -951,8 +962,7 @@ class BluetoothService:
 
         self._try_connect_bluez()
 
-        self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True, name="bt-tick")
-        self._tick_thread.start()
+        self._tick_source_id = GLib.timeout_add_seconds(int(TICK_INTERVAL_SECONDS), self._on_tick)
 
         self._glib_loop = GLib.MainLoop()
         logger.info("autostream_bluetooth %s started (adapter_present=%s)",
@@ -979,7 +989,10 @@ class BluetoothService:
             )
 
     def stop(self) -> None:
-        self._tick_stop.set()
+        if self._tick_source_id is not None:
+            from gi.repository import GLib
+            GLib.source_remove(self._tick_source_id)
+            self._tick_source_id = None
         self._disconnect_on_shutdown()
         if self.control_server is not None:
             self.control_server.stop()
