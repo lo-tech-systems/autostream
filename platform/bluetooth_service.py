@@ -842,6 +842,11 @@ class BluetoothService:
         # capture open on this, so the shared cable always carries the
         # pump's rate/format by the time the capture side negotiates.
         status["loopback_held"] = self.pump.holds_loopback() if self.pump is not None else False
+        # Additive: whether the loopback cable is currently held at
+        # incompatible parameters by the other end, pausing the pump. The
+        # coordinator watches this to bounce the monitor's inputs and force
+        # renegotiation when the lockout persists.
+        status["loopback_locked_out"] = self.pump.playback_locked_out() if self.pump is not None else False
         status["adapter_blocked"] = self._adapter_blocked
         status["version"] = BLUETOOTH_SERVICE_VERSION
         if self._last_transport_active:

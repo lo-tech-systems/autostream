@@ -1249,6 +1249,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         send_log_level_put_json(self, STATE, json_obj, "user")
 
 
+# Cooldown between lockout-triggered config reloads (_lockout_heal_check):
+# a reload bounces the monitor's inputs, which is disruptive if repeated
+# faster than the other end could plausibly release and re-pin the cable.
+LOCKOUT_RELOAD_COOLDOWN_SECONDS = 120.0
+
+
 def _bluetooth_input_configured(state) -> bool:
     """True when either monitor input is configured on the Bluetooth
     loopback's capture side."""
@@ -1299,13 +1305,57 @@ def _rate_follow_check(state, bluetooth_status: Optional[dict],
     return rate
 
 
+def _lockout_heal_check(state, bluetooth_status: Optional[dict],
+                        lockout_streak: int,
+                        last_heal_reload: Optional[float]) -> tuple:
+    """One lockout-healing step: returns the updated
+    ``(lockout_streak, last_heal_reload)``.
+
+    A sustained ``loopback_locked_out`` means the pump's capture-side peer
+    pinned the shared cable at incompatible parameters while the pump was
+    absent, and the pump alone cannot force a release -- only the monitor
+    reopening its capture side renegotiates the cable. Reloading on the
+    first observed lockout would over-react to a single transient poll, so
+    the reload fires only once the lockout has been seen on two consecutive
+    polls (and only while a Bluetooth input is actually configured), and no
+    more often than ``LOCKOUT_RELOAD_COOLDOWN_SECONDS``.
+    """
+    locked_out = bool((bluetooth_status or {}).get("loopback_locked_out", False))
+    if not locked_out:
+        return 0, last_heal_reload
+
+    lockout_streak += 1
+    now = time.monotonic()
+    cooldown_elapsed = (
+        last_heal_reload is None or now - last_heal_reload >= LOCKOUT_RELOAD_COOLDOWN_SECONDS
+    )
+    if (
+        lockout_streak >= 2
+        and cooldown_elapsed
+        and _bluetooth_input_configured(state)
+    ):
+        from autostream_core import request_config_reload
+        logging.info(
+            "Bluetooth loopback held at incompatible parameters with a "
+            "Bluetooth input configured; reloading monitor inputs to "
+            "renegotiate the cable.",
+        )
+        request_config_reload()
+        lockout_streak = 0
+        last_heal_reload = now
+    return lockout_streak, last_heal_reload
+
+
 def _scan_monitor_devices_loop() -> None:
     """Background loop: refresh visible ALSA capture devices (and, when
     the Bluetooth-input subsystem is installed, the autostream_bluetooth
     daemon status) every 15 s. Each poll also runs the Bluetooth
-    rate-follow step (_rate_follow_check).
+    rate-follow step (_rate_follow_check) and the lockout-healing step
+    (_lockout_heal_check).
     """
     last_cable_rate: Optional[int] = None
+    lockout_streak = 0
+    last_heal_reload: Optional[float] = None
     while not stop_flag.is_set():
         bluetooth_status: Optional[dict] = None
         if bluetooth_installed():
@@ -1333,6 +1383,13 @@ def _scan_monitor_devices_loop() -> None:
             last_cable_rate = _rate_follow_check(state, bluetooth_status, last_cable_rate)
         except Exception:
             logging.debug("bluetooth rate-follow check failed", exc_info=True)
+
+        try:
+            lockout_streak, last_heal_reload = _lockout_heal_check(
+                state, bluetooth_status, lockout_streak, last_heal_reload,
+            )
+        except Exception:
+            logging.debug("bluetooth lockout-heal check failed", exc_info=True)
 
         state.set_monitor_devices(devices)
         state.set_bluetooth_status(bluetooth_status)

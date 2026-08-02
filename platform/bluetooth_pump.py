@@ -197,6 +197,16 @@ class LoopbackPump:
         with self._lock:
             return self._playback_pcm is not None
 
+    def playback_locked_out(self) -> bool:
+        """True while the shared loopback cable is held at incompatible
+        parameters by its other end and the pump is pausing rather than
+        writing garbled audio (thread-safe). False during startup before the
+        first open attempt, and clears itself once a reopen succeeds.
+        Recovery requires the other end to release/renegotiate the cable —
+        the pump alone cannot force it."""
+        with self._lock:
+            return self._playback_pcm is None and self._playback_retry_at > 0
+
     def has_active_source(self) -> bool:
         """True once a capture device has been *set* (``set_active_source``),
         even before the pump thread has actually opened it — distinct from

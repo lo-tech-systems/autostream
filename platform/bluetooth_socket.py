@@ -229,6 +229,7 @@ def _handle_status(server: "BluetoothControlServer") -> dict:
         scanning=bool(st.get("scanning", False)),
         pump_source_active=bool(st.get("pump_source_active", False)),
         loopback_held=bool(st.get("loopback_held", False)),
+        loopback_locked_out=bool(st.get("loopback_locked_out", False)),
         buffer_ms=int(st.get("buffer_ms", _DEFAULT_BUFFER_MS)),
         adapter_kind=st.get("adapter_kind"),
         adapter_blocked=bool(st.get("adapter_blocked", False)),

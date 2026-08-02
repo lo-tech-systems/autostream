@@ -594,6 +594,34 @@ class TestGrantedParamVerification:
         assert refused.closed
         assert refused.writes == []   # nothing written through a mismatched open
 
+    def test_locked_out_false_before_any_open_attempt(self):
+        # No open attempted yet at all: locked-out must not be true just
+        # because there is no verified handle -- only a *refused* open
+        # counts.
+        fake = FakeAlsaAudio()
+        pump = pump_mod.LoopbackPump(
+            period_frames=4, rate=44100, buffer_ms=1, alsaaudio_module=fake,
+        )
+        assert not pump.playback_locked_out()
+
+    def test_locked_out_true_after_refused_open(self):
+        pump, _ = self._make_blocked_pump(playback_grant_rate=48000)
+        assert pump.playback_locked_out()
+
+    def test_locked_out_false_once_healthy(self):
+        pump, _ = self._make_blocked_pump(
+            playback_grant_rate=44100, playback_grant_format_name="S16_LE",
+        )
+        assert not pump.playback_locked_out()
+
+    def test_locked_out_clears_after_reopen_succeeds(self):
+        pump, fake = self._make_blocked_pump(playback_grant_rate=48000)
+        assert pump.playback_locked_out()
+        fake.playback_grant_rate = None
+        pump._playback_retry_at = 0.0
+        pump._step()
+        assert not pump.playback_locked_out()
+
     def test_format_mismatch_refuses_open(self):
         pump, _ = self._make_blocked_pump(playback_grant_format_name="S32_LE")
         assert pump._playback_pcm is None

@@ -132,6 +132,7 @@ class TestDispatchStatus:
             "scanning": False,
             "pump_source_active": False,
             "loopback_held": False,
+            "loopback_locked_out": False,
             "buffer_ms": 200,
             "adapter_kind": "usb",
             "adapter_blocked": False,
@@ -143,6 +144,12 @@ class TestDispatchStatus:
         srv._status["loopback_held"] = True
         r = dispatch(_req({"cmd": "status"}), srv)
         assert r["loopback_held"] is True
+
+    def test_status_loopback_locked_out_passthrough(self):
+        srv = FakeServer()
+        srv._status["loopback_locked_out"] = True
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["loopback_locked_out"] is True
 
     def test_status_codec_and_rate_forwarded_when_present(self):
         # The daemon includes codec/sample_rate only while an A2DP transport

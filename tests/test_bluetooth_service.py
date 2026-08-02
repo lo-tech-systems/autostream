@@ -1035,6 +1035,7 @@ class FakePump:
         # Mirrors the real pump's negotiated playback rate -- only
         # meaningful once a capture PCM is open.
         self.negotiated_rate: int | None = None
+        self.locked_out = False
 
     def set_active_source(self, capture_device, rate=None) -> None:
         self.active_source = capture_device
@@ -1052,6 +1053,11 @@ class FakePump:
         # pump reports False only during startup or while its loopback
         # open is refused (see LoopbackPump.holds_loopback()).
         return True
+
+    def playback_locked_out(self) -> bool:
+        # Overridden directly by tests that need to simulate a lockout; the
+        # fake otherwise mirrors the real pump's default (no lockout).
+        return self.locked_out
 
     def is_streaming(self) -> bool:
         return self.active_source is not None
@@ -1248,8 +1254,15 @@ class TestGetStatusWrapsPumpState:
         base_keys = set(service.state_machine.get_status().keys())
         wrapped = service._get_status()
         assert set(wrapped.keys()) == base_keys | {
-            "pump_source_active", "loopback_held", "adapter_blocked", "version",
+            "pump_source_active", "loopback_held", "loopback_locked_out",
+            "adapter_blocked", "version",
         }
+
+    def test_loopback_locked_out_reflects_pump_lockout(self, tmp_path):
+        service, _ = _make_service(tmp_path)
+        assert service._get_status()["loopback_locked_out"] is False
+        service.pump.locked_out = True
+        assert service._get_status()["loopback_locked_out"] is True
 
     def test_get_status_reports_service_version(self, tmp_path):
         service, _ = _make_service(tmp_path)
