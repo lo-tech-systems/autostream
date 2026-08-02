@@ -415,6 +415,10 @@ on_error() {
     else
       write_update_result "failure" "Update failed"
     fi
+    # A failed update does not reboot, so bring back whatever
+    # stop_services_for_update took down; best-effort, after the failure
+    # result is written so the retry service still sees the true status.
+    restore_stopped_services || true
   fi
   error "Installation failed (exit ${exit_code}) at line ${line_no}."
   open_log_prompt "Check ${LOGFILE} for details."

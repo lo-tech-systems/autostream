@@ -460,3 +460,41 @@ class TestRunUpdateWiring:
     def test_state_file_constant_matches_stamp_dir(self):
         src = self._src()
         assert 'STOPPED_SERVICES_FILE="${STAMP_DIR}/update-stopped-services.env"' in src
+
+
+class TestFailurePathRestore:
+    """The ERR trap must bring stopped services back on a failed update:
+    a failed update does not reboot, so nothing else would restart them."""
+
+    def _on_error_body(self) -> str:
+        m = re.search(r"^on_error\(\)\s*\{.*?\n\}\n", _src(), re.S | re.M)
+        assert m is not None, "on_error trap function not found"
+        return m.group(0)
+
+    def test_on_error_calls_restore_stopped_services(self):
+        assert "restore_stopped_services" in self._on_error_body()
+
+    def test_restore_runs_after_failure_result_written(self):
+        body = self._on_error_body()
+        failure_idx = body.find('write_update_result "failure"')
+        restore_idx = body.find("restore_stopped_services")
+        assert failure_idx != -1 and restore_idx != -1
+        assert failure_idx < restore_idx, (
+            "the failure status must be persisted before the best-effort "
+            "restore, so the retry service sees the true outcome even if "
+            "restore misbehaves"
+        )
+
+    def test_restore_only_in_update_mode_branch(self):
+        body = self._on_error_body()
+        update_branch = re.search(
+            r'if \[\[ "\$\{INSTALL_MODE\}" == "update" \]\]; then.*?\n  fi\n',
+            body, re.S,
+        )
+        assert update_branch is not None
+        assert "restore_stopped_services" in update_branch.group(0), (
+            "restore belongs to update mode only; fresh installs stop nothing"
+        )
+
+    def test_restore_is_best_effort(self):
+        assert "restore_stopped_services || true" in self._on_error_body()
