@@ -227,6 +227,10 @@ class ListOutputsResult:
     error: str = ""
     error_code: str = ""
 
+    @property
+    def message(self) -> str:
+        return self.error or self.error_code
+
 
 @dataclass(frozen=True)
 class GetOutputResult:
@@ -236,6 +240,10 @@ class GetOutputResult:
     output: Optional[OutputInfo] = None
     error: str = ""
     error_code: str = ""
+
+    @property
+    def message(self) -> str:
+        return self.error or self.error_code
 
 
 @dataclass(frozen=True)

@@ -1030,7 +1030,7 @@ class TestShutdownAwareness:
 # ---------------------------------------------------------------------------
 
 class TestAudioStatusPlayingFromSession:
-    def _invoke(self, session_state):
+    def _invoke(self, session_state, result=None):
         import io
         import json as _json
         import autostream_webui_api as api_mod
@@ -1042,12 +1042,13 @@ class TestAudioStatusPlayingFromSession:
         state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
         parsed = MagicMock()
         parsed.owntone.base_url = "http://localhost:3689"
-        outputs = ListOutputsResult(
-            ok=True,
-            outputs=(OutputInfo(id="a", name="Kitchen", selected=True, volume_percent=40),),
-        )
+        if result is None:
+            result = ListOutputsResult(
+                ok=True,
+                outputs=(OutputInfo(id="a", name="Kitchen", selected=True, volume_percent=40),),
+            )
         with patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs", return_value=outputs), \
+             patch("autostream_webui_api.list_outputs", return_value=result), \
              patch("autostream_webui_api.get_session_state", return_value=session_state), \
              patch("autostream_webui_api.any_monitor_capturing", return_value=False):
             api_mod.send_audio_status_json(handler, state)
@@ -1061,3 +1062,20 @@ class TestAudioStatusPlayingFromSession:
     def test_idle_session_reports_not_playing(self):
         body = self._invoke({"active": False, "source": None})
         assert body["playing"] is False
+
+    def test_backend_down_result_returns_well_formed_json(self):
+        """A not-ok ListOutputsResult must not raise; it must degrade to the
+        same backend_unavailable reply used for a raised exception."""
+        from autostream_players import ListOutputsResult
+
+        down = ListOutputsResult(ok=False, error="Connection refused")
+        body = self._invoke({"active": False, "source": None}, result=down)
+        assert body == {"playing": False, "outputs": None, "error": "backend_unavailable"}
+
+    def test_backend_down_result_exposes_message_for_logging(self):
+        """ListOutputsResult must carry a .message attribute like its sibling
+        result types, so failure logging doesn't crash the request thread."""
+        from autostream_players import ListOutputsResult
+
+        down = ListOutputsResult(ok=False, error="Connection refused")
+        assert down.message == "Connection refused"
