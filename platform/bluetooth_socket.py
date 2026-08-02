@@ -30,8 +30,15 @@ import re
 import socket
 import socketserver
 import stat
+import sys
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import bluetooth_loop as loop_mod
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +46,12 @@ DEFAULT_SOCKET_PATH = "/run/autostream-bluetooth/bluetooth.sock"
 SOCKET_MODE = 0o660
 REQUEST_MAX_BYTES = 4096
 CLIENT_TIMEOUT = 2.0
+
+# Every call this module makes into the service/state machine crosses onto
+# the loop thread via the bridge; this is the one timeout for all of them --
+# generous relative to any single D-Bus call, but still bounded so a wedged
+# loop surfaces as internal_error rather than hanging the client forever.
+BRIDGE_CALL_TIMEOUT = 10.0
 
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
@@ -82,6 +95,17 @@ def _ok(**kwargs) -> dict:
 
 def _err(error: str) -> dict:
     return {"ok": False, "error": error}
+
+
+def _call(server: "BluetoothControlServer", fn: Callable[..., Any], *args) -> Any:
+    """Marshal one call into the service onto the loop thread via the
+    bridge, blocking this (socket) thread for the result. The one point
+    where the control-socket thread reaches into the state machine --
+    every handler below goes through this rather than calling ``fn``
+    directly, so a wedged loop surfaces as ``LoopCallTimeout`` (handled by
+    ``dispatch``'s catch-all) instead of a direct cross-thread dbus-python
+    call."""
+    return server.bridge.call_sync(fn, *args, timeout=BRIDGE_CALL_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
@@ -171,20 +195,20 @@ def dispatch(raw: bytes, server: "BluetoothControlServer") -> dict:
         if cmd == "status":
             return _handle_status(server)
         if cmd == "scan_start":
-            if not server.scan_start():
+            if not _call(server, server.scan_start):
                 return _err("scan_in_progress")
             return _ok()
         if cmd == "scan_stop":
-            server.scan_stop()
+            _call(server, server.scan_stop)
             return _ok()
         if cmd == "scan_results":
-            return _ok(devices=server.get_scan_results())
+            return _ok(devices=_call(server, server.get_scan_results))
         if cmd == "pair":
             return _handle_pair(obj, server)
         if cmd == "pair_status":
             return _handle_pair_status(server)
         if cmd == "forget":
-            server.forget()
+            _call(server, server.forget)
             return _ok()
         if cmd == "configure":
             return _handle_configure(obj, server)
@@ -196,7 +220,7 @@ def dispatch(raw: bytes, server: "BluetoothControlServer") -> dict:
 
 
 def _handle_status(server: "BluetoothControlServer") -> dict:
-    st = server.get_status()
+    st = _call(server, server.get_status)
     reply = _ok(
         adapter_present=bool(st.get("adapter_present", False)),
         paired=st.get("paired"),
@@ -228,7 +252,7 @@ def _handle_pair(obj: dict, server: "BluetoothControlServer") -> dict:
     # a pairing attempt is already in flight; that must reach the client as
     # a distinct error rather than a silent success.
     # This exact string is pinned: the webui maps it to HTTP 409.
-    if not server.pair(mac):
+    if not _call(server, server.pair, mac):
         return _err("pair_in_progress")
     return _ok()
 
@@ -240,13 +264,13 @@ def _handle_configure(obj: dict, server: "BluetoothControlServer") -> dict:
     # both failure modes map to the one pinned error string.
     if not isinstance(buffer_ms, int) or isinstance(buffer_ms, bool):
         return _err("invalid_buffer_ms")
-    if not server.configure(buffer_ms):
+    if not _call(server, server.configure, buffer_ms):
         return _err("invalid_buffer_ms")
     return _ok()
 
 
 def _handle_pair_status(server: "BluetoothControlServer") -> dict:
-    st = server.get_pair_status()
+    st = _call(server, server.get_pair_status)
     resp = _ok(state=st.get("state", "idle"))
     if st.get("error"):
         resp["error"] = st["error"]
@@ -284,6 +308,10 @@ class BluetoothControlServer:
         for an out-of-range value (reported to the client as
         {"ok":false,"error":"invalid_buffer_ms"} — this exact string is
         pinned).
+    bridge: the ``LoopBridge`` every one of the callables above is marshaled
+        through -- this thread (the control-socket thread) never calls them
+        directly, only via ``bridge.call_sync()``, so dbus-python and the
+        state machine are touched exclusively from the loop thread.
     socket_path: Unix socket path; defaults to DEFAULT_SOCKET_PATH.
     """
 
@@ -298,8 +326,10 @@ class BluetoothControlServer:
         get_pair_status: Callable[[], dict],
         forget: Callable[[], None],
         configure: Callable[[int], bool],
+        bridge: "loop_mod.LoopBridge",
         socket_path: str = DEFAULT_SOCKET_PATH,
     ) -> None:
+        self.bridge = bridge
         self.get_status = get_status
         self.scan_start = scan_start
         self.scan_stop = scan_stop

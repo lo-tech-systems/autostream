@@ -956,6 +956,7 @@ class BluetoothService:
             get_pair_status=self.state_machine.get_pair_status,
             forget=self.state_machine.forget,
             configure=self.state_machine.set_buffer_ms,
+            bridge=self.bridge,
             socket_path=self._socket_path,
         )
         self.control_server.start()

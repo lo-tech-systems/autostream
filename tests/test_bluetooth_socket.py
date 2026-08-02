@@ -24,6 +24,7 @@ for _p in (REPO_ROOT / "platform",):
     if _s not in sys.path:
         sys.path.insert(0, _s)
 
+from bluetooth_loop import LoopCallTimeout  # noqa: E402
 from bluetooth_socket import (  # noqa: E402
     DEFAULT_SOCKET_PATH,
     SOCKET_MODE,
@@ -41,10 +42,28 @@ def _req(obj: dict) -> bytes:
     return (json.dumps(obj) + "\n").encode("utf-8")
 
 
+class FakeBridge:
+    """Pass-through stand-in for LoopBridge: runs fn(*args) inline on the
+    calling thread instead of marshaling onto a real loop -- exercises every
+    dispatch()/handler code path without needing GLib or a second thread."""
+
+    def call_sync(self, fn, *args, timeout=None):
+        return fn(*args)
+
+
+class TimingOutBridge:
+    """Simulates a wedged loop: every call_sync() times out instead of
+    running fn."""
+
+    def call_sync(self, fn, *args, timeout=None):
+        raise LoopCallTimeout("simulated wedged loop")
+
+
 class FakeServer:
     """Minimal BluetoothControlServer substitute for dispatch() tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, bridge=None) -> None:
+        self.bridge = bridge if bridge is not None else FakeBridge()
         self.scan_start_called = False
         self.scan_stop_called = False
         self.forget_called = False
@@ -358,6 +377,14 @@ class TestDispatchErrors:
         r = dispatch(big, FakeServer())
         assert r["error"] == "request_too_large"
 
+    def test_bridge_timeout_maps_to_internal_error(self):
+        """A wedged loop (bridge.call_sync raising LoopCallTimeout) must
+        reach the client as the same internal_error reply as any other
+        handler exception -- never a hang, never a new reply shape."""
+        srv = FakeServer(bridge=TimingOutBridge())
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r == {"ok": False, "error": "internal_error"}
+
 
 # ---------------------------------------------------------------------------
 # Unix socket end-to-end (bluez layer entirely absent — server callbacks are
@@ -392,6 +419,7 @@ def _make_server(tmpdir: str) -> BluetoothControlServer:
         get_pair_status=fake.get_pair_status,
         forget=fake.forget,
         configure=fake.configure,
+        bridge=fake.bridge,
         socket_path=os.path.join(tmpdir, "bluetooth.sock"),
     )
 
