@@ -3,8 +3,9 @@
 
 Exercises BluetoothStateMachine against a fake BluetoothOps (no dbus/gi
 required) with an injectable fake clock (window expiry / reconnect backoff
-tested without any real sleeping) and a synchronous run_async (pairing
-outcomes are deterministic rather than racing a background thread).
+tested without any real sleeping). The state machine is single-threaded on
+the GLib loop thread; FakeOps resolves pairing/reconnect ops synchronously
+and immediately, so outcomes here are deterministic straight-line calls.
 """
 from __future__ import annotations
 
@@ -129,17 +130,11 @@ class FakeOps:
         on_result(mac in self.connected_macs)
 
 
-def _sync_run_async(fn):
-    fn()
-
-
 def _make_machine(tmp_path, ops=None, clock=None):
     ops = ops or FakeOps()
     clock = clock or FakeClock()
     state_path = str(tmp_path / "bluetooth.json")
-    machine = svc.BluetoothStateMachine(
-        ops=ops, state_path=state_path, clock=clock, run_async=_sync_run_async,
-    )
+    machine = svc.BluetoothStateMachine(ops=ops, state_path=state_path, clock=clock)
     return machine, ops, clock
 
 
@@ -165,8 +160,7 @@ class TestScan:
         machine.start_pairing(MAC_A)
         assert machine.mode == svc.MODE_IDLE  # sync pairing already resolved
         # Force back into pairing mode to test the guard directly.
-        with machine._lock:
-            machine.mode = svc.MODE_PAIRING
+        machine.mode = svc.MODE_PAIRING
         assert machine.start_scan() is False
 
     def test_stop_scan_returns_to_idle(self, tmp_path):
@@ -298,8 +292,7 @@ class TestPairing:
 
     def test_pairing_rejected_while_already_pairing(self, tmp_path):
         machine, ops, _ = _make_machine(tmp_path)
-        with machine._lock:
-            machine.mode = svc.MODE_PAIRING
+        machine.mode = svc.MODE_PAIRING
         assert machine.start_pairing(MAC_B) is False
 
     def test_single_paired_device_replacement_removes_old(self, tmp_path):

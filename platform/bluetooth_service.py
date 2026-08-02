@@ -34,7 +34,6 @@ import os
 import signal
 import sys
 import tempfile
-import threading
 import time
 from typing import Callable, Optional
 
@@ -277,12 +276,12 @@ class BluetoothStateMachine:
     """Owns the scan/pairing state machine, single-paired-device policy, the
     reconnect supervisor, and presentation-state persistence.
 
-    Pairing and the reconnect probe launch loop-thread-driven command
-    objects (``BluetoothOps.start_pair_and_trust`` /
-    ``start_reconnect_probe``, see ``bluetooth_commands.py``) rather than
-    spawning a worker thread. ``run_async``/``_default_run_async`` are no
-    longer used by either path but are kept for now (their removal, and the
-    lock's, is a separate follow-up).
+    Single-threaded on the GLib loop thread: every entry point -- socket
+    commands (marshalled onto the loop via ``LoopBridge.call_sync``), the
+    tick timer, D-Bus signal handlers, and op callbacks (see
+    ``bluetooth_commands.py``) -- runs there. Pairing and the reconnect probe
+    launch loop-thread-driven command objects (``BluetoothOps.start_pair_and_trust``
+    / ``start_reconnect_probe``) rather than spawning a worker thread.
     """
 
     def __init__(
@@ -291,13 +290,12 @@ class BluetoothStateMachine:
         ops: BluetoothOps,
         state_path: str = DEFAULT_STATE_PATH,
         clock: Callable[[], float] = time.monotonic,
-        run_async: Optional[Callable[[Callable[[], None]], None]] = None,
+        bridge: Optional["loop_mod.LoopBridge"] = None,
     ) -> None:
         self._ops = ops
         self._state_path = state_path
         self._clock = clock
-        self._run_async = run_async or self._default_run_async
-        self._lock = threading.RLock()
+        self._bridge = bridge
 
         self.mode = MODE_IDLE
         self._scan_started_at: Optional[float] = None
@@ -323,9 +321,9 @@ class BluetoothStateMachine:
 
         self._load_persisted()
 
-    @staticmethod
-    def _default_run_async(fn: Callable[[], None]) -> None:
-        threading.Thread(target=fn, daemon=True, name="bt-worker").start()
+    def _assert_on_loop(self) -> None:
+        if self._bridge is not None:
+            self._bridge.assert_on_loop()
 
     def set_link_change_callback(self, cb: Callable[[str], None]) -> None:
         """*cb(link_state)* fires whenever link state changes, so the pump
@@ -334,23 +332,22 @@ class BluetoothStateMachine:
         self._on_link_change = cb
 
     def set_pair_success_callback(self, cb: Callable[[str], None]) -> None:
-        """*cb(mac)* fires outside the state-machine lock once pairing
-        completes successfully. During the first pairing of
-        a device, a MediaTransport1 object can appear (and a Connected=True
-        PropertiesChanged can arrive) *before* the device is trusted — before
-        this pairing has finished — so neither ``on_transport_changed`` nor
-        ``on_link_state_changed`` had a trusted mac to attribute the event to
-        and the daemon was stuck showing "disconnected"/zero-fill forever.
-        The service's own transport handler now falls back to the in-flight
-        pairing target mac as the primary fix; this callback is the
-        belt-and-braces follow-up, letting the service re-query actual
-        connection state and re-arm the pump once pairing lands."""
+        """*cb(mac)* fires once pairing completes successfully. During the
+        first pairing of a device, a MediaTransport1 object can appear (and a
+        Connected=True PropertiesChanged can arrive) *before* the device is
+        trusted — before this pairing has finished — so neither
+        ``on_transport_changed`` nor ``on_link_state_changed`` had a trusted
+        mac to attribute the event to and the daemon was stuck showing
+        "disconnected"/zero-fill forever. The service's own transport handler
+        now falls back to the in-flight pairing target mac as the primary
+        fix; this callback is the belt-and-braces follow-up, letting the
+        service re-query actual connection state and re-arm the pump once
+        pairing lands."""
         self._on_pair_success = cb
 
     def set_buffer_change_callback(self, cb: Callable[[int], None]) -> None:
-        """*cb(buffer_ms)* fires outside the state-machine lock whenever the
-        configured audio buffer changes, so the pump can be told to apply it
-        on its next (re)open."""
+        """*cb(buffer_ms)* fires whenever the configured audio buffer
+        changes, so the pump can be told to apply it on its next (re)open."""
         self._on_buffer_change = cb
 
     # ---- persistence ----
@@ -383,27 +380,27 @@ class BluetoothStateMachine:
     # ---- pairing-agent policy hooks ----
 
     def pairing_window_open(self) -> bool:
-        with self._lock:
-            return self.mode == MODE_PAIRING
+        self._assert_on_loop()
+        return self.mode == MODE_PAIRING
 
     def pairing_target_mac(self) -> Optional[str]:
-        with self._lock:
-            return self._pairing_target_mac
+        self._assert_on_loop()
+        return self._pairing_target_mac
 
     def trusted_mac(self) -> Optional[str]:
-        with self._lock:
-            return self._paired_mac
+        self._assert_on_loop()
+        return self._paired_mac
 
     # ---- scan ----
 
     def start_scan(self) -> bool:
-        with self._lock:
-            if self.mode == MODE_PAIRING:
-                return False
-            self.mode = MODE_SCANNING
-            self._scan_started_at = self._clock()
-            self._scan_results = {}
-            keep_macs = {m for m in (self._paired_mac, self._pairing_target_mac) if m}
+        self._assert_on_loop()
+        if self.mode == MODE_PAIRING:
+            return False
+        self.mode = MODE_SCANNING
+        self._scan_started_at = self._clock()
+        self._scan_results = {}
+        keep_macs = {m for m in (self._paired_mac, self._pairing_target_mac) if m}
         # Purge BlueZ's own device cache before (re)starting discovery: a
         # device it already saw in an earlier session never fires
         # InterfacesAdded again, so without this later scans would show
@@ -418,57 +415,57 @@ class BluetoothStateMachine:
         return True
 
     def stop_scan(self) -> None:
-        with self._lock:
-            was_scanning = self.mode == MODE_SCANNING
-            if was_scanning:
-                self.mode = MODE_IDLE
-                self._scan_started_at = None
+        self._assert_on_loop()
+        was_scanning = self.mode == MODE_SCANNING
+        if was_scanning:
+            self.mode = MODE_IDLE
+            self._scan_started_at = None
         self._ops.stop_discovery()
 
     def on_device_found(self, device: dict) -> None:
         """*device*: {mac, name, rssi, paired, audio_capable} (bluez layer
         already filtered to audio-capable devices; only recorded while a
         scan is actually open)."""
-        with self._lock:
-            if self.mode != MODE_SCANNING:
-                return
-            mac = device.get("mac")
-            if not mac:
-                return
-            self._scan_results[mac.upper()] = dict(device)
+        self._assert_on_loop()
+        if self.mode != MODE_SCANNING:
+            return
+        mac = device.get("mac")
+        if not mac:
+            return
+        self._scan_results[mac.upper()] = dict(device)
 
     def get_scan_results(self) -> list:
-        with self._lock:
-            paired = self._paired_mac
-            results = []
-            for mac, device in self._scan_results.items():
-                results.append({
-                    "mac": mac,
-                    "name": device.get("name", ""),
-                    "rssi": device.get("rssi"),
-                    "paired": mac == paired,
-                })
-            return results
+        self._assert_on_loop()
+        paired = self._paired_mac
+        results = []
+        for mac, device in self._scan_results.items():
+            results.append({
+                "mac": mac,
+                "name": device.get("name", ""),
+                "rssi": device.get("rssi"),
+                "paired": mac == paired,
+            })
+        return results
 
     # ---- pairing ----
 
     def start_pairing(self, mac: str) -> bool:
+        self._assert_on_loop()
         mac = mac.upper()
         if not bluez_mod.is_valid_mac(mac):
             return False
-        with self._lock:
-            if self.mode == MODE_PAIRING:
-                return False
-            was_scanning = self.mode == MODE_SCANNING
-            old_mac = self._paired_mac
-            self.mode = MODE_PAIRING
-            self._scan_started_at = None
-            self._pairing_target_mac = mac
-            self._pairing_started_at = self._clock()
-            self._pair_state = PAIR_STATE_PAIRING
-            self._pair_error = None
+        if self.mode == MODE_PAIRING:
+            return False
+        was_scanning = self.mode == MODE_SCANNING
+        old_mac = self._paired_mac
+        self.mode = MODE_PAIRING
+        self._scan_started_at = None
+        self._pairing_target_mac = mac
+        self._pairing_started_at = self._clock()
+        self._pair_state = PAIR_STATE_PAIRING
+        self._pair_error = None
         # A scan in progress must yield the adapter before pairing starts
-        # (mirrors stop_scan()'s own ops call, made outside the lock).
+        # (mirrors stop_scan()'s own ops call).
         if was_scanning:
             self._ops.stop_discovery()
         self._ops.set_pairable(True)
@@ -492,27 +489,24 @@ class BluetoothStateMachine:
         ``mac != pairing_target_mac`` check as belt-and-braces, so this can
         stay minimal -- a landed result was already safe to receive late,
         this just avoids the wasted D-Bus round-trips."""
-        with self._lock:
-            return self._pairing_target_mac != mac
+        return self._pairing_target_mac != mac
 
     def on_pair_result(self, mac: str, success: bool, error: Optional[str] = None) -> None:
+        self._assert_on_loop()
         mac = mac.upper()
-        with self._lock:
-            if mac != self._pairing_target_mac:
-                logger.info("Ignoring stale pair result for %s (current target %s)",
-                            mac, self._pairing_target_mac)
-                return
-            self.mode = MODE_IDLE
-            if success:
-                self._pair_state = PAIR_STATE_DONE
-                self._paired_mac = mac
-                self._paired_name = self._scan_results.get(mac, {}).get("name", "")
-                self._paired_at = time.time()
-            else:
-                self._pair_state = PAIR_STATE_FAILED
-                self._pair_error = error or "pairing_failed"
-        # ops/persistence I/O happens outside the lock (file convention: see
-        # start_scan/stop_scan).
+        if mac != self._pairing_target_mac:
+            logger.info("Ignoring stale pair result for %s (current target %s)",
+                        mac, self._pairing_target_mac)
+            return
+        self.mode = MODE_IDLE
+        if success:
+            self._pair_state = PAIR_STATE_DONE
+            self._paired_mac = mac
+            self._paired_name = self._scan_results.get(mac, {}).get("name", "")
+            self._paired_at = time.time()
+        else:
+            self._pair_state = PAIR_STATE_FAILED
+            self._pair_error = error or "pairing_failed"
         self._ops.set_pairable(False)
         if success:
             self._persist()
@@ -520,25 +514,25 @@ class BluetoothStateMachine:
                 self._on_pair_success(mac)
 
     def get_pair_status(self) -> dict:
-        with self._lock:
-            result = {"state": self._pair_state}
-            if self._pair_error:
-                result["error"] = self._pair_error
-            return result
+        self._assert_on_loop()
+        result = {"state": self._pair_state}
+        if self._pair_error:
+            result["error"] = self._pair_error
+        return result
 
     # ---- audio buffer configuration ----
 
     def get_buffer_ms(self) -> int:
-        with self._lock:
-            return self._buffer_ms
+        self._assert_on_loop()
+        return self._buffer_ms
 
     def set_buffer_ms(self, buffer_ms: object) -> bool:
         """Validate and apply a new buffer size (socket ``configure`` cmd).
         Returns False (no-op) for a non-integer or out-of-range value."""
+        self._assert_on_loop()
         if not is_valid_buffer_ms(buffer_ms):
             return False
-        with self._lock:
-            self._buffer_ms = buffer_ms
+        self._buffer_ms = buffer_ms
         self._persist()
         if self._on_buffer_change:
             self._on_buffer_change(buffer_ms)
@@ -549,27 +543,27 @@ class BluetoothStateMachine:
     def forget(self) -> None:
         """Un-pair the trusted device, and also
         invalidate any in-flight pairing attempt's target MAC — otherwise a
-        pairing worker thread that is already running (e.g. a replacement
+        pair-and-trust op already in flight (e.g. a replacement
         pairing started before this forget()) would land its result late via
         ``on_pair_result`` and re-persist state the user just asked to clear.
         ``on_pair_result``'s own ``mac != self._pairing_target_mac`` guard
         rejects it once the target is cleared here.
         """
-        with self._lock:
-            mac = self._paired_mac
-            was_pairing = self._pairing_target_mac is not None
-            if was_pairing:
-                self._pairing_target_mac = None
-                self._pairing_started_at = None
-                if self.mode == MODE_PAIRING:
-                    self.mode = MODE_IDLE
-            if mac is not None:
-                self._paired_mac = None
-                self._paired_name = ""
-                self._paired_at = None
-                self._link_state = LINK_DISCONNECTED
-                self._streaming = False
-                self._persist()
+        self._assert_on_loop()
+        mac = self._paired_mac
+        was_pairing = self._pairing_target_mac is not None
+        if was_pairing:
+            self._pairing_target_mac = None
+            self._pairing_started_at = None
+            if self.mode == MODE_PAIRING:
+                self.mode = MODE_IDLE
+        if mac is not None:
+            self._paired_mac = None
+            self._paired_name = ""
+            self._paired_at = None
+            self._link_state = LINK_DISCONNECTED
+            self._streaming = False
+            self._persist()
         if was_pairing:
             # Close the BlueZ pairing window the abandoned attempt opened;
             # on_pair_result() will no longer run this itself since its
@@ -587,34 +581,34 @@ class BluetoothStateMachine:
     # ---- link state / transport ----
 
     def on_link_state_changed(self, mac: str, connected: bool) -> None:
-        with self._lock:
-            if not mac or mac.upper() != self._paired_mac:
-                return
-            new_state = LINK_CONNECTED if connected else LINK_DISCONNECTED
-            if new_state == self._link_state:
-                return
-            self._link_state = new_state
-            if connected:
-                self._last_reconnect_attempt = None
+        self._assert_on_loop()
+        if not mac or mac.upper() != self._paired_mac:
+            return
+        new_state = LINK_CONNECTED if connected else LINK_DISCONNECTED
+        if new_state == self._link_state:
+            return
+        self._link_state = new_state
+        if connected:
+            self._last_reconnect_attempt = None
         if self._on_link_change:
             self._on_link_change(new_state)
 
     def on_transport_changed(self, active: bool) -> None:
-        with self._lock:
-            self._streaming = bool(active)
+        self._assert_on_loop()
+        self._streaming = bool(active)
 
     # ---- reconnect supervisor ----
 
     def reconnect_tick(self) -> None:
-        with self._lock:
-            mac = self._paired_mac
-            if mac is None or self._link_state != LINK_DISCONNECTED:
-                return
-            now = self._clock()
-            if (self._last_reconnect_attempt is not None
-                    and now - self._last_reconnect_attempt < RECONNECT_INTERVAL_SECONDS):
-                return
-            self._last_reconnect_attempt = now
+        self._assert_on_loop()
+        mac = self._paired_mac
+        if mac is None or self._link_state != LINK_DISCONNECTED:
+            return
+        now = self._clock()
+        if (self._last_reconnect_attempt is not None
+                and now - self._last_reconnect_attempt < RECONNECT_INTERVAL_SECONDS):
+            return
+        self._last_reconnect_attempt = now
 
         # ReconnectProbeOp checks actual connection state before hammering
         # Connect() — a stale "disconnected" link (the PropertiesChanged
@@ -639,32 +633,27 @@ class BluetoothStateMachine:
         isn't the paired device and for a state that hasn't actually
         changed, so a probe result landing late is already safe to receive;
         this just avoids issuing a redundant Connect()."""
-        with self._lock:
-            return self._paired_mac != mac or self._link_state != LINK_DISCONNECTED
+        return self._paired_mac != mac or self._link_state != LINK_DISCONNECTED
 
-    # ---- window expiry (called by the tick thread) ----
+    # ---- window expiry (driven by the GLib tick timer) ----
 
     def tick(self) -> None:
+        self._assert_on_loop()
         now = self._clock()
-        with self._lock:
-            if self.mode == MODE_SCANNING and self._scan_started_at is not None:
-                if now - self._scan_started_at >= SCAN_WINDOW_SECONDS:
-                    expired = True
-                else:
-                    expired = False
-            else:
-                expired = False
+        if self.mode == MODE_SCANNING and self._scan_started_at is not None:
+            expired = now - self._scan_started_at >= SCAN_WINDOW_SECONDS
+        else:
+            expired = False
         if expired:
             self.stop_scan()
 
-        with self._lock:
-            if self.mode == MODE_PAIRING and self._pairing_started_at is not None:
-                if now - self._pairing_started_at >= PAIRING_WINDOW_SECONDS:
-                    timed_out_mac = self._pairing_target_mac
-                else:
-                    timed_out_mac = None
+        if self.mode == MODE_PAIRING and self._pairing_started_at is not None:
+            if now - self._pairing_started_at >= PAIRING_WINDOW_SECONDS:
+                timed_out_mac = self._pairing_target_mac
             else:
                 timed_out_mac = None
+        else:
+            timed_out_mac = None
         if timed_out_mac is not None:
             self.on_pair_result(timed_out_mac, False, "timeout")
 
@@ -673,20 +662,20 @@ class BluetoothStateMachine:
     # ---- status (socket contract) ----
 
     def get_status(self) -> dict:
-        with self._lock:
-            paired = None
-            if self._paired_mac is not None:
-                paired = {"mac": self._paired_mac, "name": self._paired_name}
-            adapter_present = self._ops.adapter_present
-            return {
-                "adapter_present": adapter_present,
-                "paired": paired,
-                "link": self._link_state,
-                "streaming": self._streaming,
-                "scanning": self.mode == MODE_SCANNING,
-                "buffer_ms": self._buffer_ms,
-                "adapter_kind": self._ops.adapter_kind if adapter_present else None,
-            }
+        self._assert_on_loop()
+        paired = None
+        if self._paired_mac is not None:
+            paired = {"mac": self._paired_mac, "name": self._paired_name}
+        adapter_present = self._ops.adapter_present
+        return {
+            "adapter_present": adapter_present,
+            "paired": paired,
+            "link": self._link_state,
+            "streaming": self._streaming,
+            "scanning": self.mode == MODE_SCANNING,
+            "buffer_ms": self._buffer_ms,
+            "adapter_kind": self._ops.adapter_kind if adapter_present else None,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -983,7 +972,9 @@ class BluetoothService:
         # must never crash-loop just because bluetoothd hasn't started, or
         # no dongle is plugged in.
         self._ops = BluetoothOps()
-        self.state_machine = BluetoothStateMachine(ops=self._ops, state_path=self._state_path)
+        self.state_machine = BluetoothStateMachine(
+            ops=self._ops, state_path=self._state_path, bridge=self.bridge,
+        )
         self.state_machine.set_pair_success_callback(self._on_pair_success)
 
         self.pump = pump_mod.LoopbackPump(buffer_ms=self.state_machine.get_buffer_ms())
