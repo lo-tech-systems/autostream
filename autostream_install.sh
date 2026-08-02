@@ -391,7 +391,13 @@ engage_update_page() {
   install -m 0644 /dev/null "${UPDATING_FLAG_FILE}"
 
   for attempt in 1 2 3; do
-    read -r code redirect < <(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost/ || true)
+    # curl's -w output carries no trailing newline, so it must be captured
+    # with command substitution: read(1) would hit EOF, return nonzero, and
+    # abort the whole update via the ERR trap despite a healthy reply.
+    local response
+    response="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://localhost/ || true)"
+    code="${response%% *}"
+    redirect="${response#* }"
     if [[ "${code}" == "302" && "${redirect}" == *"/offline/updating"* ]]; then
       return 0
     fi

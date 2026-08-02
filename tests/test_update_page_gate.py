@@ -55,9 +55,17 @@ def _write_curl_stub(bin_dir: Path, body: str) -> None:
 def _run_engage_update_page(tmp_path, curl_body: str):
     """Run the real engage_update_page() body with a stubbed curl on PATH.
 
-    Returns (result, flag_path). result.stdout carries "EXIT:<code>" on its
-    last line and, when the flag file still exists at the end, "MODE:<octal>"
-    on the line before it.
+    Fidelity matters here and has bitten before, so the harness reproduces
+    the installer's execution conditions exactly: `set -e` with an ERR trap
+    (the function is called at top level, as run_update() calls it, so a
+    nonzero return or any failing inner command reaches the trap), and curl
+    stubs that emit NO trailing newline — real `curl -w` does not add one,
+    and a newline-adding stub masks EOF-handling bugs in the reply parsing.
+
+    Returns (result, flag_path). On the success path stdout ends with
+    "EXIT:0" (preceded by "MODE:<octal>" while the flag file exists); on the
+    failure path the ERR trap prints "ERRTRAP" and the script exits nonzero
+    without printing "EXIT:0".
     """
     flag = tmp_path / "autostream-updating"
     bin_dir = tmp_path / "bin"
@@ -66,17 +74,18 @@ def _run_engage_update_page(tmp_path, curl_body: str):
 
     func_src = _extract_function(_src(), "engage_update_page")
     script = f'''
+set -e
+trap 'echo "ERRTRAP"' ERR
 info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 UPDATING_FLAG_FILE="{flag.as_posix()}"
 {func_src}
 engage_update_page
-rc=$?
 if [ -e "${{UPDATING_FLAG_FILE}}" ]; then
   echo "MODE:$(stat -c '%a' "${{UPDATING_FLAG_FILE}}")"
 fi
-echo "EXIT:${{rc}}"
+echo "EXIT:0"
 '''
     env = dict(os.environ)
     env["PATH"] = bin_dir.as_posix() + os.pathsep + env.get("PATH", "")
@@ -87,9 +96,10 @@ echo "EXIT:${{rc}}"
     return result, flag
 
 
-SUCCESS_CURL = '#!/bin/bash\necho "302 http://localhost/offline/updating"\n'
-FAIL_200_CURL = '#!/bin/bash\necho "200 "\n'
-FAIL_CONN_CURL = '#!/bin/bash\necho "000 "\nexit 0\n'
+# Stubs print WITHOUT a trailing newline, exactly like `curl -w`.
+SUCCESS_CURL = '#!/bin/bash\nprintf "%s" "302 http://localhost/offline/updating"\n'
+FAIL_200_CURL = '#!/bin/bash\nprintf "%s" "200 "\n'
+FAIL_CONN_CURL = '#!/bin/bash\nprintf "%s" "000 "\nexit 0\n'
 
 
 # ---------------------------------------------------------------------------
@@ -111,17 +121,43 @@ class TestEngageUpdatePage:
         assert flag.exists(), "flag must remain in place on success"
 
     @bash_capable
-    def test_verification_fail_200_returns_nonzero_and_removes_flag(self, tmp_path):
+    def test_verification_fail_200_trips_err_trap_and_removes_flag(self, tmp_path):
         result, flag = _run_engage_update_page(tmp_path, FAIL_200_CURL)
         assert "EXIT:0" not in result.stdout
-        assert re.search(r"EXIT:[1-9]\d*", result.stdout), result.stdout
+        assert "ERRTRAP" in result.stdout, result.stdout + result.stderr
+        assert result.returncode != 0
         assert not flag.exists(), "flag must be removed when verification fails"
 
     @bash_capable
-    def test_verification_fail_no_connection_returns_nonzero_and_removes_flag(self, tmp_path):
+    def test_verification_fail_no_connection_trips_err_trap_and_removes_flag(self, tmp_path):
         result, flag = _run_engage_update_page(tmp_path, FAIL_CONN_CURL)
-        assert re.search(r"EXIT:[1-9]\d*", result.stdout), result.stdout
+        assert "ERRTRAP" in result.stdout, result.stdout + result.stderr
+        assert result.returncode != 0
         assert not flag.exists()
+
+    @bash_capable
+    def test_success_survives_newline_less_curl_under_set_e(self, tmp_path):
+        """A healthy 302 reply must pass verification on the FIRST attempt
+        with real curl semantics (no trailing newline, set -e, ERR trap):
+        the reply parsing must not itself be a failing command."""
+        counter_file = tmp_path / "curl_calls"
+        counting_success = f'''#!/bin/bash
+COUNTER="{counter_file.as_posix()}"
+n=0
+if [ -e "$COUNTER" ]; then
+  n=$(cat "$COUNTER")
+fi
+n=$((n + 1))
+printf "%s" "$n" > "$COUNTER"
+printf "%s" "302 http://localhost/offline/updating"
+'''
+        result, flag = _run_engage_update_page(tmp_path, counting_success)
+        assert "ERRTRAP" not in result.stdout, result.stdout + result.stderr
+        assert "EXIT:0" in result.stdout, result.stdout + result.stderr
+        assert counter_file.read_text(encoding="utf-8").strip() == "1", (
+            "verification must succeed on the first attempt, not via retries"
+        )
+        assert flag.exists()
 
     @bash_capable
     def test_verification_failure_logs_an_error(self, tmp_path):
@@ -140,9 +176,9 @@ fi
 n=$((n + 1))
 echo "$n" > "$COUNTER"
 if [ "$n" -lt 2 ]; then
-  echo "000 "
+  printf "%s" "000 "
 else
-  echo "302 http://localhost/offline/updating"
+  printf "%s" "302 http://localhost/offline/updating"
 fi
 '''
         result, flag = _run_engage_update_page(tmp_path, retry_curl)
