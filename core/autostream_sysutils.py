@@ -413,6 +413,37 @@ def get_root_disk_usage() -> tuple[int, int, int] | None:
         return None
 
 
+def get_effective_memory_info() -> "tuple[int, int] | None":
+    """Return (effective_free_mib, total_mib) from /proc/meminfo, or None if unavailable.
+
+    On zram swap, swapped-out pages stay resident in RAM (compressed), so
+    MemAvailable alone overstates how much headroom is genuinely free --
+    subtracting the swapped-out portion (SwapTotal - SwapFree) gives the
+    figure that actually reflects physical pressure, mirroring the monitor's
+    own sizing formula.
+    """
+    try:
+        fields: dict = {}
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            key, _, rest = line.partition(":")
+            rest = rest.strip()
+            if rest.endswith("kB"):
+                rest = rest[:-2].strip()
+            fields[key.strip()] = int(rest)
+
+        mem_total_kib = fields["MemTotal"]
+        mem_available_kib = fields["MemAvailable"]
+        swap_total_kib = fields["SwapTotal"]
+        swap_free_kib = fields["SwapFree"]
+
+        swapped_kib = max(0, swap_total_kib - swap_free_kib)
+        effective_free_kib = max(0, mem_available_kib - swapped_kib)
+
+        return effective_free_kib // 1024, mem_total_kib // 1024
+    except Exception:
+        return None
+
+
 def fmt_bytes(n: int) -> str:
     """Human-friendly bytes (GiB)."""
     try:

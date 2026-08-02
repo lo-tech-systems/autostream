@@ -7,7 +7,8 @@ Page renderer for the /about route.
 
 Responsibilities:
   - Render the About page: system information (build version, total playback
-    hours, CPU temperature, disk usage, SD card health), and copyright/license.
+    hours, CPU temperature, CPU load, memory, disk usage, SD card health), and
+    copyright/license.
   - Provides a Logs button to reach the log viewer.
 
 Shared helpers (imported from autostream_webui_common):
@@ -33,9 +34,10 @@ from autostream_bluetooth_client import (
 )
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
-from autostream_rpi import get_cpu_temperature_c
+from autostream_rpi import get_cpu_load_percent_1m, get_cpu_temperature_c
 from autostream_sysutils import (
     fmt_bytes,
+    get_effective_memory_info,
     get_root_disk_usage,
     get_sdcard_health_percent,
     get_static_system_facts,
@@ -132,8 +134,9 @@ def send_about_page(handler, state: WebUIState) -> None:
 
     # System Info panel: static placeholders with stable DOM IDs.
     # All values are populated by the DOMContentLoaded fetch below; no live
-    # probes run during page rendering.  Disk and SD sections start hidden and
-    # become visible only when the API reports available=true.
+    # probes run during page rendering.  CPU load, memory, disk, and SD
+    # sections start hidden and become visible only when the API reports
+    # available=true.
     _system_panel_html = (
         "<div aria-live='polite'>"
         "<div class='about-info-card'>"
@@ -148,9 +151,19 @@ def send_about_page(handler, state: WebUIState) -> None:
         "<div class='bar-label' style='margin-top:0.65rem;'>"
         "<strong>Total Playback Time</strong>"
         "<span id='aboutPlaybackHours'>Loading...</span></div>"
-        "<div class='bar-label' style='margin-top:0.65rem;'>"
-        "<strong>CPU Temperature</strong>"
-        "<span id='aboutCpuTemperature'>Loading...</span></div>"
+        "<div id='aboutTempSection' style='display:none;margin-top:1.3rem;'>"
+        "<div id='aboutTempLabel' class='bar-label'></div>"
+        "<div class='storage-bar'><div id='aboutTempBar' class='used' style='width:0%'></div></div>"
+        "</div>"
+        "<div id='aboutCpuSection' style='display:none;margin-top:1.3rem;'>"
+        "<div id='aboutCpuLabel' class='bar-label'></div>"
+        "<div class='storage-bar'><div id='aboutCpuBar' class='used' style='width:0%'></div></div>"
+        "</div>"
+        "<div id='aboutMemSection' style='display:none;margin-top:1.3rem;'>"
+        "<div id='aboutMemLabel' class='bar-label'></div>"
+        "<div class='storage-bar'><div id='aboutMemBar' class='used' style='width:0%'></div></div>"
+        "<div id='aboutMemMeta' class='storage-meta'></div>"
+        "</div>"
         "<div id='aboutDiskSection' style='display:none;margin-top:1.3rem;'>"
         "<div id='aboutDiskLabel' class='bar-label'></div>"
         "<div class='storage-bar'><div id='aboutDiskBar' class='used' style='width:0%'></div></div>"
@@ -216,7 +229,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         "function _ss(s){return _VS[s]?String(s):'healthy';}"
         "function _fail(){"
         "['aboutBuildAutostream','aboutDeviceModel','aboutOsBuild',"
-        "'aboutPlaybackHours','aboutCpuTemperature'].forEach(function(id){"
+        "'aboutPlaybackHours'].forEach(function(id){"
         "var e=document.getElementById(id);"
         "if(e&&e.textContent==='Loading...')e.textContent='Unavailable';});"
         "document.querySelectorAll('#aboutServices [data-service-unit] .about-svc-state')"
@@ -237,8 +250,30 @@ def send_about_page(handler, state: WebUIState) -> None:
         "_s('aboutOsBuild',String(os.pretty_name||os.version_codename||'unknown'));"
         "_s('aboutPlaybackHours',typeof d.playback_hours==='number'"
         "?d.playback_hours.toFixed(1)+' hours':'Unavailable');"
-        "_s('aboutCpuTemperature',typeof d.cpu_temperature_c==='number'"
-        "?d.cpu_temperature_c.toFixed(1)+'°C':'Unavailable');"
+        "var temp=d.cpu_temperature||{};"
+        "if(temp.available===true){"
+        "var tp=_clamp(temp.percent);"
+        "_s('aboutTempLabel','CPU Temperature: '+Number(temp.celsius).toFixed(1)+'°C');"
+        "var tb=document.getElementById('aboutTempBar');"
+        "if(tb){tb.style.width=tp+'%';tb.setAttribute('data-status',_ss(temp.status));}"
+        "var ts=document.getElementById('aboutTempSection');if(ts)ts.style.display='';}"
+        "var cl=d.cpu_load||{};"
+        "if(cl.available===true){"
+        "var cp=_clamp(cl.percent);"
+        "_s('aboutCpuLabel','CPU Load (1 min avg): '+cp.toFixed(1)+'%');"
+        "var cb=document.getElementById('aboutCpuBar');"
+        "if(cb){cb.style.width=cp+'%';cb.setAttribute('data-status',_ss(cl.status));}"
+        "var cs=document.getElementById('aboutCpuSection');if(cs)cs.style.display='';}"
+        "var mem=d.memory||{};"
+        "if(mem.available===true){"
+        "var mp=_clamp(mem.used_percent);"
+        "_s('aboutMemLabel','Memory Usage: '+mp.toFixed(1)+'%');"
+        "var mb=document.getElementById('aboutMemBar');"
+        "if(mb){mb.style.width=mp+'%';mb.setAttribute('data-status',_ss(mem.status));}"
+        "_s('aboutMemMeta',"
+        "(typeof mem.free_mib==='number'?mem.free_mib:0)+' MB free of '"
+        "+(typeof mem.total_mib==='number'?mem.total_mib:0)+' MB');"
+        "var ms=document.getElementById('aboutMemSection');if(ms)ms.style.display='';}"
         "var dk=d.disk||{};"
         "if(dk.available===true){"
         "var dp=_clamp(dk.used_percent);"
@@ -550,6 +585,34 @@ def _collect_system_info() -> dict:
     except Exception:
         pass
 
+    # 6b. CPU temperature bar block -- mirrors cpu_temp_c above but adds the
+    # bar-fill percent and status; cpu_temperature_c stays untouched for
+    # existing callers/tests.
+    cpu_temperature: dict = {"available": False}
+    try:
+        if cpu_temp_c is not None:
+            # Fixed 85C full-scale reference -- the Raspberry Pi soft-throttle
+            # point -- so the bar reads as "how close to throttling", not an
+            # arbitrary 0-100 range.
+            temp_pct = max(0.0, min(100.0, (cpu_temp_c / 85.0) * 100.0))
+            # Status keyed on absolute Celsius, inclusive both ends of the
+            # warning band (same inclusivity convention as memory): <70
+            # healthy, 70-78 warning, >78 critical.
+            if cpu_temp_c < 70:
+                temp_status = "healthy"
+            elif cpu_temp_c <= 78:
+                temp_status = "warning"
+            else:
+                temp_status = "critical"
+            cpu_temperature = {
+                "available": True,
+                "celsius": cpu_temp_c,
+                "percent": temp_pct,
+                "status": temp_status,
+            }
+    except Exception:
+        pass
+
     # 7. Root disk usage (on-demand)
     disk: dict = {"available": False}
     try:
@@ -565,6 +628,48 @@ def _collect_system_info() -> dict:
                 "free_bytes": fre,
                 "used_percent": pct,
                 "status": status,
+            }
+    except Exception:
+        pass
+
+    # 7b. CPU load, 1-minute average (on-demand /proc/loadavg read)
+    cpu_load: dict = {"available": False}
+    try:
+        load_pct = get_cpu_load_percent_1m()
+        if load_pct is not None:
+            load_status = (
+                "healthy" if load_pct < 70
+                else ("warning" if load_pct < 85 else "critical")
+            )
+            cpu_load = {
+                "available": True,
+                "percent": load_pct,
+                "status": load_status,
+            }
+    except Exception:
+        pass
+
+    # 7c. Effective memory (on-demand /proc/meminfo read)
+    memory: dict = {"available": False}
+    try:
+        mem_info = get_effective_memory_info()
+        if mem_info is not None:
+            free_mib, total_mib = mem_info
+            used_pct = round(((total_mib - free_mib) / total_mib) * 100.0) if total_mib else 0
+            # Status keyed on absolute free MiB, not percentage: >96 healthy,
+            # 64-96 warning (inclusive of both boundaries), <64 critical.
+            if free_mib > 96:
+                mem_status = "healthy"
+            elif free_mib >= 64:
+                mem_status = "warning"
+            else:
+                mem_status = "critical"
+            memory = {
+                "available": True,
+                "free_mib": free_mib,
+                "total_mib": total_mib,
+                "used_percent": used_pct,
+                "status": mem_status,
             }
     except Exception:
         pass
@@ -616,6 +721,7 @@ def _collect_system_info() -> dict:
         },
         "playback_hours": playback_hours,
         "cpu_temperature_c": cpu_temp_c,
+        "cpu_temperature": cpu_temperature,
         "device": {
             "model": facts.raspberry_pi_model,
         },
@@ -624,6 +730,8 @@ def _collect_system_info() -> dict:
             "version_id": facts.os_version_id,
             "version_codename": facts.os_version_codename,
         },
+        "cpu_load": cpu_load,
+        "memory": memory,
         "disk": disk,
         "sd_card": sd_card,
         "services": services,

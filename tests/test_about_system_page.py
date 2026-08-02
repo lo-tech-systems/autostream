@@ -78,6 +78,8 @@ def _collect_with_mocks(
     vibra_info=None,
     playback_snap=None,
     cpu_temp=48.2,
+    cpu_load_percent=35.0,
+    memory_info=(200, 500),
     disk_usage=(32_000_000_000, 12_000_000_000, 20_000_000_000),
     sd_health=96,
     static_facts=None,
@@ -118,6 +120,8 @@ def _collect_with_mocks(
          patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
          patch("autostream_webui_page_about.get_playback_snapshot", return_value=playback_snap), \
          patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=cpu_temp), \
+         patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=cpu_load_percent), \
+         patch("autostream_webui_page_about.get_effective_memory_info", return_value=memory_info), \
          patch("autostream_webui_page_about.get_root_disk_usage", return_value=disk_usage), \
          patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=sd_health), \
          patch("autostream_webui_page_about.get_static_system_facts", return_value=static_facts), \
@@ -189,6 +193,46 @@ class TestCollectSystemInfoShape:
             "version_id": "13",
             "version_codename": "trixie",
         }
+
+    def test_cpu_temperature_shape(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL, cpu_temp=48.2)
+        assert result["cpu_temperature"]["available"] is True
+        assert set(result["cpu_temperature"].keys()) == {
+            "available", "celsius", "percent", "status",
+        }
+        assert isinstance(result["cpu_temperature"]["celsius"], (int, float))
+        assert isinstance(result["cpu_temperature"]["percent"], (int, float))
+        assert isinstance(result["cpu_temperature"]["status"], str)
+
+    def test_cpu_temperature_available_always_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert "available" in result["cpu_temperature"]
+
+    def test_cpu_load_shape(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["cpu_load"]["available"] is True
+        assert set(result["cpu_load"].keys()) == {"available", "percent", "status"}
+        assert isinstance(result["cpu_load"]["percent"], (int, float))
+        assert isinstance(result["cpu_load"]["status"], str)
+
+    def test_memory_shape(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert result["memory"]["available"] is True
+        assert set(result["memory"].keys()) == {
+            "available", "free_mib", "total_mib", "used_percent", "status",
+        }
+        assert isinstance(result["memory"]["free_mib"], (int, float))
+        assert isinstance(result["memory"]["total_mib"], (int, float))
+        assert isinstance(result["memory"]["used_percent"], (int, float))
+        assert isinstance(result["memory"]["status"], str)
+
+    def test_cpu_load_available_always_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert "available" in result["cpu_load"]
+
+    def test_memory_available_always_present(self):
+        result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
+        assert "available" in result["memory"]
 
     def test_disk_available_always_present(self):
         result = _collect_with_mocks(systemctl_stdout=_ACTIVE_SYSTEMCTL)
@@ -284,7 +328,127 @@ class TestDiskThresholds:
 
 
 # ---------------------------------------------------------------------------
-# Test 4 — missing disk / SD returns {"available": false}
+# Test 3a — CPU temperature bar thresholds and percent mapping
+# ---------------------------------------------------------------------------
+
+class TestCpuTemperatureThresholds:
+
+    @pytest.mark.parametrize("celsius,expected_status", [
+        (0,    "healthy"),
+        (69.9, "healthy"),
+        (70,   "warning"),
+        (78,   "warning"),
+        (78.1, "critical"),
+        (85,   "critical"),
+    ])
+    def test_cpu_temperature_status_thresholds(self, celsius, expected_status):
+        result = _collect_with_mocks(
+            cpu_temp=celsius,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature"]["available"] is True
+        assert result["cpu_temperature"]["status"] == expected_status
+
+    def test_cpu_temperature_celsius_passed_through(self):
+        result = _collect_with_mocks(
+            cpu_temp=48.2,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature"]["celsius"] == 48.2
+
+    def test_cpu_temperature_percent_is_celsius_over_85_scale(self):
+        result = _collect_with_mocks(
+            cpu_temp=42.5,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature"]["percent"] == pytest.approx(42.5 / 85.0 * 100.0)
+
+    def test_cpu_temperature_percent_clamped_at_100(self):
+        result = _collect_with_mocks(
+            cpu_temp=200.0,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature"]["percent"] == 100.0
+
+    def test_cpu_temperature_unavailable_when_sensor_missing(self):
+        result = _collect_with_mocks(
+            cpu_temp=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature"] == {"available": False}
+        # Flat compatibility key must still degrade independently to None.
+        assert result["cpu_temperature_c"] is None
+
+    def test_flat_cpu_temperature_c_key_unaffected(self):
+        """The pre-existing flat key is untouched by the new bar block."""
+        result = _collect_with_mocks(
+            cpu_temp=48.2,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature_c"] == 48.2
+        assert result["cpu_temperature"]["celsius"] == 48.2
+
+
+# ---------------------------------------------------------------------------
+# Test 3b — CPU load and memory thresholds
+# ---------------------------------------------------------------------------
+
+class TestCpuLoadThresholds:
+
+    @pytest.mark.parametrize("percent,expected_status", [
+        (0,    "healthy"),
+        (69.9, "healthy"),
+        (70,   "warning"),
+        (84.9, "warning"),
+        (85,   "critical"),
+        (100,  "critical"),
+    ])
+    def test_cpu_load_status_thresholds(self, percent, expected_status):
+        result = _collect_with_mocks(
+            cpu_load_percent=percent,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_load"]["available"] is True
+        assert result["cpu_load"]["status"] == expected_status
+
+    def test_cpu_load_percent_passed_through(self):
+        result = _collect_with_mocks(
+            cpu_load_percent=42.0,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_load"]["percent"] == 42.0
+
+
+class TestMemoryThresholds:
+
+    @pytest.mark.parametrize("free_mib,expected_status", [
+        (500, "healthy"),
+        (97,  "healthy"),
+        (96,  "warning"),
+        (64,  "warning"),
+        (63,  "critical"),
+        (0,   "critical"),
+    ])
+    def test_memory_status_thresholds(self, free_mib, expected_status):
+        result = _collect_with_mocks(
+            memory_info=(free_mib, 500),
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["memory"]["available"] is True
+        assert result["memory"]["status"] == expected_status
+
+    def test_memory_used_percent_computed(self):
+        result = _collect_with_mocks(
+            memory_info=(100, 500),
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["memory"]["used_percent"] == 80
+        assert result["memory"]["free_mib"] == 100
+        assert result["memory"]["total_mib"] == 500
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — missing disk / SD / CPU load / memory returns {"available": false}
 # ---------------------------------------------------------------------------
 
 class TestMissingDiskAndSd:
@@ -302,6 +466,81 @@ class TestMissingDiskAndSd:
             systemctl_stdout=_ACTIVE_SYSTEMCTL,
         )
         assert result["sd_card"] == {"available": False}
+
+    def test_missing_cpu_temperature_returns_unavailable(self):
+        result = _collect_with_mocks(
+            cpu_temp=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_temperature"] == {"available": False}
+
+    def test_cpu_temperature_read_failure_does_not_sink_payload(self):
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            result = _about._collect_system_info()
+        assert result["ok"] is True
+        assert result["cpu_temperature"] == {"available": False}
+        assert result["cpu_temperature_c"] is None
+
+    def test_missing_cpu_load_returns_unavailable(self):
+        result = _collect_with_mocks(
+            cpu_load_percent=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["cpu_load"] == {"available": False}
+
+    def test_missing_memory_returns_unavailable(self):
+        result = _collect_with_mocks(
+            memory_info=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["memory"] == {"available": False}
+
+    def test_cpu_load_failure_does_not_sink_payload(self):
+        """A raising collector helper must degrade only its own field, mirroring
+        how a None cpu_temperature_c never sets ok=false."""
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", side_effect=Exception("boom")), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            result = _about._collect_system_info()
+        assert result["ok"] is True
+        assert result["cpu_load"] == {"available": False}
+
+    def test_memory_failure_does_not_sink_payload(self):
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
+             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
+             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", side_effect=Exception("boom")), \
+             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
+             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            result = _about._collect_system_info()
+        assert result["ok"] is True
+        assert result["memory"] == {"available": False}
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +787,8 @@ class TestSystemctlCommandSecurity:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
@@ -585,6 +826,8 @@ class TestSystemctlCommandSecurity:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
@@ -606,6 +849,8 @@ class TestPartialFailureDegradation:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
@@ -652,6 +897,8 @@ class TestCollectorNoIO:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
@@ -672,6 +919,8 @@ class TestCollectorNoIO:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
@@ -696,6 +945,8 @@ class TestSnapshotReadsAreMemoryOnly:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
@@ -894,6 +1145,8 @@ class TestSendJsonHeaders:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
@@ -952,7 +1205,16 @@ _REQUIRED_IDS = [
     "aboutDeviceModel",
     "aboutOsBuild",
     "aboutPlaybackHours",
-    "aboutCpuTemperature",
+    "aboutTempSection",
+    "aboutTempLabel",
+    "aboutTempBar",
+    "aboutCpuSection",
+    "aboutCpuLabel",
+    "aboutCpuBar",
+    "aboutMemSection",
+    "aboutMemLabel",
+    "aboutMemBar",
+    "aboutMemMeta",
     "aboutDiskSection",
     "aboutDiskLabel",
     "aboutDiskBar",
@@ -1007,6 +1269,23 @@ class TestAboutPageDomIds:
         assert "Services" in self._html
         assert "about-services-heading" in self._html
 
+    def test_old_temperature_text_element_removed(self):
+        """The static text row (fed by cpu_temperature_c) is replaced by the
+        aboutTempSection bar -- it must not remain in the markup."""
+        assert "id='aboutCpuTemperature'" not in self._html
+        assert 'id="aboutCpuTemperature"' not in self._html
+        assert "<strong>CPU Temperature</strong>" not in self._html
+
+    def test_cpu_meta_element_removed(self):
+        """The CPU Load bar's meta line was removed as a duplicate of its label."""
+        assert "id='aboutCpuMeta'" not in self._html
+        assert 'id="aboutCpuMeta"' not in self._html
+
+    def test_memory_label_says_usage(self):
+        """Memory bar label text is JS-composed; check the fetch script literal."""
+        assert "Memory Usage: " in self._html
+        assert "'Memory: '" not in self._html
+
 
 class TestAboutPageDiskSdInitiallyHidden:
 
@@ -1032,6 +1311,44 @@ class TestAboutPageDiskSdInitiallyHidden:
         assert "display:none" in surrounding or "display: none" in surrounding, (
             f"aboutSdSection should start with display:none; got: {surrounding!r}"
         )
+
+    def test_temp_section_initially_hidden(self):
+        import re
+        m = re.search(r"id=['\"]aboutTempSection['\"]", self._html)
+        assert m is not None
+        surrounding = self._html[max(0, m.start() - 20): m.end() + 40]
+        assert "display:none" in surrounding or "display: none" in surrounding, (
+            f"aboutTempSection should start with display:none; got: {surrounding!r}"
+        )
+
+    def test_cpu_section_initially_hidden(self):
+        import re
+        m = re.search(r"id=['\"]aboutCpuSection['\"]", self._html)
+        assert m is not None
+        surrounding = self._html[max(0, m.start() - 20): m.end() + 40]
+        assert "display:none" in surrounding or "display: none" in surrounding, (
+            f"aboutCpuSection should start with display:none; got: {surrounding!r}"
+        )
+
+    def test_mem_section_initially_hidden(self):
+        import re
+        m = re.search(r"id=['\"]aboutMemSection['\"]", self._html)
+        assert m is not None
+        surrounding = self._html[max(0, m.start() - 20): m.end() + 40]
+        assert "display:none" in surrounding or "display: none" in surrounding, (
+            f"aboutMemSection should start with display:none; got: {surrounding!r}"
+        )
+
+    def test_temp_cpu_and_mem_sections_precede_disk_section(self):
+        """Section order top-to-bottom: Temp, CPU Load, Memory, Disk, SD."""
+        temp_idx = self._html.find("aboutTempSection")
+        cpu_idx = self._html.find("aboutCpuSection")
+        mem_idx = self._html.find("aboutMemSection")
+        disk_idx = self._html.find("aboutDiskSection")
+        sd_idx = self._html.find("aboutSdSection")
+        assert temp_idx != -1 and cpu_idx != -1 and mem_idx != -1
+        assert disk_idx != -1 and sd_idx != -1
+        assert temp_idx < cpu_idx < mem_idx < disk_idx < sd_idx
 
 
 class TestAboutPageAccessibility:
@@ -1081,7 +1398,9 @@ class TestAboutPageNoLiveData:
              patch("autostream_webui_page_about.get_cpu_temperature_c") as m_cpu, \
              patch("autostream_webui_page_about.get_owntone_runtime_info") as m_owntone, \
              patch("autostream_webui_page_about.get_root_disk_usage") as m_disk, \
-             patch("autostream_webui_page_about.get_sdcard_health_percent") as m_sd:
+             patch("autostream_webui_page_about.get_sdcard_health_percent") as m_sd, \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m") as m_load, \
+             patch("autostream_webui_page_about.get_effective_memory_info") as m_mem:
             _about.send_about_page(handler, state)
 
         m_mon.assert_not_called()
@@ -1090,6 +1409,8 @@ class TestAboutPageNoLiveData:
         m_owntone.assert_not_called()
         m_disk.assert_not_called()
         m_sd.assert_not_called()
+        m_load.assert_not_called()
+        m_mem.assert_not_called()
 
 
 class TestAboutPageFetchScript:
@@ -1171,6 +1492,8 @@ class TestSnapshotExceptionIsolation:
                 ctx[target] = patch(target, return_value=val)
 
         with patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",

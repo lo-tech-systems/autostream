@@ -174,6 +174,40 @@ def get_cpu_temperature_c() -> Optional[float]:
     return None
 
 
+def get_cpu_load_percent_1m() -> Optional[float]:
+    """Return the 1-minute scheduler load average as a percentage of available
+    cores, or None if unavailable.
+
+    This is scheduler load (runnable + uninterruptible-IO-waiting tasks),
+    deliberately chosen over a narrower "CPU busy" metric as the at-a-glance
+    health signal -- it also surfaces disk/IO contention, not just compute.
+
+    The divisor is the number of cores available to this process
+    (os.sched_getaffinity), not the physical core count: on a maxcpus-limited
+    appliance, affinity tracks the cores actually online, whereas a physical
+    count would understate load by dividing across cores the kernel never
+    schedules onto.
+    """
+    try:
+        raw = Path("/proc/loadavg").read_text(encoding="utf-8").strip()
+        load_1m = float(raw.split()[0])
+    except Exception:
+        return None
+
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except Exception:
+        cores = os.cpu_count() or 1
+    if cores < 1:
+        cores = 1
+
+    try:
+        pct = (load_1m / cores) * 100.0
+    except Exception:
+        return None
+    return max(0.0, min(100.0, pct))
+
+
 def get_raspberry_pi_model() -> str:
     """Return the Raspberry Pi model string, or "unknown" if unavailable."""
     try:
