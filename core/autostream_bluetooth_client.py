@@ -62,7 +62,7 @@ DEFAULT_SOCKET_PATH = "/run/autostream-bluetooth/bluetooth.sock"
 # started). Kept in sync with the daemon's own copy
 # (platform/bluetooth_service.py's BLUETOOTH_SERVICE_VERSION) -- both must
 # be bumped together.
-BLUETOOTH_SERVICE_VERSION = "0.5.2"
+BLUETOOTH_SERVICE_VERSION = "0.5.3"
 
 # ALSA loopback card id, fixed at install time via modprobe.d.
 BLUETOOTH_CARD_ID = "ASBT"

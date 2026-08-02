@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # BLUETOOTH_SERVICE_VERSION) -- both must be bumped together whenever this
 # daemon changes, since the client falls back to its own constant whenever
 # the daemon is unreachable to query directly.
-BLUETOOTH_SERVICE_VERSION = "0.5.2"
+BLUETOOTH_SERVICE_VERSION = "0.5.3"
 
 DEFAULT_STATE_PATH = "/var/lib/autostream/bluetooth.json"
 
