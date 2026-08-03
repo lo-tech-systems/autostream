@@ -385,6 +385,66 @@ class TestBluetoothEnabledUnpaired:
     def test_successful_pair_updates_data_prev_to_loopback(self, html):
         assert "_btSelectEl.dataset.prev = BT_LOOPBACK_HW;" in html
 
+    # -- input_auto_configure surfaced from pair_status polling --
+
+    def test_poll_reads_input_auto_configure_from_pair_status_body(self, html):
+        assert "body.input_auto_configure" in html
+
+    def test_assigned_message_strings_present(self, html):
+        assert "Bluetooth assigned to" in html
+        assert "Input 1" in html
+        assert "Input 2" in html
+
+    def test_device_set_only_message_notes_setup_page(self, html):
+        assert "enable it on the Setup page" in html
+
+    def test_notice_action_appends_notice_text(self, html):
+        assert "auto.notice" in html
+
+    def test_already_configured_appends_nothing(self, html):
+        # No branch keyed on 'already_configured' -- it falls through the
+        # enabled/device_set_only/notice checks and leaves the base message
+        # untouched.
+        assert "already_configured" not in html
+
+    def test_apply_auto_configure_to_page_fn_present(self, html):
+        assert "function _btApplyAutoConfigureToPage(auto)" in html
+
+    def test_apply_auto_configure_uses_correct_field_names(self, html):
+        # Input 1's capture-device select is named "audio_capture_device"
+        # (no "1"), input 2's is "audio2_capture_device"; enable checkboxes
+        # are "audio1_enabled" / "audio2_enabled" -- must match the field
+        # names the Setup form itself renders (input_fieldset_html).
+        assert "audio2_capture_device" in html
+        assert "'audio_capture_device'" in html
+        assert "audio1_enabled" in html
+        assert "audio2_enabled" in html
+
+    def test_apply_auto_configure_checks_option_exists_before_setting(self, html):
+        assert "hasLoopbackOption" in html
+
+    def test_apply_auto_configure_only_checks_box_when_enabled(self, html):
+        idx = html.find("function _btApplyAutoConfigureToPage(auto)")
+        assert idx != -1
+        body = html[idx: idx + 1500]
+        assert "auto.action === 'enabled'" in body
+
+    def test_apply_auto_configure_calls_sync_helpers_when_defined(self, html):
+        idx = html.find("function _btApplyAutoConfigureToPage(auto)")
+        assert idx != -1
+        body = html[idx: idx + 1500]
+        assert "typeof syncInputUi === 'function'" in body
+        assert "syncInputUi(inputIndex)" in body
+        assert "typeof refreshInputCardSubs === 'function'" in body
+        assert "refreshInputCardSubs()" in body
+
+    def test_no_page_reload_in_poll_handler(self, html):
+        idx = html.find("async function _btPollPairStatus()")
+        assert idx != -1
+        window = html[idx: idx + 2500]
+        assert "location.reload" not in window
+        assert "location.href" not in window
+
 
 # ---------------------------------------------------------------------------
 # Enabled, paired

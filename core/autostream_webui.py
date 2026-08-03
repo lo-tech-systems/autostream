@@ -758,7 +758,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/bluetooth/pair_status":
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
-            send_bluetooth_pair_status_json(self)
+            send_bluetooth_pair_status_json(self, state=STATE)
         elif path == _GATEWAY_PREFIX:
             send_appliances_json(self, STATE)
         elif path.startswith(_GATEWAY_PREFIX + "/"):

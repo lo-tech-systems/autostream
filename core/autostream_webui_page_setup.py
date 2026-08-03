@@ -1840,11 +1840,45 @@ def send_setup_page(
           if (!body || body.ok === false) return;
           if (body.state === 'done') {{
             clearInterval(_btPairTimer); _btPairTimer = null;
-            _btShowResult(true, 'Paired with ' + (_btSelectedName || 'device') + '.');
+            var msg = 'Paired with ' + (_btSelectedName || 'device') + '.';
+            var auto = body.input_auto_configure;
+            if (auto) {{
+              var inputLabel = auto.input === 'audio2' ? 'Input 2' : 'Input 1';
+              if (auto.action === 'enabled') {{
+                msg += ' Bluetooth assigned to ' + inputLabel + '.';
+              }} else if (auto.action === 'device_set_only') {{
+                msg += ' Bluetooth set as ' + inputLabel + '\\'s capture device -- enable it on the Setup page.';
+              }} else if (auto.action === 'notice' && auto.notice) {{
+                msg += ' ' + auto.notice;
+              }}
+              if (auto.action === 'enabled' || auto.action === 'device_set_only') {{
+                _btApplyAutoConfigureToPage(auto);
+              }}
+            }}
+            _btShowResult(true, msg);
           }} else if (body.state === 'failed') {{
             clearInterval(_btPairTimer); _btPairTimer = null;
             _btShowResult(false, body.error || 'Pairing failed.');
           }}
+        }}
+
+        function _btApplyAutoConfigureToPage(auto) {{
+          var inputIndex = auto.input === 'audio2' ? 2 : 1;
+          var captureName = inputIndex === 2 ? 'audio2_capture_device' : 'audio_capture_device';
+          var enabledName = inputIndex === 2 ? 'audio2_enabled' : 'audio1_enabled';
+          var selectEl = document.querySelector('select[name="' + captureName + '"]');
+          if (selectEl) {{
+            var hasLoopbackOption = Array.prototype.some.call(
+              selectEl.options || [], function(opt) {{ return opt.value === BT_LOOPBACK_HW; }}
+            );
+            if (hasLoopbackOption) selectEl.value = BT_LOOPBACK_HW;
+          }}
+          if (auto.action === 'enabled') {{
+            var enabledEl = document.querySelector('input[name="' + enabledName + '"]');
+            if (enabledEl) enabledEl.checked = true;
+          }}
+          if (typeof syncInputUi === 'function') syncInputUi(inputIndex);
+          if (typeof refreshInputCardSubs === 'function') refreshInputCardSubs();
         }}
 
         function _btShowResult(success, message) {{

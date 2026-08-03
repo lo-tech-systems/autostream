@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 
@@ -3268,8 +3269,25 @@ def send_bluetooth_scan_results_json(handler) -> None:
     send_json(handler, 200, result)
 
 
-def send_bluetooth_pair_status_json(handler) -> None:
-    """GET /api/bluetooth/pair_status — live pairing-attempt state from the daemon."""
+def send_bluetooth_pair_status_json(handler, state=None) -> None:
+    """GET /api/bluetooth/pair_status — live pairing-attempt state from the daemon.
+
+    A ``pair`` POST reply only means pairing *started*; the daemon's own
+    reported outcome ("done" vs "failed") is only known here, via the
+    polled status. So this is the hook point for the post-pairing input
+    auto-enable rules (see ``_bt_pair_auto_configure``), not the POST
+    handler: once the daemon reports ``state == "done"``, apply the rules
+    and surface the outcome under ``input_auto_configure`` so the pairing
+    UI (which polls this endpoint) can show the user what changed. Never
+    fires on "failed" or "in_progress".
+
+    The UI keeps polling this endpoint every couple of seconds until it
+    observes "done" or "failed" and may therefore see "done" more than
+    once (e.g. a slow client tick); that's safe to re-run here because the
+    rules themselves are idempotent -- an input already on the loopback
+    device short-circuits to ``already_configured`` with no further
+    change.
+    """
     if not bluetooth_installed():
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
@@ -3277,6 +3295,14 @@ def send_bluetooth_pair_status_json(handler) -> None:
     if not isinstance(result, dict) or result.get("ok") is not True:
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
+    if result.get("state") == "done":
+        try:
+            auto = _bt_pair_auto_configure(_bt_pairing_resolve_state(state))
+        except Exception:
+            logging.exception("send_bluetooth_pair_status_json: auto-configure step failed")
+            auto = None
+        if auto is not None:
+            result["input_auto_configure"] = auto
     send_json(handler, 200, result)
 
 
@@ -3316,20 +3342,33 @@ def send_bluetooth_scan_post_json(handler, json_obj) -> None:
 def _bt_pairing_resolve_state(state):
     """Resolve the ``WebUIState`` to use for the post-pair auto-configure step.
 
-    The route dispatcher invokes this handler with just ``(handler,
-    json_obj)`` -- it has no ``WebUIState`` reference to pass at that call
-    site. When the caller doesn't supply one explicitly (as most existing
-    tests don't), fall back to the running webui module's process-wide
-    state singleton, resolved lazily to avoid a module-load-time circular
-    import (that module imports this one).
+    Callers that already have a ``WebUIState`` reference (the ``pair_status``
+    dispatcher passes the module-global ``STATE``) should just pass it
+    through. This fallback exists for callers that don't.
+
+    It must NOT ``import autostream_webui`` to get there. The webui process
+    is launched as a script (``python3 .../autostream_webui.py``), so the
+    running instance of that module is registered in ``sys.modules`` as
+    ``__main__``, not as ``autostream_webui``. A fresh ``import
+    autostream_webui`` would create a *second*, distinct module object --
+    one whose module-level ``STATE`` was never populated by the running
+    process -- and silently resolve to ``None`` forever. Instead, look the
+    already-loaded module up by name in ``sys.modules`` (covers the case
+    where something else legitimately imported it under that name, e.g. a
+    test) and fall back to ``__main__`` (covers the real running webui
+    process).
     """
     if state is not None:
         return state
-    try:
-        import autostream_webui as _webui_mod
-        return getattr(_webui_mod, "STATE", None)
-    except Exception:
-        return None
+    for _mod_name in ("autostream_webui", "__main__"):
+        mod = sys.modules.get(_mod_name)
+        resolved = getattr(mod, "STATE", None) if mod is not None else None
+        if resolved is not None:
+            return resolved
+    logging.warning(
+        "bluetooth pairing: WebUI state unavailable; input auto-configure skipped"
+    )
+    return None
 
 
 def _bt_pairing_set_field(state, settings, field: str, value) -> tuple[bool, Optional[str]]:
@@ -3479,7 +3518,7 @@ def _bt_pair_auto_configure(state) -> Optional[dict]:
     return {"action": "enabled", "input": target_input}
 
 
-def send_bluetooth_pair_post_json(handler, json_obj, state=None) -> None:
+def send_bluetooth_pair_post_json(handler, json_obj) -> None:
     """POST /api/bluetooth/pair {"address": <mac>} — server-side MAC validation.
 
     A daemon reply of ``{"ok": false, "error": "pair_in_progress"}`` (a
@@ -3487,10 +3526,12 @@ def send_bluetooth_pair_post_json(handler, json_obj, state=None) -> None:
     ``send_network_setup_json``'s watcher-busy 409; any other non-ok reply
     stays a 503 ``bluetooth_unavailable``.
 
-    On success, applies the input auto-enable rules (see
-    ``_bt_pair_auto_configure``) and, when a settings store is available,
-    surfaces the outcome under ``input_auto_configure`` so the pairing UI
-    (which already renders this response) can show the user what changed.
+    This only means the daemon has *started* pairing, not that it
+    succeeded -- the real outcome is only known once the client polls
+    ``GET /api/bluetooth/pair_status`` and sees ``state == "done"``. It no
+    longer applies the input auto-enable rules for that reason (see
+    ``send_bluetooth_pair_status_json``, which does); this handler's
+    response stays the plain ``{"ok": True}`` shape.
     """
     if not bluetooth_installed():
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
@@ -3512,15 +3553,7 @@ def send_bluetooth_pair_post_json(handler, json_obj, state=None) -> None:
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
 
-    resp: dict = {"ok": True}
-    try:
-        auto = _bt_pair_auto_configure(_bt_pairing_resolve_state(state))
-    except Exception:
-        logging.exception("send_bluetooth_pair_post_json: auto-configure step failed")
-        auto = None
-    if auto is not None:
-        resp["input_auto_configure"] = auto
-    send_json(handler, 200, resp)
+    send_json(handler, 200, {"ok": True})
 
 
 def send_bluetooth_forget_post_json(handler) -> None:

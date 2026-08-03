@@ -514,9 +514,11 @@ class TestBluetoothScanResultsAndPairStatus:
         assert body["error"] == "bluetooth_unavailable"
 
     def test_pair_status_success(self):
+        """A non-"done" state (here "connecting") passes the daemon payload
+        through untouched -- no auto-configure attempt, no extra field."""
         from autostream_webui_api import send_bluetooth_pair_status_json
         handler = _make_handler()
-        payload = {"ok": True, "state": "done"}
+        payload = {"ok": True, "state": "connecting"}
         with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
              patch("autostream_webui_api.BluetoothClient") as m_cls:
             m_cls.return_value.pair_status.return_value = payload
@@ -719,36 +721,39 @@ class TestBluetoothPairPost:
 
 
 # ---------------------------------------------------------------------------
-# POST pair — post-pair input auto-enable rules
+# GET pair_status — post-pair input auto-enable rules
 # ---------------------------------------------------------------------------
 
-class TestBluetoothPairAutoConfigure:
-    """On a successful pair, the handler applies the input auto-enable
-    rules (see autostream_webui_api._bt_pair_auto_configure) and surfaces
-    the outcome under ``input_auto_configure`` in the response.
+class TestBluetoothPairStatusAutoConfigure:
+    """The daemon's ``pair`` reply only means pairing *started*; real
+    success is only known once polling ``pair_status`` observes
+    ``state == "done"``. That's the correct hook point for the input
+    auto-enable rules (see autostream_webui_api._bt_pair_auto_configure),
+    not the POST handler -- so this class exercises
+    ``send_bluetooth_pair_status_json`` with a stubbed daemon reply rather
+    than the pair POST.
     """
 
-    def _pair(self, handler, state):
-        from autostream_webui_api import send_bluetooth_pair_post_json
+    def _poll(self, handler, state, daemon_state="done"):
+        from autostream_webui_api import send_bluetooth_pair_status_json
         with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
              patch("autostream_webui_api.BluetoothClient") as m_cls:
-            m_cls.return_value.pair.return_value = {"ok": True}
-            send_bluetooth_pair_post_json(
-                handler, {"address": "AA:BB:CC:DD:EE:FF"}, state=state,
-            )
+            m_cls.return_value.pair_status.return_value = {"ok": True, "state": daemon_state}
+            send_bluetooth_pair_status_json(handler, state=state)
 
     def test_input1_disabled_maps_and_enables_input1(self, tmp_path):
         """Rule a: input 1 disabled -> loopback assigned to input 1 and enabled."""
         state, store = _make_state(tmp_path, audio1={"enabled": False})
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
         code, body = _response(handler)
         assert code == 200
         assert body["ok"] is True
+        assert body["state"] == "done"
         assert body["input_auto_configure"] == {"action": "enabled", "input": "audio1"}
         assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
         assert snap.audio1_enabled is True
@@ -760,7 +765,7 @@ class TestBluetoothPairAutoConfigure:
         )
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -773,7 +778,7 @@ class TestBluetoothPairAutoConfigure:
         state, store = _make_state(tmp_path, audio1={"capture_device": "hw:1,0"})
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -792,7 +797,7 @@ class TestBluetoothPairAutoConfigure:
         )
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -807,7 +812,7 @@ class TestBluetoothPairAutoConfigure:
         )
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -828,7 +833,7 @@ class TestBluetoothPairAutoConfigure:
         )
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -852,7 +857,7 @@ class TestBluetoothPairAutoConfigure:
         )
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -865,7 +870,7 @@ class TestBluetoothPairAutoConfigure:
         assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
 
     def test_never_auto_disables_anything(self, tmp_path):
-        """Both inputs already enabled on real devices: pairing must never
+        """Both inputs already enabled on real devices: polling must never
         flip an enabled flag to False."""
         state, store = _make_state(
             tmp_path,
@@ -874,7 +879,7 @@ class TestBluetoothPairAutoConfigure:
         )
         handler = _make_handler()
         try:
-            self._pair(handler, state)
+            self._poll(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
@@ -884,17 +889,158 @@ class TestBluetoothPairAutoConfigure:
     def test_no_state_available_omits_auto_configure_field(self):
         """When no WebUIState can be resolved (e.g. the module-global
         singleton hasn't been set up), the response falls back to the
-        pre-existing bare shape rather than raising."""
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        plain daemon-passthrough shape rather than raising."""
+        from autostream_webui_api import send_bluetooth_pair_status_json
         handler = _make_handler()
         with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
              patch("autostream_webui_api.BluetoothClient") as m_cls, \
              patch("autostream_webui_api._bt_pairing_resolve_state", return_value=None):
-            m_cls.return_value.pair.return_value = {"ok": True}
-            send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
+            m_cls.return_value.pair_status.return_value = {"ok": True, "state": "done"}
+            send_bluetooth_pair_status_json(handler)
+        code, body = _response(handler)
+        assert code == 200
+        assert body == {"ok": True, "state": "done"}
+
+    def test_failed_state_never_triggers_auto_configure(self, tmp_path):
+        """A "failed" pairing attempt must never apply the auto-enable
+        rules or attach the field, even with a fully resolvable state."""
+        state, store = _make_state(tmp_path, audio1={"enabled": False})
+        handler = _make_handler()
+        try:
+            self._poll(handler, state, daemon_state="failed")
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        assert body == {"ok": True, "state": "failed"}
+        assert "input_auto_configure" not in body
+        assert snap.audio1_enabled is False
+        assert snap.audio1.capture_device == ""
+
+    def test_in_progress_state_never_triggers_auto_configure(self, tmp_path):
+        """Same guarantee for an in-progress attempt."""
+        state, store = _make_state(tmp_path, audio1={"enabled": False})
+        handler = _make_handler()
+        try:
+            self._poll(handler, state, daemon_state="in_progress")
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert "input_auto_configure" not in body
+        assert snap.audio1_enabled is False
+
+    def test_repeated_done_polls_stay_idempotent(self, tmp_path):
+        """The UI keeps polling after observing "done" is possible in
+        principle (e.g. a slow client tick); a second "done" poll must not
+        double-apply or error -- the rules themselves short-circuit once
+        the input is already on the loopback."""
+        state, store = _make_state(tmp_path, audio1={"enabled": False})
+        handler1 = _make_handler()
+        handler2 = _make_handler()
+        try:
+            self._poll(handler1, state)
+            self._poll(handler2, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        _, body2 = _response(handler2)
+        assert body2["input_auto_configure"] == {"action": "already_configured"}
+        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
+        assert snap.audio1_enabled is True
+
+    def test_pair_post_no_longer_applies_auto_configure(self, tmp_path):
+        """The pair POST reply only means pairing *started* -- it must
+        never touch settings or carry the auto-configure field, regardless
+        of what the settings snapshot looks like."""
+        from autostream_webui_api import send_bluetooth_pair_post_json
+        state, store = _make_state(tmp_path, audio1={"enabled": False})
+        handler = _make_handler()
+        try:
+            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
+                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+                m_cls.return_value.pair.return_value = {"ok": True}
+                send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
         code, body = _response(handler)
         assert code == 200
         assert body == {"ok": True}
+        assert "input_auto_configure" not in body
+        assert snap.audio1_enabled is False
+        assert snap.audio1.capture_device == ""
+
+
+# ---------------------------------------------------------------------------
+# _bt_pairing_resolve_state — script-vs-module identity fix
+# ---------------------------------------------------------------------------
+
+class TestBtPairingResolveState:
+    """The webui process runs its own module as script (``__main__``), not
+    as an importable ``autostream_webui`` -- so resolving the process-wide
+    state must never ``import autostream_webui`` (that would create a
+    second, unpopulated module instance) and must look the already-loaded
+    modules up in ``sys.modules`` instead.
+    """
+
+    def test_explicit_state_passed_through_untouched(self):
+        from autostream_webui_api import _bt_pairing_resolve_state
+        sentinel = object()
+        assert _bt_pairing_resolve_state(sentinel) is sentinel
+
+    def test_falls_back_to_main_module_state(self):
+        from autostream_webui_api import _bt_pairing_resolve_state
+        fake_main = type("FakeMain", (), {"STATE": "main-state"})()
+        had_bt_module = "autostream_webui" in sys.modules
+        saved_bt_module = sys.modules.pop("autostream_webui", None)
+        saved_main = sys.modules.get("__main__")
+        try:
+            sys.modules["__main__"] = fake_main
+            assert _bt_pairing_resolve_state(None) == "main-state"
+            # Must not have imported (or otherwise populated) a distinct
+            # "autostream_webui" module entry as a side effect.
+            assert "autostream_webui" not in sys.modules
+        finally:
+            sys.modules["__main__"] = saved_main
+            if had_bt_module:
+                sys.modules["autostream_webui"] = saved_bt_module
+
+    def test_prefers_autostream_webui_module_over_main(self):
+        """When a real ``autostream_webui`` module entry does exist (e.g. a
+        test imported it) and carries a non-None STATE, it wins over
+        ``__main__`` -- covers the (non-production) case of running under
+        an actual import rather than as the launched script."""
+        from autostream_webui_api import _bt_pairing_resolve_state
+        fake_bt_module = type("FakeBtModule", (), {"STATE": "bt-module-state"})()
+        fake_main = type("FakeMain", (), {"STATE": "main-state"})()
+        saved_bt_module = sys.modules.get("autostream_webui")
+        saved_main = sys.modules.get("__main__")
+        try:
+            sys.modules["autostream_webui"] = fake_bt_module
+            sys.modules["__main__"] = fake_main
+            assert _bt_pairing_resolve_state(None) == "bt-module-state"
+        finally:
+            if saved_bt_module is not None:
+                sys.modules["autostream_webui"] = saved_bt_module
+            else:
+                sys.modules.pop("autostream_webui", None)
+            sys.modules["__main__"] = saved_main
+
+    def test_no_resolvable_state_returns_none_and_warns(self, caplog):
+        from autostream_webui_api import _bt_pairing_resolve_state
+        saved_bt_module = sys.modules.pop("autostream_webui", None)
+        saved_main = sys.modules.get("__main__")
+        try:
+            sys.modules["__main__"] = type("FakeMain", (), {})()
+            with caplog.at_level("WARNING"):
+                assert _bt_pairing_resolve_state(None) is None
+            assert "state unavailable" in caplog.text.lower()
+        finally:
+            sys.modules["__main__"] = saved_main
+            if saved_bt_module is not None:
+                sys.modules["autostream_webui"] = saved_bt_module
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1100,20 @@ class TestRouteRegistration:
         assert "send_bluetooth_scan_results_json" in src
         assert "/api/bluetooth/pair_status" in src
         assert "send_bluetooth_pair_status_json" in src
+
+    def test_pair_status_dispatch_passes_module_state(self):
+        """The pair_status handler needs the module-global WebUIState to
+        run the post-pair auto-configure step (see
+        _bt_pairing_resolve_state's script-vs-module identity trap) -- the
+        dispatch call site must pass it explicitly rather than relying on
+        the handler's own fallback resolution."""
+        import inspect
+        webui = self._webui()
+        src = inspect.getsource(webui.ConfigWebHandler.do_GET)
+        idx = src.find('"/api/bluetooth/pair_status"')
+        assert idx != -1
+        window = src[idx: idx + 300]
+        assert "send_bluetooth_pair_status_json(self, state=STATE)" in window
 
     def test_post_routes_dispatch(self):
         import inspect
