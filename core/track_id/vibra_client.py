@@ -5,10 +5,42 @@ import json
 import logging
 import socket
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 _log = logging.getLogger(__name__)
+
+
+class _RecoveryLog:
+    """Emits one WARNING when a failing condition clears, so an operator
+    reading WARN-level logs sees the recovery, not just the failure stream.
+
+    Local to this module rather than imported from core.autostream_core:
+    vibra_client is a leaf module with no other core dependency, and pulling
+    in autostream_core just for this small helper would add a heavy,
+    otherwise-unneeded import.
+    """
+
+    def __init__(self, subject: str):
+        self._subject = subject
+        self._failing = False
+        self._count = 0
+        self._first_failure_at = 0.0
+
+    def fail(self, now: float) -> None:
+        if not self._failing:
+            self._failing = True
+            self._first_failure_at = now
+        self._count += 1
+
+    def ok(self, now: float) -> None:
+        if self._failing:
+            logging.warning(
+                "%s recovered after %d failure(s) (down for %.0fs)",
+                self._subject, self._count, now - self._first_failure_at)
+        self._failing = False
+        self._count = 0
 
 
 @dataclass(frozen=True)
@@ -44,6 +76,7 @@ class VibraClient:
         self._runtime_lock = threading.Lock()
         self._runtime_version = "unknown"
         self._runtime_connected = False
+        self._connect_recovery_log = _RecoveryLog("vibra-mini connection")
 
     # ── Connection management ────────────────────────────────────────────────
 
@@ -59,8 +92,10 @@ class VibraClient:
             sock.settimeout(self.COMMAND_TIMEOUT)
             sock.connect(self._socket_path)
             self._sock = sock
+            self._connect_recovery_log.ok(time.monotonic())
             return True
         except OSError as exc:
+            self._connect_recovery_log.fail(time.monotonic())
             _log.warning("vibra: connect to %s failed: %s", self._socket_path, exc)
             return False
 

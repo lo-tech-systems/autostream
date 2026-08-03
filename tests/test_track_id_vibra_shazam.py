@@ -409,6 +409,45 @@ class TestVibraClientFakeSocket:
             client.recognize(_PCM, 16000)
 
 
+class TestVibraClientRecoveryLog:
+    """connect()'s first success after a failure must emit exactly one
+    recovery WARNING -- production runs at WARN level, so the connect
+    failure warning alone would otherwise show no evidence the daemon
+    connection ever came back."""
+
+    def test_connect_failure_then_success_logs_one_recovery_warning(self, caplog):
+        client = VibraClient(socket_path="/tmp/nonexistent_vibra_test_recovery.sock")
+        with caplog.at_level("WARNING", logger="root"):
+            assert client.connect() is False
+        assert not any("recovered after" in r.getMessage() for r in caplog.records)
+
+        pong = {"type": "pong"}
+        _t, path = _make_fake_socket_server(pong)
+        client._socket_path = path
+        caplog.clear()
+        try:
+            with caplog.at_level("WARNING", logger="root"):
+                assert client.connect() is True
+        finally:
+            client.close()
+
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert len(recovered) == 1
+        assert "vibra-mini connection recovered after 1 failure(s)" in recovered[0].getMessage()
+
+    def test_connect_success_first_logs_no_recovery_warning(self, caplog):
+        pong = {"type": "pong"}
+        _t, path = _make_fake_socket_server(pong)
+        client = VibraClient(socket_path=path)
+        try:
+            with caplog.at_level("WARNING", logger="root"):
+                assert client.connect() is True
+        finally:
+            client.close()
+
+        assert not any("recovered after" in r.getMessage() for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # VibraClient — reconnect and retry
 # ---------------------------------------------------------------------------

@@ -26,6 +26,37 @@ logger = logging.getLogger(__name__)
 DEFAULT_CALL_TIMEOUT = 5.0
 
 
+class RecoveryLog:
+    """Emits one WARNING when a failing condition clears, so an operator
+    reading WARN-level logs sees the recovery, not just the failure stream.
+
+    Shared by the bluetooth daemon's retry loops (BlueZ adapter attach,
+    loopback playback open, ...) -- lives here rather than in each retry
+    site's own module since every bluetooth daemon module already imports
+    this one, and the daemon must not import from core/.
+    """
+
+    def __init__(self, subject: str):
+        self._subject = subject
+        self._failing = False
+        self._count = 0
+        self._first_failure_at = 0.0
+
+    def fail(self, now: float) -> None:
+        if not self._failing:
+            self._failing = True
+            self._first_failure_at = now
+        self._count += 1
+
+    def ok(self, now: float) -> None:
+        if self._failing:
+            logger.warning(
+                "%s recovered after %d failure(s) (down for %.0fs)",
+                self._subject, self._count, now - self._first_failure_at)
+        self._failing = False
+        self._count = 0
+
+
 class LoopCallTimeout(Exception):
     """Raised by ``call_sync`` when the loop does not run the scheduled
     call within the timeout -- most commonly a wedged/stalled loop."""

@@ -179,3 +179,63 @@ def test_assert_on_loop_fails_off_loop_thread(fake_loop):
 
     with pytest.raises(RuntimeError):
         bridge.assert_on_loop()
+
+
+# ── RecoveryLog: "first success after failure" recovery WARNING ───────────
+#
+# Shared by the bluetooth daemon's retry loops (BlueZ adapter attach in
+# bluetooth_service.py, loopback playback open in bluetooth_pump.py) so an
+# operator reading WARN-level logs sees a failing condition clear, not just
+# the failure stream that already logs at WARNING.
+
+def test_recovery_log_silent_when_never_failed(caplog):
+    log = loop_mod.RecoveryLog("thing")
+    with caplog.at_level("WARNING", logger="root"):
+        log.ok(100.0)
+    assert caplog.records == []
+
+
+def test_recovery_log_fail_then_ok_emits_one_warning(caplog):
+    log = loop_mod.RecoveryLog("thing")
+    log.fail(100.0)
+    with caplog.at_level("WARNING", logger="root"):
+        log.ok(104.0)
+    assert len(caplog.records) == 1
+    assert "thing recovered after 1 failure(s) (down for 4s)" in caplog.records[0].getMessage()
+
+
+def test_recovery_log_counts_failures_since_first(caplog):
+    log = loop_mod.RecoveryLog("thing")
+    log.fail(100.0)
+    log.fail(101.0)
+    log.fail(102.0)
+    with caplog.at_level("WARNING", logger="root"):
+        log.ok(112.0)
+    assert len(caplog.records) == 1
+    msg = caplog.records[0].getMessage()
+    assert "recovered after 3 failure(s) (down for 12s)" in msg
+
+
+def test_recovery_log_resets_after_recovery(caplog):
+    log = loop_mod.RecoveryLog("thing")
+    log.fail(100.0)
+    with caplog.at_level("WARNING", logger="root"):
+        log.ok(101.0)
+        log.ok(102.0)
+        log.ok(103.0)
+    assert len(caplog.records) == 1
+
+
+def test_recovery_log_independent_incidents(caplog):
+    log = loop_mod.RecoveryLog("thing")
+    log.fail(100.0)
+    with caplog.at_level("WARNING", logger="root"):
+        log.ok(101.0)
+    assert len(caplog.records) == 1
+    caplog.clear()
+
+    log.fail(200.0)
+    with caplog.at_level("WARNING", logger="root"):
+        log.ok(203.0)
+    assert len(caplog.records) == 1
+    assert "recovered after 1 failure(s) (down for 3s)" in caplog.records[0].getMessage()

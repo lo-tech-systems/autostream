@@ -40,6 +40,8 @@ import threading
 import time
 from typing import Optional
 
+import bluetooth_loop as loop_mod
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_PLAYBACK_DEVICE = "hw:CARD=ASBT,DEV=0"
@@ -155,6 +157,7 @@ class LoopbackPump:
         # so the mismatch warning stays visible without spamming.
         self._playback_retry_at = 0.0
         self._last_pin_log = 0.0
+        self._pin_recovery_log = loop_mod.RecoveryLog("bluetooth loopback playback open")
 
     # ---- control surface (called from bluetooth_service on bluez callbacks) ----
 
@@ -348,6 +351,7 @@ class LoopbackPump:
             mismatch = f"parameter negotiation failed ({e})"
 
         if mismatch:
+            self._pin_recovery_log.fail(time.monotonic())
             self._log_pin(
                 "bluetooth pump: loopback playback open refused -- %s on '%s'; "
                 "the loopback is held at incompatible parameters by its other "
@@ -360,6 +364,8 @@ class LoopbackPump:
                 pass
             self._playback_retry_at = time.monotonic() + PLAYBACK_PIN_RETRY_SECONDS
             return None
+
+        self._pin_recovery_log.ok(time.monotonic())
 
         # If the device negotiated a smaller ring than requested, clamp the
         # prefill to what actually fits rather than write into the read

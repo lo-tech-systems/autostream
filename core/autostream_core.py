@@ -969,6 +969,33 @@ def _dispatch_session_event(
 # deliberate tradeoff (documented rather than solved with a full
 # per-output-id provenance ledger, which would require instrumenting the Web
 # UI POST path more invasively than this single marker call).
+
+
+class _RecoveryLog:
+    """Emits one WARNING when a failing condition clears, so an operator
+    reading WARN-level logs sees the recovery, not just the failure stream."""
+
+    def __init__(self, subject: str):
+        self._subject = subject
+        self._failing = False
+        self._count = 0
+        self._first_failure_at = 0.0
+
+    def fail(self, now: float) -> None:
+        if not self._failing:
+            self._failing = True
+            self._first_failure_at = now
+        self._count += 1
+
+    def ok(self, now: float) -> None:
+        if self._failing:
+            logging.warning(
+                "%s recovered after %d failure(s) (down for %.0fs)",
+                self._subject, self._count, now - self._first_failure_at)
+        self._failing = False
+        self._count = 0
+
+
 class _OwntoneReconcileTracker:
     """Detects "OwnTone restarted/lost state mid-session" and re-arms retry.
 
@@ -2260,6 +2287,7 @@ class AudioMonitor:
         self._owntone_last_attempt: float = 0.0
         self._owntone_last_log: float = 0.0
         self._owntone_enabled_ok: bool = False
+        self._owntone_recovery_log = _RecoveryLog("OwnTone output-enable")
         self._capture_start_no_output_retry_at: float = 0.0
         self._capture_start_no_output_log_at: float = 0.0
 
@@ -2901,6 +2929,7 @@ class AudioMonitor:
             update_interval_s=2.0,
         )
         if not fifo_result.ok:
+            self._owntone_recovery_log.fail(now)
             self._throttled_owntone_log(
                 now,
                 logging.WARNING,
@@ -2911,6 +2940,7 @@ class AudioMonitor:
 
         outputs = self._get_owntone_outputs()
         if outputs is None:
+            self._owntone_recovery_log.fail(now)
             self._throttled_owntone_log(
                 now,
                 logging.WARNING,
@@ -2939,9 +2969,11 @@ class AudioMonitor:
                 return
 
         if self._refresh_selected_outputs(outputs):
+            self._owntone_recovery_log.ok(now)
             self._owntone_enabled_ok = True
             return
 
+        self._owntone_recovery_log.fail(now)
         self._throttled_owntone_log(
             now,
             logging.WARNING,
@@ -3833,6 +3865,12 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # pre-reload/pre-reconnect source can never manufacture a spurious
         # event once polling resumes.
         session_tracker = _SessionTracker()
+        # Same "log the recovery, not just the failure" rationale as
+        # _owntone_recovery_log above, applied to the monitor daemon socket
+        # connection: covers both the connect() retry and the get_status()
+        # failure path below, since either one leaving the loop unable to
+        # reach the daemon is the same observable outage to an operator.
+        monitor_daemon_recovery_log = _RecoveryLog("autostream_monitor connection")
         # OwnTone-restart reconcile + hang watchdog: same fresh-per-(re)start
         # / .reset()-on-reconnect lifecycle as session_tracker above -- a
         # stale pre-reload/pre-reconnect streak or rate-limit window must
@@ -3862,6 +3900,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
 
                     if not client.connect():
                         _set_monitor_runtime_info(connected=False)
+                        monitor_daemon_recovery_log.fail(now)
                         logging.warning(
                             "autostream_monitor unavailable; retrying in 5 s.",
                         )
@@ -3913,10 +3952,12 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 status = client.get_status()
                 if status is None:
                     _set_monitor_runtime_info(connected=False)
+                    monitor_daemon_recovery_log.fail(time.time())
                     logging.warning("get_status() failed; will reconnect.")
                     reconnect_at = time.time() + 2.0
                     continue
 
+                monitor_daemon_recovery_log.ok(time.time())
                 _set_monitor_runtime_info(
                     monitor_build=str(status.get("monitor_build") or "").strip() or "unknown",
                     log_level=str(status.get("log_level") or "").strip() or "unknown",

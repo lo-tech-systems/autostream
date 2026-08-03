@@ -7,6 +7,9 @@
 - fix: Bluetooth input now recovers by itself when the internal audio link is
   left at incompatible settings (previously it could stay silent until a
   restart)
+- improvement: warning-level logs now record when OwnTone, the monitor daemon
+  connection, Bluetooth, and track identification recover from a prior
+  failure, not just the failure itself
 
 ## Version 0.5.0-beta.1
 

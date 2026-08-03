@@ -714,6 +714,7 @@ class BluetoothService:
         # True when the most recent attach attempt found an adapter it could
         # not power on/prepare (distinct from no adapter being found at all).
         self._adapter_blocked = False
+        self._adapter_recovery_log = loop_mod.RecoveryLog("BlueZ adapter attach")
 
         self._tick_source_id: Optional[int] = None
         self._glib_loop = None
@@ -909,6 +910,7 @@ class BluetoothService:
             bluez.power_on()
             bluez.ensure_not_discoverable()
         except bluez_mod.BluezUnavailable as e:
+            self._adapter_recovery_log.fail(time.monotonic())
             logger.warning(
                 "bluetooth service: BlueZ adapter not available yet (%s); will retry every %ds",
                 e, ADAPTER_RETRY_INTERVAL_SECONDS,
@@ -925,6 +927,7 @@ class BluetoothService:
             # the very first attach attempt made from start()) must never be
             # allowed to crash the process over an adapter that exists but
             # cannot currently be used.
+            self._adapter_recovery_log.fail(time.monotonic())
             logger.warning(
                 "bluetooth service: BlueZ adapter present but could not be powered/prepared "
                 "(rfkill block?): %s; will retry every %ds",
@@ -961,6 +964,7 @@ class BluetoothService:
         self._sync_startup_state(bluez)
 
         self._bluez_ready = True
+        self._adapter_recovery_log.ok(time.monotonic())
         logger.info("bluetooth service: BlueZ adapter attached")
         return True
 

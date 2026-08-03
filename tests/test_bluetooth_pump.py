@@ -622,6 +622,34 @@ class TestGrantedParamVerification:
         pump._step()
         assert not pump.playback_locked_out()
 
+    def test_recovery_warning_fires_once_reopen_succeeds(self, caplog):
+        """First success after a refused-open streak must emit exactly one
+        WARNING summarizing the recovery -- production runs at WARN level,
+        so the refusal warnings alone would otherwise show no evidence the
+        loopback ever came back."""
+        pump, fake = self._make_blocked_pump(playback_grant_rate=48000)
+        assert pump.playback_locked_out()
+
+        fake.playback_grant_rate = None
+        pump._playback_retry_at = 0.0
+        with caplog.at_level("WARNING", logger="root"):
+            pump._step()
+
+        assert not pump.playback_locked_out()
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert len(recovered) == 1
+        assert "bluetooth loopback playback open recovered after" in recovered[0].getMessage()
+
+    def test_no_recovery_warning_when_open_succeeds_first_time(self, caplog):
+        fake = FakeAlsaAudio()
+        pump = pump_mod.LoopbackPump(
+            period_frames=4, rate=44100, buffer_ms=1, alsaaudio_module=fake,
+        )
+        with caplog.at_level("WARNING", logger="root"):
+            pump._playback_pcm = pump._open_playback(fake)
+        assert pump._playback_pcm is not None
+        assert not any("recovered after" in r.getMessage() for r in caplog.records)
+
     def test_format_mismatch_refuses_open(self):
         pump, _ = self._make_blocked_pump(playback_grant_format_name="S32_LE")
         assert pump._playback_pcm is None

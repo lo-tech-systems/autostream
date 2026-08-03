@@ -1373,7 +1373,7 @@ class _FakeBus:
 
 
 class TestAdapterAbsentDegradation:
-    def test_try_connect_bluez_fails_then_recovers(self, tmp_path, monkeypatch):
+    def test_try_connect_bluez_fails_then_recovers(self, tmp_path, monkeypatch, caplog):
         attempts = {"n": 0}
 
         class FlakyBluezClient:
@@ -1412,20 +1412,34 @@ class TestAdapterAbsentDegradation:
         )
 
         # First attempt: no adapter -> degrades instead of raising.
-        assert service._try_connect_bluez() is False
+        with caplog.at_level("WARNING", logger="root"):
+            assert service._try_connect_bluez() is False
         assert service.state_machine.get_status()["adapter_present"] is False
         assert service._bluez_ready is False
+        assert not any("recovered after" in r.getMessage() for r in caplog.records)
 
-        # Second attempt (the tick-driven retry): adapter now present.
-        assert service._try_connect_bluez() is True
+        # Second attempt (the tick-driven retry): adapter now present. The
+        # first success after a failure must emit exactly one recovery
+        # WARNING, so an operator reading WARN-level logs sees the adapter
+        # come back, not just the earlier failure.
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="root"):
+            assert service._try_connect_bluez() is True
         assert service.state_machine.get_status()["adapter_present"] is True
         assert service._bluez_ready is True
         assert service._bluez.subscribed is True
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert len(recovered) == 1
+        assert "BlueZ adapter attach recovered after 1 failure(s)" in recovered[0].getMessage()
 
-        # Idempotent once attached: a further call is a no-op success.
+        # Idempotent once attached: a further call is a no-op success, and
+        # must not re-emit the recovery warning (nothing failed since).
         attempts_before = attempts["n"]
-        assert service._try_connect_bluez() is True
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="root"):
+            assert service._try_connect_bluez() is True
         assert attempts["n"] == attempts_before
+        assert not any("recovered after" in r.getMessage() for r in caplog.records)
 
     def test_maybe_retry_adapter_bounded_by_interval(self, tmp_path, monkeypatch):
         attempts = {"n": 0}
@@ -1456,7 +1470,7 @@ class TestAdapterAbsentDegradation:
         service._maybe_retry_adapter()
         assert attempts["n"] == 2
 
-    def test_start_survives_adapter_power_on_failure_then_recovers(self, tmp_path, monkeypatch):
+    def test_start_survives_adapter_power_on_failure_then_recovers(self, tmp_path, monkeypatch, caplog):
         """An adapter that exists but cannot be powered (e.g. an rfkill
         soft-block) must not crash the attach attempt: it must be treated
         like the adapter-absent case for retry purposes, with the degraded
@@ -1507,12 +1521,17 @@ class TestAdapterAbsentDegradation:
         assert status["adapter_present"] is False
         assert status["adapter_blocked"] is True
 
-        # Retry succeeds -> flag clears and adapter attaches normally.
-        assert service._try_connect_bluez() is True
+        # Retry succeeds -> flag clears, adapter attaches normally, and the
+        # recovery WARNING fires (shared recovery log with the
+        # adapter-absent branch above).
+        with caplog.at_level("WARNING", logger="root"):
+            assert service._try_connect_bluez() is True
         assert service._bluez_ready is True
         status = service._get_status()
         assert status["adapter_present"] is True
         assert status["adapter_blocked"] is False
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert len(recovered) == 1
 
     def test_adapter_blocked_false_by_default(self, tmp_path):
         service, _ = _make_service(tmp_path)

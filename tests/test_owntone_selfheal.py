@@ -483,6 +483,154 @@ class TestSelfHealComposition:
         assert get_owntone_selfheal_state()["reconcile_fired_count"] == 0
 
 
+# ── _RecoveryLog: "first success after failure" recovery WARNING ───────────
+#
+# Production appliances run at WARN level, so a failure path that logs its
+# retries at WARNING but its eventual recovery at INFO (or not at all) shows
+# only the failure stream to an operator reading the logs -- there is never
+# a WARN-level line saying the problem cleared. _RecoveryLog closes that
+# gap: it tracks a boolean failing/ok state and emits exactly one WARNING,
+# on the transition back to ok, summarizing how many failures occurred and
+# how long the condition was down.
+
+class TestRecoveryLogPure:
+    def test_no_warning_when_never_failed(self, caplog):
+        log = core._RecoveryLog("thing")
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(100.0)
+        assert caplog.records == []
+
+    def test_single_fail_then_ok_emits_one_warning(self, caplog):
+        log = core._RecoveryLog("thing")
+        log.fail(100.0)
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(105.0)
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].getMessage()
+        assert "thing recovered after 1 failure(s) (down for 5s)" in msg
+
+    def test_repeated_fail_then_ok_counts_all_failures_since_first(self, caplog):
+        log = core._RecoveryLog("thing")
+        log.fail(100.0)
+        log.fail(101.0)
+        log.fail(102.0)
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(110.0)
+        assert len(caplog.records) == 1
+        msg = caplog.records[0].getMessage()
+        assert "recovered after 3 failure(s) (down for 10s)" in msg
+
+    def test_ok_without_prior_fail_is_silent_and_resets(self, caplog):
+        log = core._RecoveryLog("thing")
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(100.0)
+            log.ok(101.0)
+        assert caplog.records == []
+
+    def test_ok_resets_state_so_next_fail_ok_pair_is_independent(self, caplog):
+        log = core._RecoveryLog("thing")
+        log.fail(100.0)
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(101.0)
+        assert len(caplog.records) == 1
+        caplog.clear()
+
+        # A second, independent failure/recovery pair must not remember the
+        # first incident's count or start time.
+        log.fail(200.0)
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(202.0)
+        assert len(caplog.records) == 1
+        assert "recovered after 1 failure(s) (down for 2s)" in caplog.records[0].getMessage()
+
+    def test_consecutive_oks_after_recovery_stay_silent(self, caplog):
+        log = core._RecoveryLog("thing")
+        log.fail(100.0)
+        with caplog.at_level("WARNING", logger="root"):
+            log.ok(101.0)
+            log.ok(102.0)
+            log.ok(103.0)
+        assert len(caplog.records) == 1
+
+
+class TestMaybeRetryOwntoneRecoveryLog:
+    """Site A: AudioMonitor._owntone_recovery_log, wired into
+    _maybe_retry_owntone's existing WARNING sites (not the INFO-level
+    "no outputs selected" fallback site, which is not a failure worth
+    surfacing as a recovery event on its own)."""
+
+    def test_fail_fail_success_emits_one_recovery_warning(self, caplog):
+        mon = _make_monitor(owntone_base_url=BASE_URL)
+        mon.is_capturing = False  # replay_origin=True carries every call below
+
+        out = _outputs(True)
+        base = 1000.0
+        with patch.object(core, "reconcile_fifo_with_backend") as rf, \
+             patch.object(mon, "_get_owntone_outputs", return_value=out), \
+             patch.object(core, "retry_pending_format_reconcile"), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=True), \
+             patch.object(mon, "_refresh_selected_outputs", side_effect=[False, False, True]):
+            rf.return_value = MagicMock(ok=True, message="")
+
+            with caplog.at_level("WARNING", logger="root"):
+                mon._maybe_retry_owntone(base, replay_origin=True)
+                mon._maybe_retry_owntone(
+                    base + mon.OWNTONE_RETRY_SECONDS + 1, replay_origin=True)
+                mon._maybe_retry_owntone(
+                    base + 2 * (mon.OWNTONE_RETRY_SECONDS + 1), replay_origin=True)
+
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert len(recovered) == 1
+        assert "OwnTone output-enable recovered after 2 failure(s)" in recovered[0].getMessage()
+        assert mon._owntone_enabled_ok is True
+
+    def test_success_first_emits_no_recovery_warning(self, caplog):
+        mon = _make_monitor(owntone_base_url=BASE_URL)
+        mon.is_capturing = False
+
+        out = _outputs(True)
+        with patch.object(core, "reconcile_fifo_with_backend") as rf, \
+             patch.object(mon, "_get_owntone_outputs", return_value=out), \
+             patch.object(core, "retry_pending_format_reconcile"), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=True), \
+             patch.object(mon, "_refresh_selected_outputs", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+
+            with caplog.at_level("WARNING", logger="root"):
+                mon._maybe_retry_owntone(time.time(), replay_origin=True)
+
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert recovered == []
+        assert mon._owntone_enabled_ok is True
+
+    def test_fifo_reconcile_failure_counts_as_a_failure(self, caplog):
+        """The fifo_result.ok gate is also a _maybe_retry_owntone WARNING
+        site and must feed the same recovery log as the output-refresh
+        failures below it."""
+        mon = _make_monitor(owntone_base_url=BASE_URL)
+        mon.is_capturing = False
+
+        base = 2000.0
+        with patch.object(core, "reconcile_fifo_with_backend") as rf, \
+             patch.object(mon, "_get_owntone_outputs", return_value=_outputs(True)), \
+             patch.object(core, "retry_pending_format_reconcile"), \
+             patch.object(mon, "_has_any_selected_outputs", return_value=True), \
+             patch.object(mon, "_refresh_selected_outputs", return_value=True):
+            rf.side_effect = [
+                MagicMock(ok=False, message="backend down"),
+                MagicMock(ok=True, message=""),
+            ]
+
+            with caplog.at_level("WARNING", logger="root"):
+                mon._maybe_retry_owntone(base, replay_origin=True)
+                mon._maybe_retry_owntone(
+                    base + mon.OWNTONE_RETRY_SECONDS + 1, replay_origin=True)
+
+        recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
+        assert len(recovered) == 1
+        assert "recovered after 1 failure(s)" in recovered[0].getMessage()
+
+
 # ── /api/status passthrough ─────────────────────────────────────────────────
 
 class TestStatusPassthrough:
