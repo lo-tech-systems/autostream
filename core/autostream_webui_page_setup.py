@@ -1873,6 +1873,16 @@ def send_setup_page(
             );
             if (hasLoopbackOption) selectEl.value = BT_LOOPBACK_HW;
           }}
+          // Relabel the loopback entries immediately with the just-paired
+          // name; the periodic status poll re-applies the server's own
+          // label afterwards.
+          if (_btSelectedName) {{
+            document.querySelectorAll(
+              'select[name="audio_capture_device"] option, select[name="audio2_capture_device"] option'
+            ).forEach(function(opt) {{
+              if (opt.value === BT_LOOPBACK_HW) opt.textContent = 'Bluetooth: ' + _btSelectedName;
+            }});
+          }}
           if (auto.action === 'enabled') {{
             var enabledEl = document.querySelector('input[name="' + enabledName + '"]');
             if (enabledEl) enabledEl.checked = true;
@@ -2115,6 +2125,16 @@ def send_setup_page(
 
           var sub = document.getElementById('bluetooth-card-sub');
           if (sub) sub.textContent = (ui && ui.card_summary) || 'Disabled';
+          if (ui && ui.capture_label) {{
+            // Relabel the loopback entry in both capture dropdowns so a
+            // pair/forget is reflected without a page reload (the option
+            // text is otherwise fixed at server render time).
+            document.querySelectorAll(
+              'select[name="audio_capture_device"] option, select[name="audio2_capture_device"] option'
+            ).forEach(function(opt) {{
+              if (opt.value === BT_LOOPBACK_HW) opt.textContent = ui.capture_label;
+            }});
+          }}
           if (typeof refreshInputCardSubs === 'function') refreshInputCardSubs();
         }}
 

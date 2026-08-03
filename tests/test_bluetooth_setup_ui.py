@@ -426,13 +426,13 @@ class TestBluetoothEnabledUnpaired:
     def test_apply_auto_configure_only_checks_box_when_enabled(self, html):
         idx = html.find("function _btApplyAutoConfigureToPage(auto)")
         assert idx != -1
-        body = html[idx: idx + 1500]
+        body = html[idx: idx + 2500]
         assert "auto.action === 'enabled'" in body
 
     def test_apply_auto_configure_calls_sync_helpers_when_defined(self, html):
         idx = html.find("function _btApplyAutoConfigureToPage(auto)")
         assert idx != -1
-        body = html[idx: idx + 1500]
+        body = html[idx: idx + 2500]
         assert "typeof syncInputUi === 'function'" in body
         assert "syncInputUi(inputIndex)" in body
         assert "typeof refreshInputCardSubs === 'function'" in body

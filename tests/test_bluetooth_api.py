@@ -95,6 +95,7 @@ class TestBluetoothStatusJson:
                 "card_summary": "Disabled",
                 "paired_text": "No device paired",
                 "bt_input_text": "Not Connected",
+                "capture_label": "Bluetooth (service unavailable)",
             },
         }
 
@@ -124,6 +125,7 @@ class TestBluetoothStatusJson:
             "card_summary": "Enabled · Not paired",
             "paired_text": "No device paired",
             "bt_input_text": "Not Connected",
+            "capture_label": "Bluetooth (not paired)",
         }
 
     def test_ui_enabled_not_paired(self, tmp_path):
@@ -146,6 +148,7 @@ class TestBluetoothStatusJson:
             "card_summary": "Enabled · Not paired",
             "paired_text": "No device paired",
             "bt_input_text": "Not Connected",
+            "capture_label": "Bluetooth (not paired)",
         }
 
     def test_ui_paired_and_connected(self, tmp_path):
@@ -169,6 +172,7 @@ class TestBluetoothStatusJson:
             "card_summary": "Enabled · BT-Turntable connected",
             "paired_text": "BT-Turntable · Connected",
             "bt_input_text": "BT-Turntable",
+            "capture_label": "Bluetooth: BT-Turntable",
         }
 
     def test_ui_paired_but_disconnected(self, tmp_path):
@@ -194,6 +198,7 @@ class TestBluetoothStatusJson:
             "card_summary": "Enabled · BT-Turntable (not connected)",
             "paired_text": "BT-Turntable · Not Connected",
             "bt_input_text": "Not Connected",
+            "capture_label": "Bluetooth: BT-Turntable",
         }
 
     def test_installed_live_fails_falls_back_to_cache(self, tmp_path):

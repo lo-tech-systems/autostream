@@ -38,6 +38,7 @@ from typing import Optional
 from autostream_bluetooth_client import (
     BLUETOOTH_CAPTURE_DEVICE,
     BluetoothClient,
+    bluetooth_capture_label,
     bluetooth_card_summary,
     bluetooth_input_fragment_text,
     bluetooth_installed,
@@ -3253,6 +3254,10 @@ def send_bluetooth_status_json(handler, state) -> None:
             "card_summary": bluetooth_card_summary(services_enabled, daemon),
             "paired_text": bluetooth_paired_row_text(daemon),
             "bt_input_text": bluetooth_input_fragment_text(daemon),
+            # Label for the loopback entry in the capture-device dropdowns,
+            # so the poll can relabel it live ("Bluetooth: <name>" after a
+            # pair, back to unpaired after a forget) without a page reload.
+            "capture_label": bluetooth_capture_label(daemon),
         },
     })
 
