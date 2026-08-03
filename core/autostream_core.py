@@ -480,7 +480,7 @@ def _empty_playback_snapshot() -> PlaybackSnapshot:
 def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
     return {
         1: PlaybackInputConfig.normalized(
-            enabled=True,
+            enabled=cfg.audio1_enabled,
             is_turntable=cfg.audio1.is_turntable,
             stylus_life_hours=cfg.audio1.stylus_life_hours,
             belt_life_hours=cfg.audio1.belt_life_hours,
@@ -1417,9 +1417,9 @@ def get_monitor_levels_dbfs() -> list[dict]:
     levels: list[dict] = []
     with _monitors_lock:
         snapshot = list(all_monitors)
-    for idx, mon in enumerate(snapshot, start=1):
+    for mon in snapshot:
         levels.append({
-            "label": f"Input {idx}",
+            "label": f"Input {mon.input_index}",
             "dbfs": round(mon.poll_peak_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
             "is_above_threshold": not mon.is_silent,
@@ -3518,62 +3518,65 @@ def _configure_startup_monitors(
     client.stop_input(1)
     client.stop_input(2)
 
-    if not client.configure_input(
-        1,
-        cfg.audio1.capture_device,
-        cfg.audio1.silence_threshold_dbfs,
-        cfg.general.silence_seconds,
-        cfg.track_identification.track_change_silence_seconds,
-        cfg.general.minimum_playback_seconds,
-    ):
-        logging.warning(
-            "configure_input(1, %r) failed during startup; will retry.",
+    monitors: list[AudioMonitor] = []
+
+    if cfg.audio1_enabled:
+        if not client.configure_input(
+            1,
             cfg.audio1.capture_device,
-        )
-        return None
+            cfg.audio1.silence_threshold_dbfs,
+            cfg.general.silence_seconds,
+            cfg.track_identification.track_change_silence_seconds,
+            cfg.general.minimum_playback_seconds,
+        ):
+            logging.warning(
+                "configure_input(1, %r) failed during startup; will retry.",
+                cfg.audio1.capture_device,
+            )
+            return None
 
-    _wait_for_bluetooth_loopback(cfg.audio1.capture_device)
-    if not client.start_input(1):
-        logging.warning("start_input(1) failed during startup; will retry.")
-        return None
+        _wait_for_bluetooth_loopback(cfg.audio1.capture_device)
+        if not client.start_input(1):
+            logging.warning("start_input(1) failed during startup; will retry.")
+            return None
 
-    if not apply_input_gain(client, 1, cfg.audio1.gain_db):
-        logging.warning("set_gain(1) failed during startup; will retry.")
-        return None
+        if not apply_input_gain(client, 1, cfg.audio1.gain_db):
+            logging.warning("set_gain(1) failed during startup; will retry.")
+            return None
 
-    if not apply_input_eq(
-        client,
-        1,
-        cfg.audio1.eq_40hz_db,
-        cfg.audio1.eq_100hz_db,
-        cfg.audio1.eq_8khz_db,
-    ):
-        logging.warning("set_eq(1) failed during startup; will retry.")
-        return None
+        if not apply_input_eq(
+            client,
+            1,
+            cfg.audio1.eq_40hz_db,
+            cfg.audio1.eq_100hz_db,
+            cfg.audio1.eq_8khz_db,
+        ):
+            logging.warning("set_eq(1) failed during startup; will retry.")
+            return None
 
-    monitors: list[AudioMonitor] = [AudioMonitor(
-        input_index=1,
-        input_device=cfg.audio1.capture_device,
-        silence_threshold_dbfs=cfg.audio1.silence_threshold_dbfs,
-        silence_seconds=cfg.general.silence_seconds,
-        fifo_path=fifo_path,
-        owntone_base_url=cfg.owntone.base_url,
-        owntone_output_name=cfg.owntone.output_name,
-        owntone_volume_percent=cfg.owntone.volume_percent,
-        track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
-        minimum_playback_seconds=cfg.general.minimum_playback_seconds,
-        owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
-        owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
-        gain_db=cfg.audio1.gain_db,
-        eq_40hz_db=cfg.audio1.eq_40hz_db,
-        eq_100hz_db=cfg.audio1.eq_100hz_db,
-        eq_8khz_db=cfg.audio1.eq_8khz_db,
-    )]
+        monitors.append(AudioMonitor(
+            input_index=1,
+            input_device=cfg.audio1.capture_device,
+            silence_threshold_dbfs=cfg.audio1.silence_threshold_dbfs,
+            silence_seconds=cfg.general.silence_seconds,
+            fifo_path=fifo_path,
+            owntone_base_url=cfg.owntone.base_url,
+            owntone_output_name=cfg.owntone.output_name,
+            owntone_volume_percent=cfg.owntone.volume_percent,
+            track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
+            minimum_playback_seconds=cfg.general.minimum_playback_seconds,
+            owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
+            owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
+            gain_db=cfg.audio1.gain_db,
+            eq_40hz_db=cfg.audio1.eq_40hz_db,
+            eq_100hz_db=cfg.audio1.eq_100hz_db,
+            eq_8khz_db=cfg.audio1.eq_8khz_db,
+        ))
 
     if (
         cfg.audio2_enabled
         and cfg.audio2.capture_device
-        and cfg.audio2.capture_device != cfg.audio1.capture_device
+        and (not cfg.audio1_enabled or cfg.audio2.capture_device != cfg.audio1.capture_device)
     ):
         audio2_ok = True
 

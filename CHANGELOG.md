@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- improvement: the wired input can now be disabled/skipped so setup can be
+  completed without a wired input device connected
 - fix: the Bluetooth service no longer crashes and restarts repeatedly while
   the paired device is switched off or out of range
 - fix: Bluetooth input now recovers by itself when the internal audio link is

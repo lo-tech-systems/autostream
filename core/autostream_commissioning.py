@@ -36,7 +36,8 @@ def is_technically_complete(config_path: str) -> bool:
 
     Required fields:
       - general.fifo_path   (non-empty string)
-      - audio1.capture_device  (valid ALSA hw:* id)
+      - audio1.capture_device  (valid ALSA hw:* id), unless audio1.enabled is
+        explicitly False (absent defaults to True)
       - owntone.output_name  (non-empty string)
 
     Reads the file each call (no mtime cache). Callers that need performance
@@ -47,11 +48,13 @@ def is_technically_complete(config_path: str) -> bool:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
         fifo_path = str((data.get("general") or {}).get("fifo_path", "") or "").strip()
-        audio1_dev = str((data.get("audio1") or {}).get("capture_device", "") or "").strip()
+        audio1_section = data.get("audio1") or {}
+        audio1_enabled = bool(audio1_section.get("enabled", True))
+        audio1_dev = str(audio1_section.get("capture_device", "") or "").strip()
         output_name = str((data.get("owntone") or {}).get("output_name", "") or "").strip()
         return bool(
             fifo_path
-            and is_valid_monitor_device_id(audio1_dev)
+            and (not audio1_enabled or is_valid_monitor_device_id(audio1_dev))
             and output_name
         )
     except Exception:

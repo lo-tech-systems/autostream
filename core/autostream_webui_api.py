@@ -52,6 +52,7 @@ from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     REPEAT_CODEC_CHOICES,
+    is_valid_monitor_device_id,
     load_config,
     load_state,
     normalize_airplay_mode,
@@ -455,7 +456,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
             a = p.audio1
             update_playback_input_config(
                 1,
-                enabled=True,
+                enabled=p.audio1_enabled,
                 is_turntable=a.is_turntable,
                 stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
                 belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
@@ -1590,6 +1591,25 @@ def _live_capture_2(state: object, value: object) -> bool:
     return True
 
 
+def _live_audio1_enabled(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if isinstance(settings, _SettingsStore):
+        snap = settings.snapshot()
+        update_playback_input_config(
+            1,
+            enabled=bool(value),
+            is_turntable=snap.audio1.is_turntable,
+            stylus_life_hours=snap.audio1.stylus_life_hours,
+            belt_life_hours=snap.audio1.belt_life_hours,
+            belt_life_years=snap.audio1.belt_life_years,
+            bearing_life_hours=snap.audio1.bearing_life_hours,
+            bearing_life_years=snap.audio1.bearing_life_years,
+        )
+    _debounce_coordinator_reload(state)
+    return True
+
+
 def _live_audio2_enabled(state: object, value: object) -> bool:
     from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
@@ -1616,7 +1636,7 @@ def _live_turntable_1(state: object, value: object) -> bool:
         snap = settings.snapshot()
         update_playback_input_config(
             1,
-            enabled=True,
+            enabled=snap.audio1_enabled,
             is_turntable=bool(value),
             stylus_life_hours=snap.audio1.stylus_life_hours,
             belt_life_hours=snap.audio1.belt_life_hours,
@@ -1694,6 +1714,8 @@ _SETTINGS_FIELDS: dict = {
     # WP4B — audio input capture device (live: coordinator reload debounce)
     "audio1.capture_device":                    ("audio1",  "capture_device",                     _validate_capture_device,         _live_capture_1),
     "audio2.capture_device":                    ("audio2",  "capture_device",                     _validate_capture_device,         _live_capture_2),
+    # audio1 enabled (live: playback tracker + coordinator reload debounce)
+    "audio1.enabled":                           ("audio1",  "enabled",                            _validate_bool,                   _live_audio1_enabled),
     # WP4B — audio2 enabled (live: playback tracker + coordinator reload debounce)
     "audio2.enabled":                           ("audio2",  "enabled",                            _validate_bool,                   _live_audio2_enabled),
     # WP4B — turntable mode (atomic mutation with derived silence_threshold; live: playback tracker + coordinator reload debounce)
@@ -1764,17 +1786,50 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
     section, key, validator, live_fn = _SETTINGS_FIELDS[field]
     raw_value = json_obj["value"]
 
-    try:
-        normalized = validator(raw_value)
-    except ValueError as e:
-        send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
-        return
-
     from autostream_settings import SettingsStore as _SettingsStore
+
+    # audio1.capture_device may be cleared to an empty string only while
+    # input 1 is disabled (audio1.enabled=false) -- the field validator
+    # otherwise rejects empty values unconditionally, same as it always has.
+    if field == "audio1.capture_device" and isinstance(raw_value, str) and not raw_value.strip():
+        settings_probe = getattr(state, "settings", None)
+        audio1_enabled = True
+        if isinstance(settings_probe, _SettingsStore):
+            try:
+                audio1_enabled = bool(settings_probe.snapshot().audio1_enabled)
+            except Exception:
+                audio1_enabled = True
+        if audio1_enabled:
+            send_json(handler, 400, {"ok": False, "field": field, "error": "Value must be a non-empty string"})
+            return
+        normalized = ""
+    else:
+        try:
+            normalized = validator(raw_value)
+        except ValueError as e:
+            send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
+            return
+
     settings = getattr(state, "settings", None)
     if not isinstance(settings, _SettingsStore):
         send_json(handler, 200, {"ok": False, "field": field, "error": "Settings store unavailable"})
         return
+
+    # Enabling input 1 requires a valid capture device already on record --
+    # mirrors the completeness gates in autostream_config.unconfigured() and
+    # autostream_commissioning.is_technically_complete().
+    if field == "audio1.enabled" and normalized:
+        try:
+            current_device = str(settings.snapshot().audio1.capture_device or "").strip()
+        except Exception:
+            current_device = ""
+        if not is_valid_monitor_device_id(current_device):
+            send_json(handler, 400, {
+                "ok": False,
+                "field": field,
+                "error": "Set a valid capture device before enabling input 1",
+            })
+            return
 
     # Cross-input exclusivity guard: the same capture device must never be
     # assigned to both inputs at once (generalised from the Bluetooth-only

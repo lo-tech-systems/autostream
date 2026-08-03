@@ -99,6 +99,30 @@ class TestIsTechnicallyComplete:
         _write_config(path, _complete_config())
         assert is_technically_complete(path) is True
 
+    def test_audio1_disabled_with_no_device_returns_true(self, tmp_path):
+        from autostream_commissioning import is_technically_complete
+        path = str(tmp_path / "config.json")
+        cfg = _complete_config()
+        cfg["audio1"] = {"enabled": False}
+        _write_config(path, cfg)
+        assert is_technically_complete(path) is True
+
+    def test_audio1_disabled_with_invalid_device_returns_true(self, tmp_path):
+        from autostream_commissioning import is_technically_complete
+        path = str(tmp_path / "config.json")
+        cfg = _complete_config()
+        cfg["audio1"] = {"enabled": False, "capture_device": "not-alsa"}
+        _write_config(path, cfg)
+        assert is_technically_complete(path) is True
+
+    def test_audio1_enabled_explicit_true_with_invalid_device_returns_false(self, tmp_path):
+        from autostream_commissioning import is_technically_complete
+        path = str(tmp_path / "config.json")
+        cfg = _complete_config()
+        cfg["audio1"] = {"enabled": True, "capture_device": "not-alsa"}
+        _write_config(path, cfg)
+        assert is_technically_complete(path) is False
+
 
 # ── is_commissioning_required ─────────────────────────────────────────────────
 
@@ -168,6 +192,13 @@ class TestIsCommissioningRequired:
             tmp_path, _complete_config(),
             {"first_boot": {"required": False, "completed": False}}
         )
+        assert is_commissioning_required(cfg_path, state_path) is False
+
+    def test_audio1_disabled_no_marker_is_legacy_configured(self, tmp_path):
+        from autostream_commissioning import is_commissioning_required
+        cfg = _complete_config()
+        cfg["audio1"] = {"enabled": False}
+        cfg_path, state_path = self._paths(tmp_path, cfg, {})
         assert is_commissioning_required(cfg_path, state_path) is False
 
     def test_incomplete_config_with_completed_marker_still_requires_commissioning(self, tmp_path):

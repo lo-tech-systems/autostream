@@ -134,6 +134,7 @@ class TestParseConfigDefaults:
         assert cfg.owntone.volume_percent == 20
         assert cfg.audio1.is_turntable is False
         assert cfg.audio1.stylus_life_hours == c.DEFAULT_STYLUS_LIFE_HOURS
+        assert cfg.audio1_enabled is True
         assert cfg.audio2_enabled is False
         assert cfg.updates.auto_update is False
         assert cfg.updates.update_channel == "stable"
@@ -279,6 +280,24 @@ class TestParseConfigAudio:
         cfg = c.parse_config({"audio2": {"enabled": True, "capture_device": "hw:1,0"}})
         assert cfg.audio2_enabled is True
         assert cfg.audio2.capture_device == "hw:1,0"
+
+    def test_audio1_enabled_absent_defaults_true(self):
+        # Back-compat: every existing deployed config (written before this
+        # flag existed) must behave identically after update.
+        cfg = c.parse_config({"audio1": {"capture_device": "hw:0,0"}})
+        assert cfg.audio1_enabled is True
+
+    def test_audio1_enabled_absent_defaults_true_with_no_audio1_section(self):
+        cfg = c.parse_config({})
+        assert cfg.audio1_enabled is True
+
+    def test_audio1_enabled_explicit_false(self):
+        cfg = c.parse_config({"audio1": {"enabled": False}})
+        assert cfg.audio1_enabled is False
+
+    def test_audio1_enabled_explicit_true(self):
+        cfg = c.parse_config({"audio1": {"enabled": True, "capture_device": "hw:0,0"}})
+        assert cfg.audio1_enabled is True
 
     def test_legacy_eq_10khz_fallback(self):
         cfg = c.parse_config({"audio1": {"eq_10khz_db": 3.0}})
@@ -453,6 +472,33 @@ class TestUnconfigured:
     def test_empty_file_is_unconfigured(self, tmp_path):
         p = tmp_path / "cfg.json"
         p.write_text("")
+        assert c.unconfigured(str(p)) is True
+
+    def test_audio1_disabled_with_no_device_is_not_unconfigured(self, tmp_path):
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({
+            "general": {"fifo_path": "/tmp/x.fifo"},
+            "audio1": {"enabled": False},
+            "owntone": {"output_name": "My Speaker"},
+        }))
+        assert c.unconfigured(str(p)) is False
+
+    def test_audio1_disabled_with_invalid_device_is_not_unconfigured(self, tmp_path):
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({
+            "general": {"fifo_path": "/tmp/x.fifo"},
+            "audio1": {"enabled": False, "capture_device": "default"},
+            "owntone": {"output_name": "My Speaker"},
+        }))
+        assert c.unconfigured(str(p)) is False
+
+    def test_audio1_enabled_explicit_true_with_invalid_device_is_unconfigured(self, tmp_path):
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({
+            "general": {"fifo_path": "/tmp/x.fifo"},
+            "audio1": {"enabled": True, "capture_device": "default"},
+            "owntone": {"output_name": "My Speaker"},
+        }))
         assert c.unconfigured(str(p)) is True
 
 

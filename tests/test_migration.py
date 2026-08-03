@@ -134,6 +134,29 @@ class TestAutoStreamMigration:
         assert (tmp_path / "autostream.ini.pre-migration").exists()
         assert not old_ini.exists()
 
+    def test_migrated_config_has_no_explicit_audio1_enabled_key(self, tmp_path, stub_system):
+        """Legacy INIs never had an audio1.enabled concept, so migration must
+        not invent one -- the absent key is what makes every existing
+        deployed config behave identically (input 1 enabled) after update."""
+        old_ini = _write_minimal_ini(tmp_path / "autostream.ini")
+        cfg_path = tmp_path / "autostream.json"
+        state_path = tmp_path / "autostream-state.json"
+
+        with patch.multiple(m,
+                _OLD_INI=old_ini,
+                _NEW_CFG=cfg_path,
+                _NEW_STATE=state_path,
+                _DATA_FILES=[],
+                _OLD_HINTS=tmp_path / "hints.json"):
+            m._migrate_autostream(dry_run=False)
+
+        cfg = json.loads(cfg_path.read_text())
+        assert "enabled" not in cfg["audio1"]
+
+        import autostream_config as c
+        parsed = c.parse_config(cfg)
+        assert parsed.audio1_enabled is True
+
     def test_interrupted_migration_reconstructs_state(self, tmp_path, stub_system):
         """Config JSON written, state JSON absent — should reconstruct state from INI."""
         old_ini = _write_minimal_ini(tmp_path / "autostream.ini")

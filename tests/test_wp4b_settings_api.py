@@ -132,6 +132,9 @@ class TestSettingsFieldsWp4bPresent:
         assert "audio1.capture_device" in _SETTINGS_FIELDS
         assert "audio2.capture_device" in _SETTINGS_FIELDS
 
+    def test_audio1_enabled(self):
+        assert "audio1.enabled" in _SETTINGS_FIELDS
+
     def test_audio2_enabled(self):
         assert "audio2.enabled" in _SETTINGS_FIELDS
 
@@ -365,6 +368,87 @@ class TestAudio2EnabledLive:
         m.assert_called_once()
         _, kwargs = m.call_args
         assert kwargs["enabled"] is False
+
+
+# ── audio1.enabled live effect ────────────────────────────────────────────────
+
+class TestAudio1EnabledLive:
+    def test_enabled_calls_update_playback_tracker(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({"capture_device": "hw:0,0"}))
+        with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m, \
+             patch("autostream_webui_api._debounce_coordinator_reload"):
+            _post_resp(state, "audio1.enabled", True)
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert args[0] == 1
+        assert kwargs["enabled"] is True
+
+    def test_disabled_calls_update_playback_tracker(self, tmp_path):
+        state, _ = _make_state(str(tmp_path))
+        with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m, \
+             patch("autostream_webui_api._debounce_coordinator_reload"):
+            _post_resp(state, "audio1.enabled", False)
+        m.assert_called_once()
+        _, kwargs = m.call_args
+        assert kwargs["enabled"] is False
+
+    def test_disabling_triggers_reload_debounce(self, tmp_path):
+        state, _ = _make_state(str(tmp_path))
+        with patch("autostream_webui_api.update_playback_input_config", return_value=True), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m:
+            _post_resp(state, "audio1.enabled", False)
+        m.assert_called_once()
+
+
+# ── audio1.enabled / capture_device cross-field gating ───────────────────────
+
+class TestAudio1EnabledCaptureDeviceGating:
+    def test_empty_capture_device_accepted_when_disabled(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({"enabled": False}))
+        with patch("autostream_webui_api._debounce_coordinator_reload"):
+            code, resp = _post_resp(state, "audio1.capture_device", "")
+        assert resp["ok"] is True
+        assert store.snapshot().audio1.capture_device == ""
+
+    def test_empty_capture_device_rejected_when_enabled(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({"enabled": True}))
+        code, resp = _post_resp(state, "audio1.capture_device", "")
+        assert resp["ok"] is False
+        assert code == 400
+
+    def test_non_string_capture_device_still_rejected_when_disabled(self, tmp_path):
+        """Disabling input 1 only relaxes the empty-string case -- a
+        non-string value is still rejected by the field validator, same as
+        it always has been."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({"enabled": False}))
+        code, resp = _post_resp(state, "audio1.capture_device", True)
+        assert resp["ok"] is False
+        assert code == 400
+
+    def test_enabling_with_invalid_device_rejected(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({
+            "enabled": False, "capture_device": "",
+        }))
+        code, resp = _post_resp(state, "audio1.enabled", True)
+        assert resp["ok"] is False
+        assert code == 400
+        assert store.snapshot().audio1_enabled is False
+
+    def test_enabling_with_valid_device_accepted(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({
+            "enabled": False, "capture_device": "hw:0,0",
+        }))
+        with patch("autostream_webui_api.update_playback_input_config", return_value=True), \
+             patch("autostream_webui_api._debounce_coordinator_reload"):
+            code, resp = _post_resp(state, "audio1.enabled", True)
+        assert resp["ok"] is True
+        assert store.snapshot().audio1_enabled is True
 
 
 # ── Track-ID rebuild debounce ─────────────────────────────────────────────────

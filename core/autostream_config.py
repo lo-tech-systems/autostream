@@ -603,6 +603,7 @@ class TrackIdentificationConfig:
 @dataclass(frozen=True)
 class AutostreamConfig:
     general: GeneralConfig
+    audio1_enabled: bool
     audio1: AudioInputConfig
     audio2_enabled: bool
     audio2: AudioInputConfig
@@ -701,7 +702,11 @@ def parse_config(
         audio_path=normalize_audio_path(general_d.get("audio_path"), high_perf=high_perf),
     )
 
-    audio1 = _parse_audio_input_config(data.get("audio1") or {})
+    audio1_section = data.get("audio1") or {}
+    # Absent key defaults to True so every existing deployed config (written
+    # before this flag existed) behaves identically after update.
+    audio1_enabled = bool(audio1_section.get("enabled", True))
+    audio1 = _parse_audio_input_config(audio1_section)
 
     audio2_section = data.get("audio2") or {}
     audio2_enabled = bool(audio2_section.get("enabled", False))
@@ -822,6 +827,7 @@ def parse_config(
 
     return AutostreamConfig(
         general=general,
+        audio1_enabled=audio1_enabled,
         audio1=audio1,
         audio2_enabled=audio2_enabled,
         audio2=audio2,
@@ -871,7 +877,8 @@ def unconfigured(path: str) -> bool:
 
     Requires:
       - general.fifo_path (non-empty)
-      - audio1.capture_device in an ALSA hw:* format
+      - audio1.capture_device in an ALSA hw:* format, unless audio1.enabled
+        is explicitly False (absent defaults to True)
       - owntone.output_name (non-empty)
 
     Cached by (mtime, size) so we only re-parse when the JSON changes.
@@ -897,11 +904,13 @@ def unconfigured(path: str) -> bool:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         fifo_path = str((data.get("general") or {}).get("fifo_path", "") or "").strip()
-        audio1_dev = str((data.get("audio1") or {}).get("capture_device", "") or "").strip()
+        audio1_section = data.get("audio1") or {}
+        audio1_enabled = bool(audio1_section.get("enabled", True))
+        audio1_dev = str(audio1_section.get("capture_device", "") or "").strip()
         output_name = str((data.get("owntone") or {}).get("output_name", "") or "").strip()
         is_unconfigured = not (
             fifo_path
-            and is_valid_monitor_device_id(audio1_dev)
+            and (not audio1_enabled or is_valid_monitor_device_id(audio1_dev))
             and output_name
         )
     except Exception:
