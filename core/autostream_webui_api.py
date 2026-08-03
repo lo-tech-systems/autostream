@@ -35,6 +35,7 @@ import time
 from typing import Optional
 
 from autostream_bluetooth_client import (
+    BLUETOOTH_CAPTURE_DEVICE,
     BluetoothClient,
     bluetooth_card_summary,
     bluetooth_input_fragment_text,
@@ -42,6 +43,7 @@ from autostream_bluetooth_client import (
     bluetooth_onboard_enabled,
     bluetooth_paired_row_text,
     bluetooth_services_enabled,
+    classify_loopback_hw,
     is_loopback_playback,
 )
 from autostream_config import (
@@ -3311,13 +3313,184 @@ def send_bluetooth_scan_post_json(handler, json_obj) -> None:
     send_json(handler, 200, {"ok": True, "action": action})
 
 
-def send_bluetooth_pair_post_json(handler, json_obj) -> None:
+def _bt_pairing_resolve_state(state):
+    """Resolve the ``WebUIState`` to use for the post-pair auto-configure step.
+
+    The route dispatcher invokes this handler with just ``(handler,
+    json_obj)`` -- it has no ``WebUIState`` reference to pass at that call
+    site. When the caller doesn't supply one explicitly (as most existing
+    tests don't), fall back to the running webui module's process-wide
+    state singleton, resolved lazily to avoid a module-load-time circular
+    import (that module imports this one).
+    """
+    if state is not None:
+        return state
+    try:
+        import autostream_webui as _webui_mod
+        return getattr(_webui_mod, "STATE", None)
+    except Exception:
+        return None
+
+
+def _bt_pairing_set_field(state, settings, field: str, value) -> tuple[bool, Optional[str]]:
+    """Write one settings field through the same validator/mutator/live-effect
+    machinery as ``POST /api/settings`` (see ``send_settings_post_json`` and
+    ``_SETTINGS_FIELDS``), so this non-browser-initiated caller still goes
+    through the coordinator-reload debounce and the cross-input exclusivity
+    guard exactly like a user editing the Setup page would. Returns ``(ok,
+    error_or_None)``; never raises.
+    """
+    section, key, validator, live_fn = _SETTINGS_FIELDS[field]
+    try:
+        normalized = validator(value)
+    except ValueError as e:
+        return False, str(e)
+
+    # Enabling input 1 requires a valid capture device already on record
+    # (mirrors the completeness gates and send_settings_post_json's own
+    # guard) -- relevant here only as a defensive backstop, since the
+    # caller below always writes the capture device before the enable flag.
+    if field == "audio1.enabled" and normalized:
+        try:
+            current_device = str(settings.snapshot().audio1.capture_device or "").strip()
+        except Exception:
+            current_device = ""
+        if not is_valid_monitor_device_id(current_device):
+            return False, "input 1 has no valid capture device on record"
+
+    # Cross-input exclusivity guard: the same capture device must never be
+    # assigned to both inputs at once. Fast-path check against the live
+    # snapshot; the authoritative, race-proof check is repeated inside the
+    # mutator below, under the store lock.
+    if field in ("audio1.capture_device", "audio2.capture_device") and normalized:
+        other_section = "audio2" if field == "audio1.capture_device" else "audio1"
+        try:
+            other_value = str(getattr(settings.snapshot(), other_section).capture_device or "").strip()
+        except Exception:
+            other_value = ""
+        if other_value == normalized:
+            return False, "that device is already assigned to the other input"
+
+    def _mutator(raw: dict) -> None:
+        if field in ("audio1.capture_device", "audio2.capture_device") and normalized:
+            other_section = "audio2" if field == "audio1.capture_device" else "audio1"
+            other_value = str(raw.get(other_section, {}).get("capture_device") or "").strip()
+            if other_value == normalized:
+                raise _DuplicateCaptureDeviceError(
+                    "that device is already assigned to the other input"
+                )
+        raw.setdefault(section, {})[key] = normalized
+
+    try:
+        settings.update(_mutator)
+    except _DuplicateCaptureDeviceError as e:
+        return False, str(e)
+    except Exception:
+        logging.exception("_bt_pairing_set_field: store update failed for %s", field)
+        return False, "internal error"
+
+    if live_fn is not None:
+        try:
+            live_fn(state, normalized)
+        except Exception:
+            logging.exception("_bt_pairing_set_field: live effect failed for %s", field)
+
+    return True, None
+
+
+_BT_PAIR_NOTICE = "Bluetooth paired — assign the Bluetooth input on the Setup page."
+
+
+def _bt_pair_auto_configure(state) -> Optional[dict]:
+    """Apply the post-pairing input auto-enable rules, once the daemon has
+    confirmed a successful pair. Never auto-disables anything.
+
+    Rules, evaluated against the settings snapshot at the moment pairing
+    completes:
+      a. Input 1 disabled -> point it at the loopback capture device and
+         enable it (overwrites any stale device value already on record).
+      b. Input 1 enabled on a non-loopback device, and input 2 is unmapped
+         (disabled, or has no capture device on record) -> map input 2 to
+         the loopback and enable it.
+      c. Either input already on the loopback -> already wired; no change,
+         no notice.
+      d. Otherwise (both inputs occupied by real devices, or a weird
+         pre-existing state rules a/b can't safely resolve) -> change
+         nothing; the result carries a notice for the caller to surface.
+
+    Returns a dict describing the outcome (for embedding in the pairing
+    API response), or ``None`` when there is no settings store to act on
+    (nothing could be determined or changed).
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return None
+
+    try:
+        snap = settings.snapshot()
+        a1_enabled = bool(snap.audio1_enabled)
+        a1_device = str(snap.audio1.capture_device or "").strip()
+        a2_enabled = bool(snap.audio2_enabled)
+        a2_device = str(snap.audio2.capture_device or "").strip()
+    except Exception:
+        logging.exception("_bt_pair_auto_configure: could not read settings snapshot")
+        return None
+
+    a1_on_loopback = classify_loopback_hw(a1_device) == "capture"
+    a2_on_loopback = classify_loopback_hw(a2_device) == "capture"
+
+    # Rule c takes priority over a/b unconditionally: if either input is
+    # already wired to the loopback, nothing further can be done without
+    # risking both inputs ending up on the loopback at once (the one
+    # invariant that must never happen), so a weird pre-existing state
+    # (e.g. input 1 disabled while input 2 already holds the loopback)
+    # bails here rather than letting rule a fire underneath it.
+    if a1_on_loopback or a2_on_loopback:
+        return {"action": "already_configured"}
+
+    if not a1_enabled:
+        target_input, device_field, enabled_field = "audio1", "audio1.capture_device", "audio1.enabled"
+    elif a1_device and (not a2_enabled or not a2_device):
+        target_input, device_field, enabled_field = "audio2", "audio2.capture_device", "audio2.enabled"
+    else:
+        return {"action": "notice", "notice": _BT_PAIR_NOTICE}
+
+    device_ok, device_err = _bt_pairing_set_field(state, settings, device_field, BLUETOOTH_CAPTURE_DEVICE)
+    if not device_ok:
+        logging.warning(
+            "_bt_pair_auto_configure: could not set %s to the loopback device: %s",
+            device_field, device_err,
+        )
+        return {"action": "notice", "notice": _BT_PAIR_NOTICE}
+
+    enabled_ok, enabled_err = _bt_pairing_set_field(state, settings, enabled_field, True)
+    if not enabled_ok:
+        # The device is now on record but the input stays disabled -- a
+        # legal state (capture_device may be set while disabled) -- rather
+        # than leaving a half-applied change or raising out of a pairing
+        # response.
+        logging.warning(
+            "_bt_pair_auto_configure: set %s but could not enable %s: %s",
+            device_field, enabled_field, enabled_err,
+        )
+        return {"action": "device_set_only", "input": target_input}
+
+    return {"action": "enabled", "input": target_input}
+
+
+def send_bluetooth_pair_post_json(handler, json_obj, state=None) -> None:
     """POST /api/bluetooth/pair {"address": <mac>} — server-side MAC validation.
 
     A daemon reply of ``{"ok": false, "error": "pair_in_progress"}`` (a
     pairing attempt already active) is surfaced as a 409, mirroring
     ``send_network_setup_json``'s watcher-busy 409; any other non-ok reply
     stays a 503 ``bluetooth_unavailable``.
+
+    On success, applies the input auto-enable rules (see
+    ``_bt_pair_auto_configure``) and, when a settings store is available,
+    surfaces the outcome under ``input_auto_configure`` so the pairing UI
+    (which already renders this response) can show the user what changed.
     """
     if not bluetooth_installed():
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
@@ -3338,7 +3511,16 @@ def send_bluetooth_pair_post_json(handler, json_obj) -> None:
             return
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    send_json(handler, 200, {"ok": True})
+
+    resp: dict = {"ok": True}
+    try:
+        auto = _bt_pair_auto_configure(_bt_pairing_resolve_state(state))
+    except Exception:
+        logging.exception("send_bluetooth_pair_post_json: auto-configure step failed")
+        auto = None
+    if auto is not None:
+        resp["input_auto_configure"] = auto
+    send_json(handler, 200, resp)
 
 
 def send_bluetooth_forget_post_json(handler) -> None:

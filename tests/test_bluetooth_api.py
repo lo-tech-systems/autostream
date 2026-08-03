@@ -719,6 +719,185 @@ class TestBluetoothPairPost:
 
 
 # ---------------------------------------------------------------------------
+# POST pair — post-pair input auto-enable rules
+# ---------------------------------------------------------------------------
+
+class TestBluetoothPairAutoConfigure:
+    """On a successful pair, the handler applies the input auto-enable
+    rules (see autostream_webui_api._bt_pair_auto_configure) and surfaces
+    the outcome under ``input_auto_configure`` in the response.
+    """
+
+    def _pair(self, handler, state):
+        from autostream_webui_api import send_bluetooth_pair_post_json
+        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
+             patch("autostream_webui_api.BluetoothClient") as m_cls:
+            m_cls.return_value.pair.return_value = {"ok": True}
+            send_bluetooth_pair_post_json(
+                handler, {"address": "AA:BB:CC:DD:EE:FF"}, state=state,
+            )
+
+    def test_input1_disabled_maps_and_enables_input1(self, tmp_path):
+        """Rule a: input 1 disabled -> loopback assigned to input 1 and enabled."""
+        state, store = _make_state(tmp_path, audio1={"enabled": False})
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        assert body["ok"] is True
+        assert body["input_auto_configure"] == {"action": "enabled", "input": "audio1"}
+        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
+        assert snap.audio1_enabled is True
+
+    def test_input1_disabled_overwrites_stale_device_value(self, tmp_path):
+        """Rule a explicitly overwrites any stale device value on record."""
+        state, store = _make_state(
+            tmp_path, audio1={"enabled": False, "capture_device": "hw:1,0"},
+        )
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
+        assert snap.audio1_enabled is True
+
+    def test_input1_on_real_device_input2_disabled_maps_input2(self, tmp_path):
+        """Rule b: input 1 already on a real device, input 2 disabled ->
+        loopback assigned to input 2 and enabled; input 1 left untouched."""
+        state, store = _make_state(tmp_path, audio1={"capture_device": "hw:1,0"})
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        assert body["input_auto_configure"] == {"action": "enabled", "input": "audio2"}
+        assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
+        assert snap.audio2_enabled is True
+        assert snap.audio1.capture_device == "hw:1,0"
+
+    def test_input1_on_real_device_input2_enabled_but_no_device_maps_input2(self, tmp_path):
+        """Rule b's 'unmapped' also covers input 2 enabled with no device
+        recorded, not only input 2 disabled."""
+        state, store = _make_state(
+            tmp_path, audio1={"capture_device": "hw:1,0"}, audio2={"enabled": True},
+        )
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
+        assert snap.audio2_enabled is True
+
+    def test_already_on_loopback_is_a_no_op_with_no_notice(self, tmp_path):
+        """Rule c: input 1 already on the loopback -> nothing changes, and
+        no notice is surfaced."""
+        state, store = _make_state(
+            tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
+        )
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        assert body["input_auto_configure"] == {"action": "already_configured"}
+        assert "notice" not in body["input_auto_configure"]
+        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
+        assert snap.audio2.capture_device == ""
+
+    def test_both_inputs_on_real_devices_leaves_config_alone_with_notice(self, tmp_path):
+        """Rule d: both inputs already occupied by real devices -> nothing
+        changes, but a notice is surfaced for the caller to display."""
+        state, store = _make_state(
+            tmp_path,
+            audio1={"capture_device": "hw:1,0"},
+            audio2={"capture_device": "hw:2,0", "enabled": True},
+        )
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        auto = body["input_auto_configure"]
+        assert auto["action"] == "notice"
+        assert auto["notice"]
+        assert snap.audio1.capture_device == "hw:1,0"
+        assert snap.audio2.capture_device == "hw:2,0"
+
+    def test_never_produces_both_inputs_on_loopback(self, tmp_path):
+        """Guard against a weird pre-existing state: input 1 disabled (which
+        rule a would naively map to the loopback) while input 2 already
+        holds the loopback -- must bail rather than end up with both inputs
+        on the loopback at once."""
+        state, store = _make_state(
+            tmp_path,
+            audio1={"enabled": False},
+            audio2={"capture_device": BLUETOOTH_CAPTURE_DEVICE, "enabled": True},
+        )
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        assert body["input_auto_configure"] == {"action": "already_configured"}
+        # Input 1 must not have been touched -- still disabled, no device.
+        assert snap.audio1_enabled is False
+        assert snap.audio1.capture_device == ""
+        assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
+
+    def test_never_auto_disables_anything(self, tmp_path):
+        """Both inputs already enabled on real devices: pairing must never
+        flip an enabled flag to False."""
+        state, store = _make_state(
+            tmp_path,
+            audio1={"capture_device": "hw:1,0"},
+            audio2={"capture_device": "hw:2,0", "enabled": True},
+        )
+        handler = _make_handler()
+        try:
+            self._pair(handler, state)
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
+        assert snap.audio1_enabled is True
+        assert snap.audio2_enabled is True
+
+    def test_no_state_available_omits_auto_configure_field(self):
+        """When no WebUIState can be resolved (e.g. the module-global
+        singleton hasn't been set up), the response falls back to the
+        pre-existing bare shape rather than raising."""
+        from autostream_webui_api import send_bluetooth_pair_post_json
+        handler = _make_handler()
+        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
+             patch("autostream_webui_api.BluetoothClient") as m_cls, \
+             patch("autostream_webui_api._bt_pairing_resolve_state", return_value=None):
+            m_cls.return_value.pair.return_value = {"ok": True}
+            send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
+        code, body = _response(handler)
+        assert code == 200
+        assert body == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # POST forget
 # ---------------------------------------------------------------------------
 
