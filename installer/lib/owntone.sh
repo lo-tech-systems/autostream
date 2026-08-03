@@ -8,11 +8,15 @@
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-OWNTONE_MINI_REPO="https://github.com/lo-tech-systems/owntone-mini.git"
+# Source repository for the pinned owntone-mini build. Overridable via the
+# environment so a build can be sourced from a local mirror (e.g. a
+# file:// bare repo staged on the appliance) when testing an unpublished
+# release; production installs and updates use the default.
+OWNTONE_MINI_REPO="${AUTOSTREAM_OWNTONE_MINI_REPO:-https://github.com/lo-tech-systems/owntone-mini.git}"
 # The owntone-mini release this autostream release is built against. Both
 # fresh installs and updates build exactly this tag; keep in sync with the
 # default ref in tools/owntone_mini_update.sh.
-OWNTONE_MINI_VERSION="1.1.1"
+OWNTONE_MINI_VERSION="1.1.2"
 # Version stamp written at the end of a successful build; the fallback
 # fast-path check when the running-daemon probe misses (e.g. the service was
 # stopped ahead of an update). /var/lib/autostream is the installer's

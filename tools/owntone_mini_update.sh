@@ -32,7 +32,7 @@ error() { echo "[ERROR] $*" >&2; }
 #############################################
 # The pinned owntone-mini release this autostream release is built against;
 # keep in sync with OWNTONE_MINI_VERSION in installer/lib/owntone.sh.
-DEFAULT_REF="1.1.1"
+DEFAULT_REF="1.1.2"
 BRANCH="${DEFAULT_REF}"
 SSH_USER="pi"
 HOST=""

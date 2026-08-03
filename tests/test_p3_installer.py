@@ -423,10 +423,19 @@ install_owntone_mini_from_source
             ["bash", "-c", script], capture_output=True, text=True, timeout=15,
         )
 
+    def _pinned_version(self) -> str:
+        # The fast-path fixtures mean "matches the current pin" -- read the
+        # pin from the installer library so a release bump cannot silently
+        # turn these into stale-version scenarios.
+        text = (
+            REPO_ROOT / "installer" / "lib" / "owntone.sh"
+        ).read_text(encoding="utf-8")
+        return re.search(r'^OWNTONE_MINI_VERSION="([^"]+)"', text, re.M).group(1)
+
     @bash_capable
     def test_daemon_reports_pinned_version_skips_build(self, tmp_path):
         result = self._run_install(
-            tmp_path, reported_identity="owntone-mini 1.1.1",
+            tmp_path, reported_identity=f"owntone-mini {self._pinned_version()}",
         )
         assert result.returncode == 0, result.stderr
         assert "already installed; skipping source rebuild" in result.stdout
@@ -439,17 +448,22 @@ install_owntone_mini_from_source
         # (version stamp) fast path even if the daemon is stopped first.
         stamp_path = str(tmp_path / "owntone-mini-version")
         result = self._run_install(
-            tmp_path, reported_identity="owntone-mini 1.1.1", stamp_path=stamp_path,
+            tmp_path,
+            reported_identity=f"owntone-mini {self._pinned_version()}",
+            stamp_path=stamp_path,
         )
         assert result.returncode == 0, result.stderr
-        assert Path(stamp_path).read_text(encoding="utf-8") == "1.1.1"
+        assert Path(stamp_path).read_text(encoding="utf-8") == self._pinned_version()
 
     @bash_capable
     def test_daemon_down_stamp_matches_and_binary_present_skips_build(self, tmp_path):
         # The daemon was stopped ahead of this step (empty probe reply), but
         # a prior successful build's stamp plus its binary are still there.
         result = self._run_install(
-            tmp_path, reported_identity="", stamp_content="1.1.1", binary_present=True,
+            tmp_path,
+            reported_identity="",
+            stamp_content=self._pinned_version(),
+            binary_present=True,
         )
         assert result.returncode == 0, result.stderr
         assert "already installed; skipping source rebuild" in result.stdout
@@ -461,7 +475,10 @@ install_owntone_mini_from_source
         # Stamp says the pinned release was built, but the binary it names
         # is gone -- do not trust the stamp alone.
         result = self._run_install(
-            tmp_path, reported_identity="", stamp_content="1.1.1", binary_present=False,
+            tmp_path,
+            reported_identity="",
+            stamp_content=self._pinned_version(),
+            binary_present=False,
         )
         assert result.returncode == 0, result.stderr
         assert "already installed; skipping source rebuild" not in result.stdout
@@ -492,7 +509,7 @@ install_owntone_mini_from_source
         result = self._run_install(tmp_path, reported_identity="")
         assert result.returncode == 0, result.stderr
         stamp_path = tmp_path / "owntone-mini-version"
-        assert stamp_path.read_text(encoding="utf-8") == "1.1.1"
+        assert stamp_path.read_text(encoding="utf-8") == self._pinned_version()
 
 
 # ---------------------------------------------------------------------------
