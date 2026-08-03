@@ -18,6 +18,9 @@
 - improvement: warning-level logs now record when OwnTone, the monitor daemon
   connection, Bluetooth, and track identification recover from a prior
   failure, not just the failure itself
+- improvement: when OwnTone denies or fails an output/setting request, the
+  log now includes the HTTP status code and a snippet of the backend's
+  response instead of a bare generic failure message
 
 ## Version 0.5.0-beta.1
 

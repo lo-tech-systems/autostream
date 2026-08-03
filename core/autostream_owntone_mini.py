@@ -80,6 +80,29 @@ _MINI_SERVER_TO_BACKEND_MODE: dict[str, str] = {
     "airplay2_surround_upmix": OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
 }
 
+# Cap on how much of a backend response body gets folded into an error
+# message, so a verbose HTML error page or stack trace doesn't blow up the
+# log line. Whitespace (including newlines) is collapsed first so the
+# snippet always renders on a single line.
+_ERROR_BODY_SNIPPET_LIMIT = 200
+
+
+def _backend_error_detail(resp, err: str = "") -> str:
+    """Build a single-line "HTTP <status>[: <body snippet>]" detail string.
+
+    Used to fold the HTTP status code and a truncated response body into
+    generic error messages so operators can see why a request was denied
+    without needing another round of log digging. Falls back to the
+    transport-level error text when the response carried no body.
+    """
+    status = getattr(resp, "status_code", "?")
+    text = (getattr(resp, "text", "") or "").strip()
+    if text:
+        snippet = " ".join(text.split())[:_ERROR_BODY_SNIPPET_LIMIT]
+        return f"HTTP {status}: {snippet}"
+    if err:
+        return f"HTTP {status}: {err}"
+    return f"HTTP {status}"
 
 
 @dataclass(frozen=True)
@@ -335,10 +358,16 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
     def list_outputs(self) -> ListOutputsResult:
         payload, resp, err = self._get_json("/api/outputs")
         if err or resp is None or not resp.ok or not isinstance(payload, dict):
+            if resp is not None:
+                return ListOutputsResult(
+                    ok=False,
+                    error=f"Failed to list outputs ({_backend_error_detail(resp, err)})",
+                    error_code="http_error",
+                )
             return ListOutputsResult(
                 ok=False,
                 error="Failed to list outputs",
-                error_code="request_failed" if err else "http_error",
+                error_code="request_failed",
             )
         outputs = payload.get("outputs", [])
         if not isinstance(outputs, list):
@@ -520,6 +549,13 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
 
         payload, resp, err = self._get_json(self._setting_path(spec))
         if err:
+            if resp is not None:
+                return SettingValueResult(
+                    ok=False,
+                    error=f"Failed to read backend setting ({_backend_error_detail(resp, err)})",
+                    error_code="http_error",
+                    value=None,
+                )
             return SettingValueResult(ok=False, error="Failed to read backend setting", error_code="request_failed", value=None)
         if resp is None:
             return SettingValueResult(ok=False, error="No response while reading backend setting", error_code="no_response")
@@ -528,7 +564,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         if not resp.ok:
             return SettingValueResult(
                 ok=False,
-                error=f"Backend returned HTTP {resp.status_code}",
+                error=f"Backend returned {_backend_error_detail(resp)}",
                 error_code="http_error",
             )
         if not isinstance(payload, dict):

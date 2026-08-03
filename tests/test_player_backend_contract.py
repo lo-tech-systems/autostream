@@ -417,6 +417,48 @@ class TestMiniListOutputs:
             result = b.list_outputs()
         assert result.ok is False
 
+    def test_non_200_with_body_includes_status_and_snippet(self):
+        b = OwnToneMiniBackend(base_url="http://localhost:3689")
+        r = _resp(status=500, content=b"<html>Internal Server Error</html>")
+        r.text = "<html>Internal Server Error</html>"
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.list_outputs()
+        assert result.ok is False
+        assert "Failed to list outputs" in result.error
+        assert "500" in result.error
+        assert "Internal Server Error" in result.error
+
+    def test_oversized_body_is_truncated(self):
+        b = OwnToneMiniBackend(base_url="http://localhost:3689")
+        long_body = "x" * 5000
+        r = _resp(status=500, content=long_body.encode())
+        r.text = long_body
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.list_outputs()
+        assert result.ok is False
+        assert "500" in result.error
+        # Body snippet stays well under the raw body length and the whole
+        # error message never balloons to the full response size.
+        assert len(result.error) < 400
+
+    def test_body_with_newlines_stays_single_line(self):
+        b = OwnToneMiniBackend(base_url="http://localhost:3689")
+        r = _resp(status=500, content=b"line one\nline two\nline three")
+        r.text = "line one\nline two\nline three"
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.list_outputs()
+        assert result.ok is False
+        assert "\n" not in result.error
+
+    def test_network_error_returns_generic_failure_without_status(self):
+        b = OwnToneMiniBackend(base_url="http://localhost:3689")
+        with patch("autostream_players._session.get",
+                   side_effect=_req_exc()):
+            result = b.list_outputs()
+        assert result.ok is False
+        assert result.error == "Failed to list outputs"
+        assert result.error_code == "request_failed"
+
 
 # ---------------------------------------------------------------------------
 # Capabilities match implementations
@@ -718,6 +760,46 @@ class TestMiniGetSetting:
             result = b.get_setting(ap.SETTING_START_BUFFER_MS)
         assert result.ok is True
         assert result.value == 2250
+
+    def test_invalid_json_with_response_includes_status_and_snippet(self):
+        b = self._backend()
+        r = _resp(raise_for_json=True, content=b"not json")
+        r.text = "not json"
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.get_setting(ap.SETTING_PIPE_PATH)
+        assert result.ok is False
+        assert "Failed to read backend setting" in result.error
+        assert "not json" in result.error
+        assert "200" in result.error
+
+    def test_http_error_includes_status_and_snippet(self):
+        b = self._backend()
+        r = _resp(status=500, content=b"upstream failure detail")
+        r.text = "upstream failure detail"
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.get_setting(ap.SETTING_PIPE_PATH)
+        assert result.ok is False
+        assert "500" in result.error
+        assert "upstream failure detail" in result.error
+
+    def test_oversized_body_is_truncated(self):
+        b = self._backend()
+        long_body = "y" * 5000
+        r = _resp(status=500, content=long_body.encode())
+        r.text = long_body
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.get_setting(ap.SETTING_PIPE_PATH)
+        assert result.ok is False
+        assert len(result.error) < 400
+
+    def test_network_error_returns_generic_failure_without_status(self):
+        b = self._backend()
+        with patch("autostream_players._session.get",
+                   side_effect=_req_exc()):
+            result = b.get_setting(ap.SETTING_PIPE_PATH)
+        assert result.ok is False
+        assert result.error == "Failed to read backend setting"
+        assert result.error_code == "request_failed"
 
 
 class TestMiniSaveSetting:
