@@ -76,6 +76,12 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
 
     with contextlib.ExitStack() as stack:
         sf = stack.enter_context(patch.object(core, "stop_flag"))
+        # reload_flag is a module-level Event that other tests may leave set;
+        # a set flag would make the poll loop break into a config reload on
+        # its first iteration instead of consuming the scripted get_status
+        # sequence. Replace it so this harness is order-independent.
+        rf = stack.enter_context(patch.object(core, "reload_flag"))
+        rf.is_set.return_value = False
         stack.enter_context(patch.object(core, "unconfigured", return_value=False))
         stack.enter_context(patch.object(core, "MonitorClient", return_value=mock_client))
         stack.enter_context(patch.object(core, "_install_signal_handlers"))
