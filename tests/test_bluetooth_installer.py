@@ -355,6 +355,84 @@ class TestBluetoothLib:
 
 
 # ---------------------------------------------------------------------------
+# _copy_bluetooth_daemon_files — module set must be discovered by globbing
+# the source checkout, not hand-listed, so a newly added platform/
+# bluetooth_*.py module is never silently left undeployed.
+# ---------------------------------------------------------------------------
+
+class TestBluetoothDaemonModuleDeployment:
+    def _repo_bluetooth_modules(self) -> set:
+        platform_dir = REPO_ROOT / "platform"
+        return {p.name for p in platform_dir.glob("bluetooth_*.py")}
+
+    @bash_capable
+    def test_deploys_every_repo_bluetooth_module(self, tmp_path):
+        modules = self._repo_bluetooth_modules()
+        assert modules, "expected at least one platform/bluetooth_*.py module in the repo"
+
+        autostream_dir = tmp_path / "src"
+        install_dir = tmp_path / "install"
+        (autostream_dir / "platform").mkdir(parents=True)
+        for name in modules:
+            (autostream_dir / "platform" / name).write_text("# stub\n", encoding="utf-8")
+        # A non-.py sibling must not be swept up by the glob.
+        (autostream_dir / "platform" / "bluetooth_notes.txt").write_text("x", encoding="utf-8")
+
+        script = f'''
+set -euo pipefail
+info() {{ :; }}
+warn() {{ :; }}
+error() {{ :; }}
+# Unprivileged stand-in for coreutils install(1): copies source to dest,
+# ignoring the -m/-o/-g flags this test harness cannot satisfy without root.
+install() {{
+  local _prev="" _last=""
+  local _a
+  for _a in "$@"; do _prev=$_last; _last=$_a; done
+  cp -- "${{_prev}}" "${{_last}}"
+}}
+AUTOSTREAM_DIR="{autostream_dir.as_posix()}"
+INSTALL_DIR="{install_dir.as_posix()}"
+source "{BLUETOOTH_SH.as_posix()}"
+_copy_bluetooth_daemon_files
+ls "{install_dir.as_posix()}/platform"
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+        deployed = set(r.stdout.split())
+        assert deployed == modules, (
+            f"deployed set {deployed} does not match repo platform/bluetooth_*.py modules {modules}"
+        )
+
+    @bash_capable
+    def test_no_matches_warns_and_survives_set_e(self, tmp_path):
+        """A source tree with no bluetooth_*.py modules must not trip the
+        installer's set -e / ERR trap -- the unmatched glob must expand to
+        zero words, never pass a literal '*' pattern through as a filename."""
+        autostream_dir = tmp_path / "src"
+        install_dir = tmp_path / "install"
+        (autostream_dir / "platform").mkdir(parents=True)
+
+        script = f'''
+set -euo pipefail
+trap 'echo "ERR_TRAP_FIRED" >&2' ERR
+info() {{ :; }}
+warn() {{ echo "WARN: $*"; }}
+error() {{ :; }}
+AUTOSTREAM_DIR="{autostream_dir.as_posix()}"
+INSTALL_DIR="{install_dir.as_posix()}"
+source "{BLUETOOTH_SH.as_posix()}"
+_copy_bluetooth_daemon_files
+echo "SURVIVED"
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+        assert "ERR_TRAP_FIRED" not in r.stderr
+        assert "SURVIVED" in r.stdout
+        assert "WARN:" in r.stdout
+
+
+# ---------------------------------------------------------------------------
 # Wiring into autostream_install.sh main flow
 # ---------------------------------------------------------------------------
 

@@ -31,16 +31,13 @@ BLUETOOTH_MODPROBE_FILE="/etc/modprobe.d/autostream-bluetooth.conf"
 BLUETOOTH_MAIN_CONF_DIR="/etc/bluetooth/main.conf.d"
 BLUETOOTH_MAIN_CONF_FILE="${BLUETOOTH_MAIN_CONF_DIR}/autostream.conf"
 
-# The daemon's modules (platform/bluetooth_*.py). deploy_phase's targeted cp
-# list does not include these, so install_bluetooth_stack() deploys them
-# itself.
-BLUETOOTH_DAEMON_MODULES=(
-  bluetooth_service.py
-  bluetooth_bluez.py
-  bluetooth_agent.py
-  bluetooth_socket.py
-  bluetooth_pump.py
-)
+# The daemon's modules (platform/bluetooth_*.py) are deployed by
+# install_bluetooth_stack() via _copy_bluetooth_daemon_files(); deploy_phase's
+# targeted cp list does not include them. The module set is discovered by
+# globbing the source checkout (see _copy_bluetooth_daemon_files) rather than
+# hand-listed here, so adding a new bluetooth_*.py module cannot silently
+# leave it undeployed. bluetooth_service.py is the daemon's entry point,
+# referenced by the systemd unit's ExecStart.
 
 #############################################
 # ALSA loopback + BlueZ config
@@ -76,19 +73,34 @@ _remove_bluetooth_main_conf() {
 #############################################
 
 # _copy_bluetooth_daemon_files: deploy platform/bluetooth_*.py beside the rest
-# of the application tree at ${INSTALL_DIR}/platform. Missing modules are
-# warned about, not fatal -- allows this library to be exercised/tested ahead
-# of the daemon implementation landing.
+# of the application tree at ${INSTALL_DIR}/platform. The set of modules to
+# deploy is discovered by globbing the source checkout rather than
+# hand-listed, so a newly added bluetooth_*.py module is never silently left
+# undeployed. An empty match (no bluetooth_*.py files present) is warned
+# about, not fatal -- allows this library to be exercised/tested ahead of the
+# daemon implementation landing.
 _copy_bluetooth_daemon_files() {
   local dest="${INSTALL_DIR}/platform"
   mkdir -p "${dest}"
-  local f
-  for f in "${BLUETOOTH_DAEMON_MODULES[@]}"; do
-    if [[ -f "${AUTOSTREAM_DIR}/platform/${f}" ]]; then
-      install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/platform/${f}" "${dest}/${f}"
-    else
-      warn "Bluetooth daemon module ${f} not found in ${AUTOSTREAM_DIR}/platform; skipping"
-    fi
+
+  # nullglob so a non-matching pattern expands to zero words instead of the
+  # literal pattern string -- required under set -e so an empty match doesn't
+  # get treated as a real (nonexistent) filename below.
+  local restore_nullglob=0
+  shopt -q nullglob || restore_nullglob=1
+  shopt -s nullglob
+  local src_files=("${AUTOSTREAM_DIR}"/platform/bluetooth_*.py)
+  (( restore_nullglob )) && shopt -u nullglob
+
+  if [[ ${#src_files[@]} -eq 0 ]]; then
+    warn "No bluetooth_*.py modules found in ${AUTOSTREAM_DIR}/platform; skipping"
+    return 0
+  fi
+
+  local f base
+  for f in "${src_files[@]}"; do
+    base="$(basename "${f}")"
+    install -m 0644 -o root -g root "${f}" "${dest}/${base}"
   done
 }
 
