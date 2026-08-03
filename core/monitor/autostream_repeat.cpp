@@ -76,7 +76,24 @@ static MemInfo read_meminfo()
 
     std::ostringstream ss;
     ss << f.rdbuf();
-    return parse_meminfo_text(ss.str());
+    MemInfo mi = parse_meminfo_text(ss.str());
+
+    // This process's own VmSwap, so effective_available_mib() can exclude
+    // it from the swap deduction (see MemInfo::effective_available_mib()):
+    // a retained-but-dormant repeat buffer that has migrated to swap is not
+    // a liability against a new session the way another process's swap use
+    // is. /proc/self/status is always readable by the reading process
+    // itself; a missing file (should not happen) or a missing/malformed
+    // VmSwap line both simply leave this at 0, same as a swapless kernel.
+    std::ifstream status_f("/proc/self/status");
+    if (status_f)
+    {
+        std::ostringstream status_ss;
+        status_ss << status_f.rdbuf();
+        mi.own_swap_mib = parse_status_vmswap_mib(status_ss.str());
+    }
+
+    return mi;
 }
 
 
@@ -986,8 +1003,13 @@ void RepeatController::perform_pending_start()
     {
         _unavailable_reason = !encoder && codec != CodecChoice::Unavailable
             ? "encoder_init_failed" : "insufficient_memory";
-        LOG_WARN("[repeat] begin_session refused (input %d): %s (available=%ld MiB)",
-                  input_index, _unavailable_reason.c_str(), mem.ok() ? mem.available_mib : -1);
+        LOG_WARN("[repeat] begin_session refused (input %d): %s "
+                  "(available=%ld MiB, effective=%ld MiB, swap_total=%ld MiB, "
+                  "swap_free=%ld MiB, own_swap=%ld MiB)",
+                  input_index, _unavailable_reason.c_str(),
+                  mem.ok() ? mem.available_mib : -1,
+                  mem.ok() ? effective_mib : -1,
+                  mem.swap_total_mib, mem.swap_free_mib, mem.own_swap_mib);
         // The Pending -> Idle decision lives in decide_repeat_transition()'s
         // PendingStartFailed cell (perform_pending_start() is folded into
         // the event table alongside the others -- see RepeatEvent's

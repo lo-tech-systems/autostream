@@ -547,6 +547,86 @@ static void test_u8_meminfo_parse()
         CHECK(info_over.effective_available_mib() == 0,
               "U8: effective_available_mib clamps at 0 when swap_used exceeds available_mib");
     }
+
+    // own_swap_mib: only OTHER processes' swap should count against
+    // effective_available_mib() -- this process's own swapped-out (but
+    // reclaimable-on-demand) pages must not.
+    {
+        // Own swap fully offsets used swap: effective == available exactly,
+        // as if there were no swap pressure at all (the retained buffer's
+        // own dormant pages account for the entire swap_used figure).
+        MemInfo info_own_full;
+        info_own_full.available_mib  = 300;
+        info_own_full.swap_total_mib = 200;
+        info_own_full.swap_free_mib  = 50;    // swap_used == 150
+        info_own_full.own_swap_mib   = 150;   // == swap_used exactly
+        CHECK(info_own_full.effective_available_mib() == 300,
+              "U8: own swap fully offsetting used swap -> effective == available");
+
+        // Own swap only partially offsets used swap: only the remainder
+        // (external_swap = swap_used - own_swap) is deducted.
+        MemInfo info_own_partial;
+        info_own_partial.available_mib  = 300;
+        info_own_partial.swap_total_mib = 200;
+        info_own_partial.swap_free_mib  = 50;   // swap_used == 150
+        info_own_partial.own_swap_mib   = 60;   // external_swap == 90
+        CHECK(info_own_partial.effective_available_mib() == 300 - 90,
+              "U8: own swap partially offsetting used swap -> only external_swap deducted");
+
+        // own_swap_mib == 0 (default): identical to pre-existing behaviour.
+        MemInfo info_own_zero;
+        info_own_zero.available_mib  = 300;
+        info_own_zero.swap_total_mib = 200;
+        info_own_zero.swap_free_mib  = 50;   // swap_used == 150
+        CHECK(info_own_zero.own_swap_mib == 0, "U8: own_swap_mib defaults to 0");
+        CHECK(info_own_zero.effective_available_mib() == 300 - 150,
+              "U8: own_swap_mib == 0 -> behaviour unchanged from before the own-swap fix");
+
+        // Defensive clamp: own_swap_mib reported greater than swap_used
+        // (should not happen in practice -- own VmSwap cannot legitimately
+        // exceed total used swap -- but must never make external_swap go
+        // negative and inflate effective_available_mib beyond available_mib).
+        MemInfo info_own_over;
+        info_own_over.available_mib  = 300;
+        info_own_over.swap_total_mib = 200;
+        info_own_over.swap_free_mib  = 50;    // swap_used == 150
+        info_own_over.own_swap_mib   = 999;   // far exceeds swap_used
+        CHECK(info_own_over.effective_available_mib() == 300,
+              "U8: own_swap_mib clamped to swap_used -> effective never exceeds available_mib");
+    }
+
+    // parse_status_vmswap_mib(): pure parser for /proc/self/status's VmSwap
+    // line, same style/injection point as parse_meminfo_text().
+    {
+        const std::string status_text =
+            "Name:\tautostream-monitor\n"
+            "VmPeak:\t  123456 kB\n"
+            "VmSwap:\t   40960 kB\n"   // 40 MiB
+            "Threads:\t4\n";
+        CHECK(parse_status_vmswap_mib(status_text) == 40960 / 1024,
+              "U8: parse_status_vmswap_mib parses VmSwap correctly");
+
+        // VmSwap line absent (e.g. a kernel/build with no swap accounting):
+        // yields 0, not an error -- there is no "not ok" state for this
+        // figure, unlike MemAvailable.
+        const std::string status_no_swap =
+            "Name:\tautostream-monitor\n"
+            "VmPeak:\t  123456 kB\n"
+            "Threads:\t4\n";
+        CHECK(parse_status_vmswap_mib(status_no_swap) == 0,
+              "U8: parse_status_vmswap_mib absent VmSwap line -> 0");
+
+        // Empty input.
+        CHECK(parse_status_vmswap_mib("") == 0,
+              "U8: parse_status_vmswap_mib empty input -> 0");
+
+        // Malformed VmSwap line (no digits): treated as absent -> 0.
+        const std::string status_malformed =
+            "Name:\tautostream-monitor\n"
+            "VmSwap:\tnot-a-number kB\n";
+        CHECK(parse_status_vmswap_mib(status_malformed) == 0,
+              "U8: parse_status_vmswap_mib malformed VmSwap line -> 0");
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -614,6 +614,18 @@ struct MemInfo
     long swap_total_mib = 0;
     long swap_free_mib  = 0;
 
+    // This process's own currently-swapped-out memory (VmSwap from
+    // /proc/self/status), in MiB. A process that deliberately retains a
+    // large buffer across sessions (so it can be replayed later) will, over
+    // time, have some of that dormant buffer migrate to swap under memory
+    // pressure -- those pages are reclaimed/reused the moment a new session
+    // actually needs the RAM, so they are not a real liability against a new
+    // allocation the way another process's swapped-out memory is. Kept
+    // separate from swap_total_mib/swap_free_mib (which describe
+    // system-wide swap, not attributable to any one process) so
+    // effective_available_mib() can tell the two apart.
+    long own_swap_mib   = 0;
+
     bool ok() const { return available_mib >= 0; }
 
     // On zram swap, pages that have been swapped out stay resident in RAM in
@@ -625,13 +637,30 @@ struct MemInfo
     // practice. swap_used is swap_total_mib - swap_free_mib, clamped at >= 0
     // (a malformed or absent swap line yields 0 for that field, so swap_used
     // is 0 and this equals available_mib exactly).
+    //
+    // Only OTHER processes' swap is treated as spoken-for, though: this
+    // process's own swapped-out pages (own_swap_mib) are excluded from the
+    // deduction, since a new session reclaims/reuses that memory rather than
+    // competing with it. own_swap_mib is clamped to swap_used before
+    // subtracting (own VmSwap cannot legitimately exceed total used swap,
+    // but a defensive clamp keeps the external-swap term from going negative
+    // on a torn/inconsistent read) -- external_swap = swap_used - own_swap
+    // is then never negative.
     long effective_available_mib() const
     {
         long swap_used = swap_total_mib - swap_free_mib;
         if (swap_used < 0)
             swap_used = 0;
 
-        long effective = available_mib - swap_used;
+        long own_swap = own_swap_mib;
+        if (own_swap < 0)
+            own_swap = 0;
+        if (own_swap > swap_used)
+            own_swap = swap_used;
+
+        long external_swap = swap_used - own_swap;
+
+        long effective = available_mib - external_swap;
         if (effective < 0)
             effective = 0;
         return effective;
@@ -734,6 +763,46 @@ inline MemInfo parse_meminfo_text(const std::string& text)
 
     return result;  // any field never found/parsed keeps its default (available_mib
                      // stays kMemInfoParseError; swap_total_mib/swap_free_mib stay 0)
+}
+
+
+// =============================================================================
+// /proc/self/status TEXT parser — this process's own VmSwap
+//
+// Parses the "VmSwap:" line (kB) from /proc/self/status TEXT -- the amount
+// of THIS process's memory currently swapped out, needed by
+// MemInfo::effective_available_mib() to tell "swap this process's own
+// retained-but-dormant buffer holds" apart from "swap other processes are
+// genuinely using". Same pure-parser-over-text style as
+// parse_meminfo_text() and for the same reason: unit-testable on canned
+// input with zero file I/O; the wrapper that reads the real file lives in
+// the impure .cpp alongside read_meminfo()'s own file I/O.
+// =============================================================================
+
+// A kernel/build with no swap configured (or a status format without swap
+// accounting) simply omits the VmSwap line; unlike MemAvailable there is no
+// "parse error" state here -- absent just means 0.
+inline long parse_status_vmswap_mib(const std::string& text)
+{
+    using autostream_meminfo_detail::try_parse_kib_field;
+
+    long vmswap_mib = 0;
+
+    size_t search_from = 0;
+    while (search_from < text.size())
+    {
+        size_t line_end = text.find('\n', search_from);
+        if (line_end == std::string::npos)
+            line_end = text.size();
+
+        std::string line = text.substr(search_from, line_end - search_from);
+        search_from = line_end + 1;
+
+        if (try_parse_kib_field(line, "VmSwap:", vmswap_mib))
+            break;  // found (whether or not the numeric value itself parsed)
+    }
+
+    return vmswap_mib;
 }
 
 
