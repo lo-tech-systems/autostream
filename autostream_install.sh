@@ -507,15 +507,23 @@ stop_services_for_update() {
 
   install -m 0600 -o root -g root /dev/null "${STOPPED_SERVICES_FILE}"
 
+  # Snapshot the active set BEFORE stopping anything: stopping one unit can
+  # propagate to another via unit dependencies (e.g. a coordinator that
+  # Requires= a daemon stopped earlier in this loop), and a unit that is
+  # already deactivating by the time the loop reaches it would otherwise be
+  # skipped, never recorded, and never restored on the failure path.
+  # Recording first is safe: restarting a unit that never fully stopped is a
+  # no-op for systemctl start.
+  local active=()
   for unit in "${units[@]}"; do
-    if ! systemctl is-active --quiet "${unit}"; then
-      continue
-    fi
-    if systemctl stop "${unit}"; then
+    if systemctl is-active --quiet "${unit}"; then
+      active+=("${unit}")
       echo "${unit}" >> "${STOPPED_SERVICES_FILE}"
-    else
-      warn "Failed to stop ${unit} before update; continuing."
     fi
+  done
+
+  for unit in "${active[@]}"; do
+    systemctl stop "${unit}" || warn "Failed to stop ${unit} before update; continuing."
   done
 }
 

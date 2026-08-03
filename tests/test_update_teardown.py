@@ -167,7 +167,7 @@ class TestStopServicesForUpdate:
         assert stopped == [u for u in EXPECTED_STOP_ORDER if u != "owntone"]
 
     @bash_capable
-    def test_stop_failure_warns_and_continues_and_is_excluded_from_state(self, tmp_path):
+    def test_stop_failure_warns_and_continues_and_remains_recorded(self, tmp_path):
         result, calls, stopped_file = _run(
             tmp_path, ["stop_services_for_update"], "stop_services_for_update",
             active=ALL_UNITS, fail="vibra-mini",
@@ -180,9 +180,35 @@ class TestStopServicesForUpdate:
         idx = stop_calls.index("vibra-mini")
         assert stop_calls[idx + 1] == "autostream"
 
+        # The unit stays in the state file: recording happens from the
+        # pre-stop snapshot, and restore-starting a unit whose stop failed
+        # (i.e. one that may still be running) is a harmless no-op.
         stopped = stopped_file.read_text(encoding="utf-8").splitlines()
-        assert "vibra-mini" not in stopped
-        assert stopped == [u for u in EXPECTED_STOP_ORDER if u != "vibra-mini"]
+        assert stopped == EXPECTED_STOP_ORDER
+
+    @bash_capable
+    def test_all_units_recorded_before_any_stop_is_issued(self, tmp_path):
+        # Stopping one unit can propagate to a dependent unit via systemd
+        # dependencies (e.g. the coordinator Requires= the monitor daemon),
+        # deactivating it before the loop reaches it. The active set must
+        # therefore be snapshotted and recorded before the first stop, or a
+        # propagated stop hides the unit from the failure-path restore.
+        result, calls, stopped_file = _run(
+            tmp_path, ["stop_services_for_update"], "stop_services_for_update",
+            active=ALL_UNITS,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        first_stop = next(
+            i for i, c in enumerate(calls) if c.startswith("stop ")
+        )
+        is_active_after_first_stop = [
+            c for c in calls[first_stop:] if c.startswith("is-active")
+        ]
+        assert is_active_after_first_stop == [], (
+            "liveness checks must all complete before the first stop"
+        )
+        stopped = stopped_file.read_text(encoding="utf-8").splitlines()
+        assert stopped == EXPECTED_STOP_ORDER
 
     @bash_capable
     def test_state_file_matches_stopped_set_exactly(self, tmp_path):
