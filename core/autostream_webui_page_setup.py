@@ -64,6 +64,7 @@ from autostream_webui_common import (
     build_page_html,
     build_top_banner_html,
     get_app_version,
+    no_input_configured_notice_html,
     settings_card_html,
 )
 from autostream_webui_state import WebUIState
@@ -652,7 +653,7 @@ def send_setup_page(
             enabled_html = f"""
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="{enabled_name}" {'checked' if enabled else ''} onchange="onAudio2Toggle(this.checked)">
+              <input type="checkbox" name="{enabled_name}" {'checked' if enabled else ''} onchange="onInputEnableToggle({input_index}, this.checked)">
               <span class="switch"></span>
             </label>
             <span>Enable</span>
@@ -889,6 +890,8 @@ def send_setup_page(
         capture_name="audio_capture_device",
         threshold_name="audio_silence_threshold",
         turntable_name="audio_turntable",
+        enabled=parsed.audio1_enabled,
+        enabled_name="audio1_enabled",
         bt_enabled=bt_enabled,
         other_capture_device=parsed.audio2.capture_device,
     )
@@ -1100,7 +1103,10 @@ def send_setup_page(
         gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
         return html.escape(f"{dev} \u00b7 {mode} \u00b7 {gain_str}")
 
-    input1_summary = _input_card_summary(parsed.audio1)
+    if not parsed.audio1_enabled:
+        input1_summary = "Not configured"
+    else:
+        input1_summary = _input_card_summary(parsed.audio1)
     if not parsed.audio2_enabled:
         input2_summary = "Disabled"
     else:
@@ -1366,6 +1372,7 @@ def send_setup_page(
     <div class="setup-slide-list">
       {_setup_page_header("Setup")}
       <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
+      {no_input_configured_notice_html(parsed)}
       <div class="setup-list-card" onclick="openPanel('input1')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Input 1</span>
@@ -1437,13 +1444,15 @@ def send_setup_page(
         </div>
         {_setup_detail_header("Setup Input 1")}
         {input1_html}
-        {_audio_controls_card_html(
-          input_index=1,
-          gain_db=parsed.audio1.gain_db,
-          eq_40hz_db=parsed.audio1.eq_40hz_db,
-          eq_100hz_db=parsed.audio1.eq_100hz_db,
-          eq_8khz_db=parsed.audio1.eq_8khz_db,
-        )}
+        <div id="audio1_preamp_card" style="display:{'block' if parsed.audio1_enabled else 'none'};">
+          {_audio_controls_card_html(
+            input_index=1,
+            gain_db=parsed.audio1.gain_db,
+            eq_40hz_db=parsed.audio1.eq_40hz_db,
+            eq_100hz_db=parsed.audio1.eq_100hz_db,
+            eq_8khz_db=parsed.audio1.eq_8khz_db,
+          )}
+        </div>
       </div>
       <div class="setup-detail-panel" id="panel-input2">
         <div class="setup-detail-back">
@@ -2399,9 +2408,9 @@ def send_setup_page(
           }});
         }}
         const liveEnabled = true;
-        function onAudio2Toggle(checked){{
-          syncInputUi(2);
-          if (liveEnabled) settingsSaveField('audio2.enabled', checked);
+        function onInputEnableToggle(inputIndex, checked){{
+          syncInputUi(inputIndex);
+          if (liveEnabled) settingsSaveField('audio' + inputIndex + '.enabled', checked);
         }}
         function syncVol(v){{
           document.getElementById('owntone_volume_percent').value=v;
@@ -2412,13 +2421,12 @@ def send_setup_page(
         function thresholdPreset(checked){{ return checked ? -45 : -60; }}
         function syncInputUi(inputIndex){{
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
+          const enabledName = prefix + '_enabled';
           const turntableName = inputIndex === 1 ? 'audio_turntable' : 'audio2_turntable';
-          const enabled = inputIndex === 1
-            ? true
-            : !!document.querySelector('input[name="audio2_enabled"]')?.checked;
+          const enabled = !!document.querySelector('input[name="' + enabledName + '"]')?.checked;
           const turntable = !!document.querySelector('input[name="' + turntableName + '"]')?.checked;
           const settings = document.getElementById(prefix + '_settings');
-          const preampCard = inputIndex === 2 ? document.getElementById('audio2_preamp_card') : null;
+          const preampCard = document.getElementById(prefix + '_preamp_card');
           const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
           const note = document.getElementById(prefix + '_turntable_note');
           const threshold = thresholdPreset(turntable);
@@ -2717,7 +2725,14 @@ def send_setup_page(
         }}
         function refreshInputCardSubs() {{
           var s1 = document.getElementById('input1-card-sub');
-          if (s1) s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
+          if (s1) {{
+            var en1 = document.querySelector('input[name="audio1_enabled"]');
+            if (en1 && !en1.checked) {{
+              s1.textContent = 'Not configured';
+            }} else {{
+              s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
+            }}
+          }}
           var s2 = document.getElementById('input2-card-sub');
           if (s2) {{
             var en = document.querySelector('input[name="audio2_enabled"]');

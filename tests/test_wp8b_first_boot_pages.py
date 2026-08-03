@@ -416,6 +416,163 @@ class TestFirstBootFinishPost:
         assert m_update.call_args[1]["is_turntable"] is True
         m_reload.assert_called_once()
 
+    def test_skip_button_present_in_appliance_page(self, tmp_path):
+        from autostream_webui_page_first_boot import send_first_boot_appliance_page
+        store = _make_store(_make_config(str(tmp_path)))
+        state = _make_state(str(tmp_path), store)
+        auth = _make_auth()
+        handler, written = _make_handler()
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
+            send_first_boot_appliance_page(handler, state, auth)
+        html = _render(handler, written)
+        assert 'value="skip"' in html
+        assert "Skip" in html
+        assert "configure later" in html.lower()
+
+    def test_skip_does_not_require_valid_device(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({
+            "action": "skip",
+            "audio1_capture_device": "",
+            "volume_percent": "20",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
+             patch("autostream_webui_page_first_boot.mark_configured"):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        html = _render(handler, written)
+        assert "Invalid ALSA" not in html
+        m_mark.assert_called_once_with(state.state_path)
+
+    def test_skip_writes_audio1_disabled(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({
+            "action": "skip",
+            "audio1_capture_device": "",
+            "volume_percent": "20",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
+             patch("autostream_webui_page_first_boot.mark_configured"):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        snap = store.snapshot()
+        assert snap.audio1_enabled is False
+
+    def test_skip_leaves_capture_device_unchanged(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        # _make_finish_state's underlying config already carries VALID_ALSA
+        # as audio1.capture_device (see _make_config); the skip path must not
+        # touch it, even though the submitted dropdown value is blank.
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({
+            "action": "skip",
+            "audio1_capture_device": "",
+            "volume_percent": "20",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
+             patch("autostream_webui_page_first_boot.mark_configured"):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        snap = store.snapshot()
+        assert snap.audio1.capture_device == VALID_ALSA
+
+    def test_skip_completes_commissioning_and_redirects_home(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({
+            "action": "skip",
+            "audio1_capture_device": "",
+            "volume_percent": "20",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
+             patch("autostream_webui_page_first_boot.mark_configured"):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        m_mark.assert_called_once_with(state.state_path)
+        handler.send_response.assert_called_with(303)
+        loc_calls = [c for c in handler.send_header.call_args_list if c[0][0] == "Location"]
+        assert any("/" == str(c[0][1]) for c in loc_calls)
+
+    def test_skip_still_honours_hostname_and_volume(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({
+            "action": "skip",
+            "audio1_capture_device": "",
+            "volume_percent": "77",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
+             patch("autostream_webui_page_first_boot.mark_configured"):
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        snap = store.snapshot()
+        assert snap.owntone.volume_percent == 77
+
+    def test_skip_pushes_disabled_live_config(self, tmp_path):
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({
+            "action": "skip",
+            "audio1_capture_device": "",
+            "volume_percent": "20",
+            "hostname": "autostream",
+        })
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
+             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
+             patch("autostream_webui_page_first_boot.mark_configured"), \
+             patch("autostream_webui_page_first_boot.update_playback_input_config") as m_update, \
+             patch("autostream_webui_page_first_boot.request_config_reload") as m_reload:
+            store.save_now = MagicMock()
+            handle_first_boot_finish_post(handler, state, auth, body)
+        m_update.assert_called_once()
+        assert m_update.call_args[0][0] == 1
+        assert m_update.call_args[1]["enabled"] is False
+        m_reload.assert_called_once()
+
+    def test_normal_path_still_rejects_invalid_device_with_skip_absent(self, tmp_path):
+        """Sanity check: omitting action=skip keeps the strict validation
+        path unchanged, regardless of the skip feature's addition."""
+        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from urllib.parse import urlencode
+        state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
+        auth = _make_auth()
+        handler, written = _make_handler()
+        body = urlencode({"audio1_capture_device": "bad-device", "volume_percent": "20", "hostname": "h"})
+        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="h"):
+            handle_first_boot_finish_post(handler, state, auth, body)
+        html = _render(handler, written)
+        assert "Invalid ALSA" in html
+
     def test_finish_push_failure_does_not_break_commissioning(self, tmp_path):
         from autostream_webui_page_first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))

@@ -216,6 +216,15 @@ def send_first_boot_appliance_page(
       <span>Turntable (phono pre-amp required)</span>
     </div>
   </fieldset>
+  <div style="margin-top:0.75rem;padding:0.75rem 1rem;border:1px solid #ccc;border-radius:8px;">
+    <p style="margin:0 0 0.6rem;font-size:0.85rem;color:#666;">
+      No input device? You can set one up later, or pair a Bluetooth source from the Setup page.
+    </p>
+    <button type="submit" name="action" value="skip" class="pill-btn small"
+      style="width:100%;font-weight:500;border:1px solid #ccc;background:transparent;color:#666;">
+      Skip &#8212; configure later
+    </button>
+  </div>
   <fieldset>
     <legend>Volume</legend>
     <div class="slider-header">
@@ -307,16 +316,21 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
         )
         return
 
-    # Validate required fields
-    audio1_dev = fld("audio1_capture_device", "").strip()
-    if not is_valid_monitor_device_id(audio1_dev):
-        send_first_boot_appliance_page(
-            handler, state, auth,
-            error=f"Invalid ALSA device {audio1_dev!r}. Please select a valid hw:* device."
-        )
-        return
+    # "Skip -- configure later" bypasses the device-required validation below
+    # and completes commissioning with input 1 disabled instead. The normal
+    # Finish path is unaffected and stays strict.
+    skip_input1 = fld("action", "") == "skip"
 
+    audio1_dev = fld("audio1_capture_device", "").strip()
     audio1_turntable = "audio1_turntable" in form
+    if not skip_input1:
+        if not is_valid_monitor_device_id(audio1_dev):
+            send_first_boot_appliance_page(
+                handler, state, auth,
+                error=f"Invalid ALSA device {audio1_dev!r}. Please select a valid hw:* device."
+            )
+            return
+
     try:
         volume_percent = max(0, min(100, int(fld("volume_percent", "20"))))
     except (ValueError, TypeError):
@@ -329,8 +343,15 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     # Commit all values to store (including FIFO default if not already set)
     try:
         def _mutator(raw: dict) -> None:
-            raw.setdefault("audio1", {})["capture_device"] = audio1_dev
-            set_input_mode(raw, 1, audio1_turntable)
+            if skip_input1:
+                # Leave capture_device/turntable untouched -- only the
+                # enabled flag changes, so a device chosen in the dropdown
+                # before tapping Skip is not silently persisted.
+                raw.setdefault("audio1", {})["enabled"] = False
+            else:
+                raw.setdefault("audio1", {})["capture_device"] = audio1_dev
+                raw.setdefault("audio1", {})["enabled"] = True
+                set_input_mode(raw, 1, audio1_turntable)
             raw.setdefault("owntone", {})["volume_percent"] = volume_percent
             # Fixed appliance path, not something first boot can choose
             raw.setdefault("general", {})["fifo_path"] = FIFO_PATH
@@ -384,8 +405,8 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     try:
         update_playback_input_config(
             1,
-            enabled=True,
-            is_turntable=audio1_turntable,
+            enabled=snap.audio1_enabled,
+            is_turntable=snap.audio1.is_turntable,
             stylus_life_hours=snap.audio1.stylus_life_hours,
             belt_life_hours=snap.audio1.belt_life_hours,
             belt_life_years=snap.audio1.belt_life_years,

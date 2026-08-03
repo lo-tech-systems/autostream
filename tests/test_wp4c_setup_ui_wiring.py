@@ -6,7 +6,7 @@ Tests cover:
   - _audio_controls_card_html has settingsSaveFieldDebounced on gain and EQ sliders
   - Capture device selects are wired to settingsSaveField
   - Turntable checkboxes are wired to settingsSaveField
-  - audio2.enabled checkbox is wired (via onAudio2Toggle)
+  - audio1.enabled / audio2.enabled checkboxes are wired (via onInputEnableToggle)
   - Output name select is wired to settingsSaveField
   - syncVol calls settingsSaveFieldDebounced for owntone.volume_percent
   - syncSil calls settingsSaveFieldDebounced for general.silence_seconds
@@ -197,8 +197,8 @@ class TestSetupPageJsSync:
     def test_sync_sil_calls_debounced(self, html):
         assert "settingsSaveFieldDebounced('general.silence_seconds'" in html
 
-    def test_on_audio2_toggle_calls_save_field(self, html):
-        assert "settingsSaveField('audio2.enabled', checked)" in html
+    def test_on_input_enable_toggle_calls_save_field(self, html):
+        assert "settingsSaveField('audio' + inputIndex + '.enabled', checked)" in html
 
     def test_sync_ti_lead_in_calls_debounced(self, html):
         assert "settingsSaveFieldDebounced('track_identification.analysis_lead_in_seconds'" in html
@@ -268,8 +268,11 @@ class TestSetupPageHtmlControls:
     def test_track_id_checkbox_wired(self, html):
         assert "settingsSaveField('track_identification.enabled', this.checked)" in html
 
+    def test_audio1_enabled_toggle_handler_present(self, html):
+        assert "onInputEnableToggle(1, this.checked)" in html
+
     def test_audio2_enabled_toggle_handler_present(self, html):
-        assert "onAudio2Toggle(this.checked)" in html
+        assert "onInputEnableToggle(2, this.checked)" in html
 
     def test_gain_slider_oninput_present_in_rendered_html(self, html):
         assert "syncGain(1, this.value)" in html
@@ -283,6 +286,92 @@ class TestSetupPageHtmlControls:
 
     def test_volume_slider_uses_sync_vol(self, html):
         assert "syncVol(this.value)" in html
+
+
+# ---------------------------------------------------------------------------
+# Input 1 enable toggle (mirrors input 2's existing pattern)
+# ---------------------------------------------------------------------------
+
+class TestInput1EnableToggle:
+    def _render_with_audio1_enabled(self, tmp_path: Path, enabled: bool) -> str:
+        cfg = _minimal_cfg(tmp_path)
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+        data.setdefault("audio1", {})["enabled"] = enabled
+        cfg.write_text(json.dumps(data), encoding="utf-8")
+
+        from autostream_webui_page_setup import send_setup_page
+        from autostream_settings import SettingsStore
+        from autostream_webui_state import WebUIState
+        from autostream_players import ListOutputsResult
+
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
+        state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
+
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        auth = MagicMock()
+        auth.ensure_session.return_value = "test-csrf"
+        auth.get_csrf_token.return_value = "test-csrf"
+        auth.get_boot_pin_value.return_value = "1234"
+
+        with patch.multiple(
+            "autostream_webui_page_setup",
+            get_system_hostname=MagicMock(return_value="autostream"),
+            list_outputs=MagicMock(return_value=ListOutputsResult(ok=False, error="unreachable")),
+            get_ap_ssid=MagicMock(return_value="autostream_AP"),
+            get_app_version=MagicMock(return_value="1.0.0"),
+            _get_dial_sightings=MagicMock(return_value=[]),
+            parse_dial_entries=MagicMock(return_value=[]),
+            suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
+            build_top_banner_html=MagicMock(return_value=("", "")),
+            _set_flash_cookie=MagicMock(),
+        ):
+            with patch.object(state, "get_monitor_devices", return_value=[]):
+                send_setup_page(handler, state, auth, flash_msg="")
+
+        store.close(save=False)
+        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+
+    def test_input1_enable_checkbox_present(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, True)
+        assert 'name="audio1_enabled"' in html
+        checkbox_tag = html.split('name="audio1_enabled"', 1)[1].split('onchange', 1)[0]
+        assert 'checked' in checkbox_tag
+
+    def test_input1_enable_checkbox_unchecked_when_disabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, False)
+        checkbox_tag = html.split('name="audio1_enabled"', 1)[1].split('onchange', 1)[0]
+        assert 'checked' not in checkbox_tag
+
+    def test_input1_settings_hidden_when_disabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, False)
+        assert 'id="audio1_settings" style="display:none;"' in html
+
+    def test_input1_settings_shown_when_enabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, True)
+        assert 'id="audio1_settings" style="display:block;"' in html
+
+    def test_input1_preamp_card_hidden_when_disabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, False)
+        assert 'id="audio1_preamp_card" style="display:none;"' in html
+
+    def test_input1_preamp_card_shown_when_enabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, True)
+        assert 'id="audio1_preamp_card" style="display:block;"' in html
+
+    def test_input1_card_summary_not_configured_when_disabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, False)
+        assert '<span class="setup-list-card-sub" id="input1-card-sub">Not configured</span>' in html
+
+    def test_input1_card_summary_shows_device_when_enabled(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, True)
+        summary = html.split('id="input1-card-sub">', 1)[1].split('</span>', 1)[0]
+        assert summary != "Not configured"
+
+    def test_sync_input_ui_reads_audio1_enabled_checkbox(self, tmp_path):
+        html = self._render_with_audio1_enabled(tmp_path, True)
+        assert "const enabledName = prefix + '_enabled';" in html
+        assert "document.querySelector('input[name=\"' + enabledName + '\"]')" in html
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,13 @@
 ## Unreleased
 
 - improvement: the wired input can now be disabled/skipped so setup can be
-  completed without a wired input device connected
+  completed without a wired input device connected — first-run setup gains a
+  "Skip — configure later" option, Input 1 can be enabled/disabled from
+  Setup, and a notice on the Home and Setup pages flags when no input is
+  configured
+- improvement: pairing a Bluetooth device now automatically assigns it to a
+  free input where safe, with a Setup-page prompt when both inputs are
+  already in use
 - fix: the Bluetooth service no longer crashes and restarts repeatedly while
   the paired device is switched off or out of range
 - fix: Bluetooth input now recovers by itself when the internal audio link is

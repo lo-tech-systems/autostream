@@ -31,6 +31,7 @@ from autostream_webui_common import (
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
+    no_input_configured_notice_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -663,6 +664,7 @@ def send_equaliser_page(
 
     body_html = (
         f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
+        f"{no_input_configured_notice_html(parsed)}"
         f"{card_html}"
         f"<script>"
         f"{_eq_band_config_js()}"
