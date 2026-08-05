@@ -125,6 +125,7 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -635,19 +636,174 @@ def set_hostname(hostname: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# restart-owntone: bounded graceful stop with abort-for-core escalation
+# ---------------------------------------------------------------------------
+#
+# Some daemons occasionally wedge partway through their graceful-stop path
+# (e.g. deinitialising an audio backend) and never exit on their own. A plain
+# `systemctl restart` then blocks until systemd's stop timeout SIGKILLs the
+# process (commonly ~90s on these units), and SIGKILL never produces a core
+# dump -- even on a system where core dumps are otherwise fully armed
+# (unlimited core RLIMIT, suid_dumpable, core_pattern routed to a writable
+# location). Every such hang is therefore undiagnosable after the fact.
+#
+# To turn the next hang into evidence, this verb bounds how long it will wait
+# for a graceful restart before escalating: if the unit's pre-restart main
+# process is still running (and still verifiably the same process -- see
+# _pid_alive_same_process) once the graceful window has elapsed, it is sent
+# SIGABRT. glibc's default SIGABRT handling aborts the process and, on an
+# armed system, produces a full-thread core -- something a plain SIGKILL from
+# systemd never would. The helper then waits a further bounded period for the
+# restart to complete against the now-dead process.
+#
+# Timing: this verb is invoked by the coordinator as
+#   sudo -n autostream_admin restart-owntone
+# with a 20s subprocess timeout on the caller's side (see
+# core/autostream_core.py, _fire_owntone_hang_restart's run_admin_cmd call).
+# The two windows below (10s graceful + 6s post-abort = 16s worst case) are
+# sized to complete within that 20s budget with margin left over for process
+# spawn/signal/systemctl overhead, so the caller still gets a real outcome
+# (rather than its own rc=124 timeout) even on the escalation path. If either
+# window is widened, re-check the arithmetic against the caller's timeout.
+_RESTART_GRACEFUL_WINDOW_SECONDS = 10.0
+_RESTART_POST_ABORT_WINDOW_SECONDS = 6.0
+
+
+def _get_owntone_mainpid(systemctl: str) -> Optional[int]:
+    """Return the current MainPID of the owntone unit, or None if unavailable."""
+    rc, out, err = run_cmd([str(systemctl), "show", "-p", "MainPID", "--value", "owntone"])
+    if rc != 0:
+        return None
+    try:
+        pid = int(out.strip())
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _proc_start_time_token(pid: int) -> Optional[str]:
+    """Return a token identifying which process currently holds `pid`.
+
+    Uses the kernel-reported start-time field of /proc/<pid>/stat: this value
+    is fixed for the lifetime of a process and differs across a PID-reuse
+    boundary, so comparing it before/after a wait window guards against
+    mistakenly signalling an unrelated process that reused the same PID.
+    Returns None if the process cannot be inspected (e.g. already gone).
+    """
+    try:
+        content = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        # comm (2nd field) is parenthesised and may itself contain spaces/parens;
+        # split from the last ')' so the fixed-format fields after it line up.
+        fields_after_comm = content.rsplit(")", 1)[1].split()
+        return fields_after_comm[19]  # starttime is /proc/pid/stat field 22
+    except (OSError, IndexError):
+        return None
+
+
+def _pid_alive_same_process(pid: int, start_time_token: Optional[str]) -> bool:
+    """Return True if `pid` is still running and is the same process identified
+    by `start_time_token` (obtained from _proc_start_time_token before waiting)."""
+    if pid is None or pid <= 1 or start_time_token is None:
+        return False
+    current = _proc_start_time_token(pid)
+    return current is not None and current == start_time_token
+
+
+def _send_sigabrt(pid: int) -> bool:
+    """Send SIGABRT to `pid` for a core dump. Refuses to signal PID 0 or 1.
+
+    A process that has already exited (ESRCH) is treated as success-equivalent:
+    the wedge cleared itself between the liveness check and the signal, which
+    is the outcome we wanted anyway.
+    """
+    if pid is None or pid <= 1:
+        return False
+    try:
+        os.kill(pid, signal.SIGABRT)
+        return True
+    except ProcessLookupError:
+        return True
+    except PermissionError as e:
+        log("WARN", f"restart-owntone: SIGABRT to pid={pid} denied: {e!r}")
+        return False
+
+
+def _wait_restart_proc(proc: "subprocess.Popen[str]", timeout: float) -> Optional[int]:
+    """Wait up to `timeout` seconds for `proc` to finish; None means still running."""
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def restart_owntone() -> bool:
+    """Restart owntone, escalating to SIGABRT if the graceful stop wedges.
+
+    See the module comment above for the rationale and timing budget.
+    Returns True for both a clean restart and a restart that only completed
+    after abort escalation; the log distinguishes the two outcomes.
+    """
     log("INFO", "restart-owntone: received request")
     systemctl = find_systemctl()
     if not systemctl:
         log("ERROR", "restart-owntone: systemctl not found")
         return False
 
-    rc, out, err = run_cmd([str(systemctl), "restart", "owntone"])
+    prior_pid = _get_owntone_mainpid(systemctl)
+    prior_start_token = _proc_start_time_token(prior_pid) if prior_pid else None
+
+    proc = subprocess.Popen(
+        [str(systemctl), "restart", "owntone"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+    rc = _wait_restart_proc(proc, _RESTART_GRACEFUL_WINDOW_SECONDS)
+    if rc is not None:
+        if rc == 0:
+            log("INFO", "restart-owntone: success")
+            return True
+        _out, err = proc.communicate()
+        log("ERROR", f"restart-owntone: failed rc={rc} stderr='{(err or '').strip()}'")
+        return False
+
+    # Graceful window elapsed without systemctl completing. If we can still
+    # positively identify the pre-restart main process as still running,
+    # escalate with SIGABRT so a core dump is captured before it dies.
+    escalated = False
+    if prior_pid is not None and _pid_alive_same_process(prior_pid, prior_start_token):
+        if _send_sigabrt(prior_pid):
+            escalated = True
+            log("WARN",
+                f"restart-owntone: graceful stop exceeded "
+                f"{_RESTART_GRACEFUL_WINDOW_SECONDS:.0f}s; sent SIGABRT to wedged main "
+                f"process (pid={prior_pid}) to force a core dump")
+        else:
+            log("WARN",
+                f"restart-owntone: graceful stop exceeded window but SIGABRT to "
+                f"pid={prior_pid} could not be delivered")
+    else:
+        log("WARN",
+            "restart-owntone: graceful stop exceeded window; prior main process no "
+            "longer identifiable, skipping abort escalation")
+
+    rc = _wait_restart_proc(proc, _RESTART_POST_ABORT_WINDOW_SECONDS)
+    if rc is None:
+        log("ERROR",
+            f"restart-owntone: restart still not complete after the post-escalation "
+            f"wait (escalated={escalated}); giving up waiting")
+        return False
+
     if rc == 0:
-        log("INFO", "restart-owntone: success")
+        if escalated:
+            log("WARN", "restart-owntone: restarted after abort escalation")
+        else:
+            log("INFO", "restart-owntone: success")
         return True
 
-    log("ERROR", f"restart-owntone: failed rc={rc} stderr='{err}' stdout='{out}'")
+    _out, err = proc.communicate()
+    log("ERROR",
+        f"restart-owntone: failed rc={rc} stderr='{(err or '').strip()}' (escalated={escalated})")
     return False
 
 

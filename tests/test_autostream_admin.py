@@ -1644,3 +1644,197 @@ class TestBtSudoersEntries:
         assert "AUTOSTREAM_ADMIN_BT_SVC_DISABLE" in text
         assert "AUTOSTREAM_ADMIN_BT_ONBOARD_ON" in text
         assert "AUTOSTREAM_ADMIN_BT_ONBOARD_OFF" in text
+
+
+# ---------------------------------------------------------------------------
+# restart-owntone: bounded graceful stop + abort-for-core escalation
+# ---------------------------------------------------------------------------
+
+import subprocess as _subprocess
+
+
+class _FakeRestartProc:
+    """Stand-in for the subprocess.Popen handle of `systemctl restart owntone`.
+
+    `wait_plan` is a list of results consumed one per call to .wait(): an int
+    means the process finished with that returncode, None means the wait
+    window elapsed with the process still running (raises TimeoutExpired,
+    matching real Popen.wait() behaviour).
+    """
+
+    def __init__(self, wait_plan, communicate_result=("", "")):
+        self._wait_plan = list(wait_plan)
+        self._communicate_result = communicate_result
+        self.wait_calls = []
+
+    def wait(self, timeout=None):
+        self.wait_calls.append(timeout)
+        result = self._wait_plan.pop(0)
+        if result is None:
+            raise _subprocess.TimeoutExpired(cmd="systemctl", timeout=timeout)
+        return result
+
+    def communicate(self):
+        return self._communicate_result
+
+
+class TestRestartOwntonePidIdentity:
+    """Unit tests for the PID-reuse guard used by the escalation path."""
+
+    def test_alive_same_process_true_when_token_matches(self):
+        with patch.object(m, "_proc_start_time_token", return_value="12345"):
+            assert m._pid_alive_same_process(999, "12345") is True
+
+    def test_alive_same_process_false_when_token_differs(self):
+        # Simulates PID reuse: the recorded start-time token no longer matches
+        # the process currently holding that PID.
+        with patch.object(m, "_proc_start_time_token", return_value="99999"):
+            assert m._pid_alive_same_process(999, "12345") is False
+
+    def test_alive_same_process_false_when_pid_gone(self):
+        with patch.object(m, "_proc_start_time_token", return_value=None):
+            assert m._pid_alive_same_process(999, "12345") is False
+
+    def test_refuses_pid_1_and_0(self):
+        with patch.object(m, "_proc_start_time_token", return_value="anything"):
+            assert m._pid_alive_same_process(1, "anything") is False
+            assert m._pid_alive_same_process(0, "anything") is False
+
+    def test_refuses_when_no_prior_token(self):
+        assert m._pid_alive_same_process(999, None) is False
+
+
+class TestSendSigabrt:
+    def test_sends_signal_to_valid_pid(self):
+        with patch.object(m.os, "kill") as mock_kill:
+            result = m._send_sigabrt(4242)
+        mock_kill.assert_called_once_with(4242, m.signal.SIGABRT)
+        assert result is True
+
+    def test_esrch_is_success_equivalent(self):
+        with patch.object(m.os, "kill", side_effect=ProcessLookupError()):
+            result = m._send_sigabrt(4242)
+        assert result is True
+
+    def test_permission_denied_is_failure(self):
+        with patch.object(m.os, "kill", side_effect=PermissionError()):
+            result = m._send_sigabrt(4242)
+        assert result is False
+
+    def test_refuses_pid_1(self):
+        with patch.object(m.os, "kill") as mock_kill:
+            result = m._send_sigabrt(1)
+        mock_kill.assert_not_called()
+        assert result is False
+
+    def test_refuses_pid_0(self):
+        with patch.object(m.os, "kill") as mock_kill:
+            result = m._send_sigabrt(0)
+        mock_kill.assert_not_called()
+        assert result is False
+
+
+class TestRestartOwntone:
+    """restart_owntone(): clean restart, hang+escalate, pid-gone, pid-reuse."""
+
+    def _run(self, wait_plan, mainpid=4242, alive_same_process=True,
+              communicate_result=("", "")):
+        proc = _FakeRestartProc(wait_plan, communicate_result=communicate_result)
+        kill_calls = []
+        with patch.object(m, "find_systemctl", return_value="/bin/systemctl"), \
+             patch.object(m, "_get_owntone_mainpid", return_value=mainpid), \
+             patch.object(m, "_proc_start_time_token", return_value="111"), \
+             patch.object(m, "_pid_alive_same_process", return_value=alive_same_process), \
+             patch.object(m.subprocess, "Popen", return_value=proc), \
+             patch.object(m.os, "kill", side_effect=lambda pid, sig: kill_calls.append((pid, sig))):
+            result = m.restart_owntone()
+        return result, proc, kill_calls
+
+    def test_clean_fast_restart_no_signal_sent(self, capsys):
+        result, proc, kill_calls = self._run(wait_plan=[0])
+        assert result is True
+        assert kill_calls == []
+        assert len(proc.wait_calls) == 1
+        out = capsys.readouterr()
+        assert "restart-owntone: success" in out.out
+
+    def test_hang_then_completes_sends_sigabrt(self, capsys):
+        result, proc, kill_calls = self._run(
+            wait_plan=[None, 0], mainpid=4242, alive_same_process=True,
+        )
+        assert result is True
+        assert kill_calls == [(4242, m.signal.SIGABRT)]
+        assert len(proc.wait_calls) == 2
+        out = capsys.readouterr()
+        combined = out.out + out.err
+        assert "SIGABRT" in combined
+        assert "restarted after abort escalation" in combined
+
+    def test_pid_gone_by_escalation_time_no_signal_tolerated(self, capsys):
+        result, proc, kill_calls = self._run(
+            wait_plan=[None, 0], mainpid=4242, alive_same_process=False,
+        )
+        assert result is True
+        assert kill_calls == [], "no signal should be sent once the pid can't be confirmed"
+        out = capsys.readouterr()
+        combined = out.out + out.err
+        assert "skipping abort escalation" in combined
+
+    def test_pid_changed_reuse_guard_no_signal(self, capsys):
+        # alive_same_process=False also models the PID-reuse case: the guard
+        # function itself is unit-tested above (token mismatch); here we only
+        # need to confirm restart_owntone() never signals when the guard says no.
+        result, proc, kill_calls = self._run(
+            wait_plan=[None, 0], mainpid=9999, alive_same_process=False,
+        )
+        assert result is True
+        assert kill_calls == []
+
+    def test_still_hung_after_escalation_reports_failure(self, capsys):
+        result, proc, kill_calls = self._run(
+            wait_plan=[None, None], mainpid=4242, alive_same_process=True,
+        )
+        assert result is False
+        assert kill_calls == [(4242, m.signal.SIGABRT)]
+        out = capsys.readouterr()
+        assert "giving up waiting" in (out.out + out.err)
+
+    def test_clean_restart_never_escalates(self):
+        # No SIGABRT under any circumstance when the graceful restart finishes
+        # inside the first window, even if _pid_alive_same_process would say yes.
+        result, proc, kill_calls = self._run(wait_plan=[0], alive_same_process=True)
+        assert result is True
+        assert kill_calls == []
+
+    def test_nonzero_exit_without_hang_is_failure(self, capsys):
+        result, proc, kill_calls = self._run(
+            wait_plan=[1], communicate_result=("", "systemctl error"),
+        )
+        assert result is False
+        assert kill_calls == []
+        out = capsys.readouterr()
+        assert "restart-owntone: failed" in (out.out + out.err)
+
+    def test_no_systemctl_returns_false(self):
+        with patch.object(m, "find_systemctl", return_value=None):
+            result = m.restart_owntone()
+        assert result is False
+
+
+class TestGetOwntoneMainpid:
+    def test_parses_valid_pid(self):
+        with patch.object(m, "run_cmd", return_value=(0, "4242", "")):
+            assert m._get_owntone_mainpid("/bin/systemctl") == 4242
+
+    def test_zero_pid_treated_as_absent(self):
+        # systemctl reports MainPID=0 for a unit that isn't currently running.
+        with patch.object(m, "run_cmd", return_value=(0, "0", "")):
+            assert m._get_owntone_mainpid("/bin/systemctl") is None
+
+    def test_systemctl_failure_returns_none(self):
+        with patch.object(m, "run_cmd", return_value=(1, "", "no such unit")):
+            assert m._get_owntone_mainpid("/bin/systemctl") is None
+
+    def test_unparseable_output_returns_none(self):
+        with patch.object(m, "run_cmd", return_value=(0, "not-a-pid", "")):
+            assert m._get_owntone_mainpid("/bin/systemctl") is None
