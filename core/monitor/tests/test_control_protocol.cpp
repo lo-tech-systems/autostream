@@ -162,6 +162,47 @@ static void test_debug_fail_input_gated(const std::string& src)
 }
 
 // ---------------------------------------------------------------------------
+// Test: client worker threads are reaped promptly, not just at shutdown
+//
+// Regression coverage for a thread-stack leak: accept_loop() used to
+// emplace_back a bare std::thread per connection and never touch the vector
+// again until stop() joined everything, so every finished client thread's
+// stack stayed mapped for the life of the process. The fix sweeps the
+// container for finished entries (tracked via a completion flag set as the
+// last action of the client lambda) before accepting the next connection.
+// These are source-text checks only (this file has no ALSA/libsamplerate
+// link, matching its whole approach); the container-bounding behaviour
+// itself is exercised by test_control_thread_reap.cpp against a structural
+// mirror of this same algorithm, and will additionally be verified live
+// against the real ControlServer wherever the full monitor can be linked
+// (see that file's header comment for why it can't be linked here).
+// ---------------------------------------------------------------------------
+
+static void test_client_threads_reaped_before_accept(const std::string& src)
+{
+    // The accept_loop() sweep must join+erase finished entries using the
+    // completion flag, not just append forever.
+    CHECK(contains(src, "done->load()"),
+          "accept_loop() checks a per-thread completion flag before reaping");
+    CHECK(contains(src, "done->store(true)"),
+          "the client lambda marks itself done as its last action");
+
+    // The flag-set must be the truly-last statement in the lambda, i.e. it
+    // comes after the fd is closed and erased from _client_fds -- otherwise
+    // a flagged thread could still be doing real work when reaped.
+    size_t close_pos  = src.find("::close(client_fd);");
+    size_t store_pos  = src.find("done->store(true);");
+    CHECK(close_pos != std::string::npos && store_pos != std::string::npos &&
+          store_pos > close_pos,
+          "done->store(true) happens after ::close(client_fd) in the client lambda");
+
+    // stop() must still join every remaining entry unconditionally (running
+    // or already-finished), so no thread is ever silently dropped.
+    CHECK(contains(src, "_client_threads.clear()"),
+          "stop() still drains _client_threads after joining");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -191,6 +232,7 @@ int main(int argc, char** argv)
     test_length_header_in_dispatcher(dispatcher_src);
     test_ok_field_in_responses(dispatcher_src);
     test_debug_fail_input_gated(dispatcher_src);
+    test_client_threads_reaped_before_accept(dispatcher_src);
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

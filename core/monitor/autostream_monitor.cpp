@@ -452,10 +452,10 @@ void ControlServer::stop()
     if (_accept_thread.joinable())
         _accept_thread.join();
 
-    for (std::thread& t : _client_threads)
+    for (ClientThread& ct : _client_threads)
     {
-        if (t.joinable())
-            t.join();
+        if (ct.thread.joinable())
+            ct.thread.join();
     }
     _client_threads.clear();
 
@@ -492,7 +492,27 @@ void ControlServer::accept_loop()
 
         // _client_threads is only accessed from this thread (accept_loop) and
         // from stop() after _accept_thread.join(), so no mutex is needed here.
-        _client_threads.emplace_back([this, client_fd]()
+        // Before adding the new connection, reap threads that finished since
+        // the last accept(): this bounds the vector at roughly (live clients +
+        // threads that finished between accepts), instead of growing by one
+        // entry per connection for the life of the process.
+        for (size_t i = 0; i < _client_threads.size(); )
+        {
+            if (_client_threads[i].done->load())
+            {
+                if (_client_threads[i].thread.joinable())
+                    _client_threads[i].thread.join();
+                _client_threads[i] = std::move(_client_threads.back());
+                _client_threads.pop_back();
+            }
+            else
+            {
+                ++i;
+            }
+        }
+
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        std::thread worker([this, client_fd, done]()
         {
             LOG_DEBUG("[control] Client connected (fd=%d)", client_fd);
             handle_client(client_fd);
@@ -503,7 +523,13 @@ void ControlServer::accept_loop()
                 _client_fds.erase(client_fd);
             }
             ::close(client_fd);
+
+            // Last action: signals accept_loop() that this thread's entry may
+            // now be joined and reaped. Must come after everything above so a
+            // set flag always means the thread is done doing real work.
+            done->store(true);
         });
+        _client_threads.push_back({std::move(worker), done});
     }
 }
 

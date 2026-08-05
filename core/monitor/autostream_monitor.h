@@ -3057,7 +3057,21 @@ private:
     // worker threads cleanly.
     std::mutex              _clients_mutex;
     std::set<int>           _client_fds;
-    std::vector<std::thread> _client_threads;
+
+    // One entry per accepted connection whose worker thread has not yet been
+    // joined. `done` is set as the last action of the worker lambda (after
+    // handle_client() returns and the fd bookkeeping is done), so accept_loop()
+    // can tell which entries have finished and reap them -- see the sweep in
+    // accept_loop() and the comment there for why no mutex is needed. The flag
+    // is a shared_ptr (rather than a plain atomic<bool> member) so it safely
+    // outlives the ClientThread entry if it is ever erased while the lambda
+    // still holds a copy of the pointer.
+    struct ClientThread
+    {
+        std::thread                     thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<ClientThread> _client_threads;
 };
 
 
