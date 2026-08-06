@@ -325,12 +325,12 @@ static void test_u6_pick_codec_for_target()
               "U6: usable fits 256k but not 320k -> Mp2_256 (highest that fits)");
     }
 
-    // ── Worked example: 246 MiB available, 80 min target, 48k. usable =
-    //    246-96 = 150 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.1 MiB
+    // ── Worked example: 214 MiB available, 80 min target, 48k. usable =
+    //    214-64 = 150 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.1 MiB
     //    (no), 256k needs ~146.5 MiB (yes) -> Mp2_256. ──
     {
-        CHECK(pick_codec_for_target(246, kTarget80, 48000) == CodecChoice::Mp2_256,
-              "U6: worked example -- 246 MiB available, 80 min target, 48k -> Mp2_256");
+        CHECK(pick_codec_for_target(214, kTarget80, 48000) == CodecChoice::Mp2_256,
+              "U6: worked example -- 214 MiB available, 80 min target, 48k -> Mp2_256");
     }
 
     // ── 160 kbps hard floor: usable RAM too small even for 160k's target
@@ -374,35 +374,35 @@ static void test_u7_max_recording_seconds()
     // no min()-against-a-target step.
 
     // Fresh start, huge headroom: at 192k with 1000 MiB available, headroom
-    // = (1000-96) MiB = 904 MiB, giving a large-but-exact number of seconds
+    // = (1000-64) MiB = 936 MiB, giving a large-but-exact number of seconds
     // (no cap kicks in to truncate it to some fixed target).
     // MP2 byte rates are bitrate-derived and rate-independent (see
     // byte_rate_for()'s comment); 48000 is passed explicitly throughout this
     // test since byte_rate_for() takes no default sample_rate_hz argument.
     long rate192 = byte_rate_for(CodecChoice::Mp2_192, 48000);
-    long long expect_huge = (904LL * 1024 * 1024) / rate192;
+    long long expect_huge = (936LL * 1024 * 1024) / rate192;
     long s = max_recording_seconds(CodecChoice::Mp2_192, 1000, 0, 48000);
     CHECK(s == expect_huge, "U7: fresh start, huge headroom -> exact headroom/rate, uncapped");
 
     // Mid-recording (held > 0): held bytes count toward the available
     // duration without needing fresh headroom for them.
     size_t held = static_cast<size_t>(rate192) * 60;  // 60 s already held
-    long s_mid = max_recording_seconds(CodecChoice::Mp2_192, 130 /*just above floor*/, held, 48000);
+    long s_mid = max_recording_seconds(CodecChoice::Mp2_192, 98 /*just above floor*/, held, 48000);
     CHECK(s_mid > 0, "U7: mid-recording with held bytes is > 0");
     long long expect_mid = (34LL * 1024 * 1024 + static_cast<long long>(held)) / rate192;
     CHECK(s_mid == expect_mid, "U7: mid-recording matches headroom+held/rate exactly");
 
-    // Below-floor: available_mib at/under the 96 MiB floor with nothing held
+    // Below-floor: available_mib at/under the 64 MiB floor with nothing held
     // yields zero (this is the condition that triggers drop_oldest_chunk in
     // the impure recorder).
-    long s_floor = max_recording_seconds(CodecChoice::Mp2_192, 96, 0, 48000);
+    long s_floor = max_recording_seconds(CodecChoice::Mp2_192, 64, 0, 48000);
     CHECK(s_floor == 0, "U7: at the free-RAM floor with held=0 -> 0 seconds");
     long s_below_floor = max_recording_seconds(CodecChoice::Mp2_192, 10, 0, 48000);
     CHECK(s_below_floor == 0, "U7: below the free-RAM floor with held=0 -> 0 seconds");
 
     // PCM tier: uses the sample-rate-dependent byte rate, still uncapped.
     long rate_pcm = byte_rate_for(CodecChoice::PcmS16, 48000);
-    long long expect_pcm = (904LL * 1024 * 1024) / rate_pcm;
+    long long expect_pcm = (936LL * 1024 * 1024) / rate_pcm;
     long s_pcm = max_recording_seconds(CodecChoice::PcmS16, 1000, 0, 48000);
     CHECK(s_pcm == expect_pcm, "U7: PCM tier headroom/rate, uncapped");
 
@@ -437,7 +437,7 @@ static void test_u14_byte_rate_for_new_tiers()
     // max_recording_seconds extends cleanly to the new tiers via the same
     // headroom/rate formula as every other tier.
     long rate320 = byte_rate_for(CodecChoice::Mp2_320, 48000);
-    long long expect = (904LL * 1024 * 1024) / rate320;
+    long long expect = (936LL * 1024 * 1024) / rate320;
     CHECK(max_recording_seconds(CodecChoice::Mp2_320, 1000, 0, 48000) == expect,
           "U14: max_recording_seconds works for a new tier (Mp2_320)");
 

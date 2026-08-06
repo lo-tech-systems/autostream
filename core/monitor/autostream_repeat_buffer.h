@@ -488,12 +488,15 @@ inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
     }
 }
 
-// The free-RAM floor: the sliding window keeps (available_mib - 96 MiB)
+// The free-RAM floor: the sliding window keeps (available_mib - 64 MiB)
 // worth of headroom on top of what is already held, converted to a duration
 // at the codec's byte rate. The buffer has no fixed target-duration cap: it
 // is bounded ONLY by this floor and the codec ladder -- it buffers as much
-// as it can, for as long as free RAM allows.
-constexpr long kFreeRamFloorMib = 96;
+// as it can, for as long as free RAM allows. 64 MiB is the smallest reserve
+// that still leaves the appliance headroom for its other processes while
+// the buffer grows; on small-memory appliances it also buys roughly half
+// an hour of extra recording time at the MP2 tier versus a larger floor.
+constexpr long kFreeRamFloorMib = 64;
 
 // Target-duration codec selection.
 //
@@ -560,7 +563,7 @@ inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
     return codec_choice_for_bitrate_kbps(kMp2BitrateFloorKbps);
 }
 
-// max_recording_seconds = ((available_mib - 96 MiB) + held_bytes) / byte_rate
+// max_recording_seconds = ((available_mib - 64 MiB) + held_bytes) / byte_rate
 //
 // held_bytes is the recording's current size (0 at a fresh begin_session(),
 // >0 mid-recording — the bytes already held don't need "new" headroom).  If
