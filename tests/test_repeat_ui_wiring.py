@@ -525,22 +525,29 @@ class TestHomeRepeatButton:
 
     def test_update_repeat_button_hides_when_repeat_absent_or_disabled(self):
         html = _render_airplay_page(repeat_enabled=True)
-        assert "if (!repeat || !repeat.enabled) { btn.hidden = true; return; }" in html
+        assert (
+            "if (!repeat || !repeat.enabled) {\n"
+            "      btn.hidden = true;\n"
+            "      __repeatOptimistic = null;\n"
+            "      _setRepeatStopping(false);\n"
+            "      return;\n"
+            "    }" in html
+        )
 
     def test_update_repeat_button_gates_disabled_on_buffer_bytes(self):
         html = _render_airplay_page(repeat_enabled=True)
         assert "var hasBuffer = Number(recording.bytes || 0) > 0;" in html
-        assert "btn.disabled = (!hasBuffer && !replaying && !on);" in html
+        assert "btn.disabled = stopping || (!hasBuffer && !replaying && !on);" in html
 
     def test_update_repeat_button_uses_replay_last_label_when_idle_with_buffer(self):
         html = _render_airplay_page(repeat_enabled=True)
         assert "↻ Replay Last" in html
-        assert "btn.textContent = showReplayLast ? '↻ Replay Last' : '↻ Repeat Play';" in html
+        assert "btn.textContent = stopping ? 'Stopping…' : (showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');" in html
 
     def test_update_repeat_button_applies_active_outline_when_armed_or_replaying(self):
         html = _render_airplay_page(repeat_enabled=True)
         assert "var polledOn = replaying || armed;" in html
-        assert "btn.classList.toggle('active', on);" in html
+        assert "btn.classList.toggle('active', on || stopping);" in html
         assert ".repeat-btn.active" in html or "repeat-btn.active" in html
 
     def test_update_repeat_button_shows_progress_and_truncated_hint_in_title(self):

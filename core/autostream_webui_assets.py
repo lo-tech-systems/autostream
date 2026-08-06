@@ -708,6 +708,28 @@ button[type=submit]:active {
   background: var(--color-surface-selected);
   color: var(--color-text);
 }
+.repeat-btn:disabled {
+  cursor: default;
+}
+
+/* Page quiesce while a repeat stop is in flight (click through
+   confirmed server teardown): everything except the repeat button
+   itself -- the feedback element -- goes dim and non-interactive. The
+   button also gets `inert` toggled on its siblings by the same JS
+   choke point (updateRepeatButton/_setRepeatStopping in
+   HOME_CARDS_SCRIPT) so keyboard/AT users are blocked too, not just
+   pointer users. Polling keeps running underneath; only interaction is
+   gated. */
+body.repeat-stopping .airplay-top-controls > *:not(#repeat-btn),
+body.repeat-stopping #now-playing-card,
+body.repeat-stopping #outputs-list {
+  pointer-events: none;
+  opacity: 0.5;
+}
+body.repeat-stopping #repeat-btn {
+  pointer-events: auto;
+  opacity: 1;
+}
 
 /* iOS-style storage bar */
 .storage-bar {
@@ -1925,41 +1947,84 @@ HOME_CARDS_SCRIPT = """
     var m = Math.floor(s / 60), r = s % 60;
     return m + ':' + (r < 10 ? '0' : '') + r;
   }
+  // __repeatOptimistic holds the click's immediate intent until the polled
+  // truth agrees with it (or a fallback timeout elapses): { active, kind,
+  // ts }. kind is 'start' or 'stop' -- 'stop' gets a longer fallback window
+  // (REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS) because it also has to cover the
+  // fade-out phase, which the server now reports explicitly via
+  // repeat.replay.fading_out (see updateRepeatButton's 'stopping' state
+  // below) so the button doesn't just go dead for the 1.5 s fade.
   var __repeatOptimistic = null;
+  var REPEAT_START_OPTIMISTIC_TIMEOUT_MS = 5000;
+  var REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS = 10000;
+
+  // No master-volume writes are made anywhere in this stop/fade flow --
+  // 'stopping' is purely a visual/feedback state (label, disabled button,
+  // page quiesce class); it never touches output/appliance volume.
   function updateRepeatButton(d){
     var btn = document.getElementById('repeat-btn');
     if (!btn) return;
     var repeat = (d && d.repeat) || null;
-    if (!repeat || !repeat.enabled) { btn.hidden = true; return; }
+    if (!repeat || !repeat.enabled) {
+      btn.hidden = true;
+      __repeatOptimistic = null;
+      _setRepeatStopping(false);
+      return;
+    }
     btn.hidden = false;
     var recording = repeat.recording || {};
     var replay = repeat.replay || {};
     var armed = !!repeat.armed;
     var replaying = !!replay.active;
+    var fadingOut = !!replay.fading_out;
     var hasBuffer = Number(recording.bytes || 0) > 0;
     var polledOn = replaying || armed;
     var session = (d && d.session) || null;
     var sessionActive = (session && typeof session.active === 'boolean') ? !!session.active : null;
 
     // Optimistic-click reconciliation: hold the click's immediate
-    // visual state until the polled truth agrees with it, or ~5 s
-    // elapse -- the 1.5 s stop/start fade means polled state lags the
-    // click, and without this the button would flicker back mid-fade.
+    // visual state until the polled truth agrees with it, or the
+    // fallback timeout elapses -- the 1.5 s stop/start fade means
+    // polled state lags the click, and without this the button would
+    // flicker back mid-fade.
     var on = polledOn;
     var state = replaying ? 'repeating' : (armed ? 'armed' : 'off');
+    var optimisticStopPending = false;
     if (__repeatOptimistic) {
-      var agrees = (__repeatOptimistic.active === polledOn);
-      var expired = (Date.now() - __repeatOptimistic.ts) >= 5000;
+      optimisticStopPending = (__repeatOptimistic.kind === 'stop' && __repeatOptimistic.active === false);
+      var timeoutMs = (__repeatOptimistic.kind === 'stop')
+        ? REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS
+        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;
+      // The stop confirms complete once the server reports the replay
+      // fully gone (not just no-longer-fading): active false AND
+      // fading_out false. Until then, keep the optimistic 'stopping'
+      // visual even if a single poll briefly reports active=false while
+      // fading_out lags (defensive against ordering, though the daemon
+      // sets both from the same _state read).
+      var stopConfirmed = optimisticStopPending && !replaying && !fadingOut;
+      var agrees = optimisticStopPending ? stopConfirmed : (__repeatOptimistic.active === polledOn);
+      var expired = (Date.now() - __repeatOptimistic.ts) >= timeoutMs;
       if (agrees || expired) {
         __repeatOptimistic = null;
+        optimisticStopPending = false;
       } else {
         on = __repeatOptimistic.active;
         state = on ? (replaying ? 'repeating' : 'armed') : 'off';
       }
     }
+
+    // 'stopping' state: the single derivation point for fade-out
+    // feedback. True while either the optimistic stop click hasn't been
+    // confirmed yet (covers the click-to-poll-catch-up window, including
+    // while the server still reports replay.active true), or the server
+    // itself reports the fade in flight with no local optimistic state
+    // at all (e.g. a second tab, or a page load that lands mid-fade).
+    var stopping = optimisticStopPending || fadingOut;
+    if (stopping) state = 'stopping';
+
     btn.setAttribute('data-state', state);
-    btn.classList.toggle('active', on);
-    btn.disabled = (!hasBuffer && !replaying && !on);
+    btn.classList.toggle('active', on || stopping);
+    btn.disabled = stopping || (!hasBuffer && !replaying && !on);
 
     // 'Replay Last' only makes sense when nothing is authoritatively
     // playing right now: with a session block, gate it on
@@ -1969,7 +2034,7 @@ HOME_CARDS_SCRIPT = """
     var showReplayLast = (sessionActive === null)
       ? (!on && hasBuffer)
       : (!sessionActive && !on && hasBuffer && !armed && !replaying);
-    btn.textContent = showReplayLast ? '↻ Replay Last' : '↻ Repeat Play';
+    btn.textContent = stopping ? 'Stopping…' : (showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');
 
     if (!__repeatOptimistic) {
       var title = '';
@@ -1982,7 +2047,54 @@ HOME_CARDS_SCRIPT = """
       }
       btn.title = title;
     }
+
+    _setRepeatStopping(stopping);
   }
+
+  // Single page-quiesce choke point: toggles body.repeat-stopping and
+  // inert on the sibling controls (never on #repeat-btn itself, which is
+  // the feedback element and must stay visible + interactive-looking,
+  // though disabled). No per-control special-casing anywhere else.
+  function _repeatStoppingInertTargets(){
+    var ids = ['now-playing-card', 'outputs-list'];
+    var targets = [];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) targets.push(el);
+    }
+    // Any other direct child of .airplay-top-controls besides the repeat
+    // button itself -- covers the appliance-selector widget, which lives
+    // in that row as a sibling of #repeat-btn on both the local and
+    // remote pages. Walking siblings (rather than inerting the shared
+    // container) is what lets the button stay interactive-looking while
+    // everything around it quiesces.
+    var topControls = document.querySelector('.airplay-top-controls');
+    if (topControls) {
+      var kids = topControls.children;
+      for (var j = 0; j < kids.length; j++) {
+        var kid = kids[j];
+        if (kid.id === 'repeat-btn') continue;
+        if (targets.indexOf(kid) === -1) targets.push(kid);
+      }
+    }
+    return targets;
+  }
+  var __repeatStoppingActive = false;
+  function _setRepeatStopping(stopping){
+    stopping = !!stopping;
+    if (stopping === __repeatStoppingActive) return;
+    __repeatStoppingActive = stopping;
+    document.body.classList.toggle('repeat-stopping', stopping);
+    var targets = _repeatStoppingInertTargets();
+    for (var i = 0; i < targets.length; i++) {
+      if (stopping) {
+        targets[i].setAttribute('inert', '');
+      } else {
+        targets[i].removeAttribute('inert');
+      }
+    }
+  }
+
   function onRepeatButtonClick(){
     var btn = document.getElementById('repeat-btn');
     if (!btn || btn.disabled) return;
@@ -1991,14 +2103,31 @@ HOME_CARDS_SCRIPT = """
     // repeating -> stop replay; armed -> disarm; off -> arm (starts replay
     // immediately if idle with a buffer, or arms for stream-end if playing live).
     var newArmed = (state === 'repeating' || state === 'armed') ? false : true;
+    var kind = newArmed ? 'start' : 'stop';
     // Apply the optimistic visual state immediately: don't wait for the
-    // POST to resolve before flipping the class/title, so the click
+    // POST to resolve before flipping the class/label, so the click
     // feels instant even though the 1.5 s fade means the polled truth
-    // will lag behind for a while.
-    __repeatOptimistic = { active: newArmed, ts: Date.now() };
-    btn.classList.toggle('active', newArmed);
-    btn.setAttribute('data-state', newArmed ? 'armed' : 'off');
-    btn.title = newArmed ? 'Starting…' : 'Stopping…';
+    // will lag behind for a while. Stop clicks disable the button too --
+    // closes the double-click-during-fade hole where a second click
+    // mid-fade could re-arm/re-stop against a session that's already
+    // tearing down.
+    __repeatOptimistic = { active: newArmed, kind: kind, ts: Date.now() };
+    // 'active' (the accent-outline styling) stays true through the stop
+    // click too -- the button remains the visible feedback element while
+    // stopping, it just swaps its label/disabled state; only a confirmed
+    // 'off' clears the outline.
+    btn.classList.add('active');
+    btn.setAttribute('data-state', newArmed ? 'armed' : 'stopping');
+    if (newArmed) {
+      btn.textContent = '↻ Repeat Play';
+      btn.title = 'Starting…';
+      btn.disabled = false;
+    } else {
+      btn.textContent = 'Stopping…';
+      btn.title = 'Stopping…';
+      btn.disabled = true;
+    }
+    _setRepeatStopping(!newArmed);
     fetch(window.__REPEAT_URL || '/api/repeat', {
       method: 'POST',
       credentials: 'same-origin',
@@ -2008,10 +2137,14 @@ HOME_CARDS_SCRIPT = """
       if (!d || !d.ok) {
         __repeatOptimistic = null;
         btn.classList.toggle('active', wasActive);
+        btn.disabled = false;
+        _setRepeatStopping(false);
       }
     }).catch(function(){
       __repeatOptimistic = null;
       btn.classList.toggle('active', wasActive);
+      btn.disabled = false;
+      _setRepeatStopping(false);
     });
   }
 

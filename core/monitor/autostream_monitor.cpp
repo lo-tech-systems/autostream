@@ -1145,6 +1145,7 @@ std::string AudioMonitor::api_get_status()
             << "},"
             << "\"replay\":{"
             << "\"active\":"            << (rs.replay.active ? "true" : "false") << ","
+            << "\"fading_out\":"        << (rs.replay.fading_out ? "true" : "false") << ","
             << "\"position_seconds\":"  << rs.replay.position_seconds            << ","
             << "\"duration_seconds\":"  << rs.replay.duration_seconds            << ","
             << "\"loop_count\":"        << rs.replay.loop_count                  << "}"

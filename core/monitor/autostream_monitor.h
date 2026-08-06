@@ -1326,6 +1326,7 @@ struct RepeatStatus
     struct Replay
     {
         bool     active            = false;
+        bool     fading_out        = false;   // true only while _state == FadingOut; active stays true throughout
         double   position_seconds  = 0.0;
         double   duration_seconds  = 0.0;
         uint64_t loop_count        = 0;

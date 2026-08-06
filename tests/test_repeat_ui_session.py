@@ -186,7 +186,10 @@ class TestReplayLastNeverWhileSessionActive:
         )
 
     def test_button_text_driven_by_show_replay_last_flag(self, home_html):
-        assert "btn.textContent = showReplayLast ? '↻ Replay Last' : '↻ Repeat Play';" in home_html
+        assert (
+            "btn.textContent = stopping ? 'Stopping…' : "
+            "(showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');" in home_html
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -198,28 +201,53 @@ class TestOptimisticClickState:
         assert "var __repeatOptimistic = null;" in home_html
 
     def test_click_sets_optimistic_override_before_post_resolves(self, home_html):
-        assert "__repeatOptimistic = { active: newArmed, ts: Date.now() };" in home_html
+        assert "__repeatOptimistic = { active: newArmed, kind: kind, ts: Date.now() };" in home_html
         # Class + transient title applied synchronously, before fetch() below.
         click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
         opt_idx = click_src.index("__repeatOptimistic = { active: newArmed")
         fetch_idx = click_src.index("fetch(window.__REPEAT_URL || '/api/repeat'")
         assert opt_idx < fetch_idx
-        assert "btn.classList.toggle('active', newArmed);" in click_src[opt_idx:fetch_idx]
-        assert "btn.title = newArmed ? 'Starting…' : 'Stopping…';" in click_src[opt_idx:fetch_idx]
+        between = click_src[opt_idx:fetch_idx]
+        assert "btn.classList.add('active');" in between
+        assert "btn.title = 'Starting…';" in between
+        assert "btn.title = 'Stopping…';" in between
 
-    def test_hold_until_agree_or_five_second_timeout(self, home_html):
-        assert "var agrees = (__repeatOptimistic.active === polledOn);" in home_html
-        assert "var expired = (Date.now() - __repeatOptimistic.ts) >= 5000;" in home_html
+    def test_hold_until_agree_or_timeout(self, home_html):
+        assert (
+            "var agrees = optimisticStopPending ? stopConfirmed : (__repeatOptimistic.active === polledOn);"
+            in home_html
+        )
+        assert "var expired = (Date.now() - __repeatOptimistic.ts) >= timeoutMs;" in home_html
         assert "if (agrees || expired) {" in home_html
+
+    def test_start_and_stop_use_different_fallback_timeouts(self, home_html):
+        assert "var REPEAT_START_OPTIMISTIC_TIMEOUT_MS = 5000;" in home_html
+        assert "var REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS = 10000;" in home_html
+        assert (
+            "var timeoutMs = (__repeatOptimistic.kind === 'stop')\n"
+            "        ? REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS\n"
+            "        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;" in home_html
+        )
 
     def test_optimistic_override_wins_over_polled_state_while_held(self, home_html):
         assert "on = __repeatOptimistic.active;" in home_html
 
     def test_post_failure_reverts_optimistic_override(self, home_html):
         # Both the explicit {ok:false} branch and the network-error catch()
-        # clear the override AND restore the pre-click class.
-        assert "if (!d || !d.ok) {\n        __repeatOptimistic = null;\n        btn.classList.toggle('active', wasActive);\n      }" in home_html
-        assert "}).catch(function(){\n      __repeatOptimistic = null;\n      btn.classList.toggle('active', wasActive);\n    });" in home_html
+        # clear the override, restore the pre-click class, re-enable the
+        # button, and drop the page-quiesce state.
+        assert (
+            "if (!d || !d.ok) {\n        __repeatOptimistic = null;\n"
+            "        btn.classList.toggle('active', wasActive);\n"
+            "        btn.disabled = false;\n"
+            "        _setRepeatStopping(false);\n      }" in home_html
+        )
+        assert (
+            "}).catch(function(){\n      __repeatOptimistic = null;\n"
+            "      btn.classList.toggle('active', wasActive);\n"
+            "      btn.disabled = false;\n"
+            "      _setRepeatStopping(false);\n    });" in home_html
+        )
 
     def test_no_new_timers_beyond_existing_poll(self, home_html):
         # The optimistic mechanism must not introduce its own setTimeout/
@@ -230,6 +258,66 @@ class TestOptimisticClickState:
         opt_block = opt_block.split("function getOutputIdKey", 1)[0]
         assert "setTimeout" not in opt_block
         assert "setInterval" not in opt_block
+
+    def test_no_volume_writes_in_stop_flow(self, home_html):
+        # Agreed design constraint: no master-volume writes of any kind are
+        # part of the stop/fade feedback path.
+        opt_block = home_html.split("var __repeatOptimistic = null;", 1)[1]
+        opt_block = opt_block.split("function buildOutputCardElement", 1)[0]
+        assert "onMasterVolumeChange" not in opt_block
+        assert "MasterVolume" not in opt_block
+        assert "master_vol" not in opt_block
+
+
+# ---------------------------------------------------------------------------
+# 'stopping' state: fade-out feedback (label, disabled button, page quiesce)
+# ---------------------------------------------------------------------------
+
+
+class TestStoppingState:
+    def test_fading_out_read_from_replay_block(self, home_html):
+        assert "var fadingOut = !!replay.fading_out;" in home_html
+
+    def test_optimistic_stop_pending_derivation(self, home_html):
+        assert (
+            "optimisticStopPending = (__repeatOptimistic.kind === 'stop' "
+            "&& __repeatOptimistic.active === false);" in home_html
+        )
+
+    def test_stopping_derived_from_optimistic_pending_or_server_fading_out(self, home_html):
+        assert "var stopping = optimisticStopPending || fadingOut;" in home_html
+
+    def test_stopping_label_text(self, home_html):
+        assert "btn.textContent = stopping ? 'Stopping…' : (showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');" in home_html
+        assert "btn.textContent = 'Stopping…';" in home_html
+
+    def test_button_disabled_while_stopping(self, home_html):
+        assert "btn.disabled = stopping || (!hasBuffer && !replaying && !on);" in home_html
+        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+        assert "btn.disabled = true;" in click_src
+
+    def test_data_state_set_to_stopping(self, home_html):
+        assert "if (stopping) state = 'stopping';" in home_html
+        assert "btn.setAttribute('data-state', newArmed ? 'armed' : 'stopping');" in home_html
+
+    def test_body_class_toggled_from_single_choke_point(self, home_html):
+        assert "document.body.classList.toggle('repeat-stopping', stopping);" in home_html
+        # Only called from updateRepeatButton and the click handler / its
+        # failure paths -- not scattered elsewhere.
+        assert home_html.count("function _setRepeatStopping(stopping){") == 1
+
+    def test_inert_toggled_on_sibling_controls_not_the_button(self, home_html):
+        assert "targets[i].setAttribute('inert', '');" in home_html
+        assert "targets[i].removeAttribute('inert');" in home_html
+        assert "if (kid.id === 'repeat-btn') continue;" in home_html
+
+    def test_css_quiesce_rules_exclude_repeat_btn(self, home_html):
+        assert "body.repeat-stopping .airplay-top-controls > *:not(#repeat-btn)" in home_html
+        assert "body.repeat-stopping #repeat-btn {" in home_html
+        assert "pointer-events: auto;" in home_html
+
+    def test_stop_confirmation_requires_both_active_false_and_not_fading_out(self, home_html):
+        assert "var stopConfirmed = optimisticStopPending && !replaying && !fadingOut;" in home_html
 
 
 # ---------------------------------------------------------------------------

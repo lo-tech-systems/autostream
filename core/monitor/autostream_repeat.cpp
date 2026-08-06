@@ -1744,6 +1744,7 @@ RepeatStatus RepeatController::get_status() const
     // for position/duration/loop_count, not for the active flag itself.
     ReplayEngine::Snapshot rsnap = _replay.get_snapshot();
     s.replay.active           = (_state == RepeatState::Replaying || _state == RepeatState::FadingOut);
+    s.replay.fading_out       = (_state == RepeatState::FadingOut);
     s.replay.position_seconds = rsnap.position_seconds;
     s.replay.duration_seconds = rsnap.duration_seconds;
     s.replay.loop_count       = rsnap.loop_count;
