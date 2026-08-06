@@ -43,6 +43,7 @@ from autostream_webui_common import (
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
+    no_input_configured_notice_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -677,6 +678,10 @@ def send_airplay_page(
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
         # Repeat button + optional hostname pill
         + _top_controls_html
+        # "No input configured" notice -- shown above the Now Playing card
+        # (which holds the master volume control when enabled) so it reads
+        # as a call-to-action ahead of playback/volume controls.
+        + no_input_configured_notice_html(parsed)
         # Now Playing card (contains master volume when enabled)
         + _now_playing_card_html
         # Service warning banners

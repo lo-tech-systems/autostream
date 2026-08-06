@@ -4,14 +4,18 @@ WP8B acceptance tests: post-setup "no input configured" notice.
 
 Tests cover:
   - no_input_configured_notice_html(): the shared helper's on/off conditions
-  - Home (/equaliser) page: notice renders only when neither input is enabled
-  - Setup page: notice renders only when neither input is enabled
+  - Main page (/): notice renders above the Now Playing / master-volume
+    markup only when neither input is enabled
+  - Setup page: notice is absent (moved to the main page)
+  - Equaliser page (/equaliser): notice is absent (moved to the main page;
+    /equaliser is a distinct route, not the home page)
 """
 from __future__ import annotations
 
 import io
 import json
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -56,10 +60,6 @@ class TestNoInputConfiguredNoticeHtml:
         assert "Bluetooth" in html
 
 
-# ---------------------------------------------------------------------------
-# Home page (/equaliser) — notice shown only when no input enabled
-# ---------------------------------------------------------------------------
-
 def _minimal_cfg(tmp_path: Path, *, audio1_enabled: bool = True, audio2_enabled: bool = False) -> Path:
     cfg = tmp_path / "autostream.json"
     cfg.write_text(json.dumps({
@@ -90,7 +90,94 @@ def _minimal_cfg(tmp_path: Path, *, audio1_enabled: bool = True, audio2_enabled:
     return cfg
 
 
-class TestHomePageBanner:
+# ---------------------------------------------------------------------------
+# Main page (/) — notice shown only when no input enabled, positioned above
+# the Now Playing card (which holds the master-volume control when enabled).
+# ---------------------------------------------------------------------------
+
+def _make_playback_snapshot():
+    snap = MagicMock()
+    snap.inputs = {}
+    snap.stylus_banner_text = ""
+    snap.belt_banner_text = ""
+    snap.bearing_banner_text = ""
+    snap.has_warning = False
+    snap.to_public_dict.return_value = {}
+    return snap
+
+
+class TestMainPageBanner:
+    def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
+        from autostream_webui_page_airplay import send_airplay_page
+        from autostream_settings import SettingsStore
+        from autostream_webui_state import WebUIState
+        from autostream_players import ListOutputsResult
+        from track_id.models import disabled_snapshot
+
+        cfg = _minimal_cfg(tmp_path, audio1_enabled=audio1_enabled, audio2_enabled=audio2_enabled)
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
+        state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
+
+        handler = MagicMock()
+        handler.wfile = io.BytesIO()
+        handler._csrf_token = "tok"
+        handler._pending_set_cookies = []
+
+        auth = MagicMock()
+        auth.get_csrf_token.return_value = "tok"
+
+        buf_result = MagicMock(ok=True, value="2250")
+
+        patches = [
+            patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+            patch("autostream_webui_page_airplay.get_appliance_id", return_value="local-id"),
+            patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
+            patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+            patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+            patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=_make_playback_snapshot()),
+            patch("autostream_webui_page_airplay.list_outputs",
+                  return_value=ListOutputsResult(ok=False, error="unreachable")),
+            patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+            patch("autostream_core.get_active_track_identification_snapshot",
+                  return_value=disabled_snapshot()),
+        ]
+
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            send_airplay_page(handler, state, auth)
+
+        store.close(save=False)
+        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+
+    def test_banner_absent_when_input1_enabled(self, tmp_path):
+        html = self._render(tmp_path, audio1_enabled=True, audio2_enabled=False)
+        assert "No input device configured" not in html
+
+    def test_banner_present_when_no_input_enabled(self, tmp_path):
+        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
+        assert "No input device configured" in html
+
+    def test_banner_absent_when_only_input2_enabled(self, tmp_path):
+        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=True)
+        assert "No input device configured" not in html
+
+    def test_banner_positioned_above_now_playing_card(self, tmp_path):
+        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
+        notice_idx = html.index("No input device configured")
+        now_playing_idx = html.index('id="now-playing-card"')
+        master_volume_idx = html.index('id="master-volume-card"')
+        assert notice_idx < now_playing_idx
+        assert notice_idx < master_volume_idx
+
+
+# ---------------------------------------------------------------------------
+# Equaliser page (/equaliser) — notice removed; it now lives only on the
+# main page. /equaliser is a distinct route (not the '/' home page), so this
+# instance was dropped rather than kept.
+# ---------------------------------------------------------------------------
+
+class TestEqualiserPageBannerAbsent:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
         from autostream_webui_page_equaliser import send_equaliser_page
         from autostream_settings import SettingsStore
@@ -112,24 +199,20 @@ class TestHomePageBanner:
         store.close(save=False)
         return handler.wfile.getvalue().decode("utf-8", errors="replace")
 
+    def test_banner_absent_when_no_input_enabled(self, tmp_path):
+        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
+        assert "No input device configured" not in html
+
     def test_banner_absent_when_input1_enabled(self, tmp_path):
         html = self._render(tmp_path, audio1_enabled=True, audio2_enabled=False)
         assert "No input device configured" not in html
 
-    def test_banner_present_when_no_input_enabled(self, tmp_path):
-        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
-        assert "No input device configured" in html
-
-    def test_banner_absent_when_only_input2_enabled(self, tmp_path):
-        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=True)
-        assert "No input device configured" not in html
-
 
 # ---------------------------------------------------------------------------
-# Setup page — notice shown only when no input enabled
+# Setup page — notice removed; it now lives only on the main page.
 # ---------------------------------------------------------------------------
 
-class TestSetupPageBanner:
+class TestSetupPageBannerAbsent:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
         from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
@@ -169,6 +252,6 @@ class TestSetupPageBanner:
         html = self._render(tmp_path, audio1_enabled=True, audio2_enabled=False)
         assert "No input device configured" not in html
 
-    def test_banner_present_when_no_input_enabled(self, tmp_path):
+    def test_banner_absent_when_no_input_enabled(self, tmp_path):
         html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
-        assert "No input device configured" in html
+        assert "No input device configured" not in html

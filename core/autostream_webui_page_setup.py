@@ -64,7 +64,6 @@ from autostream_webui_common import (
     build_page_html,
     build_top_banner_html,
     get_app_version,
-    no_input_configured_notice_html,
     settings_card_html,
 )
 from autostream_webui_state import WebUIState
@@ -1372,7 +1371,6 @@ def send_setup_page(
     <div class="setup-slide-list">
       {_setup_page_header("Setup")}
       <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
-      {no_input_configured_notice_html(parsed)}
       <div class="setup-list-card" onclick="openPanel('input1')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Input 1</span>
