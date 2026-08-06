@@ -617,3 +617,147 @@ class TestBtOnboardSet:
             result, msg = su.bt_onboard_set(True)
         assert result is False
         assert "fail" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# _get_monitor_vmswap_mib
+# ---------------------------------------------------------------------------
+
+def _cp(returncode=0, stdout="", stderr=""):
+    import subprocess
+    return subprocess.CompletedProcess(["systemctl"], returncode, stdout=stdout, stderr=stderr)
+
+
+class TestGetMonitorVmswapMib:
+    def test_reports_vmswap_when_pid_and_status_present(self, tmp_path):
+        pid_dir = tmp_path / "4242"
+        pid_dir.mkdir()
+        (pid_dir / "status").write_text(
+            "Name:\tautostream_monitor\nVmSwap:\t8192 kB\n", encoding="utf-8"
+        )
+        with patch.object(su, "run_cmd", return_value=_cp(0, "4242\n")) as m_run:
+            result = su._get_monitor_vmswap_mib(proc_root=tmp_path)
+        assert result == 8
+        m_run.assert_called_once_with(
+            ["systemctl", "show", su.MONITOR_SERVICE_UNIT, "-p", "MainPID", "--value"],
+            timeout=2.0,
+            warn_on_failure=False,
+        )
+
+    def test_systemctl_failure_degrades_to_zero(self, tmp_path):
+        with patch.object(su, "run_cmd", return_value=_cp(1, "")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+    def test_no_systemd_exception_degrades_to_zero(self, tmp_path):
+        with patch.object(su, "run_cmd", side_effect=Exception("no systemctl")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+    def test_pid_absent_degrades_to_zero(self, tmp_path):
+        with patch.object(su, "run_cmd", return_value=_cp(0, "\n")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+    def test_pid_zero_degrades_to_zero(self, tmp_path):
+        with patch.object(su, "run_cmd", return_value=_cp(0, "0\n")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+    def test_unreadable_status_file_degrades_to_zero(self, tmp_path):
+        # PID directory does not exist -> /proc/<pid>/status read fails.
+        with patch.object(su, "run_cmd", return_value=_cp(0, "9999\n")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+    def test_missing_vmswap_line_degrades_to_zero(self, tmp_path):
+        pid_dir = tmp_path / "123"
+        pid_dir.mkdir()
+        (pid_dir / "status").write_text("Name:\tautostream_monitor\n", encoding="utf-8")
+        with patch.object(su, "run_cmd", return_value=_cp(0, "123\n")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+    def test_malformed_pid_degrades_to_zero(self, tmp_path):
+        with patch.object(su, "run_cmd", return_value=_cp(0, "not-a-pid\n")):
+            assert su._get_monitor_vmswap_mib(proc_root=tmp_path) == 0
+
+
+# ---------------------------------------------------------------------------
+# get_effective_memory_info
+# ---------------------------------------------------------------------------
+
+def _write_meminfo(path, mem_total_kib, mem_available_kib, swap_total_kib, swap_free_kib):
+    path.write_text(
+        f"MemTotal:       {mem_total_kib} kB\n"
+        f"MemAvailable:   {mem_available_kib} kB\n"
+        f"SwapTotal:      {swap_total_kib} kB\n"
+        f"SwapFree:       {swap_free_kib} kB\n",
+        encoding="utf-8",
+    )
+
+
+class TestGetEffectiveMemoryInfo:
+    def test_no_swap_used_matches_mem_available(self, tmp_path):
+        meminfo = tmp_path / "meminfo"
+        _write_meminfo(meminfo, 1_000_000, 500_000, 200_000, 200_000)
+        with patch.object(su, "_get_monitor_vmswap_mib", return_value=0):
+            result = su.get_effective_memory_info(meminfo_path=meminfo, proc_root=tmp_path)
+        assert result == (500_000 // 1024, 1_000_000 // 1024)
+
+    def test_external_swap_only_subtracted_old_formula(self, tmp_path):
+        # swap_used=100_000 kB, no monitor VmSwap -> subtract all of it
+        # (this is the pre-existing formula, exercised via monitor_vmswap=0).
+        meminfo = tmp_path / "meminfo"
+        _write_meminfo(meminfo, 1_000_000, 500_000, 200_000, 100_000)
+        with patch.object(su, "_get_monitor_vmswap_mib", return_value=0):
+            result = su.get_effective_memory_info(meminfo_path=meminfo, proc_root=tmp_path)
+        expected_free_kib = 500_000 - 100_000
+        assert result == (expected_free_kib // 1024, 1_000_000 // 1024)
+
+    def test_monitor_vmswap_excluded_from_deduction(self, tmp_path):
+        # swap_used=100_000 kB (~97 MiB); monitor holds 40 MiB of it ->
+        # only the remaining ~57 MiB external swap is deducted, so effective
+        # free is higher than the old (pre-exclusion) formula would give.
+        meminfo = tmp_path / "meminfo"
+        _write_meminfo(meminfo, 1_000_000, 500_000, 200_000, 100_000)
+        with patch.object(su, "_get_monitor_vmswap_mib", return_value=40):
+            result = su.get_effective_memory_info(meminfo_path=meminfo, proc_root=tmp_path)
+        swap_used_kib = 100_000
+        external_swap_kib = swap_used_kib - (40 * 1024)
+        expected_free_kib = 500_000 - external_swap_kib
+        assert result == (expected_free_kib // 1024, 1_000_000 // 1024)
+
+        old_formula_free_mib = (500_000 - swap_used_kib) // 1024
+        assert result[0] > old_formula_free_mib
+
+    def test_monitor_vmswap_clamped_to_swap_used(self, tmp_path):
+        # monitor_vmswap (200 MiB) exceeds swap_used (100_000 kB ~= 97 MiB):
+        # external swap must clamp to 0, never go negative, and effective
+        # free must never exceed MemAvailable.
+        meminfo = tmp_path / "meminfo"
+        _write_meminfo(meminfo, 1_000_000, 500_000, 200_000, 100_000)
+        with patch.object(su, "_get_monitor_vmswap_mib", return_value=200):
+            result = su.get_effective_memory_info(meminfo_path=meminfo, proc_root=tmp_path)
+        assert result == (500_000 // 1024, 1_000_000 // 1024)
+
+    def test_monitor_vmswap_lookup_failure_degrades_to_old_formula(self, tmp_path):
+        # _get_monitor_vmswap_mib itself already degrades to 0 on any
+        # internal failure (see TestGetMonitorVmswapMib); this confirms
+        # get_effective_memory_info propagates that degraded value straight
+        # through rather than raising or over-crediting free memory.
+        meminfo = tmp_path / "meminfo"
+        _write_meminfo(meminfo, 1_000_000, 500_000, 200_000, 100_000)
+        with patch.object(su, "run_cmd", side_effect=Exception("no systemd")):
+            result = su.get_effective_memory_info(meminfo_path=meminfo, proc_root=tmp_path)
+        expected_free_kib = 500_000 - 100_000
+        assert result == (expected_free_kib // 1024, 1_000_000 // 1024)
+
+    def test_missing_meminfo_file_returns_none(self, tmp_path):
+        with patch.object(su, "_get_monitor_vmswap_mib", return_value=0):
+            result = su.get_effective_memory_info(
+                meminfo_path=tmp_path / "missing", proc_root=tmp_path
+            )
+        assert result is None
+
+    def test_default_paths_used_when_unset(self):
+        # Sanity check that calling with no args still hits the real /proc
+        # paths (i.e. defaults are wired through), without asserting on the
+        # live system's actual memory figures.
+        with patch.object(su, "_get_monitor_vmswap_mib", return_value=0) as m_vm:
+            su.get_effective_memory_info()
+        m_vm.assert_called_once_with(proc_root="/proc")

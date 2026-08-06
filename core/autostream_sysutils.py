@@ -413,18 +413,85 @@ def get_root_disk_usage() -> tuple[int, int, int] | None:
         return None
 
 
-def get_effective_memory_info() -> "tuple[int, int] | None":
+MONITOR_SERVICE_UNIT = "autostream_monitor.service"
+
+
+def _get_monitor_vmswap_mib(
+    proc_root: "Path | str" = "/proc",
+    service_unit: str = MONITOR_SERVICE_UNIT,
+) -> int:
+    """Return the monitor daemon's own VmSwap in MiB, or 0 if it cannot be
+    determined.
+
+    Mirrors the monitor's own /proc/self/status read (see
+    core/monitor/autostream_repeat.cpp's read_meminfo()), but from the
+    outside: this process is not the monitor, so the PID is looked up via
+    systemd first. Every failure path -- no systemd, unit not running
+    (MainPID absent/0), unreadable /proc/<pid>/status, missing VmSwap line --
+    degrades to 0 rather than raising, which callers then treat exactly like
+    a swapless kernel (i.e. the pre-existing external-swap-only formula).
+    """
+    try:
+        result = run_cmd(
+            ["systemctl", "show", service_unit, "-p", "MainPID", "--value"],
+            timeout=2.0,
+            warn_on_failure=False,
+        )
+        if result.returncode != 0:
+            return 0
+
+        pid_text = (result.stdout or "").strip()
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            return 0
+        if pid <= 0:
+            return 0
+
+        status_path = Path(proc_root) / str(pid) / "status"
+        for line in status_path.read_text(encoding="utf-8").splitlines():
+            key, _, rest = line.partition(":")
+            if key.strip() != "VmSwap":
+                continue
+            rest = rest.strip()
+            if rest.endswith("kB"):
+                rest = rest[:-2].strip()
+            return max(0, int(rest) // 1024)
+
+        return 0
+    except Exception:
+        return 0
+
+
+def get_effective_memory_info(
+    meminfo_path: "Path | str" = "/proc/meminfo",
+    proc_root: "Path | str" = "/proc",
+) -> "tuple[int, int] | None":
     """Return (effective_free_mib, total_mib) from /proc/meminfo, or None if unavailable.
+
+    *meminfo_path* and *proc_root* default to the real system paths; they
+    are only overridden by tests.
 
     On zram swap, swapped-out pages stay resident in RAM (compressed), so
     MemAvailable alone overstates how much headroom is genuinely free --
-    subtracting the swapped-out portion (SwapTotal - SwapFree) gives the
-    figure that actually reflects physical pressure, mirroring the monitor's
-    own sizing formula.
+    subtracting the swapped-out portion (SwapTotal - SwapFree) gives a figure
+    that reflects physical pressure. Of that swapped-out portion, only the
+    part attributable to OTHER processes is treated as spoken-for: the
+    monitor daemon's own VmSwap is excluded from the deduction, since a
+    retained-but-dormant recording buffer that has migrated to swap is
+    reclaimed by the monitor itself when needed rather than competing with a
+    new allocation. This mirrors MemInfo::effective_available_mib() in the
+    monitor (core/monitor/autostream_repeat_buffer.h): effective_free =
+    MemAvailable - max(0, swap_used - monitor_vmswap), with monitor_vmswap
+    clamped to swap_used so the external-swap term is never negative. If the
+    monitor's own VmSwap cannot be determined (no systemd, unit not running,
+    unreadable /proc/<pid>/status), monitor_vmswap degrades to 0, which
+    reduces to the plain external-swap-only formula used before this
+    exclusion existed.
     """
     try:
         fields: dict = {}
-        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+        for line in Path(meminfo_path).read_text(encoding="utf-8").splitlines():
             key, _, rest = line.partition(":")
             rest = rest.strip()
             if rest.endswith("kB"):
@@ -437,7 +504,14 @@ def get_effective_memory_info() -> "tuple[int, int] | None":
         swap_free_kib = fields["SwapFree"]
 
         swapped_kib = max(0, swap_total_kib - swap_free_kib)
-        effective_free_kib = max(0, mem_available_kib - swapped_kib)
+
+        monitor_vmswap_mib = _get_monitor_vmswap_mib(proc_root=proc_root)
+        monitor_vmswap_kib = max(0, monitor_vmswap_mib * 1024)
+        if monitor_vmswap_kib > swapped_kib:
+            monitor_vmswap_kib = swapped_kib
+        external_swapped_kib = max(0, swapped_kib - monitor_vmswap_kib)
+
+        effective_free_kib = max(0, mem_available_kib - external_swapped_kib)
 
         return effective_free_kib // 1024, mem_total_kib // 1024
     except Exception:
