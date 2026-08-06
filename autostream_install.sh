@@ -1005,6 +1005,9 @@ configure_phase() {
   # Memory/swap tuning
   tune_memory_behaviour
 
+  # Unneeded system services / boot-time tax
+  remove_unneeded_system_services
+
   # Firmware / watchdog
   # update_pi_firmware_config writes dtoverlay=disable-bt on fresh installs
   # (the onboard radio is opt-in via a later, separate runtime action) and
@@ -1119,6 +1122,53 @@ EOF
   rm -f "${tmp}"
 
   sysctl -p "${conf}" || warn "sysctl -p ${conf} failed to apply; will take effect on next boot."
+}
+
+# remove_unneeded_system_services: converge every install and update on a
+# minimal package set and trim a fixed per-boot cost, matching what a
+# dedicated audio appliance actually needs.
+#
+# - modemmanager and udisks2 are pulled in by desktop-oriented base images
+#   but have no role here: there is no modem hardware, and no removable-
+#   storage workflow that would need udisks2 (removing it also closes an
+#   otherwise-idle D-Bus surface). Each is removed only after a `dpkg -s`
+#   presence check -- an unguarded `apt-get remove` on a package apt has
+#   never seen exits non-zero and would abort the install under `set -e`,
+#   so the check makes re-running this on an already-clean box a no-op.
+# - cloud-init's final per-boot stage costs a large fraction of every boot
+#   on these devices, including the automatic reboot that follows every
+#   update, yet its provisioning job is finished after the OS image's first
+#   boot -- which is guaranteed to have already happened by the time this
+#   installer runs. The supported way to stop the per-boot run without
+#   uninstalling the package is an empty, root-owned
+#   /etc/cloud/cloud-init.disabled flag file: it is reversible and survives
+#   package updates, unlike purging cloud-init outright. The flag is only
+#   created when cloud-init is actually installed.
+#
+# Not reversed on uninstall, matching the swap/zram tuning convention in
+# tune_memory_behaviour(): this is one-way convergence, not session state.
+remove_unneeded_system_services() {
+  info "Removing unneeded system services"
+
+  local pkg
+  for pkg in modemmanager udisks2; do
+    if dpkg -s "${pkg}" >/dev/null 2>&1; then
+      info "Removing package: ${pkg}"
+      DEBIAN_FRONTEND=noninteractive apt-get remove -y "${pkg}" || \
+        warn "apt-get remove -y ${pkg} failed; continuing."
+    else
+      info "Package '${pkg}' already absent; skipping."
+    fi
+  done
+
+  if dpkg -s cloud-init >/dev/null 2>&1; then
+    info "Disabling cloud-init per-boot runs"
+    mkdir -p /etc/cloud
+    install -m 0644 -o root -g root /dev/null /etc/cloud/cloud-init.disabled || \
+      warn "Could not create /etc/cloud/cloud-init.disabled; continuing."
+  else
+    info "cloud-init not installed; skipping disable flag."
+  fi
 }
 
 permissions_pass() {
