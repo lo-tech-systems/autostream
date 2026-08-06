@@ -51,7 +51,7 @@ def _reset_module():
     with ou._local_ips_cache_lock:
         ou._local_ips_cache = None
         ou._local_ips_cache_time = 0.0
-    # Reset WP2 shutdown state.
+    # Reset shutdown-awareness state.
     ou._poll_stop_event.clear()
     ou._browser_shutdown = None
     with ou._browser_lock:
@@ -936,7 +936,7 @@ class TestNullOutputsPreservesCache:
 
 
 # ---------------------------------------------------------------------------
-# WP2: Shutdown awareness (plan section 5)
+# Shutdown awareness (plan section 5)
 # ---------------------------------------------------------------------------
 
 class TestShutdownAwareness:

@@ -1213,7 +1213,7 @@ def send_federation_eq_status_json(handler, state: WebUIState) -> None:  # noqa:
 
 
 # ---------------------------------------------------------------------------
-# WP3 - Generic settings API
+# Generic settings API
 # ---------------------------------------------------------------------------
 
 def _validate_bool(value: object) -> bool:
@@ -1494,7 +1494,7 @@ def _live_audio_path(state: object, value: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# WP4B — validators, debounce helpers, and live functions
+# Validators, debounce helpers, and live functions
 # ---------------------------------------------------------------------------
 
 def _validate_capture_device(value: object) -> str:
@@ -1691,7 +1691,7 @@ class _DuplicateCaptureDeviceError(Exception):
 
 # Maps public dotted field name → (section, key, validator, live_fn_or_None)
 _SETTINGS_FIELDS: dict = {
-    # WP3 — personalisation (no live effect)
+    # Personalisation (no live effect)
     "webui.dark_mode":                          ("webui",   "dark_mode",                         _validate_bool,            None),
     "webui.show_master_volume":                 ("webui",   "show_master_volume",                 _validate_bool,            None),
     "webui.show_input_detail":                  ("webui",   "show_input_detail",                  _validate_bool,            None),
@@ -1699,7 +1699,7 @@ _SETTINGS_FIELDS: dict = {
     "webui.control_other_appliances":           ("webui",   "control_other_appliances",           _validate_bool,            None),
     "webui.output_usage_poll_interval_seconds": ("webui",   "output_usage_poll_interval_seconds", _validate_poll_interval,   None),
     "updates.update_channel":                   ("updates", "update_channel",                     _validate_update_channel,  None),
-    # WP4A — audio input gain/EQ (live: monitor)
+    # Audio input gain/EQ (live: monitor)
     "audio1.gain_db":                           ("audio1",  "gain_db",                            _validate_gain_db,         _live_gain_1),
     "audio2.gain_db":                           ("audio2",  "gain_db",                            _validate_gain_db,         _live_gain_2),
     "audio1.eq_40hz_db":                        ("audio1",  "eq_40hz_db",                         _validate_gain_db,         _live_eq_1),
@@ -1708,24 +1708,24 @@ _SETTINGS_FIELDS: dict = {
     "audio2.eq_40hz_db":                        ("audio2",  "eq_40hz_db",                         _validate_gain_db,         _live_eq_2),
     "audio2.eq_100hz_db":                       ("audio2",  "eq_100hz_db",                        _validate_gain_db,         _live_eq_2),
     "audio2.eq_8khz_db":                        ("audio2",  "eq_8khz_db",                         _validate_gain_db,         _live_eq_2),
-    # WP4A — OwnTone playback defaults (live: owntone runtime)
+    # OwnTone playback defaults (live: owntone runtime)
     "owntone.output_name":                      ("owntone", "output_name",                        _validate_output_name,     _live_owntone_name),
     "owntone.volume_percent":                   ("owntone", "volume_percent",                     _validate_volume_percent,  _live_owntone_volume),
-    # WP4A — silence detection (live: monitor)
+    # Silence detection (live: monitor)
     "general.silence_seconds":                  ("general", "silence_seconds",                    _validate_silence_seconds,        _live_silence),
     # Audio Path (live: owntone resample_quality push + monitor --src args)
     "general.audio_path":                       ("general", "audio_path",                         _validate_audio_path,             _live_audio_path),
-    # WP4B — audio input capture device (live: coordinator reload debounce)
+    # Audio input capture device (live: coordinator reload debounce)
     "audio1.capture_device":                    ("audio1",  "capture_device",                     _validate_capture_device,         _live_capture_1),
     "audio2.capture_device":                    ("audio2",  "capture_device",                     _validate_capture_device,         _live_capture_2),
     # audio1 enabled (live: playback tracker + coordinator reload debounce)
     "audio1.enabled":                           ("audio1",  "enabled",                            _validate_bool,                   _live_audio1_enabled),
-    # WP4B — audio2 enabled (live: playback tracker + coordinator reload debounce)
+    # Audio2 enabled (live: playback tracker + coordinator reload debounce)
     "audio2.enabled":                           ("audio2",  "enabled",                            _validate_bool,                   _live_audio2_enabled),
-    # WP4B — turntable mode (atomic mutation with derived silence_threshold; live: playback tracker + coordinator reload debounce)
+    # Turntable mode (atomic mutation with derived silence_threshold; live: playback tracker + coordinator reload debounce)
     "audio1.turntable":                         ("audio1",  "turntable",                          _validate_bool,                   _live_turntable_1),
     "audio2.turntable":                         ("audio2",  "turntable",                          _validate_bool,                   _live_turntable_2),
-    # WP4B — track identification (live: track-ID rebuild debounce)
+    # Track identification (live: track-ID rebuild debounce)
     "track_identification.enabled":             ("track_identification", "enabled",               _validate_bool,                   _live_track_id),
     "track_identification.analysis_lead_in_seconds": ("track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id),
     "track_identification.refresh_seconds":     ("track_identification", "refresh_seconds",        _validate_track_id_refresh,       _live_track_id),
@@ -1964,7 +1964,7 @@ def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> No
 
 
 # -----------------------------------------------------------------------------
-# WP5 — Dedicated transaction endpoints for privileged/external operations
+# Dedicated transaction endpoints for privileged/external operations
 # -----------------------------------------------------------------------------
 
 # Serializes advertisement preference changes.
@@ -2117,7 +2117,7 @@ def send_save_now_json(handler, state: WebUIState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# WP7 — OwnTone setup per-field autosave endpoints
+# OwnTone setup per-field autosave endpoints
 # ---------------------------------------------------------------------------
 
 def _owntone_update_live_runtime(state: WebUIState) -> None:
@@ -2994,7 +2994,7 @@ def _network_warning_rank(adapter: dict) -> int | None:
     if policy.get("quarantined") is True or warning == "quarantined":
         return 0
     # A no-IP-suppressed / demoted adapter is as serious as a reset budget spend
-    # (held back out of service) — rank it just below quarantined (C-WP4).
+    # (held back out of service) — rank it just below quarantined.
     if warning == "no_ip_held_back" or policy.get("held_back") is True:
         return 1
     if warning == "reset_budget_exhausted":
@@ -3029,7 +3029,7 @@ def _network_warning_fields(adapter: dict) -> dict:
             warning = f"{label} adapter held back after repeated failures. Replace the adapter if this keeps happening."
         severity = "danger"
     elif rank == 1:
-        # C-WP4: no-IP-suppressed / demoted spare — the "held back" copy now
+        # No-IP-suppressed / demoted spare — the "held back" copy now
         # covers no-IP suppression (previously wired only to quarantine), and
         # notes the device fell back to the on-board radio. That fallback
         # framing only fits a non-onboard adapter being held back.

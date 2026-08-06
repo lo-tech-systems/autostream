@@ -346,7 +346,7 @@ class TestGatewayRoutesAuth:
 
 
 # ---------------------------------------------------------------------------
-# /api/about/system — GET allowlist coverage (WP2 Test 18)
+# /api/about/system — GET allowlist coverage (Test 18)
 # ---------------------------------------------------------------------------
 
 class TestAboutSystemAllowlist:

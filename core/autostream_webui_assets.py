@@ -2868,7 +2868,7 @@ function doServiceReset(item, idx) {
 """
 
 # ---------------------------------------------------------------------------
-# Shared autosave controller for POST /api/settings (WP3+)
+# Shared autosave controller for POST /api/settings
 # ---------------------------------------------------------------------------
 # Requires window.__CSRF to be set before this script runs (done by csrf_meta
 # injected in head_extra on every page that uses it).

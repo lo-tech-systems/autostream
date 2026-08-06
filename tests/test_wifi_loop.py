@@ -28,7 +28,7 @@ from _wifi_fixtures import _adapter, _facts_for, _run_monitor_once
 
 
 class TestConnectivityHysteresis:
-    """C-WP1: connectivity_ok is slow to condemn (soft N-pass) and quick to
+    """connectivity_ok is slow to condemn (soft N-pass) and quick to
     forgive (any healthy pass), with hard signals bypassing the debounce
     (field log 01-Jul-2026)."""
 
@@ -180,7 +180,7 @@ class TestHandoverSettlingGrace:
 
 
 class TestHealthMemo:
-    """C-WP0: is_wifi_client_healthy is sampled once per (pass, ifname) and the
+    """is_wifi_client_healthy is sampled once per (pass, ifname) and the
     recovery classifier and status snapshot see the same verdict in a pass."""
 
     def test_health_memo_samples_once_per_ifname(self, watcher):
@@ -220,7 +220,7 @@ class TestHealthMemo:
 
 
 class TestBootClientBringup:
-    """C2-WP4 — the BOOT-window client bring-up is a loop rung that runs the single
+    """The BOOT-window client bring-up is a loop rung that runs the single
     recovery ladder (preferred USB, else onboard) each pass while BOOT_AP_GRACE is
     open, replacing the retired pre-loop startup_connect_usb_first() one-shot and
     its tried-MACs re-probe gate.  The apply mechanics (net-absent short-circuit,
@@ -386,7 +386,7 @@ class TestBootClientBringup:
 
 
 class TestHotspotPurposeMachine:
-    """WP3 — hotspot lifetime/probe policy driven by the purpose table; defects 1 & 2."""
+    """Hotspot lifetime/probe policy driven by the purpose table; defects 1 & 2."""
 
     def _session(self, watcher, purpose, entered_at):
         watcher.STATE.setup_mode = True
@@ -396,7 +396,7 @@ class TestHotspotPurposeMachine:
         # A configured device offline at boot is BOOT_RECOVERY and probes for the
         # saved network each pass — it does not sit until the 30-min deadline.
         # Built-in hosts the hotspot; the returned USB is the second radio probed
-        # without dropping the AP (WP6 second-radio path).
+        # without dropping the AP (second-radio path).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
         self._session(watcher, watcher.wifi_policy.HotspotPurpose.BOOT_RECOVERY, entered_at=100.0)
@@ -493,7 +493,7 @@ class TestHotspotPurposeMachine:
 
 
 class TestWs1Wp3AsyncRecovery:
-    """WS1-WP3 — the recovery handlers submit activations to the worker, the
+    """The recovery handlers submit activations to the worker, the
     onboard-failure bound yields to the hotspot, and the deferred handlers hold
     off while a job is in flight (transitioning)."""
 
@@ -601,12 +601,12 @@ class TestWs1Wp3AsyncRecovery:
 
 
 class TestBootEntryOnboardFirst:
-    """Recovery-ladder WP3 — boot-window entry tries a client before the hotspot."""
+    """Recovery ladder — boot-window entry tries a client before the hotspot."""
 
     def test_wedged_usb_boot_entry_submits_onboard_not_hotspot(self, watcher):
         # Field-log shape: USB active but declared wedged (debounced dead-PHY
         # verdict), onboard idle. Boot-window entry must SUBMIT the client on
-        # the onboard (WS1-WP3) rather than open a hotspot.  Reactivate-first
+        # the onboard rather than open a hotspot.  Reactivate-first
         # already spent this episode -> exercises the fall-through to onboard
         # specifically, not the reactivate-first rung ahead of it.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -629,7 +629,7 @@ class TestBootEntryOnboardFirst:
         enter.assert_not_called()   # onboard submitted -> no hotspot this pass
 
     def test_onboard_budget_spent_boot_entry_falls_to_hotspot(self, watcher):
-        # WS1-WP3: once the onboard failure bound is reached the ladder stops
+        # Once the onboard failure bound is reached the ladder stops
         # offering onboard, so boot entry falls to the recovery hotspot (the async
         # replacement for the old in-pass "onboard failed -> hotspot").
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -650,7 +650,7 @@ class TestBootEntryOnboardFirst:
 
 
 class TestLoopHandlers:
-    """Loop-handlers WP6 — direct per-handler tests over synthetic contexts.
+    """Loop handlers — direct per-handler tests over synthetic contexts.
 
     Isolation: the `watcher` fixture resets STATE (and the log-dedup cache); the
     event-setting tests clear the threading.Events they touch so they cannot leak.
@@ -705,7 +705,7 @@ class TestLoopHandlers:
         cr.assert_not_called()
         co.assert_not_called()
 
-    # ---- C-WP2: boot-recovery-not-after-online gate ----
+    # ---- Boot-recovery-not-after-online gate ----
 
     def test_boot_entry_skipped_after_online_this_boot(self, watcher):
         watcher.STATE.been_online_this_boot = True
@@ -815,7 +815,7 @@ class TestLoopHandlers:
     # ---- Phase B-late USB-failure fallback (over the debounced verdict) ----
 
     def test_step_usb_failure_fallback_owns_pass_on_fallback(self, watcher):
-        # C2-WP3: the handler is a Phase B-late handler over the HealthContext; it
+        # The handler is a Phase B-late handler over the HealthContext; it
         # delegates to handle_usb_failure_fallback(hctx) and owns the pass when a
         # transition fires.
         usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
@@ -882,10 +882,10 @@ class TestLoopHandlers:
 
 
 class TestExplicitModeClassifier:
-    """WP2/WP8 — the loop applies the pure next_mode classifier.
+    """The loop applies the pure next_mode classifier.
 
-    The pure next_mode state->Mode cases moved to tests/test_wifi_policy.py
-    (Phase B-WP4); these remaining tests verify the loop *applies* the
+    The pure next_mode state->Mode cases moved to tests/test_wifi_policy.py;
+    these remaining tests verify the loop *applies* the
     classifier and publishes it as device.mode.
     """
 
@@ -911,7 +911,7 @@ class TestExplicitModeClassifier:
 
 
 class TestPerTickFactsSnapshot:
-    """WP1 — one immutable Facts snapshot gathered per pass (Section 2.5)."""
+    """One immutable Facts snapshot gathered per pass (Section 2.5)."""
 
     def _run_online_idle_pass(self, watcher, *, capture: dict):
         """Run one online/idle monitor pass with all fact helpers wrapped to
@@ -968,7 +968,7 @@ class TestPerTickFactsSnapshot:
 
     def test_subprocess_fact_ceiling_per_pass(self, watcher):
         # Pi Zero budget guard: each costly fact helper is gathered exactly once
-        # per pass (the per-pass subprocess ceiling; a later WP may not raise it).
+        # per pass (the per-pass subprocess ceiling; a later change may not raise it).
         m = self._run_online_idle_pass(watcher, capture={})
         assert m["discover"].call_count == 1
         assert m["addresses"].call_count == 1
@@ -1106,7 +1106,7 @@ class TestNetworkMonitorCatchAll:
 
 
 class TestEthernetWinsWifiDisconnectPolicy:
-    """WP4 — usable wired Ethernet wins regardless of subnet; one playback gate."""
+    """Usable wired Ethernet wins regardless of subnet; one playback gate."""
 
     def _run_with_active_wifi(self, watcher, *, playing=False, setup=False):
         now = 1000.0

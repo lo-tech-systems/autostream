@@ -116,7 +116,7 @@ def migrate_client_profiles_autoconnect_no(ctx: ConfigContext) -> int:
             ctx.logger.warning("autoconnect=no migration failed for '%s' (rc=%d): %s",
                                name or uuid, r.returncode, r.stderr.strip())
     if modified:
-        ctx.logger.info("D-WP2: ensured autoconnect=no on %d client profile(s)", modified)
+        ctx.logger.info("Ensured autoconnect=no on %d client profile(s)", modified)
     return modified
 
 

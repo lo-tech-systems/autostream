@@ -1359,11 +1359,11 @@ _select_active_wifi_connection() {
 
 # _select_saved_wifi_connection: import a unique saved infrastructure profile.
 #
-# D-WP3 trace (Phase D, client profiles autoconnect=no): this selection runs only
+# Client-profiles-autoconnect=no trace: this selection runs only
 # at fresh install (network_state_phase short-circuits once network.json/ssid is
 # recorded), on profiles that PRE-EXIST the install and are therefore still
 # autoconnect=yes, so the best-autoconnect-priority path below is unaffected. The
-# watcher's autoconnect=no migration (D-WP2) runs later, at boot, after selection
+# watcher's autoconnect=no migration runs later, at boot, after selection
 # has already recorded a default. A user who manually set autoconnect=no on their
 # one profile before install is still imported by the suitable_count==1 fallback
 # (which does not require autoconnect=yes), so no widening is needed — the fallback

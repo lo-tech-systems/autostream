@@ -185,7 +185,7 @@ class TestFirstBootImport:
 
 
 class TestConnectToConfiguredWifiUuid:
-    """A-WP6: the steady-state reconnect resolves the UUID and clears
+    """The steady-state reconnect resolves the UUID and clears
     cross-adapter restrictions (inconsistency 4), fire-and-forget (no wait)."""
 
     def test_reconnect_carries_uuid_and_clears_restrictions_no_wait(self, watcher):
@@ -297,7 +297,7 @@ class TestResolveCommittedUuid:
 
 
 class TestClientProfileAutoconnectMigration:
-    """D-WP2 — the startup migration disables NM autoconnect on every managed
+    """The startup migration disables NM autoconnect on every managed
     non-AP Wi-Fi client profile (self-healing), skipping AP profiles."""
 
     def _res(self, rc=0, stderr=""):

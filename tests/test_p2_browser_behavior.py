@@ -370,7 +370,7 @@ class TestWifiWebHtmlEscaping:
 
 
 class TestWifiWebRender:
-    """WP1 verbatim-move proof: rendered setup/wait pages have the expected
+    """Verbatim-move proof: rendered setup/wait pages have the expected
     semantic content across the banner/error-code/show_reconnect/dial variants."""
 
     def test_setup_default_structure(self):

@@ -1,4 +1,4 @@
-"""WP1 — SettingsStore unit tests.
+"""SettingsStore unit tests.
 
 Tests cover:
 - Initial load from missing and existing config

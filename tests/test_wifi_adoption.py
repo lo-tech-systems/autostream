@@ -29,7 +29,7 @@ from _wifi_fixtures import _adapter, _facts_for, _spend_window_budget
 
 
 class TestUsbFailureFallback:
-    """C2-WP3 — handle_usb_failure_fallback consumes the debounced verdict from the
+    """handle_usb_failure_fallback consumes the debounced verdict from the
     HealthContext (conn_ok + pre-set-active identity) and wires diagnose->apply."""
 
     def _hctx(self, watcher, facts, *, conn_ok, prev_mac="", prev_ifname=""):
@@ -1243,7 +1243,7 @@ class TestPinUsbBssid:
 
 
 class TestNmDisconnectedUsbDebounce:
-    """C2-WP3 — a USB physically present but NM-disconnected is now debounced by
+    """A USB physically present but NM-disconnected is now debounced by
     the single connectivity hysteresis (2 passes); _set_active_client preserves
     active_client_mac while that soft debounce is in progress so pass 2 can still
     attribute the adapter."""

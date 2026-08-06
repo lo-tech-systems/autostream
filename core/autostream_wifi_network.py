@@ -352,7 +352,7 @@ def migrate_legacy_state(
 
 
 # ===========================================================================
-# Adapter discovery and identity (WP2)
+# Adapter discovery and identity
 # ===========================================================================
 
 @dataclass(frozen=True)
@@ -591,7 +591,7 @@ def find_adapter_by_mac(
 
 
 # ===========================================================================
-# USB sysfs reset primitives (dead-PHY recovery — WP1)
+# USB sysfs reset primitives (dead-PHY recovery)
 # ===========================================================================
 #
 # These are pure, side-effect-isolated facts/primitives.  They resolve sysfs
@@ -763,7 +763,7 @@ def reset_usb_adapter_reenumerate(
 
 
 # ===========================================================================
-# Interface-aware health and routing primitives (WP2)
+# Interface-aware health and routing primitives
 # ===========================================================================
 
 def _is_rfc1918_ipv4(ip: ipaddress.IPv4Address) -> bool:
@@ -1009,7 +1009,7 @@ def is_wifi_connected(ifname: str) -> bool:
 
 
 # ===========================================================================
-# NetworkManager command primitives — explicit interface targeting (WP2)
+# NetworkManager command primitives — explicit interface targeting
 # ===========================================================================
 
 def activate_connection_cmd(connection_uuid: str, connection_name: str, ifname: str) -> list[str]:
@@ -1112,7 +1112,7 @@ def get_connection_uuid_by_name_cmd(name: str) -> list[str]:
 
 
 # ===========================================================================
-# Captive-portal scanning and exact-SSID merging (WP3)
+# Captive-portal scanning and exact-SSID merging
 # ===========================================================================
 
 def parse_scan_output(stdout: str) -> dict[str, int]:
@@ -1244,7 +1244,7 @@ def connection_target_order(
 
 
 # ===========================================================================
-# Candidate-profile transaction primitives (WP3 / Section 6.5)
+# Candidate-profile transaction primitives (Section 6.5)
 # ===========================================================================
 
 def generate_candidate_name(rand_hex: Optional[str] = None) -> str:
@@ -1269,7 +1269,7 @@ def configure_candidate_cmds(
         "nmcli", "connection", "modify", con_name,
         "802-11-wireless.mode", "infrastructure",
         "ipv4.method", "auto",
-        # D-WP1: the watcher owns activation/reconnection; disable NM autoconnect
+        # The watcher owns activation/reconnection; disable NM autoconnect
         # so NM never races the watcher's single-decider path onto a stale radio.
         "connection.autoconnect", "no",
     ]
@@ -1294,7 +1294,7 @@ def configure_candidate_cmds(
 def list_wifi_connection_profiles() -> list[tuple[str, str]]:
     """Return ``(uuid, name)`` for every saved 802-11-wireless connection profile.
 
-    Facts-only primitive for the D-WP2 startup migration; the caller filters out
+    Facts-only primitive for the autoconnect=no startup migration; the caller filters out
     AP-mode profiles via wifi_profile_mode().  Returns [] on any nmcli failure.
     """
     r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "connection", "show"],
@@ -1358,7 +1358,7 @@ def get_profile_uuid(con_name: str) -> str:
 
 
 # ===========================================================================
-# Runtime dnsmasq interface binding (WP4 / Section 7.2)
+# Runtime dnsmasq interface binding (Section 7.2)
 # ===========================================================================
 
 DNSMASQ_IFACE_TOKEN = "__AUTOSTREAM_WIFI_IFACE__"
@@ -1419,7 +1419,7 @@ def remove_dnsmasq_runtime_config(runtime_path: str) -> None:
 
 
 # ===========================================================================
-# Runtime network-status snapshot (dead-PHY recovery — WP6)
+# Runtime network-status snapshot (dead-PHY recovery)
 # ===========================================================================
 #
 # The watcher stores its derived network state in memory and serves it over

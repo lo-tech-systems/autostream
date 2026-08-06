@@ -1,4 +1,4 @@
-"""Regression tests for update infrastructure (WP12–14 review findings).
+"""Regression tests for update infrastructure (review findings).
 
 Covers:
 1. Deployment-manifest correctness — dial installer must deploy the two
@@ -105,7 +105,7 @@ class TestDialDeploymentManifest:
 
 
 class TestRecoveryHelperManifest:
-    """Both installers deploy the watcher and its helper together (WP1)."""
+    """Both installers deploy the watcher and its helper together."""
 
     def test_host_installer_deploys_helper(self):
         content = HOST_INSTALLER.read_text(encoding="utf-8")
@@ -122,7 +122,7 @@ class TestRecoveryHelperManifest:
         assert "autostream_wifi_network.py" in content
 
     def test_host_installer_deploys_wifi_web(self):
-        """wifi_web.py is part of the recovery component (HTTP-extraction WP1)."""
+        """wifi_web.py is part of the recovery component (HTTP-extraction plan)."""
         content = HOST_INSTALLER.read_text(encoding="utf-8")
         assert "platform/wifi_web.py" in content
 
@@ -146,7 +146,7 @@ _WIFI_WEB_INSTALL = re.compile(
 
 
 class TestWifiWebDeploymentMode:
-    """HTTP-extraction WP4: wifi_web.py is deployed root-owned 0644 by both installers."""
+    """HTTP-extraction: wifi_web.py is deployed root-owned 0644 by both installers."""
 
     def test_host_installer_installs_wifi_web_root_0644(self):
         content = _join_continuations(HOST_INSTALLER.read_text(encoding="utf-8"))
@@ -164,7 +164,7 @@ class TestWifiWebDeploymentMode:
 
 
 class TestWifiWebImportIsolation:
-    """HTTP-extraction WP4: wifi_web runs on the system Python and must import
+    """HTTP-extraction: wifi_web runs on the system Python and must import
     only the standard library + flask — never an Autostream application module —
     so the recovery web surface survives an absent/broken app venv."""
 

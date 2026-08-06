@@ -1,6 +1,6 @@
 """Purity / invariant tests for the pure connectivity policy module.
 
-These moved out of test_p1_wifi_watcher.py in Phase B-WP4: they exercise
+These moved out of test_p1_wifi_watcher.py: they exercise
 wifi_policy directly, with no watcher / Flask / sysutils load, proving the
 decision core is genuinely standalone and effect-free (constraint 10).  State
 and facts are supplied as plain SimpleNamespace stand-ins; the per-adapter

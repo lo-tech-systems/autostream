@@ -614,7 +614,7 @@ class TestFieldLogRecoveryRegression:
     """
 
     def test_boot_entry_recovers_on_onboard_without_hotspot(self, watcher):
-        # WS1-WP3: boot entry submits the onboard client (not a hotspot on it).
+        # Boot entry submits the onboard client (not a hotspot on it).
         # The wedged USB's reactivate-first attempt is already spent this
         # episode, so the ladder falls through to onboard directly.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)

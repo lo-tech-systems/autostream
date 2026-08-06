@@ -193,7 +193,7 @@ class TestHandleLineDeduplication:
 
 
 # ---------------------------------------------------------------------------
-# WP-5: playing_since / display_authorized registry and get_display_targets()
+# playing_since / display_authorized registry and get_display_targets()
 # ---------------------------------------------------------------------------
 
 class TestPlayingSinceRegistry:
@@ -303,7 +303,7 @@ class TestPlayingSinceRegistry:
 
 
 # ---------------------------------------------------------------------------
-# WP3: start/stop wrappers (plan section 6, tests 1-2)
+# Start/stop wrappers (plan section 6, tests 1-2)
 # ---------------------------------------------------------------------------
 
 class TestPlayingBrowserWrappers:

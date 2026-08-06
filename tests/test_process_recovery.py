@@ -207,7 +207,7 @@ def test_service_unit_restart_on_failure():
 
 
 # ---------------------------------------------------------------------------
-# WP2: Scanner wrapper delegation (plan section 5, tests 1-2)
+# Scanner wrapper delegation (plan section 5, tests 1-2)
 # ---------------------------------------------------------------------------
 
 class TestScannerWrappers:
@@ -276,7 +276,7 @@ class TestScannerWrappers:
 
 
 # ---------------------------------------------------------------------------
-# WP2: _cleanup_discovery (plan section 5, tests 7-9)
+# _cleanup_discovery (plan section 5, tests 7-9)
 # ---------------------------------------------------------------------------
 
 class TestCleanupDiscovery:

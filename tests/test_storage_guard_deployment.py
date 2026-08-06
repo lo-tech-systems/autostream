@@ -1,6 +1,6 @@
 """tests/test_storage_guard_deployment.py
 
-WP4 deployment policy tests: verify that all system files referenced by
+Deployment policy tests: verify that all system files referenced by
 the installer and uninstaller scripts are present in the source tree with
 the correct names, paths, and basic content expectations.
 

@@ -220,7 +220,7 @@ class TestStatusRoute:
 
 
 class TestNetworkControlRoutes:
-    """WP6: per-boot-token-protected control surface."""
+    """Per-boot-token-protected control surface."""
 
     def test_network_status_requires_token(self, flask_client):
         client, mod = flask_client

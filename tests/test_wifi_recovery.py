@@ -112,7 +112,7 @@ class TestRecoveryAdapter:
 
 
 class TestNoIpLedgerAndDiagnosis:
-    """WP5b — no-IP/adoption-failure ledger, escalating back-off, defect 3 status."""
+    """No-IP/adoption-failure ledger, escalating back-off, defect 3 status."""
 
     MAC = "bb:bb:bb:bb:bb:21"
 
@@ -160,7 +160,7 @@ class TestNoIpLedgerAndDiagnosis:
         assert rec["policy"]["warning"] == "no_ip_address"
 
     def test_suppressed_spare_published_as_held_back(self, watcher):
-        # C-WP3: a no-IP-suppressed spare is a distinct held-back state (not the
+        # A no-IP-suppressed spare is a distinct held-back state (not the
         # transient degraded_no_ip), carries the held_back marker, and is
         # surfaced even with carrier down.
         usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
@@ -180,7 +180,7 @@ class TestNoIpLedgerAndDiagnosis:
         assert rec["policy"]["held_back"] is True
 
     def test_device_publishes_builtin_fallback_marker(self, watcher):
-        # C-WP3: the demoted-from-active marker — device reports it is running on
+        # The demoted-from-active marker — device reports it is running on
         # the on-board radio as a fallback.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         watcher.ADOPTION_STATE.using_builtin_fallback = True
@@ -295,7 +295,7 @@ class TestActivationFailureLedger:
 
 
 class TestAdapterOverlayEvents:
-    """WP5a / C2-WP3 — the overlay is now a pure classifier over the debounced
+    """The overlay is now a pure classifier over the debounced
     connectivity verdict (conn_ok): it fires ClientFailed only once the loop's
     hysteresis has condemned the path, and only when the condemnation is
     attributable to the recorded USB client.  The 2-pass debounce lives in the
@@ -409,7 +409,7 @@ class TestAdapterOverlayEvents:
         )
 
     def test_apply_client_failed_enters_hotspot_when_no_client_path(self, watcher):
-        # C2-WP1: ENTER_HOTSPOT with no usable onboard falls to USB_LOSS_RECOVERY.
+        # ENTER_HOTSPOT with no usable onboard falls to USB_LOSS_RECOVERY.
         facts = _facts_for(watcher, [], None)
         event = watcher.wifi_recovery.ClientFailed(ifname="wlan1", mac="bb:bb:bb:bb:bb:05",
                                      reason="absent", has_alt_path=False)
@@ -784,7 +784,7 @@ class TestAdapterOverlayEvents:
         assert job.ifname == "wlan0"
 
     def test_apply_client_failed_onboard_success_sets_fallback(self, watcher):
-        # WS1-WP3 async cycle: apply_client_failed submits an ACTIVATE_ONBOARD job
+        # Async cycle: apply_client_failed submits an ACTIVATE_ONBOARD job
         # (USB also present); running the worker + applying the result sets
         # using_builtin_fallback, matching the old built-in fallback behaviour.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
@@ -1408,7 +1408,7 @@ class TestRemediateUnusableUsb:
 
 
 class TestRecoveryFacts:
-    """Recovery-ladder WP1 — shared per-adapter facts + RecoveryFacts snapshot."""
+    """Recovery ladder — shared per-adapter facts + RecoveryFacts snapshot."""
 
     def _facts(self, watcher, adapters, *, active_client=None, now=1000.0,
                wifi_cfg=True, wired_ok=False):
@@ -1519,7 +1519,7 @@ class TestRecoveryFacts:
         assert rec.adapters_by_ifname["wlan1"].noip_suppressed is True
 
     def test_gather_excludes_noip_suppressed_onboard(self, watcher):
-        # C2-WP1: a no-IP-suppressed onboard is not offered as a client rung, so
+        # A no-IP-suppressed onboard is not offered as a client rung, so
         # the single decider won't blindly engage it on a USB failure.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
         watcher.RECOVERY_STATE.adapter_noip_ledgers[builtin.stable_id] = {
@@ -1675,10 +1675,10 @@ class TestResetBudgetStableIdParity:
 
 
 class TestExplicitModelInvariants:
-    """WP8 — the overlay decision is sited in wifi_recovery.
+    """The overlay decision is sited in wifi_recovery.
 
     The pure next_mode / next_recovery_action / PURPOSE_TABLE purity and
-    invariant tests moved to tests/test_wifi_policy.py (Phase B-WP4).
+    invariant tests moved to tests/test_wifi_policy.py.
     """
 
     def test_overlay_decision_only_in_wifi_recovery(self, watcher):
@@ -1696,7 +1696,7 @@ class TestExplicitModelInvariants:
 
 
 class TestRecoveryExitEdge:
-    """C2-WP2 — the in-hotspot probe routes through the single recovery ladder;
+    """The in-hotspot probe routes through the single recovery ladder;
     a dead second radio no longer blocks the onboard climb.
 
     These drive the real gather_recovery_facts + next_recovery_action and assert
@@ -1791,7 +1791,7 @@ class TestRecoveryExitEdge:
 
 
 class TestScanGatedRecovery:
-    """C2-WP2 — the ladder-routed in-hotspot probe keeps the apply-layer
+    """The ladder-routed in-hotspot probe keeps the apply-layer
     mechanics: RECONNECT_ATTEMPT_INTERVAL bounds the join and, before a drop-AP
     rejoin, RECOVERY_SCAN_INTERVAL gates the saved-SSID scan (the AP is torn down
     only once the network is visible again).  The drop-AP mechanics themselves

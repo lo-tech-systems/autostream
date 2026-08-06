@@ -12,7 +12,7 @@ Covers:
   - Thread-safe snapshot copying
   - Retry delay sequence and reset behavior
   - Idempotent start
-  - Shutdown-aware browser lifecycle (WP1)
+  - Shutdown-aware browser lifecycle
 """
 from __future__ import annotations
 
@@ -516,7 +516,7 @@ class TestDialInstallerMdnsDeploy:
 
 
 # ---------------------------------------------------------------------------
-# WP1: Shutdown-aware browser lifecycle tests
+# Shutdown-aware browser lifecycle tests
 # ---------------------------------------------------------------------------
 
 class _FakeProc:
@@ -550,7 +550,7 @@ class _FakeProc:
 
 
 class TestShutdownLifecycle:
-    """Tests 1–16 from the WP1 spec."""
+    """Tests 1–16 from the shutdown-lifecycle spec."""
 
     # 1. start() remains idempotent.
     def test_start_idempotent_no_second_thread(self):

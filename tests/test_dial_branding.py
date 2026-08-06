@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).parent.parent
 DIAL_WEBUI_ASSETS = REPO_ROOT / "dial" / "dial_webui_assets.py"
 WIFI_WATCHER = REPO_ROOT / "platform" / "wifi_watcher.py"
 # Presentation (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS) was extracted
-# to wifi_web.py (HTTP-extraction plan, WP1).
+# to wifi_web.py (HTTP-extraction plan).
 WIFI_WEB = REPO_ROOT / "platform" / "wifi_web.py"
 DIAL_WATCHER_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_dial_wifi_watcher.service"
 MAIN_WATCHER_SERVICE = REPO_ROOT / "system" / "systemd" / "autostream_wifi_watcher.service"
@@ -135,7 +135,7 @@ class TestSetupPageBranding:
 class TestWifiWatcherBannerImage:
     def test_banner_image_env_var_read(self):
         """wifi_web must read APP_BANNER_IMAGE from environment (presentation moved
-        out of the watcher in the HTTP-extraction plan, WP1)."""
+        out of the watcher in the HTTP-extraction plan)."""
         src = WIFI_WEB.read_text(encoding="utf-8")
         assert "APP_BANNER_IMAGE" in src, (
             "wifi_web must read APP_BANNER_IMAGE from os.environ"

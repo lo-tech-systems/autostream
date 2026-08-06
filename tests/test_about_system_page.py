@@ -1197,7 +1197,7 @@ class TestTopLevelExceptionHandling:
 
 
 # ---------------------------------------------------------------------------
-# WP3 tests — About page renders without live probes; DOM IDs and JS present
+# About page renders without live probes; DOM IDs and JS present
 # ---------------------------------------------------------------------------
 
 _REQUIRED_IDS = [

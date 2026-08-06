@@ -536,7 +536,7 @@ class TestSharedClientSingleton:
 
 
 # ---------------------------------------------------------------------------
-# WP1 — Vibra runtime metadata tests
+# Vibra runtime metadata tests
 # ---------------------------------------------------------------------------
 
 class TestVibraClientRuntimeMetadata:

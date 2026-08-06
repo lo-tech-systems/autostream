@@ -1,4 +1,4 @@
-"""WP3 tests for dial/dial_main.py lifecycle and shutdown.
+"""Tests for dial/dial_main.py lifecycle and shutdown.
 
 Covers:
 - SIGTERM sets shutdown event without blocking (plan test 3)
@@ -426,7 +426,7 @@ class TestDialFinalCleanup:
 
 
 # ---------------------------------------------------------------------------
-# WP-8: end-to-end display selection through the real mDNS registry, and
+# End-to-end display selection through the real mDNS registry, and
 # live POST /screen/settings apply against a running DialDisplay.
 # ---------------------------------------------------------------------------
 

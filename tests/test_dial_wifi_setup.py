@@ -186,7 +186,7 @@ class TestConnectToConfiguredWifiHealthCheck:
         The bounce is ineffective for a wedged USB PHY (NO-CARRIER) and was
         replaced by the dead-PHY USB reset ladder.  connect_to_configured_wifi
         must no longer issue `nmcli device connect`/`disconnect` on the
-        unhealthy reconnect path (dead-phy recovery plan, WP3).
+        unhealthy reconnect path (dead-phy recovery plan).
         """
         src = _config_src()
         # Scope to connect_to_configured_wifi itself (ends at migrate_client_profiles_autoconnect_no).
@@ -307,7 +307,7 @@ def _render_wait(dial_mode: bool, ssid: str = "MyNet", hostname: str = "dial-hos
 
 
 class TestDialWaitPageInstruction:
-    """render_wait_page moved to wifi_web (HTTP-extraction WP1); assert behaviour."""
+    """render_wait_page moved to wifi_web (HTTP-extraction plan); assert behaviour."""
 
     def test_dial_mode_shows_appliance_instruction(self):
         """Dial mode wait page must include 'Continue setup from an autostream appliance'."""

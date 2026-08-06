@@ -226,7 +226,7 @@ class TestWiredPathHealth:
 
 
 class TestIsGatewayReachable:
-    """Interface-specific gateway reachability (WP2).
+    """Interface-specific gateway reachability.
 
     Health is scoped to the requested interface: the default route's dev must
     equal the interface, and only a neighbour entry on that same interface
@@ -660,7 +660,7 @@ class TestWifiPolicyModule:
 
 
 class TestUnifiedGuardedReboot:
-    """C2-WP5 — every reboot domain (gateway-down, 12-hour catch-all, dead-PHY)
+    """Every reboot domain (gateway-down, 12-hour catch-all, dead-PHY)
     goes through request_guarded_reboot, sharing one persistent cross-boot guard
     and one in-process throttle.  The stamp is isolated per test by the autouse
     _isolate_reboot_guard fixture."""
@@ -829,7 +829,7 @@ class TestSubprocessTimeoutBounds:
 
 
 class TestLogThrottled:
-    """WS2-WP4 — the shared time-window throttled-log helper and the
+    """The shared time-window throttled-log helper and the
     playing-status warning folded onto it."""
 
     def test_first_call_logs_then_suppresses_within_interval(self, watcher):

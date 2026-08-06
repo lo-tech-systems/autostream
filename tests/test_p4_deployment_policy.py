@@ -221,7 +221,7 @@ class TestMallocArenaCap:
 
 
 class TestWifiWatcherProcessRecovery:
-    """D-WP0 — with Phase D (autoconnect=no) the watcher is the sole reconnection
+    """With profile autoconnect disabled, the watcher is the sole reconnection
     agent, so its unit must survive crash *and* clean exit and never give up."""
 
     WATCHER_UNITS = [
@@ -233,7 +233,7 @@ class TestWifiWatcherProcessRecovery:
     def test_restart_always(self, unit):
         restart = (_unit_section(unit, "Service").get("Restart") or [""])[0]
         assert restart == "always", (
-            f"{unit.name}: Phase D needs Restart=always (a clean exit must restart "
+            f"{unit.name}: the sole-reconnection-agent design needs Restart=always (a clean exit must restart "
             f"the sole reconnection agent), found {restart!r}"
         )
 
@@ -341,7 +341,7 @@ class TestSystemdDependencyOrdering:
     def test_installers_deploy_every_watcher_sibling_module(self):
         """Every platform/wifi_*.py the watcher imports must be copied to
         /opt/autostream by BOTH installers, or the deployed watcher crashes on
-        import (this guards the WS2-WP1 wifi_mdns split and the wifi_policy gap it
+        import (this guards the wifi_mdns split and the wifi_policy gap it
         surfaced)."""
         import re
         watcher = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
@@ -751,7 +751,7 @@ class TestDnsmasqConfig:
         text = self._conf("autostream-dial-setup.conf")
         assert re.search(r"^\s*dhcp-range\s*=", text, re.MULTILINE)
 
-    # --- WP4: runtime interface-binding template mechanism ---
+    # --- Runtime interface-binding template mechanism ---
 
     def test_setup_conf_uses_interface_token(self):
         text = self._conf("autostream-setup.conf")

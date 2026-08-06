@@ -1,6 +1,6 @@
 """Tests for core/autostream_wifi_network.py — the watcher's network helper.
 
-WP1 scope: network-state load/validate/atomic-save, legacy migration and
+Scope: network-state load/validate/atomic-save, legacy migration and
 mirroring, and the structural guarantee that the helper carries no Flask /
 threading / systemd-management code.
 """
@@ -341,7 +341,7 @@ class TestResolveUuid:
 
 
 # ---------------------------------------------------------------------------
-# WP2 — MAC normalisation
+# MAC normalisation
 # ---------------------------------------------------------------------------
 
 class TestNormaliseMac:
@@ -367,7 +367,7 @@ class TestNormaliseMac:
 
 
 # ---------------------------------------------------------------------------
-# WP2 — adapter discovery and classification
+# Adapter discovery and classification
 # ---------------------------------------------------------------------------
 
 def _adapter(ifname, mac, is_usb=False, is_builtin=False, managed=True, state="connected"):
@@ -466,7 +466,7 @@ class TestDiscovery:
 
 
 # ---------------------------------------------------------------------------
-# WP2 — explicit-interface command construction
+# Explicit-interface command construction
 # ---------------------------------------------------------------------------
 
 class TestCommandConstruction:
@@ -569,7 +569,7 @@ class TestSetBssidCommand:
 
 
 # ---------------------------------------------------------------------------
-# WP3 — scan parsing and exact-SSID merging
+# Scan parsing and exact-SSID merging
 # ---------------------------------------------------------------------------
 
 class TestScanMerge:
@@ -663,7 +663,7 @@ class TestConnectionTargetOrder:
 
 
 # ---------------------------------------------------------------------------
-# WP4 — runtime dnsmasq interface binding
+# Runtime dnsmasq interface binding
 # ---------------------------------------------------------------------------
 
 class TestDnsmasqRuntime:
@@ -715,7 +715,7 @@ class TestDnsmasqRuntime:
 
 
 # ---------------------------------------------------------------------------
-# WP1 (dead-PHY) — USB sysfs reset primitives
+# Dead-PHY recovery — USB sysfs reset primitives
 # ---------------------------------------------------------------------------
 
 def _can_symlink(tmp_path) -> bool:
@@ -929,7 +929,7 @@ class TestGatewayReachable:
 
 
 # ---------------------------------------------------------------------------
-# WP6 (dead-PHY) — runtime status snapshot read/write + address facts
+# Dead-PHY recovery — runtime status snapshot read/write + address facts
 # ---------------------------------------------------------------------------
 
 class TestUsableUnicastIpv4:
@@ -1002,7 +1002,7 @@ class TestDefaultGatewayIpv4:
 
 
 class TestConfigureCandidateCmds:
-    """D-WP1 — newly-committed client profiles are created with autoconnect=no so
+    """Newly-committed client profiles are created with autoconnect=no so
     the watcher's single-decider path is the only agent that brings a client up."""
 
     def _modify_cmd(self, cmds):
@@ -1041,7 +1041,7 @@ class TestConfigureCandidateCmds:
 
 
 class TestClientProfileMigrationHelpers:
-    """D-WP2 — enumerate saved Wi-Fi profiles, read their mode, and build the
+    """Enumerate saved Wi-Fi profiles, read their mode, and build the
     idempotent autoconnect=no modify command."""
 
     def _res(self, rc=0, stdout="", stderr=""):

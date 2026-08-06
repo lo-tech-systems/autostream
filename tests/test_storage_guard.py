@@ -1,4 +1,4 @@
-"""WP3 — Storage guard tests.
+"""Storage guard tests.
 
 Covers:
   - classify_storage: all threshold boundaries

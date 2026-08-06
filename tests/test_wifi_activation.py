@@ -172,10 +172,10 @@ class TestClientUpTail:
 
 
 class TestActivationWorker:
-    """WS1-WP2 — the off-thread activation worker skeleton: job/result split,
+    """The off-thread activation worker skeleton: job/result split,
     single-slot queue + transitioning gate, result application at pass top, and
-    the peek-then-consume control-action deferral.  No call sites are migrated yet
-    (WS1-WP3/WP4), so these drive the skeleton directly."""
+    the peek-then-consume control-action deferral.  No call sites are migrated yet,
+    so these drive the skeleton directly."""
 
     def _job(self, watcher, **kw):
         defaults = dict(epoch=watcher.wifi_activation._next_activation_epoch(watcher.ACTIVATION_CTX), kind="activate_committed",
@@ -576,7 +576,7 @@ class TestActivateClient:
 
 
 class TestCandidateValidateTail:
-    """A-WP5: _try_candidate_on_adapter validates via the shared tail, so the
+    """_try_candidate_on_adapter validates via the shared tail, so the
     net-absent short-circuit reaches the credential-apply path too."""
 
     def test_candidate_netabsent_skips_ipv4_wait_and_deletes(self, watcher):
@@ -661,7 +661,7 @@ class TestAttemptOnTargets:
 
 
 class TestApplyCredentialsWorker:
-    """WS1-WP4 — credential apply runs on the shared worker (no Flask thread).
+    """Credential apply runs on the shared worker (no Flask thread).
     submit_apply_credentials enqueues an apply_credentials job; the worker runs
     configure_wifi_with_nmcli and the loop applies the wait-page status tail."""
 
@@ -883,7 +883,7 @@ class TestReconfigureTimeout:
 
 
 class TestProbePatience:
-    """Recovery-ladder WP4 — fail fast when nmcli reports the SSID is not visible."""
+    """Recovery ladder — fail fast when nmcli reports the SSID is not visible."""
 
     def test_network_absent_detects_hard_failure(self, watcher):
         absent = MagicMock(returncode=4,
