@@ -125,26 +125,215 @@ class TestRemoteHomeOutputShape:
         render_pos = render_body.index('renderOutputList(')
         assert update_pos < render_pos
 
-    def test_empty_outputs_clears_existing_cards(self):
-        """When outputs is empty, existing output cards must be removed from the DOM."""
+    def test_empty_outputs_clears_existing_cards_once_tolerance_elapses(self):
+        """Once the empty-outputs tolerance has elapsed, existing output cards
+        must be removed from the DOM (the clear is gated on elapsed time, not
+        immediate on the first empty observation)."""
         src = _REMOTE_HOME_SCRIPT
         render_fn_idx = src.index('function renderHomeState(')
         render_fn_end = src.index('\nvar __remoteFailCount', render_fn_idx)
         render_body = src[render_fn_idx:render_fn_end]
         # Find the empty-outputs branch and confirm it removes children
         empty_idx = render_body.index('outputs.length===0')
-        empty_branch = render_body[empty_idx:empty_idx + 200]
+        empty_branch = render_body[empty_idx:empty_idx + 400]
         assert 'removeChild' in empty_branch or 'innerHTML' in empty_branch
+        # The clear must be conditioned on the elapsed-tolerance check, not
+        # performed unconditionally on the first empty observation.
+        tolerance_idx = empty_branch.index('__OUTPUTS_EMPTY_TOLERANCE_MS')
+        clear_idx = empty_branch.index('removeChild')
+        assert tolerance_idx < clear_idx
 
     def test_empty_outputs_resets_last_shape(self):
-        """When outputs is empty, __lastOutputsShape must be reset so the next non-empty poll re-renders."""
+        """Once cleared, __lastOutputsShape must be reset so the next non-empty poll re-renders."""
         src = _REMOTE_HOME_SCRIPT
         render_fn_idx = src.index('function renderHomeState(')
         render_fn_end = src.index('\nvar __remoteFailCount', render_fn_idx)
         render_body = src[render_fn_idx:render_fn_end]
         empty_idx = render_body.index('outputs.length===0')
-        empty_branch = render_body[empty_idx:empty_idx + 200]
+        empty_branch = render_body[empty_idx:empty_idx + 400]
         assert "__lastOutputsShape=''" in empty_branch
+
+    def test_empty_outputs_debounce_is_time_based(self):
+        """The empty-outputs debounce must track wall-clock elapsed time
+        (Date.now()-based), not a poll count."""
+        src = _REMOTE_HOME_SCRIPT
+        assert '__outputsEmptySince' in src
+        assert '__OUTPUTS_EMPTY_COUNT' not in src
+        render_fn_idx = src.index('function renderHomeState(')
+        render_fn_end = src.index('\nvar __remoteFailCount', render_fn_idx)
+        render_body = src[render_fn_idx:render_fn_end]
+        assert 'window.__OUTPUTS_EMPTY_TOLERANCE_MS' in render_body
+
+    def test_non_empty_outputs_resets_empty_since(self):
+        """A non-empty outputs observation must reset the empty-since timer."""
+        src = _REMOTE_HOME_SCRIPT
+        render_fn_idx = src.index('function renderHomeState(')
+        render_fn_end = src.index('\nvar __remoteFailCount', render_fn_idx)
+        render_body = src[render_fn_idx:render_fn_end]
+        assert '__outputsEmptySince=null' in render_body
+
+    def test_outputs_unknown_does_not_clear_or_advance_timer(self):
+        """When data.outputs is not an array (unknown/missing), the DOM must
+        be left untouched and the empty-since timer must not be touched."""
+        src = _REMOTE_HOME_SCRIPT
+        render_fn_idx = src.index('function renderHomeState(')
+        render_fn_end = src.index('\nvar __remoteFailCount', render_fn_idx)
+        render_body = src[render_fn_idx:render_fn_end]
+        assert 'Array.isArray(data.outputs)' in render_body
+
+
+# ---------------------------------------------------------------------------
+# Local Home page — outputs-empty tolerance (time-based, replacing the old
+# poll-count debounce) and the tolerance constant injection
+# ---------------------------------------------------------------------------
+
+def _render_local_home_html() -> str:
+    from unittest.mock import MagicMock
+    from contextlib import ExitStack
+    from unittest.mock import patch as _patch
+    from autostream_webui_page_airplay import send_airplay_page
+    from track_id.models import disabled_snapshot
+
+    handler = MagicMock()
+    chunks: list = []
+    handler.wfile.write = lambda d: chunks.append(d)
+    handler._csrf_token = "testcsrf"
+    handler._pending_set_cookies = []
+
+    auth = MagicMock()
+    auth.get_csrf_token.return_value = "testcsrf"
+
+    state = MagicMock()
+    state.config_path = "dummy.ini"
+
+    parsed = MagicMock()
+    parsed.owntone.base_url = "http://localhost:3689"
+    parsed.owntone.output_name = "autostream"
+    parsed.owntone.volume_percent = 20
+    parsed.webui.show_master_volume = True
+    parsed.webui.show_input_detail = False
+    parsed.webui.show_hostname_on_home = False
+    parsed.webui.control_other_appliances = False
+    parsed.webui.hidden_outputs = []
+    parsed.webui.dark_mode = False
+    parsed.track_identification = MagicMock(enabled=False)
+    parsed.repeat.enabled = True
+    parsed.repeat.codec = "auto"
+
+    playback = MagicMock()
+    playback.inputs = {}
+    playback.stylus_banner_text = ""
+    playback.belt_banner_text = ""
+    playback.bearing_banner_text = ""
+    playback.has_warning = False
+    playback.to_public_dict.return_value = {}
+
+    list_result = MagicMock(ok=False, outputs=[])
+    buf_result = MagicMock(ok=True, value="2250")
+
+    patches = [
+        _patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        _patch("autostream_webui_page_airplay.get_appliance_id", return_value="00000000000000000000"),
+        _patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
+        _patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        _patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+        _patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
+        _patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
+        _patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+        _patch("autostream_core.get_active_track_identification_snapshot",
+               return_value=disabled_snapshot()),
+        _patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+    ]
+
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        send_airplay_page(handler, state, auth)
+
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+@pytest.fixture(scope="module")
+def local_home_html() -> str:
+    return _render_local_home_html()
+
+
+@_skip
+class TestOutputsEmptyToleranceConstant:
+    def test_tolerance_constant_defined_in_python(self):
+        from autostream_webui_page_airplay import OUTPUTS_EMPTY_TOLERANCE_SECONDS
+        assert OUTPUTS_EMPTY_TOLERANCE_SECONDS == 6.0
+
+    def test_tolerance_injected_into_local_script(self, local_home_html):
+        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS=6000;" in local_home_html
+
+    def test_tolerance_injected_into_remote_script(self):
+        from unittest.mock import MagicMock
+        from contextlib import ExitStack
+        from unittest.mock import patch as _patch
+        from autostream_webui_page_airplay import send_remote_home_page
+
+        handler = MagicMock()
+        chunks: list = []
+        handler.wfile.write = lambda d: chunks.append(d)
+        handler._csrf_token = "testcsrf"
+        handler._pending_set_cookies = []
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+        parsed = MagicMock()
+        parsed.owntone.base_url = "http://localhost:3689"
+        parsed.owntone.volume_percent = 20
+        parsed.webui.dark_mode = False
+        parsed.webui.show_hostname_on_home = False
+        parsed.webui.control_other_appliances = False
+        parsed.repeat.enabled = True
+        parsed.repeat.codec = "auto"
+
+        patches = [
+            _patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+            _patch("autostream_webui_page_airplay.get_appliance_id", return_value="00000000000000000000"),
+            _patch("autostream_webui_page_airplay._build_appliances_for_selector", return_value=[]),
+            _patch("autostream_webui_page_airplay.build_appliance_selector_html", return_value=""),
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            send_remote_home_page(handler, state, "some-remote-appliance-id")
+
+        remote_home_html = b"".join(chunks).decode("utf-8", errors="replace")
+        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS=6000;" in remote_home_html
+
+
+@_skip
+class TestLocalHomeOutputsEmptyDebounce:
+    def test_old_count_mechanism_removed(self, local_home_html):
+        assert "__OUTPUTS_EMPTY_COUNT" not in local_home_html
+
+    def test_time_based_debounce_present(self, local_home_html):
+        assert "__OUTPUTS_EMPTY_SINCE" in local_home_html
+        fn_idx = local_home_html.index("async function refreshOutputsState")
+        fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
+        fn_body = local_home_html[fn_idx:fn_end]
+        assert "Date.now() - window.__OUTPUTS_EMPTY_SINCE" in fn_body
+        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS" in fn_body
+
+    def test_non_empty_outputs_resets_empty_since(self, local_home_html):
+        fn_idx = local_home_html.index("async function refreshOutputsState")
+        fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
+        fn_body = local_home_html[fn_idx:fn_end]
+        assert "window.__OUTPUTS_EMPTY_SINCE = null;" in fn_body
+
+    def test_outputs_unknown_leaves_dom_alone(self, local_home_html):
+        """A non-array outputs field (missing despite ok:true) must be treated
+        as unknown, not as a confirmed empty list -- and must not consume or
+        reset the empty-tolerance timer."""
+        fn_idx = local_home_html.index("async function refreshOutputsState")
+        fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
+        fn_body = local_home_html[fn_idx:fn_end]
+        unknown_idx = fn_body.index("!Array.isArray(j.outputs)")
+        unknown_branch = fn_body[unknown_idx:unknown_idx + 350]
+        assert "return;" in unknown_branch
 
 
 # ---------------------------------------------------------------------------

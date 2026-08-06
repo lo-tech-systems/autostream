@@ -47,6 +47,16 @@ from autostream_webui_common import (
 from autostream_webui_state import WebUIState
 
 
+# Wall-clock tolerance, in seconds, for transient emptiness of the backend's
+# reported outputs list (for example while a stereo pair is reforming, the
+# device list can briefly shrink to zero before settling back). Both the
+# local page poll and the remote/proxy home-state poll debounce an observed
+# empty-outputs state against this tolerance before clearing the displayed
+# output cards and showing the "no outputs" placeholder. Not exposed via any
+# UI or settings surface.
+OUTPUTS_EMPTY_TOLERANCE_SECONDS = 6.0
+
+
 _NP_ART_CSS = (
     ".now-playing-icon.np-icon-art{width:72px;height:72px;border-radius:6px;overflow:hidden;}"
     ".now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}"
@@ -58,14 +68,24 @@ function renderHomeState(data){
   renderNowPlayingCard(data);
   updateRepeatButton(data);
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
-  var outputs=Array.isArray(data.outputs)?data.outputs:[];
-  if(outputs.length===0){var _ol=document.getElementById('outputs-list');if(_ol)while(_ol.firstChild)_ol.removeChild(_ol.firstChild);__lastOutputsShape='';setOutputsPlaceholder('empty');}else{
-    var inShape=_outputsShape(outputs);if(inShape!==__lastOutputsShape){__lastOutputsShape=inShape;renderOutputList(outputs);}else{setOutputsPlaceholder('hidden');outputs.forEach(function(o){var id=String(o.id);if(window.__PENDING_OUTPUTS&&window.__PENDING_OUTPUTS.has(id))return;var cb=document.getElementById('output_enabled_'+id);var sl=document.getElementById('vol_slider_'+id);if(cb){cb.checked=!!o.selected;updateOutputStateVisual(id,!!o.selected);}if(sl&&sl!==document.activeElement){var v=normalizeVolume(o.volume);if(sl.value!==String(v)){sl.value=String(v);updateVolumeLabel(id,v);}}});reorderOutputCards();if(document.activeElement!==document.getElementById('master_vol_slider'))updateMasterVolumeCard();}
+  if(Array.isArray(data.outputs)){
+    var outputs=data.outputs;
+    if(outputs.length===0){
+      if(__outputsEmptySince==null)__outputsEmptySince=Date.now();
+      if((Date.now()-__outputsEmptySince)>=window.__OUTPUTS_EMPTY_TOLERANCE_MS){var _ol=document.getElementById('outputs-list');if(_ol)while(_ol.firstChild)_ol.removeChild(_ol.firstChild);__lastOutputsShape='';setOutputsPlaceholder('empty');}
+      // else: within tolerance -- leave existing cards and placeholder alone
+    }else{
+      __outputsEmptySince=null;
+      var inShape=_outputsShape(outputs);if(inShape!==__lastOutputsShape){__lastOutputsShape=inShape;renderOutputList(outputs);}else{setOutputsPlaceholder('hidden');outputs.forEach(function(o){var id=String(o.id);if(window.__PENDING_OUTPUTS&&window.__PENDING_OUTPUTS.has(id))return;var cb=document.getElementById('output_enabled_'+id);var sl=document.getElementById('vol_slider_'+id);if(cb){cb.checked=!!o.selected;updateOutputStateVisual(id,!!o.selected);}if(sl&&sl!==document.activeElement){var v=normalizeVolume(o.volume);if(sl.value!==String(v)){sl.value=String(v);updateVolumeLabel(id,v);}}});reorderOutputCards();if(document.activeElement!==document.getElementById('master_vol_slider'))updateMasterVolumeCard();}
+    }
   }
+  // else: outputs unknown (field missing/null despite an ok reply) -- freeze
+  // the empty-tolerance timer and leave the DOM untouched entirely.
   var warnings=(data&&data.warnings)||{};['stylus','belt','bearing'].forEach(function(item){var el=document.getElementById(item+'-warning-banner');if(!el)return;var txt=String(warnings[item]||'').trim();el.style.display=txt?'block':'none';el.textContent=txt;});
   if(showMaster)updateMasterVolumeCard();
 }
 var __lastOutputsShape='';
+var __outputsEmptySince=null;
 function _outputShapeKey(o){return String(o.id)+'|'+String(o.name||'')+'|'+String(!!o.is_default)+'|'+String(!!o.remote_in_use)+'|'+String(o.remote_owner||'');}
 function _outputsShape(outputs){return outputs.map(_outputShapeKey).sort().join(',');}
 var __remoteFailCount=0;var __remotePolling=true;var __remotePollTimer=null;
@@ -406,6 +426,7 @@ def send_airplay_page(
         f"window.__SELECTOR_CURRENT_ID='{html.escape(_local_id)}';"
         f"window.__OUTPUT_URL='/api/output';"
         f"window.__REPEAT_URL='/api/repeat';"
+        f"window.__OUTPUTS_EMPTY_TOLERANCE_MS={int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000)};"
         f"window.__PIN_PROMPT_FALLBACK='Enter PIN shown on your device';"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>"
@@ -463,14 +484,22 @@ def send_airplay_page(
               if (domKey === '') {{ setOutputsPlaceholder('unreachable'); }}
               return;
             }}
-            var outputs = Array.isArray(j.outputs) ? j.outputs : [];
-            var targetKey = outputs.length > 0 ? getOutputIdKey(outputs) : '';
-            if (outputs.length === 0 && domKey !== '') {{
-              window.__OUTPUTS_EMPTY_COUNT = (window.__OUTPUTS_EMPTY_COUNT || 0) + 1;
-              if (window.__OUTPUTS_EMPTY_COUNT < 3) {{ return; }}
-            }} else {{
-              window.__OUTPUTS_EMPTY_COUNT = 0;
+            if (!Array.isArray(j.outputs)) {{
+              // Outputs unknown (field missing despite an ok reply): leave the
+              // DOM untouched and freeze the empty-tolerance timer rather than
+              // treating this as a confirmed empty outputs list.
+              return;
             }}
+            var outputs = j.outputs;
+            if (outputs.length === 0) {{
+              if (window.__OUTPUTS_EMPTY_SINCE == null) {{ window.__OUTPUTS_EMPTY_SINCE = Date.now(); }}
+              if (domKey !== '' && (Date.now() - window.__OUTPUTS_EMPTY_SINCE) < window.__OUTPUTS_EMPTY_TOLERANCE_MS) {{
+                return;
+              }}
+            }} else {{
+              window.__OUTPUTS_EMPTY_SINCE = null;
+            }}
+            var targetKey = outputs.length > 0 ? getOutputIdKey(outputs) : '';
             if (targetKey === domKey) {{
               if (targetKey === '') {{
                 setOutputsPlaceholder('empty');
@@ -538,6 +567,7 @@ def send_airplay_page(
           reorderOutputCards();
           updateMasterVolumeCard();
           window.__OUTPUTS_IN_FLIGHT = false;
+          window.__OUTPUTS_EMPTY_SINCE = null;
           setInterval(function(){{ refreshStatus(); refreshOutputsState(); }}, 1500);
           setInterval(vuRenderTick, VU_BIN_MS);
           initApplianceSelector();
@@ -769,6 +799,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__POLL_URL='{html.escape(poll_url)}';"
         f"window.__OUTPUT_URL='{html.escape(output_url)}';"
         f"window.__REPEAT_URL='{html.escape(repeat_url)}';"
+        f"window.__OUTPUTS_EMPTY_TOLERANCE_MS={int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000)};"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
         + HOME_CARDS_SCRIPT
