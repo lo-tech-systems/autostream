@@ -438,12 +438,6 @@ def _stylus_panel_html(
     warn_state   = hd["hours_remaining_warn"]
 
     live_display = "display:none;" if tracking_off else ""
-    active_row   = ""
-    if not tracking_off:
-        if snapshot.active:
-            active_row = _summary_row("Status", "Active now")
-        elif not snapshot.enabled:
-            active_row = _summary_row("Status", "Disabled")
 
     warn_btn_style = (
         "width:100%;border-color:var(--color-status-danger);"
@@ -478,7 +472,6 @@ def _stylus_panel_html(
             html.escape(_format_reset_timestamp(snapshot.last_stylus_reset_at)),
             value_id=f"stylus-last-service-val-{input_index}",
         )
-        + active_row
         + f"</div>"
         f"<div style='margin-top:0.5rem;font-size:0.95rem;'>"
         f"<button id='stylus-reset-btn-{input_index}' type='button'"
