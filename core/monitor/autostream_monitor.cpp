@@ -1081,7 +1081,7 @@ std::string AudioMonitor::api_get_status()
         // The output pipe format is set at startup (native by default, or
         // 44100/16/2 via --compatible) and reported at runtime so the
         // Python layer reads it instead of assuming it (see
-        // docs/AUTOSTREAM-MONITOR.md).
+        // docs/AUTOSTREAM-MONITOR-API.md).
         << "\",\"output_rate\":"                << g_output_format.rate
         << ",\"output_bits\":"                  << g_output_format.bits
         << ",\"output_channels\":"              << g_output_format.channels
@@ -1109,7 +1109,7 @@ std::string AudioMonitor::api_get_status()
 
     {
         // An owntone-hang watchdog signal for the Python side (docs/
-        // AUTOSTREAM-MONITOR.md) -- seconds the CURRENT active FIFO writer
+        // AUTOSTREAM-MONITOR-API.md) -- seconds the CURRENT active FIFO writer
         // (live path or ReplayEngine, whichever owns the pipe right now) has
         // been continuously failing/dropping writes. Deliberately picks only
         // the currently-active writer's counter: the inactive one's value is

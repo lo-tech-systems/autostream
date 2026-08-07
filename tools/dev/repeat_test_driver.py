@@ -5,7 +5,7 @@ feature ("D" test scenarios).
 Drives a STANDALONE test instance of autostream_monitor (its own control
 socket + its own test FIFO -- never the live daemon/FIFO) against an ALSA
 loopback ("snd-aloop") synthetic input, using the Unix control socket's
-newline-delimited JSON protocol (docs/AUTOSTREAM-MONITOR.md).
+newline-delimited JSON protocol (docs/AUTOSTREAM-MONITOR-API.md).
 
 SILENCE RULE: this tool must only ever be pointed at a standalone test daemon
 instance with its own socket/FIFO. It must never enable a real owntone-mini
@@ -132,7 +132,7 @@ class MonitorClient:
 
     def command(self, obj: dict) -> dict:
         # The daemon closes control connections idle for 20 s (docs/
-        # AUTOSTREAM-MONITOR.md); several scenarios above block on
+        # AUTOSTREAM-MONITOR-API.md); several scenarios above block on
         # `subprocess.Popen(...).wait()` for the duration of an aplay source
         # (which can be close to that threshold with zero socket traffic in
         # between), so a stale/closed socket here is an expected transient,
@@ -158,7 +158,7 @@ class MonitorClient:
 
     def get_id_snapshot(self, input_index: int, max_seconds: int = 4) -> dict:
         """get_id_snapshot's success response is a JSON ack line immediately
-        followed by a raw binary s16le payload (docs/AUTOSTREAM-MONITOR.md) --
+        followed by a raw binary s16le payload (docs/AUTOSTREAM-MONITOR-API.md) --
         unlike every other command, a plain command() call would leave that
         payload unread on the socket, corrupting the next command's response.
         This wrapper drains it (frames * 2 bytes, mono s16le) and returns the
@@ -214,7 +214,7 @@ class MonitorClient:
         return self.command({"type": "debug_dump_repeat_buffer", "path": path})
 
     def debug_fail_input(self, input_index: int) -> dict:
-        # Test hook (docs/AUTOSTREAM-MONITOR.md "debug_fail_input").
+        # Test hook (docs/AUTOSTREAM-MONITOR-API.md "debug_fail_input").
         # Rejected with ok=false unless the daemon was launched with
         # --test-hooks; never available in production. Arms a one-shot flag
         # that makes input_index's capture thread self-stop on its next loop
@@ -858,7 +858,7 @@ def scenario_d4(socket_path: str, wav_a: str, wav_b: str, fifo_path: str,
         time.sleep(3.0)
 
         # set_allow_capture is mutually exclusive between inputs (docs/
-        # AUTOSTREAM-MONITOR.md): "a permitted input detects audio"
+        # AUTOSTREAM-MONITOR-API.md): "a permitted input detects audio"
         # presupposes something upstream (in production, Python's turntable-
         # selection logic) has already granted input_b permission -- this
         # driver stands in for that by flipping it explicitly right before

@@ -141,7 +141,7 @@ static void test_ok_field_in_responses(const std::string& src)
 // Test: debug_fail_input test hook is dispatched AND runtime-gated
 //
 // debug_fail_input is deliberately NOT in EXPECTED_COMMANDS above: it is a
-// test-only command (docs/AUTOSTREAM-MONITOR.md), never sent by the
+// test-only command (docs/AUTOSTREAM-MONITOR-API.md), never sent by the
 // production Python client (core/autostream_core.py), so it must not be
 // asserted present there. This is a narrower, source-text-only check (no
 // ALSA link needed, matching this file's whole approach) that the command

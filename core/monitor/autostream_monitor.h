@@ -16,8 +16,10 @@
 //
 // Documentation split:
 //   - This header documents the code-facing API, object model, and invariants.
-//   - docs/AUTOSTREAM-MONITOR.md is the canonical external protocol/reference
-//     document for commands, responses, examples, and integration behavior.
+//   - docs/AUTOSTREAM-MONITOR-API.md is the canonical external protocol
+//     reference for commands, responses, examples, and integration behavior.
+//   - docs/AUTOSTREAM-MONITOR.md covers what the daemon is, how it runs, its
+//     command-line options, and its processing order.
 //
 // Build dependencies:
 //   apt-get install libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev
