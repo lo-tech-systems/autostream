@@ -1192,7 +1192,21 @@ private:
 
     static constexpr int    kPollTimeoutMs   = 100;    // abort-check granularity (~100 ms)
     static constexpr size_t kSliceFrames     = 4096;   // 4096 stereo s16 frames = 16 KiB (8-16 KiB slices)
-    static constexpr double kFadeSeconds     = 1.5;    // disarm fade span
+
+public:
+    // Public (unlike the rest of this private section) purely so
+    // test_repeat_transitions.cpp can static_assert its value directly
+    // rather than duplicating the literal -- ReplayEngine has no other
+    // reason to expose it.
+    //
+    // Disarm/interrupt fade span. Shortened from 1.5 s -- shorter fades a
+    // confirmed live interrupt (RepeatController's probation gate,
+    // kInterruptSustainSeconds, autostream_repeat_buffer.h) hands off to the
+    // new session sooner without the crossfade itself becoming audibly
+    // abrupt. See kInterruptSustainSeconds' declaration comment for the
+    // probation+fade headroom arithmetic against kPreRollSeconds.
+    static constexpr double kFadeSeconds     = 1.0;    // disarm fade span
+private:
     static constexpr double kLoopGapSeconds  = 1.5;    // inter-loop silence gap
 
     RepeatController& _owner;
@@ -1353,29 +1367,50 @@ struct RepeatStatus
 // Moved here (out of RepeatController, unchanged in meaning) so
 // decide_repeat_transition() below can take it as a plain parameter.
 //
-//   None         -- default. Terminal handler falls to "-> Hold" (a plain
-//                    disarm fade completing, or a hard write error with
-//                    nothing else in flight).
-//   LiveInterrupt -- set by notify_capture_started() when a should_capture
-//                    edge arrives during Replaying/FadingOut; also
-//                    the "upgrade" target when a Disarm fade (_pending_action
-//                    == None, state == FadingOut) is hit by a live interrupt.
-//   Discard      -- set by set_enabled(false) or notify_input_stopped() while
-//                    Replaying/FadingOut. ALWAYS overwrites a pending
-//                    LiveInterrupt ("Discard wins" -- see RepeatController's
-//                    _pending_action member comment for the full precedence
-//                    writeup).
-enum class PendingAction { None, Discard, LiveInterrupt };
+//   None              -- default. Terminal handler falls to "-> Hold" (a
+//                        plain disarm fade completing, or a hard write error
+//                        with nothing else in flight).
+//   InterruptProbation -- set by notify_capture_started() when a
+//                        should_capture edge arrives while state ==
+//                        Replaying (an ACTIVE replay, not already fading for
+//                        some other reason). Does NOT fade or free anything
+//                        yet -- it arms RepeatController's probation gate
+//                        (kInterruptSustainSeconds, autostream_repeat_
+//                        buffer.h), which needs sustained above-threshold
+//                        audio on the interrupting input before the
+//                        interrupt is trusted. Resolves to either
+//                        LiveInterrupt (ProbationConfirmed) or back to None
+//                        (ProbationTimedOut) -- see those events' cells.
+//                        FadingOut's own CaptureStarted cell deliberately
+//                        does NOT go through probation (a fade is already
+//                        in flight for some other reason there, so the
+//                        "protect an active replay from a pop" concern this
+//                        exists for does not apply) -- it still sets
+//                        LiveInterrupt directly, exactly as before.
+//   LiveInterrupt      -- the confirmed interrupt. Set either directly by
+//                        notify_capture_started() (FadingOut's upgrade-in-
+//                        place cell) or by decide_repeat_transition()'s
+//                        ProbationConfirmed cell once InterruptProbation
+//                        sustains kInterruptSustainSeconds.
+//   Discard           -- set by set_enabled(false) or notify_input_stopped()
+//                        while Replaying/FadingOut. ALWAYS overwrites a
+//                        pending InterruptProbation or LiveInterrupt
+//                        ("Discard wins" -- see RepeatController's
+//                        _pending_action member comment for the full
+//                        precedence writeup).
+enum class PendingAction { None, Discard, InterruptProbation, LiveInterrupt };
 
 // One value per real entry point into the six functions that are thin
 // wrappers around decide_repeat_transition() (set_enabled()/
 // notify_capture_started()/notify_capture_stopped()/set_armed()/
 // notify_input_stopped()/on_replay_session_ended_locked_entry()), plus
-// perform_pending_start()'s two outcomes (PendingStartSucceeded/Failed).
-// perform_pending_start() is not one of those six functions, but it is a
-// genuine Pending -> {Recording, Idle} mutation site with exactly the same
-// "decide, then commit under the lock" shape as the others -- folding it in
-// here is a deliberate scope extension, not a silent addition.
+// perform_pending_start()'s two outcomes (PendingStartSucceeded/Failed) and
+// the interrupt-probation gate's two outcomes (ProbationConfirmed/
+// ProbationTimedOut, RepeatController::notify_probation_block()).
+// perform_pending_start()/notify_probation_block() are not among those six
+// functions, but each is a genuine locked-decide-then-commit mutation site
+// with exactly the same shape as the others -- folding them in here is a
+// deliberate scope extension, not a silent addition.
 enum class RepeatEvent
 {
     EnabledOn,               // set_enabled(true), was disabled
@@ -1388,6 +1423,8 @@ enum class RepeatEvent
     ReplaySessionEnded,       // on_replay_session_ended_locked_entry()
     PendingStartSucceeded,    // perform_pending_start(): codec/encoder construction ok
     PendingStartFailed,       // perform_pending_start(): refused (mem/encoder init)
+    ProbationConfirmed,       // notify_probation_block(): sustained kInterruptSustainSeconds
+    ProbationTimedOut,        // notify_probation_block(): unconfirmed within the window
 };
 
 // Read-only, event-specific extra data decide_repeat_transition() needs
@@ -1401,7 +1438,25 @@ struct RepeatEventCtx
     int  interrupting_input  = 0;      // ReplaySessionEnded: snapshot of
                                         // _pending_interrupt_input taken by
                                         // the caller before it clears it
-    bool has_hold_bytes      = false;  // ReplaySessionEnded: _buffer.total_bytes() > 0
+    // ReplaySessionEnded: _buffer.total_bytes() > 0 (a held recording is
+    // being replayed). PendingStartFailed: also _buffer.total_bytes() > 0,
+    // but there it means something different -- a LiveInterrupt promotion
+    // deferred freeing the OLD held recording until admission was confirmed
+    // (see perform_pending_start()'s admit-before-free comment), so a
+    // non-empty buffer at PendingStartFailed time is that still-intact old
+    // recording, not the (never-started) new one. A plain Idle/Hold ->
+    // Pending attempt always has an empty buffer at this point (Hold's own
+    // CaptureStarted cell frees eagerly, unaffected by this change), so this
+    // flag cleanly distinguishes the two PendingStartFailed outcomes below.
+    bool has_hold_bytes      = false;
+    // PendingStartFailed only: the origin input to revert to if
+    // has_hold_bytes is true -- i.e. the OLD held recording's origin from
+    // before the LiveInterrupt promotion overwrote _origin_input with the
+    // interrupting input. Meaningless (left 0) whenever has_hold_bytes is
+    // false. Populated by the caller from RepeatController's own
+    // _pending_interrupt_revert_origin (set at the ReplaySessionEnded x
+    // LiveInterrupt cell -- see that cell's log_tag comment).
+    int  revert_origin_input = 0;
 
     // CaptureStarted, minimum playback hold: true when the active replay (or
     // its fade-out) is still within its minimum-playback window, computed by
@@ -1441,14 +1496,19 @@ enum class RepeatLogTag
     ReenabledRestoringLiveInterrupt,      // EnabledOn, Discard+restorable
     CaptureStartIgnoredFadeInProgress,    // CaptureStarted, Ignored (LiveInterrupt pending)
     CaptureStartIgnoredDiscardPending,    // CaptureStarted, Ignored (Discard pending)
+    CaptureStartIgnoredProbationInProgress, // CaptureStarted, Ignored (InterruptProbation pending)
     CaptureStartIgnoredReplayHoldActive,  // CaptureStarted, Ignored (minimum playback hold)
-    LiveInterruptFadingOutReplay,         // CaptureStarted, Replaying -> FadingOut
-    LiveInterruptUpgradingDisarmFade,     // CaptureStarted, FadingOut upgrade
+    CaptureStartArmsProbation,            // CaptureStarted, Replaying -> probation armed (no fade yet)
+    LiveInterruptFadingOutReplay,         // ProbationConfirmed (or FadingOut-upgrade's own CaptureStarted), Replaying -> FadingOut
+    LiveInterruptUpgradingDisarmFade,     // CaptureStarted or ProbationConfirmed, FadingOut upgrade
+    ProbationTimedOutReplayContinues,     // ProbationTimedOut: unconfirmed: replay continues
     CaptureStoppedPendingCancelled,       // CaptureStopped, Pending -> Idle
     DisarmDuringReplayFadingOut,          // Disarmed, Replaying -> FadingOut
     ReplaySessionEndedDiscarded,          // ReplaySessionEnded, Discard
-    ReplaySessionEndedLiveInterruptFreed, // ReplaySessionEnded, LiveInterrupt
+    ReplaySessionEndedLiveInterruptPending, // ReplaySessionEnded, LiveInterrupt, enabled: old recording retained, admission pending
+    ReplaySessionEndedLiveInterruptDisabledFreed, // ReplaySessionEnded, LiveInterrupt, disabled before fade finished: freed, no new session
     ReplaySessionEndedRetainedHold,       // ReplaySessionEnded, None -> Hold
+    PendingStartFailedRevertedToHold,     // PendingStartFailed, has_hold_bytes -> Hold (old recording survives)
 };
 
 // Pure decision returned by decide_repeat_transition(): describes what
@@ -1495,7 +1555,10 @@ struct RepeatDecision
     // owns the actual call; this only says which one applies. Applied (by
     // handle_event_locked()) in this fixed order, derived from the order the
     // original code performed them in every cell that combines more than
-    // one: pending-bookkeeping fields, then do_free_recording, then
+    // one: pending-bookkeeping fields (set_pending_interrupt_input before
+    // set_pending_action -- the probation fast-mirror write folded into the
+    // latter needs the former's new value already in place, for the one
+    // cell that sets both at once), then do_free_recording, then
     // change_state/set_origin, then do_request_abort, then
     // do_request_fade_out, then do_begin_replay, then
     // do_request_pending_start.
@@ -1744,18 +1807,32 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
                     d.log_tag = RepeatLogTag::CaptureStartIgnoredDiscardPending;
                     return d;
                 }
+                if (pending_action == PendingAction::InterruptProbation)
+                {
+                    // A probation is already armed (this input's own bounded
+                    // re-notify while it keeps capturing unrecorded, or a
+                    // second input's edge) -- decide_repeat_transition() does
+                    // not distinguish which input armed it, matching the
+                    // LiveInterrupt/Discard-pending cells immediately above.
+                    // The armed probation's own confirm/timeout (Probation
+                    // Confirmed/ProbationTimedOut) is what resolves this, not
+                    // a further CaptureStarted call.
+                    d.kind = RepeatDecision::Kind::Ignored;
+                    d.log_tag = RepeatLogTag::CaptureStartIgnoredProbationInProgress;
+                    return d;
+                }
                 // Minimum playback hold: the active replay (or its fade-out)
                 // still owns playback. Ignore this live transient outright --
                 // no state change, no pending-interrupt latch -- rather than
-                // starting the usual fade-out/takeover sequence. Nothing is
-                // latched here to remember the transient: InputChannel's
-                // bounded re-notify (compute_should_renotify_capture_
-                // started(), autostream_monitor_utils.h) keeps calling
-                // notify_capture_started() roughly once a second for as
-                // long as this input keeps capturing unrecorded, so once
+                // starting the usual probation/fade-out/takeover sequence.
+                // Nothing is latched here to remember the transient:
+                // InputChannel's bounded re-notify (compute_should_renotify_
+                // capture_started(), autostream_monitor_utils.h) keeps
+                // calling notify_capture_started() roughly once a second for
+                // as long as this input keeps capturing unrecorded, so once
                 // ctx.replay_hold_active goes false on some later call --
                 // the hold expired, or the replay ended by another route --
-                // that later call is what actually starts the takeover.
+                // that later call is what actually starts probation/takeover.
                 if (ctx.replay_hold_active)
                 {
                     d.kind = RepeatDecision::Kind::Ignored;
@@ -1763,6 +1840,39 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
                     return d;
                 }
 
+                if (state == RepeatState::Replaying)
+                {
+                    // Interrupt probation (the core of the fix this cell
+                    // implements): a should_capture edge during an ACTIVE
+                    // replay no longer fades/frees immediately on its own --
+                    // a brief noise pop must not be able to destroy both the
+                    // replay and the held recording it is playing from. Arm
+                    // the probation gate instead (RepeatController::
+                    // notify_probation_block(), fed every block on this
+                    // input regardless of recording_wanted() -- see that
+                    // function's declaration comment for the data-path
+                    // choice) and wait for either ProbationConfirmed
+                    // (kInterruptSustainSeconds of continuous above-threshold
+                    // audio: this cell's OLD unconditional behaviour, now
+                    // gated) or ProbationTimedOut (nothing sustained within
+                    // the window: replay never stopped, nothing was freed).
+                    // No state change, no fade request, no pending_restorable
+                    // write yet -- those all belong to the confirmed outcome.
+                    d.kind = RepeatDecision::Kind::Apply;
+                    d.set_pending_action = true;
+                    d.pending_action = PendingAction::InterruptProbation;
+                    d.set_pending_interrupt_input = true;
+                    d.pending_interrupt_input = ctx.input_index;
+                    d.log_tag = RepeatLogTag::CaptureStartArmsProbation;
+                    return d;
+                }
+
+                // FadingOut: a fade is already in flight for some other
+                // reason (a disarm, or an already-confirmed interrupt's own
+                // fade) -- the "protect an active replay from a pop" concern
+                // probation exists for does not apply here, so this keeps
+                // its original, unprobated semantics: upgrade in place,
+                // immediately, exactly as before.
                 d.kind = RepeatDecision::Kind::Apply;
                 d.set_pending_action = true;
                 d.pending_action = PendingAction::LiveInterrupt;
@@ -1770,18 +1880,7 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
                 d.pending_interrupt_input = ctx.input_index;
                 d.set_pending_restorable = true;
                 d.pending_restorable = false;
-
-                if (state == RepeatState::Replaying)
-                {
-                    d.change_state = true;
-                    d.next_state = RepeatState::FadingOut;
-                    d.do_request_fade_out = true;
-                    d.log_tag = RepeatLogTag::LiveInterruptFadingOutReplay;
-                }
-                else   // FadingOut: upgrade an in-flight disarm fade in place
-                {
-                    d.log_tag = RepeatLogTag::LiveInterruptUpgradingDisarmFade;
-                }
+                d.log_tag = RepeatLogTag::LiveInterruptUpgradingDisarmFade;
                 return d;
             }
 
@@ -1892,18 +1991,45 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
             }
             else if (pending_action == PendingAction::LiveInterrupt)
             {
-                d.do_free_recording = true;
-                d.log_tag = RepeatLogTag::ReplaySessionEndedLiveInterruptFreed;
+                // Admit-before-free (see perform_pending_start()'s comment
+                // for the full ordering): the old held recording is
+                // DELIBERATELY NOT freed here any more -- do_free_recording
+                // stays false. _buffer (and _onset/_trim/_preroll_ring/
+                // _tail_marker) are left completely untouched, still holding
+                // the finished recording exactly as Hold left them, all the
+                // way through Pending. Freeing is deferred to
+                // perform_pending_start(): on admission it steals the old
+                // buffer's chunks (freeing them outside the lock, same
+                // discipline as free_recording_locked()) immediately before
+                // handing the buffer to the new session; on refusal it frees
+                // nothing at all and PendingStartFailed reverts to Hold
+                // instead of Idle so the old recording survives -- see that
+                // cell below. Enabled/Idle handling below is otherwise
+                // unchanged from before this fix.
                 if (enabled_cfg)
                 {
+                    d.log_tag = RepeatLogTag::ReplaySessionEndedLiveInterruptPending;
                     d.change_state = true;
                     d.next_state = RepeatState::Pending;
                     d.set_origin = true;
                     d.origin_input = ctx.interrupting_input;
                     d.do_request_pending_start = true;
                 }
+                else
+                {
+                    // Disabled before the fade finished: nothing to record
+                    // into, and the deferred-free contract above only
+                    // applies to a genuine Pending attempt -- fall back to
+                    // freeing now, matching every other "nowhere for this
+                    // recording to go" outcome in this table.
+                    d.do_free_recording = true;
+                    d.log_tag = RepeatLogTag::ReplaySessionEndedLiveInterruptDisabledFreed;
+                }
             }
-            else   // PendingAction::None
+            else   // PendingAction::None (or InterruptProbation that never
+                    // confirmed before this replay ended some other way,
+                    // e.g. a hard write error while probation was armed --
+                    // treated identically: nothing to promote, retain Hold)
             {
                 d.change_state = true;
                 d.next_state = RepeatState::Hold;
@@ -1935,10 +2061,102 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
                 return d;
             }
             d.kind = RepeatDecision::Kind::Apply;
-            d.change_state = true;
-            d.next_state = RepeatState::Idle;
-            d.set_origin = true;
-            d.origin_input = 0;
+            if (ctx.has_hold_bytes)
+            {
+                // Admission was refused, but this Pending attempt came from
+                // a LiveInterrupt promotion that deferred freeing the OLD
+                // held recording (see ReplaySessionEnded's LiveInterrupt
+                // cell above) -- that recording is still completely intact
+                // in _buffer. Revert to Hold instead of discarding it, with
+                // the ORIGINAL origin restored (ctx.revert_origin_input),
+                // not the interrupting input _origin_input was overwritten
+                // with at Pending-entry, so the surviving recording is
+                // attributed to the right input and can be replayed again.
+                d.change_state = true;
+                d.next_state = RepeatState::Hold;
+                d.set_origin = true;
+                d.origin_input = ctx.revert_origin_input;
+                d.log_tag = RepeatLogTag::PendingStartFailedRevertedToHold;
+                // Mirrors ReplaySessionEnded's own None -> Hold cell: resume
+                // replaying the surviving recording immediately if still
+                // armed (an EnabledOff/InputStopped/Disarmed racing in while
+                // this admission attempt was in flight already cleared
+                // `armed`/`enabled_cfg` before this call, same as there).
+                if (armed && enabled_cfg)
+                    d.do_begin_replay = true;
+            }
+            else
+            {
+                // Plain Idle/Hold -> Pending attempt (no held recording in
+                // play): unchanged from before this fix.
+                d.change_state = true;
+                d.next_state = RepeatState::Idle;
+                d.set_origin = true;
+                d.origin_input = 0;
+            }
+            return d;
+        }
+
+        case RepeatEvent::ProbationConfirmed:
+        {
+            // Only meaningful while the probation this call reports on is
+            // still the live one -- pending_action may already have moved
+            // on (Discard/LiveInterrupt/None) by the time
+            // notify_probation_block() gets the lock, and the replay may
+            // have ended entirely (state outside Replaying/FadingOut) via
+            // some other route in the meantime. Either way, a stale
+            // confirmation is moot: NoOp, nothing to promote.
+            if (pending_action != PendingAction::InterruptProbation ||
+                (state != RepeatState::Replaying && state != RepeatState::FadingOut))
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+                return d;
+            }
+            // From here on this reproduces exactly what CaptureStarted's
+            // Replaying/FadingOut cell did directly before probation-gating
+            // existed -- see that cell's log_tag comments for the same text.
+            // pending_interrupt_input/pending_restorable were already
+            // latched at arm time (CaptureStarted's probation-arm branch);
+            // nothing new to set there.
+            d.kind = RepeatDecision::Kind::Apply;
+            d.set_pending_action = true;
+            d.pending_action = PendingAction::LiveInterrupt;
+            d.set_pending_restorable = true;
+            d.pending_restorable = false;
+            if (state == RepeatState::Replaying)
+            {
+                d.change_state = true;
+                d.next_state = RepeatState::FadingOut;
+                d.do_request_fade_out = true;
+                d.log_tag = RepeatLogTag::LiveInterruptFadingOutReplay;
+            }
+            else   // FadingOut: a disarm fade started while probation was
+                    // still armed -- upgrade it in place, same as an
+                    // immediate CaptureStarted would have.
+            {
+                d.log_tag = RepeatLogTag::LiveInterruptUpgradingDisarmFade;
+            }
+            return d;
+        }
+
+        case RepeatEvent::ProbationTimedOut:
+        {
+            // Same staleness guard as ProbationConfirmed: only act if this
+            // timeout still refers to the currently-armed probation.
+            if (pending_action != PendingAction::InterruptProbation)
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+                return d;
+            }
+            // Silent reset: replay never stopped, nothing was freed, no
+            // state change at all -- only the WARN-level log line (the one
+            // operator-visible signal for a phantom-interrupt event) marks
+            // this happened. Re-arms on the next CaptureStarted edge like
+            // any other None-pending state.
+            d.kind = RepeatDecision::Kind::Apply;
+            d.set_pending_action = true;
+            d.pending_action = PendingAction::None;
+            d.log_tag = RepeatLogTag::ProbationTimedOutReplayContinues;
             return d;
         }
     }
@@ -2099,6 +2317,27 @@ public:
     void notify_capture_started(int input_index);
     void notify_capture_stopped(int input_index);
 
+    // Feeds RepeatController's interrupt-probation gate, one call per
+    // processed audio block, from InputChannel::process_thread_func() --
+    // see that call site's comment for exactly why. above_threshold MUST be
+    // the RAW per-block peak-vs-threshold comparison (the same signal the
+    // recorder's own OnsetGate receives), never the silence-window-debounced
+    // flag: a debounced flag stays true for the whole configured silence
+    // window after a single transient, which would let the sustain gate
+    // confirm on wall-clock time alone. The recorder's own feed cannot be
+    // reused directly because it only flows while recording_wanted() is
+    // true -- never during an active replay. Called
+    // UNCONDITIONALLY, for every input, every block -- deliberately cheap
+    // (two relaxed atomic loads) in the overwhelmingly common case where no
+    // probation is armed, via the same fast-mirror discipline as
+    // recording_wanted()/is_fifo_owned_by_replay(); only takes _repeat_mutex
+    // while a probation for THIS input_index is actually in flight, which is
+    // at most a few seconds around a live-interrupt attempt during replay.
+    // See decide_repeat_transition()'s CaptureStarted (Replaying) cell for
+    // where probation gets armed, and ProbationConfirmed/ProbationTimedOut
+    // for the two ways it resolves.
+    void notify_probation_block(int input_index, bool above_threshold, double now);
+
     // Called by InputChannel on stop_input() of the current origin input
     // (reload/teardown path): discards the buffer and cancels any
     // active replay unconditionally, no fade (D12).
@@ -2243,10 +2482,32 @@ private:
                                    const float* interleaved, int frames,
                                    bool above_threshold);
 
+public:
+    // Public (unlike the rest of this private section) purely so
+    // test_repeat_transitions.cpp can static_assert both values directly
+    // rather than duplicating the literals -- RepeatController has no other
+    // reason to expose them.
+    //
+    // Margin ABOVE kFreeRamFloorMib (autostream_repeat_buffer.h) a new
+    // session's admission gate keeps: kFreeRamFloorMib is the steady-state
+    // floor apply_memory_guard_locked() drops chunks to defend once a
+    // recording is already running, but starting a brand-new session needs
+    // a little extra slack above that floor for the encoder's own one-time
+    // setup allocation, so admission is stricter than the in-session guard.
+    // Value preserves the original (110 - 96 = 14 MiB) relationship this
+    // gate was chosen with, from back when kFreeRamFloorMib was 96 --
+    // re-deriving kMinAvailableMibForStart from the floor plus this margin
+    // means a future change to the floor (zram/swap tuning) automatically
+    // carries through to the admission gate instead of the two drifting
+    // apart the way they had until now.
+    static constexpr long   kSessionAdmissionMarginMib = 14;
     // Recording is refused below this threshold regardless of pinned
     // codec (the pinned codec "skips the ladder" for quality-tier selection,
-    // not for this base availability gate).
-    static constexpr long   kMinAvailableMibForStart = 110;
+    // not for this base availability gate). See kSessionAdmissionMarginMib
+    // immediately above for the derivation; currently 64 + 14 = 78 MiB.
+    static constexpr long   kMinAvailableMibForStart =
+        kFreeRamFloorMib + kSessionAdmissionMarginMib;
+private:
     static constexpr double kMemCheckIntervalSeconds  = 30.0;
     // Trailing pad kept ahead of the tail cut, shared by both close-time
     // trims: the marker-based cut (last-sustained-run end + this pad, the
@@ -2324,6 +2585,49 @@ private:
     // re-enable arrives before the fade's terminal handler runs, in which
     // case the interrupt is honoured after all.
     bool          _pending_interrupt_restorable = false;
+
+    // The origin input the ReplaySessionEnded x LiveInterrupt cell
+    // overwrote _origin_input FROM, snapshotted at that transition (see its
+    // log_tag comment) purely so PendingStartFailed can restore it if the
+    // new session's admission is refused -- _origin_input itself has
+    // already moved on to the interrupting input by then (Pending's audio
+    // routing needs it there; see recording_wanted()). Meaningless outside
+    // that one window; not cleared on read since has_hold_bytes already
+    // gates every consumer of it (RepeatEventCtx::revert_origin_input's
+    // declaration comment).
+    int           _pending_interrupt_revert_origin = 0;
+
+    // Interrupt-probation gate: accumulates continuous above-threshold time
+    // on the interrupting input while pending_action == InterruptProbation,
+    // fed by notify_probation_block() (called for every input, every block,
+    // regardless of recording_wanted() -- see that function's declaration
+    // comment). kInterruptSustainSeconds is its own constant, deliberately
+    // distinct from SustainTracker::kSustainSeconds (the RECORDER's onset-
+    // commit gate) -- see kInterruptSustainSeconds' own declaration comment
+    // (autostream_repeat_buffer.h) for the enumeration/coupling verdict.
+    // reset() at every arm (CaptureStarted's probation-arm cell) so a stale
+    // partial run from a previous, already-resolved probation attempt can
+    // never leak into a new one.
+    SustainTracker _interrupt_probation{kInterruptSustainSeconds};
+    // Wall-clock timestamp probation was armed, and of the most recently fed
+    // block while armed -- both 0.0 while no probation is in flight. Two
+    // separate clocks because the sustain accumulator above only advances on
+    // above-threshold blocks (silence resets it to zero), while the TIMEOUT
+    // bound (kPreRollSeconds, autostream_repeat_buffer.h) is measured from
+    // the arm instant regardless of what the audio has been doing since --
+    // "confirm within the window at all", not "sustain the whole window".
+    double        _probation_armed_time      = 0.0;
+    double        _probation_last_block_time = 0.0;
+    // Lock-free fast mirrors of "a probation is currently armed, for this
+    // input" -- written under _repeat_mutex at the single mutation choke
+    // point in handle_event_locked() (alongside _pending_action itself),
+    // read without the lock by notify_probation_block() so the overwhelming
+    // majority of calls (no probation in flight) cost two relaxed loads and
+    // nothing more, matching recording_wanted()/is_fifo_owned_by_replay()'s
+    // discipline. _probation_input_fast defaults to -1 (not 0) so input
+    // index 0 is never mistaken for "armed for input 0" while unarmed.
+    std::atomic<bool> _probation_armed_fast{false};
+    std::atomic<int>  _probation_input_fast{-1};
 
     std::string  _codec_cfg   = "auto";
     // Target-duration goal in minutes for the codec-ladder selection

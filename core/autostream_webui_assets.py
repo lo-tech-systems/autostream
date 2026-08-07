@@ -1953,7 +1953,8 @@ HOME_CARDS_SCRIPT = """
   // (REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS) because it also has to cover the
   // fade-out phase, which the server now reports explicitly via
   // repeat.replay.fading_out (see updateRepeatButton's 'stopping' state
-  // below) so the button doesn't just go dead for the 1.5 s fade.
+  // below) so the button doesn't just go dead for the fade (kFadeSeconds,
+  // core/monitor/autostream_monitor.h -- currently 1.0 s).
   var __repeatOptimistic = null;
   var REPEAT_START_OPTIMISTIC_TIMEOUT_MS = 5000;
   var REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS = 10000;
@@ -1984,7 +1985,8 @@ HOME_CARDS_SCRIPT = """
 
     // Optimistic-click reconciliation: hold the click's immediate
     // visual state until the polled truth agrees with it, or the
-    // fallback timeout elapses -- the 1.5 s stop/start fade means
+    // fallback timeout elapses -- the stop/start fade (kFadeSeconds,
+    // core/monitor/autostream_monitor.h) means
     // polled state lags the click, and without this the button would
     // flicker back mid-fade.
     var on = polledOn;
@@ -2106,7 +2108,8 @@ HOME_CARDS_SCRIPT = """
     var kind = newArmed ? 'start' : 'stop';
     // Apply the optimistic visual state immediately: don't wait for the
     // POST to resolve before flipping the class/label, so the click
-    // feels instant even though the 1.5 s fade means the polled truth
+    // feels instant even though the fade (kFadeSeconds, core/monitor/
+    // autostream_monitor.h) means the polled truth
     // will lag behind for a while. Stop clicks disable the button too --
     // closes the double-click-during-fade hole where a second click
     // mid-fade could re-arm/re-stop against a session that's already

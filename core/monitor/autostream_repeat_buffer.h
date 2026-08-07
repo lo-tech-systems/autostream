@@ -889,9 +889,23 @@ class SustainTracker
 {
 public:
     // Sustained above-threshold duration that counts as a genuine run
-    // (as opposed to a transient that cannot sustain this long). Internal
-    // constant, not user-configurable.
+    // (as opposed to a transient that cannot sustain this long). Remains the
+    // default threshold for every existing caller (OnsetGate's recorder-
+    // commit gate, TailMarker's tail-of-recording marker); NOT user-
+    // configurable and NOT changed by the constructor overload below.
     static constexpr double kSustainSeconds = 2.5;
+
+    SustainTracker() = default;
+
+    // Same accumulator, a different sustain threshold. Added so
+    // RepeatController's interrupt-probation gate (kInterruptSustainSeconds,
+    // autostream_repeat_buffer.h) can reuse this exact "unbroken continuous
+    // above-threshold run" core without perturbing kSustainSeconds or any of
+    // its existing callers -- see the enumeration in RepeatController's
+    // declaration comment for why the recorder-commit gate (2.5 s) and the
+    // interrupt-probation gate (1.25 s) are deliberately separate constants
+    // rather than one shared value.
+    explicit SustainTracker(double sustain_seconds) : _sustain_seconds(sustain_seconds) {}
 
     void reset() { _above_seconds = 0.0; }
 
@@ -924,16 +938,18 @@ public:
             return false;
         }
 
-        bool was_sustained = _above_seconds >= kSustainSeconds;
+        bool was_sustained = _above_seconds >= _sustain_seconds;
         _above_seconds += block_seconds;
-        return !was_sustained && _above_seconds >= kSustainSeconds;
+        return !was_sustained && _above_seconds >= _sustain_seconds;
     }
 
-    bool   is_sustained() const   { return _above_seconds >= kSustainSeconds; }
-    double above_seconds() const  { return _above_seconds; }
+    bool   is_sustained() const     { return _above_seconds >= _sustain_seconds; }
+    double above_seconds() const    { return _above_seconds; }
+    double sustain_seconds() const  { return _sustain_seconds; }
 
 private:
-    double _above_seconds = 0.0;
+    double _sustain_seconds = kSustainSeconds;
+    double _above_seconds   = 0.0;
 };
 
 
@@ -1134,6 +1150,45 @@ private:
 // still has the ring cover everything back to session start once onset
 // confirms at kOnsetSustainSeconds in.
 inline constexpr double kPreRollSeconds = 5.0;
+
+// Live-interrupt probation window (RepeatController, autostream_repeat.cpp):
+// how long a should_capture edge arriving during an ACTIVE replay must
+// sustain continuous above-threshold audio before it is trusted enough to
+// fade out the replay and free the held recording. Deliberately its own
+// constant rather than reusing SustainTracker::kSustainSeconds (2.5 s) --
+// that constant is the RECORDER's own onset-commit gate ("is this real
+// enough to start committing a brand-new recording from silence"), a
+// different, unrelated question from "is this real enough to interrupt an
+// ALREADY-PLAYING replay". No caller of kSustainSeconds (OnsetGate's
+// recorder-commit gate, TailMarker's tail-of-recording marker -- both purely
+// on the RECORDER side) has any coupling to interrupt handling, so there is
+// no reason to keep the two gates in lockstep; a shorter probation keeps a
+// genuine live interrupt feeling responsive without reopening the original
+// "a brief noise pop destroys the held recording" problem this exists to fix.
+//
+// kPreRollSeconds also doubles as this gate's TIMEOUT bound (see
+// RepeatController::notify_probation_block()): a should_capture edge that
+// never confirms within kPreRollSeconds resets silently and replay
+// continues untouched. Chosen as the bound (rather than a fresh constant)
+// because it is already the figure that bounds how long any onset-style
+// decision in this codebase is allowed to sit unconfirmed before the
+// original transient is too far in the past to still be a reasonable "this
+// just happened" signal.
+//
+// Note what this arithmetic does NOT claim: probation and the fade that
+// follows confirmation both run while the NEW session's own RepeatBuffer/
+// OnsetGate/PreRollRing are still idle (still owned by the OLD held
+// recording -- see the admit-before-free comment in RepeatController's
+// perform_pending_start()), so the audio spanning the probation window
+// itself is not captured into the eventual new recording, exactly as the
+// pre-1.0 s fade window never was either. What the headroom below buys is
+// operational slack: kInterruptSustainSeconds (to confirm) + kFadeSeconds
+// (autostream_monitor.h; the fade that follows confirmation) = 1.25 + 1.0 =
+// 2.25 s, well inside the 5 s bound above -- so a legitimate interrupt has
+// comfortable room to confirm before timing out even under scheduling
+// jitter, without the probation window itself needing to grow anywhere
+// near kPreRollSeconds.
+inline constexpr double kInterruptSustainSeconds = 1.25;
 
 class PreRollRing
 {

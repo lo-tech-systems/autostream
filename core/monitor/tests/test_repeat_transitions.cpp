@@ -207,7 +207,9 @@ static void test_capture_started()
         CHECK(d.do_request_pending_start, "Hold");
     }
 
-    // Replaying/FadingOut: the three sub-branches.
+    // Replaying/FadingOut: the four sub-branches (Ignored x3 + the state-
+    // dependent outcome: Replaying arms probation, FadingOut still upgrades
+    // immediately -- see decide_repeat_transition()'s CaptureStarted cell).
     for (RepeatState s : {RepeatState::Replaying, RepeatState::FadingOut})
     {
         RepeatDecision ignored_li = decide_repeat_transition(
@@ -222,27 +224,128 @@ static void test_capture_started()
         CHECK(ignored_discard.kind == RepeatDecision::Kind::Ignored, state_name(s));
         CHECK(ignored_discard.log_tag == RepeatLogTag::CaptureStartIgnoredDiscardPending, state_name(s));
 
+        RepeatDecision ignored_probation = decide_repeat_transition(
+            s, false, true, PendingAction::InterruptProbation, false,
+            RepeatEvent::CaptureStarted, ctx);
+        CHECK(ignored_probation.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        CHECK(ignored_probation.log_tag == RepeatLogTag::CaptureStartIgnoredProbationInProgress,
+              state_name(s));
+
         RepeatDecision trigger = decide_repeat_transition(
             s, false, true, PendingAction::None, false, RepeatEvent::CaptureStarted, ctx);
         CHECK(trigger.kind == RepeatDecision::Kind::Apply, state_name(s));
-        CHECK(trigger.set_pending_action &&
-              trigger.pending_action == PendingAction::LiveInterrupt, state_name(s));
-        CHECK(trigger.set_pending_interrupt_input &&
-              trigger.pending_interrupt_input == 1, state_name(s));
-        CHECK(trigger.set_pending_restorable && !trigger.pending_restorable, state_name(s));
 
         if (s == RepeatState::Replaying)
         {
-            CHECK(trigger.change_state && trigger.next_state == RepeatState::FadingOut, "Replaying");
-            CHECK(trigger.do_request_fade_out, "Replaying");
-            CHECK(trigger.log_tag == RepeatLogTag::LiveInterruptFadingOutReplay, "Replaying");
+            // Interrupt probation: no fade, no state change yet -- only
+            // arms the gate. pending_restorable is untouched (still belongs
+            // to the eventual confirmed/timed-out outcome).
+            CHECK(trigger.set_pending_action &&
+                  trigger.pending_action == PendingAction::InterruptProbation, "Replaying");
+            CHECK(trigger.set_pending_interrupt_input &&
+                  trigger.pending_interrupt_input == 1, "Replaying");
+            CHECK(!trigger.set_pending_restorable, "Replaying: probation arm doesn't touch restorable");
+            CHECK(!trigger.change_state, "Replaying: probation arm doesn't change state");
+            CHECK(!trigger.do_request_fade_out, "Replaying: probation arm doesn't fade");
+            CHECK(trigger.log_tag == RepeatLogTag::CaptureStartArmsProbation, "Replaying");
         }
         else
         {
+            // FadingOut: unprobated, immediate upgrade -- unchanged from
+            // before probation existed.
+            CHECK(trigger.set_pending_action &&
+                  trigger.pending_action == PendingAction::LiveInterrupt, "FadingOut");
+            CHECK(trigger.set_pending_interrupt_input &&
+                  trigger.pending_interrupt_input == 1, "FadingOut");
+            CHECK(trigger.set_pending_restorable && !trigger.pending_restorable, "FadingOut");
             CHECK(!trigger.change_state, "FadingOut upgrade: no state change");
             CHECK(!trigger.do_request_fade_out, "FadingOut upgrade: fade already running");
             CHECK(trigger.log_tag == RepeatLogTag::LiveInterruptUpgradingDisarmFade, "FadingOut");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProbationConfirmed / ProbationTimedOut
+// ---------------------------------------------------------------------------
+
+static void test_probation_confirmed_and_timed_out()
+{
+    // ProbationConfirmed, Replaying, armed: promotes to LiveInterrupt and
+    // starts the fade-out, reproducing exactly what an unprobated
+    // CaptureStarted used to do directly.
+    {
+        RepeatDecision d = decide_repeat_transition(
+            RepeatState::Replaying, false, true, PendingAction::InterruptProbation, false,
+            RepeatEvent::ProbationConfirmed, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::Apply, "Replaying confirmed");
+        CHECK(d.set_pending_action && d.pending_action == PendingAction::LiveInterrupt,
+              "Replaying confirmed");
+        CHECK(d.set_pending_restorable && !d.pending_restorable, "Replaying confirmed");
+        CHECK(d.change_state && d.next_state == RepeatState::FadingOut, "Replaying confirmed");
+        CHECK(d.do_request_fade_out, "Replaying confirmed");
+        CHECK(d.log_tag == RepeatLogTag::LiveInterruptFadingOutReplay, "Replaying confirmed");
+    }
+
+    // ProbationConfirmed, FadingOut, armed: a disarm-fade started while
+    // probation was still armed -- upgrade in place, no new state change,
+    // no new fade request (one already running).
+    {
+        RepeatDecision d = decide_repeat_transition(
+            RepeatState::FadingOut, false, true, PendingAction::InterruptProbation, false,
+            RepeatEvent::ProbationConfirmed, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::Apply, "FadingOut confirmed");
+        CHECK(d.set_pending_action && d.pending_action == PendingAction::LiveInterrupt,
+              "FadingOut confirmed");
+        CHECK(!d.change_state, "FadingOut confirmed: no state change");
+        CHECK(!d.do_request_fade_out, "FadingOut confirmed: fade already running");
+        CHECK(d.log_tag == RepeatLogTag::LiveInterruptUpgradingDisarmFade, "FadingOut confirmed");
+    }
+
+    // ProbationConfirmed but stale/superseded: pending_action already moved
+    // on (Discard won, or already LiveInterrupt), or the replay already
+    // ended (state outside Replaying/FadingOut) -- moot, NoOp.
+    {
+        RepeatDecision superseded_discard = decide_repeat_transition(
+            RepeatState::Replaying, false, true, PendingAction::Discard, false,
+            RepeatEvent::ProbationConfirmed, RepeatEventCtx{});
+        CHECK(superseded_discard.kind == RepeatDecision::Kind::NoOp, "confirmed, Discard won");
+
+        RepeatDecision superseded_none = decide_repeat_transition(
+            RepeatState::Replaying, false, true, PendingAction::None, false,
+            RepeatEvent::ProbationConfirmed, RepeatEventCtx{});
+        CHECK(superseded_none.kind == RepeatDecision::Kind::NoOp, "confirmed, already resolved");
+
+        for (RepeatState s : {RepeatState::Idle, RepeatState::Recording,
+                               RepeatState::Hold, RepeatState::Pending})
+        {
+            RepeatDecision superseded_state = decide_repeat_transition(
+                s, false, true, PendingAction::InterruptProbation, false,
+                RepeatEvent::ProbationConfirmed, RepeatEventCtx{});
+            CHECK(superseded_state.kind == RepeatDecision::Kind::NoOp, state_name(s));
+        }
+    }
+
+    // ProbationTimedOut: silent reset back to None, no state change --
+    // replay continues untouched. The WARN-level log line is the only
+    // operator-visible signal (this test only checks the decision, not the
+    // actual LOG_WARN call, which lives in handle_event_locked()).
+    {
+        RepeatDecision d = decide_repeat_transition(
+            RepeatState::Replaying, false, true, PendingAction::InterruptProbation, false,
+            RepeatEvent::ProbationTimedOut, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::Apply, "timed out");
+        CHECK(d.set_pending_action && d.pending_action == PendingAction::None, "timed out");
+        CHECK(!d.change_state, "timed out: replay continues, no state change");
+        CHECK(d.log_tag == RepeatLogTag::ProbationTimedOutReplayContinues, "timed out");
+    }
+
+    // ProbationTimedOut but stale (already resolved another way): NoOp.
+    {
+        RepeatDecision d = decide_repeat_transition(
+            RepeatState::Replaying, false, true, PendingAction::LiveInterrupt, false,
+            RepeatEvent::ProbationTimedOut, RepeatEventCtx{});
+        CHECK(d.kind == RepeatDecision::Kind::NoOp, "timed out, already confirmed");
     }
 }
 
@@ -316,15 +419,19 @@ static void test_capture_started_replay_hold()
 
         // Hold expired (replay_hold_active=false): the very next re-notify
         // call after expiry is what actually applies the takeover --
-        // identical to test_capture_started()'s "trigger" case above.
+        // identical to test_capture_started()'s "trigger" case above
+        // (probation-arm for Replaying, immediate upgrade for FadingOut).
         RepeatEventCtx ctx_expired = ctx;
         ctx_expired.replay_hold_active = false;
         RepeatDecision expired = decide_repeat_transition(
             s, false, true, PendingAction::None, false,
             RepeatEvent::CaptureStarted, ctx_expired);
         CHECK(expired.kind == RepeatDecision::Kind::Apply, state_name(s));
-        CHECK(expired.set_pending_action &&
-              expired.pending_action == PendingAction::LiveInterrupt, state_name(s));
+        CHECK(expired.set_pending_action, state_name(s));
+        if (s == RepeatState::Replaying)
+            CHECK(expired.pending_action == PendingAction::InterruptProbation, state_name(s));
+        else
+            CHECK(expired.pending_action == PendingAction::LiveInterrupt, state_name(s));
     }
 
     // Idle/Hold/Recording/Pending never consult replay_hold_active at all --
@@ -467,18 +574,24 @@ static void test_replay_session_ended()
         CHECK(discard.set_pending_restorable && !discard.pending_restorable, state_name(s));
         CHECK(discard.log_tag == RepeatLogTag::ReplaySessionEndedDiscarded, state_name(s));
 
-        // LiveInterrupt, enabled -> free + new Pending session.
+        // LiveInterrupt, enabled -> admit-before-free (change 5): the old
+        // recording is NOT freed here any more -- it stays intact in
+        // _buffer until perform_pending_start() actually decides admission
+        // (steals it on success, leaves it alone on refusal). Only the new
+        // Pending session is started here.
         RepeatDecision li_enabled = decide_repeat_transition(
             s, true, /*enabled_cfg=*/true, PendingAction::LiveInterrupt, false,
             RepeatEvent::ReplaySessionEnded, ctx);
         CHECK(li_enabled.kind == RepeatDecision::Kind::Apply, state_name(s));
-        CHECK(li_enabled.do_free_recording, state_name(s));
+        CHECK(!li_enabled.do_free_recording, state_name(s));
         CHECK(li_enabled.change_state && li_enabled.next_state == RepeatState::Pending, state_name(s));
         CHECK(li_enabled.set_origin && li_enabled.origin_input == 2, state_name(s));
         CHECK(li_enabled.do_request_pending_start, state_name(s));
-        CHECK(li_enabled.log_tag == RepeatLogTag::ReplaySessionEndedLiveInterruptFreed, state_name(s));
+        CHECK(li_enabled.log_tag == RepeatLogTag::ReplaySessionEndedLiveInterruptPending, state_name(s));
 
-        // LiveInterrupt, disabled -> free only, no new session.
+        // LiveInterrupt, disabled before the fade finished -> nowhere to
+        // record into, so this falls back to freeing immediately (the
+        // deferred-free contract only applies to a genuine Pending attempt).
         RepeatDecision li_disabled = decide_repeat_transition(
             s, true, /*enabled_cfg=*/false, PendingAction::LiveInterrupt, false,
             RepeatEvent::ReplaySessionEnded, ctx);
@@ -486,6 +599,21 @@ static void test_replay_session_ended()
         CHECK(li_disabled.do_free_recording, state_name(s));
         CHECK(!li_disabled.change_state, state_name(s));
         CHECK(!li_disabled.do_request_pending_start, state_name(s));
+        CHECK(li_disabled.log_tag == RepeatLogTag::ReplaySessionEndedLiveInterruptDisabledFreed,
+              state_name(s));
+
+        // InterruptProbation, never confirmed (e.g. a hard write error hit
+        // the replay while probation was still armed) -> treated the same
+        // as None: retain Hold, nothing to promote.
+        RepeatDecision probation_unconfirmed = decide_repeat_transition(
+            s, true, /*enabled_cfg=*/true, PendingAction::InterruptProbation, false,
+            RepeatEvent::ReplaySessionEnded, ctx);
+        CHECK(probation_unconfirmed.kind == RepeatDecision::Kind::Apply, state_name(s));
+        CHECK(!probation_unconfirmed.do_free_recording, state_name(s));
+        CHECK(probation_unconfirmed.change_state &&
+              probation_unconfirmed.next_state == RepeatState::Hold, state_name(s));
+        CHECK(probation_unconfirmed.log_tag == RepeatLogTag::ReplaySessionEndedRetainedHold,
+              state_name(s));
 
         // None, armed+enabled+bytes -> Hold + BeginReplay (restart).
         RepeatEventCtx ctx_bytes;
@@ -529,12 +657,46 @@ static void test_pending_start_outcomes()
     CHECK(ok.change_state && ok.next_state == RepeatState::Recording, "Pending PendingStartSucceeded");
     CHECK(!ok.set_origin, "origin untouched on success");
 
+    // PendingStartFailed, has_hold_bytes == false: plain Idle/Hold -> Pending
+    // attempt with no held recording in play -- unchanged from before this
+    // fix.
     RepeatDecision failed = decide_repeat_transition(
         RepeatState::Pending, false, true, PendingAction::None, false,
         RepeatEvent::PendingStartFailed, RepeatEventCtx{});
     CHECK(failed.kind == RepeatDecision::Kind::Apply, "Pending PendingStartFailed");
     CHECK(failed.change_state && failed.next_state == RepeatState::Idle, "Pending PendingStartFailed");
     CHECK(failed.set_origin && failed.origin_input == 0, "Pending PendingStartFailed");
+    CHECK(failed.log_tag != RepeatLogTag::PendingStartFailedRevertedToHold, "Pending PendingStartFailed");
+
+    // PendingStartFailed, has_hold_bytes == true: a LiveInterrupt promotion
+    // deferred freeing the old recording (change 5) and admission was
+    // refused -- revert to Hold with the ORIGINAL origin restored (NOT
+    // origin_input=0, and NOT the interrupting input), so the surviving
+    // recording is attributed correctly and can be replayed again.
+    {
+        RepeatEventCtx ctx;
+        ctx.has_hold_bytes = true;
+        ctx.revert_origin_input = 3;
+
+        RepeatDecision reverted = decide_repeat_transition(
+            RepeatState::Pending, /*armed=*/true, /*enabled_cfg=*/true, PendingAction::None, false,
+            RepeatEvent::PendingStartFailed, ctx);
+        CHECK(reverted.kind == RepeatDecision::Kind::Apply, "PendingStartFailed reverted");
+        CHECK(reverted.change_state && reverted.next_state == RepeatState::Hold,
+              "PendingStartFailed reverted");
+        CHECK(reverted.set_origin && reverted.origin_input == 3, "PendingStartFailed reverted");
+        CHECK(reverted.log_tag == RepeatLogTag::PendingStartFailedRevertedToHold,
+              "PendingStartFailed reverted");
+        CHECK(reverted.do_begin_replay, "PendingStartFailed reverted: armed+enabled resumes replay");
+
+        // Same has_hold_bytes but not armed/enabled: reverts to Hold, no
+        // auto-resume -- mirrors ReplaySessionEnded's own None -> Hold cell.
+        RepeatDecision reverted_not_armed = decide_repeat_transition(
+            RepeatState::Pending, /*armed=*/false, /*enabled_cfg=*/true, PendingAction::None, false,
+            RepeatEvent::PendingStartFailed, ctx);
+        CHECK(!reverted_not_armed.do_begin_replay, "PendingStartFailed reverted, not armed");
+        CHECK(reverted_not_armed.next_state == RepeatState::Hold, "PendingStartFailed reverted, not armed");
+    }
 
     // Impossible cells: every state other than Pending, both events.
     for (RepeatState s : kAllStates)
@@ -554,6 +716,24 @@ static void test_pending_start_outcomes()
 }
 
 // ---------------------------------------------------------------------------
+// Constant derivations: kMinAvailableMibForStart == kFreeRamFloorMib +
+// kSessionAdmissionMarginMib (78 == 64 + 14) and kFadeSeconds == 1.0 -- both
+// changes 3 and 4. Compile-time checks so a future edit to either input
+// constant without updating the derivation comment fails the build, not
+// just this test binary.
+// ---------------------------------------------------------------------------
+
+static_assert(kFreeRamFloorMib == 64, "kFreeRamFloorMib moved -- re-check the admission gate derivation");
+static_assert(RepeatController::kSessionAdmissionMarginMib == 14,
+              "margin constant changed -- re-check the 110 -> 78 derivation comment");
+static_assert(RepeatController::kMinAvailableMibForStart ==
+                  kFreeRamFloorMib + RepeatController::kSessionAdmissionMarginMib,
+              "admission gate must stay derived from the floor + margin");
+static_assert(RepeatController::kMinAvailableMibForStart == 78,
+              "expected 64 + 14 == 78");
+static_assert(ReplayEngine::kFadeSeconds == 1.0, "expected fade shortened to 1.0 s");
+
+// ---------------------------------------------------------------------------
 // Full-matrix smoke pass: every (state, event) combination must return a
 // well-defined Kind (nothing falls through to a garbage/default value) --
 // catches an event enumerator added later without a matching switch arm.
@@ -561,11 +741,12 @@ static void test_pending_start_outcomes()
 
 static void test_full_matrix_smoke()
 {
-    static const std::array<RepeatEvent, 10> kAllEvents = {
+    static const std::array<RepeatEvent, 12> kAllEvents = {
         RepeatEvent::EnabledOn, RepeatEvent::EnabledOff, RepeatEvent::CaptureStarted,
         RepeatEvent::CaptureStopped, RepeatEvent::Armed, RepeatEvent::Disarmed,
         RepeatEvent::InputStopped, RepeatEvent::ReplaySessionEnded,
         RepeatEvent::PendingStartSucceeded, RepeatEvent::PendingStartFailed,
+        RepeatEvent::ProbationConfirmed, RepeatEvent::ProbationTimedOut,
     };
 
     for (RepeatState s : kAllStates)
@@ -577,6 +758,7 @@ static void test_full_matrix_smoke()
                 for (bool enabled_cfg : {false, true})
                 {
                     for (PendingAction pa : {PendingAction::None, PendingAction::Discard,
+                                              PendingAction::InterruptProbation,
                                               PendingAction::LiveInterrupt})
                     {
                         for (bool replay_hold_active : {false, true})
@@ -603,6 +785,7 @@ int main()
     test_enabled_on_off();
     test_capture_started();
     test_capture_started_replay_hold();
+    test_probation_confirmed_and_timed_out();
     test_capture_stopped();
     test_armed_disarmed();
     test_input_stopped();

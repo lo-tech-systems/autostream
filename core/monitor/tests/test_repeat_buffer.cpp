@@ -1873,6 +1873,74 @@ static void test_u18_convert_to_pipe_format()
 }
 
 // ---------------------------------------------------------------------------
+// U19 — SustainTracker with a custom threshold (RepeatController's
+// interrupt-probation gate reuses the accumulator, constructed with
+// kInterruptSustainSeconds instead of the default kSustainSeconds -- see
+// that constant's declaration comment above for the full rationale/
+// coupling verdict, and RepeatController::notify_probation_block()
+// (autostream_repeat.cpp) for how it is actually driven in production,
+// which is not exercised here since it needs a real RepeatController).
+// ---------------------------------------------------------------------------
+
+static void test_u19_sustain_tracker_custom_threshold()
+{
+    // Default construction is unaffected: still the 2.5 s recorder gate.
+    {
+        SustainTracker t;
+        CHECK(t.sustain_seconds() == SustainTracker::kSustainSeconds,
+              "U19: default construction keeps kSustainSeconds");
+    }
+
+    // A pop shorter than kInterruptSustainSeconds never edges -- replay
+    // must continue, gate resets on the trailing silence.
+    {
+        SustainTracker probation(kInterruptSustainSeconds);
+        CHECK(probation.sustain_seconds() == kInterruptSustainSeconds,
+              "U19: custom threshold stored");
+        CHECK(!probation.on_block(true, 0.5), "U19: 0.5 s of 1.25 s -> not yet");
+        CHECK(!probation.on_block(true, 0.6), "U19: 1.1 s of 1.25 s -> still not yet");
+        CHECK(!probation.on_block(false, 0.2),
+              "U19: pop ends (silence) before confirming -- resets, no edge");
+        CHECK(!probation.is_sustained(), "U19: not sustained after the reset");
+        CHECK(probation.above_seconds() == 0.0, "U19: accumulator genuinely back to zero");
+
+        // Nothing lost: a fresh, unrelated run must still be able to
+        // confirm normally after the reset.
+        CHECK(!probation.on_block(true, 1.0), "U19: fresh run, 1.0 of 1.25 s");
+        CHECK(probation.on_block(true, 0.25), "U19: fresh run reaches 1.25 s -> confirms");
+        CHECK(probation.is_sustained(), "U19: is_sustained() agrees");
+    }
+
+    // Sustained kInterruptSustainSeconds confirms exactly once, at the
+    // crossing block -- the probation-confirmed outcome
+    // (RepeatController::notify_probation_block() promotes this edge to
+    // RepeatEvent::ProbationConfirmed).
+    {
+        SustainTracker probation(kInterruptSustainSeconds);
+        CHECK(!probation.on_block(true, 1.0), "U19: 1.0 of 1.25 s");
+        CHECK(!probation.on_block(true, 0.2), "U19: 1.2 of 1.25 s");
+        CHECK(probation.on_block(true, 0.05), "U19: block reaching exactly 1.25 s confirms");
+        CHECK(probation.is_sustained(), "U19: is_sustained() true immediately after");
+        // Unlike OnsetGate, SustainTracker itself does not latch -- it
+        // keeps reporting the edge is behind it via is_sustained(), and
+        // on_block() would report a fresh edge again only after a reset.
+        CHECK(!probation.on_block(true, 1.0), "U19: no repeated edge while still sustained");
+    }
+
+    // Derivation arithmetic (comment-verified, checked here too): the
+    // probation window plus the fade that follows confirmation must stay
+    // comfortably inside kPreRollSeconds, the probation gate's own timeout
+    // bound -- see kInterruptSustainSeconds' declaration comment for the
+    // full writeup. kFadeSeconds itself lives in autostream_monitor.h
+    // (ReplayEngine), out of reach of this header-only test file, so this
+    // checks the probation half of that arithmetic directly and leaves the
+    // combined check to test_repeat_transitions.cpp's static_asserts.
+    static_assert(kInterruptSustainSeconds == 1.25, "expected probation window == 1.25 s");
+    static_assert(kInterruptSustainSeconds < kPreRollSeconds,
+                  "probation window must fit inside its own timeout bound");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1898,6 +1966,7 @@ int main()
     test_amortized_drain_ordering_end_to_end();
     test_tail_offset_gate_end_to_end();
     test_u18_convert_to_pipe_format();
+    test_u19_sustain_tracker_custom_threshold();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

@@ -1388,6 +1388,27 @@ void InputChannel::process_thread_func()
         handle_session_edges(should_capture, peak_sample, silence_threshold_sample,
                               now, track_change_silence_seconds);
 
+        // ── Feed the live-interrupt probation gate ────────────────────────────
+        // Unconditional -- every input, every block, regardless of this
+        // input's own capturing/recording_wanted() state: this loop runs no
+        // matter what, whereas the RECORDER's own OnsetGate feed
+        // (process_recorder_samples()) only runs while recording_wanted() is
+        // true -- false for the whole of an active replay, exactly the state
+        // probation needs to keep observing.
+        //
+        // The flag fed here MUST be the RAW per-block peak test, exactly as
+        // the recorder's own onset gate receives (see the comment above
+        // submit_float_block()). It must NOT be is_above_threshold from
+        // update_silence_state(): that flag is debounced over the configured
+        // silence window, so a single transient would hold it true for the
+        // whole window and the sustain gate would "confirm" on wall-clock
+        // time alone -- turning the probation into a fixed delay instead of
+        // a continuous-audio test. notify_probation_block() itself is a
+        // cheap no-op (two relaxed atomic loads) unless a probation is
+        // actually armed for this input_index.
+        _repeat_controller.notify_probation_block(
+            _index, peak_sample >= silence_threshold_sample, now);
+
         // ── Feed through SRC → EQ → FIFO when capturing ──────────────────────
         if (_capturing.load() && _src_state)
             resample_block(frames_in, peak_sample, silence_threshold_sample);
