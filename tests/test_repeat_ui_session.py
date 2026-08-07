@@ -274,6 +274,67 @@ class TestOptimisticClickState:
 # ---------------------------------------------------------------------------
 
 
+class TestDisarmIsNotAStop:
+    """Disarming while the true source is still playing must not borrow the
+    stop treatment: repeat was only armed, so nothing fades and nothing
+    tears down. Only a click landing on an actually-replaying session is a
+    'stop'."""
+
+    def test_click_classifies_disarm_separately_from_stop(self, home_html):
+        assert (
+            "var kind = newArmed ? 'start' : "
+            "(state === 'repeating' ? 'stop' : 'disarm');" in home_html
+        )
+
+    def test_stopping_visuals_confined_to_the_stop_branch(self, home_html):
+        # "Stopping…", the disabled button and the 'stopping' data-state all
+        # live inside `if (kind === 'stop')` -- never on the disarm path.
+        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+        stop_branch = click_src.split("if (kind === 'stop') {", 1)[1]
+        stop_branch = stop_branch.split("} else if (kind === 'disarm') {", 1)[0]
+        assert "btn.textContent = 'Stopping…';" in stop_branch
+        assert "btn.setAttribute('data-state', 'stopping');" in stop_branch
+        assert "btn.disabled = true;" in stop_branch
+
+    def test_disarm_branch_goes_straight_to_the_off_look(self, home_html):
+        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+        disarm_branch = click_src.split("} else if (kind === 'disarm') {", 1)[1]
+        disarm_branch = disarm_branch.split("} else {", 1)[0]
+        assert "btn.classList.remove('active');" in disarm_branch
+        assert "btn.setAttribute('data-state', 'off');" in disarm_branch
+        assert "btn.disabled = false;" in disarm_branch
+        # No stop wording and no label rewrite on this path.
+        assert "Stopping…" not in disarm_branch
+        assert "btn.textContent" not in disarm_branch
+
+    def test_page_quiesce_only_for_a_real_fade(self, home_html):
+        assert "_setRepeatStopping(kind === 'stop');" in home_html
+
+    def test_disarm_never_enters_the_stopping_derivation(self, home_html):
+        # The poll-side stopping flag keys on kind === 'stop' only, so a
+        # held 'disarm' override can never render as stopping...
+        assert (
+            "optimisticStopPending = (__repeatOptimistic.kind === 'stop' "
+            "&& __repeatOptimistic.active === false);" in home_html
+        )
+        # ...and a stale 'armed' reading still self-heals: if the daemon did
+        # start a fade, the server's own flag drives the stopping state.
+        assert "var stopping = optimisticStopPending || fadingOut;" in home_html
+
+    def test_disarm_reconciles_on_the_generic_agreement_path(self, home_html):
+        # Not a stop, so it clears as soon as the poll reports armed false,
+        # under the shorter (start) fallback timeout rather than the stop one.
+        assert (
+            "var agrees = optimisticStopPending ? stopConfirmed : "
+            "(__repeatOptimistic.active === polledOn);" in home_html
+        )
+        assert (
+            "var timeoutMs = (__repeatOptimistic.kind === 'stop')\n"
+            "        ? REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS\n"
+            "        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;" in home_html
+        )
+
+
 class TestStoppingState:
     def test_fading_out_read_from_replay_block(self, home_html):
         assert "var fadingOut = !!replay.fading_out;" in home_html
@@ -298,7 +359,8 @@ class TestStoppingState:
 
     def test_data_state_set_to_stopping(self, home_html):
         assert "if (stopping) state = 'stopping';" in home_html
-        assert "btn.setAttribute('data-state', newArmed ? 'armed' : 'stopping');" in home_html
+        # Only the click that interrupts an actual replay goes to 'stopping'.
+        assert "btn.setAttribute('data-state', 'stopping');" in home_html
 
     def test_body_class_toggled_from_single_choke_point(self, home_html):
         assert "document.body.classList.toggle('repeat-stopping', stopping);" in home_html

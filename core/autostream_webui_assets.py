@@ -2105,7 +2105,13 @@ HOME_CARDS_SCRIPT = """
     // repeating -> stop replay; armed -> disarm; off -> arm (starts replay
     // immediately if idle with a buffer, or arms for stream-end if playing live).
     var newArmed = (state === 'repeating' || state === 'armed') ? false : true;
-    var kind = newArmed ? 'start' : 'stop';
+    // Two very different clicks both disarm, and only one of them stops
+    // anything: 'repeating' interrupts a replay that now has to fade out,
+    // while 'armed' merely cancels a pending action -- the true source is
+    // still playing and nothing fades. Giving the 'armed' case the stop
+    // treatment would flash "Stopping…" and quiesce the page for a
+    // teardown that never happens, so it gets its own kind.
+    var kind = newArmed ? 'start' : (state === 'repeating' ? 'stop' : 'disarm');
     // Apply the optimistic visual state immediately: don't wait for the
     // POST to resolve before flipping the class/label, so the click
     // feels instant even though the fade (kFadeSeconds, core/monitor/
@@ -2115,22 +2121,37 @@ HOME_CARDS_SCRIPT = """
     // mid-fade could re-arm/re-stop against a session that's already
     // tearing down.
     __repeatOptimistic = { active: newArmed, kind: kind, ts: Date.now() };
-    // 'active' (the accent-outline styling) stays true through the stop
-    // click too -- the button remains the visible feedback element while
-    // stopping, it just swaps its label/disabled state; only a confirmed
-    // 'off' clears the outline.
-    btn.classList.add('active');
-    btn.setAttribute('data-state', newArmed ? 'armed' : 'stopping');
-    if (newArmed) {
-      btn.textContent = '↻ Repeat Play';
-      btn.title = 'Starting…';
-      btn.disabled = false;
-    } else {
+    if (kind === 'stop') {
+      // 'active' (the accent-outline styling) stays true through the stop
+      // click -- the button remains the visible feedback element while
+      // stopping, it just swaps its label/disabled state; only a confirmed
+      // 'off' clears the outline.
+      btn.classList.add('active');
+      btn.setAttribute('data-state', 'stopping');
       btn.textContent = 'Stopping…';
       btn.title = 'Stopping…';
       btn.disabled = true;
+    } else if (kind === 'disarm') {
+      // Straight to the off look, button still live. The label is left
+      // alone: it already reads '↻ Repeat Play' while armed, and the next
+      // poll settles it (e.g. to '↻ Replay Last' if the source has since
+      // gone idle with a buffer).
+      btn.classList.remove('active');
+      btn.setAttribute('data-state', 'off');
+      btn.title = '';
+      btn.disabled = false;
+    } else {
+      btn.classList.add('active');
+      btn.setAttribute('data-state', 'armed');
+      btn.textContent = '↻ Repeat Play';
+      btn.title = 'Starting…';
+      btn.disabled = false;
     }
-    _setRepeatStopping(!newArmed);
+    // Only a genuine fade quiesces the page. A stale 'armed' reading (a
+    // replay that started between the last poll and the click) still gets
+    // the full stopping treatment from the server's own fading_out flag on
+    // the next poll, so nothing is lost by being conservative here.
+    _setRepeatStopping(kind === 'stop');
     fetch(window.__REPEAT_URL || '/api/repeat', {
       method: 'POST',
       credentials: 'same-origin',
