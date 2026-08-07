@@ -83,11 +83,32 @@ Pairing is done from the Setup page, either from the Bluetooth card or from an i
 4. Put your turntable into pairing mode (check its manual — this is usually a button
    press or a switch position, and often a flashing light on the turntable).
 5. Your turntable should appear in the list within a few seconds. Tap it.
-6. Once pairing completes, you're done — the device is remembered and ready to use.
+6. Once pairing completes, the device is remembered and autostream assigns it to a
+   free input for you — see below.
 
-If your Bluetooth source is a record player, tick the **Turntable** toggle on that
-input — it tunes the silence detection correctly. autostream doesn't guess this for
-you, so it's worth doing right after pairing.
+### Which input your turntable lands on
+
+When pairing succeeds, autostream wires the Bluetooth source up to an input by
+itself, so in the usual case there is nothing more to do. It never switches off or
+takes over an input you are already using:
+
+* If **Input 1 is switched off**, the turntable is assigned to Input 1, and Input 1
+  is switched on.
+* If **Input 1 is already in use by a wired device** and **Input 2 is free**, the
+  turntable is assigned to Input 2, and Input 2 is switched on.
+* If **either input is already set to Bluetooth**, nothing changes — it is already
+  wired up.
+* If **both inputs are in use by wired devices**, nothing is changed automatically
+  and the pairing window tells you: *"Bluetooth paired — assign the Bluetooth input
+  on the Setup page."* Decide which input you want to give over to Bluetooth and
+  change it yourself.
+
+The pairing window tells you which input was used, and the Setup page's input
+controls update straight away — there is no need to reload the page.
+
+If your Bluetooth source is a record player, tick the **Turntable** toggle on
+whichever input it landed on — it tunes the silence detection correctly. autostream
+doesn't guess this for you, so it's worth doing right after pairing.
 
 Only one Bluetooth device can be paired at a time. If you pair a different one later,
 it replaces the previous one.

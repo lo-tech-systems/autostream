@@ -82,6 +82,10 @@ Some examples of changes that are deliberately not reversed:
 
 - `/boot/firmware/config.txt`
 - `/boot/firmware/user-data`
+- `/etc/sysctl.d/90-autostream-swappiness.conf` (`vm.swappiness=20`)
+- the masked `rpi-zram-writeback.timer`
+- `/etc/cloud/cloud-init.disabled`
+- the removal of the `modemmanager` and `udisks2` packages
 - Any generic packages that may also be useful to other software on the system
 
 ## Before you run it

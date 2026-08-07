@@ -381,6 +381,13 @@ The result types are part of the contract. Try to follow the existing patterns:
 - `SaveSettingResult`
   - use for writes
 
+All five expose a shared `.message` property — `error or error_code`, and
+`error or detail or error_code` for `ActionResult`. This is what the rest of the
+app reads when it surfaces a failure to the logs or the UI (for example
+`autostream_webui_api.py` and `autostream_player_service.py`), so populate
+`error` / `error_code` consistently on every method rather than only on the
+mutating ones.
+
 Recommended error-code conventions already used by the project:
 
 - `unsupported`

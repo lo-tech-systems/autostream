@@ -67,6 +67,9 @@ After installation, **autostream** only requires a short, one-time setup using a
 
 1. Connect your audio sources (turntable, CD player, etc.) and reboot the Pi.
 
+   Inputs are optional at this stage. If nothing is connected yet, you can still
+   complete setup and add an input later — see [Setup Page 2](#setup-page-2--input--defaults) below.
+
 2. Using **Safari** on your iPhone or iPad, navigate to:
 
    ```
@@ -99,17 +102,24 @@ If your speakers do not appear:
 
 On the second setup page:
 
-1. Choose your connected **input device** from the list.
-2. If you have a second input connected, enable it and select that device as well.
+1. Choose your connected **input device** for **Input 1** from the list.
+2. Tick **Turntable** if that input is a record player (a phono pre-amp is required).
+3. Choose a **default volume level**.
+
+Input 1 is optional. If you have no input connected yet, tap **Skip — configure
+later** to finish setup without one. You can set Input 1 up from the Setup page at
+any time, or pair a Bluetooth source, which assigns itself to a free input
+automatically (see [BLUETOOTH.md](BLUETOOTH.md)).
+
+While no input is enabled, the Home screen shows a **"No input device configured"**
+notice above the Now Playing card. It disappears as soon as you enable an input.
+
+**Input 2** is not part of first-time setup. If you have a second input, enable it
+from the **Setup page** once setup is complete.
 
 ![Setup Page 2 – Input Selection](setup-page-2.png)
 
-Next, choose:
-
-* **Default speakers**
-* **Default volume level**
-
-When the system has been idle for some time, these default speakers will automatically start playing when music is detected. Any other previously selected speakers will be muted.
+Your **default speakers** were chosen on Setup Page 1. When the system has been idle for some time, these default speakers will automatically start playing when music is detected. Any other previously selected speakers will be muted.
 
 Tap **Done** to complete setup.
 The system will then show the autostream **Home Screen**.

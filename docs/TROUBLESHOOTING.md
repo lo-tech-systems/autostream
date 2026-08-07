@@ -117,10 +117,16 @@ In-app updates can take a long time. A full update may take up to **15 minutes**
 
 * run an APT system update
 * rebuild `autostream_monitor`
-* rebuild `owntone-mini`
 * recreate the Python virtual environment
+* rebuild `owntone-mini` and `vibra-mini` — but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost.
 
 Micro-SD card speed has a big impact, so slower cards can make updates feel stalled even when they are still working.
+
+**Audio stops while an update runs.** Before overwriting anything, the updater stops `autostream_monitor`, `autostream_bluetooth`, `owntone`, `vibra-mini` and the `autostream` coordinator, so playback and outputs go away for the duration. The Wi-Fi watcher, nginx, NetworkManager and ssh are deliberately left running, so the appliance stays on the network and reachable throughout.
+
+**The updating page is confirmed before anything is stopped.** The updater switches the Web UI over to the nginx-served "updating" holding page and verifies it is actually being served before it touches a single service. If that check fails, the update aborts immediately with nothing stopped and nothing changed — the appliance is left exactly as it was.
+
+**A failed update restores services by itself.** If an update fails after services were stopped, the updater restarts exactly what it took down, in reverse order. You should not need to start anything by hand.
 
 What to do:
 

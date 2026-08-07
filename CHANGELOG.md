@@ -5,8 +5,7 @@
 - improvement: the wired input can now be disabled/skipped so setup can be
   completed without a wired input device connected — first-run setup gains a
   "Skip — configure later" option, Input 1 can be enabled/disabled from
-  Setup, and a notice on the Home and Setup pages flags when no input is
-  configured
+  Setup, and a notice on the Home page flags when no input is configured
 - improvement: pairing a Bluetooth device now automatically assigns it to a
   free input where safe, with a Setup-page prompt when both inputs are
   already in use
@@ -21,6 +20,20 @@
 - improvement: when OwnTone denies or fails an output/setting request, the
   log now includes the HTTP status code and a snippet of the backend's
   response instead of a bare generic failure message
+- improvement: stability and reliability improvements to in-app updates — the
+  appliance now confirms the "updating" page is showing before it changes
+  anything, puts itself back the way it was if an update fails, and skips
+  rebuilding components that are already up to date, which makes most updates
+  considerably faster
+- improvement: stability and memory improvements for low-memory devices such
+  as the Pi Zero 2 W — lower background memory use, tuned swap behaviour, and
+  a longer, more reliable repeat-playback buffer
+- improvement: faster start-up, by removing system services the appliance
+  does not need
+- improvement: the About page now shows CPU temperature, CPU load, and memory
+  usage alongside the existing system information
+- improvement: repeat playback now shows a "stopping" state while it winds
+  down, instead of appearing to still be playing
 
 ## Version 0.5.0-beta.1
 

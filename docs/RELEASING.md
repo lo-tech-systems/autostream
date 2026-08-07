@@ -55,8 +55,23 @@ Draft releases are not returned by the GitHub releases API to unauthenticated ca
 
 ## Pi appliance verification
 
-Before tagging a release, verify on a running Pi appliance:
+The checks below are for maintainers publishing a release. They need a running
+test appliance and are not part of building or contributing to autostream — if
+you are not publishing, you can stop here.
+
+Before tagging a release, verify on a test appliance:
 
 - Open `http://autostream.local/about`, tap **System**, and confirm the System Info card populates (build versions, CPU temperature, disk usage) and all six service rows show **OK** within a few seconds.
 - Run `sudo systemctl stop vibra-mini.service`, reload the System page, and confirm the **Vibra Mini** row changes to **Failed**. Then `sudo systemctl start vibra-mini.service` and confirm it returns to **OK**.
 - If any other service row shows **Failed** before the stop/start test, investigate the unit before releasing.
+
+### Update path
+
+Run one full in-app update, from the previous release to the release candidate, and confirm:
+
+- The Web UI switches to the **updating** holding page as soon as the update starts, and stays reachable throughout.
+- `owntone-mini` and `vibra-mini` are **skipped** in the update log when the pinned versions are unchanged from the previous release (`OwnTone Mini <version> already installed; skipping source rebuild`). If the release bumps a pin, confirm the rebuild instead runs and completes.
+- The appliance reboots on its own at the end, comes back on the network, and the About → System card shows the new build versions.
+- Audio output works after the reboot without any manual service start.
+
+If the release changes the update path itself, also force a failure mid-update (for example by pointing `AUTOSTREAM_OWNTONE_MINI_REPO` at an unreachable source) and confirm the stopped services are restarted automatically and the appliance returns to a working state.
