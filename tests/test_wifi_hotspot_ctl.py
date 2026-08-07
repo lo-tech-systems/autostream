@@ -103,7 +103,7 @@ class TestHotspotStationCount:
     """The AP station-count primitive (iw dev <ifname> station dump)."""
 
     _DUMP = (
-        "Station dc:62:79:91:4d:d6 (on wlan0)\n"
+        "Station aa:bb:cc:00:00:10 (on wlan0)\n"
         "\tinactive time:\t120 ms\n"
         "\trx bytes:\t1234\n"
         "Station aa:bb:cc:dd:ee:ff (on wlan0)\n"

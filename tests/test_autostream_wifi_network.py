@@ -730,7 +730,7 @@ def _can_symlink(tmp_path) -> bool:
 
 
 def _build_fake_usb_tree(tmp_path, ifname="wlan0", driver="rtl8xxxu",
-                         interface_id="1-1.5:1.0", mac="dc:62:79:91:4d:d6"):
+                         interface_id="1-1.5:1.0", mac="aa:bb:cc:00:00:10"):
     """Build a symlink-based fake sysfs tree resembling a USB Wi-Fi dongle.
 
     Returns (sys_root, bus_root) as strings.  The realpath layout mirrors the
@@ -838,7 +838,7 @@ class TestSysfsNetdevEnumeration:
     def test_find_sysfs_netdev_by_mac(self, tmp_path):
         if not _can_symlink(tmp_path):
             pytest.skip("symlinks unavailable in this environment")
-        sys_root, _ = _build_fake_usb_tree(tmp_path, mac="dc:62:79:91:4d:d6")
+        sys_root, _ = _build_fake_usb_tree(tmp_path, mac="aa:bb:cc:00:00:10")
         assert wifi_net.find_sysfs_netdev_by_mac(
             "DC:62:79:91:4D:D6", sys_root=sys_root) == "wlan0"
         assert wifi_net.find_sysfs_netdev_by_mac(
@@ -891,7 +891,7 @@ class TestGatewayReachable:
       normal output but protects against unexpected kernel behaviour).
     """
 
-    _ROUTES = [{"dev": "wlan0", "gateway": "10.240.1.1", "dst": "default"}]
+    _ROUTES = [{"dev": "wlan0", "gateway": "192.168.1.1", "dst": "default"}]
 
     def _call(self, neigh_rows, ifname="wlan0"):
         with patch.object(wifi_net, "_run_ip_json", side_effect=[
@@ -902,28 +902,28 @@ class TestGatewayReachable:
 
     def test_reachable_without_dev_field(self):
         """ip omits 'dev' when the command already filters by device; must still return True."""
-        neigh = [{"dst": "10.240.1.1", "lladdr": "14:49:bc:34:0e:c8", "state": ["REACHABLE"]}]
+        neigh = [{"dst": "192.168.1.1", "lladdr": "aa:bb:cc:00:00:20", "state": ["REACHABLE"]}]
         assert self._call(neigh) is True
 
     def test_reachable_with_dev_field(self):
         """Entries that do include 'dev' (some kernel versions) continue to work."""
-        neigh = [{"dst": "10.240.1.1", "dev": "wlan0", "lladdr": "14:49:bc:34:0e:c8", "state": ["REACHABLE"]}]
+        neigh = [{"dst": "192.168.1.1", "dev": "wlan0", "lladdr": "aa:bb:cc:00:00:20", "state": ["REACHABLE"]}]
         assert self._call(neigh) is True
 
     def test_failed_neighbour_rejected(self):
-        neigh = [{"dst": "10.240.1.1", "lladdr": "14:49:bc:34:0e:c8", "state": ["FAILED"]}]
+        neigh = [{"dst": "192.168.1.1", "lladdr": "aa:bb:cc:00:00:20", "state": ["FAILED"]}]
         assert self._call(neigh) is False
 
     def test_neighbour_on_other_dev_rejected(self):
         """An entry that explicitly names a different interface must be rejected."""
-        neigh = [{"dst": "10.240.1.1", "dev": "eth0", "state": ["REACHABLE"]}]
+        neigh = [{"dst": "192.168.1.1", "dev": "eth0", "state": ["REACHABLE"]}]
         assert self._call(neigh) is False
 
     def test_empty_neigh_returns_false(self):
         assert self._call([]) is False
 
     def test_no_matching_route_returns_false(self):
-        routes = [{"dev": "eth0", "gateway": "10.240.1.1", "dst": "default"}]
+        routes = [{"dev": "eth0", "gateway": "192.168.1.1", "dst": "default"}]
         with patch.object(wifi_net, "_run_ip_json", side_effect=[routes, []]):
             assert wifi_net.is_gateway_reachable("wlan0") is False
 

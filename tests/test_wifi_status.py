@@ -27,7 +27,7 @@ from _wifi_fixtures import _adapter, _ledger
 
 
 class TestBuildNetworkStatusSnapshot:
-    MAC = "dc:62:79:91:4d:d6"
+    MAC = "aa:bb:cc:00:00:10"
 
     def _snapshot_for_usb(self, watcher, usb, *, now=1000.0, healthy=True):
         addrs = {"wlan0": [{"family": "ipv4", "address": "192.168.1.42",
@@ -446,7 +446,7 @@ class TestIf7StatusTruthfulness:
     primary SSID falls back to the active connection's configured SSID for
     hidden / scan-stale networks."""
 
-    MAC = "dc:62:79:91:4d:d6"
+    MAC = "aa:bb:cc:00:00:10"
 
     # ---- (a) held-back no-IP count and reason ----
 

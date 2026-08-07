@@ -610,7 +610,7 @@ class TestBootEntryOnboardFirst:
         # already spent this episode -> exercises the fall-through to onboard
         # specifically, not the reactivate-first rung ahead of it.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.STATE.boot_time = 300.0  # now=1000 -> boot_age 700s, inside window
@@ -633,7 +633,7 @@ class TestBootEntryOnboardFirst:
         # offering onboard, so boot entry falls to the recovery hotspot (the async
         # replacement for the old in-pass "onboard failed -> hotspot").
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.STATE.boot_time = 300.0
         watcher.STATE.onboard_activation_failures = watcher.ONBOARD_ACTIVATION_MAX_FAILURES
         with patch.object(watcher.LOOP_CTX, "submit_client_activation") as submit, \
@@ -818,7 +818,7 @@ class TestLoopHandlers:
         # The handler is a Phase B-late handler over the HealthContext; it
         # delegates to handle_usb_failure_fallback(hctx) and owns the pass when a
         # transition fires.
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=False)
         with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=True) as h:
@@ -827,7 +827,7 @@ class TestLoopHandlers:
         h.assert_called_once_with(hctx)
 
     def test_step_usb_failure_fallback_continue_when_no_transition(self, watcher):
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=True)
         with patch.object(watcher.LOOP_CTX, "handle_usb_failure_fallback", return_value=False) as h:
@@ -836,7 +836,7 @@ class TestLoopHandlers:
         h.assert_called_once_with(hctx)
 
     def test_step_usb_failure_fallback_skips_in_setup_mode(self, watcher):
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         facts = self._facts(watcher, adapters=[usb], wifi_cfg=True, active_client=usb)
         hctx = self._hctx(watcher, facts, conn_ok=False)
         watcher.STATE.setup_mode = True

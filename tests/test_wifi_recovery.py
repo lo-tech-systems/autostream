@@ -163,7 +163,7 @@ class TestNoIpLedgerAndDiagnosis:
         # A no-IP-suppressed spare is a distinct held-back state (not the
         # transient degraded_no_ip), carries the held_back marker, and is
         # surfaced even with carrier down.
-        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)
         for _ in range(watcher.wifi_recovery.NOIP_STOP_AFTER):
             watcher.wifi_recovery.record_noip_failure(watcher, usb.permanent_mac, now=100.0)
         assert watcher.wifi_recovery.noip_retry_suppressed(watcher, usb.permanent_mac, 100.0) is True
@@ -200,7 +200,7 @@ class TestNoIpLedgerAndDiagnosis:
         assert wr.noip_failure_count(watcher, self.MAC) == 0
 
     def test_no_ip_adapter_classified_degraded_no_ip(self, watcher):
-        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.wifi_recovery.record_noip_failure(watcher, usb.permanent_mac, now=100.0)
         addrs = {}
         # Pin the clock past the single-failure back-off window so the adapter
@@ -1142,7 +1142,7 @@ class TestManualAdapterControl:
 
     def test_disabled_usb_not_offered_as_client(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.wifi_recovery.disable_adapter(watcher, usb.stable_id)
         facts = _facts_for(watcher, [builtin, usb], None)
         with patch.object(watcher, "is_wifi_client_healthy", return_value=True), \
@@ -1162,11 +1162,11 @@ class TestManualAdapterControl:
 
     def _builtin_and_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         return builtin, usb
 
     def test_disabled_target_not_reset(self, watcher):
-        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.wifi_recovery.disable_adapter(watcher, usb.stable_id)
         with patch.object(watcher.wifi_recovery, "resolve_target_client",
                           return_value=watcher.wifi_recovery.TargetAdapter(
@@ -1207,7 +1207,7 @@ class TestNoIpHoldbackReset:
     """One budgeted USB reset when an idle no-IP-held spare reaches the final
     hold-back (the dead-PHY ladder only ever resets the active client)."""
 
-    def _held_usb(self, watcher, ifname="wlan1", mac="dc:62:79:91:4d:d6"):
+    def _held_usb(self, watcher, ifname="wlan1", mac="aa:bb:cc:00:00:10"):
         usb = _adapter(watcher, ifname, mac, is_usb=True)
         wr = watcher.wifi_recovery
         for _ in range(wr.NOIP_STOP_AFTER):
@@ -1244,7 +1244,7 @@ class TestNoIpHoldbackReset:
 
     def test_no_reset_before_final_holdback(self, watcher):
         wr = watcher.wifi_recovery
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         wr.record_noip_failure(watcher, usb.stable_id, now=100.0)  # count 1 < NOIP_STOP_AFTER
         with patch.object(wr, "build_target_adapter", return_value=self._target(watcher, usb)), \
              patch.object(watcher.wifi_net, "reset_usb_adapter_rebind") as reset:
@@ -1277,7 +1277,7 @@ class TestNoIpHoldbackReset:
         reset.assert_not_called()
 
     def test_success_clears_holdback_flag(self, watcher):
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.noip_holdback_reset_done.add(usb.stable_id)
         watcher.wifi_activation._set_active_client(watcher.ACTIVATION_CTX, usb)
         assert usb.stable_id not in watcher.RECOVERY_STATE.noip_holdback_reset_done
@@ -1478,7 +1478,7 @@ class TestRecoveryFacts:
 
     def test_gather_prefers_usable_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         facts = self._facts(watcher, [builtin, usb], active_client=usb)
         with patch.object(watcher, "is_wifi_client_healthy",
                           side_effect=lambda ifn, **k: ifn == "wlan0"), \
@@ -1493,7 +1493,7 @@ class TestRecoveryFacts:
 
     def test_gather_excludes_quarantined_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.adapter_reset_ledgers[usb.stable_id] = {
             "recent_resets": [], "total_resets": 5, "quarantined_until": 1000.0 + 3600,
         }
@@ -1506,7 +1506,7 @@ class TestRecoveryFacts:
 
     def test_gather_excludes_noip_suppressed_usb(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         # Past the no-IP stop budget -> suppressed until MAC changes.
         watcher.RECOVERY_STATE.adapter_noip_ledgers[usb.stable_id] = {
             "count": watcher.wifi_recovery.NOIP_STOP_AFTER, "retry_after": float("inf"),
@@ -1572,7 +1572,7 @@ class TestRecoveryFacts:
         # Mirrors failover_reset_spent exactly: keyed to preferred_usb's
         # stable_id, not the active client.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         facts = self._facts(watcher, [builtin, usb], active_client=usb)
         with patch.object(watcher, "is_wifi_client_healthy",
@@ -1601,7 +1601,7 @@ class TestRecoveryFacts:
 
     def test_gather_wedged_reactivate_spent_false_when_unmarked(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         facts = self._facts(watcher, [builtin, usb], active_client=usb)
         with patch.object(watcher, "is_wifi_client_healthy",
                           side_effect=lambda ifn, **k: ifn == "wlan0"), \
@@ -1716,7 +1716,7 @@ class TestRecoveryExitEdge:
         # NOT be chosen; the ladder selects the onboard drop-AP rejoin (exit
         # edge) instead of probing the dead USB forever.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         self._in_hotspot(watcher)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"
         # Reactivate-first (rung 1a) already spent this episode: exercises the
@@ -1738,7 +1738,7 @@ class TestRecoveryExitEdge:
 
     def test_quarantined_second_radio_falls_through_to_onboard(self, watcher):
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.adapter_reset_ledgers[usb.stable_id] = {
             "recent_resets": [], "total_resets": 5, "quarantined_until": 1000.0 + 3600,
         }
@@ -1759,7 +1759,7 @@ class TestRecoveryExitEdge:
         # A genuinely usable second radio keeps the existing behaviour: the ladder
         # selects ACTIVATE_USB without dropping the AP (drop_hotspot False).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         self._in_hotspot(watcher)
         facts = _facts_for(watcher, [builtin, usb], None)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \
@@ -1778,7 +1778,7 @@ class TestRecoveryExitEdge:
         # Ethernet appearing mid-hotspot -> ladder HOLDs; the probe must not drop
         # the AP or attempt any client activation (no divergence from the ladder).
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         self._in_hotspot(watcher)
         facts = _facts_for(watcher, [builtin, usb], None, wired_ok=True)
         with patch.object(watcher.wifi_net, "read_link_down", return_value=False), \

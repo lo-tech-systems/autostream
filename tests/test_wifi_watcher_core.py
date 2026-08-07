@@ -1244,7 +1244,7 @@ class TestModuleSplit:
         assert hasattr(wifi_status, "build_network_status_snapshot")
 
     def test_escalate_delegates(self, watcher):
-        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
                                    link_down=False, healthy=True):

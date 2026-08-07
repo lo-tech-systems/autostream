@@ -8,10 +8,10 @@
 Description=WiFi Setup State Machine (AP Mode + Captive Portal based WiFi Config)
 After=NetworkManager.service autostream_update_retry.service
 Wants=NetworkManager.service
-# D-WP0: with Phase D (client profiles autoconnect=no) the watcher process is the
-# sole Wi-Fi reconnection agent, so a crash or clean exit that stops it must never
-# be permanent.  StartLimitIntervalSec=0 disables the start-rate limiter so the
-# service always retries and can never land in "start-limit-hit".
+# Client profiles are configured autoconnect=no, so the watcher process is the
+# sole Wi-Fi reconnection agent, and a crash or clean exit that stops it must
+# never be permanent.  StartLimitIntervalSec=0 disables the start-rate limiter so
+# the service always retries and can never land in "start-limit-hit".
 StartLimitIntervalSec=0
 
 [Service]
@@ -33,18 +33,18 @@ Environment=APP_DNSMASQ_RUNTIME=/run/autostream/autostream-setup.conf
 # Log level for the wifi watcher. Valid values: fatal, log, warning, info, debug, spam
 #Environment=AUTOSTREAM_WIFI_LOG_LEVEL=info
 
-# D-WP0: Restart=always (was on-failure) so a *clean* exit — e.g. app.run()
-# returning — also restarts the watcher; under Phase D nothing else rejoins Wi-Fi
-# or raises a hotspot if this process stops.
+# Restart=always (rather than on-failure) so a *clean* exit — e.g. app.run()
+# returning — also restarts the watcher; nothing else rejoins Wi-Fi or raises a
+# hotspot if this process stops.
 Restart=always
 RestartSec=5
-# WatchdogSec/Type=notify (restart of a *wedged*, not crashed, process) is
-# deferred to the follow-on async-activation workstream (WS1): today the monitor
-# loop blocks synchronously up to ~45s per adapter during activation, so a
-# watchdog would fire mid-activation and cause spurious restarts.  WS1 moves
-# activation off the loop thread and adds sd_notify pings that continue during a
-# job, at which point WatchdogSec becomes safe.  Until then a wedged process is
-# recovered by the watcher's own reboot domains (request_guarded_reboot).
+# WatchdogSec/Type=notify (restart of a *wedged*, not crashed, process) is not
+# used yet: today the monitor loop blocks synchronously up to ~45s per adapter
+# during activation, so a watchdog would fire mid-activation and cause spurious
+# restarts.  Moving activation off the loop thread and adding sd_notify pings
+# that continue during a job would make WatchdogSec safe.  Until then a wedged
+# process is recovered by the watcher's own reboot domains
+# (request_guarded_reboot).
 
 StandardOutput=journal
 StandardError=journal

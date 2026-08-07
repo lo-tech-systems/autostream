@@ -29,7 +29,7 @@ from _wifi_fixtures import _adapter, _patch_dead_phy_facts, _ledger, _spend_wind
 
 class TestDeadAdapterTargetResolution:
     def test_resolves_sole_usb_as_startup_target(self, watcher):
-        usb = _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"]):
             target = watcher.wifi_recovery.resolve_target_client(watcher, [usb])
@@ -39,10 +39,10 @@ class TestDeadAdapterTargetResolution:
 
     def test_resolves_from_active_mac_via_sysfs_when_nm_missing(self, watcher):
         # NM reports no adapters, but the recorded MAC maps to a sysfs netdev.
-        watcher.STATE.active_client_mac = "dc:62:79:91:4d:d6"
+        watcher.STATE.active_client_mac = "aa:bb:cc:00:00:10"
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"],
-                                   sysfs_mac="dc:62:79:91:4d:d6"):
+                                   sysfs_mac="aa:bb:cc:00:00:10"):
             target = watcher.wifi_recovery.resolve_target_client(watcher, [])
         assert target is not None
         assert target.ifname == "wlan0"
@@ -59,7 +59,7 @@ class TestDeadAdapterTargetResolution:
 
 class TestDeadAdapterDetection:
     def _usb(self, watcher):
-        return _adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)
+        return _adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)
 
     def test_debounce_declares_dead_and_sets_since(self, watcher):
         usb = self._usb(watcher)
@@ -140,7 +140,7 @@ class TestResetBudget:
         with _patch_dead_phy_facts(watcher, sysfs_names=["wlan0"],
                                    usb_paths_ifaces=["wlan0"]):
             return watcher.wifi_recovery.resolve_target_client(watcher, 
-                [_adapter(watcher, "wlan0", "dc:62:79:91:4d:d6", is_usb=True)])
+                [_adapter(watcher, "wlan0", "aa:bb:cc:00:00:10", is_usb=True)])
 
     def test_exhausted_after_per_window_budget(self, watcher):
         t = self._target(watcher)
@@ -234,7 +234,7 @@ class TestDeadPhyRebootGuard:
 
 
 class TestEscalateDeadAdapterRecovery:
-    USB_MAC = "dc:62:79:91:4d:d6"
+    USB_MAC = "aa:bb:cc:00:00:10"
 
     def _usb(self, watcher, ifname="wlan0"):
         return _adapter(watcher, ifname, self.USB_MAC, is_usb=True)
@@ -563,7 +563,7 @@ class TestEscalateDeadAdapterRecovery:
 
 
 class TestDeadPhyRebootThreshold:
-    USB_MAC = "dc:62:79:91:4d:d6"
+    USB_MAC = "aa:bb:cc:00:00:10"
 
     def _wedged_offline(self, watcher, now):
         usb = _adapter(watcher, "wlan0", self.USB_MAC, is_usb=True)
@@ -618,7 +618,7 @@ class TestFieldLogRecoveryRegression:
         # The wedged USB's reactivate-first attempt is already spent this
         # episode, so the ladder falls through to onboard directly.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"  # declared wedged
         watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.STATE.boot_time = 300.0  # boot_age 700s at now=1000 (inside window)
@@ -639,7 +639,7 @@ class TestFieldLogRecoveryRegression:
         # The wedged USB's reactivate-first attempt is already spent this
         # episode, so the ladder climbs to onboard rather than re-probing it.
         builtin = _adapter(watcher, "wlan0", "aa:bb:cc:00:00:01", is_builtin=True)
-        usb = _adapter(watcher, "wlan1", "dc:62:79:91:4d:d6", is_usb=True)
+        usb = _adapter(watcher, "wlan1", "aa:bb:cc:00:00:10", is_usb=True)
         watcher.RECOVERY_STATE.dead_adapter_ifname = "wlan1"  # declared wedged
         watcher.RECOVERY_STATE.wedged_reactivate_done.add(usb.stable_id)
         watcher.STATE.setup_mode = True
@@ -662,7 +662,7 @@ class TestFieldLogRecoveryRegression:
 
 
 class TestDeadPhyEndToEnd:
-    MAC = "dc:62:79:91:4d:d6"
+    MAC = "aa:bb:cc:00:00:10"
 
     def _usb(self, watcher):
         return _adapter(watcher, "wlan0", self.MAC, is_usb=True)
