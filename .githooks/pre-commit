@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# Refuse to commit paths that .gitignore says should not be tracked.
+#
+# .gitignore only guards files git does not already track, and it is silently
+# bypassed by `git add -f`, by `git apply --index`, and by GUIs that force-add
+# a file you click on. That is how a set of working notes under docs/working/
+# ended up committed despite an ignore rule that had been in place for weeks.
+#
+# `git check-ignore` needs --no-index here: by default it consults the index
+# and reports nothing for a file that is already tracked, which is exactly the
+# case this hook exists to catch.
+#
+# Enable (per clone, hooks are not installed by checkout alone):
+#     git config core.hooksPath .githooks
+#
+# Deliberate override, when you really do mean it:
+#     git commit --no-verify
+
+fail=0
+
+# 1. Anything newly staged that .gitignore excludes.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -n "${staged}" ]; then
+    offenders=$(printf '%s\n' "${staged}" | git check-ignore --no-index --stdin 2>/dev/null)
+    if [ -n "${offenders}" ]; then
+        echo "pre-commit: refusing to commit path(s) excluded by .gitignore:" >&2
+        printf '%s\n' "${offenders}" | sed 's/^/    /' >&2
+        fail=1
+    fi
+fi
+
+# 2. Anything already tracked that .gitignore excludes. Check 1 only sees the
+# staged diff, so it misses a file that slipped in by another route -- notably
+# a merge, since this hook does not run for merge commits at all. This is the
+# check that found the original docs/working/ leak.
+tracked=$(git ls-files -i -c --exclude-standard)
+if [ -n "${tracked}" ]; then
+    echo "pre-commit: ignored path(s) are already tracked:" >&2
+    printf '%s\n' "${tracked}" | sed 's/^/    /' >&2
+    echo "    (untrack with: git rm --cached <path>)" >&2
+    fail=1
+fi
+
+if [ "${fail}" -ne 0 ]; then
+    echo >&2
+    echo "If this is genuinely intended, re-run with --no-verify." >&2
+    exit 1
+fi
+
+exit 0
