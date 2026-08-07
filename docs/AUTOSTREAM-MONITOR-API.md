@@ -232,9 +232,26 @@ session/replay started:
   original start edge) whether it can now be admitted. Once the hold
   expires -- or the replay ends by some other route (e.g. disable/re-enable)
   while the input is still capturing -- the very next one of those checks is
-  what actually starts the takeover or the recording, normally within about
-  a second. Worst case, a legitimate takeover during the hold is deferred
-  until the hold expires and the new source is still live.
+  what actually starts the takeover or the recording. Clearing the hold does
+  not by itself interrupt the replay, though -- an admitted edge then has to
+  clear the probation gate below. Worst case, a legitimate takeover during
+  the hold is deferred until the hold expires and the new source is still
+  live.
+- **Interrupt probation.** An admitted live edge does not interrupt an
+  actively-playing replay on its own. It arms a probation gate that requires
+  1.25 s of sustained above-threshold audio on the interrupting input before
+  the interrupt is trusted; only then does the 1.0 s fade-out and takeover
+  begin. Probation is bounded by a 5 s wall clock: if the audio does not
+  sustain within that window, the probation expires silently -- replay never
+  stopped, nothing was freed, no status field changed -- and the only
+  operator-visible trace is a WARN-level log line. It re-arms on the next
+  capture-start edge. The gate exists so that a brief transient (a needle
+  bump, a stray click) cannot tear down an active replay.
+
+  One exception: if the replay is *already* fading out for some other reason
+  (a disarm, say), a live edge upgrades that fade in place and takes over
+  directly, without probation. The concern probation exists for does not
+  apply once a fade is in flight.
 
 What the hold does **not** affect:
 
@@ -720,7 +737,7 @@ Request fields:
   - one of `auto` (target-duration selection picks a tier from free RAM at
     each recording start -- see below), `mp2_160`, `mp2_192`, `mp2_224`,
     `mp2_256`, `mp2_320`, `mp2_384`, or `pcm` (pinned; still subject to the
-    base 110 MiB availability gate and the 64 MiB floor/sliding window)
+    base 78 MiB session-admission gate and the 64 MiB floor/sliding window)
   - defaults to `auto` if omitted or empty
 - `target_minutes` (optional, integer, 10..600)
   - the recording duration the `auto` codec ladder tries to GUARANTEE in
@@ -798,7 +815,7 @@ Behavior:
   update that reports the session as stopped (no snapshot ever shows
   `is_capturing:false` with `repeat.armed:true` and non-zero recorded bytes
   but `repeat.replay.active:false`)
-- `armed:false` while replay is active starts a 1.5 s fade-out; once complete,
+- `armed:false` while replay is active starts a 1.0 s fade-out; once complete,
   replay stops and the recording is retained (re-armable) rather than freed
 - `armed:false` at any other time is just a flag clear (nothing to interrupt)
 
@@ -1124,10 +1141,15 @@ Top-level fields:
     since the current/most recent recording began (ring overrun, e.g. under
     CPU starvation); the live FIFO path is never affected by this
   - `recording.unavailable_reason`: `null` normally; `"insufficient_memory"`
-    when a capture session started with `enabled:true` but free RAM was below
-    the 110 MiB minimum, so no recording was started for that session;
+    when a capture session started with `enabled:true` but effective free RAM
+    was below the 78 MiB session-admission minimum (the 64 MiB floor plus a
+    14 MiB margin), so no recording was started for that session;
     `"encoder_init_failed"` on the (defensive, should not occur) case where
     codec encoder construction itself fails
+  - admission is evaluated BEFORE any previously held recording is freed. If a
+    live interrupt confirms and the new session is then refused for memory, the
+    controller reverts to holding the old recording, which stays replayable,
+    rather than ending up with neither
   - `replay.active`: `true` while the recording is looping back into the FIFO
     (including the disarm fade-out window -- see `set_repeat_armed`)
   - `replay.position_seconds` / `replay.duration_seconds`: playback position

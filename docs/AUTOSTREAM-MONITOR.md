@@ -55,6 +55,11 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     a capture session is active, and loops it back into the same FIFO once
     armed, until disarmed or new live audio interrupts it (crossfades out on
     interrupt)
+  - a live interrupt of an actively-playing replay is probation-gated: the
+    new audio must sustain above threshold for 1.25 s (bounded by a 5 s wall
+    clock) before the crossfade begins, so a brief transient cannot tear down
+    a replay. A probation that does not sustain expires silently, leaving the
+    replay untouched
   - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
     pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
     The codec/bitrate tier is chosen to GUARANTEE a target recording

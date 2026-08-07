@@ -1024,10 +1024,11 @@ public:
     // Signals the thread to exit and joins it. Called at daemon shutdown.
     void stop_thread();
 
-    // Both the disarm and live-interrupt triggers use the identical 1.5 s
-    // linear fade shape in the slice path below -- only RepeatController's
-    // POST-fade branching differs (autostream_repeat.cpp's single
-    // _pending_action, consulted by on_replay_session_ended_locked_entry()).
+    // Both the disarm and live-interrupt triggers use the identical
+    // kFadeSeconds linear fade shape in the slice path below -- only
+    // RepeatController's POST-fade branching differs (autostream_repeat.cpp's
+    // single _pending_action, consulted by
+    // on_replay_session_ended_locked_entry()).
     // request_fade_out() therefore no longer takes a reason parameter (
     // a former FadeReason enum was accepted here but never actually read by
     // ReplayEngine -- a phantom API -- since the fade shape itself never
@@ -2262,7 +2263,7 @@ public:
 
     // {"type":"set_repeat_armed",...} handler. Setting armed=true
     // while HOLD (finished recording, idle) starts replay immediately.
-    // Setting armed=false while REPLAYING triggers the 1.5 s disarm fade
+    // Setting armed=false while REPLAYING triggers the kFadeSeconds disarm fade
     // (D5); the buffer is retained (HOLD) afterwards and remains re-armable.
     // Returns "" always (no rejectable inputs beyond the bool itself).
     std::string set_armed(bool armed);
