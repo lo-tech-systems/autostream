@@ -403,12 +403,19 @@ inline void convert_to_pipe_format(const int16_t* in_s16, size_t n_samples,
         out.resize(n_samples * sizeof(int32_t));
         int32_t* out32 = reinterpret_cast<int32_t*>(out.data());
         for (size_t i = 0; i < n_samples; ++i)
-            out32[i] = static_cast<int32_t>(in_s16[i]) << 16;
+            // Shift through the unsigned type: left-shifting a negative
+            // signed value is undefined before C++20, and this is built as
+            // C++17. Same widening convention as widen_s16_to_s32().
+            out32[i] = static_cast<int32_t>(
+                static_cast<uint32_t>(static_cast<int32_t>(in_s16[i])) << 16);
     }
     else
     {
         out.resize(n_samples * sizeof(int16_t));
-        std::memcpy(out.data(), in_s16, out.size());
+        // memcpy's source is declared non-null, so a zero-length call with a
+        // null input is still undefined; callers legitimately pass both.
+        if (n_samples != 0)
+            std::memcpy(out.data(), in_s16, out.size());
     }
 }
 

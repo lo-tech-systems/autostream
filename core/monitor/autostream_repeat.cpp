@@ -2280,7 +2280,7 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
     {
         // End of buffer: loop (loop_count++, reader.rewind()). Never happens
         // mid-fade in practice (a fade
-        // completes in 1.5 s, far short of any recording), but if it did,
+        // completes in kFadeSeconds, far short of any recording), but if it did,
         // looping mid-fade is harmless -- the fade gain continues to
         // ramp down against the freshly-rewound stream.
         _loop_count.fetch_add(1, std::memory_order_relaxed);
@@ -2447,8 +2447,8 @@ void ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, si
     src_float_to_short_array(ctx.dsp_float_buf.data(), ctx.dsp_pcm_buf.data(),
                               static_cast<int>(slice_samples));
 
-    // ── Fade gain (disarm fade, linear, 1.5 s span) ─────────────────────
-    // Applied AFTER the DSP chain (per this WP's spec) so a live gain
+    // ── Fade gain (disarm fade, linear, kFadeSeconds span) ──────────────
+    // Applied AFTER the DSP chain, by design, so a live gain
     // change during the fade itself still scales correctly -- the
     // fade is a final multiplicative envelope on top of whatever the
     // DSP chain just produced, not a substitute baked-in level.

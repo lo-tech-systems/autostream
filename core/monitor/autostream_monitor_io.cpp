@@ -1890,7 +1890,7 @@ void InputChannel::apply_output_chain(int out_frames)
         // section in deliver_output() is skipped entirely whenever
         // is_fifo_owned_by_replay() is true, so these frames are
         // computed but never reach OwnTone -- decrementing the
-        // counter anyway would let a ~1.5 s live-interrupt fade
+        // counter anyway would let the live-interrupt fade
         // silently exhaust the 1 s ramp before the FIFO ever
         // hands over, producing an abrupt full-volume jump the
         // instant ownership actually flips to Live instead of the

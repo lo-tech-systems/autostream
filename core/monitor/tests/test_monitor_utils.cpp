@@ -322,11 +322,19 @@ static void test_dbfs_linear_round_trip_across_range()
 
 static void test_widen_s16_to_s32_left_justifies()
 {
+    // Expected values shift through the unsigned type for the same reason the
+    // function under test does: left-shifting a negative signed value is
+    // undefined before C++20, so computing the expectation the naive way would
+    // itself be undefined behaviour.
+    auto widened = [](std::int32_t v) {
+        return static_cast<std::int32_t>(static_cast<std::uint32_t>(v) << 16);
+    };
+
     CHECK(widen_s16_to_s32(0) == 0, "zero widens to zero");
-    CHECK(widen_s16_to_s32(1) == (1 << 16), "smallest positive step lands at bit 16");
-    CHECK(widen_s16_to_s32(-1) == (-1 << 16), "smallest negative step lands at bit 16");
-    CHECK(widen_s16_to_s32(32767) == (32767 << 16), "int16 max widens by <<16");
-    CHECK(widen_s16_to_s32(-32768) == (static_cast<std::int32_t>(-32768) << 16),
+    CHECK(widen_s16_to_s32(1) == widened(1), "smallest positive step lands at bit 16");
+    CHECK(widen_s16_to_s32(-1) == widened(-1), "smallest negative step lands at bit 16");
+    CHECK(widen_s16_to_s32(32767) == widened(32767), "int16 max widens by <<16");
+    CHECK(widen_s16_to_s32(-32768) == widened(-32768),
           "int16 min widens by <<16");
 }
 

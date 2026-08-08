@@ -23,6 +23,11 @@ g++ -std=c++17 -O2 \
     "$TEST_DIR/test_control_protocol.cpp" \
     -o "$BUILD_DIR/test_control_protocol"
 
+echo "=== Building test_control_thread_reap (no system libs needed) ==="
+g++ -std=c++17 -O2 -pthread \
+    "$TEST_DIR/test_control_thread_reap.cpp" \
+    -o "$BUILD_DIR/test_control_thread_reap"
+
 echo "=== Building test_monitor_utils ==="
 g++ -std=c++17 -O2 \
     -I "$MONITOR_DIR" \
@@ -70,6 +75,10 @@ g++ -std=c++17 -Wall -Wextra -O2 \
 echo ""
 echo "=== Running test_control_protocol (from repo root) ==="
 (cd "$REPO_ROOT" && "$BUILD_DIR/test_control_protocol")
+
+echo ""
+echo "=== Running test_control_thread_reap ==="
+"$BUILD_DIR/test_control_thread_reap"
 
 echo ""
 echo "=== Running test_monitor_utils ==="

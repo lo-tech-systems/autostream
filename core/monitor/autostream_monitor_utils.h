@@ -62,7 +62,12 @@ std::array<std::uint8_t, 44> build_wav_header(int rate,
 // without an ALSA device.
 inline constexpr std::int32_t widen_s16_to_s32(std::int16_t sample)
 {
-    return static_cast<std::int32_t>(sample) << 16;
+    // Shift through the unsigned type: left-shifting a negative signed value
+    // is undefined before C++20, and this is built as C++17. The round trip
+    // is value-preserving on any two's-complement target and compiles to the
+    // same instruction.
+    return static_cast<std::int32_t>(
+        static_cast<std::uint32_t>(static_cast<std::int32_t>(sample)) << 16);
 }
 
 

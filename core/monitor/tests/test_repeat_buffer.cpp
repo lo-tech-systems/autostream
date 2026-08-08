@@ -1811,6 +1811,16 @@ static void test_tail_offset_gate_end_to_end()
 // U18 — convert_to_pipe_format() wire layouts
 // ---------------------------------------------------------------------------
 
+// Expected values shift through the unsigned type for the same reason
+// convert_to_pipe_format() does: left-shifting a negative signed value is
+// undefined before C++20, so computing the expectation the naive way would
+// itself be undefined behaviour.
+static inline int32_t widened_s16(int16_t v)
+{
+    return static_cast<int32_t>(
+        static_cast<uint32_t>(static_cast<int32_t>(v)) << 16);
+}
+
 static void test_u18_convert_to_pipe_format()
 {
     // Widening layout ("native"): each s16 sample becomes a little-endian
@@ -1824,7 +1834,7 @@ static void test_u18_convert_to_pipe_format()
         CHECK(out.size() == n * sizeof(int32_t), "U18: widened output is 4 bytes/sample");
         const int32_t* out32 = reinterpret_cast<const int32_t*>(out.data());
         for (size_t i = 0; i < n; ++i)
-            CHECK(out32[i] == (static_cast<int32_t>(in[i]) << 16),
+            CHECK(out32[i] == widened_s16(in[i]),
                   "U18: widened sample equals value << 16");
     }
 
@@ -1862,7 +1872,7 @@ static void test_u18_convert_to_pipe_format()
         convert_to_pipe_format(sweep, n, wide, /*widen_to_s32=*/true);
         const int32_t* wide32 = reinterpret_cast<const int32_t*>(wide.data());
         for (size_t i = 0; i < n; ++i)
-            CHECK(wide32[i] == (static_cast<int32_t>(sweep[i]) << 16),
+            CHECK(wide32[i] == widened_s16(sweep[i]),
                   "U18: sweep value widens to value << 16");
 
         std::vector<uint8_t> narrow;
