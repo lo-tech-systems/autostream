@@ -151,7 +151,7 @@ install_owntone_mini_from_source() {
     autoreconf -i
     # -Ofast (implies -ffast-math): measurably lighter AAC encode on Pi-class
     # CPUs (validated on Pi 5 and Pi Zero 2W).
-    ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-install-user --enable-chromecast \
+    ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
       CFLAGS="-Ofast" CXXFLAGS="-Ofast"
     update_progress "Building OwnTone..." 71
     make -j2
