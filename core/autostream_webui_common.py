@@ -19,6 +19,7 @@ from urllib.parse import quote, urlparse
 from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
+from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import CONFIG_IO_LOCK, DEFAULT_STYLUS_LIFE_HOURS, load_config
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
@@ -274,6 +275,9 @@ def _fallback_input_snapshot(
         f"Input {input_index}",
         enabled=bool(enabled),
         is_turntable=bool(getattr(parsed_input, "is_turntable", False)),
+        is_bluetooth=classify_loopback_hw(
+            str(getattr(parsed_input, "capture_device", "") or "")
+        ) == "capture",
         stylus_life_hours=int(getattr(parsed_input, "stylus_life_hours", DEFAULT_STYLUS_LIFE_HOURS)),
         belt_life_hours=int(getattr(parsed_input, "belt_life_hours", 0)),
         belt_life_years=int(getattr(parsed_input, "belt_life_years", 0)),

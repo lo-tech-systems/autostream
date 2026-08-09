@@ -187,6 +187,7 @@ class PlaybackInputConfig:
 
     enabled: bool = True
     is_turntable: bool = False
+    is_bluetooth: bool = False
     stylus_life_hours: int = DEFAULT_STYLUS_LIFE_HOURS
     belt_life_hours: int = 0
     belt_life_years: int = 0
@@ -199,6 +200,7 @@ class PlaybackInputConfig:
         *,
         enabled: bool = True,
         is_turntable: bool = False,
+        is_bluetooth: bool = False,
         stylus_life_hours: object = DEFAULT_STYLUS_LIFE_HOURS,
         belt_life_hours: object = 0,
         belt_life_years: object = 0,
@@ -208,6 +210,7 @@ class PlaybackInputConfig:
         return cls(
             enabled=bool(enabled),
             is_turntable=bool(is_turntable),
+            is_bluetooth=bool(is_bluetooth),
             stylus_life_hours=normalize_stylus_life_hours(stylus_life_hours),
             belt_life_hours=normalize_maintenance_life_hours(belt_life_hours),
             belt_life_years=normalize_maintenance_life_years(belt_life_years),
@@ -291,6 +294,7 @@ class InputPlaybackSnapshot:
     active: bool
     enabled: bool
     is_turntable: bool
+    is_bluetooth: bool
 
     # Total lifetime hours
     total_playback_seconds: int
@@ -351,6 +355,7 @@ class InputPlaybackSnapshot:
             "active": bool(self.active),
             "enabled": bool(self.enabled),
             "is_turntable": bool(self.is_turntable),
+            "is_bluetooth": bool(self.is_bluetooth),
             "total_playback_seconds": int(self.total_playback_seconds),
             "total_playback_hours": float(self.total_playback_hours),
             # Stylus
@@ -417,6 +422,7 @@ def make_fallback_input_snapshot(
     *,
     enabled: bool = True,
     is_turntable: bool = False,
+    is_bluetooth: bool = False,
     stylus_life_hours: int = DEFAULT_STYLUS_LIFE_HOURS,
     belt_life_hours: int = 0,
     belt_life_years: int = 0,
@@ -430,6 +436,7 @@ def make_fallback_input_snapshot(
         active=False,
         enabled=enabled,
         is_turntable=is_turntable,
+        is_bluetooth=is_bluetooth,
         total_playback_seconds=0,
         total_playback_hours=0.0,
         stylus_playback_seconds=0,
@@ -660,6 +667,7 @@ class PlaybackTracker:
                 self._normalize_input_index(idx): PlaybackInputConfig.normalized(
                     enabled=cfg.enabled,
                     is_turntable=cfg.is_turntable,
+                    is_bluetooth=cfg.is_bluetooth,
                     stylus_life_hours=cfg.stylus_life_hours,
                     belt_life_hours=cfg.belt_life_hours,
                     belt_life_years=cfg.belt_life_years,
@@ -679,6 +687,7 @@ class PlaybackTracker:
         *,
         enabled: bool,
         is_turntable: bool,
+        is_bluetooth: bool = False,
         stylus_life_hours: object,
         belt_life_hours: object = 0,
         belt_life_years: object = 0,
@@ -692,6 +701,7 @@ class PlaybackTracker:
             cfg = PlaybackInputConfig.normalized(
                 enabled=enabled,
                 is_turntable=is_turntable,
+                is_bluetooth=is_bluetooth,
                 stylus_life_hours=stylus_life_hours,
                 belt_life_hours=belt_life_hours,
                 belt_life_years=belt_life_years,
@@ -926,6 +936,7 @@ class PlaybackTracker:
                     active=active,
                     enabled=cfg.enabled,
                     is_turntable=cfg.is_turntable,
+                    is_bluetooth=cfg.is_bluetooth,
                     total_playback_seconds=total_seconds,
                     total_playback_hours=hours_from_seconds(total_seconds),
                     # Stylus
@@ -1012,6 +1023,7 @@ class PlaybackTracker:
             idx, input_label(idx),
             enabled=cfg.enabled,
             is_turntable=cfg.is_turntable,
+            is_bluetooth=cfg.is_bluetooth,
             stylus_life_hours=cfg.stylus_life_hours,
             belt_life_hours=cfg.belt_life_hours,
             belt_life_years=cfg.belt_life_years,

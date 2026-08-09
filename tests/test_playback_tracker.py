@@ -608,3 +608,75 @@ class TestMultiInputSnapshot:
         assert 1 in snap.stylus_overdue_indices
         assert 2 in snap.stylus_warning_indices
         assert snap.stylus_banner_text is not None
+
+
+# ---------------------------------------------------------------------------
+# is_bluetooth flag: config -> snapshot -> public dict
+# ---------------------------------------------------------------------------
+
+class TestBluetoothFlag:
+    def test_bluetooth_input_snapshot_has_is_bluetooth_true(self, tmp_path):
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        cfg = PlaybackInputConfig.normalized(
+            enabled=True, is_turntable=False, is_bluetooth=True,
+        )
+        tr.replace_input_configs({1: cfg})
+        snap = tr.snapshot().inputs[1]
+        assert snap.is_bluetooth is True
+        assert snap.is_turntable is False
+
+    def test_line_input_snapshot_has_is_bluetooth_false(self, tmp_path):
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _line_config()})
+        snap = tr.snapshot().inputs[1]
+        assert snap.is_bluetooth is False
+
+    def test_turntable_wins_precedence_over_bluetooth(self, tmp_path):
+        """A bluetooth-loopback-shaped turntable input is still is_turntable=True
+        and is_bluetooth=True on the snapshot -- precedence between the two is
+        a rendering-layer concern (turntable icon wins), not a data-layer one."""
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        cfg = PlaybackInputConfig.normalized(
+            enabled=True, is_turntable=True, is_bluetooth=True,
+        )
+        tr.replace_input_configs({1: cfg})
+        snap = tr.snapshot().inputs[1]
+        assert snap.is_turntable is True
+        assert snap.is_bluetooth is True
+
+    def test_to_public_dict_includes_is_bluetooth(self, tmp_path):
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        cfg = PlaybackInputConfig.normalized(
+            enabled=True, is_turntable=False, is_bluetooth=True,
+        )
+        tr.replace_input_configs({1: cfg})
+        public = tr.snapshot().inputs[1].to_public_dict()
+        assert public["is_bluetooth"] is True
+
+    def test_to_public_dict_is_bluetooth_false_for_line_input(self, tmp_path):
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _line_config()})
+        public = tr.snapshot().inputs[1].to_public_dict()
+        assert public["is_bluetooth"] is False
+
+    def test_update_input_config_threads_is_bluetooth(self, tmp_path):
+        clk = FakeClock()
+        tr = _tracker(tmp_path, clock=clk)
+        tr.replace_input_configs({1: _line_config()})
+        tr.update_input_config(
+            1, enabled=True, is_turntable=False, is_bluetooth=True,
+            stylus_life_hours=0,
+        )
+        snap = tr.snapshot().inputs[1]
+        assert snap.is_bluetooth is True
+
+    def test_fallback_snapshot_default_is_bluetooth_false(self):
+        from autostream_playback_stats import make_fallback_input_snapshot
+        snap = make_fallback_input_snapshot(1, "Input 1")
+        assert snap.is_bluetooth is False
+        assert snap.to_public_dict()["is_bluetooth"] is False

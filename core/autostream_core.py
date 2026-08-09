@@ -531,6 +531,7 @@ def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
         1: PlaybackInputConfig.normalized(
             enabled=cfg.audio1_enabled,
             is_turntable=cfg.audio1.is_turntable,
+            is_bluetooth=classify_loopback_hw(cfg.audio1.capture_device) == "capture",
             stylus_life_hours=cfg.audio1.stylus_life_hours,
             belt_life_hours=cfg.audio1.belt_life_hours,
             belt_life_years=cfg.audio1.belt_life_years,
@@ -540,6 +541,7 @@ def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
         2: PlaybackInputConfig.normalized(
             enabled=cfg.audio2_enabled,
             is_turntable=cfg.audio2.is_turntable,
+            is_bluetooth=classify_loopback_hw(cfg.audio2.capture_device) == "capture",
             stylus_life_hours=cfg.audio2.stylus_life_hours,
             belt_life_hours=cfg.audio2.belt_life_hours,
             belt_life_years=cfg.audio2.belt_life_years,
@@ -611,6 +613,7 @@ def update_playback_input_config(
     *,
     enabled: bool,
     is_turntable: bool,
+    is_bluetooth: bool = False,
     stylus_life_hours: int,
     belt_life_hours: int = 0,
     belt_life_years: int = 0,
@@ -625,6 +628,7 @@ def update_playback_input_config(
             int(input_index),
             enabled=enabled,
             is_turntable=is_turntable,
+            is_bluetooth=is_bluetooth,
             stylus_life_hours=stylus_life_hours,
             belt_life_hours=belt_life_hours,
             belt_life_years=belt_life_years,

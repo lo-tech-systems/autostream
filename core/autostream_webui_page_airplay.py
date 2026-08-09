@@ -32,6 +32,7 @@ from autostream_webui_assets import (
     BANNER_LOGO_HTML,
     COMMON_MODAL_CSS,
     HOME_CARDS_SCRIPT,
+    ICON_BLUETOOTH,
     ICON_LINE_LEVEL,
     ICON_TURNTABLE,
     INFO_MODAL_HTML,
@@ -267,15 +268,32 @@ def send_airplay_page(
     _np_is_playing = any(lv.get("is_above_threshold") for lv in input_levels)
     _np_snap = playback_snapshot.inputs.get(_np_active_idx + 1)
     _np_is_turntable = bool(_np_snap.is_turntable) if _np_snap else False
+    _np_is_bluetooth = bool(_np_snap.is_bluetooth) if _np_snap else False
+    # Precedence: turntable wins over bluetooth-ness (mirrors
+    # _default_nowplaying_title in autostream_core.py) -- a bluetooth
+    # turntable is still shown/labelled as a turntable.
+    _np_icon_kind = (
+        "turntable" if _np_is_turntable
+        else "bluetooth" if _np_is_bluetooth
+        else "line"
+    )
     _np_label = str(_np_active_level.get("label", f"Input {_np_active_idx + 1}"))
-    _np_type_label = "Turntable" if _np_is_turntable else "Line Level"
+    _np_type_label = {
+        "turntable": "Turntable",
+        "bluetooth": "Bluetooth",
+        "line": "Line Level",
+    }[_np_icon_kind]
     _np_hz = float(_np_active_level.get("detected_hz", 0.0))
     _np_signal_parts = []
     if show_input_detail and _np_hz > 0:
         _np_signal_parts.append("Locked")
         _np_signal_parts.append(f"{_np_hz / 1000:.0f} kHz")
     _np_signal = " \u00b7 ".join(_np_signal_parts)
-    _np_icon_svg = ICON_TURNTABLE if _np_is_turntable else ICON_LINE_LEVEL
+    _np_icon_svg = {
+        "turntable": ICON_TURNTABLE,
+        "bluetooth": ICON_BLUETOOTH,
+        "line": ICON_LINE_LEVEL,
+    }[_np_icon_kind]
 
     # Track identification initial state for server-rendered card.
     try:
@@ -306,7 +324,11 @@ def send_airplay_page(
         _np_display_name = html.escape(_ti_title or "Unknown")
         _np_display_signal = html.escape(_ti_artist)
     elif _ti_enabled:
-        _input_prefix = "Vinyl" if _np_is_turntable else "Line In"
+        _input_prefix = {
+            "turntable": "Vinyl",
+            "bluetooth": "Bluetooth",
+            "line": "Line In",
+        }[_np_icon_kind]
         if _ti_state == "error":
             _np_display_name = html.escape(f"{_input_prefix} – Track ID function not available")
         elif _ti_state == "not_found":
@@ -315,13 +337,13 @@ def send_airplay_page(
             _np_display_name = html.escape(f"{_input_prefix} – Identifying Track…")
         _np_display_signal = ""
         _np_icon_content = _np_icon_svg
-        _np_icon_key = f"svg:{str(_np_is_turntable).lower()}"
+        _np_icon_key = f"svg:{_np_icon_kind}"
         _np_icon_extra_cls = ""
     else:
         _np_display_name = html.escape(f"{_np_label} · {_np_type_label}")
         _np_display_signal = html.escape(_np_signal)
         _np_icon_content = _np_icon_svg
-        _np_icon_key = f"svg:{str(_np_is_turntable).lower()}"
+        _np_icon_key = f"svg:{_np_icon_kind}"
         _np_icon_extra_cls = ""
 
     # Fetch the OwnTone start-buffer setting so the VU meter can be aligned to
@@ -422,6 +444,7 @@ def send_airplay_page(
         f"window.__SHOW_INPUT_DETAIL={'true' if show_input_detail else 'false'};"
         f"window.__VU_DELAY_MS={int(vu_delay_ms)};"
         f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
+        f"window.__ICON_BLUETOOTH={json.dumps(ICON_BLUETOOTH)};"
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__SELECTOR_CURRENT_ID='{html.escape(_local_id)}';"
@@ -796,6 +819,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__SHOW_INPUT_DETAIL=false;"
         f"window.__VU_DELAY_MS=2250;"
         f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
+        f"window.__ICON_BLUETOOTH={json.dumps(ICON_BLUETOOTH)};"
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__REMOTE_AID='{html.escape(appliance_id)}';"
@@ -855,7 +879,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'<div class="now-playing-card np-ready" id="now-playing-card">'
         f'<div class="now-playing-hdr" id="np-hdr">Ready · {html.escape(_remote_hostname)}</div>'
         f'<div class="now-playing-body">'
-        f'<div class="now-playing-icon" id="np-icon" data-np-icon-key="svg:false">'
+        f'<div class="now-playing-icon" id="np-icon" data-np-icon-key="svg:line">'
         f'{_np_icon_svg}'
         f'</div>'
         f'<div class="now-playing-meta">'

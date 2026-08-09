@@ -1870,6 +1870,17 @@ HOME_CARDS_SCRIPT = """
     if (!activeLevel) return;
     var inputSnap = inputs[String(activeIdx + 1)] || {};
     var isTurntable = !!inputSnap.is_turntable;
+    var isBluetooth = !!inputSnap.is_bluetooth;
+    // Precedence: turntable wins over bluetooth-ness (mirrors the server's
+    // _default_nowplaying_title / _np_icon_kind derivation).
+    var iconKind = isTurntable ? 'turntable' : (isBluetooth ? 'bluetooth' : 'line');
+    var iconSvgByKind = {
+      turntable: window.__ICON_TURNTABLE,
+      bluetooth: window.__ICON_BLUETOOTH,
+      line: window.__ICON_LINE_LEVEL,
+    };
+    var iconLabelByKind = { turntable: 'Vinyl', bluetooth: 'Bluetooth', line: 'Line In' };
+    var typeLabelByKind = { turntable: 'Turntable', bluetooth: 'Bluetooth', line: 'Line Level' };
     var label = String(activeLevel.label || ('Input ' + (activeIdx + 1)));
     var signalParts = [];
     if (window.__SHOW_INPUT_DETAIL) {
@@ -1910,32 +1921,32 @@ HOME_CARDS_SCRIPT = """
             };
             artImg.src = tiArtUrl;
           } else {
-            iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+            iconEl.innerHTML = iconSvgByKind[iconKind];
             iconEl.classList.remove('np-icon-art');
           }
         }
       }
     } else if (tiEnabled) {
-      var inputPrefix = isTurntable ? 'Vinyl' : 'Line In';
+      var inputPrefix = iconLabelByKind[iconKind];
       var suffix;
       if (tiState === 'error') { suffix = 'Track ID function not available'; }
       else if (tiState === 'not_found') { suffix = 'Unknown track'; }
       else { suffix = 'Identifying Track…'; }
       if (nameEl) nameEl.textContent = inputPrefix + ' – ' + suffix;
       if (signalEl) signalEl.textContent = '';
-      var svgKey = 'svg:' + String(isTurntable);
+      var svgKey = 'svg:' + iconKind;
       if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey) {
         iconEl.setAttribute('data-np-icon-key', svgKey);
-        iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+        iconEl.innerHTML = iconSvgByKind[iconKind];
         iconEl.classList.remove('np-icon-art');
       }
     } else {
-      if (nameEl) nameEl.textContent = label + ' · ' + (isTurntable ? 'Turntable' : 'Line Level');
+      if (nameEl) nameEl.textContent = label + ' · ' + typeLabelByKind[iconKind];
       if (signalEl) signalEl.textContent = signalParts.join(' · ');
-      var svgKey2 = 'svg:' + String(isTurntable);
+      var svgKey2 = 'svg:' + iconKind;
       if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey2) {
         iconEl.setAttribute('data-np-icon-key', svgKey2);
-        iconEl.innerHTML = isTurntable ? window.__ICON_TURNTABLE : window.__ICON_LINE_LEVEL;
+        iconEl.innerHTML = iconSvgByKind[iconKind];
         iconEl.classList.remove('np-icon-art');
       }
     }
@@ -2581,6 +2592,14 @@ ICON_LINE_LEVEL = (
     '<path d="M59 122 H69"/>'
     '<path d="M59 138 H69"/>'
     '<path d="M59 154 H69"/>'
+    '</svg>'
+)
+
+ICON_BLUETOOTH = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 258"'
+    ' fill="none" stroke="var(--color-accent)" stroke-width="7"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M9 74 L119 184 L64 239 L64 19 L119 74 L9 184"/>'
     '</svg>'
 )
 

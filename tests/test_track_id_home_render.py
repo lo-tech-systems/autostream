@@ -69,7 +69,7 @@ def _make_playback_snapshot():
     return snap
 
 
-def _render_airplay_page(ti_snapshot=None) -> str:
+def _render_airplay_page(ti_snapshot=None, playback_snapshot=None) -> str:
     """Invoke send_airplay_page() with all external deps mocked and return HTML."""
     if ti_snapshot is None:
         ti_snapshot = disabled_snapshot()
@@ -87,7 +87,7 @@ def _render_airplay_page(ti_snapshot=None) -> str:
     state.config_path = "dummy.ini"
 
     parsed = _make_parsed()
-    playback = _make_playback_snapshot()
+    playback = playback_snapshot if playback_snapshot is not None else _make_playback_snapshot()
     list_result = MagicMock(ok=False, outputs=[])
     buf_result = MagicMock(ok=True, value="2250")
 
@@ -183,7 +183,7 @@ class TestTiDisabledRender:
 
     def test_icon_uses_svg_key(self):
         html = _render_airplay_page(ti_snapshot=disabled_snapshot())
-        assert 'data-np-icon-key="svg:false"' in html
+        assert 'data-np-icon-key="svg:line"' in html
 
     def test_no_np_icon_art_class_on_icon_element(self):
         html = _render_airplay_page(ti_snapshot=disabled_snapshot())
@@ -285,7 +285,7 @@ class TestTiInProgressRender:
 
     def test_in_progress_uses_svg_key(self):
         html = _render_airplay_page(ti_snapshot=self._snap(STATE_ANALYSING))
-        assert 'data-np-icon-key="svg:false"' in html
+        assert 'data-np-icon-key="svg:line"' in html
 
     def test_in_progress_no_art_class_on_icon_element(self):
         html = _render_airplay_page(ti_snapshot=self._snap(STATE_ANALYSING))
@@ -325,3 +325,60 @@ class TestJsContent:
     def test_remote_np_art_css_present(self):
         html = _render_remote_home()
         assert "np-icon-art" in html
+
+
+# ---------------------------------------------------------------------------
+# Now Playing icon: three-way turntable / bluetooth / line-in selection
+# ---------------------------------------------------------------------------
+
+def _playback_snapshot_with_input(*, is_turntable=False, is_bluetooth=False):
+    snap = _make_playback_snapshot()
+    input_snap = MagicMock()
+    input_snap.is_turntable = is_turntable
+    input_snap.is_bluetooth = is_bluetooth
+    snap.inputs = {1: input_snap}
+    return snap
+
+
+@_skip
+class TestNowPlayingIconKind:
+    def test_bluetooth_input_uses_bluetooth_icon_and_key(self):
+        playback = _playback_snapshot_with_input(is_bluetooth=True)
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:bluetooth"' in html
+        assert "Bluetooth" in html
+
+    def test_line_input_uses_line_icon_and_key(self):
+        playback = _playback_snapshot_with_input()
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:line"' in html
+
+    def test_turntable_input_uses_turntable_icon_and_key(self):
+        playback = _playback_snapshot_with_input(is_turntable=True)
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:turntable"' in html
+
+    def test_turntable_wins_precedence_over_bluetooth_in_icon_key(self):
+        """A bluetooth-loopback-shaped turntable input must still render the
+        turntable icon/key, not bluetooth -- turntable takes precedence."""
+        playback = _playback_snapshot_with_input(is_turntable=True, is_bluetooth=True)
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:turntable"' in html
+        assert 'data-np-icon-key="svg:bluetooth"' not in html
+
+    def test_bluetooth_in_progress_track_id_shows_bluetooth_prefix(self):
+        playback = _playback_snapshot_with_input(is_bluetooth=True)
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state=STATE_ANALYSING, status_text="Analysing",
+        )
+        html = _render_airplay_page(ti_snapshot=snap, playback_snapshot=playback)
+        assert "Bluetooth" in html
+        assert 'data-np-icon-key="svg:bluetooth"' in html

@@ -328,7 +328,7 @@ class TestBearingHoursWarningBoundary:
 # ---------------------------------------------------------------------------
 
 _EXPECTED_PUBLIC_KEYS = frozenset({
-    "input_index", "label", "active", "enabled", "is_turntable",
+    "input_index", "label", "active", "enabled", "is_turntable", "is_bluetooth",
     "total_playback_seconds", "total_playback_hours",
     # stylus
     "stylus_playback_seconds", "stylus_playback_hours",
