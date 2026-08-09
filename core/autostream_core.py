@@ -401,6 +401,55 @@ def _get_last_user_output_action_at() -> float:
         return _last_user_output_action_at
 
 
+# ── User-chosen-silence latch ────────────────────────────────────────────────
+# Set when the Web UI's POST /api/output handler observes that the user has
+# just disabled the last remaining selected output (deliberately choosing
+# zero outputs), and cleared as soon as the user enables any output again, or
+# when the current capture session ends (a new session always starts with
+# normal default-output behaviour, latch or no latch). While active, it tells
+# both the zero-output reconcile (_OwntoneReconcileTracker.update()'s
+# user_silenced veto) and the periodic output-enable retry
+# (AudioMonitor._maybe_retry_owntone()) to leave a zero-output state alone
+# rather than re-arming/re-applying the default output. Session-scoped, not
+# persisted across coordinator restarts. Guarded by its own lock, same
+# discipline as _last_user_output_action_lock above -- a plain bool needs no
+# richer synchronization, but the lock keeps set/clear/read atomic with
+# respect to each other across threads (Web UI request thread vs coordinator
+# thread).
+
+_user_silence_latch_lock = threading.Lock()
+_user_silence_latch: bool = False
+
+
+def set_user_silence_latch() -> None:
+    """Mark the current session's zero-output state as user-chosen.
+
+    Called by the Web UI's output-toggle handler after it confirms a
+    successful disable left zero outputs selected.
+    """
+    global _user_silence_latch
+    with _user_silence_latch_lock:
+        _user_silence_latch = True
+
+
+def clear_user_silence_latch() -> None:
+    """Clear the user-chosen-silence latch.
+
+    Called by the Web UI's output-toggle handler after a successful enable,
+    and by the coordinator when the capture session ends (see
+    _dispatch_session_event()'s "session_ended" branch).
+    """
+    global _user_silence_latch
+    with _user_silence_latch_lock:
+        _user_silence_latch = False
+
+
+def user_silence_latch_active() -> bool:
+    """Return True iff the user has deliberately chosen zero outputs."""
+    with _user_silence_latch_lock:
+        return _user_silence_latch
+
+
 # ── OwnTone-restart reconcile + hang-watchdog status cache ──────────────────
 # Exposed via /api/status (autostream_webui_api.py) for observability; never
 # authoritative for coordinator decisions (that state lives on the tracker
@@ -915,6 +964,10 @@ def _dispatch_session_event(
             _start_session_owntone(new_monitor)
     elif event == "session_ended":
         _session_nowplaying_end(prev_monitor)
+        # A new session always gets normal default-output behaviour, so the
+        # user-chosen-silence latch (see set_user_silence_latch()) must not
+        # outlive the session it was set during.
+        clear_user_silence_latch()
         if owntone_base_url:
             _stop_and_disable_owntone(owntone_base_url, "session ended")
     elif event == "source_changed":
@@ -1014,6 +1067,14 @@ class _OwntoneReconcileTracker:
     *device_initiated_pause* so callers can veto a fire in that case without
     disturbing the zero-streak, the same way the user-action grace window
     does.
+
+    A zero-output state can also be the user's own deliberate choice: they
+    disabled the last selected output through the Web UI and want silence,
+    not a re-armed default output. update() accepts *user_silenced* (backed
+    by the module-level user_silence_latch_active()) as an independent veto
+    with the same non-destructive semantics as device_initiated_pause -- it
+    does not disturb the zero-streak, so a genuine restart-wipe that follows
+    (latch cleared by an enable or session end) is still caught.
     """
 
     ZERO_POLL_THRESHOLD = 3
@@ -1027,12 +1088,18 @@ class _OwntoneReconcileTracker:
         # device-initiated-pause veto first applies, so the poll loop can
         # log a single line instead of spamming every poll of the veto.
         self.last_device_pause_notice = False
+        self._user_silenced_notified = False
+        # Same edge-detect discipline as last_device_pause_notice, for the
+        # independent user_silenced veto.
+        self.last_user_silenced_notice = False
 
     def reset(self) -> None:
         self._consecutive_zero = 0
         self._armed = True
         self._device_pause_notified = False
         self.last_device_pause_notice = False
+        self._user_silenced_notified = False
+        self.last_user_silenced_notice = False
 
     def update(
         self,
@@ -1042,6 +1109,7 @@ class _OwntoneReconcileTracker:
         now: float,
         last_user_action_at: float,
         device_initiated_pause: bool = False,
+        user_silenced: bool = False,
     ) -> bool:
         """Advance one check. Returns True iff reconcile should fire now.
 
@@ -1057,6 +1125,8 @@ class _OwntoneReconcileTracker:
             self._armed = True
             self._device_pause_notified = False
             self.last_device_pause_notice = False
+            self._user_silenced_notified = False
+            self.last_user_silenced_notice = False
             return False
 
         if selected_count > 0:
@@ -1064,11 +1134,14 @@ class _OwntoneReconcileTracker:
             self._armed = True
             self._device_pause_notified = False
             self.last_device_pause_notice = False
+            self._user_silenced_notified = False
+            self.last_user_silenced_notice = False
             return False
 
         # selected_count == 0 while a session is active.
         self._consecutive_zero += 1
         self.last_device_pause_notice = False
+        self.last_user_silenced_notice = False
         if self._consecutive_zero < self.ZERO_POLL_THRESHOLD:
             return False
         if not self._armed:
@@ -1084,6 +1157,15 @@ class _OwntoneReconcileTracker:
             self._device_pause_notified = True
             return False
         self._device_pause_notified = False
+        if user_silenced:
+            # The user deliberately disabled the last selected output
+            # through the Web UI -- do not treat the resulting zero-output
+            # state as a fault. Keep counting so a genuine wipe that follows
+            # (latch cleared by an enable or session end) is still caught.
+            self.last_user_silenced_notice = not self._user_silenced_notified
+            self._user_silenced_notified = True
+            return False
+        self._user_silenced_notified = False
         if (now - last_user_action_at) < self.USER_ACTION_GRACE_SECONDS:
             # Recent user output action: presume the zero state is
             # intentional and do not fire, but keep counting/re-checking so
@@ -1130,11 +1212,16 @@ def _reconcile_owntone_outputs_if_wiped(
         now=now,
         last_user_action_at=_get_last_user_output_action_at(),
         device_initiated_pause=device_paused,
+        user_silenced=user_silence_latch_active(),
     )
     if tracker.last_device_pause_notice:
         logging.info(
             "Zero-output state is device-initiated (output paused by device); "
             "leaving outputs as they are."
+        )
+    if tracker.last_user_silenced_notice:
+        logging.info(
+            "Zero-output state was chosen by the user; leaving outputs as they are."
         )
     if not should_fire:
         return
@@ -3002,6 +3089,14 @@ class AudioMonitor:
         retry_pending_format_reconcile(self.owntone_base_url, monitor_status)
 
         if not self._has_any_selected_outputs(outputs):
+            if user_silence_latch_active():
+                # The user deliberately disabled the last selected output
+                # through the Web UI; do not re-apply the default output
+                # while the latch is active (cleared by the user enabling an
+                # output, or by the session ending). The FIFO/format
+                # reconcile work above still ran this cycle -- only the
+                # output-enable/default-apply step is skipped here.
+                return
             if not self._auto_select_default_output(now, outputs, reason="retry"):
                 self._throttled_owntone_log(
                     now,

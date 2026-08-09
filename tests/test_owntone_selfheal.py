@@ -43,8 +43,11 @@ from autostream_core import (
     _OwntoneHangWatchdog,
     _OwntoneReconcileTracker,
     _reconcile_owntone_outputs_if_wiped,
+    clear_user_silence_latch,
     get_owntone_selfheal_state,
     note_user_output_action,
+    set_user_silence_latch,
+    user_silence_latch_active,
 )
 
 
@@ -98,6 +101,7 @@ def _reset_selfheal_state_and_user_action():
     """Isolate module-level caches between tests (same discipline as other
     coordinator-state tests in this suite, e.g. _set_repeat_status)."""
     note_user_output_action(0.0)
+    clear_user_silence_latch()
     core._set_owntone_selfheal_state(
         reconcile_fired_count=0,
         reconcile_last_fired_at=0.0,
@@ -107,6 +111,7 @@ def _reset_selfheal_state_and_user_action():
     )
     yield
     note_user_output_action(0.0)
+    clear_user_silence_latch()
 
 
 # ── _OwntoneReconcileTracker: pure update() diff behaviour ──────────────────
@@ -291,6 +296,70 @@ class TestOwntoneReconcileTrackerDevicePause:
         assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
 
 
+class TestOwntoneReconcileTrackerUserSilenced:
+    """user_silenced veto: zero outputs because the user deliberately
+    disabled the last selected output through the Web UI must not be
+    treated as a wiped-outputs fault."""
+
+    def test_user_silenced_veto_never_fires_even_past_threshold(self):
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        results = [
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, user_silenced=True,
+            )
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 10)
+        ]
+        assert all(r is False for r in results)
+
+    def test_latch_clearing_allows_prompt_fire_without_resetting_streak(self):
+        """Once the streak is past threshold under veto, clearing the latch
+        (e.g. the session ended and a new one started) fires on the very
+        next poll -- the veto never reset the zero-streak."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 2):
+            assert tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, user_silenced=True,
+            ) is False
+        assert tracker.update(
+            session_active=True, selected_count=0, now=now + 1000,
+            last_user_action_at=0.0, user_silenced=False,
+        ) is True
+
+    def test_notice_edge_flag_fires_once_per_streak(self):
+        """last_user_silenced_notice is an edge-detect flag: True only on
+        the poll where the zero-streak first crosses the threshold while
+        vetoed, not on every subsequent vetoed poll."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        notices = []
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, user_silenced=True,
+            )
+            notices.append(tracker.last_user_silenced_notice)
+        assert notices.count(True) == 1
+        assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
+
+    def test_user_silenced_and_device_pause_are_independent_vetoes(self):
+        """Each veto tracks its own notified/edge-detect state; silencing
+        does not consume or interfere with the device-pause notice flag."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, device_initiated_pause=False,
+                user_silenced=True,
+            )
+        assert tracker.last_device_pause_notice is False
+        assert tracker._device_pause_notified is False
+
+
 # ── _reconcile_owntone_outputs_if_wiped: poll-loop wiring ───────────────────
 
 class TestReconcileWiring:
@@ -390,6 +459,118 @@ class TestReconcileWiring:
         assert fired_any is True
         state = get_owntone_selfheal_state()
         assert state["reconcile_fired_count"] == 1
+
+    def test_user_silence_latch_set_prevents_rearm(self):
+        """The user-chosen-silence latch (set_user_silence_latch()) must
+        suppress reconcile just like the device-pause flag does."""
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        tracker = _OwntoneReconcileTracker()
+        set_user_silence_latch()
+
+        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
+            now = 1000.0
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
+                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
+
+        assert mon._owntone_enabled_ok is True
+        state = get_owntone_selfheal_state()
+        assert state["reconcile_fired_count"] == 0
+
+    def test_user_silence_latch_cleared_rearms_as_today(self):
+        """Same synthetic outputs as the latched case, but with the latch
+        cleared: reconcile must still fire as it does today."""
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        tracker = _OwntoneReconcileTracker()
+        clear_user_silence_latch()
+        assert user_silence_latch_active() is False
+
+        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
+            now = 1000.0
+            fired_any = False
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
+                before = mon._owntone_enabled_ok
+                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
+                if mon._owntone_enabled_ok is False and before is True:
+                    fired_any = True
+
+        assert fired_any is True
+        state = get_owntone_selfheal_state()
+        assert state["reconcile_fired_count"] == 1
+
+
+# ── User-chosen-silence latch: module-level set/clear/read ──────────────────
+
+class TestUserSilenceLatch:
+    def test_initially_inactive(self):
+        assert user_silence_latch_active() is False
+
+    def test_set_makes_active(self):
+        set_user_silence_latch()
+        assert user_silence_latch_active() is True
+
+    def test_clear_makes_inactive(self):
+        set_user_silence_latch()
+        clear_user_silence_latch()
+        assert user_silence_latch_active() is False
+
+    def test_clear_is_idempotent_when_already_clear(self):
+        clear_user_silence_latch()
+        clear_user_silence_latch()
+        assert user_silence_latch_active() is False
+
+    def test_set_is_idempotent_when_already_set(self):
+        set_user_silence_latch()
+        set_user_silence_latch()
+        assert user_silence_latch_active() is True
+
+    def test_concurrent_set_clear_read_no_exception_and_coherent_final_state(self):
+        """Basic thread-safety smoke test: many threads hammering
+        set/clear/read concurrently must never raise, and the final read
+        must reflect one of the two valid boolean states (no torn state)."""
+        import threading as _threading
+
+        stop = _threading.Event()
+        errors = []
+
+        def _setter():
+            while not stop.is_set():
+                set_user_silence_latch()
+
+        def _clearer():
+            while not stop.is_set():
+                clear_user_silence_latch()
+
+        def _reader():
+            try:
+                for _ in range(2000):
+                    val = user_silence_latch_active()
+                    assert val in (True, False)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            _threading.Thread(target=_setter),
+            _threading.Thread(target=_clearer),
+            _threading.Thread(target=_reader),
+            _threading.Thread(target=_reader),
+        ]
+        for t in threads:
+            t.start()
+        # Let the reader threads finish their fixed iteration count, then
+        # signal the unbounded setter/clearer threads to stop.
+        threads[2].join()
+        threads[3].join()
+        stop.set()
+        threads[0].join()
+        threads[1].join()
+
+        assert errors == []
+        # Final state is whatever the last writer left it as -- just assert
+        # it is a coherent bool, not that a torn/partial value leaked out.
+        assert user_silence_latch_active() in (True, False)
+        clear_user_silence_latch()
 
 
 # ── _OwntoneHangWatchdog: pure decision logic ───────────────────────────────

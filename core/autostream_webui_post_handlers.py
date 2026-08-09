@@ -33,15 +33,17 @@ from autostream_config import (
 )
 from autostream_core import (
     apply_track_id_config_live,
+    clear_user_silence_latch,
     note_user_output_action,
     request_config_reload,
     set_live_input_eq,
     set_live_input_gain,
+    set_user_silence_latch,
     update_live_owntone_runtime,
     update_live_silence_seconds,
     update_playback_input_config,
 )
-from autostream_player_service import config_airplay_mode_to_backend
+from autostream_player_service import config_airplay_mode_to_backend, list_outputs
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
 from autostream_webui_common import (
@@ -89,6 +91,29 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
         from autostream_appliance_models import apply_output_mutation
         result = apply_output_mutation(base_url, out_id, payload, offset_ms=offset_ms, mode=mode)
+        if result.get("ok"):
+            selected = bool(payload.get("selected", False))
+            if selected:
+                # User enabled an output: any prior "chose silence" latch no
+                # longer applies to the current output selection.
+                clear_user_silence_latch()
+            elif op != "pin":
+                # User disabled an output (not a PIN submission, which never
+                # changes selection state). If that was the last selected
+                # output, latch the resulting zero-output state as
+                # user-chosen so the coordinator's reconcile/retry don't
+                # fight it. Re-fetch outputs rather than trust local state,
+                # since other outputs' selection is not known to this
+                # handler. On fetch failure the state is unknown, so fail
+                # open (do not set the latch) rather than risk latching a
+                # zero-output state that may not actually be all-zero.
+                try:
+                    list_result = list_outputs(base_url, timeout=3)
+                except Exception:
+                    list_result = None
+                if list_result is not None and getattr(list_result, "ok", False):
+                    if not any(bool(o.selected) for o in list_result.outputs):
+                        set_user_silence_latch()
         send_json(handler, 200, result)
     except Exception as e:
         logging.error("Update failed: %s", e)

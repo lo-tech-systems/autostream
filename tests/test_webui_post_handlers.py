@@ -1418,7 +1418,7 @@ class TestOutputMutationOccupancyProtection:
         _am._OUTPUT_INFO_CACHE_TIME[url_a] = _time.monotonic()
 
         # URL B should not reuse URL A's cache; it must call list_outputs.
-        lr_b = _make_list_outputs_ok([_make_fake_output("42", "Lounge")])
+        lr_b = _make_list_outputs_ok([_make_fake_output("42", "Bedroom")])
         ok = _make_result_ok()
         list_calls = []
         with patch("autostream_appliance_models.list_outputs",
@@ -1559,3 +1559,100 @@ class TestOutputMutationOccupancyProtection:
             result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
 
         assert result["error"] == "output_in_use"
+
+
+# ---------------------------------------------------------------------------
+# handle_output_update: user-chosen-silence latch
+#
+# The latch (autostream_core.set_user_silence_latch / clear_user_silence_latch
+# / user_silence_latch_active) tells the coordinator's zero-output reconcile
+# and output-enable retry that a zero-output state is the user's own choice.
+# handle_output_update is the only Web UI path that sets/clears it: a
+# successful disable that leaves zero outputs selected sets it, a successful
+# enable clears it.
+# ---------------------------------------------------------------------------
+
+from autostream_core import clear_user_silence_latch, user_silence_latch_active
+
+
+class TestOutputUpdateUserSilenceLatch:
+    def setup_method(self):
+        clear_user_silence_latch()
+
+    def teardown_method(self):
+        clear_user_silence_latch()
+
+    def test_disable_to_zero_outputs_sets_latch(self, tmp_path):
+        """Disabling the last selected output (post-disable list_outputs shows
+        nothing selected) must latch the zero-output state as user-chosen."""
+        with patch("autostream_webui_post_handlers.list_outputs",
+                   return_value=_make_list_outputs_ok([
+                       _make_fake_output("42", "Kitchen", selected=False),
+                   ])):
+            r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
+        _, data = r["calls"][0]
+        assert data["ok"] is True
+        assert user_silence_latch_active() is True
+
+    def test_disable_with_another_output_still_selected_does_not_set_latch(self, tmp_path):
+        """Disabling one of several outputs, leaving another selected, must
+        not latch -- the zero-output condition never actually occurred."""
+        with patch("autostream_webui_post_handlers.list_outputs",
+                   return_value=_make_list_outputs_ok([
+                       _make_fake_output("42", "Kitchen", selected=False),
+                       _make_fake_output("43", "Bedroom", selected=True),
+                   ])):
+            r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
+        _, data = r["calls"][0]
+        assert data["ok"] is True
+        assert user_silence_latch_active() is False
+
+    def test_enable_clears_latch(self, tmp_path):
+        """Enabling an output always clears a previously-set latch, even
+        though this handler does not itself need to check other outputs."""
+        from autostream_core import set_user_silence_latch
+        set_user_silence_latch()
+        assert user_silence_latch_active() is True
+
+        r = _call_output_update({"id": "42", "selected": True, "volume": 50}, tmp_path=tmp_path)
+        _, data = r["calls"][0]
+        assert data["ok"] is True
+        assert user_silence_latch_active() is False
+
+    def test_disable_does_not_set_latch_when_outputs_fetch_fails(self, tmp_path):
+        """Unknown post-disable state (outputs fetch failed) must fail open:
+        never set the latch on a guess."""
+        with patch("autostream_webui_post_handlers.list_outputs",
+                   side_effect=Exception("network error")):
+            r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
+        _, data = r["calls"][0]
+        assert data["ok"] is True
+        assert user_silence_latch_active() is False
+
+    def test_disable_does_not_set_latch_when_mutation_fails(self, tmp_path):
+        """The latch must only ever be set on the success path."""
+        with patch("autostream_webui_post_handlers.list_outputs",
+                   return_value=_make_list_outputs_ok([
+                       _make_fake_output("42", "Kitchen", selected=False),
+                   ])):
+            r = _call_output_update(
+                {"id": "42", "selected": False}, tmp_path=tmp_path,
+                disable_result=_make_result_err("error", "backend rejected"),
+            )
+        _, data = r["calls"][0]
+        assert data["ok"] is False
+        assert user_silence_latch_active() is False
+
+    def test_pin_op_does_not_touch_latch(self, tmp_path):
+        """A PIN submission never changes output selection, so it must not
+        set or clear the latch."""
+        from autostream_core import set_user_silence_latch
+        set_user_silence_latch()
+        r = _call_output_update(
+            {"id": "1", "op": "pin", "pin": "1234"},
+            tmp_path=tmp_path,
+            pin_result=_make_result_ok(),
+        )
+        _, data = r["calls"][0]
+        assert data["ok"] is True
+        assert user_silence_latch_active() is True
