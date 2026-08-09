@@ -913,6 +913,11 @@ def _start_session_owntone(monitor: "AudioMonitor") -> None:
 def _session_nowplaying_start(monitor: Optional["AudioMonitor"]) -> None:
     if monitor is None:
         return
+    # Fresh session: drop any title/artist/artwork left over from whatever
+    # last played (own previous session, or -- for source_changed -- the
+    # other input) before publishing, so a stale cover doesn't flash before
+    # this session's own identification (if any) lands.
+    monitor._reset_nowplaying_for_new_session()
     monitor._nowplaying_publisher.publish_start(monitor._current_nowplaying)
 
 
@@ -2296,6 +2301,21 @@ class MonitorClient:
             return (pcm, rate)
 
 
+def _default_nowplaying_title(is_turntable: bool, input_device: str) -> str:
+    """Pick a receiver-facing default title for an input with no manual hint
+    and no identified track yet, instead of leaking the raw ALSA device
+    string (e.g. "hw:1,0") to the Now Playing screen.
+
+    Precedence: turntable wins over bluetooth-ness -- a bluetooth turntable
+    is still "Vinyl" (established design decision), not "Bluetooth".
+    """
+    if is_turntable:
+        return "Vinyl"
+    if classify_loopback_hw(input_device) == "capture":
+        return "Bluetooth"
+    return "Line-In"
+
+
 # --------------------------------------------------------------------------- #
 # AudioMonitor                                                                 #
 # --------------------------------------------------------------------------- #
@@ -2337,9 +2357,11 @@ class AudioMonitor:
         eq_40hz_db: float = 0.0,
         eq_100hz_db: float = 0.0,
         eq_8khz_db: float = 0.0,
+        is_turntable: bool = False,
     ) -> None:
         self.input_index = input_index
         self.input_device = input_device
+        self.is_turntable = is_turntable
         self.silence_threshold_dbfs = silence_threshold_dbfs
         self.silence_seconds = silence_seconds
         self.track_change_silence_seconds = track_change_silence_seconds
@@ -2369,14 +2391,7 @@ class AudioMonitor:
         # what the pipe can actually carry; a larger image would be fetched
         # only to be dropped at publish time.
         self._artwork_cache = ArtworkFileCache(max_bytes=MAX_PICTURE_BYTES)
-        self._current_nowplaying = (
-            self._nowplaying_cache.get_manual_hint(input_device)
-            or NowPlayingMetadata(
-                title=f"Autostream ({input_device})",
-                artist="Vinyl",
-                album="Unknown Album",
-            )
-        )
+        self._current_nowplaying = self._default_nowplaying_metadata()
 
         # --- Track identification scheduling ---
         from track_id.models import disabled_snapshot as _ds
@@ -2526,6 +2541,40 @@ class AudioMonitor:
             svc.analysis_lead_in_seconds, svc.snapshot_seconds,
         )
         self._schedule_track_id_after(now, delay, "track_change")
+        # Deliberately NOT touching self._current_nowplaying here: while
+        # re-identification is pending (this delay, plus however long the
+        # worker takes), _ti_snapshot (the status/UI view) moves to
+        # "waiting", but the previously-published title/artist/artwork are
+        # untouched -- no publish_refresh() is fired from this path at all
+        # (only _ti_worker(), on a completed identification, calls
+        # publish_refresh()). See _default_nowplaying_metadata() /
+        # _reset_nowplaying_for_new_session() for the one place metadata
+        # *does* get reset (a fresh session).
+
+    def _default_nowplaying_metadata(self) -> "NowPlayingMetadata":
+        """The now-playing metadata for this input with no identified track:
+        a manual hint from nowplaying_hints.json if one applies, otherwise a
+        receiver-friendly input label (Vinyl / Bluetooth / Line-In) as the
+        title -- the prominent line on the receiver -- with the constant
+        "autostream" as the artist beneath it, rather than leaking the raw
+        ALSA device string. Re-read each call (not cached) so a manual-hints
+        file edit is picked up at the next session start."""
+        return self._nowplaying_cache.get_manual_hint(self.input_device) or NowPlayingMetadata(
+            title=_default_nowplaying_title(self.is_turntable, self.input_device),
+            artist="autostream",
+            album="Unknown Album",
+        )
+
+    def _reset_nowplaying_for_new_session(self) -> None:
+        """Called at the start of each new play session (session_started /
+        source_changed dispatch, via _session_nowplaying_start()) to drop
+        any title/artist/artwork carried over from a previous session --
+        otherwise a stale cover from whatever was last playing could flash
+        up before this session's own track ID (if any) lands. This is the
+        one artwork reset point; within a session, a pending
+        re-identification instead holds the previous artwork (see
+        _on_possible_track_change() above and _ti_worker() below)."""
+        self._current_nowplaying = self._default_nowplaying_metadata()
 
     def apply_allow_capture(self, client: "MonitorClient") -> None:
         """Send set_allow_capture to the daemon if the value has changed."""
@@ -2920,6 +2969,12 @@ class AudioMonitor:
                     # Fall back to the previous artwork rather than the hint's
                     # badge: an identified track with the wrong cover is worse
                     # than an identified track with the cover we already had.
+                    # If there is no previous artwork either, the publisher's
+                    # own HOLD-UNTIL-NEW fallback (see
+                    # OwntoneMetadataPipePublisher._resolve_refresh_artwork())
+                    # re-emits whatever it last sent for this session
+                    # (placeholder or real), so the receiver never sees a
+                    # bundle with no picture at all.
                     artwork_url = result.artwork.url if result.artwork else ""
                     artwork_path = (
                         self._artwork_cache.get_path(artwork_url)
@@ -3711,6 +3766,7 @@ def _configure_startup_monitors(
             eq_40hz_db=cfg.audio1.eq_40hz_db,
             eq_100hz_db=cfg.audio1.eq_100hz_db,
             eq_8khz_db=cfg.audio1.eq_8khz_db,
+            is_turntable=cfg.audio1.is_turntable,
         ))
 
     if (
@@ -3772,6 +3828,7 @@ def _configure_startup_monitors(
                 eq_40hz_db=cfg.audio2.eq_40hz_db,
                 eq_100hz_db=cfg.audio2.eq_100hz_db,
                 eq_8khz_db=cfg.audio2.eq_8khz_db,
+                is_turntable=cfg.audio2.is_turntable,
             ))
 
     if len(monitors) > 1:

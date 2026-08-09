@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import errno
+import functools
 import json
 import logging
 import os
@@ -28,6 +29,56 @@ PIPE_METADATA_ENV = "AUTOSTREAM_ENABLE_PIPE_METADATA"
 # discards a metadata bundle whose picture is larger than this. The two are
 # raised together; owntone-mini carries the matching 2MB limit.
 MAX_PICTURE_BYTES = 2 * 1024 * 1024
+
+# Bundled fallback artwork so a receiver (e.g. an Apple TV) always has a
+# picture to show for a session: track ID disabled, the startup window
+# before the first identification, and an identified track with no artwork
+# of its own all fall back to this file.
+PLACEHOLDER_ARTWORK_FILENAME = "autostream-playback-logo-dark-512x512.png"
+# Overrides the resolved placeholder path outright (tests; or an operator
+# who wants a different placeholder without touching the install tree).
+PLACEHOLDER_ARTWORK_ENV = "AUTOSTREAM_PLACEHOLDER_ARTWORK_PATH"
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_placeholder_artwork_path() -> Optional[str]:
+    """Resolve the bundled Now Playing placeholder artwork's on-disk path.
+
+    AUTOSTREAM_PLACEHOLDER_ARTWORK_PATH, if set, is used as-is and is NOT
+    existence-checked here -- a deliberately-pointed-at-a-missing-file
+    override degrades the same way a missing bundled file does (the reader
+    finds nothing and the caller publishes without artwork, never raising).
+
+    Otherwise: Path(__file__).resolve().parent.parent / "images" / <file>
+    resolves correctly both in the dev checkout (repo_root/images) and the
+    installed tree (/opt/autostream/images), since the installer copies
+    images/ alongside core/. That default path IS existence-checked so a
+    mangled install tree logs once instead of returning a path that will
+    fail on every read.
+
+    Cached (functools.lru_cache) so this is resolved once per process and a
+    missing file is logged only once, not on every bundle -- call
+    .cache_clear() to force re-resolution (tests only). Returns None (and
+    logs at info, never raises) if no usable path was found -- the writer
+    must keep publishing metadata without artwork rather than crash.
+    """
+    override = (os.environ.get(PLACEHOLDER_ARTWORK_ENV) or "").strip()
+    if override:
+        return override
+
+    path = Path(__file__).resolve().parent.parent / "images" / PLACEHOLDER_ARTWORK_FILENAME
+    try:
+        if path.exists() and path.is_file():
+            return str(path)
+    except Exception as e:
+        LOGGER.info("Could not check placeholder artwork %s: %s", path, e)
+        return None
+    LOGGER.info(
+        "Now-playing placeholder artwork not found at %s; publishing without "
+        "a fallback picture until a session provides real artwork.", path,
+    )
+    return None
+
 
 # ── Shared-publisher registry ─────────────────────────────────
 #
@@ -78,8 +129,8 @@ def release_shared_metadata_publisher(audio_fifo_path: str) -> None:
 
 @dataclass
 class NowPlayingMetadata:
-    title: str = "Autostream Input"
-    artist: str = "Vinyl"
+    title: str = "Line-In"
+    artist: str = "autostream"
     album: str = "Unknown Album"
     artwork_path: Optional[str] = None
 
@@ -150,6 +201,18 @@ class OwntoneMetadataPipePublisher:
         raw = (os.environ.get(PIPE_METADATA_ENV) or "").strip().lower()
         self._enabled = raw in {"1", "true", "yes", "on"}
 
+        # Placeholder-artwork bytes cache: the placeholder file is re-used
+        # for every artless bundle (session start with no art, every
+        # artless refresh while nothing better is held), so its bytes are
+        # read from disk once and reused rather than re-read on every
+        # publish -- see _read_artwork_bytes(). Keyed by the path they were
+        # read for, so a changed placeholder path (env override change,
+        # or a fresh cache_clear() in tests) invalidates it correctly.
+        # Initialized unconditionally so the attributes exist even when
+        # publishing is disabled.
+        self._placeholder_bytes: Optional[bytes] = None
+        self._placeholder_bytes_path: Optional[str] = None
+
         if not self._enabled:
             self._cleanup_stale_fifo()
             LOGGER.info("OwnTone pipe metadata publishing disabled (set %s=1 to enable).", PIPE_METADATA_ENV)
@@ -162,6 +225,11 @@ class OwntoneMetadataPipePublisher:
         # the moment a session-begin ("pbeg") bundle has been emitted until a
         # matching session-end ("pend") bundle is emitted.
         self._session_open = False
+        # HOLD-UNTIL-NEW: the artwork_path actually emitted for the
+        # currently-open session (placeholder or real), so an artless
+        # refresh can re-emit it instead of omitting PICT -- see
+        # _resolve_refresh_artwork(). Reset on session end/start.
+        self._held_artwork_path: Optional[str] = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -187,7 +255,14 @@ class OwntoneMetadataPipePublisher:
         only, WITHOUT a second pbeg. If no session is
         currently open (defensive fallback -- should not happen in normal
         operation), falls back to a full session-begin bundle so the wire
-        framing stays valid."""
+        framing stays valid.
+
+        *meta.artwork_path* has three meaningful states here -- see
+        _resolve_refresh_artwork() for the full rationale: a real path (new
+        artwork, becomes the new held artwork), None (no news either way --
+        re-send whatever is currently held, if anything), and "" (the empty
+        string -- a decided "this track has no artwork", which clears the
+        hold instead of re-sending a previous, different track's cover)."""
         if not self._enabled:
             return
         self._queue.put(("refresh", meta))
@@ -294,6 +369,7 @@ class OwntoneMetadataPipePublisher:
                         if self._session_open:
                             self._emit_end_bundle(out)
                         self._session_open = False
+                        self._held_artwork_path = None
             except Exception as e:
                 LOGGER.info("Metadata publish failed: %s", e)
 
@@ -311,10 +387,98 @@ class OwntoneMetadataPipePublisher:
 
         out.write(xml.encode("ascii"))
 
-    def _write_metadata_items(self, out, meta: NowPlayingMetadata) -> None:
+    def _resolve_start_artwork(self, incoming: Optional[str]) -> Optional[str]:
+        """Session-begin artwork resolution: use the incoming path if the
+        caller has one (a manual hint or an already-identified track);
+        otherwise fall back to the bundled placeholder so the very first
+        bundle of a session always carries a PICT (covers: track ID
+        disabled, and the startup window before the first identification).
+        Whatever this resolves to becomes the held artwork for the session.
+        """
+        path = incoming or _resolve_placeholder_artwork_path()
+        self._held_artwork_path = path
+        return path
+
+    def _resolve_refresh_artwork(self, incoming: Optional[str]) -> Optional[str]:
+        """Mid-session artwork resolution.
+
+        - incoming is a real path: a track-ID match landed new/updated
+          artwork. Remember and use it.
+        - incoming is None: no news either way (e.g. identification still
+          pending) -- HOLD-UNTIL-NEW: explicitly re-emit the previously held
+          artwork rather than omitting PICT from this bundle. A bundle with
+          no picture item at all can cause the receiver to drop the artwork
+          it is already showing, so "no new artwork this refresh" must mean
+          "re-send the old one", not "send nothing".
+        - incoming is "" (the empty string, distinct from None): a *decided*
+          outcome -- identification completed and this track genuinely has
+          no artwork of its own (see AudioMonitor._ti_worker() in
+          autostream_core.py). Unlike the None case, this must NOT keep
+          holding the previous (different) track's cover -- fall back to the
+          placeholder instead (same as a fresh session start with no art),
+          and hold *that* from here on, so a later artless refresh
+          (incoming=None) keeps re-sending the placeholder rather than
+          reverting to no-PICT-at-all.
+        """
+        if incoming:
+            self._held_artwork_path = incoming
+            return incoming
+        if incoming == "":
+            path = _resolve_placeholder_artwork_path()
+            self._held_artwork_path = path
+            return path
+        return getattr(self, "_held_artwork_path", None)
+
+    def _read_artwork_bytes(self, path: str) -> Optional[bytes]:
+        """Read artwork bytes for *path*, honoring MAX_PICTURE_BYTES.
+
+        When *path* is the resolved placeholder path, bytes are cached in
+        this instance after the first successful read (see __init__ /
+        _placeholder_bytes) so repeated placeholder use -- a session with
+        track ID disabled re-sends it on every refresh -- doesn't re-read
+        the same file from disk each time. Any other path (real or held
+        real artwork) is read fresh each call, unchanged from the
+        pre-existing per-publish read.
+        """
+        if path == self._placeholder_bytes_path and self._placeholder_bytes is not None:
+            return self._placeholder_bytes
+
+        try:
+            art_path = Path(path)
+            if not (art_path.exists() and art_path.is_file()):
+                LOGGER.info("Pipe metadata: artwork %s is missing, publishing without it", art_path)
+                return None
+            data = art_path.read_bytes()
+        except Exception as e:
+            LOGGER.warning("Pipe metadata: could not read artwork %s: %s", path, e)
+            return None
+
+        if len(data) > MAX_PICTURE_BYTES:
+            # OwnTone rejects a picture larger than this outright
+            # (PIPE_PICTURE_SIZE_MAX in its inputs/pipe.c), so sending it
+            # would cost us the whole metadata bundle.
+            LOGGER.warning(
+                "Pipe metadata: artwork %s is %d bytes, over the %d byte limit; publishing without it",
+                art_path, len(data), MAX_PICTURE_BYTES,
+            )
+            return None
+
+        if path == _resolve_placeholder_artwork_path():
+            self._placeholder_bytes = data
+            self._placeholder_bytes_path = path
+
+        return data
+
+    def _write_metadata_items(self, out, meta: NowPlayingMetadata, artwork_path: Optional[str]) -> None:
         """Write the asar/asal/minm/artwork items shared by both the
         session-begin and metadata-refresh bundles (the mdst/mden bracket
-        and any pbeg/pend framing are the caller's responsibility)."""
+        and any pbeg/pend framing are the caller's responsibility).
+
+        *artwork_path* is the already-resolved picture to publish (placeholder,
+        held, or the caller's own) -- see _resolve_start_artwork() /
+        _resolve_refresh_artwork(); this method never looks at
+        meta.artwork_path directly, since the effective picture for a bundle
+        can differ from what the caller passed in (fallback/hold)."""
         if meta.artist:
             self._write_item(out, "core", "asar", meta.artist.encode("utf-8", errors="replace"))
         if meta.album:
@@ -322,26 +486,7 @@ class OwntoneMetadataPipePublisher:
         if meta.title:
             self._write_item(out, "core", "minm", meta.title.encode("utf-8", errors="replace"))
 
-        art_payload = None
-        if meta.artwork_path:
-            try:
-                art_path = Path(meta.artwork_path)
-                if not (art_path.exists() and art_path.is_file()):
-                    LOGGER.info("Pipe metadata: artwork %s is missing, publishing without it", art_path)
-                else:
-                    art_payload = art_path.read_bytes()
-                    if len(art_payload) > MAX_PICTURE_BYTES:
-                        # OwnTone rejects a picture larger than this outright
-                        # (PIPE_PICTURE_SIZE_MAX in its inputs/pipe.c), so
-                        # sending it would cost us the whole metadata bundle.
-                        LOGGER.warning(
-                            "Pipe metadata: artwork %s is %d bytes, over the %d byte limit; publishing without it",
-                            art_path, len(art_payload), MAX_PICTURE_BYTES,
-                        )
-                        art_payload = None
-            except Exception as e:
-                LOGGER.warning("Pipe metadata: could not read artwork %s: %s", meta.artwork_path, e)
-                art_payload = None
+        art_payload = self._read_artwork_bytes(artwork_path) if artwork_path else None
 
         if art_payload:
             self._write_item(out, "ssnc", "pcst")
@@ -354,14 +499,16 @@ class OwntoneMetadataPipePublisher:
         session_started/source_changed dispatch) -- see publish_start()."""
         self._write_item(out, "ssnc", "pbeg")
         self._write_item(out, "ssnc", "mdst")
-        self._write_metadata_items(out, meta)
+        artwork_path = self._resolve_start_artwork(meta.artwork_path)
+        self._write_metadata_items(out, meta, artwork_path)
         self._write_item(out, "ssnc", "mden")
 
     def _emit_metadata_refresh_bundle(self, out, meta: NowPlayingMetadata) -> None:
         """Metadata-only update within an already-open session: mdst..mden,
         no pbeg (Shairport-sync convention -- see publish_refresh())."""
         self._write_item(out, "ssnc", "mdst")
-        self._write_metadata_items(out, meta)
+        artwork_path = self._resolve_refresh_artwork(meta.artwork_path)
+        self._write_metadata_items(out, meta, artwork_path)
         self._write_item(out, "ssnc", "mden")
 
     def _emit_end_bundle(self, out) -> None:
