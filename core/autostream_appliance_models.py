@@ -30,6 +30,7 @@ from autostream_core import (
     get_repeat_status,
     get_session_state,
     note_user_output_action,
+    request_nowplaying_republish,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
@@ -644,6 +645,12 @@ def apply_output_mutation(
             # User enabled an output: any prior "chose silence" latch no
             # longer applies to the current output selection.
             clear_user_silence_latch()
+        # A newly enabled output joins the session knowing only the queue
+        # defaults -- it never saw the bundle published at session start.
+        # Ask the coordinator to re-send the current now-playing metadata so
+        # the receiver shows the proper title/artwork immediately rather
+        # than at the next natural push (e.g. the next track change).
+        request_nowplaying_republish()
         return {"ok": True, "id": out_id_text}
 
     disable_result = set_output_enabled(owntone_base_url, out_id_text, False, timeout=3)

@@ -421,6 +421,35 @@ _user_silence_latch_lock = threading.Lock()
 _user_silence_latch: bool = False
 
 
+# ── Now-playing republish request ────────────────────────────────────────────
+# Set when an output is newly enabled (apply_output_mutation) or when the
+# OwnTone recovery path has just re-applied outputs after a backend restart
+# (_maybe_retry_owntone): in both cases the receiver-side backend only knows
+# the bare queue defaults until the next natural metadata push, so the
+# coordinator poll loop consumes this flag once per request and re-sends the
+# active session's current now-playing bundle. Same lock discipline as the
+# user-silence latch above (web/request threads set, coordinator consumes).
+
+_nowplaying_republish_lock = threading.Lock()
+_nowplaying_republish_pending: bool = False
+
+
+def request_nowplaying_republish() -> None:
+    """Ask the coordinator to re-send the current now-playing metadata."""
+    global _nowplaying_republish_pending
+    with _nowplaying_republish_lock:
+        _nowplaying_republish_pending = True
+
+
+def consume_nowplaying_republish() -> bool:
+    """Return-and-clear the pending republish request (coordinator loop)."""
+    global _nowplaying_republish_pending
+    with _nowplaying_republish_lock:
+        pending = _nowplaying_republish_pending
+        _nowplaying_republish_pending = False
+        return pending
+
+
 def set_user_silence_latch() -> None:
     """Mark the current session's zero-output state as user-chosen.
 
@@ -923,6 +952,31 @@ def _session_nowplaying_start(monitor: Optional["AudioMonitor"]) -> None:
     # this session's own identification (if any) lands.
     monitor._reset_nowplaying_for_new_session()
     monitor._nowplaying_publisher.publish_start(monitor._current_nowplaying)
+
+
+def _republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_active: bool) -> None:
+    """Re-send the active session's current now-playing bundle mid-session.
+
+    Consumed-flag counterpart of request_nowplaying_republish(): fired when a
+    newly enabled output (or a freshly restarted backend) knows only the
+    queue defaults. artwork_path is deliberately None -- publish_refresh()'s
+    "no news" value -- so the publisher re-sends whatever artwork it
+    currently holds (placeholder or identified cover) rather than treating
+    the republish as an artwork change. Dropped silently when no session is
+    active: a future session opens with its own publish_start()."""
+    if not session_active or monitor is None:
+        return
+    cur = monitor._current_nowplaying
+    if cur is None:
+        return
+    monitor._nowplaying_publisher.publish_refresh(
+        NowPlayingMetadata(
+            title=cur.title,
+            artist=cur.artist,
+            album=cur.album,
+            artwork_path=None,
+        )
+    )
 
 
 def _session_nowplaying_end(monitor: Optional["AudioMonitor"]) -> None:
@@ -3170,6 +3224,11 @@ class AudioMonitor:
         if self._refresh_selected_outputs(outputs):
             self._owntone_recovery_log.ok(now)
             self._owntone_enabled_ok = True
+            # Outputs were just re-applied after a backend restart/state
+            # loss: the backend's queue holds only its startup defaults, so
+            # the on-screen now-playing would show those until the next
+            # natural push. Have the poll loop re-send the current bundle.
+            request_nowplaying_republish()
             return
 
         self._owntone_recovery_log.fail(now)
@@ -4256,6 +4315,14 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     session_source is not None,
                     time.time(),
                 )
+                # A newly enabled output or a just-recovered backend has
+                # requested the current now-playing bundle be re-sent (see
+                # request_nowplaying_republish()); consume at most one
+                # request per cycle.
+                if consume_nowplaying_republish():
+                    _republish_current_nowplaying(
+                        session_new_monitor, session_source is not None,
+                    )
                 _maybe_run_owntone_hang_watchdog(
                     owntone_hang_watchdog,
                     status,
