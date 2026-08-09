@@ -1006,6 +1006,14 @@ class _OwntoneReconcileTracker:
     last_user_action_at) sequences; the poll loop is responsible for the
     actual outputs fetch and for applying the effect when update() returns
     True (see _reconcile_owntone_outputs_if_wiped()).
+
+    A zero-output state can also be device-initiated: the backend may report
+    an output as deselected because the AirPlay device itself asked to
+    pause (e.g. an Apple TV going to standby), and it keeps playing with no
+    outputs rather than treating that as a fault. update() accepts
+    *device_initiated_pause* so callers can veto a fire in that case without
+    disturbing the zero-streak, the same way the user-action grace window
+    does.
     """
 
     ZERO_POLL_THRESHOLD = 3
@@ -1014,10 +1022,17 @@ class _OwntoneReconcileTracker:
     def __init__(self) -> None:
         self._consecutive_zero = 0
         self._armed = True  # may fire again once a fresh zero-streak starts
+        self._device_pause_notified = False
+        # Edge-detect flag: set True by update() only on the call where a
+        # device-initiated-pause veto first applies, so the poll loop can
+        # log a single line instead of spamming every poll of the veto.
+        self.last_device_pause_notice = False
 
     def reset(self) -> None:
         self._consecutive_zero = 0
         self._armed = True
+        self._device_pause_notified = False
+        self.last_device_pause_notice = False
 
     def update(
         self,
@@ -1026,6 +1041,7 @@ class _OwntoneReconcileTracker:
         selected_count: Optional[int],
         now: float,
         last_user_action_at: float,
+        device_initiated_pause: bool = False,
     ) -> bool:
         """Advance one check. Returns True iff reconcile should fire now.
 
@@ -1039,21 +1055,35 @@ class _OwntoneReconcileTracker:
         if not session_active or selected_count is None:
             self._consecutive_zero = 0
             self._armed = True
+            self._device_pause_notified = False
+            self.last_device_pause_notice = False
             return False
 
         if selected_count > 0:
             self._consecutive_zero = 0
             self._armed = True
+            self._device_pause_notified = False
+            self.last_device_pause_notice = False
             return False
 
         # selected_count == 0 while a session is active.
         self._consecutive_zero += 1
+        self.last_device_pause_notice = False
         if self._consecutive_zero < self.ZERO_POLL_THRESHOLD:
             return False
         if not self._armed:
             # Already fired for this zero-streak; wait for a nonzero
             # observation (handled above) before it can fire again.
             return False
+        if device_initiated_pause:
+            # The device itself asked to pause (e.g. an AirPlay receiver
+            # going to standby) and the backend is playing on into a drained
+            # pipe by design -- do not treat this as a fault. Keep counting
+            # so a genuine wipe that follows (flag cleared) is still caught.
+            self.last_device_pause_notice = not self._device_pause_notified
+            self._device_pause_notified = True
+            return False
+        self._device_pause_notified = False
         if (now - last_user_action_at) < self.USER_ACTION_GRACE_SECONDS:
             # Recent user output action: presume the zero state is
             # intentional and do not fire, but keep counting/re-checking so
@@ -1080,17 +1110,32 @@ def _reconcile_owntone_outputs_if_wiped(
     is no active session or no monitor/base_url to check.
     """
     selected_count: Optional[int] = None
+    device_paused = False
     if session_active and monitor is not None and monitor.owntone_base_url:
         outputs = monitor._get_owntone_outputs()
         if outputs is not None:
             selected_count = sum(1 for o in outputs if o.selected)
+            # A single deselected output carrying the flag is sufficient
+            # evidence the zero-output state is device-initiated: a
+            # stereo-group deselect can fan out to sibling outputs that
+            # don't themselves carry it.
+            device_paused = any(
+                (not o.selected) and bool(o.extra_dict().get("paused_by_device"))
+                for o in outputs
+            )
 
     should_fire = tracker.update(
         session_active=session_active,
         selected_count=selected_count,
         now=now,
         last_user_action_at=_get_last_user_output_action_at(),
+        device_initiated_pause=device_paused,
     )
+    if tracker.last_device_pause_notice:
+        logging.info(
+            "Zero-output state is device-initiated (output paused by device); "
+            "leaving outputs as they are."
+        )
     if not should_fire:
         return
 

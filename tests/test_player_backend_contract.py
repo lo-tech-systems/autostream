@@ -273,6 +273,16 @@ class TestMiniModeNormalization:
         out = b._normalize_output_info({"id": "x", "supported_modes": "bad"})
         assert out.supported_modes == (ap.OUTPUT_MODE_AUTO,)
 
+    def test_paused_by_device_true_surfaced_in_extra(self):
+        b = OwnToneMiniBackend(base_url="http://localhost:3689")
+        out = b._normalize_output_info({"id": "x", "paused_by_device": True})
+        assert out.extra_dict().get("paused_by_device") is True
+
+    def test_paused_by_device_absent_surfaces_as_false(self):
+        b = OwnToneMiniBackend(base_url="http://localhost:3689")
+        out = b._normalize_output_info({"id": "x"})
+        assert out.extra_dict().get("paused_by_device") is False
+
 
 # ---------------------------------------------------------------------------
 # HTTP error / invalid JSON handling in _get_json

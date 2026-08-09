@@ -72,8 +72,25 @@ def _make_monitor(**overrides) -> AudioMonitor:
 
 
 def _outputs(*selected_flags) -> list:
-    return [SimpleNamespace(id=str(i), selected=bool(sel), name=f"out{i}")
-            for i, sel in enumerate(selected_flags)]
+    return [
+        SimpleNamespace(
+            id=str(i), selected=bool(sel), name=f"out{i}",
+            extra_dict=lambda: {},
+        )
+        for i, sel in enumerate(selected_flags)
+    ]
+
+
+def _outputs_with_paused_flag(*selected_and_paused) -> list:
+    """Build synthetic outputs where each item is (selected, paused_by_device)."""
+    outs = []
+    for i, (selected, paused) in enumerate(selected_and_paused):
+        extra = {"paused_by_device": paused} if paused else {}
+        outs.append(SimpleNamespace(
+            id=str(i), selected=bool(selected), name=f"out{i}",
+            extra_dict=lambda extra=extra: extra,
+        ))
+    return outs
 
 
 @pytest.fixture(autouse=True)
@@ -224,6 +241,56 @@ class TestOwntoneReconcileTrackerPure:
             ) is False
 
 
+class TestOwntoneReconcileTrackerDevicePause:
+    """device_initiated_pause veto: zero outputs because the AirPlay device
+    itself asked to pause (e.g. going to standby) must not be treated as a
+    wiped-outputs fault."""
+
+    def test_device_pause_veto_never_fires_even_past_threshold(self):
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        results = [
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, device_initiated_pause=True,
+            )
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 10)
+        ]
+        assert all(r is False for r in results)
+
+    def test_flag_clearing_allows_prompt_fire_without_resetting_streak(self):
+        """Once the streak is past threshold under veto, dropping the flag
+        (e.g. owntone restarted and lost the paused_by_device state) fires
+        on the very next poll -- the veto never reset the zero-streak."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 2):
+            assert tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, device_initiated_pause=True,
+            ) is False
+        assert tracker.update(
+            session_active=True, selected_count=0, now=now + 1000,
+            last_user_action_at=0.0, device_initiated_pause=False,
+        ) is True
+
+    def test_notice_edge_flag_fires_once_per_streak(self):
+        """last_device_pause_notice is an edge-detect flag: True only on the
+        poll where the zero-streak first crosses the threshold while vetoed,
+        not on every subsequent vetoed poll."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        notices = []
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, device_initiated_pause=True,
+            )
+            notices.append(tracker.last_device_pause_notice)
+        assert notices.count(True) == 1
+        assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
+
+
 # ── _reconcile_owntone_outputs_if_wiped: poll-loop wiring ───────────────────
 
 class TestReconcileWiring:
@@ -283,6 +350,46 @@ class TestReconcileWiring:
         assert mon._owntone_enabled_ok is True
         state = get_owntone_selfheal_state()
         assert state["reconcile_fired_count"] == 0
+
+    def test_device_initiated_pause_flag_prevents_rearm(self):
+        """A deselected output carrying paused_by_device=True is sufficient
+        evidence the zero-output state is device-initiated (e.g. the AirPlay
+        receiver went to standby) -- reconcile must not fire."""
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        tracker = _OwntoneReconcileTracker()
+        outputs = _outputs_with_paused_flag((False, True), (False, False))
+
+        with patch.object(mon, "_get_owntone_outputs", return_value=outputs):
+            now = 1000.0
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
+                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
+
+        assert mon._owntone_enabled_ok is True
+        state = get_owntone_selfheal_state()
+        assert state["reconcile_fired_count"] == 0
+
+    def test_no_paused_flag_still_rearms_as_today(self):
+        """Same shape as the device-pause case but with the flag absent on
+        every output: this is the pre-existing wiped-outputs fault path and
+        must still fire."""
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        tracker = _OwntoneReconcileTracker()
+        outputs = _outputs_with_paused_flag((False, False), (False, False))
+
+        with patch.object(mon, "_get_owntone_outputs", return_value=outputs):
+            now = 1000.0
+            fired_any = False
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
+                before = mon._owntone_enabled_ok
+                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
+                if mon._owntone_enabled_ok is False and before is True:
+                    fired_any = True
+
+        assert fired_any is True
+        state = get_owntone_selfheal_state()
+        assert state["reconcile_fired_count"] == 1
 
 
 # ── _OwntoneHangWatchdog: pure decision logic ───────────────────────────────

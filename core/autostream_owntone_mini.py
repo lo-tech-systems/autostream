@@ -353,7 +353,15 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         else:
             supported_modes = (OUTPUT_MODE_AUTO,)
 
-        return replace(base, current_mode=current_mode, supported_modes=supported_modes)
+        # The daemon may auto-disable an output because the AirPlay device
+        # itself requested pause (e.g. an Apple TV going to standby). Always
+        # surface this flag, explicitly false when absent, so consumers can
+        # distinguish "mini backend, not paused" from "backend without the
+        # concept".
+        paused_by_device = bool(output.get("paused_by_device", False))
+        extra = base.extra + (("paused_by_device", paused_by_device),)
+
+        return replace(base, current_mode=current_mode, supported_modes=supported_modes, extra=extra)
 
     def list_outputs(self) -> ListOutputsResult:
         payload, resp, err = self._get_json("/api/outputs")
