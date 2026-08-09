@@ -22,15 +22,18 @@ from autostream_config import (
 )
 from autostream_core import (
     any_monitor_capturing,
+    clear_user_silence_latch,
     get_active_track_identification_snapshot,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
     get_repeat_status,
     get_session_state,
+    note_user_output_action,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
+    set_user_silence_latch,
 )
 from autostream_player_service import (
     config_airplay_mode_to_backend,
@@ -510,6 +513,7 @@ def apply_output_mutation(
     offset_ms: Optional[int] = None,
     mode: Optional[str] = None,
     output_name: str = "",
+    initiated_by: str,
 ) -> dict:
     """Apply an output toggle/volume change or PIN submission.
 
@@ -519,12 +523,48 @@ def apply_output_mutation(
     cache is checked before enabling. If the name cannot be resolved the check is
     skipped (fail-open) and a debug message is logged.
 
+    initiated_by: "user" or "system". Supplied by trusted internal code only.
+        Selects whether the per-user-action bookkeeping below runs:
+
+        - note_user_output_action() is called at function entry whenever
+          initiated_by == "user", regardless of the op (including "pin") and
+          regardless of whether the mutation goes on to succeed or fail. This
+          mirrors the pre-centralisation local handler's behaviour, which
+          noted the action unconditionally before attempting the mutation; a
+          false-conservative widening of the coordinator's reconcile
+          suppression window is harmless, a missed marker is not.
+        - The user-chosen-silence latch is only touched for non-pin ops that
+          carry a "selected" field, and only once the mutation has
+          succeeded: selected=True clears the latch; selected=False re-fetches
+          the live output list and sets the latch iff zero outputs remain
+          selected. A failed re-fetch leaves the latch untouched (fail open).
+
+        System-initiated calls (initiated_by="system", e.g. the coordinator's
+        own auto-select/reconcile paths) perform none of the above.
+
+    Raises ValueError if initiated_by is not "user" or "system".
+
     Returns a result dict with keys: ok, id, and optional
     error/pin_required/pin_invalid (error is "encoder_capacity" when the
     appliance's buffered-encode admission control declines the enable).
     """
+    initiated_by_text = str(initiated_by or "").strip().lower()
+    if initiated_by_text not in ("user", "system"):
+        raise ValueError(f"Invalid initiated_by value: {initiated_by!r}")
+    is_user_initiated = initiated_by_text == "user"
+
     op = (body.get("op") or "").strip().lower()
     out_id_text = str(out_id or "").strip()
+
+    if is_user_initiated:
+        # Record that a user-initiated output change was attempted, so the
+        # coordinator's OwnTone-restart reconcile (autostream_core.py,
+        # _OwntoneReconcileTracker) can tell "OwnTone forgot everything" apart
+        # from "the user deselected everything on purpose". Recorded
+        # unconditionally (including "pin" ops and failed mutations) since a
+        # false-conservative widening of the suppression window is harmless;
+        # only a missed marker would matter.
+        note_user_output_action()
 
     if not out_id_text:
         return {"ok": False, "error": "Missing output id"}
@@ -600,6 +640,10 @@ def apply_output_mutation(
                 "pin_invalid": False,
             }
         _update_cached_selected(owntone_base_url, out_id_text, True)
+        if is_user_initiated:
+            # User enabled an output: any prior "chose silence" latch no
+            # longer applies to the current output selection.
+            clear_user_silence_latch()
         return {"ok": True, "id": out_id_text}
 
     disable_result = set_output_enabled(owntone_base_url, out_id_text, False, timeout=3)
@@ -607,4 +651,19 @@ def apply_output_mutation(
         _invalidate_output_info_cache(owntone_base_url)
         return {"ok": False, "id": out_id_text, "error": disable_result.message}
     _update_cached_selected(owntone_base_url, out_id_text, False)
+    if is_user_initiated:
+        # User disabled an output. If that was the last selected output,
+        # latch the resulting zero-output state as user-chosen so the
+        # coordinator's reconcile/retry don't fight it. Re-fetch outputs
+        # rather than trust local state, since other outputs' selection is
+        # not known to this call. On fetch failure the state is unknown, so
+        # fail open (do not set the latch) rather than risk latching a
+        # zero-output state that may not actually be all-zero.
+        try:
+            list_result = list_outputs(owntone_base_url, timeout=3)
+        except Exception:
+            list_result = None
+        if list_result is not None and getattr(list_result, "ok", False):
+            if not any(bool(o.selected) for o in list_result.outputs):
+                set_user_silence_latch()
     return {"ok": True, "id": out_id_text}

@@ -800,7 +800,9 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
             logging.error("gateway output (bound): config error: %s", e)
             send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        result = apply_output_mutation(base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode)
+        result = apply_output_mutation(
+            base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
+        )
         send_json(handler, 200, result)
         return
 

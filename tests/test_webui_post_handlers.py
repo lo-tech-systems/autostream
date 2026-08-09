@@ -1262,7 +1262,7 @@ class TestOutputMutationOccupancyProtection:
                    return_value=ok), \
              patch("autostream_output_usage.usage_for_output",
                    return_value=usage):
-            return _am.apply_output_mutation("http://localhost:3689", "42", body)
+            return _am.apply_output_mutation("http://localhost:3689", "42", body, initiated_by="system")
 
     def test_enabling_occupied_output_returns_output_in_use(self, tmp_path):
         lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
@@ -1299,7 +1299,8 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok):
             result = _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
+                initiated_by="system",
             )
         assert result["ok"] is True
 
@@ -1315,7 +1316,8 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_output_usage.usage_for_output", return_value=None), \
              patch("autostream_output_usage.refresh_now", side_effect=lambda *a, **k: refresh_calls.append(1)):
             _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
+                initiated_by="system",
             )
         assert refresh_calls == [], "refresh_now must not be called from mutation path"
 
@@ -1335,7 +1337,8 @@ class TestOutputMutationOccupancyProtection:
             # Client tries to bypass by supplying a different (unoccupied) name.
             result = _am.apply_output_mutation(
                 "http://localhost:3689", "42",
-                {"id": "42", "selected": True, "volume": 50, "name": "not-occupied"}
+                {"id": "42", "selected": True, "volume": 50, "name": "not-occupied"},
+                initiated_by="system",
             )
         # Occupancy is still detected because the real name "Kitchen" was resolved.
         assert result["error"] == "output_in_use"
@@ -1353,10 +1356,12 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
             _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
+                initiated_by="system",
             )
             _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50}
+                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
+                initiated_by="system",
             )
         assert list_calls == [1], "list_outputs called once; second call uses cache"
 
@@ -1373,7 +1378,8 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_output_usage.usage_for_output", return_value=usage):
             result = _am.apply_output_mutation(
                 "http://localhost:3689", "42",
-                {"id": "42", "selected": True, "volume": 80}
+                {"id": "42", "selected": True, "volume": 80},
+                initiated_by="system",
             )
         # Must pass through to OwnTone even though remote reports it occupied.
         assert result["ok"] is True
@@ -1402,7 +1408,8 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=usage):
             result = _am.apply_output_mutation(
-                url, "42", {"id": "42", "selected": True, "volume": 50}
+                url, "42", {"id": "42", "selected": True, "volume": 50},
+                initiated_by="system",
             )
         # Occupancy was enforced because a refresh was triggered.
         assert result["error"] == "output_in_use"
@@ -1428,7 +1435,8 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
             _am.apply_output_mutation(
-                url_b, "42", {"id": "42", "selected": True, "volume": 50}
+                url_b, "42", {"id": "42", "selected": True, "volume": 50},
+                initiated_by="system",
             )
         assert list_calls == [1], "URL B must not reuse URL A cache"
 
@@ -1442,7 +1450,7 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
 
         assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", True)
 
@@ -1455,7 +1463,7 @@ class TestOutputMutationOccupancyProtection:
         ok = _make_result_ok()
         with patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False})
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False}, initiated_by="system")
 
         assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
 
@@ -1472,7 +1480,7 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
 
         assert url not in _am._OUTPUT_INFO_CACHE_TIME, "cache must be expired after non-PIN failure"
 
@@ -1485,7 +1493,7 @@ class TestOutputMutationOccupancyProtection:
         err = _make_result_err("owntone_error", "OwnTone refused")
         with patch("autostream_appliance_models.set_output_enabled", return_value=err), \
              patch("autostream_appliance_models.submit_output_pin", return_value=_make_result_ok()):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False})
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False}, initiated_by="system")
 
         assert url not in _am._OUTPUT_INFO_CACHE_TIME, "cache must be expired after disable failure"
 
@@ -1506,7 +1514,7 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
 
         assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
         assert _am._OUTPUT_INFO_CACHE_TIME.get(url) == stamp, "cache timestamp must not change"
@@ -1527,7 +1535,7 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
-            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
 
         assert result == {"ok": False, "id": "42", "error": "encoder_capacity"}
         assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
@@ -1546,7 +1554,7 @@ class TestOutputMutationOccupancyProtection:
         # Disable: cache updated in-place to selected=False.
         with patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False})
+            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False}, initiated_by="system")
 
         assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
 
@@ -1556,7 +1564,7 @@ class TestOutputMutationOccupancyProtection:
              patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
              patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
              patch("autostream_output_usage.usage_for_output", return_value=usage):
-            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50})
+            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
 
         assert result["error"] == "output_in_use"
 
@@ -1585,7 +1593,7 @@ class TestOutputUpdateUserSilenceLatch:
     def test_disable_to_zero_outputs_sets_latch(self, tmp_path):
         """Disabling the last selected output (post-disable list_outputs shows
         nothing selected) must latch the zero-output state as user-chosen."""
-        with patch("autostream_webui_post_handlers.list_outputs",
+        with patch("autostream_appliance_models.list_outputs",
                    return_value=_make_list_outputs_ok([
                        _make_fake_output("42", "Kitchen", selected=False),
                    ])):
@@ -1597,7 +1605,7 @@ class TestOutputUpdateUserSilenceLatch:
     def test_disable_with_another_output_still_selected_does_not_set_latch(self, tmp_path):
         """Disabling one of several outputs, leaving another selected, must
         not latch -- the zero-output condition never actually occurred."""
-        with patch("autostream_webui_post_handlers.list_outputs",
+        with patch("autostream_appliance_models.list_outputs",
                    return_value=_make_list_outputs_ok([
                        _make_fake_output("42", "Kitchen", selected=False),
                        _make_fake_output("43", "Bedroom", selected=True),
@@ -1622,7 +1630,7 @@ class TestOutputUpdateUserSilenceLatch:
     def test_disable_does_not_set_latch_when_outputs_fetch_fails(self, tmp_path):
         """Unknown post-disable state (outputs fetch failed) must fail open:
         never set the latch on a guess."""
-        with patch("autostream_webui_post_handlers.list_outputs",
+        with patch("autostream_appliance_models.list_outputs",
                    side_effect=Exception("network error")):
             r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
         _, data = r["calls"][0]
@@ -1631,7 +1639,7 @@ class TestOutputUpdateUserSilenceLatch:
 
     def test_disable_does_not_set_latch_when_mutation_fails(self, tmp_path):
         """The latch must only ever be set on the success path."""
-        with patch("autostream_webui_post_handlers.list_outputs",
+        with patch("autostream_appliance_models.list_outputs",
                    return_value=_make_list_outputs_ok([
                        _make_fake_output("42", "Kitchen", selected=False),
                    ])):
@@ -1656,3 +1664,65 @@ class TestOutputUpdateUserSilenceLatch:
         _, data = r["calls"][0]
         assert data["ok"] is True
         assert user_silence_latch_active() is True
+
+
+# ---------------------------------------------------------------------------
+# apply_output_mutation: initiated_by contract
+#
+# initiated_by is a required, keyword-only, trusted-caller-only parameter
+# (mirrors autostream_log_policy.set_log_level's changed_by convention).
+# Only "user" and "system" are accepted; only "user" performs bookkeeping.
+# ---------------------------------------------------------------------------
+
+class TestApplyOutputMutationInitiatedBy:
+    def test_missing_initiated_by_raises_type_error(self):
+        with pytest.raises(TypeError):
+            _am.apply_output_mutation("http://localhost:3689", "42", {"id": "42", "selected": True})
+
+    def test_invalid_initiated_by_raises_value_error(self):
+        with pytest.raises(ValueError):
+            _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "selected": True},
+                initiated_by="not-a-real-actor",
+            )
+
+    def test_system_initiated_performs_no_bookkeeping(self, tmp_path):
+        """System-initiated mutations (coordinator auto-select/reconcile) must
+        not touch the reconcile timestamp or the user-silence latch."""
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.note_user_output_action") as note_mock, \
+             patch("autostream_appliance_models.set_user_silence_latch") as set_latch_mock, \
+             patch("autostream_appliance_models.clear_user_silence_latch") as clear_latch_mock, \
+             patch("autostream_appliance_models.list_outputs",
+                   return_value=_make_list_outputs_ok([
+                       _make_fake_output("42", "Kitchen", selected=False),
+                   ])), \
+             patch("autostream_appliance_models.update_output", return_value=ok), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
+            # Disable-to-zero would set the latch under initiated_by="user".
+            result = _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "selected": False},
+                initiated_by="system",
+            )
+        assert result["ok"] is True
+        note_mock.assert_not_called()
+        set_latch_mock.assert_not_called()
+        clear_latch_mock.assert_not_called()
+
+    def test_user_initiated_pin_op_notes_action_but_not_latch(self, tmp_path):
+        """Per the deliberate asymmetry: pin submissions count toward the
+        reconcile grace timestamp but never touch the latch."""
+        ok = _make_result_ok()
+        with patch("autostream_appliance_models.note_user_output_action") as note_mock, \
+             patch("autostream_appliance_models.set_user_silence_latch") as set_latch_mock, \
+             patch("autostream_appliance_models.clear_user_silence_latch") as clear_latch_mock, \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
+            result = _am.apply_output_mutation(
+                "http://localhost:3689", "42", {"id": "42", "op": "pin", "pin": "1234"},
+                initiated_by="user",
+            )
+        assert result["ok"] is True
+        note_mock.assert_called_once()
+        set_latch_mock.assert_not_called()
+        clear_latch_mock.assert_not_called()

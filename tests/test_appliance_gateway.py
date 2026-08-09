@@ -1224,6 +1224,102 @@ class TestSendGatewayRepeatJson:
 
 
 # ---------------------------------------------------------------------------
+# send_gateway_output_json ("bound" branch) — per-user-action bookkeeping
+#
+# apply_output_mutation() centralises the reconcile-grace timestamp
+# (note_user_output_action) and the user-chosen-silence latch. The gateway's
+# "bound" branch passes initiated_by="user", so a locally-bound appliance
+# reached via the gateway must get exactly the same bookkeeping as the local
+# Web UI handler.
+# ---------------------------------------------------------------------------
+
+def _make_fake_output(id_: str, name: str, *, selected: bool = False):
+    o = MagicMock()
+    o.id = id_
+    o.name = name
+    o.selected = selected
+    return o
+
+
+def _make_list_outputs_ok(outputs):
+    r = MagicMock()
+    r.ok = True
+    r.outputs = outputs
+    return r
+
+
+def _make_result_ok():
+    r = MagicMock()
+    r.ok = True
+    r.error_code = None
+    r.message = ""
+    return r
+
+
+class TestSendGatewayOutputJsonBookkeeping:
+    def _run(self, body: dict, *, list_outputs_result=None,
+              update_result=None, disable_result=None, pin_result=None):
+        from autostream_core import clear_user_silence_latch
+        clear_user_silence_latch()
+
+        handler = _make_handler()
+        sent_codes = []
+        sent_data = []
+        ok = _make_result_ok()
+
+        def fake_send_json(h, code, data):
+            sent_codes.append(code)
+            sent_data.append(data)
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+
+        with patch("autostream_appliance_gateway.resolve_appliance",
+                   return_value=("bound", None)), \
+             patch("autostream_appliance_gateway.locked_load_config",
+                   return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
+             patch("autostream_appliance_gateway.parse_config") as mock_parse, \
+             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
+             patch("autostream_appliance_models.list_outputs",
+                   return_value=list_outputs_result or _make_list_outputs_ok([])), \
+             patch("autostream_appliance_models.update_output",
+                   return_value=update_result or ok), \
+             patch("autostream_appliance_models.set_output_enabled",
+                   return_value=disable_result or ok), \
+             patch("autostream_appliance_models.submit_output_pin",
+                   return_value=pin_result or ok), \
+             patch("autostream_appliance_models.note_user_output_action") as note_mock:
+            mock_parse.return_value.owntone.base_url = "http://localhost:3689"
+            mock_parse.return_value.owntone.output_offsets_ms = {}
+            mock_parse.return_value.owntone.output_airplay_modes = {}
+            gw.send_gateway_output_json(handler, state, "a" * 20, json.dumps(body))
+
+        return sent_codes, sent_data, note_mock
+
+    def test_disable_to_zero_outputs_sets_latch(self):
+        from autostream_core import user_silence_latch_active
+        codes, data, note_mock = self._run(
+            {"id": "42", "selected": False},
+            list_outputs_result=_make_list_outputs_ok([
+                _make_fake_output("42", "Kitchen", selected=False),
+            ]),
+        )
+        assert codes == [200]
+        assert data[0]["ok"] is True
+        assert user_silence_latch_active() is True
+        note_mock.assert_called_once()
+
+    def test_enable_clears_latch(self):
+        from autostream_core import set_user_silence_latch, user_silence_latch_active
+        set_user_silence_latch()
+        codes, data, note_mock = self._run({"id": "42", "selected": True, "volume": 50})
+        assert codes == [200]
+        assert data[0]["ok"] is True
+        assert user_silence_latch_active() is False
+        note_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # _handle_remote_response — error normalization
 # ---------------------------------------------------------------------------
 

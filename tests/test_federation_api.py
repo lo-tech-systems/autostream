@@ -570,6 +570,75 @@ class TestFederationOutput:
         assert sent and sent[0][0] == 400
         assert sent[0][1]["error"] == "invalid_endpoint"
 
+    # -------------------------------------------------------------------
+    # Per-user-action bookkeeping (apply_output_mutation initiated_by="user")
+    #
+    # send_federation_output_json is one of three callers of
+    # apply_output_mutation() that must all get identical bookkeeping: the
+    # reconcile grace timestamp (note_user_output_action) and the
+    # user-chosen-silence latch. Previously this federation path did not
+    # feed the latch/timestamp at all -- these tests cover that gap.
+    # -------------------------------------------------------------------
+
+    @staticmethod
+    def _make_fake_output(id_: str, name: str, *, selected: bool = False):
+        o = MagicMock()
+        o.id = id_
+        o.name = name
+        o.selected = selected
+        return o
+
+    @classmethod
+    def _make_list_outputs_ok(cls, outputs):
+        r = MagicMock(ok=True, outputs=outputs)
+        return r
+
+    def test_disable_to_zero_outputs_sets_latch(self, tmp_path):
+        from autostream_core import clear_user_silence_latch, user_silence_latch_active
+        clear_user_silence_latch()
+        state = _fake_state(tmp_path)
+        bearer = _get_bearer()
+        body = json.dumps({"id": "42", "selected": False})
+        h = _make_handler("POST", "/api/federation/v1/output",
+                          body=body.encode(),
+                          headers={"Authorization": bearer})
+        ok_result = MagicMock(ok=True, error_code=None, message="")
+        with patch("autostream_appliance_models.list_outputs",
+                   return_value=self._make_list_outputs_ok([
+                       self._make_fake_output("42", "Kitchen", selected=False),
+                   ])), \
+             patch("autostream_appliance_models.update_output", return_value=ok_result), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok_result), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok_result), \
+             patch("autostream_appliance_models.note_user_output_action") as note_mock:
+            code, data = _call(h, state)
+        assert code == 200
+        assert data["ok"] is True
+        assert user_silence_latch_active() is True
+        note_mock.assert_called_once()
+
+    def test_enable_clears_latch(self, tmp_path):
+        from autostream_core import set_user_silence_latch, user_silence_latch_active
+        set_user_silence_latch()
+        state = _fake_state(tmp_path)
+        bearer = _get_bearer()
+        body = json.dumps({"id": "42", "selected": True, "volume": 50})
+        h = _make_handler("POST", "/api/federation/v1/output",
+                          body=body.encode(),
+                          headers={"Authorization": bearer})
+        ok_result = MagicMock(ok=True, error_code=None, message="")
+        with patch("autostream_appliance_models.list_outputs",
+                   return_value=self._make_list_outputs_ok([])), \
+             patch("autostream_appliance_models.update_output", return_value=ok_result), \
+             patch("autostream_appliance_models.set_output_enabled", return_value=ok_result), \
+             patch("autostream_appliance_models.submit_output_pin", return_value=ok_result), \
+             patch("autostream_appliance_models.note_user_output_action") as note_mock:
+            code, data = _call(h, state)
+        assert code == 200
+        assert data["ok"] is True
+        assert user_silence_latch_active() is False
+        note_mock.assert_called_once()
+
     def test_unknown_federation_get_route_returns_400_invalid_endpoint(self, tmp_path):
         state = _fake_state(tmp_path)
         bearer = _get_bearer()

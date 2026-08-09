@@ -1155,7 +1155,9 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
         send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
 
-    result = apply_output_mutation(base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode)
+    result = apply_output_mutation(
+        base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
+    )
     send_json(handler, 200, result)
 
 
