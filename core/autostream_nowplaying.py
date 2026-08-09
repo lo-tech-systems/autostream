@@ -66,16 +66,26 @@ def _resolve_placeholder_artwork_path() -> Optional[str]:
     if override:
         return override
 
-    path = Path(__file__).resolve().parent.parent / "images" / PLACEHOLDER_ARTWORK_FILENAME
-    try:
-        if path.exists() and path.is_file():
-            return str(path)
-    except Exception as e:
-        LOGGER.info("Could not check placeholder artwork %s: %s", path, e)
-        return None
+    # Two layouts have to work: the dev checkout keeps this module under
+    # core/ with images/ a level up (repo/core/<mod>.py + repo/images), while
+    # the installer flattens core/* into the install dir so the module and
+    # images/ become siblings (/opt/autostream/<mod>.py + /opt/autostream/
+    # images). Try the sibling images/ first, then the parent's.
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "images" / PLACEHOLDER_ARTWORK_FILENAME,
+        here.parent / "images" / PLACEHOLDER_ARTWORK_FILENAME,
+    ]
+    for path in candidates:
+        try:
+            if path.exists() and path.is_file():
+                return str(path)
+        except Exception as e:
+            LOGGER.info("Could not check placeholder artwork %s: %s", path, e)
     LOGGER.info(
-        "Now-playing placeholder artwork not found at %s; publishing without "
-        "a fallback picture until a session provides real artwork.", path,
+        "Now-playing placeholder artwork not found (looked in %s); publishing "
+        "without a fallback picture until a session provides real artwork.",
+        " and ".join(str(c.parent) for c in candidates),
     )
     return None
 
