@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import queue
+import select
 import stat
 import threading
 import time
@@ -383,6 +384,39 @@ class OwntoneMetadataPipePublisher:
             except Exception as e:
                 LOGGER.info("Metadata publish failed: %s", e)
 
+    # A bundle carrying a base64 cover routinely exceeds the kernel FIFO
+    # capacity (64KB on Linux), and the fd is opened O_NONBLOCK (so the open
+    # can poll for a reader). An unbuffered non-blocking write() then does a
+    # PARTIAL write once the pipe is full -- silently, via its return value --
+    # truncating the item mid-base64. The reader resyncs on the next item
+    # boundary and sees a picture item with no data, so any cover larger than
+    # ~47KB was simply lost. Hence: every write drains the pipe via poll and
+    # writes the remainder, bounded by a deadline so a reader that died
+    # mid-bundle can't hang the publisher thread forever.
+    WRITE_DEADLINE_SECONDS = 10.0
+
+    def _write_all(self, out, data: bytes) -> None:
+        deadline = time.monotonic() + self.WRITE_DEADLINE_SECONDS
+        offset = 0
+        while offset < len(data):
+            try:
+                n = out.write(data[offset:] if offset else data)
+            except BlockingIOError:
+                n = 0
+            if n is None:
+                # File-likes without partial-write semantics (plain buffers,
+                # test doubles) take everything in one call.
+                return
+            if n:
+                offset += n
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"metadata fifo write stalled with {len(data) - offset} bytes unwritten"
+                )
+            select.select([], [out.fileno()], [], min(remaining, 0.5))
+
     def _write_item(self, out, type_tag: str, code_tag: str, payload: bytes = b"") -> None:
         type_hex = self._tag_hex(type_tag)
         code_hex = self._tag_hex(code_tag)
@@ -395,7 +429,7 @@ class OwntoneMetadataPipePublisher:
         else:
             xml = f"<item><type>{type_hex}</type><code>{code_hex}</code><length>0</length></item>\n"
 
-        out.write(xml.encode("ascii"))
+        self._write_all(out, xml.encode("ascii"))
 
     def _resolve_start_artwork(self, incoming: Optional[str]) -> Optional[str]:
         """Session-begin artwork resolution: use the incoming path if the
