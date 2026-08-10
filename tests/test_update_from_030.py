@@ -51,7 +51,7 @@ OLD_UPDATER_COMMIT = "30ae289"
 
 # Set this to the actual tag before cutting the release that 0.3.0 devices
 # must be able to discover and install.
-CANDIDATE_TAG = "v0.4.0"
+CANDIDATE_TAG = "v0.5.0"
 
 
 # ---------------------------------------------------------------------------

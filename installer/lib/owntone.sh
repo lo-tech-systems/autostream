@@ -16,7 +16,7 @@ OWNTONE_MINI_REPO="${AUTOSTREAM_OWNTONE_MINI_REPO:-https://github.com/lo-tech-sy
 # The owntone-mini release this autostream release is built against. Both
 # fresh installs and updates build exactly this tag; keep in sync with the
 # default ref in tools/owntone_mini_update.sh.
-OWNTONE_MINI_VERSION="1.1.2"
+OWNTONE_MINI_VERSION="1.1.3"
 # Version stamp written at the end of a successful build; the fallback
 # fast-path check when the running-daemon probe misses (e.g. the service was
 # stopped ahead of an update). /var/lib/autostream is the installer's
