@@ -6,8 +6,20 @@ Shared log-level getter/setter used by both the Web API and the storage
 guard maintenance service.  This module must not import the Web UI router.
 
 Public interface:
-    get_log_level_state(config_path) -> dict
-    set_log_level(config_path, requested_level, *, changed_by, now=None) -> dict
+    get_log_level_state(config_path, settings=None) -> dict
+    set_log_level(config_path, requested_level, *, changed_by, now=None,
+                  settings=None) -> dict
+
+Persistence: inside the main appliance process the SettingsStore is the sole
+authoritative owner of the configuration file, and any store write replaces
+the file wholesale from the store's in-memory copy.  A direct
+load/save_config here would therefore be silently reverted by the next store
+save (the store never saw the change).  Callers running inside that process
+MUST pass their SettingsStore via *settings* so reads and writes go through
+the store; the direct-disk path remains for storeless contexts (tests,
+standalone tooling).  The storage guard runs in a separate process but
+applies changes via PUT /api/log-level on the main process, so it funnels
+through the store too.
 """
 
 from __future__ import annotations
@@ -48,16 +60,23 @@ def _utc_now_str(now: Optional[datetime] = None) -> str:
     return now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def get_log_level_state(config_path: str) -> dict:
-    """Return the current log-level policy state from disk.
+def get_log_level_state(config_path: str, settings=None) -> dict:
+    """Return the current log-level policy state.
+
+    When *settings* (a SettingsStore) is provided, read the store's canonical
+    in-memory state; otherwise read the file directly (see the module
+    docstring for why in-process callers must pass the store).
 
     Returns:
         {"ok": True, "level": str, "changed_by": str, "changed_at": str|None}
     """
     try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(config_path)
-            parsed = parse_config(cfg)
+        if settings is not None:
+            parsed = settings.snapshot()
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(config_path)
+                parsed = parse_config(cfg)
         return {
             "ok": True,
             "level": parsed.general.log_level,
@@ -76,6 +95,7 @@ def set_log_level(
     changed_by: str,
     now: Optional[datetime] = None,
     _startup: bool = False,
+    settings=None,
 ) -> dict:
     """Validate, persist, and apply a log-level change.
 
@@ -87,6 +107,12 @@ def set_log_level(
         now:             Injectable clock for testing. Defaults to utc now.
         _startup:        When True, apply live without updating changed_at. This
                          argument is for internal startup use only.
+        settings:        The process's SettingsStore, when one exists. Reads and
+                         persistence then go through the store -- REQUIRED inside
+                         the main appliance process, where a direct disk write
+                         would be reverted by the store's next wholesale save
+                         (see module docstring). None selects the direct-disk
+                         path for storeless contexts.
 
     Returns a dict with:
         ok, level, changed_by, changed_at, changed (bool),
@@ -112,59 +138,76 @@ def set_log_level(
     new_changed_by = changed_by_str
     new_changed_at: Optional[str] = None
 
-    try:
-        with CONFIG_IO_LOCK:
-            cfg = load_config(config_path)
-            parsed = parse_config(cfg)
-            current_level = parsed.general.log_level
-            current_changed_by = parsed.general.log_level_changed_by
-            current_changed_at = parsed.general.log_level_changed_at
+    def _persist_general(updates: dict) -> None:
+        # Route through the store when one was supplied (in-process: the store
+        # must see the change or its next save reverts it); otherwise re-load
+        # and write the file directly under the config lock.
+        if settings is not None:
+            settings.update(lambda raw: raw.setdefault("general", {}).update(updates))
+            # Level changes are rare, deliberate actions: make them durable now
+            # rather than waiting for the debounced background save. A failed
+            # save leaves the store dirty, so the background cycle retries.
+            if not settings.save_now():
+                logger.warning(
+                    "set_log_level: immediate save failed; change is applied "
+                    "in-memory and will persist on the next save cycle"
+                )
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(config_path)
+                cfg.setdefault("general", {}).update(updates)
+                save_config(config_path, cfg)
 
-            if _startup:
-                # Startup: apply live, but do not change the level or changed_by.
+    try:
+        if settings is not None:
+            parsed = settings.snapshot()
+        else:
+            with CONFIG_IO_LOCK:
+                parsed = parse_config(load_config(config_path))
+        current_level = parsed.general.log_level
+        current_changed_by = parsed.general.log_level_changed_by
+        current_changed_at = parsed.general.log_level_changed_at
+
+        if _startup:
+            # Startup: apply live, but do not change the level or changed_by.
+            new_level = current_level
+            new_changed_by = current_changed_by
+            new_changed_at = current_changed_at
+
+            # A persisted elevated level with no changed_at has no clock for
+            # the de-escalation staircase to age it from (compute_expiry_target
+            # returns None when changed_at is missing). Seed it once, leaving the
+            # level and changed_by exactly as the user/system left them. A
+            # persisted warning/log/fatal level gets nothing.
+            if current_level in _ELEVATED_LEVELS and current_changed_at is None:
+                new_changed_at = _utc_now_str(now)
+                _persist_general({"log_level_changed_at": new_changed_at})
+                logger.info(
+                    "set_log_level: seeded missing log_level_changed_at=%s for "
+                    "persisted level=%s so the de-escalation staircase can age it",
+                    new_changed_at, current_level,
+                )
+            # No further persistence needed.
+        else:
+            # Determine whether policy state changed (Section 3.2).
+            level_changed = (level_str != current_level)
+            owner_changed = (changed_by_str != current_changed_by)
+            policy_changed = level_changed or owner_changed
+
+            if policy_changed:
+                new_level = level_str
+                new_changed_by = changed_by_str
+                new_changed_at = _utc_now_str(now)
+                _persist_general({
+                    "log_level": new_level,
+                    "log_level_changed_by": new_changed_by,
+                    "log_level_changed_at": new_changed_at,
+                })
+            else:
+                # No-op; preserve existing metadata.
                 new_level = current_level
                 new_changed_by = current_changed_by
                 new_changed_at = current_changed_at
-
-                # A persisted elevated level with no changed_at has no clock for
-                # the de-escalation staircase to age it from (compute_expiry_target
-                # returns None when changed_at is missing). Seed it once, leaving the
-                # level and changed_by exactly as the user/system left them. A
-                # persisted warning/log/fatal level gets nothing.
-                if current_level in _ELEVATED_LEVELS and current_changed_at is None:
-                    new_changed_at = _utc_now_str(now)
-                    cfg.setdefault("general", {}).update({
-                        "log_level_changed_at": new_changed_at,
-                    })
-                    save_config(config_path, cfg)
-                    logger.info(
-                        "set_log_level: seeded missing log_level_changed_at=%s for "
-                        "persisted level=%s so the de-escalation staircase can age it",
-                        new_changed_at, current_level,
-                    )
-                # No further persistence needed.
-            else:
-                # Determine whether policy state changed (Section 3.2).
-                level_changed = (level_str != current_level)
-                owner_changed = (changed_by_str != current_changed_by)
-                policy_changed = level_changed or owner_changed
-
-                if policy_changed:
-                    new_level = level_str
-                    new_changed_by = changed_by_str
-                    new_changed_at = _utc_now_str(now)
-                    # Persist atomically.
-                    cfg.setdefault("general", {}).update({
-                        "log_level": new_level,
-                        "log_level_changed_by": new_changed_by,
-                        "log_level_changed_at": new_changed_at,
-                    })
-                    save_config(config_path, cfg)
-                else:
-                    # No-op; preserve existing metadata.
-                    new_level = current_level
-                    new_changed_by = current_changed_by
-                    new_changed_at = current_changed_at
 
     except Exception as e:
         logger.error("set_log_level: persistence failed: %s", e)
@@ -262,11 +305,13 @@ def set_log_level(
     }
 
 
-def apply_startup_log_level(config_path: str) -> None:
+def apply_startup_log_level(config_path: str, settings=None) -> None:
     """Apply the persisted log level at startup without updating policy metadata.
 
     Called once during coordinator startup to bring Python, monitor, OwnTone,
-    and NGINX into alignment with the configured level.
+    and NGINX into alignment with the configured level.  Pass the process's
+    SettingsStore as *settings* so any changed_at seeding persists through the
+    store (see module docstring).
     """
     try:
         result = set_log_level(
@@ -274,6 +319,7 @@ def apply_startup_log_level(config_path: str) -> None:
             requested_level=None,  # overridden by _startup=True
             changed_by="system",
             _startup=True,
+            settings=settings,
         )
         if not result.get("ok"):
             logger.warning("apply_startup_log_level: could not apply: %s", result.get("error"))

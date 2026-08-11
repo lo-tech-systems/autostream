@@ -2650,7 +2650,9 @@ _LOG_LEVEL_PUT_ALLOWED_FIELDS: frozenset[str] = frozenset({"level"})
 def send_log_level_get_json(handler, state: WebUIState) -> None:
     """GET /api/log-level — return current log-level policy state."""
     from autostream_log_policy import get_log_level_state
-    result = get_log_level_state(state.config_path)
+    result = get_log_level_state(
+        state.config_path, settings=getattr(state, "settings", None)
+    )
     send_json(handler, 200, result)
 
 
@@ -2680,10 +2682,13 @@ def send_log_level_put_json(
         return
 
     from autostream_log_policy import set_log_level
+    # Persistence must go through the process's SettingsStore: the store owns
+    # the config file and its next save would revert a direct disk write.
     result = set_log_level(
         state.config_path,
         requested_level,
         changed_by=changed_by,
+        settings=getattr(state, "settings", None),
     )
     if not result.get("ok"):
         error = result.get("error", "Unknown error")

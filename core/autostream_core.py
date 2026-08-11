@@ -3951,7 +3951,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # fan-out already forwards the level to the Wi-Fi watcher -- no
         # separate startup forward call is needed here.
         from autostream_log_policy import apply_startup_log_level as _apply_startup_log_level
-        _apply_startup_log_level(config_path)
+        _apply_startup_log_level(config_path, settings=settings)
     except Exception:
         logging.warning("apply_startup_log_level: import or apply failed; continuing")
     audit_static_system_facts()

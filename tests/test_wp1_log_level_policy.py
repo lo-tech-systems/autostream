@@ -296,6 +296,87 @@ class TestSetLogLevelStartupMode:
         assert parsed.general.log_level_changed_at == ts
 
 
+class TestSetLogLevelSettingsStore:
+    """set_log_level(settings=...) must persist THROUGH the SettingsStore.
+
+    The store is the sole authoritative owner of the config file in the main
+    process: any store save rewrites the file wholesale from the store's
+    in-memory copy. A level persisted by a direct disk write (bypassing the
+    store) is therefore silently reverted by the next store save -- observed
+    in the field as a UI-set level not surviving a service restart."""
+
+    def _make_store(self, config_path):
+        from autostream_settings import SettingsStore
+        # Long interval: the background thread stays quiet for the test's
+        # lifetime; writes happen via save_now() only.
+        return SettingsStore(config_path, _save_interval_seconds=3600.0)
+
+    def test_level_survives_unrelated_store_save(self, tmp_path, monkeypatch):
+        import autostream_log_policy as lp
+        _make_no_op_apply(monkeypatch)
+        p = _write_config(tmp_path, _minimal_config("info"))
+        store = self._make_store(p)
+        try:
+            with patch.dict("sys.modules", {"autostream_player_service": MagicMock()}):
+                result = lp.set_log_level(p, "debug", changed_by="user", settings=store)
+            assert result["ok"] is True
+
+            # An unrelated settings change followed by a store save must NOT
+            # revert the level (the regression this class exists for).
+            store.update(lambda raw: raw.setdefault("general", {}).update(
+                {"silence_seconds": 45}))
+            assert store.save_now() is True
+
+            parsed = cfg_mod.parse_config(cfg_mod.load_config(p))
+            assert parsed.general.log_level == "debug"
+            assert parsed.general.log_level_changed_by == "user"
+            assert parsed.general.log_level_changed_at is not None
+        finally:
+            store.close(save=False)
+
+    def test_state_read_reflects_store_not_disk(self, tmp_path, monkeypatch):
+        import autostream_log_policy as lp
+        _make_no_op_apply(monkeypatch)
+        p = _write_config(tmp_path, _minimal_config("info"))
+        store = self._make_store(p)
+        try:
+            # Mutate the store without saving: the store, not the file, is
+            # canonical, so get_log_level_state(settings=...) must see it.
+            store.update(lambda raw: raw.setdefault("general", {}).update(
+                {"log_level": "spam", "log_level_changed_by": "user"}))
+            state = lp.get_log_level_state(p, settings=store)
+            assert state["ok"] is True
+            assert state["level"] == "spam"
+        finally:
+            store.close(save=False)
+
+    def test_startup_seed_persists_through_store(self, tmp_path, monkeypatch):
+        import autostream_log_policy as lp
+        _make_no_op_apply(monkeypatch)
+        # Elevated level with no changed_at: startup must seed the timestamp,
+        # and the seed must go through the store so it survives store saves.
+        p = _write_config(tmp_path, _minimal_config("debug"))
+        store = self._make_store(p)
+        try:
+            with patch.dict("sys.modules", {"autostream_player_service": MagicMock()}):
+                result = lp.set_log_level(
+                    p, requested_level=None, changed_by="system",
+                    _startup=True, settings=store,
+                )
+            assert result["ok"] is True
+            assert result["changed_at"] is not None
+            assert store.snapshot().general.log_level_changed_at is not None
+
+            store.update(lambda raw: raw.setdefault("general", {}).update(
+                {"silence_seconds": 45}))
+            assert store.save_now() is True
+            parsed = cfg_mod.parse_config(cfg_mod.load_config(p))
+            assert parsed.general.log_level == "debug"
+            assert parsed.general.log_level_changed_at is not None
+        finally:
+            store.close(save=False)
+
+
 class TestSetLogLevelApplied:
     def test_nginx_verbose_called_for_debug(self, tmp_path, monkeypatch):
         import autostream_log_policy as lp

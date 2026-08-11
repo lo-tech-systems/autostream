@@ -249,7 +249,7 @@ class TestSendLogLevelPutJson:
         h = _make_handler()
         captured_changed_by = []
 
-        def _fake_set(path, level, *, changed_by):
+        def _fake_set(path, level, *, changed_by, settings=None):
             captured_changed_by.append(changed_by)
             return {"ok": True, "level": level, "changed_by": changed_by,
                     "changed_at": None, "changed": True, "applied": {}}
@@ -265,7 +265,7 @@ class TestSendLogLevelPutJson:
         h = _make_handler()
         captured_changed_by = []
 
-        def _fake_set(path, level, *, changed_by):
+        def _fake_set(path, level, *, changed_by, settings=None):
             captured_changed_by.append(changed_by)
             return {"ok": True, "level": level, "changed_by": changed_by,
                     "changed_at": None, "changed": True, "applied": {}}
