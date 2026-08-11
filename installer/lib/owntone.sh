@@ -119,7 +119,7 @@ install_owntone_mini_from_source() {
     libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libavutil-dev \
     libxml2-dev libgcrypt20-dev libavahi-client-dev zlib1g-dev \
     libevent-dev libplist-dev libsodium-dev libjson-c-dev libwebsockets-dev \
-    libcurl4-openssl-dev libprotobuf-c-dev libgnutls28-dev
+    libcurl4-openssl-dev libprotobuf-c-dev libgnutls28-dev uuid-dev
 
   if dpkg -s owntone >/dev/null 2>&1; then
     info "Removing packaged OwnTone before source install"
