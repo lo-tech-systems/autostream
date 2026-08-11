@@ -404,9 +404,14 @@ class OwntoneMetadataPipePublisher:
             except BlockingIOError:
                 n = 0
             if n is None:
-                # File-likes without partial-write semantics (plain buffers,
-                # test doubles) take everything in one call.
-                return
+                # Raw non-blocking file objects -- io.FileIO, which is
+                # exactly what _run()'s os.fdopen(fd, "wb", buffering=0)
+                # produces -- return None when the pipe is full and not a
+                # single byte could be written (RawIOBase contract). That is
+                # a zero-progress write, NOT completion: fall through to the
+                # poll below. (Treating it as completion silently dropped
+                # the unwritten remainder of large covers.)
+                n = 0
             if n:
                 offset += n
                 continue

@@ -370,7 +370,10 @@ class TestWriteItem:
 
         class _FakeOut:
             def write(self, data):
-                buf.write(data if isinstance(data, bytes) else data.encode("ascii"))
+                # Honour the file-like contract: report bytes accepted, so
+                # _write_all() doesn't mistake us for a stalled non-blocking
+                # pipe (None now means EAGAIN there).
+                return buf.write(data if isinstance(data, bytes) else data.encode("ascii"))
 
         pub._write_item(_FakeOut(), type_tag, code_tag, payload)
         return buf.getvalue().decode("ascii")
@@ -407,6 +410,48 @@ class TestWriteItem:
         xml = self._write_to_bytes(pub, "ssnc", "pbeg")
         assert xml.endswith("\n")
 
+    def test_write_all_retries_after_nonblocking_none(self, tmp_path):
+        """A raw non-blocking FileIO returns None when the pipe is full and
+        zero bytes could be written. _write_all() must treat that as EAGAIN
+        and retry -- not as completion (which silently truncated any cover
+        too large for the free pipe capacity: the item arrived at owntone
+        cut mid-base64 and the whole picture was discarded)."""
+        import base64
+        import socket
+
+        pub = self._make_publisher(tmp_path)
+        buf = io.BytesIO()
+
+        # Accept a small chunk, stall twice (None), then accept the rest.
+        behaviour = iter([8, None, None, len])
+        # select() needs a real selectable object (on Windows, sockets only);
+        # a connected socket is always writable, so the poll returns at once.
+        sock_a, sock_b = socket.socketpair()
+
+        class _StallingOut:
+            def write(self, data):
+                step = next(behaviour, len)
+                n = len(data) if step is len else step
+                if n is None:
+                    return None
+                buf.write(data[:n])
+                return n
+
+            def fileno(self):
+                return sock_a.fileno()
+
+        payload = b"x" * 4096
+        try:
+            pub._write_item(_StallingOut(), "ssnc", "PICT", payload)
+        finally:
+            sock_a.close()
+            sock_b.close()
+
+        xml = buf.getvalue().decode("ascii")
+        b64 = base64.b64encode(payload).decode("ascii")
+        assert b64 in xml
+        assert xml.endswith("</data></item>\n")
+
 
 # ---------------------------------------------------------------------------
 # _emit_start_bundle() / _emit_end_bundle()
@@ -428,7 +473,7 @@ class TestEmitBundles:
 
         class _Out:
             def write(self, data):
-                buf.write(data if isinstance(data, bytes) else data.encode())
+                return buf.write(data if isinstance(data, bytes) else data.encode())
 
         out = _Out()
         if meta is not None:
@@ -637,7 +682,7 @@ class TestBundleFraming:
 
         class _Out:
             def write(self, data):
-                buf.write(data if isinstance(data, bytes) else data.encode())
+                return buf.write(data if isinstance(data, bytes) else data.encode())
 
         write_fn(_Out())
         return buf.getvalue().decode("ascii")
@@ -774,7 +819,7 @@ class TestArtworkFallbackAndHold:
 
         class _Out:
             def write(self, data):
-                buf.write(data if isinstance(data, bytes) else data.encode())
+                return buf.write(data if isinstance(data, bytes) else data.encode())
 
         write_fn(_Out())
         return buf.getvalue().decode("ascii")
