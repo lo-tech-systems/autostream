@@ -929,6 +929,8 @@ configure_phase() {
   info "Running config layout migration (idempotent)"
   python3 "${LIBEXEC_DIR}/autostream_migrate.py"
 
+  remove_legacy_default_nowplaying_hints
+
   # Must be in place before OwnTone is provisioned and (re)started below, so
   # that the FIFO it watches already exists.
   info "Configuring the audio FIFO runtime directory"
@@ -1063,6 +1065,52 @@ else:
     tmp.replace(fallback_path)
     print(f'appliance-id: created fallback identity at {fallback_path}')
 PYEOF
+}
+
+remove_legacy_default_nowplaying_hints() {
+  # Earlier releases shipped a nowplaying_hints.json whose "default" entry
+  # blanketed EVERY input with turntable text and the bundled badge image,
+  # overriding the input-aware now-playing labels and the playback-logo
+  # placeholder. The repo now ships an empty hints file, but the deploy step
+  # above intentionally never overwrites an existing one -- so updated
+  # devices keep the bad default forever unless it is migrated out.
+  #
+  # Remove the fielded file only when BOTH hold:
+  #   - OwnTone mode is "mini": with full OwnTone the input-aware label flow
+  #     is not the supported path, and the hints file may still be wanted.
+  #   - Every entry in the file is byte-for-byte the legacy shipped default,
+  #     i.e. the user never customised it. Any edited, extended or malformed
+  #     file is preserved untouched.
+  if [[ "${OWNTONE_MODE}" != "mini" ]]; then
+    return 0
+  fi
+  python3 - <<'PYHINTS'
+import json
+import os
+
+LEGACY_ENTRY = {
+    "title": "Enjoy",
+    "artist": "Turntable",
+    "album": "Vinyl LP",
+    "artwork_path": "/opt/autostream/images/autostream-badge.png",
+}
+
+for path in (
+    "/etc/autostream/nowplaying_hints.json",
+    "/opt/autostream/nowplaying_hints.json",
+):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        continue
+    except Exception:
+        # Unreadable or malformed: not provably the shipped default, keep it.
+        continue
+    if isinstance(data, dict) and data and all(v == LEGACY_ENTRY for v in data.values()):
+        os.unlink(path)
+        print(f"Removed legacy default now-playing hints file {path}")
+PYHINTS
 }
 
 configure_cloud_init() {
