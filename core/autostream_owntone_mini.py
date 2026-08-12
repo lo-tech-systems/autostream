@@ -537,6 +537,13 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         return self._put_json("/api/update", None, success_statuses=(204,))
 
     def push_metadata(self, metadata: PlaybackMetadata) -> ActionResult:
+        """PUT /api/metadata -- no live caller today; the supported artwork
+        transport is the pipe metadata bundle (autostream_nowplaying.py),
+        which carries a normalised, size-guaranteed ArtworkImage. This path
+        hands artwork_url straight to the queue item as a file: reference,
+        bypassing that normalisation and its <=48KB contract entirely. If
+        this is ever wired up, the caller must normalise the artwork before
+        calling it -- do not extend it to accept raw provider URLs."""
         if not any((metadata.title, metadata.artist, metadata.album, metadata.artwork_url)):
             return ActionResult(ok=True)
         payload: dict[str, str] = {}

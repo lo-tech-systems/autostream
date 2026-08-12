@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: track cover art is now resized before being sent to AirPlay speakers,
+  fixing an issue where larger covers would silently fail to display on
+  Apple TV; the artwork pipeline also no longer touches disk, closing a
+  narrow window where a fast track change could show the wrong cover
 - improvement: the wired input can now be disabled/skipped so setup can be
   completed without a wired input device connected — first-run setup gains a
   "Skip — configure later" option, Input 1 can be enabled/disabled from

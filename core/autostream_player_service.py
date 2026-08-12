@@ -1487,6 +1487,11 @@ def list_supported_settings(base_url: str, *, timeout: float = 3.0) -> list[Sett
 
 
 def push_metadata(base_url: str, *, title: str = "", artist: str = "", album: str = "", artwork_url: str = "", timeout: float = 3.0) -> ActionResult:
+    """No live caller today. The supported now-playing artwork transport is
+    the pipe metadata bundle (see core/autostream_nowplaying.py), not this
+    API path -- artwork_url here goes straight to the backend as a raw
+    reference and skips the <=48KB normalisation contract every other
+    artwork consumer relies on. Any future caller must normalise first."""
     metadata = PlaybackMetadata(
         title=str(title or ""),
         artist=str(artist or ""),
