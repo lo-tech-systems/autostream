@@ -387,7 +387,10 @@ class TestStartupWifiWatcherForwarding:
 
             _core_mod.run_autostream("unused.json", settings=settings)
 
-        m_apply.assert_called_once_with("unused.json")
+        # The startup apply must route persistence through the process's
+        # SettingsStore (a direct disk write would be reverted by the store's
+        # next wholesale save).
+        m_apply.assert_called_once_with("unused.json", settings=settings)
         m_forward.assert_not_called()
         monitor_client.assert_not_called()
 

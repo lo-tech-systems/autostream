@@ -840,7 +840,7 @@ class TestSysfsNetdevEnumeration:
             pytest.skip("symlinks unavailable in this environment")
         sys_root, _ = _build_fake_usb_tree(tmp_path, mac="aa:bb:cc:00:00:10")
         assert wifi_net.find_sysfs_netdev_by_mac(
-            "DC:62:79:91:4D:D6", sys_root=sys_root) == "wlan0"
+            "AA:BB:CC:00:00:10", sys_root=sys_root) == "wlan0"
         assert wifi_net.find_sysfs_netdev_by_mac(
             "aa:bb:cc:dd:ee:ff", sys_root=sys_root) == ""
 
