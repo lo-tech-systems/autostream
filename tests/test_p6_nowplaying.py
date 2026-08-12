@@ -3,7 +3,8 @@
 What runs here (offline, no audio hardware, no OwnTone):
   - PersistentNowPlayingCache: hint file parsing for valid, missing, malformed,
     non-dict, empty, and non-object-root content.  Input-name lookup, default
-    fallback, explicit artwork_path, and cache invalidation when mtime changes.
+    fallback, explicit artwork_path (read+normalised into an ArtworkImage at
+    load time), and cache invalidation when mtime changes.
   - NowPlayingMetadata: default values and field normalisation.
   - OwntoneMetadataPipePublisher disabled path: env var unset → _enabled=False
     → publish_start/publish_end/close are all no-ops.
@@ -27,7 +28,9 @@ import io
 import json
 import os
 import sys
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -36,16 +39,41 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "core"))
 
+from autostream_artwork import ArtworkImage
 from autostream_nowplaying import (
+    MAX_PICTURE_BYTES,
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
     get_shared_metadata_publisher,
     release_shared_metadata_publisher,
     _publisher_registry,
+    _load_placeholder_artwork,
     _resolve_placeholder_artwork_path,
 )
 from autostream_core import _default_nowplaying_title
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover -- exercised only when Pillow is absent
+    Image = None
+
+requires_pillow = pytest.mark.skipif(Image is None, reason="Pillow not installed")
+
+
+def _art(payload: bytes = b"ARTBYTES", mime: str = "image/jpeg", ident: str = "0" * 16) -> ArtworkImage:
+    """A ready-made ArtworkImage for tests that don't care about real image
+    bytes -- only that *some* ArtworkImage travels through the publisher.
+    Distinct calls with the same payload produce equal (not necessarily
+    identical) ArtworkImage instances, since ArtworkImage is a frozen
+    dataclass."""
+    return ArtworkImage(data=payload, mime=mime, ident=ident)
+
+
+def _write_png(path: Path, size=(64, 64), color=(10, 200, 90)) -> None:
+    """A small, real, valid PNG file on disk -- for hint-loading tests that
+    exercise PersistentNowPlayingCache's own read+normalise step."""
+    Image.new("RGB", size, color).save(path, "PNG")
 
 
 # ---------------------------------------------------------------------------
@@ -63,15 +91,16 @@ class TestNowPlayingMetadataDefaults:
     def test_default_album(self):
         assert NowPlayingMetadata().album == "Unknown Album"
 
-    def test_default_artwork_path_is_none(self):
-        assert NowPlayingMetadata().artwork_path is None
+    def test_default_artwork_is_none(self):
+        assert NowPlayingMetadata().artwork is None
 
     def test_custom_values_stored(self):
-        m = NowPlayingMetadata(title="T", artist="A", album="L", artwork_path="/img.png")
+        image = _art()
+        m = NowPlayingMetadata(title="T", artist="A", album="L", artwork=image)
         assert m.title == "T"
         assert m.artist == "A"
         assert m.album == "L"
-        assert m.artwork_path == "/img.png"
+        assert m.artwork is image
 
 
 # ---------------------------------------------------------------------------
@@ -157,22 +186,55 @@ class TestHintFileParsing:
         meta = cache.get_manual_hint("USB AUDIO  CODEC: Audio")
         assert meta.title == "SpecificTitle"
 
-    def test_artwork_path_included_when_present(self, tmp_path):
+    @requires_pillow
+    def test_artwork_read_and_normalised_when_path_present(self, tmp_path):
+        art_path = tmp_path / "badge.png"
+        _write_png(art_path)
         p = tmp_path / "hints.json"
         _write_hints(p, {"default": {
             "title": "T", "artist": "A", "album": "B",
-            "artwork_path": "/opt/autostream/images/badge.png"
+            "artwork_path": str(art_path),
         }})
         cache = PersistentNowPlayingCache(str(p))
         meta = cache.get_manual_hint("default")
-        assert meta.artwork_path == "/opt/autostream/images/badge.png"
+        assert isinstance(meta.artwork, ArtworkImage)
+        # normalise_artwork() always outputs JPEG (bar the placeholder).
+        assert meta.artwork.mime == "image/jpeg"
 
-    def test_artwork_path_is_none_when_absent(self, tmp_path):
+    def test_artwork_is_none_when_hint_has_no_artwork_path(self, tmp_path):
         p = tmp_path / "hints.json"
         _write_hints(p, {"default": {"title": "T", "artist": "A", "album": "B"}})
         cache = PersistentNowPlayingCache(str(p))
         meta = cache.get_manual_hint("default")
-        assert meta.artwork_path is None
+        assert meta.artwork is None
+
+    def test_artwork_is_none_when_hint_artwork_file_missing(self, tmp_path):
+        p = tmp_path / "hints.json"
+        _write_hints(p, {"default": {
+            "title": "T", "artist": "A", "album": "B",
+            "artwork_path": str(tmp_path / "does-not-exist.png"),
+        }})
+        cache = PersistentNowPlayingCache(str(p))
+        meta = cache.get_manual_hint("default")
+        assert meta.artwork is None
+
+    @requires_pillow
+    def test_hint_artwork_is_cached_across_calls(self, tmp_path):
+        """The hint image is read+normalised once per hints-file reload, not
+        on every get_manual_hint() call -- see _resolve_hint_artwork()."""
+        art_path = tmp_path / "badge.png"
+        _write_png(art_path)
+        p = tmp_path / "hints.json"
+        _write_hints(p, {"default": {
+            "title": "T", "artist": "A", "album": "B",
+            "artwork_path": str(art_path),
+        }})
+        cache = PersistentNowPlayingCache(str(p))
+        first = cache.get_manual_hint("default")
+        with patch("autostream_nowplaying.normalise_artwork") as m:
+            second = cache.get_manual_hint("default")
+        m.assert_not_called()
+        assert second.artwork is first.artwork
 
     def test_missing_title_field_uses_default(self, tmp_path):
         p = tmp_path / "hints.json"
@@ -463,12 +525,15 @@ class TestEmitBundles:
         pub._enabled = False
         pub.audio_fifo_path = str(tmp_path / "fifo")
         pub.metadata_fifo_path = str(tmp_path / "fifo.metadata")
-        pub._held_artwork_path = None
-        pub._placeholder_bytes = None
-        pub._placeholder_bytes_path = None
+        pub._held_artwork = None
+        pub._held_lock = threading.Lock()
         return pub
 
     def _capture(self, pub, meta=None):
+        """meta.artwork, if any, is resolved via _resolve_start_artwork()
+        first -- mirroring publish_start(), which resolves the effective
+        ArtworkImage BEFORE the bundle is emitted (see A4: bytes are bound
+        at enqueue time, not inside the emitter)."""
         buf = io.BytesIO()
 
         class _Out:
@@ -477,6 +542,7 @@ class TestEmitBundles:
 
         out = _Out()
         if meta is not None:
+            meta = replace(meta, artwork=pub._resolve_start_artwork(meta.artwork))
             pub._emit_start_bundle(out, meta)
         else:
             pub._emit_end_bundle(out)
@@ -517,50 +583,43 @@ class TestEmitBundles:
         xml = self._capture(pub, meta)
         assert base64.b64encode(b"MyAlbum").decode("ascii") in xml
 
-    def test_start_bundle_falls_back_to_placeholder_when_path_is_none(self, tmp_path):
+    def test_start_bundle_falls_back_to_placeholder_when_artwork_is_none(self, tmp_path):
         """Session start with no artwork of its own must still carry a PICT:
         the publisher falls back to the bundled placeholder (item 2) rather
         than omitting the picture, so a receiver can raise Now Playing
         immediately (track ID disabled / startup window)."""
         import base64
         pub = self._make_publisher(tmp_path)
-        placeholder = tmp_path / "placeholder.png"
-        placeholder.write_bytes(b"PLACEHOLDERBYTES")
-        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork_path=None)
+        placeholder = _art(b"PLACEHOLDERBYTES", mime="image/png")
+        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork=None)
         with patch(
-            "autostream_nowplaying._resolve_placeholder_artwork_path",
-            return_value=str(placeholder),
+            "autostream_nowplaying._load_placeholder_artwork",
+            return_value=placeholder,
         ):
             xml = self._capture(pub, meta)
         pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
         assert pict_hex in xml
         assert base64.b64encode(b"PLACEHOLDERBYTES").decode("ascii") in xml
-        assert pub._held_artwork_path == str(placeholder)
+        assert pub._held_artwork is placeholder
 
-    def test_start_bundle_no_artwork_when_file_missing(self, tmp_path):
+    def test_start_bundle_no_artwork_when_no_placeholder_available(self, tmp_path):
         pub = self._make_publisher(tmp_path)
-        meta = NowPlayingMetadata(
-            title="T", artist="A", album="B",
-            artwork_path=str(tmp_path / "missing.png")
-        )
-        xml = self._capture(pub, meta)
+        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork=None)
+        with patch("autostream_nowplaying._load_placeholder_artwork", return_value=None):
+            xml = self._capture(pub, meta)
         pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
         assert pict_hex not in xml
 
-    def test_start_bundle_includes_artwork_when_file_exists(self, tmp_path):
+    def test_start_bundle_includes_artwork_when_provided(self, tmp_path):
         import base64
         pub = self._make_publisher(tmp_path)
-        img_path = tmp_path / "art.png"
-        img_path.write_bytes(b"FAKEIMAGEDATA")
-        meta = NowPlayingMetadata(
-            title="T", artist="A", album="B",
-            artwork_path=str(img_path)
-        )
+        image = _art(b"FAKEIMAGEDATA")
+        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork=image)
         xml = self._capture(pub, meta)
         pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
         assert pict_hex in xml
         assert base64.b64encode(b"FAKEIMAGEDATA").decode("ascii") in xml
-        assert pub._held_artwork_path == str(img_path)
+        assert pub._held_artwork is image
 
     def test_end_bundle_contains_pend(self, tmp_path):
         pub = self._make_publisher(tmp_path)
@@ -672,9 +731,8 @@ class TestBundleFraming:
         pub.audio_fifo_path = str(tmp_path / "fifo")
         pub.metadata_fifo_path = str(tmp_path / "fifo.metadata")
         pub._session_open = False
-        pub._held_artwork_path = None
-        pub._placeholder_bytes = None
-        pub._placeholder_bytes_path = None
+        pub._held_artwork = None
+        pub._held_lock = threading.Lock()
         return pub
 
     def _capture_bundle(self, write_fn) -> str:
@@ -688,10 +746,18 @@ class TestBundleFraming:
         return buf.getvalue().decode("ascii")
 
     def _run_dispatch(self, pub, kind, meta):
-        """Reproduce _run()'s per-item dispatch (the "start"/"refresh"/"end"
-        branch) directly against a captured buffer, without a real fifo/
-        thread -- mirrors how TestEmitBundles exercises the bundle emitters
-        in isolation."""
+        """Reproduce publish_start()/publish_refresh()'s enqueue-time
+        resolution PLUS _run()'s per-item dispatch (the "start"/"refresh"/
+        "end" branch), directly against a captured buffer, without a real
+        fifo/thread/queue -- mirrors how TestEmitBundles exercises the
+        bundle emitters in isolation. Since A4, resolution happens once at
+        enqueue time (see publish_start()/publish_refresh()), not inside
+        _run()'s dispatch, so it is reproduced here rather than in
+        _dispatch_one()."""
+        if kind == "start" and meta is not None:
+            meta = replace(meta, artwork=pub._resolve_start_artwork(meta.artwork))
+        elif kind == "refresh" and meta is not None:
+            meta = replace(meta, artwork=pub._resolve_refresh_artwork(meta.artwork))
         return self._capture_bundle(
             lambda out: self._dispatch_one(pub, out, kind, meta)
         )
@@ -705,13 +771,16 @@ class TestBundleFraming:
             if pub._session_open:
                 pub._emit_metadata_refresh_bundle(out, meta)
             else:
+                if meta.artwork is None:
+                    meta = replace(meta, artwork=_load_placeholder_artwork())
+                    pub._held_artwork = meta.artwork
                 pub._emit_start_bundle(out, meta)
                 pub._session_open = True
         elif kind == "end":
             if pub._session_open:
                 pub._emit_end_bundle(out)
             pub._session_open = False
-            pub._held_artwork_path = None
+            pub._held_artwork = None
 
     def test_session_begin_emits_pbeg_once(self, tmp_path):
         pub = self._make_publisher(tmp_path)
@@ -809,9 +878,8 @@ class TestArtworkFallbackAndHold:
         pub.audio_fifo_path = str(tmp_path / "fifo")
         pub.metadata_fifo_path = str(tmp_path / "fifo.metadata")
         pub._session_open = False
-        pub._held_artwork_path = None
-        pub._placeholder_bytes = None
-        pub._placeholder_bytes_path = None
+        pub._held_artwork = None
+        pub._held_lock = threading.Lock()
         return pub
 
     def _capture(self, write_fn) -> str:
@@ -835,77 +903,79 @@ class TestArtworkFallbackAndHold:
             if pub._session_open:
                 pub._emit_metadata_refresh_bundle(out, meta)
             else:
+                if meta.artwork is None:
+                    meta = replace(meta, artwork=_load_placeholder_artwork())
+                    pub._held_artwork = meta.artwork
                 pub._emit_start_bundle(out, meta)
                 pub._session_open = True
         elif kind == "end":
             if pub._session_open:
                 pub._emit_end_bundle(out)
             pub._session_open = False
-            pub._held_artwork_path = None
+            pub._held_artwork = None
 
     def _run_dispatch(self, pub, kind, meta) -> str:
+        """Reproduce publish_start()/publish_refresh()'s enqueue-time
+        artwork resolution, then _run()'s dispatch -- see the equivalent
+        note on TestBundleFraming._run_dispatch()."""
+        if kind == "start" and meta is not None:
+            meta = replace(meta, artwork=pub._resolve_start_artwork(meta.artwork))
+        elif kind == "refresh" and meta is not None:
+            meta = replace(meta, artwork=pub._resolve_refresh_artwork(meta.artwork))
         return self._capture(lambda out: self._dispatch_one(pub, out, kind, meta))
 
     def test_placeholder_used_at_session_start_with_no_artwork(self, tmp_path):
         pub = self._make_publisher(tmp_path)
-        placeholder = tmp_path / "placeholder.png"
-        placeholder.write_bytes(b"PLACEHOLDERBYTES")
-        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork_path=None)
-        with patch(
-            "autostream_nowplaying._resolve_placeholder_artwork_path",
-            return_value=str(placeholder),
-        ):
+        placeholder = _art(b"PLACEHOLDERBYTES", mime="image/png")
+        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork=None)
+        with patch("autostream_nowplaying._load_placeholder_artwork", return_value=placeholder):
             xml = self._run_dispatch(pub, "start", meta)
         pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
         assert pict_hex in xml
         import base64
         assert base64.b64encode(b"PLACEHOLDERBYTES").decode("ascii") in xml
-        assert pub._held_artwork_path == str(placeholder)
+        assert pub._held_artwork is placeholder
 
-    def test_real_artwork_passes_through_and_updates_held_path(self, tmp_path):
+    def test_real_artwork_passes_through_and_updates_held_artwork(self, tmp_path):
         import base64
         pub = self._make_publisher(tmp_path)
-        art = tmp_path / "art.png"
-        art.write_bytes(b"REALARTBYTES")
-        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork_path=str(art))
+        image = _art(b"REALARTBYTES")
+        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork=image)
         xml = self._run_dispatch(pub, "start", meta)
         assert base64.b64encode(b"REALARTBYTES").decode("ascii") in xml
-        assert pub._held_artwork_path == str(art)
+        assert pub._held_artwork is image
 
     def test_artless_refresh_reemits_held_artwork(self, tmp_path):
         """A track-ID refresh that brings no artwork of its own must
         re-emit the artwork already held for this session, not omit PICT."""
         import base64
         pub = self._make_publisher(tmp_path)
-        art = tmp_path / "art.png"
-        art.write_bytes(b"HELDARTBYTES")
-        start_meta = NowPlayingMetadata(title="T1", artist="A", album="B", artwork_path=str(art))
+        image = _art(b"HELDARTBYTES")
+        start_meta = NowPlayingMetadata(title="T1", artist="A", album="B", artwork=image)
         self._run_dispatch(pub, "start", start_meta)
 
-        refresh_meta = NowPlayingMetadata(title="T2", artist="A", album="B", artwork_path=None)
+        refresh_meta = NowPlayingMetadata(title="T2", artist="A", album="B", artwork=None)
         xml_refresh = self._run_dispatch(pub, "refresh", refresh_meta)
 
         pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
         assert pict_hex in xml_refresh
         assert base64.b64encode(b"HELDARTBYTES").decode("ascii") in xml_refresh
-        assert pub._held_artwork_path == str(art)
+        assert pub._held_artwork is image
 
-    def test_refresh_with_new_artwork_updates_held_path(self, tmp_path):
+    def test_refresh_with_new_artwork_updates_held_artwork(self, tmp_path):
         import base64
         pub = self._make_publisher(tmp_path)
-        art1 = tmp_path / "art1.png"
-        art1.write_bytes(b"FIRSTART")
-        art2 = tmp_path / "art2.png"
-        art2.write_bytes(b"SECONDART")
+        image1 = _art(b"FIRSTART")
+        image2 = _art(b"SECONDART")
 
         self._run_dispatch(pub, "start", NowPlayingMetadata(
-            title="T1", artist="A", album="B", artwork_path=str(art1)))
+            title="T1", artist="A", album="B", artwork=image1))
         xml_refresh = self._run_dispatch(pub, "refresh", NowPlayingMetadata(
-            title="T2", artist="A", album="B", artwork_path=str(art2)))
+            title="T2", artist="A", album="B", artwork=image2))
 
         assert base64.b64encode(b"SECONDART").decode("ascii") in xml_refresh
         assert base64.b64encode(b"FIRSTART").decode("ascii") not in xml_refresh
-        assert pub._held_artwork_path == str(art2)
+        assert pub._held_artwork is image2
 
     def test_held_state_resets_on_session_end_next_start_uses_placeholder(self, tmp_path):
         """Held artwork must not leak across sessions: after publish_end(),
@@ -913,41 +983,106 @@ class TestArtworkFallbackAndHold:
         placeholder again, not the previous session's held artwork."""
         import base64
         pub = self._make_publisher(tmp_path)
-        art = tmp_path / "art.png"
-        art.write_bytes(b"OLDSESSIONART")
-        placeholder = tmp_path / "placeholder.png"
-        placeholder.write_bytes(b"FRESHPLACEHOLDER")
+        old_image = _art(b"OLDSESSIONART")
+        placeholder = _art(b"FRESHPLACEHOLDER", mime="image/png")
 
         self._run_dispatch(pub, "start", NowPlayingMetadata(
-            title="T1", artist="A", album="B", artwork_path=str(art)))
+            title="T1", artist="A", album="B", artwork=old_image))
         self._run_dispatch(pub, "end", None)
-        assert pub._held_artwork_path is None
+        assert pub._held_artwork is None
 
-        with patch(
-            "autostream_nowplaying._resolve_placeholder_artwork_path",
-            return_value=str(placeholder),
-        ):
+        with patch("autostream_nowplaying._load_placeholder_artwork", return_value=placeholder):
             xml_new_start = self._run_dispatch(pub, "start", NowPlayingMetadata(
-                title="T2", artist="A", album="B", artwork_path=None))
+                title="T2", artist="A", album="B", artwork=None))
 
         assert base64.b64encode(b"FRESHPLACEHOLDER").decode("ascii") in xml_new_start
         assert base64.b64encode(b"OLDSESSIONART").decode("ascii") not in xml_new_start
-        assert pub._held_artwork_path == str(placeholder)
+        assert pub._held_artwork is placeholder
 
-    def test_missing_placeholder_file_continues_without_artwork_no_exception(self, tmp_path):
-        """If the bundled placeholder file isn't present at runtime, the
-        writer must log and continue publishing metadata without a picture
-        -- never raise."""
+    def test_missing_placeholder_continues_without_artwork_no_exception(self, tmp_path):
+        """If the bundled placeholder is unavailable at runtime, the writer
+        must log and continue publishing metadata without a picture -- never
+        raise."""
         pub = self._make_publisher(tmp_path)
-        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork_path=None)
-        with patch(
-            "autostream_nowplaying._resolve_placeholder_artwork_path",
-            return_value=None,
-        ):
+        meta = NowPlayingMetadata(title="T", artist="A", album="B", artwork=None)
+        with patch("autostream_nowplaying._load_placeholder_artwork", return_value=None):
             xml = self._run_dispatch(pub, "start", meta)  # must not raise
         pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
         assert pict_hex not in xml
-        assert pub._held_artwork_path is None
+        assert pub._held_artwork is None
+
+    def test_explicit_placeholder_refresh_does_not_hold_previous_track_cover(self, tmp_path):
+        """A track-change refresh whose caller has decided this track has no
+        artwork of its own passes the placeholder ArtworkImage explicitly
+        (the old empty-string tri-state is gone -- see
+        NowPlayingMetadata.artwork). That must NOT keep re-emitting the
+        previous (different) track's cover -- that would misattribute
+        someone else's artwork to this track."""
+        import base64
+        pub = self._make_publisher(tmp_path)
+        old_image = _art(b"OLDTRACKART")
+        placeholder = _art(b"PLACEHOLDERBYTES", mime="image/png")
+
+        self._run_dispatch(pub, "start", NowPlayingMetadata(
+            title="T1", artist="A", album="B", artwork=old_image))
+
+        xml_refresh = self._run_dispatch(pub, "refresh", NowPlayingMetadata(
+            title="T2", artist="A", album="B", artwork=placeholder))
+
+        pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
+        assert pict_hex in xml_refresh
+        assert base64.b64encode(b"PLACEHOLDERBYTES").decode("ascii") in xml_refresh
+        assert base64.b64encode(b"OLDTRACKART").decode("ascii") not in xml_refresh
+        assert pub._held_artwork is placeholder
+
+    def test_pending_reidentification_still_holds_previous_track_cover(self, tmp_path):
+        """Contrast with the above: a refresh with artwork=None (no decision
+        yet, e.g. title/artist-only update while ID is still pending) DOES
+        keep re-emitting the previously held artwork -- see
+        _resolve_refresh_artwork()."""
+        import base64
+        pub = self._make_publisher(tmp_path)
+        image = _art(b"CURRENTTRACKART")
+
+        self._run_dispatch(pub, "start", NowPlayingMetadata(
+            title="T1", artist="A", album="B", artwork=image))
+        xml_refresh = self._run_dispatch(pub, "refresh", NowPlayingMetadata(
+            title="T1", artist="A", album="B", artwork=None))
+
+        pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
+        assert pict_hex in xml_refresh
+        assert base64.b64encode(b"CURRENTTRACKART").decode("ascii") in xml_refresh
+        assert pub._held_artwork is image
+
+    @requires_pillow
+    def test_placeholder_artwork_is_loaded_once_not_reread_per_publish(self, tmp_path):
+        """_load_placeholder_artwork() is process-cached (functools.lru_cache)
+        -- repeated artless bundles reuse the same ArtworkImage instance
+        rather than re-reading the bundled file from disk."""
+        pub = self._make_publisher(tmp_path)
+        placeholder = tmp_path / "placeholder.png"
+        _write_png(placeholder)
+        _load_placeholder_artwork.cache_clear()
+        try:
+            with patch(
+                "autostream_nowplaying._resolve_placeholder_artwork_path",
+                return_value=str(placeholder),
+            ):
+                self._run_dispatch(pub, "start", NowPlayingMetadata(
+                    title="T1", artist="A", album="B", artwork=None))
+                first_held = pub._held_artwork
+                assert first_held is not None
+
+                # Mutate the file on disk; the cached ArtworkImage must NOT
+                # change, proving the second publish reused the cache
+                # instead of re-reading and re-normalising.
+                _write_png(placeholder, color=(250, 10, 10))
+                self._run_dispatch(pub, "refresh", NowPlayingMetadata(
+                    title="T1", artist="A", album="B", artwork=None))
+        finally:
+            _load_placeholder_artwork.cache_clear()
+
+        assert pub._held_artwork is first_held
 
     def test_resolve_placeholder_artwork_path_missing_file_returns_none(self):
         """_resolve_placeholder_artwork_path() itself must degrade to None
@@ -985,82 +1120,6 @@ class TestArtworkFallbackAndHold:
             assert result == str(custom)
         finally:
             _resolve_placeholder_artwork_path.cache_clear()
-
-    def test_no_artwork_resolution_does_not_hold_previous_track_cover(self, tmp_path):
-        """A track-change refresh that resolves to "" (identification
-        completed, this track confirmed to have no artwork of its own) must
-        NOT keep re-emitting the previous (different) track's cover -- that
-        would misattribute someone else's artwork to this track. It falls
-        back to the placeholder instead, same as a fresh session."""
-        import base64
-        pub = self._make_publisher(tmp_path)
-        old_art = tmp_path / "old_track_art.png"
-        old_art.write_bytes(b"OLDTRACKART")
-        placeholder = tmp_path / "placeholder.png"
-        placeholder.write_bytes(b"PLACEHOLDERBYTES")
-
-        self._run_dispatch(pub, "start", NowPlayingMetadata(
-            title="T1", artist="A", album="B", artwork_path=str(old_art)))
-
-        with patch(
-            "autostream_nowplaying._resolve_placeholder_artwork_path",
-            return_value=str(placeholder),
-        ):
-            xml_refresh = self._run_dispatch(pub, "refresh", NowPlayingMetadata(
-                title="T2", artist="A", album="B", artwork_path=""))
-
-        pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
-        assert pict_hex in xml_refresh
-        assert base64.b64encode(b"PLACEHOLDERBYTES").decode("ascii") in xml_refresh
-        assert base64.b64encode(b"OLDTRACKART").decode("ascii") not in xml_refresh
-        assert pub._held_artwork_path == str(placeholder)
-
-    def test_pending_reidentification_still_holds_previous_track_cover(self, tmp_path):
-        """Contrast with the above: a refresh with artwork_path=None (no
-        decision yet, e.g. title/artist-only update while ID is still
-        pending) DOES keep re-emitting the previously held artwork -- see
-        _resolve_refresh_artwork()'s None vs "" distinction."""
-        import base64
-        pub = self._make_publisher(tmp_path)
-        art = tmp_path / "current_track_art.png"
-        art.write_bytes(b"CURRENTTRACKART")
-
-        self._run_dispatch(pub, "start", NowPlayingMetadata(
-            title="T1", artist="A", album="B", artwork_path=str(art)))
-        xml_refresh = self._run_dispatch(pub, "refresh", NowPlayingMetadata(
-            title="T1", artist="A", album="B", artwork_path=None))
-
-        pict_hex = OwntoneMetadataPipePublisher._tag_hex("PICT")
-        assert pict_hex in xml_refresh
-        assert base64.b64encode(b"CURRENTTRACKART").decode("ascii") in xml_refresh
-        assert pub._held_artwork_path == str(art)
-
-    def test_placeholder_bytes_are_cached_not_reread_per_publish(self, tmp_path):
-        """The placeholder is read from disk at most once per publisher
-        instance -- repeated artless bundles reuse the cached bytes."""
-        pub = self._make_publisher(tmp_path)
-        placeholder = tmp_path / "placeholder.png"
-        placeholder.write_bytes(b"PLACEHOLDERBYTES")
-
-        with patch(
-            "autostream_nowplaying._resolve_placeholder_artwork_path",
-            return_value=str(placeholder),
-        ):
-            self._run_dispatch(pub, "start", NowPlayingMetadata(
-                title="T1", artist="A", album="B", artwork_path=None))
-            assert pub._placeholder_bytes == b"PLACEHOLDERBYTES"
-            assert pub._placeholder_bytes_path == str(placeholder)
-
-            # Mutate the file on disk; the cached bytes must NOT change,
-            # proving the second publish reused the cache instead of
-            # re-reading.
-            placeholder.write_bytes(b"CHANGEDBYTES")
-            xml_refresh = self._run_dispatch(pub, "refresh", NowPlayingMetadata(
-                title="T1", artist="A", album="B", artwork_path=None))
-
-        import base64
-        assert base64.b64encode(b"PLACEHOLDERBYTES").decode("ascii") in xml_refresh
-        assert base64.b64encode(b"CHANGEDBYTES").decode("ascii") not in xml_refresh
 
 
 # ---------------------------------------------------------------------------

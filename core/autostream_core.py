@@ -40,7 +40,7 @@ from autostream_config import (
     python_log_level_value,
     unconfigured,
 )
-from autostream_artwork import ArtworkFileCache
+from autostream_artwork import ArtworkMemoryCache
 from autostream_bluetooth_client import (
     BluetoothClient,
     bluetooth_capture_label,
@@ -48,7 +48,6 @@ from autostream_bluetooth_client import (
     classify_loopback_hw,
 )
 from autostream_nowplaying import (
-    MAX_PICTURE_BYTES,
     NowPlayingMetadata,
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
@@ -959,7 +958,7 @@ def _republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_act
 
     Consumed-flag counterpart of request_nowplaying_republish(): fired when a
     newly enabled output (or a freshly restarted backend) knows only the
-    queue defaults. artwork_path is deliberately None -- publish_refresh()'s
+    queue defaults. artwork is deliberately None -- publish_refresh()'s
     "no news" value -- so the publisher re-sends whatever artwork it
     currently holds (placeholder or identified cover) rather than treating
     the republish as an artwork change. Dropped silently when no session is
@@ -974,7 +973,7 @@ def _republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_act
             title=cur.title,
             artist=cur.artist,
             album=cur.album,
-            artwork_path=None,
+            artwork=None,
         )
     )
 
@@ -2443,12 +2442,14 @@ class AudioMonitor:
         # interleave mid-stream during a cross-monitor source_changed
         # dispatch. Paired with release_shared_metadata_publisher() in stop().
         self._nowplaying_publisher = get_shared_metadata_publisher(fifo_path)
-        # Track ID gives us an artwork URL, but the metadata pipe publishes
-        # artwork as bytes read from a file, so the URL has to be fetched to
-        # disk before OwnTone can carry it to the speakers. Cap the download at
-        # what the pipe can actually carry; a larger image would be fetched
-        # only to be dropped at publish time.
-        self._artwork_cache = ArtworkFileCache(max_bytes=MAX_PICTURE_BYTES)
+        # Track ID gives us an artwork URL; the cache fetches and normalises
+        # it into an ArtworkImage entirely in memory (no file handoff -- see
+        # autostream_artwork.ArtworkMemoryCache). The fetch cap is
+        # deliberately generous (the module default): normalise_artwork()
+        # re-encodes an oversized cover down to the publish-ready 48KB
+        # regardless of how large the source was, so there is no reason to
+        # reject a large source before that resampling gets a chance to run.
+        self._artwork_cache = ArtworkMemoryCache()
         self._current_nowplaying = self._default_nowplaying_metadata()
 
         # --- Track identification scheduling ---
@@ -3034,15 +3035,15 @@ class AudioMonitor:
                     # (placeholder or real), so the receiver never sees a
                     # bundle with no picture at all.
                     artwork_url = result.artwork.url if result.artwork else ""
-                    artwork_path = (
-                        self._artwork_cache.get_path(artwork_url)
-                        or self._current_nowplaying.artwork_path
+                    artwork = (
+                        self._artwork_cache.get(artwork_url)
+                        or self._current_nowplaying.artwork
                     )
                     new_meta = NowPlayingMetadata(
                         title=result.title or self._current_nowplaying.title,
                         artist=result.artist or self._current_nowplaying.artist,
                         album=result.album or self._current_nowplaying.album,
-                        artwork_path=artwork_path,
+                        artwork=artwork,
                     )
                     if new_meta != self._current_nowplaying:
                         self._current_nowplaying = new_meta

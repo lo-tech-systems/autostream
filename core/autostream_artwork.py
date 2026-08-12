@@ -1,13 +1,15 @@
 """autostream_artwork.py
 
-Fetching provider (Shazam) artwork URLs, and caching them to local files.
+Fetching provider (Shazam) artwork URLs, and normalising them into the one
+in-memory image contract every downstream consumer relies on.
 
 Two consumers:
 
   * the dial display, which wants the image bytes to draw on the panel;
-  * the OwnTone metadata pipe, which needs the image as a file on disk, because
-    the Shairport-style metadata format carries artwork as embedded bytes read
-    from ``NowPlayingMetadata.artwork_path``.
+  * the OwnTone metadata pipe, which carries artwork as bytes embedded
+    directly in a NowPlayingMetadata bundle (see autostream_nowplaying.py) --
+    no file on disk changes hands between "an image was fetched" and "a
+    receiver saw it".
 
 The fetch itself lives here, once, rather than in each consumer. It faces the
 open internet with a URL that arrives from a third-party provider response, so
@@ -21,13 +23,12 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
-import os
-import tempfile
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -39,15 +40,6 @@ MAX_ARTWORK_REDIRECTS = 2
 ARTWORK_CONTENT_TYPES = ("image/jpeg", "image/png", "image/webp")
 
 ARTWORK_FETCH_TIMEOUT_SECONDS = 5.0
-
-DEFAULT_ARTWORK_CACHE_DIR = "/tmp/autostream-artwork"
-ARTWORK_CACHE_DIR_ENV = "AUTOSTREAM_ARTWORK_CACHE_DIR"
-
-_CONTENT_TYPE_SUFFIX = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-}
 
 
 def _is_ip_literal(hostname: str) -> bool:
@@ -164,35 +156,50 @@ ARTWORK_MAX_EDGE_PX = 600
 _resample_unavailable_logged = False
 
 
-def _resample_artwork(data: bytes) -> bytes:
-    """Return artwork bytes no larger than ARTWORK_TARGET_BYTES.
+@dataclass(frozen=True)
+class ArtworkImage:
+    """A complete, normalised, immutable image ready to publish.
 
-    Bytes already within the target pass through untouched. Oversized images
-    are re-encoded as progressive-free baseline JPEG, stepping quality down
-    (and finally the long edge) until they fit. On any failure -- Pillow not
-    installed, undecodable image -- the original bytes are returned: an
-    oversized cover that some receivers still show beats no cover at all.
+    Created in exactly two places: normalise_artwork() below, at fetch time,
+    and the bundled placeholder loaded once at startup (autostream_nowplaying
+    .py). Nothing downstream ever holds a path or re-reads a file for this --
+    the bytes travel with the decision that produced them.
     """
-    global _resample_unavailable_logged
 
-    if len(data) <= ARTWORK_TARGET_BYTES:
-        return data
+    data: bytes
+    mime: str  # "image/jpeg", except the placeholder, which stays PNG.
+    ident: str  # 16 lowercase hex chars, a stable content hash of `data`.
 
+
+def _mime_for(data: bytes) -> Optional[str]:
+    """Best-effort image mime type from magic bytes; None if unrecognised.
+
+    The URL is no guide — provider artwork URLs carry size templates and
+    query strings — so the format has to come from what the bytes actually
+    are.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _content_ident(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _reencode_to_jpeg(img, original: bytes) -> Optional[bytes]:
+    """Re-encode an already-open Pillow image as baseline JPEG, stepping
+    quality down (and finally the long edge) until it fits under
+    ARTWORK_TARGET_BYTES. If nothing fits (pathological image), the smallest
+    attempt is returned rather than nothing. On any encode failure the
+    original bytes are returned unchanged: some receivers still show an
+    oversized/wrong-format cover, which beats no cover at all.
+    """
     try:
-        import io
-        from PIL import Image
-    except ImportError:
-        if not _resample_unavailable_logged:
-            _resample_unavailable_logged = True
-            LOGGER.warning(
-                "artwork: Pillow unavailable; oversized covers (>%d bytes) "
-                "will be published as-is and may not display on Apple TV",
-                ARTWORK_TARGET_BYTES,
-            )
-        return data
-
-    try:
-        img = Image.open(io.BytesIO(data))
         img = img.convert("RGB")
         if max(img.size) > ARTWORK_MAX_EDGE_PX:
             img.thumbnail((ARTWORK_MAX_EDGE_PX, ARTWORK_MAX_EDGE_PX))
@@ -206,6 +213,7 @@ def _resample_artwork(data: bytes) -> bytes:
             if edge is not None and max(candidate.size) > edge:
                 candidate = img.copy()
                 candidate.thumbnail((edge, edge))
+            import io
             buf = io.BytesIO()
             candidate.save(buf, "JPEG", quality=quality, optimize=True)
             out = buf.getvalue()
@@ -214,127 +222,134 @@ def _resample_artwork(data: bytes) -> bytes:
             if len(out) <= ARTWORK_TARGET_BYTES:
                 LOGGER.info(
                     "artwork: resampled %d -> %d bytes (quality=%d, %dx%d)",
-                    len(data), len(out), quality, *candidate.size,
+                    len(original), len(out), quality, *candidate.size,
                 )
                 return out
 
         # Nothing fit (pathological image); send the smallest attempt anyway.
         LOGGER.warning(
             "artwork: could not fit cover under %d bytes (best %d); sending best effort",
-            ARTWORK_TARGET_BYTES, len(best) if best else len(data),
+            ARTWORK_TARGET_BYTES, len(best) if best else len(original),
         )
-        return best if best is not None else data
+        return best if best is not None else original
     except Exception as e:
         LOGGER.warning("artwork: resample failed (%s); using original bytes", e)
-        return data
+        return original
 
 
-def _suffix_for(data: bytes) -> str:
-    """Suffix from the image's magic bytes.
+def normalise_artwork(raw: bytes) -> Optional[ArtworkImage]:
+    """Normalise provider artwork bytes into the one size contract every
+    downstream consumer can rely on: at most ARTWORK_TARGET_BYTES (48 KB),
+    longest edge at most ARTWORK_MAX_EDGE_PX (600 px) -- see the comment on
+    ARTWORK_TARGET_BYTES above for why those numbers. Output is always a
+    JPEG (bar the one exception: the bundled placeholder, constructed
+    separately, stays PNG).
 
-    The URL is no guide — provider artwork URLs carry size templates and query
-    strings — and OwnTone infers the image format from what it is given, so the
-    file we write has to be named for what it actually contains.
+    A JPEG already inside both limits passes through byte-identical -- no
+    quality loss, no re-encode churn for the common case. Anything else
+    (oversized, over-dimension, a different format, or metadata blocks such
+    as Exif/Photoshop APP13 that a re-encode strips as a side effect) goes
+    through the re-encode ladder in _reencode_to_jpeg().
+
+    Returns None -- never raises -- if Pillow is unavailable and the input
+    isn't already a compliant JPEG, or if the input can't be decoded as an
+    image at all. Either way the caller falls back to the placeholder.
     """
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp"
-    return ""
+    if not raw:
+        return None
+
+    try:
+        from PIL import Image
+    except ImportError:
+        mime = _mime_for(raw)
+        if mime == "image/jpeg" and len(raw) <= ARTWORK_TARGET_BYTES:
+            return ArtworkImage(data=raw, mime=mime, ident=_content_ident(raw))
+        global _resample_unavailable_logged
+        if not _resample_unavailable_logged:
+            _resample_unavailable_logged = True
+            LOGGER.warning(
+                "artwork: Pillow unavailable; only already-compliant JPEG "
+                "covers can be published, everything else falls back to the "
+                "placeholder",
+            )
+        return None
+
+    try:
+        import io
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except Exception as e:
+        LOGGER.info("artwork: undecodable image (%s); no cover will be published", e)
+        return None
+
+    if (
+        img.format == "JPEG"
+        and len(raw) <= ARTWORK_TARGET_BYTES
+        and max(img.size) <= ARTWORK_MAX_EDGE_PX
+    ):
+        return ArtworkImage(data=raw, mime="image/jpeg", ident=_content_ident(raw))
+
+    out = _reencode_to_jpeg(img, raw)
+    if not out:
+        return None
+    mime = _mime_for(out) or "image/jpeg"
+    return ArtworkImage(data=out, mime=mime, ident=_content_ident(out))
 
 
-class ArtworkFileCache:
-    """Downloads provider artwork to a local file, keyed by URL.
+class ArtworkMemoryCache:
+    """Fetches and normalises provider artwork, keyed by URL, entirely in
+    memory: no filesystem handoff, no file lifetime for a publisher that
+    might still be holding the previous track's bytes to race against.
 
-    The OwnTone metadata pipe publishes artwork as bytes read from a path, so a
-    URL has to become a file before it can be published. Tracks change far less
-    often than they are republished, so we keep the last image on disk and only
-    re-fetch when the URL changes.
+    A tiny LRU (2 entries) is enough -- tracks change far less often than
+    they're republished, and holding the current and previous track's
+    normalised image is plenty to survive a same-poll-cycle source_changed
+    handoff between two AudioMonitors sharing one FIFO.
     """
+
+    MAX_ENTRIES = 2
 
     def __init__(
         self,
-        cache_dir: Optional[str] = None,
         max_bytes: int = MAX_ARTWORK_RESPONSE_BYTES,
         timeout: float = ARTWORK_FETCH_TIMEOUT_SECONDS,
     ) -> None:
-        chosen = (
-            cache_dir
-            or (os.environ.get(ARTWORK_CACHE_DIR_ENV) or "").strip()
-            or DEFAULT_ARTWORK_CACHE_DIR
-        )
-        self.cache_dir = Path(chosen)
         self.max_bytes = max_bytes
         self.timeout = timeout
         self._lock = threading.Lock()
-        self._cached_url: str = ""
-        self._cached_path: Optional[str] = None
+        self._entries: "OrderedDict[str, ArtworkImage]" = OrderedDict()
 
-    def get_path(self, url: str) -> Optional[str]:
-        """Return a local path holding the image at url, or None if unavailable.
-
-        Never raises: artwork is decoration, and a provider having a bad day
-        must not take playback with it.
+    def get(self, url: str) -> Optional[ArtworkImage]:
+        """Return the normalised ArtworkImage for *url*, fetching and
+        normalising on a cache miss. Never raises: artwork is decoration,
+        and a provider having a bad day must not take playback with it. A
+        failed fetch or normalisation returns None WITHOUT evicting whatever
+        is already cached for other URLs.
         """
         if not url:
             return None
 
         with self._lock:
-            if url == self._cached_url and self._cached_path and Path(self._cached_path).exists():
-                return self._cached_path
+            cached = self._entries.get(url)
+            if cached is not None:
+                self._entries.move_to_end(url)
+                return cached
 
         data, err = fetch_artwork(url, self.timeout, self.max_bytes)
         if not data:
-            LOGGER.info("artwork: not caching %s (%s)", url, err or "no_data")
+            LOGGER.info("artwork: not fetching %s (%s)", url, err or "no_data")
             return None
 
-        suffix = _suffix_for(data)
-        if not suffix:
-            LOGGER.info("artwork: %s is not a recognised image, not caching", url)
-            return None
-
-        # Re-encode oversized covers before they enter the cache, so every
-        # consumer downstream (metadata pipe, MRP push) stays under the
-        # receiver's silent artwork cap. Re-derive the suffix afterwards: the
-        # resample path always emits JPEG.
-        data = _resample_artwork(data)
-        suffix = _suffix_for(data) or suffix
-
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-            path = self.cache_dir / f"artwork-{digest}{suffix}"
-
-            # Write via a temporary file in the same directory and rename, so a
-            # reader never sees a half-written image.
-            fd, tmp_name = tempfile.mkstemp(dir=str(self.cache_dir), suffix=suffix)
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    f.write(data)
-                os.replace(tmp_name, path)
-            except Exception:
-                _unlink_quietly(tmp_name)
-                raise
-        except Exception as e:
-            LOGGER.warning("artwork: could not cache %s: %s", url, e)
+        image = normalise_artwork(data)
+        if image is None:
+            LOGGER.info("artwork: %s could not be normalised, not caching", url)
             return None
 
         with self._lock:
-            previous = self._cached_path
-            self._cached_url = url
-            self._cached_path = str(path)
+            self._entries[url] = image
+            self._entries.move_to_end(url)
+            while len(self._entries) > self.MAX_ENTRIES:
+                self._entries.popitem(last=False)
 
-        if previous and previous != str(path):
-            _unlink_quietly(previous)
-
-        LOGGER.info("artwork: cached %d bytes from %s to %s", len(data), url, path)
-        return str(path)
-
-
-def _unlink_quietly(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+        LOGGER.info("artwork: cached %d bytes (normalised) from %s", len(image.data), url)
+        return image
