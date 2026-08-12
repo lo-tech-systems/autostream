@@ -150,6 +150,85 @@ def fetch_artwork(
     return None, "too_many_redirects"
 
 
+# Apple TV silently discards a NowPlayingInfo push whose ArtworkData exceeds
+# a cap somewhere in the 59-97KB range (observed on-wire: a 58,951-byte cover
+# displays, a 97,447-byte cover in an otherwise byte-identical payload is
+# ignored without any error). Re-encode anything bigger than this target so
+# every receiver gets a cover it will actually show. 48KB leaves margin under
+# the worst-case reading of the cap.
+ARTWORK_TARGET_BYTES = 48 * 1024
+# Covers are displayed small (lock screen / now-playing tiles); 600px is
+# indistinguishable there and keeps the re-encode fast on Pi-class CPUs.
+ARTWORK_MAX_EDGE_PX = 600
+
+_resample_unavailable_logged = False
+
+
+def _resample_artwork(data: bytes) -> bytes:
+    """Return artwork bytes no larger than ARTWORK_TARGET_BYTES.
+
+    Bytes already within the target pass through untouched. Oversized images
+    are re-encoded as progressive-free baseline JPEG, stepping quality down
+    (and finally the long edge) until they fit. On any failure -- Pillow not
+    installed, undecodable image -- the original bytes are returned: an
+    oversized cover that some receivers still show beats no cover at all.
+    """
+    global _resample_unavailable_logged
+
+    if len(data) <= ARTWORK_TARGET_BYTES:
+        return data
+
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        if not _resample_unavailable_logged:
+            _resample_unavailable_logged = True
+            LOGGER.warning(
+                "artwork: Pillow unavailable; oversized covers (>%d bytes) "
+                "will be published as-is and may not display on Apple TV",
+                ARTWORK_TARGET_BYTES,
+            )
+        return data
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        img = img.convert("RGB")
+        if max(img.size) > ARTWORK_MAX_EDGE_PX:
+            img.thumbnail((ARTWORK_MAX_EDGE_PX, ARTWORK_MAX_EDGE_PX))
+
+        best: Optional[bytes] = None
+        for edge, quality in (
+            (None, 85), (None, 78), (None, 70), (None, 60),
+            (400, 70), (400, 55), (300, 55),
+        ):
+            candidate = img
+            if edge is not None and max(candidate.size) > edge:
+                candidate = img.copy()
+                candidate.thumbnail((edge, edge))
+            buf = io.BytesIO()
+            candidate.save(buf, "JPEG", quality=quality, optimize=True)
+            out = buf.getvalue()
+            if best is None or len(out) < len(best):
+                best = out
+            if len(out) <= ARTWORK_TARGET_BYTES:
+                LOGGER.info(
+                    "artwork: resampled %d -> %d bytes (quality=%d, %dx%d)",
+                    len(data), len(out), quality, *candidate.size,
+                )
+                return out
+
+        # Nothing fit (pathological image); send the smallest attempt anyway.
+        LOGGER.warning(
+            "artwork: could not fit cover under %d bytes (best %d); sending best effort",
+            ARTWORK_TARGET_BYTES, len(best) if best else len(data),
+        )
+        return best if best is not None else data
+    except Exception as e:
+        LOGGER.warning("artwork: resample failed (%s); using original bytes", e)
+        return data
+
+
 def _suffix_for(data: bytes) -> str:
     """Suffix from the image's magic bytes.
 
@@ -215,6 +294,13 @@ class ArtworkFileCache:
         if not suffix:
             LOGGER.info("artwork: %s is not a recognised image, not caching", url)
             return None
+
+        # Re-encode oversized covers before they enter the cache, so every
+        # consumer downstream (metadata pipe, MRP push) stays under the
+        # receiver's silent artwork cap. Re-derive the suffix afterwards: the
+        # resample path always emits JPEG.
+        data = _resample_artwork(data)
+        suffix = _suffix_for(data) or suffix
 
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
