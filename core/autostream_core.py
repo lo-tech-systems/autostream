@@ -25,7 +25,7 @@ import sys
 import time
 import signal
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +53,7 @@ from autostream_nowplaying import (
     PersistentNowPlayingCache,
     get_shared_metadata_publisher,
     release_shared_metadata_publisher,
+    _load_placeholder_artwork,
 )
 from autostream_player_service import (
     config_airplay_mode_to_backend,
@@ -2600,15 +2601,33 @@ class AudioMonitor:
             svc.analysis_lead_in_seconds, svc.snapshot_seconds,
         )
         self._schedule_track_id_after(now, delay, "track_change")
-        # Deliberately NOT touching self._current_nowplaying here: while
-        # re-identification is pending (this delay, plus however long the
-        # worker takes), _ti_snapshot (the status/UI view) moves to
-        # "waiting", but the previously-published title/artist/artwork are
-        # untouched -- no publish_refresh() is fired from this path at all
-        # (only _ti_worker(), on a completed identification, calls
-        # publish_refresh()). See _default_nowplaying_metadata() /
-        # _reset_nowplaying_for_new_session() for the one place metadata
-        # *does* get reset (a fresh session).
+        # DETECTING-INTERSTITIAL policy: a detected track boundary is a
+        # visible moment for the receiver, not just a status change. Reset
+        # _current_nowplaying to the input-label default (with the bundled
+        # placeholder logo as its artwork, decided explicitly rather than
+        # left as None) and publish it immediately, so the receiver drops
+        # the just-finished track's title/cover and shows "<input label> /
+        # autostream" + the autostream logo while re-identification runs --
+        # the same look a session start gets from _reset_nowplaying_for_new_
+        # session() / _session_nowplaying_start(). When the pending
+        # identification lands, _ti_worker() compares its result against
+        # this now-reset _current_nowplaying: for a *different* track the
+        # comparison obviously differs; for the *same* track it still
+        # differs (this interstitial's placeholder artwork vs. the
+        # identified cover), so either way _ti_worker() publishes real
+        # metadata and the receiver's display "restores" on its own -- no
+        # special-casing needed here for the same-track case. Note this
+        # path is reached only from a monitor-reported gap event
+        # (track_change_seq advancing); the periodic re-identification
+        # timer (_ti_worker() scheduling itself via _schedule_track_id_
+        # after()) never calls back into this method, so a routine refresh
+        # of an already-identified track does not re-trigger the
+        # interstitial.
+        self._current_nowplaying = self._default_nowplaying_metadata()
+        self._current_nowplaying = replace(
+            self._current_nowplaying, artwork=_load_placeholder_artwork()
+        )
+        self._nowplaying_publisher.publish_refresh(self._current_nowplaying)
 
     def _default_nowplaying_metadata(self) -> "NowPlayingMetadata":
         """The now-playing metadata for this input with no identified track:
@@ -2629,10 +2648,10 @@ class AudioMonitor:
         source_changed dispatch, via _session_nowplaying_start()) to drop
         any title/artist/artwork carried over from a previous session --
         otherwise a stale cover from whatever was last playing could flash
-        up before this session's own track ID (if any) lands. This is the
-        one artwork reset point; within a session, a pending
-        re-identification instead holds the previous artwork (see
-        _on_possible_track_change() above and _ti_worker() below)."""
+        up before this session's own track ID (if any) lands. Within a
+        session, a detected track boundary resets metadata the same way
+        (see _on_possible_track_change() above, and _ti_worker() below for
+        where a completed identification then replaces it)."""
         self._current_nowplaying = self._default_nowplaying_metadata()
 
     def apply_allow_capture(self, client: "MonitorClient") -> None:

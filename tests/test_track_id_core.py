@@ -1545,6 +1545,100 @@ class TestTrackChangeScheduling:
 
 
 # ---------------------------------------------------------------------------
+# T5b: Detecting-interstitial -- a track-change event publishes the input
+# label + placeholder logo immediately, rather than holding the previous
+# track's title/artwork until re-identification completes.
+# ---------------------------------------------------------------------------
+
+class TestTrackChangeInterstitial:
+
+    def test_track_change_publishes_default_metadata_with_placeholder(self):
+        """A gap event publishes once: input-label title, placeholder artwork."""
+        from autostream_artwork import ArtworkImage
+        placeholder = ArtworkImage(data=b"placeholder-bytes", mime="image/png", ident="placeholder1234")
+        svc = _make_service()
+        mon = _make_capturing_monitor_with_service(svc)
+        expected_default = mon._default_nowplaying_metadata()
+
+        with patch("autostream_core._load_placeholder_artwork", return_value=placeholder):
+            mon._on_possible_track_change(1)
+
+        mon._nowplaying_publisher.publish_refresh.assert_called_once()
+        published = mon._nowplaying_publisher.publish_refresh.call_args[0][0]
+        assert published.title == expected_default.title
+        assert published.artist == expected_default.artist
+        assert published.artwork == placeholder
+        assert mon._current_nowplaying == published
+
+    def test_track_change_publishes_with_none_artwork_when_placeholder_missing(self):
+        """If the bundled placeholder can't be loaded, publish artwork=None
+        and let the publisher's own HOLD-UNTIL-NEW fallback take over."""
+        svc = _make_service()
+        mon = _make_capturing_monitor_with_service(svc)
+
+        with patch("autostream_core._load_placeholder_artwork", return_value=None):
+            mon._on_possible_track_change(1)
+
+        mon._nowplaying_publisher.publish_refresh.assert_called_once()
+        published = mon._nowplaying_publisher.publish_refresh.call_args[0][0]
+        assert published.artwork is None
+
+    def test_track_change_without_service_does_not_publish(self):
+        """The svc-is-None early-out must still skip publishing entirely."""
+        mon = _make_capturing_monitor_with_service()
+        core._track_id_service = None
+        mon._on_possible_track_change(3)
+        mon._nowplaying_publisher.publish_refresh.assert_not_called()
+
+    def test_same_track_reidentification_after_interstitial_republishes(self):
+        """A completed identification of the SAME track, landing after the
+        interstitial reset _current_nowplaying, must still publish (it now
+        differs from the interstitial's input-label/placeholder metadata),
+        restoring the receiver's display without any special-casing."""
+        from autostream_artwork import ArtworkImage
+        placeholder = ArtworkImage(data=b"placeholder-bytes", mime="image/png", ident="placeholder1234")
+        svc = _make_service(matched=True)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        with patch("autostream_core._load_placeholder_artwork", return_value=placeholder):
+            mon._on_possible_track_change(1)
+        mon._nowplaying_publisher.publish_refresh.reset_mock()
+        interstitial_meta = mon._current_nowplaying
+        assert interstitial_meta.artwork == placeholder
+
+        # Re-identification lands and matches the same track as before.
+        _run_worker_sync(mon)
+
+        mon._nowplaying_publisher.publish_refresh.assert_called_once()
+        published = mon._nowplaying_publisher.publish_refresh.call_args[0][0]
+        assert published.title == "Test Title"
+        assert published.artist == "Test Artist"
+        assert published != interstitial_meta
+        assert mon._current_nowplaying == published
+
+    def test_different_track_reidentification_after_interstitial_publishes_new(self):
+        """A completed identification of a DIFFERENT track after the
+        interstitial publishes that new track's metadata."""
+        svc = _make_service(matched=True)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+
+        mon._on_possible_track_change(1)
+        mon._nowplaying_publisher.publish_refresh.reset_mock()
+
+        _run_worker_sync(mon)
+
+        mon._nowplaying_publisher.publish_refresh.assert_called_once()
+        published = mon._nowplaying_publisher.publish_refresh.call_args[0][0]
+        assert published.title == "Test Title"
+        assert published.artist == "Test Artist"
+        assert mon._current_nowplaying == published
+
+
+# ---------------------------------------------------------------------------
 # Track identification during replay
 # ---------------------------------------------------------------------------
 #

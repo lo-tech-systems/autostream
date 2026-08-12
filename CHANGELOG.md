@@ -5,6 +5,10 @@
 - fix: the first action in an already-open browser tab no longer silently
   fails after the appliance restarts — the page now refreshes its session
   transparently and retries, so buttons work first time
+- improvement: when a track change is detected, the receiver now switches
+  straight to the input label and the autostream logo while the new track is
+  being identified, instead of continuing to show the previous track's
+  title and cover until identification finishes
 - fix: track cover art is now resized before being sent to AirPlay speakers,
   fixing an issue where larger covers would silently fail to display on
   Apple TV; the artwork pipeline also no longer touches disk, closing a

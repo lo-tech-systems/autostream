@@ -797,6 +797,8 @@ Track boundaries are detected from short silent gaps. Gapless albums and live re
 
 If the periodic refresh is identifying the wrong (previous) track, the most likely cause is that the refresh deadline happened to fall early in the new track. The refresh will self-correct at the next cycle.
 
+On a detected boundary, the receiver switches immediately to the input label (e.g. "Vinyl") and the autostream logo while re-identification runs, then updates to the new track's title and cover once identification completes — including a false boundary, where it shows the input label briefly before the same track's details reappear.
+
 #### False track changes on quiet passages
 
 Passages that dip below the configured silence threshold for more than 1.25 seconds can trigger a false track-change event. If this is common with a particular source, the threshold duration can be increased in the JSON configuration:
