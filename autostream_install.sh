@@ -700,9 +700,12 @@ handle_pin() {
 # appliance installed before a dependency joined this list must acquire it on
 # its next update, or deploy_phase's monitor build fails with missing headers.
 ensure_build_deps() {
+  # python3-pil: now-playing artwork normalisation (covers are re-encoded to
+  # the size receivers reliably display); without it oversized covers are
+  # published as-is and may not appear on some receivers.
   apt_install git build-essential libffi-dev pkg-config fq \
     libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev \
-    python3-dev python3-venv python3-pip python3-flask
+    python3-dev python3-venv python3-pip python3-flask python3-pil
 }
 
 # bootstrap_phase: first-time-only setup — users, groups, directories, base packages.
@@ -1084,9 +1087,15 @@ remove_legacy_default_nowplaying_hints() {
   if [[ "${OWNTONE_MODE}" != "mini" ]]; then
     return 0
   fi
-  python3 - <<'PYHINTS'
+  # Paths overridable so the migration can be exercised against a scratch
+  # tree (same pattern as the vibra stamp-path override).
+  python3 - \
+    "${AUTOSTREAM_HINTS_FILE:-/etc/autostream/nowplaying_hints.json}" \
+    "${AUTOSTREAM_LEGACY_HINTS_FILE:-/opt/autostream/nowplaying_hints.json}" \
+    <<'PYHINTS'
 import json
 import os
+import sys
 
 LEGACY_ENTRY = {
     "title": "Enjoy",
@@ -1095,10 +1104,7 @@ LEGACY_ENTRY = {
     "artwork_path": "/opt/autostream/images/autostream-badge.png",
 }
 
-for path in (
-    "/etc/autostream/nowplaying_hints.json",
-    "/opt/autostream/nowplaying_hints.json",
-):
+for path in sys.argv[1:]:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)

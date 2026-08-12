@@ -6,6 +6,9 @@
   fixing an issue where larger covers would silently fail to display on
   Apple TV; the artwork pipeline also no longer touches disk, closing a
   narrow window where a fast track change could show the wrong cover
+- fix: updating an appliance that still carried the old built-in "Turntable"
+  now-playing hints file removes it, restoring the input-aware labels and
+  placeholder artwork (customised hints files are always preserved)
 - improvement: the wired input can now be disabled/skipped so setup can be
   completed without a wired input device connected — first-run setup gains a
   "Skip — configure later" option, Input 1 can be enabled/disabled from
