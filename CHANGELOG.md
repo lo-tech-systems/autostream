@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: the platform log level chosen on the Info page now survives an
+  appliance restart — previously any later settings change could silently
+  revert it to the default
 - fix: the first action in an already-open browser tab no longer silently
   fails after the appliance restarts — the page now refreshes its session
   transparently and retries, so buttons work first time
