@@ -40,6 +40,7 @@ from autostream_webui_assets import (
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
+    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
@@ -454,7 +455,7 @@ def send_airplay_page(
         f"window.__PIN_PROMPT_FALLBACK='Enter PIN shown on your device';"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>"
-    )
+    ) + CSRF_RECOVERY_SCRIPT
 
     _vu_stereo_css = (
         ".vu-meter{flex-direction:row;gap:3px;width:23px;}"
@@ -831,6 +832,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__OUTPUTS_EMPTY_TOLERANCE_MS={int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000)};"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
+        + CSRF_RECOVERY_SCRIPT
         + HOME_CARDS_SCRIPT
         + INFO_MODAL_SCRIPT
         + _REMOTE_HOME_SCRIPT

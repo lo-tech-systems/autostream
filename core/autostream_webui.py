@@ -915,6 +915,23 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         if not AUTH.validate_csrf(self, csrf_token):
             if path in ("/setup", "/owntone-setup", "/service"):
                 self._redirect_with_error_flash("Settings not saved, please try again")
+            elif path.startswith("/api/"):
+                # Stale-session recovery: sessions live in memory, so an
+                # appliance restart invalidates every open browser tab's
+                # cookie and embedded CSRF token -- the tab's FIRST
+                # state-changing request after a restart then lands here.
+                # Establish a fresh session on this very response (cookie is
+                # flushed via end_headers) and hand the new CSRF token back,
+                # so the client can transparently retry once instead of the
+                # user's click silently dying. Safe against actual CSRF: a
+                # cross-site attacker cannot read this response body, so the
+                # fresh token never reaches them.
+                fresh_csrf = AUTH.ensure_session(self)
+                send_json(self, 403, {
+                    "ok": False,
+                    "error": "csrf_stale",
+                    "csrf_token": fresh_csrf,
+                })
             else:
                 self.send_error(403, "CSRF validation failed")
             return

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: the first action in an already-open browser tab no longer silently
+  fails after the appliance restarts — the page now refreshes its session
+  transparently and retries, so buttons work first time
 - fix: track cover art is now resized before being sent to AirPlay speakers,
   fixing an issue where larger covers would silently fail to display on
   Apple TV; the artwork pipeline also no longer touches disk, closing a

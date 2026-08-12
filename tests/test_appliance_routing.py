@@ -331,3 +331,61 @@ class TestPostGatewayRequiresCsrf:
             handler.do_POST()
         # Handler must be reached even without authenticated session
         stub.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Stale-session CSRF recovery on API posts
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestStaleCsrfRecovery:
+    """A restart wipes the in-memory session table, so an already-open tab's
+    first API POST fails CSRF validation. That 403 must carry a freshly
+    minted session (cookie) and CSRF token so the page's fetch shim can
+    transparently retry, instead of the click silently doing nothing."""
+
+    def _post_output_with_stale_session(self):
+        mgr = _make_auth(pin=None)
+        # Cookie references a session the manager has never seen (restart).
+        body = json.dumps({"id": "out1", "selected": True, "volume": 50}).encode()
+        handler = _make_post_handler(
+            "/api/output",
+            sess_token="stale-token-from-before-the-restart",
+            csrf_token="stale-csrf-from-the-old-page",
+            body=body,
+        )
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required", return_value=False):
+            handler.do_POST()
+        return mgr, handler
+
+    def test_stale_session_gets_json_403_with_fresh_token(self):
+        mgr, handler = self._post_output_with_stale_session()
+        handler.send_response.assert_called_once_with(403)
+        payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+        assert payload["ok"] is False
+        assert payload["error"] == "csrf_stale"
+        # The token in the body must belong to a real, fresh session.
+        fresh = [s for s in mgr._sessions.values()
+                 if s.csrf_token == payload["csrf_token"]]
+        assert len(fresh) == 1
+
+    def test_stale_session_response_sets_fresh_cookie(self):
+        mgr, handler = self._post_output_with_stale_session()
+        cookie = handler._pending_auth_cookie
+        assert cookie and SESSION_COOKIE_NAME in cookie
+        token = cookie.split(f"{SESSION_COOKIE_NAME}=", 1)[1].split(";", 1)[0]
+        assert token in mgr._sessions
+
+    def test_non_api_post_keeps_plain_403(self):
+        mgr = _make_auth(pin=None)
+        handler = _make_post_handler(
+            "/some-page", sess_token="stale", csrf_token="stale", body=b"{}",
+        )
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.is_commissioning_required", return_value=False):
+            handler.do_POST()
+        handler.send_error.assert_called_once()
+        assert handler.send_error.call_args[0][0] == 403

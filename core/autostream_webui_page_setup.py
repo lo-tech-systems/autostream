@@ -59,6 +59,7 @@ from autostream_webui_assets import (
     PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
+    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     _set_flash_cookie,
     build_page_html,
@@ -711,7 +712,7 @@ def send_setup_page(
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + CSRF_RECOVERY_SCRIPT
     pin_modal_setup_css = """
       #pinModal .pin-entry {
         -webkit-text-security: disc;

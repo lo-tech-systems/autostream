@@ -27,6 +27,7 @@ from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
 from autostream_webui_assets import APPLIANCE_SELECTOR_CSS
 from autostream_webui_common import (
+    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
@@ -1076,6 +1077,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         f"window.__REMOTE_HOSTNAME='{html.escape(_remote_hostname)}';"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"</script>\n"
+        + CSRF_RECOVERY_SCRIPT
         + _REMOTE_EQUALISER_SCRIPT
     )
 

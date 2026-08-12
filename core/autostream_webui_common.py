@@ -698,3 +698,36 @@ def render_license_md(text: str) -> str:
     close_ul()
     flush_para()
     return "\n".join(out)
+
+
+# ── Stale-CSRF transparent recovery ──────────────────────────────────────────
+#
+# Browser sessions live in memory, so an appliance restart invalidates every
+# open tab's session cookie and embedded CSRF token. The first state-changing
+# API request from such a tab gets HTTP 403 {"error": "csrf_stale"} carrying a
+# freshly minted token (see the CSRF branch in autostream_webui.py's POST
+# dispatch); this script wraps window.fetch once per page so that exact case
+# is retried transparently with the new token instead of the user's click
+# silently doing nothing. Any other 403 (or a second consecutive failure)
+# passes through untouched. Emit directly after the window.__CSRF assignment
+# on every page that makes API calls.
+CSRF_RECOVERY_SCRIPT = (
+    "<script>(function(){"
+    "if(window.__csrfRecoveryInstalled)return;window.__csrfRecoveryInstalled=true;"
+    "var _f=window.fetch.bind(window);"
+    "function hget(h,k){if(!h)return undefined;return(typeof h.get==='function')?h.get(k):h[k];}"
+    "function hcopy(h,k,v){if(typeof h.get==='function'){var n=new Headers(h);n.set(k,v);return n;}"
+    "var n={};for(var key in h){n[key]=h[key];}n[k]=v;return n;}"
+    "window.fetch=function(input,init){"
+    "return _f(input,init).then(function(resp){"
+    "if(resp.status!==403||!init||!hget(init.headers,'X-CSRF-Token'))return resp;"
+    "return resp.clone().json().then(function(data){"
+    "if(!data||data.error!=='csrf_stale'||!data.csrf_token)return resp;"
+    "window.__CSRF=data.csrf_token;"
+    "var retry=Object.assign({},init);"
+    "retry.headers=hcopy(init.headers,'X-CSRF-Token',data.csrf_token);"
+    "return _f(input,retry);"
+    "},function(){return resp;});"
+    "});};"
+    "})();</script>"
+)

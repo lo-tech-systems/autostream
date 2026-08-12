@@ -47,7 +47,7 @@ from autostream_player_service import (
     output_supported_config_modes,
 )
 from autostream_sysutils import run_admin_cmd
-from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, locked_load_config
+from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config
 from autostream_webui_assets import AUTOSAVE_JS
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
@@ -488,7 +488,7 @@ def send_owntone_setup_page(
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>"
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + CSRF_RECOVERY_SCRIPT
 
     page_heading_html = "<h1>Owntone Setup</h1>"
 
