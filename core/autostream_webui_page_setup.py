@@ -2646,8 +2646,7 @@ def send_setup_page(
               const r = await fetch("/api/update/check"); const j = await r.json();
               if(j.ok && j.update_available){{
                 cand=j.candidate;
-                var chanNote = j.channel === "dev" ? " (pre-release channel)" : "";
-                msg("Update available: " + j.candidate + chanNote);
+                msg("Update available: " + j.candidate);
                 notesHtml = j.release_notes_html || "";
                 notesText = j.release_notes || "";
                 infoMode = true;

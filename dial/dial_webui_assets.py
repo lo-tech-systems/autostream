@@ -332,8 +332,7 @@ async function checkForUpdate() {
     if (!d.ok) {
       st.textContent = d.error || 'Check failed'; st.style.color = 'var(--err)';
     } else if (d.update_available) {
-      var chanNote = d.channel === 'dev' ? ' (pre-release channel)' : '';
-      st.textContent = 'Update available' + (d.candidate ? ': v' + d.candidate : '') + chanNote;
+      st.textContent = 'Update available' + (d.candidate ? ': v' + d.candidate : '');
       st.style.color = 'var(--ok)';
       inst.style.display = '';
     } else {

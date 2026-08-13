@@ -78,7 +78,7 @@ def _release_payload(tag: str = "v1.2.3") -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.1 — DialConfig model
+# Section 8.1 â€” DialConfig model
 # ---------------------------------------------------------------------------
 
 class TestDialConfigModel:
@@ -196,7 +196,7 @@ class TestDialConfigModel:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.2 — Dial updater channel reading and cmd_check
+# Section 8.2 â€” Dial updater channel reading and cmd_check
 # ---------------------------------------------------------------------------
 
 class TestDialUpdaterChannelReading:
@@ -421,7 +421,7 @@ class TestDialUpdaterCmdApply:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.3 — Dial HTTP /configure API
+# Section 8.3 â€” Dial HTTP /configure API
 # ---------------------------------------------------------------------------
 
 class TestDialHttpConfigureApi:
@@ -505,7 +505,7 @@ class TestDialHttpConfigureApi:
                 f"Expected update_channel={channel!r} in GET response, got {resp['data']}"
             )
 
-    # --- POST /configure — channel values ---
+    # --- POST /configure â€” channel values ---
 
     def test_configure_post_accepts_dev_value(self):
         """POST update_channel='dev' succeeds, persists to save_config, and updates live cfg."""
@@ -585,7 +585,7 @@ class TestDialHttpConfigureApi:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.4 — Dial Setup UI (structural)
+# Section 8.4 â€” Dial Setup UI (structural)
 # ---------------------------------------------------------------------------
 
 class TestDialSetupUiStructural:
@@ -604,13 +604,18 @@ class TestDialSetupUiStructural:
         assert "update_channel:" in SETUP_PAGE_HTML
         assert "pre ? 'dev' : 'stable'" in SETUP_PAGE_HTML
 
-    def test_channel_annotation_in_update_check_result(self):
+    def test_update_check_result_states_the_candidate_alone(self):
+        """The check result names the candidate version and nothing else: the
+        tag itself already distinguishes a pre-release (it carries an
+        -alpha/-beta label), and which channel the device follows is shown
+        with the channel setting, not appended to the offered version."""
         from dial_webui_assets import SETUP_PAGE_HTML
-        assert "pre-release channel" in SETUP_PAGE_HTML
+        assert "'Update available' + (d.candidate ? ': v' + d.candidate : '')" in SETUP_PAGE_HTML
+        assert "pre-release channel" not in SETUP_PAGE_HTML
 
 
 # ---------------------------------------------------------------------------
-# Section 8.5 — Main appliance dial card (structural)
+# Section 8.5 â€” Main appliance dial card (structural)
 # ---------------------------------------------------------------------------
 
 class TestMainDialCardStructural:
@@ -641,7 +646,7 @@ class TestMainDialCardStructural:
         assert "classList.contains('dial-channel')" in source
 
     def test_change_listener_includes_dial_step(self):
-        """The step slider must save on change — focusout alone never fires
+        """The step slider must save on change â€” focusout alone never fires
         after a plain drag-and-release, silently dropping the new value."""
         source = self._get_setup_page_source()
         change_handler = source.split("card.addEventListener('change'", 1)[1]
@@ -649,7 +654,7 @@ class TestMainDialCardStructural:
         assert "classList.contains('dial-step')" in change_handler
 
     def test_proxy_passthrough_no_modification(self):
-        """The proxy strips uuid and forwards all other fields — no dials.py changes needed."""
+        """The proxy strips uuid and forwards all other fields â€” no dials.py changes needed."""
         source_path = REPO_ROOT / "core" / "autostream_webui_dials.py"
         source = source_path.read_text(encoding="utf-8")
         # Proxy strips uuid and forwards everything else verbatim.
@@ -657,7 +662,7 @@ class TestMainDialCardStructural:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.1 — Installer default (structural)
+# Section 8.1 â€” Installer default (structural)
 # ---------------------------------------------------------------------------
 
 class TestInstallerDefault:
@@ -678,7 +683,7 @@ class TestInstallerDefault:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.6 — Dial update-check passes channel through
+# Section 8.6 â€” Dial update-check passes channel through
 # ---------------------------------------------------------------------------
 
 class TestDialUpdateCheckPassthrough:
