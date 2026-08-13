@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.5.0
 
 - fix: the updating screen no longer briefly claims a new update is already
   100% complete (a leftover result from the previous update) — progress now
