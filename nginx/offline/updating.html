@@ -170,6 +170,17 @@
     var OFFLINE_WARN_THRESHOLD     = 18; // ~3 min — escalate offline message
     var OFFLINE_GUIDANCE_THRESHOLD = 60; // ~10 min — offer concrete guidance
 
+    // The status endpoint can report a previous run's status=success/100%
+    // before a newly-started update has had a chance to write its own
+    // in_progress state (or when this page is opened/reloaded with no
+    // update actually running). witnessedActive only becomes true once a
+    // poll has actually observed status=in_progress in this page session,
+    // and enterSuccessMode is gated on it so a stale/absent success can
+    // never be mistaken for this update having finished.
+    var witnessedActive = false;
+    var noActivityPollCount = 0;
+    var NO_ACTIVITY_POLL_LIMIT = 6; // ~1 min at REFRESH_MS
+
     function text(el, value) {
       if (el) el.textContent = value;
     }
@@ -200,8 +211,28 @@
       var lastRun = (data && data.last_run_at) ? String(data.last_run_at) : 'unknown';
       var isStale = !!(data && data.stale);
 
+      if (status === 'in_progress') {
+        witnessedActive = true;
+        noActivityPollCount = 0;
+      }
+
+      // A success report this page has not itself watched happen (a stale
+      // previous run, or the page opened/reloaded with nothing running) must
+      // never be treated as this update having completed.
+      var waitingForStart = (status === 'success' && !witnessedActive);
+
       var message;
-      if (status === 'unknown') {
+      var noUpdateRunning = false;
+      if (waitingForStart) {
+        noActivityPollCount++;
+        percent = 0;
+        if (noActivityPollCount >= NO_ACTIVITY_POLL_LIMIT) {
+          noUpdateRunning = true;
+          message = 'No update appears to be running.';
+        } else {
+          message = 'Waiting for the update to start...';
+        }
+      } else if (status === 'unknown') {
         message = 'Preparing update...';
       } else if (isStale) {
         var isHung = !!(data && data.hung);
@@ -222,7 +253,9 @@
       }
 
       pageEl.classList.remove('status-error', 'status-success', 'status-stale');
-      if (isStale) {
+      if (waitingForStart) {
+        // Neither success nor error/stale — deliberately unstyled/neutral.
+      } else if (isStale) {
         pageEl.classList.add('status-stale');
       } else if (status === 'failure' || status === 'error') {
         pageEl.classList.add('status-error');
@@ -246,13 +279,24 @@
         logTailEl.textContent = '';
       }
 
-      text(messageEl, message);
-      text(statusLabelEl, isStale ? 'Possibly stalled' : friendlyStatus(status));
+      if (noUpdateRunning) {
+        messageEl.textContent = '';
+        messageEl.appendChild(document.createTextNode(message + ' '));
+        var link = document.createElement('a');
+        link.href = '/';
+        link.textContent = 'Return to autostream';
+        messageEl.appendChild(link);
+      } else {
+        text(messageEl, message);
+      }
+      text(statusLabelEl, waitingForStart
+        ? (noUpdateRunning ? 'Not running' : 'Waiting...')
+        : (isStale ? 'Possibly stalled' : friendlyStatus(status)));
       text(statusPercentEl, percent + '%');
       text(lastRunEl, 'Last update run: ' + lastRun);
       fillEl.style.width = percent + '%';
 
-      if (status === 'success' && percent >= 100) {
+      if (status === 'success' && percent >= 100 && witnessedActive) {
         enterSuccessMode(lastRun);
       }
     }

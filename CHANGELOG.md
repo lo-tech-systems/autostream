@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: the updating screen no longer briefly claims a new update is already
+  100% complete (a leftover result from the previous update) — progress now
+  starts at "Preparing update..." the moment an update begins, and the page
+  only reports completion for an update it has actually watched run, so
+  there's no window inviting a power-cycle mid-update
 - fix: the platform log level chosen on the Info page now survives an
   appliance restart — previously any later settings change could silently
   revert it to the default

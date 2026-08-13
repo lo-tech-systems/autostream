@@ -18,9 +18,17 @@ COMMANDS
 NOTES
 -----
 - Must run as root.
-- The installer (autostream_install.sh) is the authoritative writer of both
-  install-state.env (applied version) and update-result.env (progress/result).
-- This helper does not write install-state.env or update-result.env directly.
+- The installer (autostream_install.sh) is the authoritative writer of
+  install-state.env (applied version). It is also the authoritative writer
+  of update-result.env (progress/result) from the point it is scheduled
+  onward: its own first write always lands after this helper's last write.
+- This helper does not write install-state.env directly. It DOES write
+  update-result.env for the phases that happen before the installer takes
+  over — admission (STATUS=in_progress, "Preparing update..."), the tarball
+  download (STATUS=in_progress, "Downloading the update..."), and every
+  failure/skip return in between — so the /offline/updating page never
+  shows a stale result left over from a previous run while a new update is
+  merely being staged. See cmd_apply and _write_update_result.
 - Staging location: /var/lib/autostream/update-staging/  (root-owned, cleaned
   at the start of each apply run so stale extracts do not accumulate).
 - Immediately before scheduling the installer, cmd_apply best-effort stops
@@ -38,6 +46,7 @@ import fcntl
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +98,50 @@ def _read_installed_release_tag() -> str:
         _log(f"read_installed_release_tag: install-state read failed: {e}")
         return "unknown"
     return "unknown"
+
+
+def _write_update_result(status: str, percent: int, message: str) -> None:
+    """Atomically write UPDATE_RESULT_FILE for the pre-installer apply phases.
+
+    Uses the same field set/format the installer itself writes (LAST_RUN_AT,
+    STATUS, MESSAGE, PERCENT_COMPLETE, all double-quoted) so the
+    /offline/updating page and autostream_admin's update-status reader treat
+    both writers identically. Once the installer is scheduled it immediately
+    takes over this file with its own writes, which always land after the
+    last write made here.
+
+    Best-effort: a failure here must never break the apply itself, so all
+    errors are caught and logged rather than raised.
+    """
+    try:
+        run_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        safe_message = str(message).replace('"', "'")
+
+        UPDATE_RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{UPDATE_RESULT_FILE.name}.",
+            suffix=".tmp",
+            dir=str(UPDATE_RESULT_FILE.parent),
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f'LAST_RUN_AT="{run_at}"\n')
+                fh.write(f'STATUS="{status}"\n')
+                fh.write(f'MESSAGE="{safe_message}"\n')
+                fh.write(f'PERCENT_COMPLETE="{percent}"\n')
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, UPDATE_RESULT_FILE)
+        except Exception:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        _log(f"apply: warning — could not write update-result.env: {e}")
 
 
 def _update_unit_active() -> bool:
@@ -229,6 +282,11 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: refused — unable to determine update unit status: {e}")
         return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
 
+    # From here on, this apply is actually going ahead: close the window
+    # during which the status page could otherwise show a previous run's
+    # stale success/failure while this new apply is still being staged.
+    _write_update_result("in_progress", 0, "Preparing update...")
+
     # Single channel-aware release lookup — used for both the version guard
     # and the tarball staged below.  This ensures the release that is staged
     # is exactly the one that was compared with the installed version.
@@ -236,9 +294,12 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     reachable, tag, tarball_url, _html_url, _notes = _resolve_release(channel)
     if not reachable:
         _log("apply: GitHub API not reachable")
-        return {"ok": False, "error": "GitHub API not reachable (network or HTTP error)"}
+        msg = "GitHub API not reachable (network or HTTP error)"
+        _write_update_result("failure", 0, msg)
+        return {"ok": False, "error": msg}
     if not tag:
         _log("apply: no release available for channel")
+        _write_update_result("failure", 0, "No release available for this update channel.")
         return {"ok": True, "staged_tag": None}
 
     installed = _read_installed_release_tag()
@@ -246,20 +307,27 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     if installed != "missing":
         if not (_version_key(candidate) > _version_key(installed)):
             _log(f"apply: already at latest ({installed!r}) — no-op")
+            _write_update_result("success", 100, "Already up to date.")
             return {"ok": True, "staged_tag": None}
 
     if not tarball_url:
         _log("apply: no tarball URL for release")
-        return {"ok": False, "error": "No latest GitHub release (or missing tarball URL)"}
+        msg = "No latest GitHub release (or missing tarball URL)"
+        _write_update_result("failure", 0, msg)
+        return {"ok": False, "error": msg}
 
     systemd_run = _find_systemd_run()
     if systemd_run is None:
         _log("apply: systemd-run not found; cannot schedule installer")
-        return {"ok": False, "error": "systemd-run not found; cannot schedule installer"}
+        msg = "systemd-run not found; cannot schedule installer"
+        _write_update_result("failure", 0, msg)
+        return {"ok": False, "error": msg}
 
     if not (os.path.isfile(FLOCK_BIN) and os.access(FLOCK_BIN, os.X_OK)):
         _log(f"apply: {FLOCK_BIN} not found or not executable; cannot schedule locked installer")
-        return {"ok": False, "error": f"flock not found at {FLOCK_BIN}; cannot schedule installer"}
+        msg = f"flock not found at {FLOCK_BIN}; cannot schedule installer"
+        _write_update_result("failure", 0, msg)
+        return {"ok": False, "error": msg}
 
     _log(f"apply: staging release tag={tag} tarball={tarball_url} channel={channel}")
 
@@ -271,16 +339,23 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         lock_fd = os.open(str(UPDATE_LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o600)
     except OSError as e:
         _log(f"apply: failed to open update lock file: {e}")
-        return {"ok": False, "error": "Failed to open update lock."}
+        msg = "Failed to open update lock."
+        _write_update_result("failure", 0, msg)
+        return {"ok": False, "error": msg}
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as e:
         os.close(lock_fd)
         if e.errno in (errno.EWOULDBLOCK, errno.EACCES):
+            # A concurrent apply's installer already holds the lock and owns
+            # update-result.env for the duration of its run; leave the file
+            # alone so its genuine progress is not clobbered by our refusal.
             _log("apply: refused — update lock already held by a running installer")
             return {"ok": False, "error": "An update is already in progress. Please wait for it to complete."}
         _log(f"apply: failed to acquire update lock: {e}")
-        return {"ok": False, "error": "Failed to acquire update lock."}
+        msg = "Failed to acquire update lock."
+        _write_update_result("failure", 0, msg)
+        return {"ok": False, "error": msg}
 
     try:
         # Recheck after acquiring the lock: a concurrent apply() may have passed the
@@ -288,13 +363,18 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         # check and our lock acquisition.
         try:
             if _update_unit_active():
+                # As above: a concurrent installer is genuinely running and
+                # owns the result file — do not overwrite its real progress.
                 _log("apply: refused after lock — unit became active during staging window")
                 return {"ok": False, "error": "An update is already in progress. Please wait for it to complete."}
         except Exception as e:
             _log(f"apply: refused — unable to recheck update unit status after lock: {e}")
-            return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
+            msg = "Unable to verify update status. Please try again shortly."
+            _write_update_result("failure", 0, msg)
+            return {"ok": False, "error": msg}
 
         _log(f"apply: staging release tag={tag}")
+        _write_update_result("in_progress", 5, "Downloading the update...")
         try:
             installer = stage_release(
                 tarball_url, tag, STAGING_DIR,
@@ -303,7 +383,9 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             _log(f"apply: staged release at {installer.parent}")
         except Exception as e:
             _log(f"apply: staging failed: {e}")
-            return {"ok": False, "error": "Release staging failed", "details": str(e)}
+            fail_msg = "Release staging failed"
+            _write_update_result("failure", 0, fail_msg)
+            return {"ok": False, "error": fail_msg, "details": str(e)}
 
         # Best-effort pre-update teardown: stop playback and free the repeat
         # buffer *before* scheduling the installer's heavy work (apt +
@@ -341,17 +423,14 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         )
         if rc != 0:
             _log(f"apply: systemd-run scheduling failed rc={rc} stderr='{err}'")
-            return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
+            fail_msg = "Failed to schedule installer"
+            _write_update_result("failure", 0, fail_msg)
+            return {"ok": False, "error": fail_msg, "details": err or out}
 
-        # Clear any stale update-result.env from the previous run so the status
-        # page does not immediately show the old "success / 100%" result before
-        # the new installer has written its first progress entry.
-        try:
-            UPDATE_RESULT_FILE.unlink(missing_ok=True)
-            _log("apply: cleared stale update-result.env")
-        except Exception as e:
-            _log(f"apply: warning — could not clear update-result.env: {e}")
-
+        # No further write is needed here: the installer, now scheduled, will
+        # perform its own first write (STATUS=in_progress) within moments,
+        # which always lands after the "Downloading the update..." write
+        # above and supersedes it.
         _log(f"apply: installer scheduled as transient unit {unit_name} tag={tag}")
         return {"ok": True, "staged_tag": tag.lstrip("v")}
 

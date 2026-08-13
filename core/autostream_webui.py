@@ -23,7 +23,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +38,6 @@ from autostream_core import (
 from autostream_bluetooth_client import BluetoothClient, bluetooth_installed
 
 from autostream_sysutils import (
-    atomic_write_file,
     reboot_system,
 )
 
@@ -229,8 +227,10 @@ _update_apply_in_progress = False
 
 # Where the installer (autostream_install.sh) persists apply progress/result;
 # read by autostream_admin's "update-status" command for the /offline/updating
-# page. Owned by the "autostream" user (same as this process), so it can be
-# written directly without going through sudo.
+# page. Root-owned, so this (unprivileged) process cannot write it directly.
+# autostream_updater (run as root via sudo) now owns every write to this file
+# for the phases before the installer takes over — including the failure/
+# timeout cases below — so this process only needs to log those outcomes.
 _UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 
 
@@ -238,35 +238,6 @@ def _update_apply_mark_finished() -> None:
     global _update_apply_in_progress
     with _update_apply_lock:
         _update_apply_in_progress = False
-
-
-def _write_update_apply_result(status: str, message: str) -> None:
-    """Best-effort write of a webui-observed apply outcome into update-result.env.
-
-    Only used for failures that happen before the installer itself has a
-    chance to write anything (e.g. release staging failing, or the apply
-    subprocess never returning). Once the installer is actually scheduled and
-    starts, it immediately overwrites this file with STATUS=in_progress and
-    then its own final result, so a write made here can only ever be visible
-    for the (bounded) window before that happens — it can never mask a
-    success that has already completed, because that success write always
-    comes after and last.
-    """
-    run_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    safe_message = message.replace('"', "'")
-
-    def _writer(fh) -> None:
-        fh.write(f'LAST_RUN_AT="{run_at}"\n')
-        fh.write(f'STATUS="{status}"\n')
-        fh.write(f'MESSAGE="{safe_message}"\n')
-        fh.write('PERCENT_COMPLETE=""\n')
-
-    try:
-        atomic_write_file(_UPDATE_RESULT_FILE, _writer)
-    except Exception:
-        logging.exception(
-            "update apply: failed to write %s result to %s", status, _UPDATE_RESULT_FILE
-        )
 
 
 def _run_update_apply_background() -> None:
@@ -283,21 +254,17 @@ def _run_update_apply_background() -> None:
             # The updater subprocess (invoked via sudo) is not guaranteed to
             # die with its parent, so a timeout here does not mean the apply
             # itself failed — staging or the installer hand-off may still be
-            # under way. Record "error" rather than "failure" to avoid
-            # asserting a failure that may not have happened; if the apply
-            # does go on to schedule the installer, that installer's first
-            # write (STATUS=in_progress) supersedes this one, and this entry
-            # is only ever visible for the window until it does.
+            # under way. autostream_updater (running as root) is the sole
+            # writer of update-result.env for this window; if it is still
+            # progressing, its own writes continue to land regardless of this
+            # process losing track of the subprocess, so nothing needs to be
+            # written here — only logged.
             logging.error("update apply: timed out waiting for updater subprocess")
-            _write_update_apply_result(
-                "error",
-                "Update status could not be confirmed after a timeout. "
-                "Check back shortly before retrying.",
-            )
             return
         except Exception as e:
+            # As above: autostream_updater owns update-result.env, including
+            # any failure state, so only logging is needed here.
             logging.error("update apply: background apply raised: %s", e)
-            _write_update_apply_result("failure", f"Update failed to start: {e}")
             return
 
         if rc == 0:
@@ -306,10 +273,10 @@ def _run_update_apply_background() -> None:
             except Exception:
                 result = {"ok": True}
             if not result.get("ok", True):
+                # The updater has already written its own failure (or, for a
+                # detected concurrent update, deliberately left the running
+                # instance's own progress untouched) — log only.
                 logging.error("update apply: updater reported failure: %s", result)
-                _write_update_apply_result(
-                    "failure", str(result.get("error") or "Update failed")
-                )
             return
 
         try:
@@ -319,8 +286,10 @@ def _run_update_apply_background() -> None:
             message = "Update failed"
         if err.strip():
             message = f"{message}: {err.strip()}"
+        # The updater owns update-result.env; a non-zero exit before it could
+        # write anything is rare (e.g. sudo/exec failure) but even then there
+        # is nothing this unprivileged process can do about the result file.
         logging.error("update apply: updater exited rc=%s: %s", rc, message)
-        _write_update_apply_result("failure", message)
     finally:
         _update_apply_mark_finished()
 
@@ -412,8 +381,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         responds immediately with {ok: True, accepted: True}. The JS client
         treats "accepted" the same way it used to treat a synchronous
         success and navigates to /offline/updating, which polls the update
-        status the installer (and, for failures before the installer takes
-        over, this background thread) writes to update-result.env.
+        status autostream_updater (running as root) and, once scheduled,
+        the installer write to update-result.env. This process cannot write
+        that root-owned file itself, so _run_update_apply_background only
+        logs outcomes rather than persisting them there.
 
         A second POST while an apply is already in flight does not start a
         concurrent run — it returns already_in_progress=True instead. The

@@ -4,9 +4,11 @@ Covers cmd_apply for both host (autostream_updater) and dial
 (autostream_dial_updater): tarball staging/extraction, AP-mode guard,
 unit-active guard, lock contention, missing installer, missing system/,
 systemd-run and flock guards, scheduling failures, auto-update gates, and
-per-product side-effects (host clears result file; dial writes in_progress
-status with canonical schema and creates UPDATING_FLAG; scheduling failure
-writes STATUS=failure and removes UPDATING_FLAG).
+per-product side-effects (host writes in_progress/failure/success states to
+update-result.env at each phase, overwriting any stale previous-run result;
+dial writes in_progress status with canonical schema and creates
+UPDATING_FLAG; scheduling failure writes STATUS=failure and removes
+UPDATING_FLAG).
 
 Dial transient unit names match the pattern autostream-update-dial-<ts>-<pid>
 which is covered by the shared autostream-update-*.service active-unit glob.
@@ -131,6 +133,22 @@ def _fake_systemd_run(mod, tmp_path: Path):
 
 def _run_ok():
     return patch.object(_asu, "_run", return_value=(0, "", ""))
+
+
+def _read_result_env(path: Path) -> dict:
+    """Parse a quoted or unquoted KEY=VALUE update-result.env file."""
+    env: dict = {}
+    if not path.exists():
+        return env
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        env[key.strip()] = value
+    return env
 
 
 def _run_fail():
@@ -275,6 +293,7 @@ class TestHostStagingFailures:
 
     def test_download_failure_returns_staging_error(self, tmp_path):
         mod = _load_host(tmp_path)
+        result_file = tmp_path / "update-result.env"
         with _unit_inactive(mod), \
              patch.object(mod, "_resolve_release", return_value=_fake_release()), \
              _no_installed(mod), \
@@ -291,6 +310,44 @@ class TestHostStagingFailures:
             result = mod.cmd_apply(auto=False)
         assert result["ok"] is False
         assert result.get("error") == "Release staging failed"
+        # A download failure must leave a truthful terminal state in
+        # update-result.env, not the in_progress write made just before the
+        # download began.
+        env = _read_result_env(result_file)
+        assert env["STATUS"] == "failure"
+        assert env["MESSAGE"] == "Release staging failed"
+
+    def test_pre_download_write_is_in_progress_five_percent(self, tmp_path):
+        """Immediately before the tarball download begins, cmd_apply must
+        mark STATUS=in_progress at 5% complete, so a slow download shows
+        forward motion on the status page instead of a stale/missing
+        result."""
+        mod = _load_host(tmp_path)
+        result_file = tmp_path / "update-result.env"
+        observed = {}
+
+        def _download_side_effect(url, dst, ua, timeout=120):
+            observed["env_at_download"] = _read_result_env(result_file)
+            raise OSError("network timeout")
+
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release()), \
+             _no_installed(mod), \
+             patch.object(mod, "_find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch.object(_asu, "_download_file", side_effect=_download_side_effect), \
+             patch.object(mod, "fcntl") as mk_fcntl, \
+             patch.object(mod, "_update_unit_active", return_value=False):
+            mk_fcntl.LOCK_EX = 2
+            mk_fcntl.LOCK_NB = 4
+            mk_fcntl.LOCK_UN = 8
+            mk_fcntl.flock.return_value = None
+            mod.cmd_apply(auto=False)
+
+        env = observed["env_at_download"]
+        assert env["STATUS"] == "in_progress"
+        assert env["PERCENT_COMPLETE"] == "5"
 
 
 # ---------------------------------------------------------------------------
@@ -323,15 +380,24 @@ class TestHostApplySuccess:
         assert result["ok"] is True
         assert result.get("staged_tag") == "1.2.3"
 
-    def test_success_clears_stale_update_result(self, tmp_path):
+    def test_success_overwrites_stale_update_result_before_download(self, tmp_path):
+        """A stale previous-run result must not survive an apply that goes
+        ahead: cmd_apply now writes its own in_progress state (rather than
+        unlinking the file) before the tarball download begins, so the
+        status page always sees forward motion instead of a missing file."""
         tar = _make_tarball(tmp_path)
         # Pre-create a stale result file
         result_file = tmp_path / "update-result.env"
-        result_file.write_text("STATUS=success\n")
+        result_file.write_text('STATUS="success"\n')
         result, mod, _ = self._run_apply(tmp_path, tar)
         assert result["ok"] is True
-        # File should have been removed
-        assert not result_file.exists()
+        # The stale success must have been overwritten; the installer never
+        # actually runs in this test (systemd-run is mocked), so the file
+        # reflects cmd_apply's own last pre-installer write.
+        content = result_file.read_text()
+        assert "success" not in content
+        assert 'STATUS="in_progress"' in content
+        assert 'PERCENT_COMPLETE="5"' in content
 
     def test_success_writes_release_tag_file(self, tmp_path):
         tar = _make_tarball(tmp_path)
@@ -412,6 +478,54 @@ class TestHostVersionGuard:
             result = mod.cmd_apply(auto=False)
         assert result.get("ok") is True
         assert result.get("staged_tag") is None
+
+    def test_already_at_latest_writes_success_full_percent(self, tmp_path):
+        """The already-latest skip must leave a truthful success/100% state
+        so the status page runs its normal success flow rather than showing
+        whatever a previous run left behind."""
+        mod = _load_host(tmp_path)
+        result_file = tmp_path / "update-result.env"
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", return_value=_fake_release(tag="v1.2.3")), \
+             patch.object(mod, "_read_installed_release_tag", return_value="1.2.3"):
+            result = mod.cmd_apply(auto=False)
+        assert result.get("ok") is True
+        env = _read_result_env(result_file)
+        assert env["STATUS"] == "success"
+        assert env["PERCENT_COMPLETE"] == "100"
+        assert "up to date" in env["MESSAGE"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Host: update-result.env is written before the release lookup
+# ---------------------------------------------------------------------------
+
+class TestHostPreReleaseLookupWrite:
+    def test_apply_writes_in_progress_before_release_lookup(self, tmp_path):
+        """cmd_apply must write STATUS=in_progress/0% before _resolve_release
+        is even called, so a slow or hanging GitHub lookup cannot leave a
+        stale previous result showing on the status page. Also verifies that
+        a subsequent failure from that lookup leaves a truthful failure
+        state rather than the in_progress write it followed."""
+        mod = _load_host(tmp_path)
+        result_file = tmp_path / "update-result.env"
+        observed = {}
+
+        def _resolve_side_effect(channel):
+            observed["env_at_lookup"] = _read_result_env(result_file)
+            return (False, None, None, None, None)  # not reachable
+
+        with _unit_inactive(mod), \
+             patch.object(mod, "_resolve_release", side_effect=_resolve_side_effect):
+            result = mod.cmd_apply(auto=False)
+
+        env_at_lookup = observed["env_at_lookup"]
+        assert env_at_lookup["STATUS"] == "in_progress"
+        assert env_at_lookup["PERCENT_COMPLETE"] == "0"
+
+        assert result["ok"] is False
+        env_after = _read_result_env(result_file)
+        assert env_after["STATUS"] == "failure"
 
 
 # ---------------------------------------------------------------------------

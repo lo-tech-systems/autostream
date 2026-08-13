@@ -9,11 +9,13 @@ Coverage for the async accept-then-poll contract of POST /api/update/apply:
   - the in-flight guard clears once the background apply finishes, allowing
     a subsequent apply
   - a background failure (non-zero rc, ok:false JSON, exception, or timeout)
-    is logged and written to update-result.env in the schema the offline
-    updating page expects
+    is logged only. update-result.env is root-owned; autostream_updater
+    (running as root) is the sole writer of it for the pre-installer
+    phases, so this process must never touch the file itself.
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import time
@@ -149,69 +151,63 @@ class TestStartUpdateApplyAccepts:
 
 
 @_skip_no_webui
-class TestBackgroundApplyFailureSurfacing:
-    """_run_update_apply_background must surface failures into
-    update-result.env in the schema autostream_admin's update-status reads."""
+class TestBackgroundApplyFailureLogging:
+    """_run_update_apply_background must never write update-result.env itself.
 
-    def _result_env(self, path: Path) -> dict:
-        env = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            env[key.strip()] = value
-        return env
+    The file is root-owned; autostream_updater (invoked as root via sudo) is
+    now the sole writer of it for every phase before the installer takes
+    over, including its own failure states. This process can only log what
+    it observed.
+    """
 
-    def test_nonzero_rc_writes_failure_result(self, tmp_path):
+    def test_nonzero_rc_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         result_file = tmp_path / "update-result.env"
         with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
              patch.object(webui, "run_updater",
-                           return_value=(1, '{"error": "staging failed"}', "boom")):
+                           return_value=(1, '{"error": "staging failed"}', "boom")), \
+             caplog.at_level(logging.ERROR):
             webui._run_update_apply_background()
 
         assert webui._update_apply_in_progress is False
-        env = self._result_env(result_file)
-        assert env["STATUS"] == "failure"
-        assert "staging failed" in env["MESSAGE"]
+        assert not result_file.exists()
+        assert "staging failed" in caplog.text
 
-    def test_ok_false_json_writes_failure_result(self, tmp_path):
+    def test_ok_false_json_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         result_file = tmp_path / "update-result.env"
         with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
              patch.object(webui, "run_updater",
-                           return_value=(0, '{"ok": false, "error": "no release"}', "")):
+                           return_value=(0, '{"ok": false, "error": "no release"}', "")), \
+             caplog.at_level(logging.ERROR):
             webui._run_update_apply_background()
 
-        env = self._result_env(result_file)
-        assert env["STATUS"] == "failure"
-        assert "no release" in env["MESSAGE"]
+        assert not result_file.exists()
+        assert "no release" in caplog.text
 
-    def test_exception_writes_failure_result(self, tmp_path):
+    def test_exception_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         result_file = tmp_path / "update-result.env"
         with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater", side_effect=OSError("sudo not found")):
+             patch.object(webui, "run_updater", side_effect=OSError("sudo not found")), \
+             caplog.at_level(logging.ERROR):
             webui._run_update_apply_background()
 
-        env = self._result_env(result_file)
-        assert env["STATUS"] == "failure"
-        assert "sudo not found" in env["MESSAGE"]
+        assert not result_file.exists()
+        assert "sudo not found" in caplog.text
 
-    def test_timeout_writes_error_not_failure(self, tmp_path):
+    def test_timeout_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         import subprocess
         result_file = tmp_path / "update-result.env"
         with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
              patch.object(webui, "run_updater",
-                           side_effect=subprocess.TimeoutExpired(cmd="autostream_updater", timeout=180)):
+                           side_effect=subprocess.TimeoutExpired(cmd="autostream_updater", timeout=180)), \
+             caplog.at_level(logging.ERROR):
             webui._run_update_apply_background()
 
         # A subprocess timeout does not prove the apply failed (the sudo'd
-        # child may survive and complete on its own), so this must not
-        # assert STATUS=failure.
-        env = self._result_env(result_file)
-        assert env["STATUS"] != "failure"
-        assert env["STATUS"] == "error"
+        # child may survive and complete on its own): autostream_updater
+        # owns the result file for this window, so this process must not
+        # write anything of its own regardless of outcome.
+        assert not result_file.exists()
+        assert "timed out" in caplog.text
 
     def test_success_does_not_write_result_file(self, tmp_path):
         result_file = tmp_path / "update-result.env"
