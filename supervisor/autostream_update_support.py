@@ -26,9 +26,14 @@ API_LATEST    = (
     "https://api.github.com/repos/"
     f"{REPO_OWNER}/{REPO_NAME}/releases/latest"
 )
+# Window size for the dev-channel releases list fetch.  The list is ordered
+# by creation time, not by version precedence, so a single-item fetch can
+# miss the highest-version release; RELEASES_PAGE_SIZE bounds how far back
+# we look while still being cheap.
+RELEASES_PAGE_SIZE = 30
 API_RELEASES  = (
     "https://api.github.com/repos/"
-    f"{REPO_OWNER}/{REPO_NAME}/releases?per_page=1"
+    f"{REPO_OWNER}/{REPO_NAME}/releases?per_page={RELEASES_PAGE_SIZE}"
 )
 RELEASES_HTML = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases"
 
@@ -58,6 +63,10 @@ def _run(cmd: list[str], timeout: int = 60) -> Tuple[int, str, str]:
 
 
 def _http_get(url: str, ua: str, timeout: int = 20) -> Tuple[int, bytes]:
+    # No extra-headers parameter here (kept intentionally minimal) -- a
+    # Cache-Control: no-cache header on the releases list fetch would help
+    # avoid a stale intermediary cache, but adding a headers param would
+    # touch every existing caller.  Left as a caveat rather than refactored.
     req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return getattr(resp, "status", 200), resp.read()
@@ -180,6 +189,48 @@ def _parse_release_object(
     )
 
 
+def _fetch_releases_list(ua: str) -> Tuple[bool, list]:
+    """Fetch the releases-list window (API_RELEASES).
+
+    Returns (reachable, entries).  reachable is False only when the request
+    itself failed (network error, non-JSON body, or an unexpected shape);
+    an empty list is a normal, reachable result (no releases published yet).
+    """
+    try:
+        _status, raw = _http_get(API_RELEASES, ua, timeout=20)
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return False, []
+    if not isinstance(data, list):
+        return False, []
+    return True, data
+
+
+def _fetch_latest_release(ua: str) -> Tuple[bool, list]:
+    """Fetch /releases/latest (API_LATEST) as a single-entry candidate list.
+
+    Returns (reachable, entries).  A 404 (no releases published) is treated
+    as reachable with an empty entry list, so it composes the same way as an
+    empty releases-list result.  Any other failure (network error, non-404
+    HTTP error, non-JSON body) is unreachable.
+    """
+    try:
+        _status, raw = _http_get(API_LATEST, ua, timeout=20)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return True, []
+        return False, []
+    except Exception:
+        return False, []
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return False, []
+    if not isinstance(data, dict):
+        return False, []
+    return True, [data]
+
+
 def _github_latest_release(
     ua: str,
     channel: str = "stable",
@@ -199,34 +250,62 @@ def _github_latest_release(
 
     channel is normalised before use:
       stable → uses /releases/latest (JSON object)
-      dev    → uses /releases?per_page=1 (JSON list, first item)
+      dev    → uses /releases?per_page=RELEASES_PAGE_SIZE (JSON list) *and*
+               /releases/latest, picking the highest-precedence tag across
+               both (see selection comment below for why both are needed)
     """
     channel = _normalise_update_channel(channel)
-    try:
-        if channel == "dev":
-            _status, raw = _http_get(API_RELEASES, ua, timeout=20)
-            data_list = json.loads(raw.decode("utf-8", errors="replace"))
-            if not isinstance(data_list, list):
-                return False, None, None, None, None
-            if not data_list:
-                # API reachable but no published release exists.
-                return True, None, None, None, None
-            tag, tarball, html, notes = _parse_release_object(data_list[0])
-        else:
+    if channel != "dev":
+        try:
             _status, raw = _http_get(API_LATEST, ua, timeout=20)
             data = json.loads(raw.decode("utf-8", errors="replace"))
             tag, tarball, html, notes = _parse_release_object(data)
+            if not tag:
+                return True, None, None, html, notes
+            return True, tag, tarball, html, notes
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return True, None, None, None, None
+            return False, None, None, None, None
+        except Exception:
+            return False, None, None, None, None
 
+    # dev channel: the releases list is ordered by creation time, not by
+    # version precedence or publish time, and it has been observed to omit
+    # a just-published release entirely for some time after publication
+    # while /releases/latest already served it correctly.  So we fetch both,
+    # pool every candidate with a usable tag, and pick the max by
+    # _version_key -- that's the only ordering that reflects actual release
+    # precedence.  Either source failing independently must not fail the
+    # whole resolution; only both failing is unreachable.
+    list_reachable, list_entries = _fetch_releases_list(ua)
+    latest_reachable, latest_entries = _fetch_latest_release(ua)
+
+    if not list_reachable and not latest_reachable:
+        return False, None, None, None, None
+
+    best_entry = None
+    best_key = None
+    for entry in list_entries + latest_entries:
+        if not isinstance(entry, dict):
+            continue
+        tag = entry.get("tag_name")
         if not tag:
-            return True, None, None, html, notes
-        return True, tag, tarball, html, notes
+            continue
+        key = _version_key(str(tag))
+        if best_entry is None or key > best_key:
+            best_entry = entry
+            best_key = key
 
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return True, None, None, None, None
-        return False, None, None, None, None
-    except Exception:
-        return False, None, None, None, None
+    if best_entry is None:
+        # Both sources reachable (or one reachable, one failed) but neither
+        # yielded a usable tagged release.
+        return True, None, None, None, None
+
+    tag, tarball, html, notes = _parse_release_object(best_entry)
+    if not tag:
+        return True, None, None, html, notes
+    return True, tag, tarball, html, notes
 
 
 def _download_file(url: str, dst: Path, ua: str, timeout: int = 120) -> None:

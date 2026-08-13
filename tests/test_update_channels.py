@@ -61,6 +61,24 @@ def _mock_response(payload: bytes, status: int = 200) -> MagicMock:
     return mock_resp
 
 
+def _dispatch_urlopen(url_map: dict):
+    """Build a urlopen side_effect that serves a different response per URL.
+
+    url_map maps a URL string to either a bytes payload (served as a 200
+    response) or an Exception instance (raised).  A URL not present in the
+    map raises AssertionError so an unexpected extra call fails loudly.
+    """
+    def _side_effect(req, timeout=None):
+        url = req.full_url
+        if url not in url_map:
+            raise AssertionError(f"unexpected URL requested: {url}")
+        entry = url_map[url]
+        if isinstance(entry, Exception):
+            raise entry
+        return _mock_response(entry)
+    return _side_effect
+
+
 def _release_payload(
     tag: str = "v1.2.3",
     tarball: str = "https://example.com/release.tgz",
@@ -120,13 +138,19 @@ class TestGithubEndpointSelection:
             _github_latest_release("ua", channel="stable")
         url_called = m.call_args[0][0].full_url
         assert url_called == API_LATEST
+        assert m.call_count == 1
 
     def test_dev_uses_releases_list(self):
-        payload = json.dumps([json.loads(_release_payload())]).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_response(payload)) as m:
+        list_payload = json.dumps([json.loads(_release_payload())]).encode()
+        latest_payload = _release_payload()
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_payload}),
+        ) as m:
             _github_latest_release("ua", channel="dev")
-        url_called = m.call_args[0][0].full_url
-        assert url_called == API_RELEASES
+        urls_called = [c.args[0].full_url for c in m.call_args_list]
+        assert API_RELEASES in urls_called
+        assert API_LATEST in urls_called
 
     def test_invalid_channel_falls_back_to_stable(self):
         payload = _release_payload()
@@ -204,9 +228,26 @@ class TestDevResponseParsing:
         assert reachable is True
         assert tag is None
 
-    def test_non_list_response_returns_not_reachable(self):
-        payload = json.dumps({"not": "a list"}).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_response(payload)):
+    def test_non_list_response_falls_back_to_latest(self):
+        """A malformed list response must not fail the whole lookup when
+        /releases/latest is still reachable -- only both failing is fatal."""
+        list_payload = json.dumps({"not": "a list"}).encode()
+        latest_payload = _release_payload(tag="v1.2.3")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_payload}),
+        ):
+            reachable, tag, *_ = _github_latest_release("ua", channel="dev")
+        assert reachable is True
+        assert tag == "v1.2.3"
+
+    def test_both_sources_failing_returns_not_reachable(self):
+        list_payload = json.dumps({"not": "a list"}).encode()
+        latest_err = urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ):
             reachable, *_ = _github_latest_release("ua", channel="dev")
         assert reachable is False
 
@@ -214,6 +255,115 @@ class TestDevResponseParsing:
         with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
             reachable, *_ = _github_latest_release("ua", channel="dev")
         assert reachable is False
+
+
+# ---------------------------------------------------------------------------
+# Section 5.1a — Dev channel: max-by-version selection across list + latest
+# ---------------------------------------------------------------------------
+
+class TestDevChannelSelection:
+    """Regression coverage: the releases-list endpoint orders by creation
+    time, not version precedence, and has been observed to omit a
+    just-published release for a period.  Selection must be immune to both."""
+
+    def _entry(self, tag, tarball=None, html=None, body="notes"):
+        return {
+            "tag_name":    tag,
+            "tarball_url": tarball or f"https://example.com/{tag}.tgz",
+            "html_url":    html or f"https://example.com/releases/{tag}",
+            "body":        body,
+        }
+
+    def test_highest_version_not_first_in_list_is_selected(self):
+        """The exact field regression: list order != version order."""
+        list_entries = [
+            self._entry("v0.5.0-beta.3"),
+            self._entry("v0.5.0-beta.2"),
+            self._entry("v0.5.0"),  # highest precedence, but last in the list
+        ]
+        list_payload = json.dumps(list_entries).encode()
+        latest_err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ):
+            reachable, tag, tarball, html, notes = _github_latest_release("ua", channel="dev")
+        assert reachable is True
+        assert tag == "v0.5.0"
+
+    def test_release_omitted_from_list_but_present_at_latest_is_selected(self):
+        """The omission case: a just-published release missing from the list
+        window is still picked up via /releases/latest."""
+        list_entries = [
+            self._entry("v0.5.0-beta.2"),
+            self._entry("v0.4.0"),
+        ]
+        list_payload = json.dumps(list_entries).encode()
+        latest_payload = json.dumps(self._entry("v0.5.0")).encode()
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_payload}),
+        ):
+            reachable, tag, tarball, html, notes = _github_latest_release("ua", channel="dev")
+        assert reachable is True
+        assert tag == "v0.5.0"
+
+    def test_newer_prerelease_beats_older_stable(self):
+        """Dev channel intent: a newer prerelease must still win over an
+        older final release."""
+        list_entries = [
+            self._entry("v0.5.0"),
+            self._entry("v0.5.1-beta.1"),
+        ]
+        list_payload = json.dumps(list_entries).encode()
+        latest_payload = json.dumps(self._entry("v0.5.0")).encode()
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_payload}),
+        ):
+            reachable, tag, tarball, html, notes = _github_latest_release("ua", channel="dev")
+        assert reachable is True
+        assert tag == "v0.5.1-beta.1"
+
+    def test_entries_with_missing_tag_are_skipped(self):
+        list_entries = [
+            {"tarball_url": "https://example.com/no-tag.tgz", "html_url": "x", "body": "y"},
+            self._entry("v0.5.0"),
+        ]
+        list_payload = json.dumps(list_entries).encode()
+        latest_err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ):
+            reachable, tag, *_ = _github_latest_release("ua", channel="dev")
+        assert reachable is True
+        assert tag == "v0.5.0"
+
+    def test_both_endpoints_fail_is_not_reachable(self):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({
+                API_RELEASES: urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs=None, fp=None),
+                API_LATEST: OSError("timeout"),
+            }),
+        ):
+            reachable, tag, tarball, html, notes = _github_latest_release("ua", channel="dev")
+        assert reachable is False
+        assert tag is None
+
+    def test_empty_list_and_404_latest_is_reachable_with_no_tag(self):
+        list_payload = json.dumps([]).encode()
+        latest_err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ):
+            reachable, tag, tarball, html, notes = _github_latest_release("ua", channel="dev")
+        assert reachable is True
+        assert tag is None
+        assert tarball is None
+        assert html is None
 
 
 # ---------------------------------------------------------------------------
@@ -595,13 +745,17 @@ class TestMainUpdaterApplySingleLookup:
         mod = self._load(tmp_path, channel="dev")
         state = tmp_path / "install-state.env"
         state.write_text("AUTOSTREAM_RELEASE_TAG=v1.2.0\n", encoding="utf-8")
-        payload = json.dumps([json.loads(_release_payload(tag="v1.3.0-beta.1"))]).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_response(payload)) as m:
+        list_payload = json.dumps([json.loads(_release_payload(tag="v1.3.0-beta.1"))]).encode()
+        latest_err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ) as m:
             with patch.object(mod, "_update_unit_active", return_value=False):
                 with patch.object(mod, "_find_systemd_run", return_value=None):
                     mod.cmd_apply()
-        url_called = m.call_args[0][0].full_url
-        assert url_called == API_RELEASES
+        urls_called = [c.args[0].full_url for c in m.call_args_list]
+        assert API_RELEASES in urls_called
 
     def test_apply_single_lookup_stages_correct_tarball(self, tmp_path):
         """apply() must call _resolve_release exactly once, download the exact

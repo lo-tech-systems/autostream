@@ -68,6 +68,23 @@ def _mock_response(payload: bytes, status: int = 200) -> MagicMock:
     return r
 
 
+def _dispatch_urlopen(url_map: dict):
+    """Build a urlopen side_effect that serves a different response per URL.
+
+    url_map maps a URL string to either a bytes payload (served as a 200
+    response) or an Exception instance (raised).
+    """
+    def _side_effect(req, timeout=None):
+        url = req.full_url
+        if url not in url_map:
+            raise AssertionError(f"unexpected URL requested: {url}")
+        entry = url_map[url]
+        if isinstance(entry, Exception):
+            raise entry
+        return _mock_response(entry)
+    return _side_effect
+
+
 def _release_payload(tag: str = "v1.2.3") -> bytes:
     return json.dumps({
         "tag_name":    tag,
@@ -78,7 +95,7 @@ def _release_payload(tag: str = "v1.2.3") -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.1 â€” DialConfig model
+# Section 8.1 — DialConfig model
 # ---------------------------------------------------------------------------
 
 class TestDialConfigModel:
@@ -196,7 +213,7 @@ class TestDialConfigModel:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.2 â€” Dial updater channel reading and cmd_check
+# Section 8.2 — Dial updater channel reading and cmd_check
 # ---------------------------------------------------------------------------
 
 class TestDialUpdaterChannelReading:
@@ -270,11 +287,15 @@ class TestDialUpdaterCmdCheck:
 
     def test_check_dev_uses_releases_list_endpoint(self, tmp_path):
         mod = self._load(tmp_path, channel="dev")
-        payload = json.dumps([json.loads(_release_payload("v1.3.0-beta.1"))]).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_response(payload)) as m:
+        list_payload = json.dumps([json.loads(_release_payload("v1.3.0-beta.1"))]).encode()
+        latest_err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ) as m:
             mod.cmd_check()
-        url_called = m.call_args[0][0].full_url
-        assert url_called == API_RELEASES
+        urls_called = [c.args[0].full_url for c in m.call_args_list]
+        assert API_RELEASES in urls_called
 
 
 class TestDialUpdaterCmdApply:
@@ -341,13 +362,17 @@ class TestDialUpdaterCmdApply:
         mod = self._load(tmp_path, channel="dev")
         state = tmp_path / "install-state.env"
         state.write_text("AUTOSTREAM_RELEASE_TAG=v1.2.0\n", encoding="utf-8")
-        payload = json.dumps([json.loads(_release_payload("v1.3.0-beta.1"))]).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_response(payload)) as m:
+        list_payload = json.dumps([json.loads(_release_payload("v1.3.0-beta.1"))]).encode()
+        latest_err = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs=None, fp=None)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=_dispatch_urlopen({API_RELEASES: list_payload, API_LATEST: latest_err}),
+        ) as m:
             with patch.object(mod, "_dial_update_unit_active", return_value=False):
                 with patch.object(mod, "_find_systemd_run", return_value=None):
                     mod.cmd_apply()
-        url_called = m.call_args[0][0].full_url
-        assert url_called == API_RELEASES
+        urls_called = [c.args[0].full_url for c in m.call_args_list]
+        assert API_RELEASES in urls_called
 
     def test_apply_auto_update_gate_independent_of_channel(self, tmp_path):
         """auto_update gate must work the same way regardless of channel."""
@@ -421,7 +446,7 @@ class TestDialUpdaterCmdApply:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.3 â€” Dial HTTP /configure API
+# Section 8.3 — Dial HTTP /configure API
 # ---------------------------------------------------------------------------
 
 class TestDialHttpConfigureApi:
@@ -505,7 +530,7 @@ class TestDialHttpConfigureApi:
                 f"Expected update_channel={channel!r} in GET response, got {resp['data']}"
             )
 
-    # --- POST /configure â€” channel values ---
+    # --- POST /configure — channel values ---
 
     def test_configure_post_accepts_dev_value(self):
         """POST update_channel='dev' succeeds, persists to save_config, and updates live cfg."""
@@ -585,7 +610,7 @@ class TestDialHttpConfigureApi:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.4 â€” Dial Setup UI (structural)
+# Section 8.4 — Dial Setup UI (structural)
 # ---------------------------------------------------------------------------
 
 class TestDialSetupUiStructural:
@@ -615,7 +640,7 @@ class TestDialSetupUiStructural:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.5 â€” Main appliance dial card (structural)
+# Section 8.5 — Main appliance dial card (structural)
 # ---------------------------------------------------------------------------
 
 class TestMainDialCardStructural:
@@ -646,7 +671,7 @@ class TestMainDialCardStructural:
         assert "classList.contains('dial-channel')" in source
 
     def test_change_listener_includes_dial_step(self):
-        """The step slider must save on change â€” focusout alone never fires
+        """The step slider must save on change — focusout alone never fires
         after a plain drag-and-release, silently dropping the new value."""
         source = self._get_setup_page_source()
         change_handler = source.split("card.addEventListener('change'", 1)[1]
@@ -654,7 +679,7 @@ class TestMainDialCardStructural:
         assert "classList.contains('dial-step')" in change_handler
 
     def test_proxy_passthrough_no_modification(self):
-        """The proxy strips uuid and forwards all other fields â€” no dials.py changes needed."""
+        """The proxy strips uuid and forwards all other fields — no dials.py changes needed."""
         source_path = REPO_ROOT / "core" / "autostream_webui_dials.py"
         source = source_path.read_text(encoding="utf-8")
         # Proxy strips uuid and forwards everything else verbatim.
@@ -662,7 +687,7 @@ class TestMainDialCardStructural:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.1 â€” Installer default (structural)
+# Section 8.1 — Installer default (structural)
 # ---------------------------------------------------------------------------
 
 class TestInstallerDefault:
@@ -683,7 +708,7 @@ class TestInstallerDefault:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.6 â€” Dial update-check passes channel through
+# Section 8.6 — Dial update-check passes channel through
 # ---------------------------------------------------------------------------
 
 class TestDialUpdateCheckPassthrough:
