@@ -23,7 +23,8 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_display_adafruit as dda
-from dial_display_adafruit import AdafruitST7735SBackend
+from dial_display_adafruit import AdafruitDisplayBackend, AdafruitST7735SBackend
+from dial_display_profiles import DISPLAY_PROFILES, get_profile
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +310,145 @@ class TestMockedHardwareBackend:
 
         args, kwargs = st7735_ctor.call_args
         assert args[2] is None
+
+
+# ---------------------------------------------------------------------------
+# Profile table integrity (also exercised standalone in
+# test_dial_display_profiles.py — kept here too since the backend consumes it)
+# ---------------------------------------------------------------------------
+
+class TestProfileTableIntegrity:
+    def test_keys_unique_and_default_present(self):
+        assert len(DISPLAY_PROFILES) == len(set(DISPLAY_PROFILES.keys()))
+        assert "st7735s_160x128" in DISPLAY_PROFILES
+
+    def test_default_profile_reproduces_todays_constants(self):
+        profile = get_profile("st7735s_160x128")
+        assert (profile.width, profile.height) == (160, 128)
+        assert (profile.x_offset, profile.y_offset) == (0, 0)
+        assert profile.rotation == 0
+        assert profile.baudrate == 16_000_000
+
+
+class TestZeroArgBackwardCompat:
+    def test_zero_arg_backend_reports_default_dims_and_name(self):
+        backend = AdafruitST7735SBackend()
+        assert backend.width == 160
+        assert backend.height == 128
+        assert backend.name == "adafruit_st7735s"
+
+
+# ---------------------------------------------------------------------------
+# Profile-driven driver dispatch (ST7789 / ILI9341)
+# ---------------------------------------------------------------------------
+
+def _install_fake_hardware_modules_for(driver_tag: str, module_name: str, class_name: str):
+    """Inject fake board/busio/digitalio plus a fake driver module for
+    *driver_tag*, without an st7735 module — dispatch must import only the
+    module the profile names."""
+    board = types.ModuleType("board")
+    for name in ("GPIO8", "GPIO9", "GPIO10", "GPIO11", "GPIO18", "GPIO24", "GPIO25"):
+        setattr(board, name, name)
+
+    busio = types.ModuleType("busio")
+    spi_mock = MagicMock(name="SPI")
+    busio.SPI = MagicMock(return_value=spi_mock)
+
+    digitalio = types.ModuleType("digitalio")
+    digitalio.DigitalInOut = MagicMock(side_effect=lambda pin: MagicMock(name=f"DigitalInOut({pin})"))
+
+    adafruit_rgb_display = types.ModuleType("adafruit_rgb_display")
+    driver_mod = types.ModuleType(f"adafruit_rgb_display.{module_name}")
+    fake_display = MagicMock(name=f"{class_name}_instance")
+    setattr(driver_mod, class_name, MagicMock(return_value=fake_display))
+    setattr(adafruit_rgb_display, module_name, driver_mod)
+
+    modules = {
+        "board": board,
+        "busio": busio,
+        "digitalio": digitalio,
+        "adafruit_rgb_display": adafruit_rgb_display,
+        f"adafruit_rgb_display.{module_name}": driver_mod,
+    }
+    return modules, digitalio.DigitalInOut, getattr(driver_mod, class_name), fake_display
+
+
+class TestProfileDrivenDriverDispatch:
+    def test_st7789_profile_constructs_st7789_with_profile_dims(self):
+        profile = get_profile("st7789_320x240")
+        modules, dio_ctor, st7789_ctor, fake_display = (
+            _install_fake_hardware_modules_for("st7789", "st7789", "ST7789")
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitDisplayBackend(profile)
+            backend.open()
+
+        assert st7789_ctor.call_count == 1
+        args, kwargs = st7789_ctor.call_args
+        assert kwargs["width"] == profile.width
+        assert kwargs["height"] == profile.height
+        assert kwargs["x_offset"] == profile.x_offset
+        assert kwargs["y_offset"] == profile.y_offset
+        assert kwargs["rotation"] == profile.rotation
+        assert kwargs["baudrate"] == profile.baudrate
+        # ST7789 does not accept bl= in the pinned library — the backend
+        # must not pass it.
+        assert "bl" not in kwargs
+        assert backend.name == "adafruit_st7789"
+
+    def test_st7789_backend_drives_backlight_itself(self):
+        profile = get_profile("st7789_320x240")
+        modules, dio_ctor, st7789_ctor, fake_display = (
+            _install_fake_hardware_modules_for("st7789", "st7789", "ST7789")
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitDisplayBackend(profile)
+            backend.open()
+
+        backend._backlight.switch_to_output.assert_called_once_with(value=True)
+
+    def test_ili9341_profile_constructs_ili9341_with_profile_dims(self):
+        profile = get_profile("ili9341_320x240")
+        modules, dio_ctor, ili9341_ctor, fake_display = (
+            _install_fake_hardware_modules_for("ili9341", "ili9341", "ILI9341")
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitDisplayBackend(profile)
+            backend.open()
+
+        assert ili9341_ctor.call_count == 1
+        args, kwargs = ili9341_ctor.call_args
+        assert kwargs["width"] == profile.width
+        assert kwargs["height"] == profile.height
+        assert kwargs["rotation"] == profile.rotation
+        assert kwargs["baudrate"] == profile.baudrate
+        assert "bl" not in kwargs
+        # ILI9341's constructor in the pinned library declares neither offset
+        # argument; passing them is a TypeError on real hardware. The mocked
+        # driver would accept them silently, so assert their absence.
+        assert "x_offset" not in kwargs
+        assert "y_offset" not in kwargs
+        assert backend.name == "adafruit_ili9341"
+
+    def test_offset_less_driver_profiles_declare_zero_offsets(self):
+        """Offsets are dropped for drivers that take none — so a non-zero
+        offset in such a profile would be silently unenforceable."""
+        from dial_display_adafruit import _DRIVER_TAKES_OFFSETS
+        from dial_display_profiles import DISPLAY_PROFILES
+
+        for profile in DISPLAY_PROFILES.values():
+            if profile.driver_tag not in _DRIVER_TAKES_OFFSETS:
+                assert profile.x_offset == 0 and profile.y_offset == 0, (
+                    f"{profile.key} sets offsets its driver cannot accept"
+                )
+
+    def test_unknown_driver_tag_raises_runtime_error(self):
+        from dial_display_profiles import DisplayProfile
+
+        bogus = DisplayProfile(
+            key="bogus", label="Bogus", driver_tag="not-a-real-driver",
+            width=100, height=100,
+        )
+        backend = AdafruitDisplayBackend(bogus)
+        with pytest.raises(RuntimeError, match="not-a-real-driver"):
+            backend.open()

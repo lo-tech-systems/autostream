@@ -1,10 +1,12 @@
-"""dial_display_adafruit.py — ST7735S SPI backend behind the display manager interface.
+"""dial_display_adafruit.py — profile-driven Adafruit SPI display backend.
 
-Fixed v1 hardware profile only: Raspberry Pi SPI0, no GRAM offsets, no
-BGR/invert, no alternate wiring. Hardware imports (board, busio, digitalio,
-adafruit_rgb_display) happen only inside open(), never at module import time,
-so a display-disabled dial never touches SPI/GPIO and starts normally even
-when the Adafruit package is not installed.
+Panel geometry (dimensions, offsets, rotation, baudrate) comes from a
+DisplayProfile (see dial_display_profiles.py); wiring (which BCM pins carry
+DC/reset/CS/backlight) is fixed across all profiles and stays in this
+module. Hardware imports (board, busio, digitalio, adafruit_rgb_display)
+happen only inside open(), never at module import time, so a display-disabled
+dial never touches SPI/GPIO and starts normally even when the Adafruit
+package is not installed.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -13,39 +15,40 @@ from __future__ import annotations
 import logging
 
 from dial_display import DisplayBackend
+from dial_display_profiles import DEFAULT_PROFILE_KEY, DisplayProfile, backend_name_for, get_profile
 
-_SPI_CLOCK_HZ = 16_000_000
-
-# Fixed v1 wiring profile (Raspberry Pi SPI0). Blinka exposes Raspberry Pi pins
-# with different aliases across releases/boards, so resolve each BCM pin through
-# the common names instead of assuming one board module shape.
+# Fixed wiring (Raspberry Pi SPI0), shared across every profile — this is
+# board wiring, not panel geometry, so it is not part of the profile table.
+# Blinka exposes Raspberry Pi pins with different aliases across
+# releases/boards, so resolve each BCM pin through the common names instead
+# of assuming one board module shape.
 _DC_GPIO = 25
 _RESET_GPIO = 24
 _CS_GPIO = 8
 _BACKLIGHT_GPIO = 18
 
-# The ST7735S driver's hardcoded init sets MADCTL=0x60 (MV|MX), so the
-# controller itself scans in LANDSCAPE: after the axis exchange the CASET
-# "column" register addresses the physical 160-px axis (162 GRAM addresses)
-# and RASET the 128-px axis (132 addresses). The driver must therefore be
-# constructed with landscape dimensions (width=160, height=128) and rotation=0,
-# and each pre-rendered 160x128 frame is sent as-is in a single full-screen
-# write — every pixel, background included, is overwritten on every update.
-#
-# (Configuring the common-sense-looking portrait 128x160 + rotation=90 instead
-# writes only 128 of the 160 physical columns — leaving an unfilled stripe —
-# and overflows the 132-address row register, mangling the image.)
-#
-# This panel's visible area starts at GRAM 0,0 — no green-tab-style offsets
-# (confirmed on hardware: non-zero offsets shift the image). Set _ROTATION=180
-# if the image is upside down for the chosen mounting (the driver rotates the
-# frame in software; dimensions are unchanged).
-_PANEL_WIDTH = 160
-_PANEL_HEIGHT = 128
-_X_OFFSET = 0
-_Y_OFFSET = 0
-_ROTATION = 0
 _BACKGROUND_RGB = (14, 40, 65)
+
+# Driver tag -> (module path, class name) for lazy import inside open().
+_DRIVER_MODULES = {
+    "st7735s": ("adafruit_rgb_display.st7735", "ST7735S"),
+    "st7789": ("adafruit_rgb_display.st7789", "ST7789"),
+    "ili9341": ("adafruit_rgb_display.ili9341", "ILI9341"),
+}
+
+# Only ST7735S's constructor in the pinned adafruit-circuitpython-rgb-display
+# accepts bl= and drives the backlight pin itself; ST7789 and ILI9341 do not
+# take a backlight kwarg at all. For those tags this backend claims the
+# backlight pin directly and drives it high on open()/wake() and low on
+# close()/sleep(), matching what ST7735S's bl= does internally.
+_DRIVER_OWNS_BACKLIGHT = {"st7735s"}
+
+# ILI9341's constructor in the pinned library takes no GRAM offset arguments
+# at all (its init table fixes the window), unlike ST7735S and ST7789 which
+# both accept x_offset/y_offset. Passing them anyway is a TypeError at open(),
+# so the offsets are only supplied to the drivers that declare them. Profiles
+# for offset-less drivers must therefore leave x_offset/y_offset at 0.
+_DRIVER_TAKES_OFFSETS = {"st7735s", "st7789"}
 
 
 def _board_pin(board_module, gpio: int, *aliases: str):
@@ -78,6 +81,17 @@ def _claim_chip_select_or_none(digitalio_module, pin):
         raise RuntimeError(f"claim GPIO8/CE0 chip-select failed: {e}") from e
 
 
+def _resolve_driver_class(driver_tag: str):
+    try:
+        module_path, class_name = _DRIVER_MODULES[driver_tag]
+    except KeyError:
+        raise RuntimeError(f"unknown display driver tag {driver_tag!r}") from None
+    import importlib
+
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
+
+
 def _fit_image_to_panel(image, width: int, height: int):
     if getattr(image, "size", None) == (width, height):
         return image
@@ -102,26 +116,31 @@ def _fit_image_to_panel(image, width: int, height: int):
         return image
 
 
-def _solid_background_image():
+def _solid_background_image(width: int, height: int):
     from PIL import Image
 
-    return Image.new("RGB", (_PANEL_WIDTH, _PANEL_HEIGHT), _BACKGROUND_RGB)
+    return Image.new("RGB", (width, height), _BACKGROUND_RGB)
 
 
-class AdafruitST7735SBackend(DisplayBackend):
-    name = "adafruit_st7735s"
-    width = _PANEL_WIDTH
-    height = _PANEL_HEIGHT
-
-    def __init__(self) -> None:
+class AdafruitDisplayBackend(DisplayBackend):
+    def __init__(self, profile: DisplayProfile) -> None:
+        self._profile = profile
+        self.name = backend_name_for(profile)
+        self.width = profile.width
+        self.height = profile.height
         self._display = None
         self._backlight = None
 
     def open(self) -> None:
+        profile = self._profile
+        # Resolve the driver class before touching any hardware module, so
+        # an unknown/misconfigured driver tag fails fast with a clear error
+        # instead of a confusing missing-hardware-module traceback.
+        driver_class = _resolve_driver_class(profile.driver_tag)
+
         import board
         import busio
         import digitalio
-        from adafruit_rgb_display.st7735 import ST7735S
 
         try:
             spi = busio.SPI(
@@ -135,21 +154,32 @@ class AdafruitST7735SBackend(DisplayBackend):
         cs = _claim_chip_select_or_none(digitalio, _board_pin(board, _CS_GPIO, "CE0"))
         dc = _claim_digital_out(digitalio, _board_pin(board, _DC_GPIO), "GPIO25 data-command")
         reset = _claim_digital_out(digitalio, _board_pin(board, _RESET_GPIO), "GPIO24 reset")
+
+        driver_owns_backlight = profile.driver_tag in _DRIVER_OWNS_BACKLIGHT
         backlight = _claim_digital_out(digitalio, _board_pin(board, _BACKLIGHT_GPIO), "GPIO18 backlight")
 
-        self._display = ST7735S(
-            spi, dc, cs,
+        kwargs = dict(
             rst=reset,
-            width=_PANEL_WIDTH,
-            height=_PANEL_HEIGHT,
-            baudrate=_SPI_CLOCK_HZ,
+            width=profile.width,
+            height=profile.height,
+            baudrate=profile.baudrate,
             polarity=0,
             phase=0,
-            rotation=_ROTATION,
-            bl=backlight,
-            x_offset=_X_OFFSET,
-            y_offset=_Y_OFFSET,
+            rotation=profile.rotation,
         )
+        if profile.driver_tag in _DRIVER_TAKES_OFFSETS:
+            kwargs["x_offset"] = profile.x_offset
+            kwargs["y_offset"] = profile.y_offset
+        if driver_owns_backlight:
+            kwargs["bl"] = backlight
+
+        self._display = driver_class(spi, dc, cs, **kwargs)
+
+        if not driver_owns_backlight:
+            # The driver has no bl= kwarg (ST7789/ILI9341 in the pinned
+            # library) — drive the shared backlight pin ourselves so the
+            # panel lights up on open(), matching ST7735S's bl= behaviour.
+            backlight.switch_to_output(value=True)
 
         self._backlight = backlight
 
@@ -169,7 +199,8 @@ class AdafruitST7735SBackend(DisplayBackend):
     def clear(self) -> None:
         if self._display is None:
             return
-        self._display.image(_fit_image_to_panel(_solid_background_image(), self.width, self.height))
+        image = _solid_background_image(self.width, self.height)
+        self._display.image(_fit_image_to_panel(image, self.width, self.height))
 
     def display(self, image) -> None:
         if self._display is None:
@@ -188,7 +219,7 @@ class AdafruitST7735SBackend(DisplayBackend):
                 pass
         from PIL import Image
 
-        black = Image.new("RGB", (_PANEL_WIDTH, _PANEL_HEIGHT), (0, 0, 0))
+        black = Image.new("RGB", (self.width, self.height), (0, 0, 0))
         self._display.image(_fit_image_to_panel(black, self.width, self.height))
 
     def wake(self) -> None:
@@ -199,3 +230,15 @@ class AdafruitST7735SBackend(DisplayBackend):
                 self._backlight.value = True
             except Exception:
                 pass
+
+
+class AdafruitST7735SBackend(AdafruitDisplayBackend):
+    """Zero-arg backend bound to the default (today's shipped) profile.
+
+    Kept as its own class, rather than a bare alias, so every existing
+    zero-arg call site (create_dial_display(), the test suite) keeps working
+    unchanged.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(get_profile(DEFAULT_PROFILE_KEY))
