@@ -1001,17 +1001,21 @@ class TestDialCardHtmlStructure:
 
     def test_dial_sync_rotate_enabled_function_present(self):
         src = _setup_page_src()
-        assert "function dialSyncRotateEnabled" in src
+        assert "function dialSyncScreenControlsEnabled" in src
         assert "rotateEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
+        assert "bgrEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
+        assert "typeEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
+        # Old name must be gone entirely -- this was a clean rename, not an alias.
+        assert "dialSyncRotateEnabled" not in src
 
     def test_dial_sync_rotate_enabled_wired_to_change_listener(self):
         src = _setup_page_src()
-        assert "dialSyncRotateEnabled(card)" in src
+        assert "dialSyncScreenControlsEnabled(card)" in src
         idx = src.find("if (action === 'save-screen')")
         assert idx >= 0
         block_end = src.find("}}", idx)
         block = src[idx:block_end]
-        assert "dialSyncRotateEnabled" in block
+        assert "dialSyncScreenControlsEnabled" in block
 
     def test_dial_sync_rotate_enabled_wired_to_unlock_and_lock(self):
         src = _setup_page_src()
@@ -1022,12 +1026,114 @@ class TestDialCardHtmlStructure:
         assert next_fn_after_unlock >= 0
         lock_block = src[lock_idx:unlock_idx]
         unlock_block = src[unlock_idx:next_fn_after_unlock]
-        assert "dialSyncRotateEnabled(card)" in lock_block
-        assert "dialSyncRotateEnabled(card)" in unlock_block
+        assert "dialSyncScreenControlsEnabled(card)" in lock_block
+        assert "dialSyncScreenControlsEnabled(card)" in unlock_block
 
     def test_dial_save_screen_settings_sends_rotate(self):
         src = _setup_page_src()
         assert "rotate: rotateEl.checked" in src
+
+    # ── Screen settings (BGR toggle + screen-type select) ────────────────────
+
+    def test_screen_bgr_toggle_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert "dial-screen-bgr" in result
+        assert "Swap Red/Blue (BGR)" in result
+        assert 'data-dial-action="save-screen"' in result
+
+    def test_screen_type_select_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert '<select class="dial-screen-type" data-dial-action="save-screen" disabled></select>' in result
+
+    def test_screen_bgr_and_type_inside_locked_section_after_rotate(self):
+        """Both new rows must live in the locked section, after the rotate row,
+        and before the Change Dial PIN button."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        locked_idx = result.find("dial-locked-section")
+        rotate_idx = result.find("dial-screen-rotate")
+        bgr_idx = result.find("dial-screen-bgr")
+        type_idx = result.find("dial-screen-type")
+        pin_btn_idx = result.find('data-dial-action="change-pin"')
+        assert locked_idx >= 0 and rotate_idx >= 0 and bgr_idx >= 0 and type_idx >= 0 and pin_btn_idx >= 0
+        assert locked_idx < rotate_idx < bgr_idx < type_idx < pin_btn_idx
+
+    def test_screen_bgr_and_type_rows_hidden_by_default(self):
+        """Both new rows must be hidden until the dial publishes `supported`."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        bgr_row_idx = result.find("dial-screen-bgr-row")
+        type_row_idx = result.find("dial-screen-type-row")
+        assert bgr_row_idx >= 0 and type_row_idx >= 0
+        bgr_row_tag = result[bgr_row_idx - 40:bgr_row_idx + 80]
+        type_row_tag = result[type_row_idx - 40:type_row_idx + 80]
+        assert "display:none" in bgr_row_tag
+        assert "display:none" in type_row_tag
+
+    def test_screen_type_select_populated_and_cleared_in_load(self):
+        """dialLoadScreenSettings must clear existing options before
+        repopulating -- it runs on render, authorize, and PIN unlock, so
+        without a clear the options would duplicate."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "typeEl.innerHTML = ''" in body
+        assert "j.supported" in body
+        assert "localeCompare" in body
+
+    def test_screen_caps_gate_flag_set_and_cleared(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.screenCaps = '1'" in body
+        assert "delete card.dataset.screenCaps" in body
+
+    def test_screen_save_body_gated_by_supported_caps(self):
+        """The save body must include screen_type/bgr only when the
+        capability gate flag is set -- an old dial 400s on an unknown field,
+        which would otherwise break the existing fitted/rotate toggles."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.screenCaps === '1'" in body
+        assert "screen.bgr = " in body
+        assert "screen.screen_type = " in body
+        # Ungated body (no caps) must remain byte-identical to the historical
+        # {{fitted, rotate}} shape.
+        assert "var screen = {{fitted: fittedEl.checked, rotate: rotateEl.checked}};" in body
+
+    def test_screen_save_reverts_via_snapshot_not_just_negation(self):
+        """A <select> can't be reverted with `!checked` -- the changed
+        control's previous value must be snapshotted before the POST and
+        restored on both the error branch and the network-error catch."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "var prevValue" in body
+        assert body.count("changedEl.value = prevValue") >= 1
+        assert body.count("changedEl.checked = prevValue") >= 2
+
+    def test_screen_apply_failed_error_message_mapped(self):
+        src = _setup_page_src()
+        idx = src.find("function _dialErrorMessage")
+        assert idx >= 0
+        next_fn = src.find("async function _dialFetch", idx)
+        block = src[idx:next_fn]
+        assert "'screen_apply_failed'" in block
+        assert "Screen settings could not be applied" in block
 
     def test_revoke_button_absent_in_source(self):
         """The source must not define a Revoke button element."""

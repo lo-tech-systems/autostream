@@ -656,6 +656,60 @@ class TestHandleDialScreenSettings:
         assert code == 400
         assert data["error"] == "invalid_screen_settings"
 
+    def test_get_passes_through_supported_and_new_screen_fields_verbatim(self):
+        """`supported` is the capability gate the browser uses to show the
+        new controls, and screen_type/bgr must reach it unaltered -- the
+        proxy is a generic pass-through and must not reshape the payload."""
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":false,"screen_type":"ips_2in","bgr":true},'
+                 b'"supported":[{"key":"ips_2in","text":"2.0 inch IPS"},{"key":"tft_1in3","text":"1.3 inch TFT"}],'
+                 b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
+                 b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json") as mock_send, \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_get(MagicMock(), "uuid")
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/screen/settings"
+        code, data = mock_send.call_args[0][1], mock_send.call_args[0][2]
+        assert code == 200
+        assert data["screen"] == {
+            "fitted": True, "rotate": False, "screen_type": "ips_2in", "bgr": True,
+        }
+        assert data["supported"] == [
+            {"key": "ips_2in", "text": "2.0 inch IPS"},
+            {"key": "tft_1in3", "text": "1.3 inch TFT"},
+        ]
+
+    def test_post_body_with_screen_type_and_bgr_passes_through_verbatim(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":true,"screen_type":"tft_1in3","bgr":false},'
+                 b'"runtime":{},"restart_required":false}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_post(
+                MagicMock(),
+                {
+                    "uuid": "my-uuid",
+                    "current_pin": "1234",
+                    "screen": {"fitted": True, "rotate": True, "screen_type": "tft_1in3", "bgr": False},
+                },
+            )
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/screen/settings"
+        _, call_kwargs = conn.request.call_args
+        sent_body = json.loads(call_kwargs["body"])
+        assert sent_body == {
+            "current_pin": "1234",
+            "screen": {"fitted": True, "rotate": True, "screen_type": "tft_1in3", "bgr": False},
+        }
+        assert "uuid" not in sent_body
+
 
 # ---------------------------------------------------------------------------
 # Authorize / revoke handler validation

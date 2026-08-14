@@ -459,6 +459,17 @@ def _dial_card_html(
                     </label>
                     <span>Rotate Screen</span>
                   </div>
+                  <div class="dial-screen-bgr-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-screen-bgr" data-dial-action="save-screen" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Swap Red/Blue (BGR)</span>
+                  </div>
+                  <div class="dial-screen-type-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Screen Type:</span>
+                    <select class="dial-screen-type" data-dial-action="save-screen" disabled></select>
+                  </div>
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
@@ -3010,11 +3021,15 @@ def send_setup_page(
           if (valEl) valEl.textContent = input.value + '% per click';
         }}
 
-        function dialSyncRotateEnabled(card) {{
+        function dialSyncScreenControlsEnabled(card) {{
           var fittedEl = card.querySelector('.dial-screen-fitted');
           var rotateEl = card.querySelector('.dial-screen-rotate');
+          var bgrEl = card.querySelector('.dial-screen-bgr');
+          var typeEl = card.querySelector('.dial-screen-type');
           if (!fittedEl || !rotateEl) return;
           rotateEl.disabled = fittedEl.disabled || !fittedEl.checked;
+          if (bgrEl) bgrEl.disabled = fittedEl.disabled || !fittedEl.checked;
+          if (typeEl) typeEl.disabled = fittedEl.disabled || !fittedEl.checked;
         }}
 
         function _dialLockSection(card) {{
@@ -3024,8 +3039,8 @@ def send_setup_page(
           section.classList.add('dial-section-locked');
           var btn = section.querySelector('.dial-lock-btn');
           if (btn) {{ btn.innerHTML = _ICON_PADLOCK_LOCKED; btn.setAttribute('aria-label', 'Unlock settings'); }}
-          section.querySelectorAll('input').forEach(function(el) {{ el.disabled = true; }});
-          dialSyncRotateEnabled(card);
+          section.querySelectorAll('input, select').forEach(function(el) {{ el.disabled = true; }});
+          dialSyncScreenControlsEnabled(card);
         }}
 
         function _dialUnlockSection(card, pin) {{
@@ -3043,8 +3058,8 @@ def send_setup_page(
               btn.style.display = 'none';
             }}
           }}
-          section.querySelectorAll('input').forEach(function(el) {{ el.disabled = false; }});
-          dialSyncRotateEnabled(card);
+          section.querySelectorAll('input, select').forEach(function(el) {{ el.disabled = false; }});
+          dialSyncScreenControlsEnabled(card);
         }}
 
         function _updateDialLockVisibility(card) {{
@@ -3101,6 +3116,7 @@ def send_setup_page(
             'invalid_response': 'Appliance returned an unexpected response',
             'wrong_pin': 'Incorrect PIN',
             'too_many_attempts': 'Too many attempts; try again later',
+            'screen_apply_failed': 'Screen settings could not be applied',
           }};
           return map[String(error || '')] || String(error || 'Unknown error');
         }}
@@ -3246,13 +3262,43 @@ def send_setup_page(
             var j = loadResult.body;
             var fittedEl = card.querySelector('.dial-screen-fitted');
             var rotateEl = card.querySelector('.dial-screen-rotate');
+            var bgrEl = card.querySelector('.dial-screen-bgr');
+            var typeEl = card.querySelector('.dial-screen-type');
+            var bgrRow = card.querySelector('.dial-screen-bgr-row');
+            var typeRow = card.querySelector('.dial-screen-type-row');
             if (fittedEl && j.screen && j.screen.fitted != null) {{
               fittedEl.checked = !!j.screen.fitted;
             }}
             if (rotateEl && j.screen) {{
               rotateEl.checked = !!(j.screen || {{}}).rotate;
             }}
-            dialSyncRotateEnabled(card);
+            // `supported` is the capability gate: older dials that don't
+            // publish it must never receive screen_type/bgr in the save
+            // body, so the two new controls stay hidden and disabled.
+            var supported = Array.isArray(j.supported) ? j.supported : [];
+            if (supported.length > 0) {{
+              card.dataset.screenCaps = '1';
+              if (typeEl) {{
+                typeEl.innerHTML = '';
+                supported.slice().sort(function(a, b) {{
+                  return String(a.text).localeCompare(String(b.text));
+                }}).forEach(function(opt) {{
+                  var o = document.createElement('option');
+                  o.value = opt.key;
+                  o.textContent = opt.text;
+                  typeEl.appendChild(o);
+                }});
+                if (j.screen && j.screen.screen_type != null) typeEl.value = j.screen.screen_type;
+              }}
+              if (bgrEl && j.screen) bgrEl.checked = !!j.screen.bgr;
+              if (bgrRow) bgrRow.style.display = 'flex';
+              if (typeRow) typeRow.style.display = 'flex';
+            }} else {{
+              delete card.dataset.screenCaps;
+              if (bgrRow) bgrRow.style.display = 'none';
+              if (typeRow) typeRow.style.display = 'none';
+            }}
+            dialSyncScreenControlsEnabled(card);
           }} catch(e) {{}}
         }}
 
@@ -3261,30 +3307,53 @@ def send_setup_page(
           if (!uuid) return;
           var fittedEl = card.querySelector('.dial-screen-fitted');
           var rotateEl = card.querySelector('.dial-screen-rotate');
+          var bgrEl = card.querySelector('.dial-screen-bgr');
+          var typeEl = card.querySelector('.dial-screen-type');
           if (!fittedEl || !rotateEl) return;
-          var body = {{uuid: uuid, screen: {{fitted: fittedEl.checked, rotate: rotateEl.checked}}}};
+          var screen = {{fitted: fittedEl.checked, rotate: rotateEl.checked}};
+          // Capability gate: only include the new fields once the dial has
+          // published `supported` — an older dial 400s the whole save on an
+          // unknown field, which would break the existing toggles too.
+          if (card.dataset.screenCaps === '1') {{
+            screen.bgr = bgrEl ? bgrEl.checked : false;
+            screen.screen_type = typeEl ? typeEl.value : '';
+          }}
+          var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
             if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
             body.current_pin = unlockedPin;
           }}
+          // Snapshot the changed control's previous value before posting —
+          // a <select> can't be reverted with a simple !checked flip like
+          // the checkboxes, so remember what to restore it to on failure.
+          var prevValue = null;
+          if (changedEl) {{
+            prevValue = (changedEl.tagName === 'SELECT') ? changedEl.value : changedEl.checked;
+          }}
           try {{
             var result = await _dialPost('/api/dial/screen/settings', body);
             if (result.ok) {{
               dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
-              dialSyncRotateEnabled(card);
+              dialSyncScreenControlsEnabled(card);
             }}
             else {{
               dialMsg(card, _dialErrorMessage(result.error), false);
-              // Revert only the control the user changed — the other checkbox
-              // still holds its pre-save value.
-              if (changedEl) changedEl.checked = !changedEl.checked;
-              dialSyncRotateEnabled(card);
+              // Revert only the control the user changed — the others
+              // still hold their pre-save values.
+              if (changedEl) {{
+                if (changedEl.tagName === 'SELECT') changedEl.value = prevValue;
+                else changedEl.checked = prevValue;
+              }}
+              dialSyncScreenControlsEnabled(card);
             }}
           }} catch(e) {{
             dialMsg(card, 'Network error', false);
-            if (changedEl) changedEl.checked = !changedEl.checked;
-            dialSyncRotateEnabled(card);
+            if (changedEl) {{
+              if (changedEl.tagName === 'SELECT') changedEl.value = prevValue;
+              else changedEl.checked = prevValue;
+            }}
+            dialSyncScreenControlsEnabled(card);
           }}
         }}
 
@@ -3623,7 +3692,7 @@ def send_setup_page(
                 ev.target.classList.contains('dial-step')
               )) dialSaveConfig(card);
               if (action === 'save-screen') {{
-                if (ev.target.classList.contains('dial-screen-fitted')) dialSyncRotateEnabled(card);
+                if (ev.target.classList.contains('dial-screen-fitted')) dialSyncScreenControlsEnabled(card);
                 dialSaveScreenSettings(card, ev.target);
               }}
             }});
