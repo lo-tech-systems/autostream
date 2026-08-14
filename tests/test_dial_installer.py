@@ -506,6 +506,45 @@ class TestDisplayImageProcessingDeployment:
             "it must be outside so it runs on --update too."
         )
 
+    def test_install_venv_build_packages_installs_python3_dev(self):
+        """sysv-ipc has no armv7l wheel; pip builds it and needs Python.h + gcc."""
+        content = self._helpers_content()
+        idx = content.find("\ninstall_venv_build_packages() {")
+        assert idx != -1, "install_venv_build_packages() definition not found"
+        end = content.find("\n}", idx)
+        fn_text = content[idx:end]
+        assert "python3-dev" in fn_text
+        assert "gcc" in fn_text
+
+    def test_install_venv_build_packages_called_before_setup_venv(self):
+        """Build deps must land before the pip step that compiles against them."""
+        content = self._installer_content()
+        call_pos = content.find("install_venv_build_packages")
+        venv_pos = content.find("setup_venv")
+        assert call_pos != -1, (
+            "install_venv_build_packages not called in autostream_dial_install.sh"
+        )
+        assert venv_pos != -1, "setup_venv not called in autostream_dial_install.sh"
+        assert call_pos < venv_pos, (
+            "install_venv_build_packages must be called before setup_venv"
+        )
+
+    def test_install_venv_build_packages_called_unconditionally(self):
+        """setup_venv runs on --update too, so its build deps must as well.
+
+        Same guard-balance check used for install_recovery_packages().
+        """
+        content = self._installer_content()
+        call_pos = content.find("install_venv_build_packages")
+        assert call_pos != -1
+        before = content[:call_pos]
+        open_update_guards = before.count("if ! $UPDATE")
+        fi_count = before.count("fi")
+        assert fi_count >= open_update_guards, (
+            "install_venv_build_packages() is called inside 'if ! $UPDATE' — "
+            "it must be outside so it runs on --update too."
+        )
+
     def test_logo_deployed_to_images_dir(self):
         """autostream-logo-centred-dark.png must be installed to /opt/autostream/images/."""
         content = self._installer_content()

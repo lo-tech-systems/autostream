@@ -126,6 +126,7 @@ sed -i 's/\r$//' /opt/autostream/autostream_wifi_watcher
 
 deploy_admin
 deploy_avahi_template
+install_venv_build_packages   # Python.h + gcc for sdist-only deps (sysv-ipc on armv7l)
 setup_venv   # pip install gpiozero into /opt/autostream/venv
 
 # ---- Recovery infrastructure (fresh install and --update) -------------------

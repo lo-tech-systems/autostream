@@ -22,6 +22,8 @@ install_os_packages() {
     # platform/wifi_watcher.py's module docstring.
     # Offline-recovery packages are omitted here; install_recovery_packages() is
     # the single install site, called unconditionally for both fresh and update paths.
+    # Venv build dependencies are likewise omitted; install_venv_build_packages()
+    # owns those and runs on both paths because setup_venv() does too.
     apt-get install -y --no-install-recommends \
         avahi-daemon avahi-utils nginx dnsmasq curl \
         python3-venv python3-flask python3-lgpio
@@ -437,6 +439,18 @@ require_trixie_os() {
         echo "ERROR: Bookworm installations require re-imaging; unattended OS upgrades are not supported." >&2
         exit 1
     fi
+}
+
+install_venv_build_packages() {
+    # Headers and a compiler for source builds in setup_venv().
+    # adafruit-circuitpython-rgb-display pulls in sysv-ipc (via adafruit-blinka),
+    # which publishes no armv7l wheel — on 32-bit images pip compiles it from the
+    # sdist, and without Python.h the pip step fails and aborts the whole install.
+    # python3-dev transitively supplies libc6-dev, so gcc needs no build-essential.
+    # Called unconditionally (fresh install and --update) because setup_venv() is:
+    # dials installed from a 32-bit image before this existed must acquire it on
+    # their next update, or that update's pip step fails the same way.
+    apt-get install -y --no-install-recommends python3-dev gcc
 }
 
 setup_venv() {
