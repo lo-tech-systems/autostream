@@ -172,12 +172,13 @@ class RecoveryWindow:
             }
 
 
-# ---- Display status provider (placeholder until the real display manager) --
+# ---- Display status provider (fallback when no display manager is wired) ----
 
 class NoOpDisplayStatusProvider:
-    """Default screen-settings runtime status provider used before WP-6/WP-8
-    wire in the real DialDisplay manager. Tracks only the fitted flag it is
-    told about; every other runtime field stays at its no-op default.
+    """Screen-settings runtime status provider used when no real display
+    manager was supplied — the server still answers /screen/settings so a
+    display-disabled dial behaves consistently. Tracks only the fitted flag it
+    is told about; every other runtime field stays at its no-op default.
     """
 
     def __init__(self) -> None:
