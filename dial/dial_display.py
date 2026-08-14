@@ -206,6 +206,9 @@ class DialDisplay:
 
         self._backend: DisplayBackend | None = None
         self._backend_name = "noop"
+        # Profile key of the backend actually open right now ("" when none).
+        # Distinct from self._config.screen_type, which is what was REQUESTED.
+        self._active_screen_type = ""
         self._backend_open = False
         self._backend_loaded = False
         self._showing = "noop"
@@ -269,7 +272,11 @@ class DialDisplay:
             return DisplayRuntimeStatus(
                 fitted=self._config.fitted,
                 rotate=self._config.rotate,
-                screen_type=self._config.screen_type,
+                # The ACTIVE profile, not the configured one: after a failed
+                # swap the configured key is the one that would not open, so
+                # reporting it here would hide exactly the drift this field
+                # exists to expose. Empty while no backend is open.
+                screen_type=self._active_screen_type,
                 bgr=self._config.bgr,
                 active=self._backend_open and self._backend_name != "noop",
                 backend=self._backend_name,
@@ -286,9 +293,16 @@ class DialDisplay:
             old_config = self._config
             self._config = config
             screen_type_changed = old_config.screen_type != config.screen_type
+            if screen_type_changed:
+                # Rebuild unconditionally, NOT only when fitted: a screen_type
+                # change accepted while the display is off must still be in
+                # force when it is later switched on. Rebuilding only under
+                # `fitted` leaves the stale factory in place, and the later
+                # enable sees no screen_type change to react to — so it would
+                # silently open the previous profile while status and disk
+                # both report the new one.
+                self._rebuild_backend_factory_locked(config.screen_type)
             if config.fitted:
-                if screen_type_changed:
-                    self._rebuild_backend_factory_locked(config.screen_type)
                 if screen_type_changed and self._backend_open:
                     # Swap branch takes precedence over the rotate/bgr
                     # redisplay branch below — for this same update_config()
@@ -355,6 +369,7 @@ class DialDisplay:
             return
         self._backend = backend
         self._backend_name = getattr(backend, "name", "noop")
+        self._active_screen_type = self._config.screen_type
         self._backend_open = True
         self._backend_loaded = True
         # A successful open clears any stale unrelated failure — today only
@@ -399,6 +414,7 @@ class DialDisplay:
         self._backend_open = False
         self._backend_loaded = False
         self._backend_name = "noop"
+        self._active_screen_type = ""
         # Drop the cached frame and its source identity before reopening: it
         # was composed at the OLD panel's dimensions. A successful
         # _enable_locked() renders the logo (which clears these anyway), but
@@ -419,6 +435,7 @@ class DialDisplay:
         self._backend_open = False
         self._backend_loaded = False
         self._backend_name = "noop"
+        self._active_screen_type = ""
         self._showing = "noop"
         self._source_artwork_url = ""
         self._current_rendered_image = None
@@ -476,14 +493,21 @@ class DialDisplay:
         default profile's dimensions when no backend is open (e.g. between
         close() and the next open()).
 
-        Reads self._backend without taking self._lock — safe under the same
-        single-mutator-thread invariant _show_artwork() already relies on
-        (see its comment), so this may be called either lock-held (from the
-        _locked methods) or lock-free (from _show_artwork()'s unlocked
-        fetch/decode/transform stretch).
+        May be called with or without self._lock held. The HTTP thread can
+        swap or close the backend concurrently (update_config runs there), so
+        the reference is snapshotted into a local before use rather than being
+        dereferenced through self — otherwise a swap landing between the
+        _backend_open check and the width read would raise on None.
+
+        These dimensions are therefore advisory: a frame composed against them
+        can still be superseded by a swap while it is being built. That is why
+        the size is re-checked under the lock before the frame is pushed (see
+        _show_artwork) — the guard, not this read, is what keeps a wrong-sized
+        frame off the panel.
         """
-        if self._backend_open and self._backend is not None:
-            return self._backend.width, self._backend.height
+        backend = self._backend
+        if self._backend_open and backend is not None:
+            return backend.width, backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
     def _apply_frame_transform(self, image):
@@ -656,10 +680,13 @@ class DialDisplay:
             self.show_logo()
             return
 
-        # Fetch, decode, and transform happen outside the lock — this is the
-        # only thread that mutates display state, so there is no concurrent
-        # selection change to race against; no mid-fetch cancellation is
-        # needed.
+        # Fetch, decode, and transform happen outside the lock so a slow
+        # network round-trip never blocks a settings change. This is the only
+        # thread that changes which artwork is SELECTED, so no mid-fetch
+        # cancellation is needed — but it is not the only thread touching
+        # display state: the HTTP thread can swap or close the backend
+        # underneath this work via update_config. The re-check below, taken
+        # under the lock, is what makes that safe.
         url_key = _url_log_key(url)
         data, err = _fetch_artwork(url, ARTWORK_FETCH_TIMEOUT_SECONDS)
         if err:

@@ -3298,6 +3298,9 @@ def send_setup_page(
               if (bgrRow) bgrRow.style.display = 'none';
               if (typeRow) typeRow.style.display = 'none';
             }}
+            // Only now is it safe to save: the controls hold the dial's real
+            // values, so a whole-object POST cannot reset an unread field.
+            card.dataset.screenLoaded = '1';
             dialSyncScreenControlsEnabled(card);
           }} catch(e) {{}}
         }}
@@ -3310,6 +3313,16 @@ def send_setup_page(
           var bgrEl = card.querySelector('.dial-screen-bgr');
           var typeEl = card.querySelector('.dial-screen-type');
           if (!fittedEl || !rotateEl) return;
+          // POST /screen/settings replaces the whole object, and any field
+          // left out is reset to its default. dialLoadConfig and
+          // dialLoadScreenSettings are fired independently on page load, so
+          // without this guard a toggle clicked before the screen-settings
+          // GET resolves would post {{fitted, rotate}} alone and silently
+          // reset a configured screen_type/BGR back to defaults.
+          if (card.dataset.screenLoaded !== '1') {{
+            dialMsg(card, 'Still loading screen settings — try again', false);
+            return;
+          }}
           var screen = {{fitted: fittedEl.checked, rotate: rotateEl.checked}};
           // Capability gate: only include the new fields once the dial has
           // published `supported` — an older dial 400s the whole save on an

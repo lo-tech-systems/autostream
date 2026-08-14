@@ -86,6 +86,19 @@ class TestDefaultProfile:
         assert profile.driver_tag == "st7735s"
         assert profile.rotation_mechanism == "init_table"
 
+    def test_init_table_profiles_only_use_supported_rotations(self):
+        """An init_table panel scans in a fixed orientation, so only 0 and 180
+        are meaningful — 90/270 would address the row register beyond its
+        range and mangle the image rather than rotating it. Nothing enforces
+        this at construction, so guard the table itself.
+        """
+        for profile in ddp.DISPLAY_PROFILES.values():
+            if profile.rotation_mechanism == "init_table":
+                assert profile.rotation in (0, 180), (
+                    f"{profile.key}: rotation {profile.rotation} is not "
+                    "addressable on an init_table panel"
+                )
+
     def test_default_profile_backend_name(self):
         profile = ddp.get_profile(ddp.DEFAULT_PROFILE_KEY)
         assert ddp.backend_name_for(profile) == "adafruit_st7735s"

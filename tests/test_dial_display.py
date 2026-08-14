@@ -160,8 +160,10 @@ class TestDisabledConfig:
     def test_disabled_status_shape(self):
         display, fb, gt, mu = _make_display(fitted=False)
         status = display.get_status()
+        # screen_type is the ACTIVE profile, so it is empty while the display
+        # is off — the configured key still reads back from GET /screen/settings.
         assert status == {
-            "fitted": False, "rotate": False, "screen_type": DEFAULT_PROFILE_KEY,
+            "fitted": False, "rotate": False, "screen_type": "",
             "bgr": False, "active": False, "backend": "noop",
             "backend_loaded": False, "showing": "noop",
             "last_error": "", "last_error_at": None,
@@ -660,6 +662,69 @@ class TestScreenTypeSwap:
         assert fb_new.opened is True
         assert status["screen_type"] == "st7789_240x240"
         assert display._backend is fb_new
+
+    def test_screen_type_change_while_off_applies_at_next_enable(self):
+        """A profile accepted while the display is off must be the one that
+        opens when it is switched back on.
+
+        The factory rebuild must not be gated on `fitted`: the later enable
+        sees no screen_type change to react to, so a rebuild deferred until
+        then never happens and the previous profile opens instead — silently,
+        with status and on-disk config both naming the new one.
+        """
+        fb_old = FakeBackend()
+        fb_old.width, fb_old.height = 160, 128
+        fb_new = FakeBackend()
+        fb_new.width, fb_new.height = 240, 240
+
+        display, _, gt, mu = _make_display(
+            fitted=True, screen_type="st7735s_160x128", backend=fb_old,
+            backend_factory_builder=self._swap_builder(fb_old, fb_new),
+        )
+        display.enable()
+        assert fb_old.opened is True
+
+        # Turn the display off and change the profile in the same request.
+        display.update_config(
+            DialDisplayConfig(fitted=False, screen_type="st7789_240x240")
+        )
+        assert fb_old.closed is True
+        assert fb_new.opened is False
+
+        # Switching back on — same screen_type as the previous call, so there
+        # is no change to detect here; the rebuild must already have happened.
+        status = display.update_config(
+            DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+        )
+
+        assert fb_new.opened is True, "the newly-selected profile must open"
+        assert display._backend is fb_new
+        assert status["screen_type"] == "st7789_240x240"
+
+    def test_runtime_screen_type_is_active_not_requested(self):
+        """runtime.screen_type must name the profile actually open, so a
+        failed swap is visible as drift against the configured value."""
+        fb_old = FakeBackend()
+
+        class _FailingBackend(FakeBackend):
+            def open(self):
+                raise RuntimeError("no panel")
+
+        fb_new = _FailingBackend()
+        display, _, gt, mu = _make_display(
+            fitted=True, screen_type="st7735s_160x128", backend=fb_old,
+            backend_factory_builder=self._swap_builder(fb_old, fb_new),
+        )
+        display.enable()
+        assert display.get_status()["screen_type"] == "st7735s_160x128"
+
+        status = display.update_config(
+            DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+        )
+        # The requested profile failed to open: nothing is active, so runtime
+        # reports no profile rather than echoing the request.
+        assert status["screen_type"] == ""
+        assert status["last_error"] == "backend_open_failed"
 
     def test_swap_clears_cache_so_next_poll_recomposes(self):
         t = _target()

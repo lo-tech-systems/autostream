@@ -1113,6 +1113,22 @@ class TestDialCardHtmlStructure:
         # {{fitted, rotate}} shape.
         assert "var screen = {{fitted: fittedEl.checked, rotate: rotateEl.checked}};" in body
 
+    def test_save_blocked_until_screen_settings_loaded(self):
+        """A whole-object POST built before the screen-settings GET resolves
+        would omit screen_type/bgr and reset them to defaults, so the save
+        must refuse until the load has populated the controls."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.screenLoaded !== '1'" in body
+        # The guard must sit before the body is assembled, not after.
+        assert body.index("screenLoaded") < body.index("var screen = ")
+
+        load_idx = src.find("async function dialLoadScreenSettings(card)")
+        load_body = src[load_idx:src.find("async function dialSaveScreenSettings", load_idx)]
+        assert "card.dataset.screenLoaded = '1'" in load_body
+
     def test_screen_save_reverts_via_snapshot_not_just_negation(self):
         """A <select> can't be reverted with `!checked` -- the changed
         control's previous value must be snapshotted before the POST and

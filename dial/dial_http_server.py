@@ -579,6 +579,20 @@ class DialHTTPServer:
                 # every boot. fitted/rotate/bgr keep their previous
                 # save-regardless behaviour, so they stay changeable even on a
                 # dial whose panel is absent or faulty (where every open fails).
+                #
+                # The comparison is against the PERSISTED profile, not the
+                # active one. Comparing against active would mean that on a
+                # dial whose panel cannot open at all (none fitted, faulty
+                # wiring) nothing ever matches, so every setting would be
+                # rejected and the display would become unconfigurable.
+                #
+                # Known limitation: a screen_type accepted while fitted is
+                # false cannot be opened, so it is persisted unvalidated; if
+                # the later enable fails on it, that enable counts as "no
+                # change" here and is persisted. The web UI cannot reach this
+                # (its selector is disabled unless fitted is checked), and the
+                # drift is visible — runtime.screen_type reports no active
+                # profile while the configured one names it.
                 apply_failed = (
                     new_display.fitted
                     and new_display.screen_type != cfg.display.screen_type

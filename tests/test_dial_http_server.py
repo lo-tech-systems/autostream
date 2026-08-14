@@ -963,7 +963,10 @@ class _FailingDisplayStatusProvider:
     def update_config(self, config) -> dict:
         return {
             "fitted": config.fitted, "rotate": config.rotate,
-            "screen_type": config.screen_type, "bgr": config.bgr,
+            # runtime.screen_type reports the ACTIVE profile, and nothing is
+            # open after a failed enable — mirroring DialDisplay, which clears
+            # it on teardown and only sets it on a successful open.
+            "screen_type": "", "bgr": config.bgr,
             "active": False, "backend": "noop", "backend_loaded": False,
             "showing": "noop", "last_error": "backend_open_failed",
             "last_error_at": 12345.0,
