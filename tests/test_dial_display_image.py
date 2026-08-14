@@ -2,8 +2,9 @@
 
 Covers: MAX_IMAGE_PIXELS/DecompressionBombWarning wiring, artwork decode
 (format validation, pixel-count and expanded-footprint limits, malformed
-image handling, EXIF orientation, RGB conversion), panel transform
-(center-crop to 5:4 then resize to 160x128), and logo scale-to-fit
+image handling, EXIF orientation, RGB conversion), panel transform (ambient
+blur backdrop: fit-to-panel foreground centered over a blurred, darkened
+cover-fill backdrop, resulting in one 160x128 frame), and logo scale-to-fit
 letterboxing.
 """
 from __future__ import annotations
@@ -23,6 +24,8 @@ if _DIAL not in sys.path:
 
 import dial_display_image as ddi
 from dial_display_image import (
+    BACKDROP_BLUR_RADIUS,
+    BACKDROP_DARKEN_PERCENT,
     LOGO_BACKGROUND_RGB,
     PANEL_HEIGHT,
     PANEL_WIDTH,
@@ -30,6 +33,7 @@ from dial_display_image import (
     load_logo,
     transform_artwork_for_panel,
 )
+from PIL import ImageEnhance, ImageFilter
 
 
 def _jpeg_bytes(size=(400, 300), color=(255, 0, 0)) -> bytes:
@@ -101,21 +105,87 @@ class TestTransformArtworkForPanel:
         img = decode_artwork(_jpeg_bytes(size=(500, 500)))
         out = transform_artwork_for_panel(img)
         assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
+        assert out.mode == "RGB"
 
-    def test_wide_source_center_cropped_to_aspect(self):
-        img = decode_artwork(_jpeg_bytes(size=(800, 200)))
+    def test_wide_panel_ratio_source_fills_edge_to_edge(self):
+        # Exactly the panel's 5:4 ratio — the fit-to-panel foreground already
+        # covers the whole frame, so this is the no-backdrop fast path.
+        img = decode_artwork(_jpeg_bytes(size=(800, 640), color=(10, 20, 30)))
+        out = transform_artwork_for_panel(img)
+        assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
+        # No blurred/darkened backdrop bands — every pixel is the flat source
+        # colour, including the corners.
+        assert out.getpixel((0, 0)) == (10, 20, 30)
+        assert out.getpixel((PANEL_WIDTH - 1, PANEL_HEIGHT - 1)) == (10, 20, 30)
+
+    def test_narrow_tall_source_gets_backdrop_left_right(self):
+        # The "contain" logic applies to any aspect ratio, not just square.
+        # A narrow/tall source (200x800) is constrained by height when fit
+        # within the panel — it scales to 32x128, full height, leaving
+        # blurred backdrop bands left and right rather than above/below.
+        img = decode_artwork(_jpeg_bytes(size=(200, 800), color=(200, 40, 40)))
+        out = transform_artwork_for_panel(img)
+        assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
+        band_pixel = out.getpixel((2, PANEL_HEIGHT // 2))
+        foreground_pixel = out.getpixel((PANEL_WIDTH // 2, PANEL_HEIGHT // 2))
+        assert band_pixel != foreground_pixel
+
+    def test_small_source_is_upscaled_to_fill_axis(self):
+        # thumbnail() never upscales; the contain-scale must. A 64x64 cover
+        # becomes a full 128x128 foreground, not a 64x64 stamp in the middle.
+        img = decode_artwork(_jpeg_bytes(size=(64, 64), color=(40, 200, 40)))
         out = transform_artwork_for_panel(img)
         assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
 
-    def test_tall_source_center_cropped_to_aspect(self):
-        img = decode_artwork(_jpeg_bytes(size=(200, 800)))
-        out = transform_artwork_for_panel(img)
-        assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
+        expected_fg = img.resize((PANEL_HEIGHT, PANEL_HEIGHT), ddi._RESAMPLE)
+        x_offset = (PANEL_WIDTH - PANEL_HEIGHT) // 2
+        actual_fg = out.crop((x_offset, 0, x_offset + PANEL_HEIGHT, PANEL_HEIGHT))
+        assert list(actual_fg.getdata()) == list(expected_fg.getdata())
 
-    def test_square_source_center_cropped_to_aspect(self):
+    def test_square_source_foreground_matches_plain_resize(self):
+        # Square album art (the common case) becomes a full 128x128
+        # foreground pasted centered over the backdrop.
         img = decode_artwork(_jpeg_bytes(size=(300, 300)))
         out = transform_artwork_for_panel(img)
         assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
+
+        expected_fg = img.resize((PANEL_HEIGHT, PANEL_HEIGHT), ddi._RESAMPLE)
+        x_offset = (PANEL_WIDTH - PANEL_HEIGHT) // 2
+        actual_fg = out.crop((x_offset, 0, x_offset + PANEL_HEIGHT, PANEL_HEIGHT))
+        assert list(actual_fg.getdata()) == list(expected_fg.getdata())
+
+    def test_square_source_side_bands_are_darkened_blurred_backdrop(self):
+        img = decode_artwork(_jpeg_bytes(size=(300, 300), color=(200, 40, 40)))
+        out = transform_artwork_for_panel(img)
+
+        x_offset = (PANEL_WIDTH - PANEL_HEIGHT) // 2
+        band_pixel = out.getpixel((2, PANEL_HEIGHT // 2))
+
+        # Not black — it carries the source's colour wash, not a letterbox.
+        assert band_pixel != (0, 0, 0)
+
+        # Matches the same cover/blur/darken pipeline the implementation
+        # uses, exactly.
+        expected_backdrop = ddi._cover_panel(img)
+        expected_backdrop = expected_backdrop.filter(ImageFilter.GaussianBlur(BACKDROP_BLUR_RADIUS))
+        expected_backdrop = ImageEnhance.Brightness(expected_backdrop).enhance(
+            1 - BACKDROP_DARKEN_PERCENT / 100
+        )
+        assert band_pixel == expected_backdrop.getpixel((2, PANEL_HEIGHT // 2))
+
+        # Darkened relative to the un-darkened blurred backdrop, by
+        # approximately BACKDROP_DARKEN_PERCENT.
+        undarkened = ddi._cover_panel(img).filter(ImageFilter.GaussianBlur(BACKDROP_BLUR_RADIUS))
+        undarkened_pixel = undarkened.getpixel((2, PANEL_HEIGHT // 2))
+        ratio = sum(band_pixel) / sum(undarkened_pixel)
+        assert abs(ratio - (1 - BACKDROP_DARKEN_PERCENT / 100)) < 0.05
+
+        # Sanity-check the offset used above is still outside the pasted
+        # foreground region.
+        assert 2 < x_offset
+
+    def test_backdrop_darken_percent_pinned(self):
+        assert BACKDROP_DARKEN_PERCENT == 35
 
 
 class TestLoadLogo:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import warnings
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 # MAX_IMAGE_PIXELS is a PIL process-wide global. This is the dial's only PIL
 # user, so applying the limit here at import time is safe and also protects
@@ -39,6 +39,18 @@ PANEL_HEIGHT = 128
 LOGO_BACKGROUND_RGB = (14, 40, 65)
 
 _ARTWORK_FORMATS = ("JPEG", "PNG", "WEBP")
+
+# Ambient-blur backdrop (Apple-TV-style): the source is scaled to cover the
+# panel, blurred into a soft colour wash, then darkened so the foreground art
+# reads clearly on top. Radius 10 is chosen empirically for a 160x128 panel —
+# low enough that the blur still carries the source's dominant colours,
+# high enough that no source detail or hard edges survive into the wash.
+BACKDROP_BLUR_RADIUS = 10
+
+# Percentage by which the blurred backdrop is darkened before compositing —
+# 35 means backdrop pixels are multiplied down to 65% of their blurred
+# brightness, keeping the foreground art the clear visual focus.
+BACKDROP_DARKEN_PERCENT = 35
 
 try:
     _RESAMPLE = Image.Resampling.LANCZOS
@@ -83,8 +95,10 @@ def decode_artwork(data: bytes) -> Image.Image | None:
     return img
 
 
-def transform_artwork_for_panel(img: Image.Image) -> Image.Image:
-    """Center-crop to the panel aspect ratio (5:4 landscape) and resize to 160x128."""
+def _cover_panel(img: Image.Image) -> Image.Image:
+    """Center-crop to the panel aspect ratio (5:4 landscape) and resize to
+    160x128, filling the panel with no letterboxing (some source content is
+    cropped away)."""
     src_w, src_h = img.size
     target_ratio = PANEL_WIDTH / PANEL_HEIGHT
 
@@ -101,6 +115,45 @@ def transform_artwork_for_panel(img: Image.Image) -> Image.Image:
 
     cropped = img.crop(box)
     return cropped.resize((PANEL_WIDTH, PANEL_HEIGHT), _RESAMPLE)
+
+
+def transform_artwork_for_panel(img: Image.Image) -> Image.Image:
+    """Compose an Apple-TV-style ambient-blur backdrop, returning one 160x128
+    RGB frame.
+
+    The source is scaled to fit within the panel preserving aspect ratio
+    (the common case — square album art — becomes a full 128x128 foreground)
+    and pasted centered over a blurred, darkened backdrop built by covering
+    the panel with the same source. This applies to any aspect ratio, not
+    just square: art narrower than 160:128 leaves blurred bands left/right,
+    art wider than 160:128 leaves them above/below.
+    """
+    # Explicit contain-scale rather than Image.thumbnail(): thumbnail never
+    # upscales, and provider artwork smaller than the panel must still fill
+    # its axis (a 100x100 cover becomes a 128x128 foreground, not a stamp).
+    src_w, src_h = img.size
+    scale = min(PANEL_WIDTH / src_w, PANEL_HEIGHT / src_h)
+    fitted = img.resize(
+        (max(1, round(src_w * scale)), max(1, round(src_h * scale))),
+        _RESAMPLE,
+    )
+
+    if fitted.size == (PANEL_WIDTH, PANEL_HEIGHT):
+        # Source is already exactly panel ratio — the foreground covers the
+        # whole frame, so there is no backdrop left to show. Skip the blur
+        # work entirely.
+        return fitted
+
+    backdrop = _cover_panel(img)
+    backdrop = backdrop.filter(ImageFilter.GaussianBlur(BACKDROP_BLUR_RADIUS))
+    backdrop = ImageEnhance.Brightness(backdrop).enhance(1 - BACKDROP_DARKEN_PERCENT / 100)
+
+    offset = (
+        (PANEL_WIDTH - fitted.width) // 2,
+        (PANEL_HEIGHT - fitted.height) // 2,
+    )
+    backdrop.paste(fitted, offset)
+    return backdrop
 
 
 def load_logo(path: str) -> Image.Image | None:
