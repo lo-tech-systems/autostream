@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Callable
 
 from dial_config import InvalidScreenSettings, _read_env_file, validate_screen_settings
+from dial_display_profiles import DEFAULT_PROFILE_KEY, list_profiles
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
@@ -186,6 +187,8 @@ class NoOpDisplayStatusProvider:
         return {
             "fitted":         self._fitted,
             "rotate":         False,
+            "screen_type":    DEFAULT_PROFILE_KEY,
+            "bgr":            False,
             "active":         False,
             "backend":        "noop",
             "backend_loaded": False,
@@ -341,9 +344,15 @@ class DialHTTPServer:
                     with dial_server._cfg_lock:
                         cfg = dial_server._cfg
                     self._send_json(200, {
-                        'ok':      True,
-                        'screen':  {'fitted': cfg.display.fitted, 'rotate': cfg.display.rotate},
-                        'runtime': dial_server._display_status.get_status(),
+                        'ok':        True,
+                        'screen':    {
+                            'fitted':      cfg.display.fitted,
+                            'rotate':      cfg.display.rotate,
+                            'screen_type': cfg.display.screen_type,
+                            'bgr':         cfg.display.bgr,
+                        },
+                        'supported': list_profiles(),
+                        'runtime':   dial_server._display_status.get_status(),
                     })
 
                 else:
@@ -549,6 +558,50 @@ class DialHTTPServer:
                 new_cfg = copy.copy(cfg)
                 new_cfg.display = new_display
 
+                # Apply-then-persist — reverses the usual save-first ordering
+                # used by /configure. Several screen_type profiles are
+                # untested on hardware; saving before confirming the backend
+                # actually opens would persist a broken choice and the dial
+                # would boot into a no-op display every restart. fitted/
+                # rotate/bgr can never fail to apply, so this reordering has
+                # no observable effect on them — only a bad screen_type can
+                # trip the failure path below.
+                runtime = dial_server._display_status.update_config(new_cfg.display)
+                # A failed live apply while fitted is requested surfaces as
+                # last_error == "backend_open_failed" (set by DialDisplay's
+                # degrade-to-noop path — see dial_display.py _enable_locked);
+                # a successful enable always clears last_error, and disabling
+                # the display can never fail, so gating on fitted here avoids
+                # ever misreading a stale unrelated error as an apply failure.
+                #
+                # Only a screen_type change withholds persistence: that is the
+                # setting that can leave the dial opening a broken profile on
+                # every boot. fitted/rotate/bgr keep their previous
+                # save-regardless behaviour, so they stay changeable even on a
+                # dial whose panel is absent or faulty (where every open fails).
+                apply_failed = (
+                    new_display.fitted
+                    and new_display.screen_type != cfg.display.screen_type
+                    and runtime.get('last_error') == 'backend_open_failed'
+                )
+                if apply_failed:
+                    logging.warning(
+                        "screen settings apply failed (screen_type=%s) — on-disk config left unchanged",
+                        new_display.screen_type,
+                    )
+                    self._send_json(200, {
+                        'ok':      False,
+                        'error':   'screen_apply_failed',
+                        'screen':  {
+                            'fitted':      cfg.display.fitted,
+                            'rotate':      cfg.display.rotate,
+                            'screen_type': cfg.display.screen_type,
+                            'bgr':         cfg.display.bgr,
+                        },
+                        'runtime': runtime,
+                    })
+                    return
+
                 from dial_config import save_config
                 try:
                     save_config(new_cfg)
@@ -558,15 +611,19 @@ class DialHTTPServer:
                     return
 
                 dial_server.update_cfg(new_cfg)
-                runtime = dial_server._display_status.update_config(new_cfg.display)
 
                 logging.info(
-                    "screen settings updated: fitted=%s rotate=%s",
-                    new_display.fitted, new_display.rotate,
+                    "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s",
+                    new_display.fitted, new_display.rotate, new_display.screen_type, new_display.bgr,
                 )
                 self._send_json(200, {
                     'ok':               True,
-                    'screen':           {'fitted': new_cfg.display.fitted, 'rotate': new_cfg.display.rotate},
+                    'screen':           {
+                        'fitted':      new_cfg.display.fitted,
+                        'rotate':      new_cfg.display.rotate,
+                        'screen_type': new_cfg.display.screen_type,
+                        'bgr':         new_cfg.display.bgr,
+                    },
                     'runtime':          runtime,
                     'restart_required': False,
                 })

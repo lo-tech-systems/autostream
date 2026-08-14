@@ -710,3 +710,41 @@ class TestScreenSettingsLiveApply:
         # Applied synchronously against the real running manager, not merely
         # in the response payload.
         assert display.get_status()["rotate"] is True
+
+    def test_post_screen_settings_applies_screen_type_and_bgr_on_real_display_manager(self):
+        from dial_config import DialConfig, DialDisplayConfig
+        from dial_display import DialDisplay, NoOpBackend
+        from dial_http_server import DialHTTPServer
+        import dial_mdns as dm_mdns
+
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, bgr=False))
+        display = DialDisplay(
+            config=cfg.display,
+            get_display_targets=dm_mdns.get_display_targets,
+            mark_display_target_unauthorized=dm_mdns.mark_display_target_unauthorized,
+            dial_id=cfg.uuid,
+            backend_factory=NoOpBackend,
+        )
+        display.enable()
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = __import__("threading").Lock()
+        server._display_status = display
+        server._recovery_window = MagicMock()
+
+        assert display.get_status()["bgr"] is False
+        assert display.get_status()["screen_type"] == "st7735s_160x128"
+
+        result = self._post_screen_settings(
+            server,
+            {"screen": {"fitted": True, "screen_type": "st7789_240x240", "bgr": True}},
+        )
+
+        assert result["status"] == 200
+        assert result["data"]["runtime"]["screen_type"] == "st7789_240x240"
+        assert result["data"]["runtime"]["bgr"] is True
+        # Applied synchronously against the real running manager, not merely
+        # in the response payload. NoOpBackend never fails to "open", so
+        # this is an unconditional apply-then-persist success path.
+        assert display.get_status()["screen_type"] == "st7789_240x240"
+        assert display.get_status()["bgr"] is True

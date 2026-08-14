@@ -23,7 +23,7 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_http_server as dhs
-from dial_config import DialConfig, DialDisplayConfig
+from dial_config import DEFAULT_PROFILE_KEY, DialConfig, DialDisplayConfig
 from dial_http_server import NoOpDisplayStatusProvider, RecoveryWindow
 
 
@@ -743,8 +743,8 @@ class TestReconcileUpdateTimer:
 # GET/POST /screen/settings
 # ---------------------------------------------------------------------------
 
-_RUNTIME_KEYS = {"fitted", "rotate", "active", "backend", "backend_loaded", "showing",
-                  "last_error", "last_error_at",
+_RUNTIME_KEYS = {"fitted", "rotate", "screen_type", "bgr", "active", "backend", "backend_loaded",
+                  "showing", "last_error", "last_error_at",
                   "display_sleeping", "display_idle_seconds"}
 
 
@@ -760,11 +760,17 @@ class TestScreenSettingsGet:
         h.do_GET()
         assert result["status"] == 200
         assert result["data"]["ok"] is True
-        assert result["data"]["screen"] == {"fitted": False, "rotate": False}
+        assert result["data"]["screen"] == {
+            "fitted": False, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+        }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
         assert result["data"]["runtime"]["backend"] == "noop"
         assert "artwork_url" not in json.dumps(result["data"])
+        supported = result["data"]["supported"]
+        assert supported, "supported profile list must not be empty"
+        assert all(set(p.keys()) == {"key", "text"} for p in supported)
 
     def test_get_reflects_fitted_true(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
@@ -775,7 +781,10 @@ class TestScreenSettingsGet:
         h.client_address = ("127.0.0.1", 1234)
         h._send_json     = lambda s, d: result.update(status=s, data=d)
         h.do_GET()
-        assert result["data"]["screen"] == {"fitted": True, "rotate": False}
+        assert result["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+        }
         assert result["data"]["runtime"]["fitted"] is True
 
     def test_get_reflects_rotate_true(self):
@@ -787,7 +796,26 @@ class TestScreenSettingsGet:
         h.client_address = ("127.0.0.1", 1234)
         h._send_json     = lambda s, d: result.update(status=s, data=d)
         h.do_GET()
-        assert result["data"]["screen"] == {"fitted": True, "rotate": True}
+        assert result["data"]["screen"] == {
+            "fitted": True, "rotate": True,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+        }
+
+    def test_get_reflects_screen_type_and_bgr(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, screen_type="st7789_240x240", bgr=True,
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": "st7789_240x240", "bgr": True,
+        }
 
 
 class TestScreenSettingsPost:
@@ -798,7 +826,10 @@ class TestScreenSettingsPost:
         r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
         assert r["status"] == 200
         assert r["data"]["ok"] is True
-        assert r["data"]["screen"] == {"fitted": True, "rotate": False}
+        assert r["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+        }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
         assert r["save_calls"][0].display.fitted is True
@@ -806,8 +837,33 @@ class TestScreenSettingsPost:
     def test_post_rotate_true_persists_and_appears_in_response(self):
         r = _call_handler("/screen/settings", body={"screen": {"fitted": True, "rotate": True}})
         assert r["status"] == 200
-        assert r["data"]["screen"] == {"fitted": True, "rotate": True}
+        assert r["data"]["screen"] == {
+            "fitted": True, "rotate": True,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+        }
         assert r["save_calls"][0].display.rotate is True
+
+    def test_post_screen_type_and_bgr_persist_and_appear_in_response(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_240x240", "bgr": True}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": "st7789_240x240", "bgr": True,
+        }
+        assert r["save_calls"][0].display.screen_type == "st7789_240x240"
+        assert r["save_calls"][0].display.bgr is True
+
+    def test_post_unknown_screen_type_returns_invalid_screen_settings(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "no_such_panel"}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
 
     def test_post_rotate_omitted_defaults_false_and_still_200(self):
         r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
@@ -894,6 +950,109 @@ class TestScreenSettingsPost:
 
 
 # ---------------------------------------------------------------------------
+# Apply-then-persist: a failed live apply must not reach save_config(), and
+# the response must surface the failure with the on-disk config unchanged.
+# ---------------------------------------------------------------------------
+
+class _FailingDisplayStatusProvider:
+    """Stand-in whose update_config() reports a failed backend open — the
+    same last_error a real DialDisplay sets when a screen_type's backend
+    fails to open (see dial_display.py _enable_locked degrade-to-noop path).
+    """
+
+    def update_config(self, config) -> dict:
+        return {
+            "fitted": config.fitted, "rotate": config.rotate,
+            "screen_type": config.screen_type, "bgr": config.bgr,
+            "active": False, "backend": "noop", "backend_loaded": False,
+            "showing": "noop", "last_error": "backend_open_failed",
+            "last_error_at": 12345.0,
+            "display_sleeping": False, "display_idle_seconds": 0,
+        }
+
+    def get_status(self) -> dict:
+        return self.update_config(DialDisplayConfig())
+
+
+class TestScreenSettingsApplyThenPersist:
+    def test_failed_apply_does_not_persist_and_reports_error(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, screen_type="st7735s_160x128",
+        ))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
+            setup_server=server,
+        )
+        assert r["status"] == 200
+        assert r["data"]["ok"] is False
+        assert r["data"]["error"] == "screen_apply_failed"
+        assert r["save_calls"] == [], "a failed apply must never reach save_config()"
+        # On-disk config unchanged: the response's screen echoes the OLD
+        # (still-effective) settings, not the rejected screen_type.
+        assert r["data"]["screen"]["screen_type"] == "st7735s_160x128"
+
+    def test_rotate_change_still_persists_when_backend_cannot_open(self):
+        """Only a screen_type change withholds persistence.
+
+        A dial whose panel is absent or faulty fails every open, but its
+        rotate/bgr/fitted settings must stay changeable — withholding those
+        too would make an unopenable display unconfigurable.
+        """
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, rotate=False, screen_type="st7735s_160x128",
+        ))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {
+                "fitted": True, "rotate": True,
+                "screen_type": "st7735s_160x128",
+            }},
+            setup_server=server,
+        )
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert len(r["save_calls"]) == 1
+        assert r["save_calls"][0].display.rotate is True
+        assert server._cfg.display.screen_type == "st7735s_160x128"
+        assert r["data"]["runtime"]["last_error"] == "backend_open_failed"
+
+    def test_failed_apply_does_not_call_update_cfg(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        original_update_cfg = server.update_cfg
+        calls = []
+        server.update_cfg = lambda c: (calls.append(c), original_update_cfg(c))
+        _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
+            setup_server=server,
+        )
+        assert calls == [], "a failed apply must never update the live server config"
+
+    def test_disabling_display_never_treated_as_apply_failure(self):
+        """fitted=False can never fail to apply — even if the display status
+        provider is (unrealistically) reporting a stale backend_open_failed,
+        disabling must still succeed and persist normally."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": False}},
+            setup_server=server,
+        )
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert len(r["save_calls"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # NoOpDisplayStatusProvider — placeholder runtime status shape
 # ---------------------------------------------------------------------------
 
@@ -903,6 +1062,12 @@ class TestNoOpDisplayStatusProvider:
         status = provider.get_status()
         assert status["display_sleeping"] is False
         assert status["display_idle_seconds"] == 0
+
+    def test_get_status_includes_screen_type_and_bgr(self):
+        provider = NoOpDisplayStatusProvider()
+        status = provider.get_status()
+        assert status["screen_type"] == DEFAULT_PROFILE_KEY
+        assert status["bgr"] is False
 
 
 # ---------------------------------------------------------------------------

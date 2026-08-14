@@ -383,7 +383,10 @@ class TestDisplaySettings:
             data = json.loads(s.read_text())
         finally:
             dc.SETTINGS_PATH = orig
-        assert data["display"] == {"fitted": True, "rotate": False}
+        assert data["display"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": dc.DEFAULT_PROFILE_KEY, "bgr": False,
+        }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
         hw = tmp_path / "hw.json"
@@ -418,7 +421,94 @@ class TestDisplaySettings:
             data = json.loads(s.read_text())
         finally:
             dc.SETTINGS_PATH = orig
-        assert data["display"] == {"fitted": True, "rotate": True}
+        assert data["display"] == {
+            "fitted": True, "rotate": True,
+            "screen_type": dc.DEFAULT_PROFILE_KEY, "bgr": False,
+        }
+
+
+class TestScreenTypeAndBgrSettings:
+    def test_missing_display_defaults_screen_type(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.screen_type == dc.DEFAULT_PROFILE_KEY
+
+    def test_missing_display_defaults_bgr_false(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.bgr is False
+
+    def test_hw_display_screen_type_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "screen_type": "ili9341_320x240"})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.screen_type == "ili9341_320x240"
+
+    def test_hw_display_bgr_true_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "bgr": True})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.bgr is True
+
+    def test_mutable_settings_override_hw_screen_type(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "screen_type": "st7735s_160x128"})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_type": "st7789_320x240"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_type == "st7789_320x240"
+
+    def test_mutable_settings_override_hw_bgr(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "bgr": False})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "bgr": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.bgr is True
+
+    def test_save_persists_screen_type_and_bgr(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(
+                uuid="x",
+                display=DialDisplayConfig(fitted=True, screen_type="st7789_240x240", bgr=True),
+            )
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"]["screen_type"] == "st7789_240x240"
+        assert data["display"]["bgr"] is True
+
+    def test_corrupt_persisted_screen_type_in_settings_falls_back_to_default(self, tmp_path):
+        """A corrupt/stale settings file must not brick the dial at startup —
+        an unknown screen_type falls back to the default profile with a
+        warning log rather than raising."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_type": "no_such_panel_anymore"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_type == dc.DEFAULT_PROFILE_KEY
+        assert cfg.display.fitted is True
+
+    def test_corrupt_hw_screen_type_falls_back_to_default(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "screen_type": "totally_bogus"})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.screen_type == dc.DEFAULT_PROFILE_KEY
 
 
 class TestValidateScreenSettings:
@@ -469,6 +559,42 @@ class TestValidateScreenSettings:
     def test_string_rotate_rejected(self):
         with pytest.raises(InvalidScreenSettings):
             validate_screen_settings({"fitted": True, "rotate": "true"})
+
+    def test_valid_bgr_true_accepted(self):
+        result = validate_screen_settings({"fitted": True, "bgr": True})
+        assert result == DialDisplayConfig(fitted=True, bgr=True)
+
+    def test_valid_bgr_false_accepted(self):
+        result = validate_screen_settings({"fitted": True, "bgr": False})
+        assert result == DialDisplayConfig(fitted=True, bgr=False)
+
+    def test_bgr_omitted_defaults_false(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result == DialDisplayConfig(fitted=True, bgr=False)
+
+    def test_integer_bgr_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "bgr": 1})
+
+    def test_string_bgr_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "bgr": "true"})
+
+    def test_valid_screen_type_accepted(self):
+        result = validate_screen_settings({"fitted": True, "screen_type": "st7789_240x240"})
+        assert result == DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+
+    def test_screen_type_omitted_defaults_to_default_profile_key(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result == DialDisplayConfig(fitted=True, screen_type=dc.DEFAULT_PROFILE_KEY)
+
+    def test_unknown_screen_type_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "screen_type": "no_such_panel"})
+
+    def test_non_string_screen_type_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "screen_type": 42})
 
 
 class TestSaveConfigAtomic:

@@ -125,10 +125,12 @@ class FakeBackend:
 
 
 def _make_display(
-    fitted=True, rotate=False, targets=None, backend=None,
+    fitted=True, rotate=False, bgr=False, screen_type=DEFAULT_PROFILE_KEY,
+    targets=None, backend=None,
     get_targets=None, mark_unauthorized=None,
+    backend_factory_builder=None,
 ) -> tuple[DialDisplay, FakeBackend, MagicMock, MagicMock]:
-    cfg = DialDisplayConfig(fitted=fitted, rotate=rotate)
+    cfg = DialDisplayConfig(fitted=fitted, rotate=rotate, bgr=bgr, screen_type=screen_type)
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
     mu = mark_unauthorized or MagicMock()
@@ -139,6 +141,7 @@ def _make_display(
         dial_id="dial-uuid",
         logo_path=_TEST_LOGO_PATH,
         backend_factory=lambda: fb,
+        backend_factory_builder=backend_factory_builder,
     )
     return display, fb, gt, mu
 
@@ -158,7 +161,8 @@ class TestDisabledConfig:
         display, fb, gt, mu = _make_display(fitted=False)
         status = display.get_status()
         assert status == {
-            "fitted": False, "rotate": False, "active": False, "backend": "noop",
+            "fitted": False, "rotate": False, "screen_type": DEFAULT_PROFILE_KEY,
+            "bgr": False, "active": False, "backend": "noop",
             "backend_loaded": False, "showing": "noop",
             "last_error": "", "last_error_at": None,
             "display_sleeping": False, "display_idle_seconds": 0,
@@ -623,12 +627,154 @@ class TestUpdateConfig:
 
 
 # ---------------------------------------------------------------------------
+# Screen-type swap — closes the old backend, opens a new one built for the
+# new profile, and clears cached state so the next frame recomposes at the
+# new dimensions.
+# ---------------------------------------------------------------------------
+
+class TestScreenTypeSwap:
+    def _swap_builder(self, fb_old, fb_new, new_key="st7789_240x240"):
+        def builder(screen_type):
+            return (lambda: fb_new) if screen_type == new_key else (lambda: fb_old)
+        return builder
+
+    def test_swap_closes_old_backend_and_opens_new_with_new_dims(self):
+        fb_old = FakeBackend()
+        fb_old.width, fb_old.height = 160, 128
+        fb_new = FakeBackend()
+        fb_new.width, fb_new.height = 240, 240
+
+        display, _, gt, mu = _make_display(
+            fitted=True, screen_type="st7735s_160x128", backend=fb_old,
+            backend_factory_builder=self._swap_builder(fb_old, fb_new),
+        )
+        display.enable()
+        assert fb_old.opened is True
+        assert fb_new.opened is False
+
+        status = display.update_config(
+            DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+        )
+
+        assert fb_old.closed is True
+        assert fb_new.opened is True
+        assert status["screen_type"] == "st7789_240x240"
+        assert display._backend is fb_new
+
+    def test_swap_clears_cache_so_next_poll_recomposes(self):
+        t = _target()
+        fb_old = FakeBackend()
+        fb_old.width, fb_old.height = 160, 128
+        fb_new = FakeBackend()
+        fb_new.width, fb_new.height = 240, 240
+
+        display, _, gt, mu = _make_display(
+            fitted=True, targets=[t], screen_type="st7735s_160x128", backend=fb_old,
+            backend_factory_builder=self._swap_builder(fb_old, fb_new),
+        )
+        display.enable()
+
+        fake_image = _marked_image(size=(fb_old.width, fb_old.height))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        assert display.get_status()["showing"] == "artwork"
+        assert display._current_rendered_image is not None
+
+        display.update_config(DialDisplayConfig(fitted=True, screen_type="st7789_240x240"))
+
+        assert display._current_rendered_image is None
+        assert display._source_artwork_url == ""
+        assert display.get_status()["showing"] == "logo"
+
+    def test_combined_screen_type_and_rotate_change_never_redisplays_stale_dims(self):
+        """A single update_config() carrying both a screen_type change and a
+        rotate change must never push a frame sized for the OLD backend to
+        the NEW backend — the swap branch must suppress the rotate/bgr
+        synchronous-redisplay branch entirely."""
+        t = _target()
+        fb_old = FakeBackend()
+        fb_old.width, fb_old.height = 160, 128
+        fb_new = FakeBackend()
+        fb_new.width, fb_new.height = 240, 240
+
+        display, _, gt, mu = _make_display(
+            fitted=True, targets=[t], screen_type="st7735s_160x128", rotate=False,
+            backend=fb_old, backend_factory_builder=self._swap_builder(fb_old, fb_new),
+        )
+        display.enable()
+
+        fake_image = _marked_image(size=(fb_old.width, fb_old.height))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        fb_new.displayed.clear()
+
+        display.update_config(
+            DialDisplayConfig(fitted=True, screen_type="st7789_240x240", rotate=True)
+        )
+
+        for img in fb_new.displayed:
+            assert img.size == (fb_new.width, fb_new.height), \
+                "backend must never receive a frame at the superseded backend's dims"
+
+    def test_swap_to_backend_that_fails_open_degrades_to_noop(self):
+        fb_old = FakeBackend()
+        fb_new = FakeBackend(fail_open=True)
+
+        display, _, gt, mu = _make_display(
+            fitted=True, screen_type="st7735s_160x128", backend=fb_old,
+            backend_factory_builder=self._swap_builder(fb_old, fb_new),
+        )
+        display.enable()
+
+        status = display.update_config(
+            DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+        )
+
+        assert fb_old.closed is True
+        assert status["backend"] == "noop"
+        assert status["backend_loaded"] is False
+        assert status["last_error"] == "backend_open_failed"
+
+    def test_get_status_includes_screen_type_and_bgr(self):
+        display, fb, gt, mu = _make_display(fitted=True, screen_type="st7789_240x240", bgr=True)
+        display.enable()
+        status = display.get_status()
+        assert status["screen_type"] == "st7789_240x240"
+        assert status["bgr"] is True
+
+
+# ---------------------------------------------------------------------------
+# Successful enable clears any stale last_error — a successful swap must not
+# keep reporting an old, unrelated failure.
+# ---------------------------------------------------------------------------
+
+class TestLastErrorClearedOnSuccessfulEnable:
+    def test_stale_error_cleared_after_successful_enable(self):
+        fb = FakeBackend()
+        display, _, gt, mu = _make_display(fitted=True, backend=fb)
+        display._last_error = "some_stale_unrelated_error"
+        display._last_error_at = 12345.0
+
+        display.enable()
+
+        status = display.get_status()
+        assert status["last_error"] == ""
+        assert status["last_error_at"] is None
+
+
+# ---------------------------------------------------------------------------
 # Rotation — applied manager-side at display hand-off, cache stays unrotated
 # ---------------------------------------------------------------------------
 
-def _marked_image() -> "Image.Image":
+def _marked_image(size: tuple[int, int] = (4, 4)) -> "Image.Image":
     """A small asymmetric image so a 180° rotation is detectable pixel-wise."""
-    image = Image.new("RGB", (4, 4), (0, 0, 0))
+    image = Image.new("RGB", size, (0, 0, 0))
     image.putpixel((0, 0), (255, 0, 0))
     return image
 
@@ -656,7 +802,7 @@ class TestRotation:
         display, fb, gt, mu = _make_display(targets=[t], fitted=True, rotate=False)
         display.enable()
 
-        fake_image = _marked_image()
+        fake_image = _marked_image(size=(fb.width, fb.height))
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
@@ -681,7 +827,7 @@ class TestRotation:
         display, fb, gt, mu = _make_display(targets=[t], fitted=True, rotate=True)
         display.enable()
 
-        fake_image = _marked_image()
+        fake_image = _marked_image(size=(fb.width, fb.height))
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
@@ -694,6 +840,114 @@ class TestRotation:
         display, fb, gt, mu = _make_display(fitted=True, rotate=True)
         display.enable()
         assert display.get_status()["rotate"] is True
+
+
+# ---------------------------------------------------------------------------
+# BGR colour-order toggle — applied manager-side at display hand-off,
+# alongside (and composing with) rotate; cache stays untransformed.
+# ---------------------------------------------------------------------------
+
+class TestBgr:
+    def test_bgr_true_swaps_channels_before_backend_display(self):
+        img = _marked_image()
+
+        display_off, fb_off, _, _ = _make_display(bgr=False)
+        display_off.enable()
+        fb_off.displayed.clear()
+        display_off.display(img)
+
+        display_on, fb_on, _, _ = _make_display(bgr=True)
+        display_on.enable()
+        fb_on.displayed.clear()
+        display_on.display(img)
+
+        expected = Image.merge("RGB", img.split()[::-1])
+        assert list(fb_off.displayed[-1].getdata()) == list(img.getdata())
+        assert list(fb_on.displayed[-1].getdata()) == list(expected.getdata())
+
+    def test_rotate_and_bgr_compose_together(self):
+        img = _marked_image()
+
+        display, fb, _, _ = _make_display(rotate=True, bgr=True)
+        display.enable()
+        fb.displayed.clear()
+        display.display(img)
+
+        expected = img.transpose(Image.ROTATE_180)
+        expected = Image.merge("RGB", expected.split()[::-1])
+        assert list(fb.displayed[-1].getdata()) == list(expected.getdata())
+
+    def test_bgr_toggle_via_update_config_redisplays_synchronously(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], fitted=True, bgr=False)
+        display.enable()
+
+        fake_image = _marked_image(size=(fb.width, fb.height))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        fb.displayed.clear()
+
+        with patch.object(display, "_poll_once") as mock_poll:
+            status = display.update_config(DialDisplayConfig(fitted=True, bgr=True))
+        mock_poll.assert_not_called()
+
+        assert status["bgr"] is True
+        expected = Image.merge("RGB", fake_image.split()[::-1])
+        assert len(fb.displayed) == 1
+        assert list(fb.displayed[-1].getdata()) == list(expected.getdata())
+
+    def test_cached_rendered_image_stays_untransformed_with_bgr(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], fitted=True, bgr=True)
+        display.enable()
+
+        fake_image = _marked_image(size=(fb.width, fb.height))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+
+        assert list(display._current_rendered_image.getdata()) == list(fake_image.getdata())
+
+    def test_get_status_includes_bgr(self):
+        display, fb, gt, mu = _make_display(fitted=True, bgr=True)
+        display.enable()
+        assert display.get_status()["bgr"] is True
+
+
+# ---------------------------------------------------------------------------
+# Swap race guard — a frame composed outside the lock against a backend
+# that a concurrent swap has since superseded must be dropped, not shown at
+# the wrong size.
+# ---------------------------------------------------------------------------
+
+class TestSuperseededFrameRaceGuard:
+    def test_mismatched_size_frame_is_dropped_not_displayed(self):
+        t = _target()
+        fb = FakeBackend()
+        fb.width, fb.height = 240, 240
+        display, _, gt, mu = _make_display(targets=[t], backend=fb)
+        display.enable()
+        fb.displayed.clear()
+
+        # transform_artwork_for_panel is mocked to return an image sized for
+        # a DIFFERENT backend than the one now open — simulating a
+        # screen_type swap that raced with the unlocked fetch/decode/
+        # transform stretch in _show_artwork().
+        stale_sized_image = Image.new("RGB", (160, 128))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))), \
+             patch("dial_display.transform_artwork_for_panel", return_value=stale_sized_image):
+            display._poll_once()
+
+        assert fb.displayed == []
+        assert display.get_status()["showing"] != "artwork"
+        assert display._current_rendered_image is None
 
 
 # ---------------------------------------------------------------------------

@@ -9,11 +9,18 @@ Two-file split:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# dial_display_profiles.py is pure data (no hardware imports) — see its module
+# docstring for why that must never change. Importing it here is therefore
+# safe even though dial_config is imported unconditionally at process start,
+# before the display stack gets a chance to isolate a broken Adafruit install.
+from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES
 
 HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
 SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
@@ -29,6 +36,8 @@ def _normalise_dial_channel(value: object) -> str:
 class DialDisplayConfig:
     fitted: bool = False
     rotate: bool = False
+    screen_type: str = DEFAULT_PROFILE_KEY
+    bgr: bool = False
 
 
 @dataclass
@@ -56,13 +65,18 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
 
     Strict: `fitted` must be a JSON boolean (not 0/1/"true"), the object must be
     a dict containing only known fields, and `fitted` may not be missing or
-    unrecognised fields present. `rotate` is optional (defaults to False) so
-    older webuis that omit it still validate, but if present it must also be
-    a strict JSON boolean. Raises InvalidScreenSettings on any violation.
+    unrecognised fields present. `rotate` and `bgr` are optional (default to
+    False) so older webuis that omit them still validate, but if present they
+    must also be strict JSON booleans. `screen_type` is optional (defaults to
+    DEFAULT_PROFILE_KEY); if present it must be a string naming a known
+    profile — an unknown value is a hard InvalidScreenSettings error rather
+    than a silent fallback, since silently coercing a wrong driver choice to
+    the default would mask the very mistake this validation exists to catch.
+    Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
-    unknown = set(obj.keys()) - {"fitted", "rotate"}
+    unknown = set(obj.keys()) - {"fitted", "rotate", "screen_type", "bgr"}
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
     if "fitted" not in obj:
@@ -73,7 +87,34 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     rotate = obj.get("rotate", False)
     if not isinstance(rotate, bool):
         raise InvalidScreenSettings("screen.rotate must be a boolean")
-    return DialDisplayConfig(fitted=fitted, rotate=rotate)
+    bgr = obj.get("bgr", False)
+    if not isinstance(bgr, bool):
+        raise InvalidScreenSettings("screen.bgr must be a boolean")
+    screen_type = obj.get("screen_type", DEFAULT_PROFILE_KEY)
+    if not isinstance(screen_type, str):
+        raise InvalidScreenSettings("screen.screen_type must be a string")
+    if screen_type not in DISPLAY_PROFILES:
+        raise InvalidScreenSettings(f"unknown screen.screen_type: {screen_type!r}")
+    return DialDisplayConfig(fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr)
+
+
+def _resolve_persisted_screen_type(value: object) -> str:
+    """Resolve a persisted screen_type value, falling back to the default
+    profile with a warning log rather than raising.
+
+    A corrupt or stale settings file (e.g. after a profile is renamed/removed
+    across an upgrade) must not brick the dial at startup — only the strict
+    API-facing validate_screen_settings() is allowed to reject an unknown
+    profile outright.
+    """
+    if isinstance(value, str) and value in DISPLAY_PROFILES:
+        return value
+    if value is not None:
+        logging.warning(
+            "dial config: unknown persisted screen_type %r — falling back to %s",
+            value, DEFAULT_PROFILE_KEY,
+        )
+    return DEFAULT_PROFILE_KEY
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -116,6 +157,8 @@ def load_config() -> DialConfig:
         cfg.display = DialDisplayConfig(
             fitted=bool(hw_display.get('fitted', False)),
             rotate=bool(hw_display.get('rotate', False)),
+            screen_type=_resolve_persisted_screen_type(hw_display.get('screen_type')),
+            bgr=bool(hw_display.get('bgr', False)),
         )
 
     if SETTINGS_PATH.exists():
@@ -130,6 +173,10 @@ def load_config() -> DialConfig:
             cfg.display = DialDisplayConfig(
                 fitted=bool(s_display.get('fitted', cfg.display.fitted)),
                 rotate=bool(s_display.get('rotate', cfg.display.rotate)),
+                screen_type=_resolve_persisted_screen_type(
+                    s_display.get('screen_type', cfg.display.screen_type)
+                ),
+                bgr=bool(s_display.get('bgr', cfg.display.bgr)),
             )
 
     if not cfg.uuid:
@@ -159,7 +206,12 @@ def save_config(cfg: DialConfig) -> None:
         'pin':            cfg.pin,
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
-        'display':        {'fitted': cfg.display.fitted, 'rotate': cfg.display.rotate},
+        'display':        {
+            'fitted':      cfg.display.fitted,
+            'rotate':      cfg.display.rotate,
+            'screen_type': cfg.display.screen_type,
+            'bgr':         cfg.display.bgr,
+        },
     }
     with _save_lock:
         fd, tmp_path = tempfile.mkstemp(dir=SETTINGS_PATH.parent, suffix='.tmp')

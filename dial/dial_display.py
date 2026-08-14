@@ -31,7 +31,11 @@ from dial_display_image import (
     load_logo,
     transform_artwork_for_panel,
 )
-from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
+from dial_display_profiles import (
+    DEFAULT_PROFILE_KEY,
+    UnknownDisplayProfileError,
+    get_profile,
+)
 from dial_target_status import fetch_target_status
 
 # The artwork fetch is shared with the OwnTone metadata publisher, which also
@@ -106,6 +110,8 @@ def _url_log_key(url: str) -> str:
 class DisplayRuntimeStatus:
     fitted: bool
     rotate: bool
+    screen_type: str
+    bgr: bool
     active: bool
     backend: str
     backend_loaded: bool
@@ -181,6 +187,7 @@ class DialDisplay:
         dial_id: str,
         logo_path: str = DEFAULT_DISPLAY_LOGO_PATH,
         backend_factory=NoOpBackend,
+        backend_factory_builder=None,
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
@@ -189,6 +196,13 @@ class DialDisplay:
         self._dial_id = dial_id
         self._logo_path = logo_path
         self._backend_factory = backend_factory
+        # Optional screen_type -> zero-arg-backend-factory resolver, used to
+        # rebuild self._backend_factory on a live screen_type swap. Left as
+        # an injected callable (rather than importing a concrete backend
+        # module here) so this facade stays free of hardware-specific
+        # coupling; create_dial_display() supplies the real profile-driven
+        # resolver, and tests that never swap can leave this unset.
+        self._backend_factory_builder = backend_factory_builder
 
         self._backend: DisplayBackend | None = None
         self._backend_name = "noop"
@@ -255,6 +269,8 @@ class DialDisplay:
             return DisplayRuntimeStatus(
                 fitted=self._config.fitted,
                 rotate=self._config.rotate,
+                screen_type=self._config.screen_type,
+                bgr=self._config.bgr,
                 active=self._backend_open and self._backend_name != "noop",
                 backend=self._backend_name,
                 backend_loaded=self._backend_loaded,
@@ -269,15 +285,34 @@ class DialDisplay:
         with self._lock:
             old_config = self._config
             self._config = config
+            screen_type_changed = old_config.screen_type != config.screen_type
             if config.fitted:
-                self._enable_locked()
-                # _enable_locked() is a no-op when the backend is already
-                # open, so a rotate-only toggle needs its own path here —
-                # re-display the current frame under the new orientation
-                # immediately rather than waiting for the next poll.
-                rotate_changed = old_config.fitted and old_config.rotate != config.rotate
-                if rotate_changed and self._backend_open:
-                    self._redisplay_current_locked()
+                if screen_type_changed:
+                    self._rebuild_backend_factory_locked(config.screen_type)
+                if screen_type_changed and self._backend_open:
+                    # Swap branch takes precedence over the rotate/bgr
+                    # redisplay branch below — for this same update_config()
+                    # call the two are mutually exclusive. Redisplaying a
+                    # cached frame composed at the OLD backend's dimensions
+                    # against the new backend would push a wrong-size frame
+                    # (the backend would silently letterbox it), so the swap
+                    # clears the cache instead and lets the next poll (or the
+                    # logo render below) recompose at the new dims.
+                    self._swap_backend_locked()
+                else:
+                    self._enable_locked()
+                    # _enable_locked() is a no-op when the backend is already
+                    # open, so a rotate/bgr-only toggle needs its own path
+                    # here — re-display the current frame under the new
+                    # settings immediately rather than waiting for the next
+                    # poll. Never runs alongside a screen_type change (see
+                    # the swap branch above).
+                    redisplay_changed = (
+                        old_config.fitted and not screen_type_changed
+                        and (old_config.rotate != config.rotate or old_config.bgr != config.bgr)
+                    )
+                    if redisplay_changed and self._backend_open:
+                        self._redisplay_current_locked()
             else:
                 self._disable_locked()
         return self.get_status()
@@ -322,6 +357,12 @@ class DialDisplay:
         self._backend_name = getattr(backend, "name", "noop")
         self._backend_open = True
         self._backend_loaded = True
+        # A successful open clears any stale unrelated failure — today only
+        # a successful artwork render did this, so a successful screen_type
+        # swap would otherwise keep reporting a stale error and defeat drift
+        # detection.
+        self._last_error = ""
+        self._last_error_at = None
         logging.info(
             "dial display: backend %s open (%dx%d)",
             self._backend_name, backend.width, backend.height,
@@ -331,6 +372,42 @@ class DialDisplay:
         self._idle_started_at = None
         self._display_sleeping = False
         self._render_logo_locked()
+
+    def _rebuild_backend_factory_locked(self, screen_type: str) -> None:
+        """Rebuild self._backend_factory for *screen_type* via the injected
+        resolver, so the next _enable_locked() opens the right backend.
+
+        A no-op when no resolver was supplied (see backend_factory_builder
+        in __init__) — the manager simply keeps using its original factory.
+        """
+        if self._backend_factory_builder is None:
+            return
+        self._backend_factory = self._backend_factory_builder(screen_type)
+
+    def _swap_backend_locked(self) -> None:
+        """Close the currently open backend and reopen via the (already
+        rebuilt) factory — used when screen_type changes while fitted and
+        open. If the new backend fails to open, _enable_locked()'s existing
+        degrade-to-noop path holds and runtime reflects it.
+        """
+        if self._backend_open and self._backend is not None:
+            try:
+                self._backend.close()
+            except Exception as e:
+                logging.debug("dial display: backend close raised during swap: %s", e)
+        self._backend = None
+        self._backend_open = False
+        self._backend_loaded = False
+        self._backend_name = "noop"
+        # Drop the cached frame and its source identity before reopening: it
+        # was composed at the OLD panel's dimensions. A successful
+        # _enable_locked() renders the logo (which clears these anyway), but
+        # on a failed open the stale frame and URL would otherwise survive
+        # into the degraded state and be reused by the next poll.
+        self._showing = "noop"
+        self._source_artwork_url = ""
+        self._current_rendered_image = None
+        self._enable_locked()
 
     def _disable_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -409,23 +486,35 @@ class DialDisplay:
             return self._backend.width, self._backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
-    def _apply_rotation(self, image):
-        """Rotate *image* 180° for display hand-off when configured.
+    def _apply_frame_transform(self, image):
+        """Apply configured rotate/BGR transforms for display hand-off.
 
         Applied here, at the single point every frame reaches the backend,
-        so self._current_rendered_image stays unrotated in the cache and a
-        rotate toggle can re-display it under the new orientation without
-        re-fetching or re-transforming artwork.
+        so self._current_rendered_image stays untransformed in the cache and
+        a rotate/bgr toggle can re-display it under the new settings without
+        re-fetching or re-transforming artwork. Rotate (180°) is applied
+        before the BGR channel swap; the order is arbitrary since the two
+        operations commute, but is kept consistent here.
+
+        This seam is bypassed by the backend-internal clear()/sleep() fills,
+        which paint directly against the backend rather than going through
+        _display_locked(). sleep()'s black fill is swap-symmetric so that is
+        harmless; clear()'s background colour is not — an accepted cosmetic
+        exception, limited to the fallback background and never artwork.
         """
-        if self._config.rotate and image is not None:
-            return image.transpose(Image.ROTATE_180)
+        if image is None:
+            return image
+        if self._config.rotate:
+            image = image.transpose(Image.ROTATE_180)
+        if self._config.bgr:
+            image = Image.merge("RGB", image.split()[::-1])
         return image
 
     def _display_locked(self, image) -> None:
         if not (self._backend_open and self._backend is not None):
             return
         try:
-            self._backend.display(self._apply_rotation(image))
+            self._backend.display(self._apply_frame_transform(image))
         except Exception as e:
             self._record_error_locked("display_write_failed")
             self._log_limiter.log(
@@ -598,6 +687,17 @@ class DialDisplay:
         with self._lock:
             if not (self._backend_open and self._backend is not None):
                 return
+            if transformed.size != (self._backend.width, self._backend.height):
+                # A screen_type swap raced with this fetch/transform, which
+                # ran outside the lock against the backend that was active
+                # at the time — composed for its (now superseded) dims. Drop
+                # the stale-sized frame rather than letting the new backend
+                # silently letterbox it; the next poll recomposes at the now
+                # -active dims.
+                logging.debug(
+                    "dial display: dropping frame sized for a superseded backend"
+                )
+                return
             was_showing = self._showing
             self._display_locked(transformed)
             self._source_artwork_url = url
@@ -611,21 +711,39 @@ class DialDisplay:
             logging.info("dial display: showing artwork")
 
 
+def _adafruit_backend_factory_for_screen_type(screen_type: str):
+    """Resolve *screen_type* to a zero-arg AdafruitDisplayBackend factory,
+    falling back to the default profile if the key is unresolvable.
+
+    dial_display_adafruit imports hardware modules only inside its open()
+    method, so importing it here is safe even when no screen is fitted or
+    the Adafruit package is absent — screen_type resolution itself never
+    touches hardware.
+    """
+    from dial_display_adafruit import AdafruitDisplayBackend
+
+    try:
+        profile = get_profile(screen_type)
+    except UnknownDisplayProfileError:
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+    return lambda: AdafruitDisplayBackend(profile)
+
+
 def create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized) -> DialDisplay:
     """Build the display manager for dial_main.py wiring.
 
-    Always uses the real ST7735S backend factory; whether it is ever opened
-    is controlled by the fitted flag in DialDisplay.enable()/update_config(),
-    not by this factory choice. dial_display_adafruit imports hardware
-    modules only inside its open() method, so importing it here is safe even
-    when no screen is fitted or the Adafruit package is absent.
+    Builds the backend factory from the configured profile (cfg.display.
+    screen_type) at startup, falling back to the default profile if the key
+    is unresolvable; whether it is ever opened is controlled by the fitted
+    flag in DialDisplay.enable()/update_config(), not by this factory
+    choice. Also wires the screen_type -> factory resolver so a live
+    screen_type change can rebuild and swap the backend without a restart.
     """
-    from dial_display_adafruit import AdafruitST7735SBackend
-
     return DialDisplay(
         config=cfg.display,
         get_display_targets=get_display_targets,
         mark_display_target_unauthorized=mark_display_target_unauthorized,
         dial_id=cfg.uuid,
-        backend_factory=AdafruitST7735SBackend,
+        backend_factory=_adafruit_backend_factory_for_screen_type(cfg.display.screen_type),
+        backend_factory_builder=_adafruit_backend_factory_for_screen_type,
     )
