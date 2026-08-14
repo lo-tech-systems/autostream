@@ -21,6 +21,12 @@ StandardError=journal
 SyslogIdentifier=autostream-dial
 RuntimeDirectory=autostream-dial
 RuntimeDirectoryMode=0750
+# lgpio creates its .lgd-nfy* notification FIFO in the working directory by
+# default, but /opt/autostream is root-owned by design (the service must not be
+# able to rewrite its own code). Without this the FIFO mkfifo fails and lgpio
+# init aborts, killing the display backend, rotary encoder, and button in one
+# go. LG_WD points lgpio at the service's own runtime directory instead.
+Environment=LG_WD=/run/autostream-dial
 
 [Install]
 WantedBy=multi-user.target

@@ -732,6 +732,20 @@ class TestControlSocketDeployment:
             "RuntimeDirectoryMode=0750 not found in autostream_dial.service"
         )
 
+    def test_lg_wd_points_lgpio_at_runtime_directory(self):
+        """autostream_dial.service must set LG_WD=/run/autostream-dial.
+
+        lgpio creates its .lgd-nfy* FIFO in the process working directory by
+        default; /opt/autostream is root-owned by design, so without LG_WD the
+        mkfifo fails and lgpio init aborts — no-op display backend plus dead
+        rotary encoder and button (seen on fresh Trixie installs).
+        """
+        content = self._service_content()
+        assert "Environment=LG_WD=/run/autostream-dial" in content, (
+            "Environment=LG_WD=/run/autostream-dial not found in "
+            "autostream_dial.service"
+        )
+
     def test_cli_python_installed_with_0644(self):
         """autostream_dial_control.py must be installed with mode 0644."""
         content = self._installer_content()
