@@ -420,20 +420,32 @@ fails to run or produces unparseable output.
 
 ### `GET /screen/settings`
 
-Returns the dial-owned effective screen-fitted setting and current runtime status.
-Screen settings are owned and persisted by the dial; the main appliance never stores a
-copy and always reads current values from this endpoint.
+Returns the dial-owned effective screen settings, the catalogue of display profiles this
+dial firmware supports, and current runtime status. Screen settings are owned and
+persisted by the dial; the main appliance never stores a copy and always reads current
+values from this endpoint.
 
 ```json
 {
   "ok": true,
   "screen": {
     "fitted": false,
-    "rotate": false
+    "rotate": false,
+    "screen_type": "st7735s_160x128",
+    "bgr": false
   },
+  "supported": [
+    {"key": "st7735s_160x128", "text": "ST7735S (128x160)"},
+    {"key": "st7735s_128x128", "text": "ST7735S (128x128)"},
+    {"key": "st7789_240x240", "text": "ST7789 (240x240)"},
+    {"key": "st7789_320x240", "text": "ST7789 (240x320)"},
+    {"key": "ili9341_320x240", "text": "ILI9341 (320x240)"}
+  ],
   "runtime": {
     "fitted": false,
     "rotate": false,
+    "screen_type": "st7735s_160x128",
+    "bgr": false,
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -450,10 +462,15 @@ copy and always reads current values from this endpoint.
 |---|---|---|
 | `screen.fitted` | bool | Persisted screen-fitted setting |
 | `screen.rotate` | bool | Persisted screen-rotation setting; `true` rotates the display 180 degrees. Optional, defaults to `false` |
+| `screen.screen_type` | string | Persisted display profile key. Optional, defaults to the dial's default profile |
+| `screen.bgr` | bool | Persisted colour-order swap setting. Optional, defaults to `false` |
+| `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text"}, ...]` — see **Supported profiles** below |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
+| `runtime.screen_type` | string | The **active** display profile key — see **Configured vs. active** below |
+| `runtime.bgr` | bool | The **active** colour-order swap setting — see **Configured vs. active** below |
 | `runtime.active` | bool | `true` when a non-no-op display path is open |
-| `runtime.backend` | string | Selected backend name (e.g. `noop`, `adafruit_st7735s`) |
+| `runtime.backend` | string | Name of the currently active driver (e.g. `noop`, `adafruit_st7735s`) |
 | `runtime.backend_loaded` | bool | `true` once backend imports and hardware open succeeded |
 | `runtime.showing` | string | One of `logo`, `artwork`, or `noop` |
 | `runtime.last_error` | string | Last non-fatal display/fetch/render error identifier, or `""` |
@@ -462,6 +479,29 @@ copy and always reads current values from this endpoint.
 | `runtime.display_idle_seconds` | int | Seconds since idling began, capped at the 15-minute sleep threshold; resets to `0` while showing content |
 
 Never returns secrets or provider artwork URLs.
+
+**Supported profiles.** `supported` is the catalogue of display profiles this dial
+firmware knows how to drive. `key` is the opaque value a client sends back in
+`screen.screen_type` to select that profile; `text` is a display label for presenting the
+choice to a user. **Both `key` and `text` are opaque to clients** — clients must not parse
+either string for meaning (e.g. extracting dimensions from the label), and must render
+only what the dial itself published in `supported`. Sorting the list by `text` for
+presentation is fine; inferring structure from its contents is not.
+
+**Configured vs. active.** `screen.screen_type`/`screen.bgr` are the persisted
+configuration; `runtime.screen_type`/`runtime.bgr` are what the display manager currently
+has open. These normally match. They can diverge when a live profile swap fails to open
+the new panel — see **Apply-then-persist** under `POST /screen/settings` below — in which
+case `runtime` keeps reporting the last-known-working (degraded or previous) state while
+`screen` reflects what is actually persisted on disk. Clients can compare
+`screen.screen_type` with `runtime.screen_type` to detect this drift. `runtime.backend`
+names the driver currently active for `runtime.screen_type` (e.g. `adafruit_st7735s`,
+`noop` if no panel is open).
+
+**Capability gate.** `screen_type` and `bgr` are a single joint capability, advertised by
+the presence of a non-empty `supported` array in this response. See **Capability gate /
+compatibility** under `POST /screen/settings` below — this is the cross-firmware-version
+contract clients must follow before ever sending `screen.screen_type` or `screen.bgr`.
 
 ### `POST /screen/settings`
 
@@ -474,7 +514,9 @@ is set, the request must include the current PIN in `current_pin`.
   "current_pin": "1234",
   "screen": {
     "fitted": true,
-    "rotate": false
+    "rotate": false,
+    "screen_type": "st7735s_160x128",
+    "bgr": false
   }
 }
 ```
@@ -486,11 +528,15 @@ Successful response:
   "ok": true,
   "screen": {
     "fitted": true,
-    "rotate": false
+    "rotate": false,
+    "screen_type": "st7735s_160x128",
+    "bgr": false
   },
   "runtime": {
     "fitted": true,
     "rotate": false,
+    "screen_type": "st7735s_160x128",
+    "bgr": false,
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -504,24 +550,69 @@ Successful response:
 }
 ```
 
-`restart_required` is always `false`: the dial applies the fitted and rotate settings live
-by starting or stopping the current display provider internally.
+`restart_required` is always `false`: the dial applies the fitted, rotate, screen_type,
+and bgr settings live by starting, stopping, or swapping the current display provider
+internally — a screen-type change never requires a process restart.
+
+**Capability gate / compatibility.** `screen_type` and `bgr` form **one joint capability**,
+advertised by `GET /screen/settings` returning a non-empty `supported` array (see above).
+This is the cross-version contract between clients and dial firmware:
+
+- A client **must not** send `screen.screen_type` or `screen.bgr` to a dial that did not
+  advertise a non-empty `supported` array. Older firmware validates `screen` against a
+  strict field whitelist and rejects the **entire** request with HTTP `400`
+  `invalid_screen_settings` if either field is present — including otherwise-valid
+  `fitted`/`rotate` changes bundled in the same request.
+- Conversely, newer firmware accepts a request that omits both `screen_type` and `bgr`
+  (they are optional and default), so an older client that only ever sends
+  `fitted`/`rotate` keeps working unchanged against newer dials.
 
 **Validation:**
 
 - `fitted` must be a strict JSON boolean — `0`, `1`, `"true"`, and `"false"` are rejected.
 - `rotate` is optional and defaults to `false` when omitted; when present it must also be a
   strict JSON boolean.
+- `bgr` is optional and defaults to `false` when omitted; when present it must also be a
+  strict JSON boolean.
+- `screen_type` is optional and defaults to the dial's default profile when omitted; when
+  present it must be a string naming a profile key present in `supported`. An unknown
+  value is rejected outright — it is never silently coerced to the default.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
-  `screen` returns HTTP `400`:
+  `screen` (including a `screen_type`/`bgr` sent to firmware that doesn't support them —
+  see the capability gate above) returns HTTP `400`:
   ```json
   {"ok": false, "error": "invalid_screen_settings"}
   ```
 - A wrong or missing `current_pin` when a PIN is set follows existing `POST /configure`
   PIN failure behavior (HTTP `403`/`429`).
 - Persistence failures return HTTP `500`.
-- A saved config whose runtime application fails may still return `ok: true` with
-  `runtime.last_error` populated, provided the display manager degraded to no-op.
+- A saved config whose runtime application fails for a reason unrelated to a screen_type
+  change may still return `ok: true` with `runtime.last_error` populated, provided the
+  display manager degraded to no-op.
+
+**Apply-then-persist (screen_type).** Unlike the rest of `POST /configure`/`POST
+/screen/settings`, a `screen_type` change is applied to the live display **before** being
+written to disk, and is persisted only if the apply succeeded:
+
+- `fitted`, `rotate`, and `bgr` can never fail to apply, so they are always persisted
+  regardless of runtime outcome — this part of the ordering is unchanged from before.
+- If a `screen_type` change is requested while `fitted` is true and the new panel driver
+  fails to open, the response is:
+  ```json
+  {
+    "ok": false,
+    "error": "screen_apply_failed",
+    "screen": { "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false },
+    "runtime": { "...": "..." }
+  }
+  ```
+  with HTTP `200`. The `screen` object in this response echoes the **still-effective**
+  (previous, on-disk) settings, not the rejected request. The on-disk configuration is
+  left unchanged, so a reboot returns to the last working profile rather than booting into
+  a broken panel every time.
+- `restart_required` is omitted from the `screen_apply_failed` response body (it is only
+  present on the `ok: true` path) and is `false` whenever it is present — screen-type
+  changes are applied live, without a process restart, whether they succeed or fail.
 
 ---
 

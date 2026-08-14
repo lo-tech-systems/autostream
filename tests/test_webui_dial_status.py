@@ -538,6 +538,16 @@ class TestDialProtocolDoc:
         assert "invalid_screen_settings" in text
         assert "restart_required" in text
 
+    def test_dial_protocol_documents_screen_type_and_bgr_capability_gate(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "screen_type" in text
+        assert "\"bgr\"" in text or "`bgr`" in text
+        assert "supported" in text
+        assert "screen_apply_failed" in text
+        # The capability-gate contract must be spelled out, not just named.
+        assert "capability" in text.lower()
+
 
 # ---------------------------------------------------------------------------
 # Router-level: non-object JSON must NOT trigger HTTP 400 for /api/dial/status
