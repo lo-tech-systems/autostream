@@ -563,3 +563,36 @@ class TestScreenSettingsLiveApply:
         assert result["data"]["runtime"]["fitted"] is True
         # The *same* running display manager instance must reflect the change.
         assert display.get_status()["fitted"] is True
+
+    def test_post_screen_settings_toggles_rotate_on_real_display_manager(self):
+        from dial_config import DialConfig, DialDisplayConfig
+        from dial_display import DialDisplay, NoOpBackend
+        from dial_http_server import DialHTTPServer
+        import dial_mdns as dm_mdns
+
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, rotate=False))
+        display = DialDisplay(
+            config=cfg.display,
+            get_display_targets=dm_mdns.get_display_targets,
+            mark_display_target_unauthorized=dm_mdns.mark_display_target_unauthorized,
+            dial_id=cfg.uuid,
+            backend_factory=NoOpBackend,
+        )
+        display.enable()
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = __import__("threading").Lock()
+        server._display_status = display
+        server._recovery_window = MagicMock()
+
+        assert display.get_status()["rotate"] is False
+
+        result = self._post_screen_settings(
+            server, {"screen": {"fitted": True, "rotate": True}}
+        )
+
+        assert result["status"] == 200
+        assert result["data"]["runtime"]["rotate"] is True
+        # Applied synchronously against the real running manager, not merely
+        # in the response payload.
+        assert display.get_status()["rotate"] is True

@@ -123,10 +123,10 @@ class FakeBackend:
 
 
 def _make_display(
-    fitted=True, targets=None, backend=None,
+    fitted=True, rotate=False, targets=None, backend=None,
     get_targets=None, mark_unauthorized=None,
 ) -> tuple[DialDisplay, FakeBackend, MagicMock, MagicMock]:
-    cfg = DialDisplayConfig(fitted=fitted)
+    cfg = DialDisplayConfig(fitted=fitted, rotate=rotate)
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
     mu = mark_unauthorized or MagicMock()
@@ -156,7 +156,7 @@ class TestDisabledConfig:
         display, fb, gt, mu = _make_display(fitted=False)
         status = display.get_status()
         assert status == {
-            "fitted": False, "active": False, "backend": "noop",
+            "fitted": False, "rotate": False, "active": False, "backend": "noop",
             "backend_loaded": False, "showing": "noop",
             "last_error": "", "last_error_at": None,
             "display_sleeping": False, "display_idle_seconds": 0,
@@ -618,6 +618,80 @@ class TestUpdateConfig:
         status = display.update_config(DialDisplayConfig(fitted=False))
         assert fb.closed is True
         assert status["showing"] == "noop"
+
+
+# ---------------------------------------------------------------------------
+# Rotation — applied manager-side at display hand-off, cache stays unrotated
+# ---------------------------------------------------------------------------
+
+def _marked_image() -> "Image.Image":
+    """A small asymmetric image so a 180° rotation is detectable pixel-wise."""
+    image = Image.new("RGB", (4, 4), (0, 0, 0))
+    image.putpixel((0, 0), (255, 0, 0))
+    return image
+
+
+class TestRotation:
+    def test_rotate_true_rotates_image_before_backend_display(self):
+        img = _marked_image()
+
+        display_off, fb_off, _, _ = _make_display(rotate=False)
+        display_off.enable()
+        fb_off.displayed.clear()
+        display_off.display(img)
+
+        display_on, fb_on, _, _ = _make_display(rotate=True)
+        display_on.enable()
+        fb_on.displayed.clear()
+        display_on.display(img)
+
+        expected = img.transpose(Image.ROTATE_180)
+        assert list(fb_off.displayed[-1].getdata()) == list(img.getdata())
+        assert list(fb_on.displayed[-1].getdata()) == list(expected.getdata())
+
+    def test_rotate_toggle_via_update_config_redisplays_synchronously(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], fitted=True, rotate=False)
+        display.enable()
+
+        fake_image = _marked_image()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        assert display.get_status()["showing"] == "artwork"
+        fb.displayed.clear()
+
+        # Toggling rotate must take effect synchronously via update_config —
+        # not via the 6s poll loop.
+        with patch.object(display, "_poll_once") as mock_poll:
+            status = display.update_config(DialDisplayConfig(fitted=True, rotate=True))
+        mock_poll.assert_not_called()
+
+        assert status["rotate"] is True
+        expected = fake_image.transpose(Image.ROTATE_180)
+        assert len(fb.displayed) == 1
+        assert list(fb.displayed[-1].getdata()) == list(expected.getdata())
+
+    def test_cached_rendered_image_stays_unrotated(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], fitted=True, rotate=True)
+        display.enable()
+
+        fake_image = _marked_image()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+
+        assert list(display._current_rendered_image.getdata()) == list(fake_image.getdata())
+
+    def test_get_status_includes_rotate(self):
+        display, fb, gt, mu = _make_display(fitted=True, rotate=True)
+        display.enable()
+        assert display.get_status()["rotate"] is True
 
 
 # ---------------------------------------------------------------------------

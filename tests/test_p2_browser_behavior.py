@@ -961,11 +961,73 @@ class TestDialCardHtmlStructure:
     def test_screen_toggle_wired_to_save_action(self):
         src = _setup_page_src()
         assert "save-screen" in src
-        assert "dialSaveScreenSettings(card)" in src
+        # The change listener passes the triggering element so a failed save
+        # reverts only the checkbox the user actually changed.
+        assert "dialSaveScreenSettings(card, ev.target)" in src
 
     def test_dial_onload_loads_screen_settings(self):
         src = _setup_page_src()
         assert "dialLoadScreenSettings" in src
+
+    # ── Screen settings (Rotate Screen toggle) ───────────────────────────────
+
+    def test_screen_rotate_toggle_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert "dial-screen-rotate" in result
+        assert "Rotate Screen" in result
+
+    def test_screen_rotate_toggle_inside_locked_section(self):
+        """The rotate toggle must live inside the existing locked settings card area."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        locked_idx = result.find("dial-locked-section")
+        rotate_idx = result.find("dial-screen-rotate")
+        pin_btn_idx = result.find('data-dial-action="change-pin"')
+        assert locked_idx >= 0 and rotate_idx >= 0 and pin_btn_idx >= 0
+        assert locked_idx < rotate_idx < pin_btn_idx
+
+    def test_screen_rotate_toggle_after_fitted_toggle(self):
+        """The rotate row must appear after the fitted row in the HTML string."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        fitted_idx = result.find("dial-screen-fitted")
+        rotate_idx = result.find("dial-screen-rotate")
+        assert fitted_idx >= 0 and rotate_idx >= 0
+        assert fitted_idx < rotate_idx
+
+    def test_dial_sync_rotate_enabled_function_present(self):
+        src = _setup_page_src()
+        assert "function dialSyncRotateEnabled" in src
+        assert "rotateEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
+
+    def test_dial_sync_rotate_enabled_wired_to_change_listener(self):
+        src = _setup_page_src()
+        assert "dialSyncRotateEnabled(card)" in src
+        idx = src.find("if (action === 'save-screen')")
+        assert idx >= 0
+        block_end = src.find("}}", idx)
+        block = src[idx:block_end]
+        assert "dialSyncRotateEnabled" in block
+
+    def test_dial_sync_rotate_enabled_wired_to_unlock_and_lock(self):
+        src = _setup_page_src()
+        lock_idx = src.find("function _dialLockSection")
+        unlock_idx = src.find("function _dialUnlockSection")
+        assert lock_idx >= 0 and unlock_idx >= 0
+        next_fn_after_unlock = src.find("function _updateDialLockVisibility")
+        assert next_fn_after_unlock >= 0
+        lock_block = src[lock_idx:unlock_idx]
+        unlock_block = src[unlock_idx:next_fn_after_unlock]
+        assert "dialSyncRotateEnabled(card)" in lock_block
+        assert "dialSyncRotateEnabled(card)" in unlock_block
+
+    def test_dial_save_screen_settings_sends_rotate(self):
+        src = _setup_page_src()
+        assert "rotate: rotateEl.checked" in src
 
     def test_revoke_button_absent_in_source(self):
         """The source must not define a Revoke button element."""

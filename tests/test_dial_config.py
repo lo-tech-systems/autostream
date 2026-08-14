@@ -352,7 +352,42 @@ class TestDisplaySettings:
             data = json.loads(s.read_text())
         finally:
             dc.SETTINGS_PATH = orig
-        assert data["display"] == {"fitted": True}
+        assert data["display"] == {"fitted": True, "rotate": False}
+
+    def test_missing_display_defaults_rotate_false(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.rotate is False
+
+    def test_hw_display_rotate_true_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "rotate": True})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.rotate is True
+
+    def test_mutable_settings_override_hw_rotate(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "rotate": False})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "rotate": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.rotate is True
+
+    def test_save_persists_display_rotate(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, rotate=True))
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"] == {"fitted": True, "rotate": True}
 
 
 class TestValidateScreenSettings:
@@ -383,6 +418,26 @@ class TestValidateScreenSettings:
     def test_string_fitted_rejected(self):
         with pytest.raises(InvalidScreenSettings):
             validate_screen_settings({"fitted": "true"})
+
+    def test_valid_rotate_true_accepted(self):
+        result = validate_screen_settings({"fitted": True, "rotate": True})
+        assert result == DialDisplayConfig(fitted=True, rotate=True)
+
+    def test_valid_rotate_false_accepted(self):
+        result = validate_screen_settings({"fitted": True, "rotate": False})
+        assert result == DialDisplayConfig(fitted=True, rotate=False)
+
+    def test_rotate_omitted_defaults_false(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result == DialDisplayConfig(fitted=True, rotate=False)
+
+    def test_integer_rotate_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "rotate": 1})
+
+    def test_string_rotate_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "rotate": "true"})
 
 
 class TestSaveConfigAtomic:

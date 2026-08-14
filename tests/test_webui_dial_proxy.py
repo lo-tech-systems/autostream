@@ -596,7 +596,8 @@ class TestHandleDialScreenSettings:
     def test_get_proxies_to_dial_screen_settings_path(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(
-            body=b'{"ok":true,"screen":{"fitted":true},"runtime":{"fitted":true,'
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":true},"runtime":{"fitted":true,'
+                 b'"rotate":true,'
                  b'"active":false,"backend":"noop","backend_loaded":false,'
                  b'"showing":"noop","last_error":"","last_error_at":null}}'
         )
@@ -608,7 +609,8 @@ class TestHandleDialScreenSettings:
         assert called_path == "/screen/settings"
         code, data = mock_send.call_args[0][1], mock_send.call_args[0][2]
         assert code == 200
-        assert data["screen"] == {"fitted": True}
+        assert data["screen"] == {"fitted": True, "rotate": True}
+        assert data["runtime"]["rotate"] is True
 
     def test_get_offline_tunneled(self):
         with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
@@ -625,19 +627,19 @@ class TestHandleDialScreenSettings:
 
     def test_post_proxies_uuid_stripped_body(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
-        conn = _conn_success(body=b'{"ok":true,"screen":{"fitted":true},"runtime":{},"restart_required":false}')
+        conn = _conn_success(body=b'{"ok":true,"screen":{"fitted":true,"rotate":true},"runtime":{},"restart_required":false}')
         with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
              patch("autostream_webui_dials.send_json"), \
              patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
-                {"uuid": "my-uuid", "current_pin": "1234", "screen": {"fitted": True}},
+                {"uuid": "my-uuid", "current_pin": "1234", "screen": {"fitted": True, "rotate": True}},
             )
         called_path = conn.request.call_args[0][1]
         assert called_path == "/screen/settings"
         _, call_kwargs = conn.request.call_args
         sent_body = json.loads(call_kwargs["body"])
-        assert sent_body == {"current_pin": "1234", "screen": {"fitted": True}}
+        assert sent_body == {"current_pin": "1234", "screen": {"fitted": True, "rotate": True}}
         assert "uuid" not in sent_body
 
     def test_post_dial_400_passes_through_natively(self):

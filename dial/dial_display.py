@@ -23,6 +23,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from PIL import Image
+
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
     decode_artwork,
@@ -96,6 +98,7 @@ def _url_log_key(url: str) -> str:
 @dataclass
 class DisplayRuntimeStatus:
     fitted: bool
+    rotate: bool
     active: bool
     backend: str
     backend_loaded: bool
@@ -241,6 +244,7 @@ class DialDisplay:
                 )
             return DisplayRuntimeStatus(
                 fitted=self._config.fitted,
+                rotate=self._config.rotate,
                 active=self._backend_open and self._backend_name != "noop",
                 backend=self._backend_name,
                 backend_loaded=self._backend_loaded,
@@ -253,9 +257,17 @@ class DialDisplay:
 
     def update_config(self, config) -> dict:
         with self._lock:
+            old_config = self._config
             self._config = config
             if config.fitted:
                 self._enable_locked()
+                # _enable_locked() is a no-op when the backend is already
+                # open, so a rotate-only toggle needs its own path here —
+                # re-display the current frame under the new orientation
+                # immediately rather than waiting for the next poll.
+                rotate_changed = old_config.fitted and old_config.rotate != config.rotate
+                if rotate_changed and self._backend_open:
+                    self._redisplay_current_locked()
             else:
                 self._disable_locked()
         return self.get_status()
@@ -372,17 +384,41 @@ class DialDisplay:
         with self._lock:
             self._record_error_locked(error_id)
 
+    def _apply_rotation(self, image):
+        """Rotate *image* 180° for display hand-off when configured.
+
+        Applied here, at the single point every frame reaches the backend,
+        so self._current_rendered_image stays unrotated in the cache and a
+        rotate toggle can re-display it under the new orientation without
+        re-fetching or re-transforming artwork.
+        """
+        if self._config.rotate and image is not None:
+            return image.transpose(Image.ROTATE_180)
+        return image
+
     def _display_locked(self, image) -> None:
         if not (self._backend_open and self._backend is not None):
             return
         try:
-            self._backend.display(image)
+            self._backend.display(self._apply_rotation(image))
         except Exception as e:
             self._record_error_locked("display_write_failed")
             self._log_limiter.log(
                 logging.WARNING, "display_write_failed",
                 "dial display: backend write failed: %s", e,
             )
+
+    def _redisplay_current_locked(self) -> None:
+        """Re-display the current frame synchronously — used when rotate
+        changes while already fitted and open, so the new orientation is
+        visible immediately rather than at the next poll.
+        """
+        if not (self._backend_open and self._backend is not None):
+            return
+        if self._current_rendered_image is not None:
+            self._display_locked(self._current_rendered_image)
+        else:
+            self._render_logo_locked()
 
     # ---- logo fallback -------------------------------------------------
 

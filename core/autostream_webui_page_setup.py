@@ -452,6 +452,13 @@ def _dial_card_html(
                     </label>
                     <span>Has Screen Fitted</span>
                   </div>
+                  <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-screen-rotate" data-dial-action="save-screen" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Rotate Screen</span>
+                  </div>
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
@@ -3003,6 +3010,13 @@ def send_setup_page(
           if (valEl) valEl.textContent = input.value + '% per click';
         }}
 
+        function dialSyncRotateEnabled(card) {{
+          var fittedEl = card.querySelector('.dial-screen-fitted');
+          var rotateEl = card.querySelector('.dial-screen-rotate');
+          if (!fittedEl || !rotateEl) return;
+          rotateEl.disabled = fittedEl.disabled || !fittedEl.checked;
+        }}
+
         function _dialLockSection(card) {{
           _dialUnlockedPins.delete(card);
           var section = card.querySelector('.dial-locked-section');
@@ -3011,6 +3025,7 @@ def send_setup_page(
           var btn = section.querySelector('.dial-lock-btn');
           if (btn) {{ btn.innerHTML = _ICON_PADLOCK_LOCKED; btn.setAttribute('aria-label', 'Unlock settings'); }}
           section.querySelectorAll('input').forEach(function(el) {{ el.disabled = true; }});
+          dialSyncRotateEnabled(card);
         }}
 
         function _dialUnlockSection(card, pin) {{
@@ -3029,6 +3044,7 @@ def send_setup_page(
             }}
           }}
           section.querySelectorAll('input').forEach(function(el) {{ el.disabled = false; }});
+          dialSyncRotateEnabled(card);
         }}
 
         function _updateDialLockVisibility(card) {{
@@ -3229,18 +3245,24 @@ def send_setup_page(
             if (!loadResult.ok) return;
             var j = loadResult.body;
             var fittedEl = card.querySelector('.dial-screen-fitted');
+            var rotateEl = card.querySelector('.dial-screen-rotate');
             if (fittedEl && j.screen && j.screen.fitted != null) {{
               fittedEl.checked = !!j.screen.fitted;
             }}
+            if (rotateEl && j.screen) {{
+              rotateEl.checked = !!(j.screen || {{}}).rotate;
+            }}
+            dialSyncRotateEnabled(card);
           }} catch(e) {{}}
         }}
 
-        async function dialSaveScreenSettings(card) {{
+        async function dialSaveScreenSettings(card, changedEl) {{
           var uuid = dialUUID(card);
           if (!uuid) return;
           var fittedEl = card.querySelector('.dial-screen-fitted');
-          if (!fittedEl) return;
-          var body = {{uuid: uuid, screen: {{fitted: fittedEl.checked}}}};
+          var rotateEl = card.querySelector('.dial-screen-rotate');
+          if (!fittedEl || !rotateEl) return;
+          var body = {{uuid: uuid, screen: {{fitted: fittedEl.checked, rotate: rotateEl.checked}}}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
             if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
@@ -3248,14 +3270,21 @@ def send_setup_page(
           }}
           try {{
             var result = await _dialPost('/api/dial/screen/settings', body);
-            if (result.ok) {{ dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000); }}
+            if (result.ok) {{
+              dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
+              dialSyncRotateEnabled(card);
+            }}
             else {{
               dialMsg(card, _dialErrorMessage(result.error), false);
-              fittedEl.checked = !fittedEl.checked;
+              // Revert only the control the user changed — the other checkbox
+              // still holds its pre-save value.
+              if (changedEl) changedEl.checked = !changedEl.checked;
+              dialSyncRotateEnabled(card);
             }}
           }} catch(e) {{
             dialMsg(card, 'Network error', false);
-            fittedEl.checked = !fittedEl.checked;
+            if (changedEl) changedEl.checked = !changedEl.checked;
+            dialSyncRotateEnabled(card);
           }}
         }}
 
@@ -3593,7 +3622,10 @@ def send_setup_page(
                 ev.target.classList.contains('dial-channel') ||
                 ev.target.classList.contains('dial-step')
               )) dialSaveConfig(card);
-              if (action === 'save-screen') dialSaveScreenSettings(card);
+              if (action === 'save-screen') {{
+                if (ev.target.classList.contains('dial-screen-fitted')) dialSyncRotateEnabled(card);
+                dialSaveScreenSettings(card, ev.target);
+              }}
             }});
             card.addEventListener('focusout', function(ev) {{
               if (ev.target.dataset.dialAction === 'save-config'

@@ -28,6 +28,7 @@ def _normalise_dial_channel(value: object) -> str:
 @dataclass
 class DialDisplayConfig:
     fitted: bool = False
+    rotate: bool = False
 
 
 @dataclass
@@ -54,12 +55,14 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     """Validate a complete API-supplied `screen` settings object.
 
     Strict: `fitted` must be a JSON boolean (not 0/1/"true"), the object must be
-    a dict containing exactly the known field, and no fields may be missing or
-    unrecognised. Raises InvalidScreenSettings on any violation.
+    a dict containing only known fields, and `fitted` may not be missing or
+    unrecognised fields present. `rotate` is optional (defaults to False) so
+    older webuis that omit it still validate, but if present it must also be
+    a strict JSON boolean. Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
-    unknown = set(obj.keys()) - {"fitted"}
+    unknown = set(obj.keys()) - {"fitted", "rotate"}
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
     if "fitted" not in obj:
@@ -67,7 +70,10 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     fitted = obj["fitted"]
     if not isinstance(fitted, bool):
         raise InvalidScreenSettings("screen.fitted must be a boolean")
-    return DialDisplayConfig(fitted=fitted)
+    rotate = obj.get("rotate", False)
+    if not isinstance(rotate, bool):
+        raise InvalidScreenSettings("screen.rotate must be a boolean")
+    return DialDisplayConfig(fitted=fitted, rotate=rotate)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -107,7 +113,10 @@ def load_config() -> DialConfig:
 
     hw_display = hw.get('display')
     if isinstance(hw_display, dict):
-        cfg.display = DialDisplayConfig(fitted=bool(hw_display.get('fitted', False)))
+        cfg.display = DialDisplayConfig(
+            fitted=bool(hw_display.get('fitted', False)),
+            rotate=bool(hw_display.get('rotate', False)),
+        )
 
     if SETTINGS_PATH.exists():
         s = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
@@ -118,7 +127,10 @@ def load_config() -> DialConfig:
         cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
         s_display = s.get('display')
         if isinstance(s_display, dict):
-            cfg.display = DialDisplayConfig(fitted=bool(s_display.get('fitted', cfg.display.fitted)))
+            cfg.display = DialDisplayConfig(
+                fitted=bool(s_display.get('fitted', cfg.display.fitted)),
+                rotate=bool(s_display.get('rotate', cfg.display.rotate)),
+            )
 
     if not cfg.uuid:
         state = _read_env_file(INSTALL_STATE_PATH)
@@ -147,7 +159,7 @@ def save_config(cfg: DialConfig) -> None:
         'pin':            cfg.pin,
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
-        'display':        {'fitted': cfg.display.fitted},
+        'display':        {'fitted': cfg.display.fitted, 'rotate': cfg.display.rotate},
     }
     with _save_lock:
         fd, tmp_path = tempfile.mkstemp(dir=SETTINGS_PATH.parent, suffix='.tmp')

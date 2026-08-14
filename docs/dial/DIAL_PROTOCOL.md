@@ -428,10 +428,12 @@ copy and always reads current values from this endpoint.
 {
   "ok": true,
   "screen": {
-    "fitted": false
+    "fitted": false,
+    "rotate": false
   },
   "runtime": {
     "fitted": false,
+    "rotate": false,
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -447,7 +449,9 @@ copy and always reads current values from this endpoint.
 | Field | Type | Notes |
 |---|---|---|
 | `screen.fitted` | bool | Persisted screen-fitted setting |
+| `screen.rotate` | bool | Persisted screen-rotation setting; `true` rotates the display 180 degrees. Optional, defaults to `false` |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
+| `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
 | `runtime.active` | bool | `true` when a non-no-op display path is open |
 | `runtime.backend` | string | Selected backend name (e.g. `noop`, `adafruit_st7735s`) |
 | `runtime.backend_loaded` | bool | `true` once backend imports and hardware open succeeded |
@@ -469,7 +473,8 @@ is set, the request must include the current PIN in `current_pin`.
 {
   "current_pin": "1234",
   "screen": {
-    "fitted": true
+    "fitted": true,
+    "rotate": false
   }
 }
 ```
@@ -480,10 +485,12 @@ Successful response:
 {
   "ok": true,
   "screen": {
-    "fitted": true
+    "fitted": true,
+    "rotate": false
   },
   "runtime": {
     "fitted": true,
+    "rotate": false,
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -497,12 +504,14 @@ Successful response:
 }
 ```
 
-`restart_required` is always `false`: the dial applies the fitted toggle live by starting
-or stopping the current display provider internally.
+`restart_required` is always `false`: the dial applies the fitted and rotate settings live
+by starting or stopping the current display provider internally.
 
 **Validation:**
 
 - `fitted` must be a strict JSON boolean — `0`, `1`, `"true"`, and `"false"` are rejected.
+- `rotate` is optional and defaults to `false` when omitted; when present it must also be a
+  strict JSON boolean.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` returns HTTP `400`:
   ```json

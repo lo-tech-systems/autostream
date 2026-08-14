@@ -185,6 +185,7 @@ class NoOpDisplayStatusProvider:
     def get_status(self) -> dict:
         return {
             "fitted":         self._fitted,
+            "rotate":         False,
             "active":         False,
             "backend":        "noop",
             "backend_loaded": False,
@@ -341,7 +342,7 @@ class DialHTTPServer:
                         cfg = dial_server._cfg
                     self._send_json(200, {
                         'ok':      True,
-                        'screen':  {'fitted': cfg.display.fitted},
+                        'screen':  {'fitted': cfg.display.fitted, 'rotate': cfg.display.rotate},
                         'runtime': dial_server._display_status.get_status(),
                     })
 
@@ -559,10 +560,13 @@ class DialHTTPServer:
                 dial_server.update_cfg(new_cfg)
                 runtime = dial_server._display_status.update_config(new_cfg.display)
 
-                logging.info("screen settings updated: fitted=%s", new_display.fitted)
+                logging.info(
+                    "screen settings updated: fitted=%s rotate=%s",
+                    new_display.fitted, new_display.rotate,
+                )
                 self._send_json(200, {
                     'ok':               True,
-                    'screen':           {'fitted': new_cfg.display.fitted},
+                    'screen':           {'fitted': new_cfg.display.fitted, 'rotate': new_cfg.display.rotate},
                     'runtime':          runtime,
                     'restart_required': False,
                 })

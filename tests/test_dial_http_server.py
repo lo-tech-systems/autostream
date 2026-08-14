@@ -743,7 +743,7 @@ class TestReconcileUpdateTimer:
 # GET/POST /screen/settings
 # ---------------------------------------------------------------------------
 
-_RUNTIME_KEYS = {"fitted", "active", "backend", "backend_loaded", "showing",
+_RUNTIME_KEYS = {"fitted", "rotate", "active", "backend", "backend_loaded", "showing",
                   "last_error", "last_error_at",
                   "display_sleeping", "display_idle_seconds"}
 
@@ -760,7 +760,7 @@ class TestScreenSettingsGet:
         h.do_GET()
         assert result["status"] == 200
         assert result["data"]["ok"] is True
-        assert result["data"]["screen"] == {"fitted": False}
+        assert result["data"]["screen"] == {"fitted": False, "rotate": False}
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
         assert result["data"]["runtime"]["backend"] == "noop"
@@ -775,8 +775,19 @@ class TestScreenSettingsGet:
         h.client_address = ("127.0.0.1", 1234)
         h._send_json     = lambda s, d: result.update(status=s, data=d)
         h.do_GET()
-        assert result["data"]["screen"] == {"fitted": True}
+        assert result["data"]["screen"] == {"fitted": True, "rotate": False}
         assert result["data"]["runtime"]["fitted"] is True
+
+    def test_get_reflects_rotate_true(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, rotate=True))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"] == {"fitted": True, "rotate": True}
 
 
 class TestScreenSettingsPost:
@@ -787,10 +798,27 @@ class TestScreenSettingsPost:
         r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
         assert r["status"] == 200
         assert r["data"]["ok"] is True
-        assert r["data"]["screen"] == {"fitted": True}
+        assert r["data"]["screen"] == {"fitted": True, "rotate": False}
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
         assert r["save_calls"][0].display.fitted is True
+
+    def test_post_rotate_true_persists_and_appears_in_response(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True, "rotate": True}})
+        assert r["status"] == 200
+        assert r["data"]["screen"] == {"fitted": True, "rotate": True}
+        assert r["save_calls"][0].display.rotate is True
+
+    def test_post_rotate_omitted_defaults_false_and_still_200(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["status"] == 200
+        assert r["data"]["screen"]["rotate"] is False
+        assert r["save_calls"][0].display.rotate is False
+
+    def test_post_non_bool_rotate_returns_invalid_screen_settings(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True, "rotate": 1}})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
 
     def test_post_missing_fitted_returns_invalid_screen_settings(self):
         r = _call_handler("/screen/settings", body={"screen": {}})
