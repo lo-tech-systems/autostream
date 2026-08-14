@@ -171,14 +171,21 @@ def main() -> None:
         # finalising the underlying lgpio device handle and silently stopping
         # interrupts.
         encoder = None
-        button = None
-        if setup_rotary_encoder is not None:
+        if cfg.clk_gpio is None or cfg.dt_gpio is None:
+            # A screen-only build has no rotary encoder wired up — this is a
+            # deliberate config choice, not a hardware fault, so it gets an
+            # INFO line rather than the GPIO-init warning below.
+            logging.info("rotary encoder not configured; skipping")
+        elif setup_rotary_encoder is not None:
             encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
 
         def on_press() -> None:
             enqueue_mute_toggle()
 
-        if setup_button is not None and cfg.sw_gpio is not None:
+        button = None
+        if cfg.sw_gpio is None:
+            logging.info("button not configured; skipping")
+        elif setup_button is not None:
             button = setup_button(cfg.sw_gpio, on_press)
 
         while not shutdown_event.wait(5):

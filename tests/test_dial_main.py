@@ -103,6 +103,120 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None):
 
 
 # ---------------------------------------------------------------------------
+# Rotary encoder / button GPIO skip logic (screen-only dial support)
+# ---------------------------------------------------------------------------
+
+class TestOptionalGpioSetup:
+    """Screen-only dials have no rotary encoder or button wired up.  main()
+    must skip setup_rotary_encoder/setup_button entirely (no call, no
+    warning) when the relevant GPIOs are null, logging one deliberate INFO
+    line instead."""
+
+    def _run(self, cfg, caplog):
+        import dial_main as dm
+
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+        mock_encoder_setup = MagicMock(return_value="encoder-handle")
+        mock_button_setup = MagicMock(return_value="button-handle")
+
+        fake_rpi = MagicMock()
+        fake_rpi.setup_rotary_encoder = mock_encoder_setup
+        fake_rpi.setup_button = mock_button_setup
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "autostream_rpi":
+                return fake_rpi
+            return real_import(name, *args, **kwargs)
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http), \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer", return_value=mock_control), \
+             patch("threading.Event", _QuickEvent), \
+             patch("builtins.__import__", side_effect=_fake_import), \
+             caplog.at_level("INFO"):
+            dm.main()
+
+        return mock_encoder_setup, mock_button_setup
+
+    def test_all_gpios_null_skips_both_and_logs_info(self, caplog):
+        """A pure screen-only dial: neither setup is called, both INFO lines
+        are logged, and the service still starts (dm.main() must not raise)."""
+        cfg = _make_cfg()
+        cfg.clk_gpio = None
+        cfg.dt_gpio = None
+        cfg.sw_gpio = None
+
+        encoder_setup, button_setup = self._run(cfg, caplog)
+
+        encoder_setup.assert_not_called()
+        button_setup.assert_not_called()
+        assert "rotary encoder not configured; skipping" in caplog.text
+        assert "button not configured; skipping" in caplog.text
+
+    def test_only_sw_set_sets_up_button_but_skips_encoder(self, caplog):
+        cfg = _make_cfg()
+        cfg.clk_gpio = None
+        cfg.dt_gpio = None
+        cfg.sw_gpio = 23
+
+        encoder_setup, button_setup = self._run(cfg, caplog)
+
+        encoder_setup.assert_not_called()
+        button_setup.assert_called_once()
+        assert button_setup.call_args.args[0] == 23
+        assert "rotary encoder not configured; skipping" in caplog.text
+        assert "button not configured; skipping" not in caplog.text
+
+    def test_partial_encoder_pair_skips_setup(self, caplog):
+        """clk set but dt null (or vice versa) must not attempt encoder
+        setup — a partial pair is not a usable encoder."""
+        cfg = _make_cfg()
+        cfg.clk_gpio = 22
+        cfg.dt_gpio = None
+        cfg.sw_gpio = None
+
+        encoder_setup, button_setup = self._run(cfg, caplog)
+
+        encoder_setup.assert_not_called()
+        button_setup.assert_not_called()
+        assert "rotary encoder not configured; skipping" in caplog.text
+
+    def test_fully_configured_sets_up_both(self, caplog):
+        """Unchanged behaviour when everything is configured: both are set
+        up and no 'not configured' INFO lines are emitted."""
+        cfg = _make_cfg()
+        cfg.clk_gpio = 22
+        cfg.dt_gpio = 27
+        cfg.sw_gpio = 23
+
+        encoder_setup, button_setup = self._run(cfg, caplog)
+
+        encoder_setup.assert_called_once()
+        assert encoder_setup.call_args.args[0] == 22
+        assert encoder_setup.call_args.args[1] == 27
+        button_setup.assert_called_once()
+        assert button_setup.call_args.args[0] == 23
+        assert "rotary encoder not configured; skipping" not in caplog.text
+        assert "button not configured; skipping" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Signal handler tests
 # ---------------------------------------------------------------------------
 

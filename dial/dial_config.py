@@ -33,8 +33,8 @@ class DialDisplayConfig:
 
 @dataclass
 class DialConfig:
-    clk_gpio:       int        = 17
-    dt_gpio:        int        = 27
+    clk_gpio:       int | None = 17
+    dt_gpio:        int | None = 27
     sw_gpio:        int | None = 22
     led_gpio:       int | None = None
     port:           int        = 7842

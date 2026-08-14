@@ -116,6 +116,37 @@ class TestLoadConfigHardwareOverlay:
             cfg = load_config()
         assert cfg.uuid == "dead-beef-uuid"
 
+    def test_null_clk_dt_sw_gpio_become_none(self, tmp_path):
+        """A screen-only dial has no rotary encoder or button wired up —
+        explicit null in the hw config must load as None, mirroring led_gpio."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, clk_gpio=None, dt_gpio=None, sw_gpio=None)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.clk_gpio is None
+        assert cfg.dt_gpio is None
+        assert cfg.sw_gpio is None
+
+    def test_absent_clk_dt_sw_gpio_keep_defaults(self, tmp_path):
+        """Omitting the keys entirely (as opposed to explicit null) must
+        preserve today's defaults, unchanged."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.clk_gpio == 17
+        assert cfg.dt_gpio == 27
+        assert cfg.sw_gpio == 22
+
+    def test_explicit_int_clk_dt_sw_gpio_still_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, clk_gpio=4, dt_gpio=5, sw_gpio=6)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.clk_gpio == 4
+        assert cfg.dt_gpio == 5
+        assert cfg.sw_gpio == 6
+
     def test_invalid_update_channel_in_settings_defaults_to_stable(self, tmp_path):
         hw = tmp_path / "hw.json"
         _write_hw(hw)
