@@ -50,12 +50,22 @@ install. The default values (CLK=17, DT=27, SW=22) match the wiring above.
 
 ---
 
-## Optional: 1.8" ST7735S Display Module
+## Optional: SPI Display Module
 
-An optional 1.8-inch 128x160 SPI TFT display (ST7735S controller) can show
-album artwork for the currently playing, identified track, falling back to
-the autostream logo otherwise. Only one fixed v1 wiring profile is supported;
-there is no software offset, colour-order, or GPIO remapping in this release.
+An optional SPI TFT display can show album artwork for the currently playing,
+identified track, falling back to the autostream logo otherwise. The shipped
+and hardware-validated panel is a 1.8-inch 160x128 display using the ST7735S
+controller.
+
+The dial software also supports four other panel/controller combinations in
+software: ST7735S at 128x128, ST7789 at 240x240 and 320x240, and ILI9341 at
+320x240. These are selectable from the **Screen Type** control on the main
+autostream Setup → Dials page (see `docs/dial/SETUP.md`), but they have **not
+yet been validated on real hardware** — treat their offsets, colour order, and
+timings as nominal until confirmed on a physical panel.
+
+Wiring is the same fixed SPI0 profile regardless of which screen type is
+selected in software — there is no per-panel wiring variant:
 
 | Display pin | Pi Zero GPIO (BCM) | Physical pin |
 |-------------|--------------------|--------------|
@@ -77,7 +87,11 @@ SPI0 must be enabled (the installer does this via `raspi-config nonint do_spi
 0` when available) and may require a reboot before the display becomes
 accessible. Enabling the screen is a software setting, separate from wiring:
 after connecting the panel, use the **Has Screen Fitted** toggle on the main
-autostream Setup → Dials page (see `docs/dial/SETUP.md`) to turn it on.
+autostream Setup → Dials page (see `docs/dial/SETUP.md`) to turn it on. If
+the panel's red and blue channels appear swapped, use the **Swap Red/Blue
+(BGR)** toggle on the same page — this is a common quirk on cheap panel
+breakouts and does not indicate a wiring fault. Changing the screen type or
+the BGR setting applies immediately, with no restart or re-flash required.
 
 SPI1 and alternate GPIO mapping are not supported in this release — SPI1's
 default pins collide with the encoder CLK line (GPIO 17) and the display

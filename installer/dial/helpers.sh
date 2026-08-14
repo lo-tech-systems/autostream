@@ -81,7 +81,7 @@ add_gpio_group() {
 }
 
 install_display_hardware_packages() {
-    # python3-spidev is apt-provided; the ST7735S backend needs SPI0 access.
+    # python3-spidev is apt-provided; the SPI display backend needs SPI0 access.
     # Called unconditionally on fresh install and --update so existing dials
     # gain SPI support without requiring a re-image.
     apt-get install -y --no-install-recommends python3-spidev
@@ -94,7 +94,7 @@ add_spi_group() {
 }
 
 enable_spi0() {
-    # Enables Raspberry Pi SPI0 for the ST7735S display backend. Non-fatal on
+    # Enables Raspberry Pi SPI0 for the SPI display backend. Non-fatal on
     # non-Pi platforms or when raspi-config is unavailable; display-disabled
     # installs must keep working regardless.
     if command -v raspi-config >/dev/null 2>&1; then

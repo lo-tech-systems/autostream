@@ -63,8 +63,9 @@ Updates* below). Saves automatically when changed.
 **Pre-release updates** — Toggle for the dial's update channel (see *Update
 Channels* below). Saves automatically when changed.
 
-**Has Screen Fitted** — Toggle for the optional display module (see *Display
-Screen* below). Saves automatically when changed.
+**Has Screen Fitted**, **Rotate Screen**, **Swap Red/Blue (BGR)**, **Screen
+Type** — Controls for the optional display module (see *Display Screen*
+below). Save automatically when changed.
 
 ---
 
@@ -72,7 +73,7 @@ Screen* below). Saves automatically when changed.
 
 A PIN prevents unauthorized users from changing the dial's settings. The PIN
 protects: name, step size, auto-update toggle, pre-release toggle, screen
-setting, and the PIN itself.
+settings, and the PIN itself.
 
 Volume control is **not** PIN-protected — the dial still adjusts volume without
 any PIN.
@@ -348,25 +349,47 @@ Note: there is no Network card in the dial management UI in this release. Factor
 
 ## Display Screen (if fitted)
 
-Dials that have an optional 1.8-inch TFT display module fitted can show album
+Dials that have an optional SPI TFT display module fitted can show album
 artwork for the currently playing, identified track, falling back to the
 autostream logo when nothing is playing or no artwork is available.
 
-The only setting exposed in this release is whether a screen is physically
-fitted:
+The shipped, hardware-validated panel is a 1.8-inch 160x128 display using the
+ST7735S controller. The dial software also supports ST7735S at 128x128, ST7789
+at 240x240 and 320x240, and ILI9341 at 320x240 — these four are selectable but
+have **not yet been validated on real hardware**.
+
+The screen settings live on the dial's card in the **Dials** panel:
 
 1. Open the main autostream Setup page and find the dial's card.
 2. Unlock the card's locked settings section (enter the PIN if one is set).
-3. Toggle **Has Screen Fitted**.
+3. Configure the controls described below.
 
-The toggle is read from the dial itself every time the card's settings section
-is opened or unlocked — the main appliance does not store its own copy of this
-setting. If the dial is offline, the card still functions for other settings;
-the screen toggle simply reflects whatever was last read from the dial.
+**Has Screen Fitted** — Whether a display module is physically connected. The
+other screen controls are disabled until this is on.
 
-There is no offset, colour, orientation, or artwork-fit configuration in this
-release — those use a fixed wiring and rendering profile chosen for the
-supported hardware.
+**Rotate Screen** — Rotates the rendered image 180 degrees, for mounting
+orientations where the panel would otherwise display upside down.
+
+**Swap Red/Blue (BGR)** — Swaps the red and blue colour channels. Cheap panel
+breakouts vary in wiring colour order; if reds and blues look swapped on the
+screen, toggle this.
+
+**Screen Type** — Selects which display profile (panel model/resolution) the
+dial renders for. Changing it applies immediately to the running dial — no
+restart or re-flash is needed.
+
+**Screen Type** and **Swap Red/Blue (BGR)** only appear on dials whose
+firmware advertises support for them; older dial firmware shows just **Has
+Screen Fitted** and **Rotate Screen**.
+
+All of the above toggles are read from the dial itself every time the card's
+settings section is opened or unlocked — the main appliance does not store its
+own copy of these settings. If the dial is offline, the card still functions
+for other settings; the screen controls simply reflect whatever was last read
+from the dial.
+
+Wiring is unchanged and shared across all supported panels — the same fixed
+SPI0 pin-out is used regardless of screen type (see BUILD-GUIDE.md).
 
 ### Display behavior
 
