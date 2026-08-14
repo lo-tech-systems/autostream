@@ -188,6 +188,78 @@ class TestTransformArtworkForPanel:
         assert BACKDROP_DARKEN_PERCENT == 35
 
 
+class TestTransformArtworkForPanelNonDefaultDims:
+    """Same pipeline, parameterized panel size — the profile table carries
+    non-160x128 entries (e.g. 240x240, 320x240) that must compose correctly
+    even though nothing ships on them yet."""
+
+    @pytest.mark.parametrize("width,height", [(240, 240), (320, 240)])
+    def test_output_is_requested_panel_size(self, width, height):
+        img = decode_artwork(_jpeg_bytes(size=(500, 500)))
+        out = transform_artwork_for_panel(img, width, height)
+        assert out.size == (width, height)
+        assert out.mode == "RGB"
+
+    def test_square_panel_240_panel_ratio_source_fills_edge_to_edge(self):
+        # A square source into a square panel is again the panel-ratio fast
+        # path — same shape as test_wide_panel_ratio_source_fills_edge_to_edge
+        # above, just at a different resolution.
+        img = decode_artwork(_jpeg_bytes(size=(300, 300), color=(200, 40, 40)))
+        out = transform_artwork_for_panel(img, 240, 240)
+        assert out.size == (240, 240)
+        assert out.getpixel((0, 0)) == (200, 40, 40)
+        assert out.getpixel((239, 239)) == (200, 40, 40)
+
+    def test_landscape_320x240_square_art_centre_intact_with_side_bands(self):
+        img = decode_artwork(_jpeg_bytes(size=(300, 300), color=(200, 40, 40)))
+        out = transform_artwork_for_panel(img, 320, 240)
+        assert out.size == (320, 240)
+
+        # Foreground: 300x300 fit to the 240 height -> a 240x240 square,
+        # centered on the 320-wide panel.
+        expected_fg = img.resize((240, 240), ddi._RESAMPLE)
+        x_offset = (320 - 240) // 2
+        actual_fg = out.crop((x_offset, 0, x_offset + 240, 240))
+        assert list(actual_fg.getdata()) == list(expected_fg.getdata())
+
+        # Side bands carry the blurred/darkened colour wash, not a letterbox
+        # and not the flat foreground colour.
+        band_pixel = out.getpixel((2, 120))
+        assert band_pixel != (0, 0, 0)
+        assert band_pixel != (200, 40, 40)
+
+    def test_explicit_blur_radius_override_is_honoured(self):
+        img = decode_artwork(_jpeg_bytes(size=(300, 300), color=(200, 40, 40)))
+        out = transform_artwork_for_panel(img, blur_radius=1)
+
+        expected_backdrop = ddi._cover_panel(img)
+        expected_backdrop = expected_backdrop.filter(ImageFilter.GaussianBlur(1))
+        expected_backdrop = ImageEnhance.Brightness(expected_backdrop).enhance(
+            1 - BACKDROP_DARKEN_PERCENT / 100
+        )
+        band_pixel = out.getpixel((2, PANEL_HEIGHT // 2))
+        assert band_pixel == expected_backdrop.getpixel((2, PANEL_HEIGHT // 2))
+
+
+class TestBlurRadiusFor:
+    def test_returns_ten_at_default_panel_size(self):
+        assert ddi._blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT) == 10
+
+    def test_matches_backdrop_blur_radius_constant(self):
+        assert ddi._blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT) == BACKDROP_BLUR_RADIUS
+
+    def test_scales_up_for_larger_panels(self):
+        # min(short side) * 10 / 128, rounded — see the helper's docstring.
+        assert ddi._blur_radius_for(240, 240) == 19
+        assert ddi._blur_radius_for(320, 240) == 19
+
+    def test_monotonic_with_panel_short_side(self):
+        small = ddi._blur_radius_for(160, 128)
+        mid = ddi._blur_radius_for(200, 176)
+        large = ddi._blur_radius_for(320, 240)
+        assert small < mid < large
+
+
 class TestLoadLogo:
     def _write_logo(self, tmp_path, size=(983, 575)):
         path = tmp_path / "logo.png"
@@ -224,3 +296,9 @@ class TestLoadLogo:
         img = load_logo(str(real_path))
         assert img is not None
         assert img.size == (PANEL_WIDTH, PANEL_HEIGHT)
+
+    def test_valid_logo_at_non_default_dims_returns_those_dims(self, tmp_path):
+        path = self._write_logo(tmp_path)
+        img = load_logo(path, 240, 240)
+        assert img is not None
+        assert img.size == (240, 240)

@@ -31,6 +31,7 @@ from dial_display_image import (
     load_logo,
     transform_artwork_for_panel,
 )
+from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
 from dial_target_status import fetch_target_status
 
 # The artwork fetch is shared with the OwnTone metadata publisher, which also
@@ -46,6 +47,12 @@ except ImportError:
     from autostream_artwork import artwork_url_eligible, fetch_artwork
 
 DEFAULT_DISPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-centred-dark.png"
+
+# Fallback compose dimensions for when no backend is open yet (or it just
+# closed) — the default profile's landscape 160x128, matching today's only
+# shipped panel.
+_DEFAULT_PANEL_WIDTH = get_profile(DEFAULT_PROFILE_KEY).width
+_DEFAULT_PANEL_HEIGHT = get_profile(DEFAULT_PROFILE_KEY).height
 
 DISPLAY_POLL_INTERVAL_SECONDS = 6
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
@@ -118,8 +125,11 @@ class DisplayRuntimeStatus:
 
 class DisplayBackend:
     name = "backend"
-    width = 128
-    height = 160
+    # Sourced from the default profile rather than hardcoded — these were
+    # previously 128/160, the transpose of the real landscape panel (see
+    # dial_display_profiles.py for why the panel is 160 wide x 128 tall).
+    width = _DEFAULT_PANEL_WIDTH
+    height = _DEFAULT_PANEL_HEIGHT
 
     def open(self) -> None: ...
 
@@ -136,8 +146,8 @@ class DisplayBackend:
 
 class NoOpBackend(DisplayBackend):
     name = "noop"
-    width = 128
-    height = 160
+    width = _DEFAULT_PANEL_WIDTH
+    height = _DEFAULT_PANEL_HEIGHT
 
     def open(self) -> None:
         pass
@@ -384,6 +394,21 @@ class DialDisplay:
         with self._lock:
             self._record_error_locked(error_id)
 
+    def _active_panel_dims(self) -> tuple[int, int]:
+        """Return the open backend's panel dimensions, falling back to the
+        default profile's dimensions when no backend is open (e.g. between
+        close() and the next open()).
+
+        Reads self._backend without taking self._lock — safe under the same
+        single-mutator-thread invariant _show_artwork() already relies on
+        (see its comment), so this may be called either lock-held (from the
+        _locked methods) or lock-free (from _show_artwork()'s unlocked
+        fetch/decode/transform stretch).
+        """
+        if self._backend_open and self._backend is not None:
+            return self._backend.width, self._backend.height
+        return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
+
     def _apply_rotation(self, image):
         """Rotate *image* 180° for display hand-off when configured.
 
@@ -423,7 +448,8 @@ class DialDisplay:
     # ---- logo fallback -------------------------------------------------
 
     def _render_logo_locked(self) -> None:
-        image = load_logo(self._logo_path)
+        width, height = self._active_panel_dims()
+        image = load_logo(self._logo_path, width, height)
         if image is None:
             self._record_error_locked("logo_unavailable")
             self._log_limiter.log(
@@ -566,7 +592,8 @@ class DialDisplay:
             self.show_logo()
             return
 
-        transformed = transform_artwork_for_panel(image)
+        width, height = self._active_panel_dims()
+        transformed = transform_artwork_for_panel(image, width, height)
 
         with self._lock:
             if not (self._backend_open and self._backend is not None):

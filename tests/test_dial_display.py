@@ -30,10 +30,12 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 from dial_config import DialDisplayConfig
+from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
 from dial_mdns import PlayingTarget
 import dial_display as dd
 from dial_display import (
     DialDisplay,
+    DisplayBackend,
     NoOpBackend,
     _fetch_artwork,
     artwork_url_eligible,
@@ -788,3 +790,61 @@ class TestRateLimitedLogger:
                 limiter.log(30, "keyA", "msg")
             limiter.log(30, "keyB", "other")
         assert mock_log.call_count == 2  # first of keyA, first of keyB
+
+
+# ---------------------------------------------------------------------------
+# Panel dimensions — base-class defaults and per-backend pass-through to the
+# compose functions in dial_display_image.py
+# ---------------------------------------------------------------------------
+
+class TestPanelDimensionDefaults:
+    def test_display_backend_dims_match_default_profile(self):
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        assert DisplayBackend.width == profile.width
+        assert DisplayBackend.height == profile.height
+
+    def test_noop_backend_dims_match_default_profile(self):
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        assert NoOpBackend.width == profile.width
+        assert NoOpBackend.height == profile.height
+
+    def test_active_panel_dims_falls_back_to_default_profile_when_backend_closed(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        # Never enabled — self._backend is still None.
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        assert display._active_panel_dims() == (profile.width, profile.height)
+
+
+class TestActiveBackendDimsPassthrough:
+    """Proves the compose call sites use the open backend's own width/height
+    rather than dial_display_image's module-level PANEL_WIDTH/PANEL_HEIGHT
+    globals — these would fail if the call sites regressed to the globals,
+    since FakeBackend here is set to a non-default size.
+    """
+
+    def test_artwork_frame_handed_to_backend_matches_active_backend_dims(self):
+        t = _target()
+        fb = FakeBackend()
+        fb.width = 240
+        fb.height = 240
+        display, _, gt, mu = _make_display(targets=[t], backend=fb)
+        display.enable()
+        fb.displayed.clear()
+
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))):
+            display._poll_once()
+
+        assert display.get_status()["showing"] == "artwork"
+        assert fb.displayed[-1].size == (240, 240)
+
+    def test_logo_frame_handed_to_backend_matches_active_backend_dims(self):
+        fb = FakeBackend()
+        fb.width = 240
+        fb.height = 200
+        display, _, gt, mu = _make_display(targets=[], backend=fb)
+        display.enable()  # renders the logo immediately
+
+        assert fb.displayed
+        assert fb.displayed[-1].size == (240, 200)
