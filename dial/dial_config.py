@@ -22,6 +22,12 @@ from pathlib import Path
 # before the display stack gets a chance to isolate a broken Adafruit install.
 from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES
 
+# dial_touch_controllers.py is likewise pure data (no hardware imports) — see
+# its module docstring for the same argument as dial_display_profiles above.
+# Importing it here is safe and preserves the invariant that dial_config never
+# pulls in hardware.
+from dial_touch_controllers import DEFAULT_TOUCH_KEY, TOUCH_CONTROLLERS
+
 HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
 SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
 INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
@@ -34,10 +40,19 @@ def _normalise_dial_channel(value: object) -> str:
 
 @dataclass
 class DialDisplayConfig:
+    """Screen settings for the dial's display.
+
+    `touch_type` is deliberately colocated here rather than split into its own
+    config section: it is part of the screen assembly (the touch panel and the
+    LCD share the same physical unit and the same webui "Screen" settings
+    section), so it shares one save path and one validation path with the
+    other screen fields. Do not "fix" this later by pulling it out.
+    """
     fitted: bool = False
     rotate: bool = False
     screen_type: str = DEFAULT_PROFILE_KEY
     bgr: bool = False
+    touch_type: str = DEFAULT_TOUCH_KEY
 
 
 @dataclass
@@ -72,11 +87,14 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     profile — an unknown value is a hard InvalidScreenSettings error rather
     than a silent fallback, since silently coercing a wrong driver choice to
     the default would mask the very mistake this validation exists to catch.
+    `touch_type` is optional (defaults to DEFAULT_TOUCH_KEY, i.e. "none") and
+    follows the exact same rule: if present it must be a string naming a
+    known controller in TOUCH_CONTROLLERS, otherwise InvalidScreenSettings.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
-    unknown = set(obj.keys()) - {"fitted", "rotate", "screen_type", "bgr"}
+    unknown = set(obj.keys()) - {"fitted", "rotate", "screen_type", "bgr", "touch_type"}
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
     if "fitted" not in obj:
@@ -95,7 +113,15 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
         raise InvalidScreenSettings("screen.screen_type must be a string")
     if screen_type not in DISPLAY_PROFILES:
         raise InvalidScreenSettings(f"unknown screen.screen_type: {screen_type!r}")
-    return DialDisplayConfig(fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr)
+    touch_type = obj.get("touch_type", DEFAULT_TOUCH_KEY)
+    if not isinstance(touch_type, str):
+        raise InvalidScreenSettings("screen.touch_type must be a string")
+    if touch_type not in TOUCH_CONTROLLERS:
+        raise InvalidScreenSettings(f"unknown screen.touch_type: {touch_type!r}")
+    return DialDisplayConfig(
+        fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
+        touch_type=touch_type,
+    )
 
 
 def _resolve_persisted_screen_type(value: object) -> str:
@@ -115,6 +141,25 @@ def _resolve_persisted_screen_type(value: object) -> str:
             value, DEFAULT_PROFILE_KEY,
         )
     return DEFAULT_PROFILE_KEY
+
+
+def _resolve_persisted_touch_type(value: object) -> str:
+    """Resolve a persisted touch_type value, falling back to the default
+    controller ("none") with a warning log rather than raising.
+
+    Mirrors _resolve_persisted_screen_type: a corrupt or stale settings file
+    must not brick the dial at startup — only the strict API-facing
+    validate_screen_settings() is allowed to reject an unknown controller
+    outright.
+    """
+    if isinstance(value, str) and value in TOUCH_CONTROLLERS:
+        return value
+    if value is not None:
+        logging.warning(
+            "dial config: unknown persisted touch_type %r — falling back to %s",
+            value, DEFAULT_TOUCH_KEY,
+        )
+    return DEFAULT_TOUCH_KEY
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -159,6 +204,7 @@ def load_config() -> DialConfig:
             rotate=bool(hw_display.get('rotate', False)),
             screen_type=_resolve_persisted_screen_type(hw_display.get('screen_type')),
             bgr=bool(hw_display.get('bgr', False)),
+            touch_type=_resolve_persisted_touch_type(hw_display.get('touch_type')),
         )
 
     if SETTINGS_PATH.exists():
@@ -177,6 +223,9 @@ def load_config() -> DialConfig:
                     s_display.get('screen_type', cfg.display.screen_type)
                 ),
                 bgr=bool(s_display.get('bgr', cfg.display.bgr)),
+                touch_type=_resolve_persisted_touch_type(
+                    s_display.get('touch_type', cfg.display.touch_type)
+                ),
             )
 
     if not cfg.uuid:
@@ -211,6 +260,7 @@ def save_config(cfg: DialConfig) -> None:
             'rotate':      cfg.display.rotate,
             'screen_type': cfg.display.screen_type,
             'bgr':         cfg.display.bgr,
+            'touch_type':  cfg.display.touch_type,
         },
     }
     with _save_lock:

@@ -24,6 +24,7 @@ from typing import Callable
 
 from dial_config import InvalidScreenSettings, _read_env_file, validate_screen_settings
 from dial_display_profiles import DEFAULT_PROFILE_KEY, list_profiles
+from dial_touch_controllers import list_controllers
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
@@ -190,6 +191,7 @@ class NoOpDisplayStatusProvider:
             "rotate":         False,
             "screen_type":    DEFAULT_PROFILE_KEY,
             "bgr":            False,
+            "touch_type":     "",
             "active":         False,
             "backend":        "noop",
             "backend_loaded": False,
@@ -344,16 +346,20 @@ class DialHTTPServer:
                 elif self.path == '/screen/settings':
                     with dial_server._cfg_lock:
                         cfg = dial_server._cfg
+                    runtime = dial_server._display_status.get_status()
+                    runtime.setdefault('touch_type', '')
                     self._send_json(200, {
-                        'ok':        True,
-                        'screen':    {
+                        'ok':             True,
+                        'screen':         {
                             'fitted':      cfg.display.fitted,
                             'rotate':      cfg.display.rotate,
                             'screen_type': cfg.display.screen_type,
                             'bgr':         cfg.display.bgr,
+                            'touch_type':  cfg.display.touch_type,
                         },
-                        'supported': list_profiles(),
-                        'runtime':   dial_server._display_status.get_status(),
+                        'supported':      list_profiles(),
+                        'supported_touch': list_controllers(),
+                        'runtime':        runtime,
                     })
 
                 else:
@@ -604,6 +610,7 @@ class DialHTTPServer:
                         "screen settings apply failed (screen_type=%s) — on-disk config left unchanged",
                         new_display.screen_type,
                     )
+                    runtime.setdefault('touch_type', '')
                     self._send_json(200, {
                         'ok':      False,
                         'error':   'screen_apply_failed',
@@ -612,6 +619,7 @@ class DialHTTPServer:
                             'rotate':      cfg.display.rotate,
                             'screen_type': cfg.display.screen_type,
                             'bgr':         cfg.display.bgr,
+                            'touch_type':  cfg.display.touch_type,
                         },
                         'runtime': runtime,
                     })
@@ -628,9 +636,11 @@ class DialHTTPServer:
                 dial_server.update_cfg(new_cfg)
 
                 logging.info(
-                    "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s",
-                    new_display.fitted, new_display.rotate, new_display.screen_type, new_display.bgr,
+                    "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s touch_type=%s",
+                    new_display.fitted, new_display.rotate, new_display.screen_type,
+                    new_display.bgr, new_display.touch_type,
                 )
+                runtime.setdefault('touch_type', '')
                 self._send_json(200, {
                     'ok':               True,
                     'screen':           {
@@ -638,6 +648,7 @@ class DialHTTPServer:
                         'rotate':      new_cfg.display.rotate,
                         'screen_type': new_cfg.display.screen_type,
                         'bgr':         new_cfg.display.bgr,
+                        'touch_type':  new_cfg.display.touch_type,
                     },
                     'runtime':          runtime,
                     'restart_required': False,

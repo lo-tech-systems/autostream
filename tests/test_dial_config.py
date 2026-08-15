@@ -386,6 +386,7 @@ class TestDisplaySettings:
         assert data["display"] == {
             "fitted": True, "rotate": False,
             "screen_type": dc.DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": dc.DEFAULT_TOUCH_KEY,
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -424,6 +425,7 @@ class TestDisplaySettings:
         assert data["display"] == {
             "fitted": True, "rotate": True,
             "screen_type": dc.DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": dc.DEFAULT_TOUCH_KEY,
         }
 
 
@@ -511,6 +513,82 @@ class TestScreenTypeAndBgrSettings:
         assert cfg.display.screen_type == dc.DEFAULT_PROFILE_KEY
 
 
+class TestTouchTypeSettings:
+    def test_missing_display_defaults_touch_type(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.touch_type == dc.DEFAULT_TOUCH_KEY
+
+    def test_hw_display_touch_type_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "touch_type": "xpt2046"})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.touch_type == "xpt2046"
+
+    def test_mutable_settings_override_hw_touch_type(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "touch_type": "xpt2046"})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "touch_type": "ft6206"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.touch_type == "ft6206"
+
+    def test_save_persists_touch_type(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(
+                uuid="x",
+                display=DialDisplayConfig(fitted=True, touch_type="ft6206"),
+            )
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"]["touch_type"] == "ft6206"
+
+    def test_save_and_reload_round_trip_touch_type(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            cfg = DialConfig(uuid="hw-uuid-1234", display=DialDisplayConfig(fitted=True, touch_type="xpt2046"))
+            save_config(cfg)
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+        assert reloaded.display.touch_type == "xpt2046"
+
+    def test_corrupt_persisted_touch_type_in_settings_falls_back_to_default(self, tmp_path):
+        """A corrupt/stale settings file must not brick the dial at startup —
+        an unknown touch_type falls back to the default controller with a
+        warning log rather than raising."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "touch_type": "no_such_controller_anymore"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.touch_type == dc.DEFAULT_TOUCH_KEY
+        assert cfg.display.fitted is True
+
+    def test_corrupt_hw_touch_type_falls_back_to_default(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "touch_type": "totally_bogus"})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.touch_type == dc.DEFAULT_TOUCH_KEY
+
+
 class TestValidateScreenSettings:
     def test_valid_true_accepted(self):
         result = validate_screen_settings({"fitted": True})
@@ -595,6 +673,22 @@ class TestValidateScreenSettings:
     def test_non_string_screen_type_rejected(self):
         with pytest.raises(InvalidScreenSettings):
             validate_screen_settings({"fitted": True, "screen_type": 42})
+
+    def test_valid_touch_type_accepted(self):
+        result = validate_screen_settings({"fitted": True, "touch_type": "xpt2046"})
+        assert result == DialDisplayConfig(fitted=True, touch_type="xpt2046")
+
+    def test_touch_type_omitted_defaults_to_default_touch_key(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result == DialDisplayConfig(fitted=True, touch_type=dc.DEFAULT_TOUCH_KEY)
+
+    def test_unknown_touch_type_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "touch_type": "no_such_controller"})
+
+    def test_non_string_touch_type_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "touch_type": 42})
 
 
 class TestSaveConfigAtomic:

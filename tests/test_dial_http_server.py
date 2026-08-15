@@ -23,7 +23,7 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_http_server as dhs
-from dial_config import DEFAULT_PROFILE_KEY, DialConfig, DialDisplayConfig
+from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
 from dial_http_server import NoOpDisplayStatusProvider, RecoveryWindow
 
 
@@ -743,8 +743,8 @@ class TestReconcileUpdateTimer:
 # GET/POST /screen/settings
 # ---------------------------------------------------------------------------
 
-_RUNTIME_KEYS = {"fitted", "rotate", "screen_type", "bgr", "active", "backend", "backend_loaded",
-                  "showing", "last_error", "last_error_at",
+_RUNTIME_KEYS = {"fitted", "rotate", "screen_type", "bgr", "touch_type", "active", "backend",
+                  "backend_loaded", "showing", "last_error", "last_error_at",
                   "display_sleeping", "display_idle_seconds"}
 
 
@@ -763,14 +763,24 @@ class TestScreenSettingsGet:
         assert result["data"]["screen"] == {
             "fitted": False, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
         assert result["data"]["runtime"]["backend"] == "noop"
+        assert result["data"]["runtime"]["touch_type"] == ""
         assert "artwork_url" not in json.dumps(result["data"])
         supported = result["data"]["supported"]
         assert supported, "supported profile list must not be empty"
         assert all(set(p.keys()) == {"key", "text"} for p in supported)
+        supported_touch = result["data"]["supported_touch"]
+        assert supported_touch, "supported_touch controller list must not be empty"
+        assert all(set(c.keys()) == {"key", "text"} for c in supported_touch)
+        # supported_touch is a separate capability list from supported (display
+        # profiles) — a dial on a previous release publishes supported but has
+        # no supported_touch key at all, so a client must not infer touch
+        # support from the presence/contents of supported.
+        assert {p["key"] for p in supported_touch} != {p["key"] for p in supported}
 
     def test_get_reflects_fitted_true(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
@@ -784,6 +794,7 @@ class TestScreenSettingsGet:
         assert result["data"]["screen"] == {
             "fitted": True, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -799,6 +810,7 @@ class TestScreenSettingsGet:
         assert result["data"]["screen"] == {
             "fitted": True, "rotate": True,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -815,6 +827,24 @@ class TestScreenSettingsGet:
         assert result["data"]["screen"] == {
             "fitted": True, "rotate": False,
             "screen_type": "st7789_240x240", "bgr": True,
+            "touch_type": DEFAULT_TOUCH_KEY,
+        }
+
+    def test_get_reflects_touch_type(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type="xpt2046",
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": "xpt2046",
         }
 
 
@@ -829,6 +859,7 @@ class TestScreenSettingsPost:
         assert r["data"]["screen"] == {
             "fitted": True, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -840,6 +871,7 @@ class TestScreenSettingsPost:
         assert r["data"]["screen"] == {
             "fitted": True, "rotate": True,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -852,9 +884,32 @@ class TestScreenSettingsPost:
         assert r["data"]["screen"] == {
             "fitted": True, "rotate": False,
             "screen_type": "st7789_240x240", "bgr": True,
+            "touch_type": DEFAULT_TOUCH_KEY,
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
+
+    def test_post_touch_type_persists_and_appears_in_response(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "touch_type": "ft6206"}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": "ft6206",
+        }
+        assert r["save_calls"][0].display.touch_type == "ft6206"
+
+    def test_post_unknown_touch_type_returns_invalid_screen_settings(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "touch_type": "no_such_controller"}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
 
     def test_post_unknown_screen_type_returns_invalid_screen_settings(self):
         r = _call_handler(
