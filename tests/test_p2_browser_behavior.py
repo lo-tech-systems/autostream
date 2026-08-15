@@ -1002,11 +1002,36 @@ class TestDialCardHtmlStructure:
     def test_dial_sync_rotate_enabled_function_present(self):
         src = _setup_page_src()
         assert "function dialSyncScreenControlsEnabled" in src
-        assert "rotateEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
-        assert "bgrEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
-        assert "typeEl.disabled = fittedEl.disabled || !fittedEl.checked" in src
+        # The fitted condition is computed once and applied to all three
+        # controls, so the greying can never drift out of step with which
+        # controls are actually disabled.
+        assert "var off = fittedEl.disabled || !fittedEl.checked;" in src
+        assert "rotateEl.disabled = off;" in src
+        assert "bgrEl.disabled = off;" in src
+        assert "typeEl.disabled = off;" in src
         # Old name must be gone entirely -- this was a clean rename, not an alias.
         assert "dialSyncRotateEnabled" not in src
+
+    def test_screen_control_rows_dim_when_not_fitted(self):
+        """A disabled input still renders its label at full contrast, so the
+        whole row is dimmed alongside being disabled."""
+        src = _setup_page_src()
+        # Every screen control row carries the shared class...
+        assert src.count('class="dial-screen-ctl-row"') >= 1
+        assert 'dial-screen-bgr-row dial-screen-ctl-row' in src
+        assert 'dial-screen-type-row dial-screen-ctl-row' in src
+        # ...the sync function toggles the dimmed state from the same
+        # condition that disables the controls...
+        assert "row.classList.toggle('is-disabled', off)" in src
+        # ...and the stylesheet actually dims it.
+        assert ".dial-screen-ctl-row.is-disabled{opacity:0.45;}" in src
+
+    def test_dial_cards_are_spaced_apart(self):
+        """Dial cards space themselves like the setup list cards: a bottom
+        margin on each card, so the first still sits flush under the header."""
+        src = _setup_page_src()
+        assert '<div class="dial-card-wrap">' in src
+        assert ".dial-card-wrap{margin-bottom:0.62rem;}" in src
 
     def test_dial_sync_rotate_enabled_wired_to_change_listener(self):
         src = _setup_page_src()

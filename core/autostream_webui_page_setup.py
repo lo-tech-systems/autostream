@@ -389,7 +389,7 @@ def _dial_card_html(
     pin_btn_margin_top = "0.5rem" if fw_update_btn else "0.75rem"
     current_name_display = nv if nv else html.escape("(unnamed)")
 
-    return settings_card_html(f"""
+    card_html = settings_card_html(f"""
           <div class="dial-card" data-dial-uuid="{su}"
                data-authorized="{'true' if authorized else 'false'}"
                data-online="{'true' if online else 'false'}"{data_new}
@@ -452,21 +452,21 @@ def _dial_card_html(
                     </label>
                     <span>Has Screen Fitted</span>
                   </div>
-                  <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                  <div class="dial-screen-ctl-row" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <label class="output-toggle" style="margin:0;">
                       <input type="checkbox" class="dial-screen-rotate" data-dial-action="save-screen" disabled>
                       <span class="switch"></span>
                     </label>
                     <span>Rotate Screen</span>
                   </div>
-                  <div class="dial-screen-bgr-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                  <div class="dial-screen-bgr-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <label class="output-toggle" style="margin:0;">
                       <input type="checkbox" class="dial-screen-bgr" data-dial-action="save-screen" disabled>
                       <span class="switch"></span>
                     </label>
                     <span>Swap Red/Blue (BGR)</span>
                   </div>
-                  <div class="dial-screen-type-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                  <div class="dial-screen-type-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Screen Type:</span>
                     <select class="dial-screen-type" data-dial-action="save-screen" disabled></select>
                   </div>
@@ -481,6 +481,12 @@ def _dial_card_html(
             <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
           </div>
         """, margin_top="0")
+    # Spacing between dial cards follows the setup list cards: a bottom margin
+    # on each card rather than a top margin, so the first card still sits
+    # flush under the panel header. settings_card_html only offers margin_top,
+    # hence the wrapper — the card it emits is the bordered element that has
+    # to carry the gap.
+    return f'<div class="dial-card-wrap">{card_html}</div>'
 
 
 
@@ -1547,6 +1553,14 @@ def send_setup_page(
 .dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
+/* Matches the setup list cards' 0.62rem bottom margin so the Dials panel
+   spaces its cards the same way the rest of the setup page does. */
+.dial-card-wrap{margin-bottom:0.62rem;}
+/* Screen controls follow the "Has Screen Fitted" toggle: the inputs are
+   disabled from JS, and this dims the whole row — including its label text,
+   which a disabled attribute alone leaves at full contrast. */
+.dial-screen-ctl-row{transition:opacity 0.15s ease;}
+.dial-screen-ctl-row.is-disabled{opacity:0.45;}
 """
     _bt_pairing_modal_css = ""
     if bt_enabled:
@@ -3027,9 +3041,15 @@ def send_setup_page(
           var bgrEl = card.querySelector('.dial-screen-bgr');
           var typeEl = card.querySelector('.dial-screen-type');
           if (!fittedEl || !rotateEl) return;
-          rotateEl.disabled = fittedEl.disabled || !fittedEl.checked;
-          if (bgrEl) bgrEl.disabled = fittedEl.disabled || !fittedEl.checked;
-          if (typeEl) typeEl.disabled = fittedEl.disabled || !fittedEl.checked;
+          var off = fittedEl.disabled || !fittedEl.checked;
+          rotateEl.disabled = off;
+          if (bgrEl) bgrEl.disabled = off;
+          if (typeEl) typeEl.disabled = off;
+          // Dim the rows too — a disabled input still renders its label text
+          // at full contrast, which reads as available when it is not.
+          card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
+            row.classList.toggle('is-disabled', off);
+          }});
         }}
 
         function _dialLockSection(card) {{
