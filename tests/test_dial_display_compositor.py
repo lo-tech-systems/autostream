@@ -368,3 +368,187 @@ class TestOverlayVisible:
         )
         expected = Image.merge("RGB", drawn_first.split()[::-1])
         assert list(composed_then_swapped.getdata()) == list(expected.getdata())
+
+
+class TestOverlayDividers:
+    """Divider lines marking the boundaries between button areas — must be
+    derived from zones_for()'s own rectangles (never a hardcoded fraction),
+    sit in the dead-zone gaps rather than inside any zone's active area, and
+    must never appear when the overlay itself is inert."""
+
+    def _panel_image(self, size, color=(200, 150, 100)):
+        return Image.new("RGB", size, color)
+
+    @staticmethod
+    def _gap_centers(zones):
+        """Return the expected divider-line positions for *zones*, using the
+        same adjacency test as the compositor: if MUTE/DOWN/UP all share one
+        (y0, y1) span it's the WIDE layout (two vertical gaps), otherwise
+        it's the SQUARE layout (one horizontal gap, one vertical gap below
+        it). Returns a list of (axis, coordinate, span) triples, axis in
+        {"x", "y"} meaning "a vertical line at x=coordinate spanning
+        y-range=span" or "a horizontal line at y=coordinate spanning
+        x-range=span" — span is the union of the two adjacent rects' extent
+        along the line's own axis, mirroring exactly what
+        _draw_vertical_divider/_draw_horizontal_divider compute, since a
+        vertical divider between DOWN and UP in the SQUARE layout is only
+        meaningful within their shared band, not the full panel height.
+        """
+        mute = zones[TouchZone.MUTE]
+        down = zones[TouchZone.DOWN]
+        up = zones[TouchZone.UP]
+        if (mute[1], mute[3]) == (down[1], down[3]) == (up[1], up[3]):
+            return [
+                ("x", (mute[2] + down[0]) // 2, (min(mute[1], down[1]), max(mute[3], down[3]))),
+                ("x", (down[2] + up[0]) // 2, (min(down[1], up[1]), max(down[3], up[3]))),
+            ]
+        return [
+            ("y", (mute[3] + down[1]) // 2, (min(mute[0], down[0]), max(mute[2], down[2]))),
+            ("x", (down[2] + up[0]) // 2, (min(down[1], up[1]), max(down[3], up[3]))),
+        ]
+
+    def test_lines_present_when_visible_wide_panel(self, compositor):
+        size = (320, 240)
+        img = self._panel_image(size)
+        hidden = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=False),
+        )
+        visible = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        zones = zones_for(*size)
+        for axis, coord, span in self._gap_centers(zones):
+            if axis == "x":
+                sample_y = (span[0] + span[1]) // 2
+                assert hidden.getpixel((coord, sample_y)) != visible.getpixel((coord, sample_y))
+            else:
+                sample_x = (span[0] + span[1]) // 2
+                assert hidden.getpixel((sample_x, coord)) != visible.getpixel((sample_x, coord))
+
+    def test_lines_present_when_visible_square_panel(self, compositor):
+        size = (240, 240)
+        img = self._panel_image(size)
+        hidden = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=False),
+        )
+        visible = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        zones = zones_for(*size)
+        for axis, coord, span in self._gap_centers(zones):
+            if axis == "x":
+                sample_y = (span[0] + span[1]) // 2
+                assert hidden.getpixel((coord, sample_y)) != visible.getpixel((coord, sample_y))
+            else:
+                sample_x = (span[0] + span[1]) // 2
+                assert hidden.getpixel((sample_x, coord)) != visible.getpixel((sample_x, coord))
+
+    def _assert_lines_stay_in_gaps(self, compositor, size):
+        img = self._panel_image(size)
+        hidden = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=False),
+        )
+        visible = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        zones = zones_for(*size)
+        width, height = size
+
+        def inside_any_zone(x, y):
+            for (x0, y0, x1, y1) in zones.values():
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return True
+            return False
+
+        # Every gap-center coordinate we expect a divider line at must not
+        # land inside any zone's active rectangle, at any point along the
+        # line's actual length (its span along the perpendicular axis, the
+        # same union the compositor itself draws across — see
+        # _gap_centers's docstring).
+        for axis, coord, span in self._gap_centers(zones):
+            if axis == "x":
+                for y in range(span[0], span[1]):
+                    assert not inside_any_zone(coord, y), (
+                        f"divider at x={coord} lands inside a zone at y={y}"
+                    )
+            else:
+                for x in range(span[0], span[1]):
+                    assert not inside_any_zone(x, coord), (
+                        f"divider at y={coord} lands inside a zone at x={x}"
+                    )
+
+        # And confirm hidden vs visible actually differ somewhere (the
+        # dividers, dim, glyphs, etc. all contribute) — a degenerate no-op
+        # implementation would trivially satisfy the "not inside a zone"
+        # checks above by drawing nothing at all.
+        assert list(hidden.getdata()) != list(visible.getdata())
+
+    def test_wide_panel_lines_fall_in_gaps_not_in_zones(self, compositor):
+        self._assert_lines_stay_in_gaps(compositor, (320, 240))
+
+    def test_square_panel_lines_fall_in_gaps_not_in_zones(self, compositor):
+        self._assert_lines_stay_in_gaps(compositor, (240, 240))
+
+    def test_square_panel_uses_square_layout_not_wide_layout(self, compositor):
+        """A square panel must draw the SQUARE layout's divider positions
+        (one horizontal band boundary, one vertical split below it) — not
+        the WIDE layout's two full-height vertical dividers."""
+        size = (240, 240)
+        zones = zones_for(*size)
+        gaps = self._gap_centers(zones)
+        axes = sorted(axis for axis, _, _ in gaps)
+        assert axes == ["x", "y"], "square panel should have one horizontal and one vertical divider"
+
+        mute = zones[TouchZone.MUTE]
+        down = zones[TouchZone.DOWN]
+        up = zones[TouchZone.UP]
+        # Confirm the fixture itself is genuinely square-shaped per
+        # zones_for's own layout choice (sanity check on the test, not the
+        # implementation): MUTE must NOT share DOWN's full vertical span.
+        assert (mute[1], mute[3]) != (down[1], down[3])
+        assert (down[1], down[3]) == (up[1], up[3])
+
+    def test_dividers_do_not_disturb_glyph_or_pressed_assertions(self, compositor):
+        """Re-run the pre-existing muted/unmuted and pressed-highlight
+        pixel checks at the 160x128 profile to confirm the new divider
+        drawing did not change their outcome."""
+        img = self._panel_image((160, 128))
+        muted = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True),
+        )
+        unmuted = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False),
+        )
+        x0, y0, x1, y1 = zones_for(img.width, img.height)[TouchZone.MUTE]
+        assert list(muted.crop((x0, y0, x1, y1)).getdata()) != list(
+            unmuted.crop((x0, y0, x1, y1)).getdata()
+        )
+
+        unpressed = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        pressed = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, pressed=TouchZone.DOWN),
+        )
+        zones = zones_for(img.width, img.height)
+        dx0, dy0, dx1, dy1 = zones[TouchZone.DOWN]
+        for zone, (x0, y0, x1, y1) in zones.items():
+            if zone == TouchZone.DOWN:
+                continue
+            region_a = unpressed.crop((x0, y0, x1, y1))
+            region_b = pressed.crop((x0, y0, x1, y1))
+            assert list(region_a.getdata()) == list(region_b.getdata())

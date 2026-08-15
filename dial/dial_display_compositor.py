@@ -66,6 +66,19 @@ _GLYPH_RGB = (255, 255, 255)
 _PRESSED_FILL_RGB = (255, 255, 255)
 _PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
 
+# Divider-line colour: light-grey, near-white — a step down from the pure
+# white glyphs/highlight so the boundary lines read as structure rather than
+# competing with the glyphs for attention.
+_DIVIDER_RGB = (200, 200, 200)
+
+# Divider-line width scales with the panel's short side using the same
+# reference axis dial_touch_layout._dead_zone_margin uses (128px short side
+# -> 1px line), rounded and floored at 1px. This keeps the line reading as a
+# thin hairline at the shipped 160x128 profile while thickening modestly
+# (2px) on 320x240/240x240 profiles rather than looking lost against a
+# bigger panel.
+_DIVIDER_REFERENCE_SHORT_SIDE = 128
+
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -155,7 +168,89 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
     _draw_mute_glyph(draw, zones[TouchZone.MUTE], overlay.muted)
     _draw_minus_glyph(draw, zones[TouchZone.DOWN])
     _draw_plus_glyph(draw, zones[TouchZone.UP])
+
+    # Divider lines are drawn last, on top of the glyphs and highlight. They
+    # never spatially overlap either (they sit in the dead-zone gaps between
+    # zones.zones_for() rects, while glyphs/highlight are confined inside
+    # those rects), so draw order can't change what's visible — drawing them
+    # last simply keeps this as the smallest possible diff (an addition at
+    # the end of the function) and means any future overlay content added
+    # above the glyphs still can't bury the boundary lines.
+    _draw_dividers(draw, zones, width, height)
     return dimmed
+
+
+def _divider_line_width(width: int, height: int) -> int:
+    """Divider line width in pixels, scaled from a 1px-at-128-short-side
+    reference — see _DIVIDER_REFERENCE_SHORT_SIDE. Floored at 1px."""
+    return max(1, round(min(width, height) / _DIVIDER_REFERENCE_SHORT_SIDE))
+
+
+def _draw_dividers(
+    draw: ImageDraw.ImageDraw,
+    zones: dict[TouchZone, tuple[int, int, int, int]],
+    width: int,
+    height: int,
+) -> None:
+    """Draw light-grey dividing lines centred in the dead-zone gap between
+    each pair of adjacent zone rectangles from *zones* (as returned by
+    dial_touch_layout.zones_for()) — never at a hardcoded fraction of the
+    panel, so the lines can't disagree with where taps actually land.
+
+    Which pairs are "adjacent" — and whether the boundary is vertical or
+    horizontal — is read off the rects themselves rather than re-deriving
+    the WIDE/SQUARE choice zones_for() already made:
+      - MUTE and DOWN share the same (y0, y1) span in the WIDE layout
+        (vertical thirds: MUTE | DOWN | UP, each full-height) -> two
+        vertical dividers, MUTE|DOWN and DOWN|UP.
+      - Otherwise (SQUARE layout: full-width MUTE band on top, DOWN|UP
+        splitting the area below) -> one horizontal divider between the
+        MUTE band and the DOWN/UP band, plus one vertical divider between
+        DOWN and UP confined to that lower band's own height.
+    """
+    mute = zones[TouchZone.MUTE]
+    down = zones[TouchZone.DOWN]
+    up = zones[TouchZone.UP]
+    line_width = _divider_line_width(width, height)
+
+    if (mute[1], mute[3]) == (down[1], down[3]) == (up[1], up[3]):
+        # WIDE: vertical thirds, all sharing the same full-height span.
+        _draw_vertical_divider(draw, mute, down, line_width)
+        _draw_vertical_divider(draw, down, up, line_width)
+    else:
+        # SQUARE: MUTE band on top; DOWN/UP split the band below it.
+        _draw_horizontal_divider(draw, mute, down, line_width)
+        _draw_vertical_divider(draw, down, up, line_width)
+
+
+def _draw_vertical_divider(
+    draw: ImageDraw.ImageDraw,
+    left_rect: tuple[int, int, int, int],
+    right_rect: tuple[int, int, int, int],
+    line_width: int,
+) -> None:
+    """Draw a vertical line centred in the horizontal gap between
+    *left_rect* (ends at x1) and *right_rect* (starts at x0), spanning the
+    union of their vertical extents."""
+    x = (left_rect[2] + right_rect[0]) // 2
+    y0 = min(left_rect[1], right_rect[1])
+    y1 = max(left_rect[3], right_rect[3])
+    draw.line([(x, y0), (x, y1 - 1)], fill=_DIVIDER_RGB, width=line_width)
+
+
+def _draw_horizontal_divider(
+    draw: ImageDraw.ImageDraw,
+    top_rect: tuple[int, int, int, int],
+    bottom_rect: tuple[int, int, int, int],
+    line_width: int,
+) -> None:
+    """Draw a horizontal line centred in the vertical gap between *top_rect*
+    (ends at y1) and *bottom_rect* (starts at y0), spanning the union of
+    their horizontal extents."""
+    y = (top_rect[3] + bottom_rect[1]) // 2
+    x0 = min(top_rect[0], bottom_rect[0])
+    x1 = max(top_rect[2], bottom_rect[2])
+    draw.line([(x0, y), (x1 - 1, y)], fill=_DIVIDER_RGB, width=line_width)
 
 
 def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
