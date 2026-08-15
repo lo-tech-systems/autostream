@@ -83,11 +83,17 @@ add_gpio_group() {
 install_display_hardware_packages() {
     # python3-spidev is apt-provided; the SPI display backend needs SPI0 access.
     # python3-smbus is apt-provided; a capacitive (I2C) touch panel backend
-    # (e.g. FT6206/FT6236) needs it. Both are installed here so the venv sees
-    # them via --system-site-packages.
+    # (e.g. FT6206/FT6236) needs it.
+    # python3-numpy is apt-provided and REQUIRED, not optional: the pinned
+    # adafruit_rgb_display driver converts every frame to RGB565 inside
+    # Display.image(), and without numpy it falls back to a pure-Python
+    # per-pixel loop that takes hundreds of milliseconds to well over a
+    # second per frame (measured on a Pi 2B) — the display is unusably slow
+    # without it. All three are installed here so the venv sees them via
+    # --system-site-packages, the same mechanism as python3-pil/python3-spidev.
     # Called unconditionally on fresh install and --update so existing dials
-    # gain SPI/I2C support without requiring a re-image.
-    apt-get install -y --no-install-recommends python3-spidev python3-smbus
+    # gain SPI/I2C/fast-display support without requiring a re-image.
+    apt-get install -y --no-install-recommends python3-spidev python3-smbus python3-numpy
 }
 
 add_spi_group() {

@@ -622,6 +622,35 @@ class TestDisplayHardwareDeployment:
         fn_text = content[idx:idx + 400]
         assert "python3-smbus" in fn_text
 
+    def test_install_display_hardware_packages_installs_numpy(self):
+        """python3-numpy must be installed — the driver needs it for a fast
+        RGB565 frame conversion path."""
+        content = self._helpers_content()
+        idx = content.find("install_display_hardware_packages()")
+        assert idx != -1
+        fn_text = content[idx:idx + 700]
+        assert "python3-numpy" in fn_text
+
+    def test_install_display_hardware_packages_explains_numpy_is_required(self):
+        """The comment must state numpy is a hard requirement, not an
+        optimisation: without it the driver falls back to a slow per-pixel
+        Python loop that makes the display unusably slow."""
+        content = self._helpers_content()
+        idx = content.find("install_display_hardware_packages()")
+        assert idx != -1
+        fn_text = content[idx:idx + 900]
+        assert "REQUIRED" in fn_text or "required" in fn_text, (
+            "install_display_hardware_packages() must explain that numpy is required"
+        )
+        assert "per-pixel" in fn_text, (
+            "install_display_hardware_packages() must explain the slow per-pixel "
+            "fallback that numpy avoids"
+        )
+        assert "slow" in fn_text.lower() or "unusably" in fn_text.lower(), (
+            "install_display_hardware_packages() must explain the fallback is "
+            "unusably slow, not merely suboptimal"
+        )
+
     def test_enable_i2c_defined_in_helpers(self):
         """enable_i2c() must be defined in helpers.sh."""
         content = self._helpers_content()

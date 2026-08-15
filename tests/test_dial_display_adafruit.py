@@ -545,3 +545,137 @@ class TestProfileDrivenDriverDispatch:
         backend = AdafruitDisplayBackend(bogus)
         with pytest.raises(RuntimeError, match="not-a-real-driver"):
             backend.open()
+
+
+# ---------------------------------------------------------------------------
+# _pack_rgb565 — our own fast RGB565 packer (replaces the driver's slower
+# image_to_data()+bytes() round trip for full-frame pushes).
+# ---------------------------------------------------------------------------
+
+class TestPackRgb565:
+    @pytest.fixture(autouse=True)
+    def _reset_numpy_missing_logged(self):
+        """_numpy_missing_logged is a process-wide 'log once' latch — reset
+        it around every test in this class so one test's trip doesn't
+        suppress the warning assertion in another."""
+        dda._numpy_missing_logged = False
+        yield
+        dda._numpy_missing_logged = False
+
+    def test_known_pixel_colors_pack_to_exact_bytes(self):
+        numpy = pytest.importorskip("numpy", reason="numpy not installed")
+        image = Image.new("RGB", (5, 1))
+        image.putpixel((0, 0), (255, 0, 0))    # pure red   -> 0xF800
+        image.putpixel((1, 0), (0, 255, 0))    # pure green -> 0x07E0
+        image.putpixel((2, 0), (0, 0, 255))    # pure blue  -> 0x001F
+        image.putpixel((3, 0), (255, 255, 255))  # white    -> 0xFFFF
+        image.putpixel((4, 0), (0, 0, 0))      # black      -> 0x0000
+
+        packed = dda._pack_rgb565(image)
+
+        assert packed == (
+            b"\xf8\x00"  # red
+            + b"\x07\xe0"  # green
+            + b"\x00\x1f"  # blue
+            + b"\xff\xff"  # white
+            + b"\x00\x00"  # black
+        )
+
+    def test_packed_length_matches_width_times_height_times_two(self):
+        pytest.importorskip("numpy", reason="numpy not installed")
+        image = Image.new("RGB", (160, 128), (14, 40, 65))
+        packed = dda._pack_rgb565(image)
+        assert len(packed) == 160 * 128 * 2
+
+    def test_returns_none_and_logs_once_when_numpy_unavailable(self, caplog, monkeypatch):
+        # Simulate numpy being absent via the import hook rather than
+        # poisoning sys.modules["numpy"] — numpy's C extension cannot be
+        # safely re-initialised once evicted from sys.modules ("cannot load
+        # module more than once per process"), which would corrupt every
+        # later test in this process that needs real numpy.
+        import builtins
+        import logging as _logging
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "numpy":
+                raise ImportError("simulated: numpy not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+
+        image = Image.new("RGB", (4, 4), (1, 2, 3))
+        with caplog.at_level(_logging.WARNING):
+            first = dda._pack_rgb565(image)
+            second = dda._pack_rgb565(image)
+
+        assert first is None
+        assert second is None
+        numpy_warnings = [r for r in caplog.records if "numpy" in r.message.lower()]
+        assert len(numpy_warnings) == 1, (
+            "numpy-unavailable fallback must be logged exactly once, not per frame"
+        )
+
+    def test_returns_none_on_packing_failure_rather_than_raising(self):
+        """A non-image-like input must not raise — the caller falls back to
+        the driver's own image() path instead."""
+        pytest.importorskip("numpy", reason="numpy not installed")
+        assert dda._pack_rgb565(object()) is None
+
+
+# ---------------------------------------------------------------------------
+# AdafruitDisplayBackend._push_frame — uses the driver's private _block()
+# window-write primitive with our packed bytes when possible, falling back
+# to the driver's own image() when packing or _block is unavailable.
+# ---------------------------------------------------------------------------
+
+class TestPushFrameFastPath:
+    def test_display_calls_block_with_packed_bytes_and_full_panel_bounds(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        packed_bytes = b"\x00\x01" * (160 * 128)
+        frame = Image.new("RGB", (160, 128), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565", return_value=packed_bytes) as pack_mock:
+                backend = AdafruitST7735SBackend()
+                backend.open()
+                backend.display(frame)
+
+        fake_display.image.assert_not_called()
+        fake_display._block.assert_called_once_with(0, 0, 159, 127, packed_bytes)
+        pack_mock.assert_called_once()
+
+    def test_display_falls_back_to_image_when_block_is_missing(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        # A driver object with no _block attribute at all (e.g. a future
+        # library version that renamed/removed it) — simulate with a
+        # spec-restricted mock so getattr(..., "_block", None) is really None.
+        no_block_display = MagicMock(name="ST7735S_instance", spec=["image"])
+        st7735_ctor.return_value = no_block_display
+        packed_bytes = b"\x00\x01" * (160 * 128)
+        frame = Image.new("RGB", (160, 128), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565", return_value=packed_bytes):
+                backend = AdafruitST7735SBackend()
+                backend.open()
+                backend.display(frame)  # must not raise
+
+        no_block_display.image.assert_called_once_with(frame)
+
+    def test_display_falls_back_to_image_when_numpy_unavailable(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        frame = Image.new("RGB", (160, 128), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565", return_value=None):
+                backend = AdafruitST7735SBackend()
+                backend.open()
+                backend.display(frame)
+
+        fake_display.image.assert_called_once_with(frame)
+        fake_display._block.assert_not_called()
