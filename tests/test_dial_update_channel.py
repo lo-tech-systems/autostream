@@ -467,6 +467,9 @@ class TestDialHttpConfigureApi:
         class FakeDialServer:
             _cfg_lock = __import__('threading').Lock()
             _recovery_window = MagicMock(_active=False, _volume_confirmed=False)
+            # Set once at startup by dial_main from the inputs it actually
+            # constructed; this fake never builds any, so it reports False.
+            _can_confirm_presence = False
             _make_handler = dhs.DialHTTPServer._make_handler
 
             def __init__(self, initial):
