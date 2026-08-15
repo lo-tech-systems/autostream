@@ -31,7 +31,7 @@ from dial_mdns import (
     stop_playing_browser,
 )
 from dial_target_status import enrich_targets
-from dial_volume import enqueue_delta, enqueue_mute_toggle, start_volume_worker
+from dial_volume import enqueue_delta, enqueue_mute, is_muted, start_volume_worker
 
 
 def _configure_logging() -> None:
@@ -100,6 +100,7 @@ def _build_touch_source(cfg, display, confirm_presence=None):
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
+    from dial_touch_layout import TouchZone
 
     # Any deliberate contact with the screen proves physical presence — the
     # reveal-then-arm scheme (see dial_touch.py) means a first touch may only
@@ -128,7 +129,11 @@ def _build_touch_source(cfg, display, confirm_presence=None):
     def on_reveal_overlay() -> None:
         _confirm_presence()
         display.notify_touch_activity()
-        display.set_overlay(OverlayState(visible=True))
+        # muted is read from the belief (dial_volume.is_muted()) rather than
+        # left at the tri-state default so a reveal that follows a prior
+        # mute (from the physical button, or an earlier touch session)
+        # shows the correct glyph on its very first frame.
+        display.set_overlay(OverlayState(visible=True, muted=is_muted()))
         # The repaint thread services the overlay signal well ahead of any
         # human-perceptible delay; treating "signaled" as "rendered" here
         # (rather than blocking on the repaint thread's actual SPI push)
@@ -142,7 +147,7 @@ def _build_touch_source(cfg, display, confirm_presence=None):
     def on_set_pressed_zone(zone) -> None:
         _confirm_presence()
         display.notify_touch_activity()
-        display.set_overlay(OverlayState(visible=True, pressed=zone))
+        display.set_overlay(OverlayState(visible=True, pressed=zone, muted=is_muted()))
 
     def on_volume_up() -> None:
         display.notify_touch_activity()
@@ -154,7 +159,15 @@ def _build_touch_source(cfg, display, confirm_presence=None):
 
     def on_mute_toggle() -> None:
         display.notify_touch_activity()
-        enqueue_mute_toggle()
+        # Flip the belief and repaint the glyph immediately, on the same
+        # frame as the press — enqueue_mute() does no network I/O and takes
+        # no DialDisplay lock (see its docstring), so this stays as cheap as
+        # the volume callbacks above. on_set_pressed_zone() always runs
+        # immediately before this for the MUTE zone (see
+        # TouchStateMachine._arm), so the overlay is already visible with
+        # pressed=TouchZone.MUTE; this call only needs to update muted.
+        muted = enqueue_mute()
+        display.set_overlay(OverlayState(visible=True, pressed=TouchZone.MUTE, muted=muted))
 
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,
@@ -296,7 +309,7 @@ def main() -> None:
 
         def on_press() -> None:
             http_server.confirm_volume()
-            enqueue_mute_toggle()
+            enqueue_mute()
 
         button = None
         if cfg.sw_gpio is None:

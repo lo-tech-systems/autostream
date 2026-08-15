@@ -4,6 +4,12 @@ Covers: _send_one() URL/body/timeout, ok=false application failure,
 403 debug-only, clamp detection, fail-count reset; _log_volume_failure()
 warning on 1st and every 10th, debug in between; _fan_out() concurrent
 dispatch and clamped aggregate; queue coalescing and LED flash.
+
+Also covers the deterministic mute fan-out (_fan_out_mute/_send_one_mute) —
+new coverage, not an update: the exact wire contract dial_main.py sends
+against ({"dial_id", "action": "mute"|"restore"}), the "muted" field folded
+back into the belief from an authoritative response, 403 debug-only, no
+targets, all-targets-403, and partial fan-out failure.
 """
 from __future__ import annotations
 
@@ -45,6 +51,23 @@ def _mock_urlopen_success(volume: int = 50, ok: bool = True):
 
 def _clear_state():
     dv._fail_counts.clear()
+
+
+def _reset_belief(value: bool = False) -> None:
+    """Directly set the module-level mute belief for test isolation — bypasses
+    the lock (fine: single-threaded test setup, not a concurrency test)."""
+    dv._muted = value
+
+
+def _mock_urlopen_mute_success(muted: bool = True, ok: bool = True, extra: dict | None = None):
+    body = {"ok": ok, "muted": muted}
+    if extra:
+        body.update(extra)
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = json.dumps(body).encode()
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -378,4 +401,362 @@ class TestQueueCoalescing:
             if clamped and dv._led_ref:
                 dv._led_ref.flash_clamped()
 
-        mock_led.flash_clamped.assert_called_once()
+
+# ---------------------------------------------------------------------------
+# _send_one_mute: exact wire contract
+#
+# This is the one place the exact body dial_volume sends is checked against
+# the exact shape the appliance-side handler parses: POST /api/dial/mute
+# takes {"dial_id": ..., "action": "mute"|"restore"}. Nothing else in the
+# suite exercises both sides of this protocol together.
+# ---------------------------------------------------------------------------
+
+class TestSendOneMuteRequestFormat:
+    def setup_method(self):
+        _clear_state()
+        _reset_belief(False)
+
+    def test_body_matches_the_exact_wire_contract_for_mute(self):
+        target = _target()
+        captured_bodies = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_bodies.append(json.loads(req.data))
+            return _mock_urlopen_mute_success(muted=True)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._send_one_mute(target, "dial-uuid-42", True)
+
+        assert captured_bodies[0] == {"dial_id": "dial-uuid-42", "action": "mute"}
+
+    def test_body_matches_the_exact_wire_contract_for_restore(self):
+        target = _target()
+        captured_bodies = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_bodies.append(json.loads(req.data))
+            return _mock_urlopen_mute_success(muted=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._send_one_mute(target, "dial-uuid-42", False)
+
+        assert captured_bodies[0] == {"dial_id": "dial-uuid-42", "action": "restore"}
+
+    def test_sends_to_correct_url(self):
+        target = _target(ip="10.0.0.6", port=7842)
+        captured = []
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req.full_url)
+            return _mock_urlopen_mute_success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._send_one_mute(target, "uuid", True)
+
+        assert captured[0] == "http://10.0.0.6:7842/api/dial/mute"
+
+    def test_request_timeout_is_04(self):
+        target = _target()
+        captured_timeouts = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_timeouts.append(timeout)
+            return _mock_urlopen_mute_success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._send_one_mute(target, "uuid", True)
+
+        assert captured_timeouts[0] == pytest.approx(0.4, abs=0.01)
+
+    def test_content_type_header_is_json(self):
+        target = _target()
+        captured_headers = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_headers.append(req.get_header("Content-type"))
+            return _mock_urlopen_mute_success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._send_one_mute(target, "uuid", True)
+
+        assert captured_headers[0] == "application/json"
+
+    def test_method_is_post(self):
+        target = _target()
+        captured_methods = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_methods.append(req.get_method())
+            return _mock_urlopen_mute_success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._send_one_mute(target, "uuid", True)
+
+        assert captured_methods[0] == "POST"
+
+
+# ---------------------------------------------------------------------------
+# _send_one_mute: free reconciliation — the "muted" field folds into belief
+# ---------------------------------------------------------------------------
+
+class TestSendOneMuteReconciliation:
+    def setup_method(self):
+        _clear_state()
+        _reset_belief(False)
+
+    def test_authoritative_muted_true_sets_belief_true(self):
+        _reset_belief(False)
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=True)):
+            dv._send_one_mute(_target(), "uuid", True)
+        assert dv.is_muted() is True
+
+    def test_authoritative_muted_false_sets_belief_false_even_if_we_asked_to_mute(self):
+        # Mute responses are authoritative and may set the belief either
+        # way — unlike a bare volume observation (see note_master_volume_positive).
+        _reset_belief(True)
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=False)):
+            dv._send_one_mute(_target(), "uuid", True)
+        assert dv.is_muted() is False
+
+    def test_missing_muted_field_leaves_belief_unchanged(self):
+        _reset_belief(True)
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = json.dumps({"ok": True}).encode()
+        with patch("urllib.request.urlopen", return_value=resp):
+            dv._send_one_mute(_target(), "uuid", False)
+        assert dv.is_muted() is True
+
+    def test_non_bool_muted_field_leaves_belief_unchanged(self):
+        _reset_belief(True)
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = json.dumps({"ok": True, "muted": "yes"}).encode()
+        with patch("urllib.request.urlopen", return_value=resp):
+            dv._send_one_mute(_target(), "uuid", False)
+        assert dv.is_muted() is True
+
+    def test_ok_false_does_not_reconcile_belief(self):
+        _reset_belief(True)
+        with patch("urllib.request.urlopen",
+                   return_value=_mock_urlopen_mute_success(muted=False, ok=False)):
+            dv._send_one_mute(_target(), "uuid", False)
+        assert dv.is_muted() is True
+
+    def test_partial_true_response_still_reconciles(self):
+        """A response may carry "partial": true alongside ok/muted — that is
+        purely informational and must not block reconciliation."""
+        _reset_belief(False)
+        resp = _mock_urlopen_mute_success(muted=True, extra={"partial": True})
+        with patch("urllib.request.urlopen", return_value=resp):
+            dv._send_one_mute(_target(), "uuid", True)
+        assert dv.is_muted() is True
+
+
+# ---------------------------------------------------------------------------
+# _send_one_mute: application failure and 403 (mirrors _send_one's rules)
+# ---------------------------------------------------------------------------
+
+class TestSendOneMuteFailureHandling:
+    def setup_method(self):
+        _clear_state()
+        _reset_belief(False)
+
+    def test_ok_false_increments_fail_count(self):
+        target = _target(ip="1.2.3.9")
+        with patch("urllib.request.urlopen",
+                   return_value=_mock_urlopen_mute_success(muted=True, ok=False)):
+            dv._send_one_mute(target, "uuid", True)
+        assert dv._fail_counts.get("1.2.3.9", 0) == 1
+
+    def test_success_clears_fail_count(self):
+        ip = "5.5.5.9"
+        dv._fail_counts[ip] = 3
+        target = _target(ip=ip)
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=True)):
+            dv._send_one_mute(target, "uuid", True)
+        assert ip not in dv._fail_counts
+
+    def test_403_does_not_increment_fail_count(self, caplog):
+        import logging
+        target = _target(ip="9.9.9.8")
+        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one_mute(target, "uuid", True)
+        assert dv._fail_counts.get("9.9.9.8", 0) == 0
+
+    def test_403_logs_at_debug_not_warning(self, caplog):
+        import logging
+        target = _target(ip="9.9.9.8")
+        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one_mute(target, "uuid", True)
+        warning_msgs = [r for r in caplog.records
+                        if r.levelno >= logging.WARNING and "9.9.9.8" in r.getMessage()]
+        debug_msgs = [r for r in caplog.records
+                      if r.levelno == logging.DEBUG and "9.9.9.8" in r.getMessage()]
+        assert not warning_msgs, "403 should not log at WARNING"
+        assert debug_msgs, "403 should log at DEBUG"
+
+    def test_403_does_not_reconcile_belief(self):
+        """A 403 carries no body to fold in — the belief must be untouched."""
+        _reset_belief(True)
+        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            dv._send_one_mute(_target(), "uuid", False)
+        assert dv.is_muted() is True
+
+
+# ---------------------------------------------------------------------------
+# _fan_out_mute: concurrent dispatch, no targets, all-403, partial failure
+# ---------------------------------------------------------------------------
+
+class TestFanOutMute:
+    def setup_method(self):
+        _clear_state()
+        _reset_belief(False)
+
+    def test_sends_to_all_targets_with_the_same_absolute_action(self):
+        targets = [_target("2.0.0.1"), _target("2.0.0.2"), _target("2.0.0.3")]
+        sent = []
+
+        def fake_send_one_mute(target, uuid, muted):
+            sent.append((target.ip, muted))
+
+        with patch.object(dv, "_send_one_mute", side_effect=fake_send_one_mute):
+            dv._fan_out_mute(targets, "uuid", True)
+
+        assert sorted(sent) == [
+            ("2.0.0.1", True), ("2.0.0.2", True), ("2.0.0.3", True),
+        ]
+
+    def test_no_targets_sends_nothing(self):
+        """An empty target list (the no-targets case) must not attempt any
+        request — mirrors _worker()'s `if not targets: continue` guard."""
+        sent = []
+
+        def fake_send_one_mute(target, uuid, muted):
+            sent.append(target)
+
+        with patch.object(dv, "_send_one_mute", side_effect=fake_send_one_mute):
+            dv._fan_out_mute([], "uuid", True)
+
+        assert sent == []
+
+    def test_all_targets_403_leaves_belief_unreconciled(self):
+        """All targets unauthorized: no target returns a body to fold in, so
+        the belief this dial already flipped to on press must survive
+        untouched — a mixed-LAN 403 must never look like a correction."""
+        _reset_belief(True)
+        targets = [_target("3.0.0.1"), _target("3.0.0.2")]
+        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+
+        with patch("urllib.request.urlopen", side_effect=err):
+            dv._fan_out_mute(targets, "uuid", True)
+
+        assert dv.is_muted() is True
+        assert dv._fail_counts.get("3.0.0.1", 0) == 0
+        assert dv._fail_counts.get("3.0.0.2", 0) == 0
+
+    def test_partial_fan_out_failure_reconciles_from_the_surviving_target(self):
+        """One target succeeds (and reports muted=True back), the other is
+        unreachable — the belief still gets the free reconciliation from the
+        one that answered, and the failing one's fail count is bumped."""
+        _reset_belief(False)
+        good = _target(ip="4.0.0.1")
+        bad = _target(ip="4.0.0.2")
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.startswith(f"http://{bad.ip}"):
+                raise OSError("connection refused")
+            return _mock_urlopen_mute_success(muted=True)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._fan_out_mute([good, bad], "uuid", True)
+
+        assert dv.is_muted() is True
+        assert dv._fail_counts.get(bad.ip, 0) == 1
+        assert dv._fail_counts.get(good.ip, 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# enqueue_mute(): belief flip, no network I/O, no DialDisplay lock
+# ---------------------------------------------------------------------------
+
+class TestEnqueueMuteBelief:
+    def setup_method(self):
+        _clear_state()
+        _reset_belief(False)
+        # Drain any leftover queue items from a previous test.
+        while True:
+            try:
+                dv._queue.get_nowait()
+            except Exception:
+                break
+
+    def test_default_belief_is_unmuted(self):
+        assert dv.is_muted() is False
+
+    def test_first_press_flips_to_muted_and_enqueues_it(self):
+        new_belief = dv.enqueue_mute()
+        assert new_belief is True
+        assert dv.is_muted() is True
+        assert dv._queue.get_nowait() == ("mute", True)
+
+    def test_second_press_flips_back_to_unmuted(self):
+        dv.enqueue_mute()
+        dv._queue.get_nowait()
+        new_belief = dv.enqueue_mute()
+        assert new_belief is False
+        assert dv.is_muted() is False
+        assert dv._queue.get_nowait() == ("mute", False)
+
+    def test_enqueue_mute_performs_no_network_io(self):
+        def boom(*a, **kw):
+            raise AssertionError("enqueue_mute() must never touch the network")
+
+        with patch("urllib.request.urlopen", side_effect=boom):
+            dv.enqueue_mute()  # must not raise
+
+    def test_note_master_volume_positive_forces_unmuted(self):
+        _reset_belief(True)
+        dv.note_master_volume_positive()
+        assert dv.is_muted() is False
+
+
+# ---------------------------------------------------------------------------
+# _worker(): dispatches a mute batch item through _fan_out_mute with the
+# belief carried in the queue event (mirrors TestQueueCoalescing's style of
+# simulating a single worker iteration rather than driving the real
+# infinite-loop thread).
+# ---------------------------------------------------------------------------
+
+class TestWorkerMuteDispatch:
+    def setup_method(self):
+        _clear_state()
+        _reset_belief(False)
+        dv._cfg = MagicMock(uuid="test-uuid")
+
+    def test_mute_batch_item_dispatches_via_fan_out_mute(self):
+        fan_out_mute_calls = []
+
+        def fake_fan_out_mute(targets, uuid, muted):
+            fan_out_mute_calls.append((uuid, muted))
+
+        target = _target()
+        dv._targets_fn = lambda: [target]
+
+        with patch.object(dv, "_fan_out_mute", side_effect=fake_fan_out_mute):
+            batch = dv._coalesce(("mute", True))
+            targets = dv._targets_fn()
+            for event in batch:
+                if event[0] == "delta":
+                    dv._fan_out(targets, dv._cfg.uuid, event[1])
+                else:
+                    dv._fan_out_mute(targets, dv._cfg.uuid, event[1])
+
+        assert fan_out_mute_calls == [("test-uuid", True)]

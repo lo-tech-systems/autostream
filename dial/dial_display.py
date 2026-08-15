@@ -35,6 +35,7 @@ from dial_display_profiles import (
     get_profile,
 )
 from dial_target_status import fetch_target_status
+from dial_volume import note_master_volume_positive
 
 # The artwork fetch is shared with the OwnTone metadata publisher, which also
 # turns provider URLs into images. It faces the open internet, so it lives in
@@ -840,6 +841,15 @@ class DialDisplay:
                     "dial display: target %s status_error=%s", target.service_name, status_error,
                 )
                 continue
+
+            # Free reconciliation for the dial mute belief (dial_volume.py):
+            # a master_volume > 0 seen on ANY target here is definitive
+            # proof the fleet is audible. master_volume == 0 is NOT the
+            # mirror case — it proves nothing about the rest of the fleet —
+            # so it is deliberately not checked here at all.
+            master_volume = result.get("master_volume")
+            if isinstance(master_volume, int) and not isinstance(master_volume, bool) and master_volume > 0:
+                note_master_volume_positive()
 
             track_id = result.get("track_id")
             if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):

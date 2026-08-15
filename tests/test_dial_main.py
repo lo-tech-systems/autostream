@@ -951,7 +951,7 @@ class TestBuildTouchSourceWiring:
     background thread) faked out."""
 
     @contextmanager
-    def _built(self, confirm_presence=None):
+    def _built(self, confirm_presence=None, is_muted_value=False):
         """Construct via dial_main._build_touch_source() with the mocks
         still active, yielding everything a test needs — the invoked
         callbacks reference module globals (enqueue_delta etc.) resolved at
@@ -979,7 +979,8 @@ class TestBuildTouchSourceWiring:
         with patch("dial_touch_drivers.open_driver") as mock_open, \
              patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
              patch("dial_main.enqueue_delta") as mock_delta, \
-             patch("dial_main.enqueue_mute_toggle") as mock_mute:
+             patch("dial_main.enqueue_mute", return_value=True) as mock_mute, \
+             patch("dial_main.is_muted", return_value=is_muted_value):
             result = dm._build_touch_source(cfg, display, confirm_presence=confirm_presence)
             yield cfg, display, result, captured, mock_open, mock_delta, mock_mute
 
@@ -1011,6 +1012,21 @@ class TestBuildTouchSourceWiring:
             mock_mute.assert_called_once()
             display.notify_touch_activity.assert_called_once()
 
+    def test_mute_toggle_repaints_glyph_from_returned_belief(self):
+        """The press flips the belief and repaints the glyph on the same
+        frame — set_overlay must be called with the new belief returned by
+        enqueue_mute(), not the pre-press one from is_muted()."""
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            captured["kwargs"]["on_mute_toggle"]()
+
+            display.set_overlay.assert_called_once()
+            state = display.set_overlay.call_args[0][0]
+            assert state.visible is True
+            assert state.pressed == TouchZone.MUTE
+            assert state.muted is True  # enqueue_mute() was stubbed to return True
+
     def test_reveal_overlay_sets_overlay_visible_and_signals_overlay_live(self):
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_reveal_overlay"]()
@@ -1021,6 +1037,16 @@ class TestBuildTouchSourceWiring:
             assert state.pressed is None
             display.notify_touch_activity.assert_called_once()
             result.overlay_live.assert_called_once()
+
+    def test_reveal_overlay_reads_muted_from_belief(self):
+        """A reveal must show the CURRENT belief on its very first frame,
+        not the tri-state default — otherwise a mute set by the physical
+        button (or an earlier touch session) would briefly draw wrong."""
+        with self._built(is_muted_value=True) as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_reveal_overlay"]()
+
+            state = display.set_overlay.call_args[0][0]
+            assert state.muted is True
 
     def test_dismiss_overlay_sets_overlay_hidden(self):
         with self._built() as (cfg, display, result, captured, *_):
@@ -1067,6 +1093,125 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_reveal_overlay"]()
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
+
+
+# ---------------------------------------------------------------------------
+# Both mute press entry points (touch mute zone AND the physical button)
+# must stay off DialDisplay._lock and off the network.
+#
+# Runs dial_main.main() end-to-end with a REAL DialDisplay (spied via
+# dial_display.create_dial_display) and the REAL dial_volume.enqueue_mute(),
+# not stand-ins for either — otherwise this would only prove a hand-rolled
+# copy of the wiring is safe, not the actual callbacks dial_main builds.
+# ---------------------------------------------------------------------------
+
+class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
+    def _run(self):
+        import dial_main as dm
+        import dial_display as dd
+        from dial_config import DialConfig, DialDisplayConfig
+
+        cfg = DialConfig(
+            uuid="lock-test-uuid",
+            sw_gpio=23,
+            clk_gpio=None,
+            dt_gpio=None,
+            led_gpio=None,
+            pin="",
+        )
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+
+        captured: dict = {}
+
+        real_create_dial_display = dd.create_dial_display
+
+        def spy_create_dial_display(*args, **kwargs):
+            instance = real_create_dial_display(*args, **kwargs)
+            captured["display"] = instance
+            return instance
+
+        def fake_touch_event_source(driver, touch_filter, state_machine, **kwargs):
+            captured["touch_kwargs"] = kwargs
+            return MagicMock()
+
+        def fake_setup_button(gpio, on_press, bounce_time=0.1):
+            captured["on_press"] = on_press
+            return MagicMock()
+
+        fake_rpi = MagicMock()
+        fake_rpi.setup_rotary_encoder = MagicMock(return_value=None)
+        fake_rpi.setup_button = fake_setup_button
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "autostream_rpi":
+                return fake_rpi
+            return real_import(name, *args, **kwargs)
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http), \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer"), \
+             patch("dial_touch_drivers.open_driver"), \
+             patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
+             patch.object(dd, "create_dial_display", side_effect=spy_create_dial_display), \
+             patch("threading.Event", _QuickEvent), \
+             patch("builtins.__import__", side_effect=_fake_import):
+            dm.main()
+
+        return captured
+
+    def test_neither_entry_point_blocks_on_display_lock_or_touches_the_network(self):
+        captured = self._run()
+        display = captured["display"]
+        on_mute_toggle = captured["touch_kwargs"]["on_mute_toggle"]
+        on_press = captured["on_press"]
+
+        def _network_call_forbidden(*args, **kwargs):
+            raise AssertionError("a mute press entry point performed network I/O")
+
+        with patch("urllib.request.urlopen", side_effect=_network_call_forbidden):
+            # Hold DialDisplay's own lock in THIS thread. If either entry
+            # point tried to acquire it (directly, or via a display method
+            # that isn't actually lock-free), the call below would block
+            # for the full join timeout instead of returning immediately.
+            held = display._lock.acquire(blocking=False)
+            assert held, "test setup: could not acquire display._lock to hold it"
+            try:
+                for name, entry_point in (
+                    ("touch mute zone", on_mute_toggle),
+                    ("physical button", on_press),
+                ):
+                    done = threading.Event()
+
+                    def run(entry_point=entry_point, done=done):
+                        entry_point()
+                        done.set()
+
+                    t = threading.Thread(target=run, daemon=True)
+                    t.start()
+                    t.join(timeout=1.0)
+                    assert done.is_set(), (
+                        f"{name} entry point blocked while DialDisplay._lock "
+                        "was held — it must never take that lock"
+                    )
+            finally:
+                display._lock.release()
 
 
 # ---------------------------------------------------------------------------

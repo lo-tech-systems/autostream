@@ -778,7 +778,6 @@ _volume_lock = threading.Lock()
 
 # Mute state — protected by _volume_lock
 _mute_snapshot: dict[str, int] = {}   # output_id → pre-mute volume_percent
-_mute_pending: Optional[str] = None   # "mute" | "restore" | None
 
 
 def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> None:
@@ -952,13 +951,15 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/mute — UUID-auth only (no session/CSRF required).
 
-    Toggles mute state across all selected OwnTone outputs.  A snapshot of
-    pre-mute volumes is kept so that the restore action can return each output
-    to its original level.  The pending action is retained across partial
-    failures so that a retry press completes the interrupted operation rather
-    than toggling back too early.
+    Applies an explicit mute/restore action across all selected OwnTone
+    outputs.  The action is dictated by the caller (the dial owns the single
+    fleet-wide toggle decision) — this endpoint performs it and never infers
+    it locally.  A snapshot of pre-mute volumes is kept so that the restore
+    action can return each output to its original level.  Both actions are
+    idempotent: "mute" on an already-silent selection and "restore" on an
+    already-audible one are no-ops.
     """
-    global _mute_snapshot, _mute_pending
+    global _mute_snapshot
 
     dial_id = json_obj.get("dial_id", "")
     if not isinstance(dial_id, str) or not dial_id:
@@ -966,6 +967,11 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
         return
     if not is_dial_authorized(dial_id):
         send_json(handler, 403, {})
+        return
+
+    action = json_obj.get("action")
+    if action not in ("mute", "restore"):
+        send_json(handler, 400, {"ok": False, "error": "invalid_action"})
         return
 
     try:
@@ -987,19 +993,9 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
             send_json(handler, 200, {"ok": False, "error": "no_active_outputs"})
             return
 
-        if _mute_pending is not None:
-            action = _mute_pending
-        elif any(o.volume_percent > 0 for o in selected):
-            action = "mute"
-        else:
-            action = "restore"
-
-        _mute_pending = action
-
         if action == "mute":
             targets = [o for o in selected if o.volume_percent > 0]
             if not targets:
-                _mute_pending = None
                 send_json(handler, 200, {"ok": True, "muted": True})
                 return
 
@@ -1025,7 +1021,6 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
                 send_json(handler, 200, {"ok": True, "muted": True, "partial": True})
                 return
 
-            _mute_pending = None
             send_json(handler, 200, {"ok": True, "muted": True})
 
         else:  # restore
@@ -1058,7 +1053,6 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
 
             if not any_attempted:
                 # All selected outputs are already at non-zero; nothing left to do.
-                _mute_pending = None
                 _mute_snapshot.clear()
                 send_json(handler, 200, {"ok": True, "muted": False})
                 return
@@ -1071,7 +1065,6 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
                 send_json(handler, 200, {"ok": True, "muted": False, "partial": True})
                 return
 
-            _mute_pending = None
             _mute_snapshot.clear()
             send_json(handler, 200, {"ok": True, "muted": False})
 

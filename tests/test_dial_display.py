@@ -309,6 +309,81 @@ class TestTargetSelectionFallback:
         assert kwargs["timeout_seconds"] == dd.DIAL_STATUS_TIMEOUT_SECONDS
 
 
+# ---------------------------------------------------------------------------
+# dial mute belief: free reconciliation from the status poll.
+# master_volume > 0 seen on ANY target during this poll is definitive proof
+# the fleet is audible;
+# master_volume == 0 proves nothing about the rest of the fleet and must
+# never be used to force the belief to muted.
+# ---------------------------------------------------------------------------
+
+class TestMuteBeliefReconciliationFromStatusPoll:
+    def test_positive_master_volume_notifies_the_mute_belief(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None)) as _, \
+             patch("dial_display.note_master_volume_positive") as mock_note:
+            display._poll_once()
+        mock_note.assert_called_once()
+
+    def test_zero_master_volume_does_not_notify_the_mute_belief(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        result = _status_result(track_id=None)
+        result["master_volume"] = 0
+        with patch("dial_display.fetch_target_status", return_value=result), \
+             patch("dial_display.note_master_volume_positive") as mock_note:
+            display._poll_once()
+        mock_note.assert_not_called()
+
+    def test_none_master_volume_does_not_notify_the_mute_belief(self):
+        # selected_output_count == 0 legitimately carries master_volume=None.
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        result = _status_result(track_id=None)
+        result["master_volume"] = None
+        result["selected_output_count"] = 0
+        with patch("dial_display.fetch_target_status", return_value=result), \
+             patch("dial_display.note_master_volume_positive") as mock_note:
+            display._poll_once()
+        mock_note.assert_not_called()
+
+    def test_status_error_response_does_not_notify_the_mute_belief(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(status_error="timeout")), \
+             patch("dial_display.note_master_volume_positive") as mock_note:
+            display._poll_once()
+        mock_note.assert_not_called()
+
+    def test_positive_master_volume_actually_clears_the_real_belief(self):
+        """End-to-end against the real dial_volume module (not a mock of
+        note_master_volume_positive) — proves the two modules are actually
+        wired together, not just that dial_display calls a same-named stub.
+        dial_display imports note_master_volume_positive directly from
+        dial_volume, so setting/reading dv._muted here observes exactly the
+        state that function mutates."""
+        import dial_volume as dv
+        original = dv._muted
+        dv._muted = True  # simulate an existing mute belief
+        try:
+            t = _target()
+            display, fb, gt, mu = _make_display(targets=[t])
+            display.enable()
+            with patch("dial_display.fetch_target_status",
+                       return_value=_status_result(track_id=None)):
+                display._poll_once()
+            assert dv.is_muted() is False
+        finally:
+            dv._muted = original
+
+
 # Artwork URL eligibility and fetching now live in core/autostream_artwork.py,
 # shared with the OwnTone metadata publisher; their tests moved to test_artwork.py.
 
