@@ -573,6 +573,9 @@ class DialHTTPServer:
                 # rotate/bgr can never fail to apply, so this reordering has
                 # no observable effect on them — only a bad screen_type can
                 # trip the failure path below.
+                touch_type_changed = (
+                    new_display.touch_type != cfg.display.touch_type
+                )
                 runtime = dial_server._display_status.update_config(new_cfg.display)
                 # A failed live apply while fitted is requested surfaces as
                 # last_error == "backend_open_failed" (set by DialDisplay's
@@ -641,6 +644,11 @@ class DialHTTPServer:
                     new_display.bgr, new_display.touch_type,
                 )
                 runtime.setdefault('touch_type', '')
+                # fitted/rotate/bgr/screen_type all apply live. touch_type
+                # does not: the touch stack is constructed once at startup
+                # from the persisted controller, so a change to it only
+                # takes effect on the next service start. Say so rather
+                # than reporting a live apply that did not happen.
                 self._send_json(200, {
                     'ok':               True,
                     'screen':           {
@@ -651,7 +659,7 @@ class DialHTTPServer:
                         'touch_type':  new_cfg.display.touch_type,
                     },
                     'runtime':          runtime,
-                    'restart_required': False,
+                    'restart_required': touch_type_changed,
                 })
 
             def _handle_update_check(self) -> None:

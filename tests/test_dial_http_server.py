@@ -1032,6 +1032,37 @@ class _FailingDisplayStatusProvider:
         return self.update_config(DialDisplayConfig())
 
 
+class TestTouchTypeRestartRequired:
+    """touch_type is read once at startup, so changing it cannot apply live
+    — the response must say so instead of claiming a live apply."""
+
+    def _post(self, cfg, screen):
+        return _call_handler("/screen/settings", body={"screen": screen}, cfg=cfg)
+
+    def test_touch_type_change_sets_restart_required(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        r = self._post(cfg, {"fitted": True, "touch_type": "xpt2046"})
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert r["data"]["restart_required"] is True
+
+    def test_unchanged_touch_type_does_not_set_restart_required(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type="xpt2046",
+        ))
+        r = self._post(cfg, {"fitted": True, "touch_type": "xpt2046"})
+        assert r["data"]["restart_required"] is False
+
+    def test_other_screen_changes_still_apply_live(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, rotate=False, touch_type="xpt2046",
+        ))
+        r = self._post(cfg, {"fitted": True, "rotate": True, "touch_type": "xpt2046"})
+        assert r["data"]["restart_required"] is False
+
+
 class TestScreenSettingsApplyThenPersist:
     def test_failed_apply_does_not_persist_and_reports_error(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(

@@ -1186,6 +1186,10 @@ class TestNotifyTouchActivity:
             clock.t += 5.0
             assert display.get_status()["display_idle_seconds"] == 5
             display.notify_touch_activity()
+            # Applied by the repaint thread (which holds the lock), not
+            # inline on the touch thread — pump one repaint to apply it.
+            with display._lock:
+                display._repaint_current_locked()
             assert display._idle_started_at is None
             assert display.get_status()["display_idle_seconds"] == 0
 
@@ -1200,6 +1204,8 @@ class TestNotifyTouchActivity:
         assert display.get_status()["display_sleeping"] is True
 
         display.notify_touch_activity()
+        with display._lock:
+            display._repaint_current_locked()
 
         assert display.get_status()["display_sleeping"] is False
         assert fb.wake_calls == 1
@@ -1267,6 +1273,69 @@ class TestOverlaySetAndRepaintExecutor:
         display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
 
         assert spy_lock.acquire_calls == 0
+
+    def test_no_touch_thread_entry_point_acquires_self_lock(self):
+        """Every method the touch thread calls synchronously must be
+        lock-free — not just set_overlay.
+
+        The touch thread dispatches its callbacks inline, so if any of these
+        took self._lock it would block behind a whole SPI frame push and
+        delay the volume step the user just asked for. Spying on only one
+        entry point previously let notify_touch_activity() take the lock
+        while the suite stayed green.
+        """
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+
+        class _SpyLock:
+            def __init__(self):
+                self._real = threading.Lock()
+                self.acquire_calls = 0
+
+            def acquire(self, *args, **kwargs):
+                self.acquire_calls += 1
+                return self._real.acquire(*args, **kwargs)
+
+            def release(self):
+                return self._real.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc_info):
+                self.release()
+
+        spy_lock = _SpyLock()
+        display._lock = spy_lock
+
+        # Everything dial_main wires to the touch callbacks.
+        display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
+        display.notify_touch_activity()
+        display.set_overlay(OverlayState(visible=False))
+        display.noncomposited_generation()
+
+        assert spy_lock.acquire_calls == 0, (
+            "a touch-thread entry point acquired the display lock"
+        )
+
+    def test_touch_activity_wakes_via_repaint_thread(self):
+        """notify_touch_activity() defers the wake rather than doing it
+        inline, so the wake must still actually happen."""
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._display_sleeping = True
+            display._idle_started_at = 123.0
+
+        display.notify_touch_activity()
+        # Nothing applied yet — the touch thread only set a flag.
+        assert display._display_sleeping is True
+
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._display_sleeping is False
+        assert display._idle_started_at is None
 
     def test_rapid_signals_coalesce_to_one_repaint_of_newest_snapshot(self):
         display, fb, gt, mu = _make_display(targets=[])

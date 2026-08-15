@@ -20,13 +20,10 @@ Two kinds of base image reach compose():
 
 After the base is panel-sized, compose() applies, in order:
   1. overlay — the touch-zone status overlay (mute/down/up glyphs plus a
-     pressed-zone highlight), drawn when OverlayState.visible is true. This
-     step is a DORMANT feature as of this change: nothing in the codebase
-     yet constructs a visible OverlayState, so in practice compose() keeps
-     behaving exactly as before until a future touch-session change starts
-     passing one. overlay=None (the default) or an OverlayState with
-     visible=False are both a strict no-op — same object identity path as
-     before this change, pixel-for-pixel.
+     pressed-zone highlight), drawn when OverlayState.visible is true. The
+     touch session is what makes it visible; overlay=None (the default) or
+     an OverlayState with visible=False are both a strict no-op, pixel for
+     pixel, which is what a dial with no touch panel always sees.
   2. rotate (180 degrees, when configured)
   3. BGR channel swap (when configured)
 

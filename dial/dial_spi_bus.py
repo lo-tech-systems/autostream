@@ -1,11 +1,11 @@
 """dial_spi_bus.py — process-lifetime shared owner of the Raspberry Pi SPI0
 bus.
 
-Today only the display backend (dial_display_adafruit.py) uses SPI0. A
-future touch controller will need to share the same physical bus (clock,
-MOSI, MISO lines) with the display, so bus construction and the discipline
-around using it safely from more than one caller live here rather than
-inside the display backend.
+Both the display backend (dial_display_adafruit.py) and the resistive
+touch driver (dial_touch_drivers.py) drive SPI0, sharing the same physical
+clock, MOSI and MISO lines. Bus construction and the discipline for using it
+safely from more than one caller therefore live here rather than inside
+either of them.
 
 Hardware imports (board, busio) happen ONLY inside get_bus(), never at
 module import time — this module must be importable on a machine with no
@@ -64,11 +64,15 @@ _transaction_lock = threading.Lock()
 _bus = None
 
 
-def _board_pin(board_module, gpio: int, *aliases: str):
+def board_pin(board_module, gpio: int, *aliases: str):
     """Resolve a BCM GPIO number to whichever alias this Blinka release's
-    board module exposes for it. Mirrors dial_display_adafruit.py's helper
-    of the same name — kept as a separate copy here rather than a shared
-    import so this module has no dependency on the display backend."""
+    board module exposes for it.
+
+    Public and shared: the display backend and the touch drivers both need
+    it and both already import this module, so it lives here as the single
+    definition rather than being copied into each of them where the copies
+    could drift apart.
+    """
     names = (f"GPIO{gpio}", f"D{gpio}", *aliases)
     for name in names:
         if hasattr(board_module, name):
@@ -103,9 +107,9 @@ def get_bus():
         import busio
 
         bus = busio.SPI(
-            clock=_board_pin(board, 11, "SCLK"),
-            MOSI=_board_pin(board, 10, "MOSI"),
-            MISO=_board_pin(board, 9, "MISO"),
+            clock=board_pin(board, 11, "SCLK"),
+            MOSI=board_pin(board, 10, "MOSI"),
+            MISO=board_pin(board, 9, "MISO"),
         )
         _bus = bus
     return _bus

@@ -249,6 +249,9 @@ class DialDisplay:
         self._overlay_snapshot_lock = threading.Lock()
         self._overlay_snapshot = OverlayState()
         self._overlay_signal = threading.Event()
+        # Set by notify_touch_activity() (touch thread, lock-free); consumed
+        # by the repaint thread under self._lock.
+        self._touch_activity_pending = False
         self._repaint_thread: threading.Thread | None = None
         self._repaint_stop_event = threading.Event()
         # The last base image handed to _display_locked (pre-overlay,
@@ -423,11 +426,26 @@ class DialDisplay:
         overlay for longer than DISPLAY_IDLE_SLEEP_SECONDS while nothing
         plays will still eventually see the display sleep underneath them —
         touch resets idle, it does not disable sleep.
+
+        Takes NO lock: this runs on the touch thread, which must never block
+        on self._lock (it can be held across a whole SPI frame push, which
+        would stall the very volume step the user is asking for). The actual
+        idle reset and wake are applied by the repaint thread, which already
+        holds self._lock when it composes — see _apply_touch_activity_locked.
+        Setting the flag and signalling are both single atomic operations.
         """
-        with self._lock:
-            self._idle_started_at = None
-            if self._display_sleeping:
-                self._wake_locked()
+        self._touch_activity_pending = True
+        self._overlay_signal.set()
+
+    def _apply_touch_activity_locked(self) -> None:
+        """Apply a pending touch-activity notification. Caller holds
+        self._lock; runs on the repaint thread, not the touch thread."""
+        if not self._touch_activity_pending:
+            return
+        self._touch_activity_pending = False
+        self._idle_started_at = None
+        if self._display_sleeping:
+            self._wake_locked()
 
     def set_overlay(self, state: OverlayState) -> None:
         """Publish a new touch-overlay snapshot and signal the repaint
@@ -748,6 +766,9 @@ class DialDisplay:
         itself changed (no new poll-driven frame). No-op if the backend is
         closed or nothing has ever been displayed yet.
         """
+        # Wake first if touch asked for it, so the backlight is on before
+        # the overlay frame is pushed rather than one repaint later.
+        self._apply_touch_activity_locked()
         if not (self._backend_open and self._backend is not None):
             return
         if self._current_base_image is None:

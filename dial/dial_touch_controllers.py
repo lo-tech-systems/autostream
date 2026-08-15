@@ -9,11 +9,10 @@ docstring for the full argument — the same discipline applies here). A
 hardware import at this level would let a missing/broken touch library crash
 the whole dial service, including volume control.
 
-This WP is DORMANT: nothing constructs a controller from this table yet, no
-config field references it, and dial_main.py does not wire it in. Resolving
-a driver_tag to an actual driver class happens lazily inside
+Resolving a driver_tag to an actual driver class happens lazily inside
 dial_touch_drivers.py's open(), exactly as dial_display_adafruit.py resolves
-DisplayProfile.driver_tag.
+DisplayProfile.driver_tag — so this table stays free of hardware even though
+dial_main.py selects a controller from it at startup.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """

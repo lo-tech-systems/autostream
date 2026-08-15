@@ -50,14 +50,9 @@ class UnknownTouchDriverError(RuntimeError):
 
 
 def _board_pin(board_module, gpio: int, *aliases: str):
-    names = (f"GPIO{gpio}", f"D{gpio}", *aliases)
-    for name in names:
-        if hasattr(board_module, name):
-            return getattr(board_module, name)
-    raise AttributeError(
-        f"board module has no supported alias for GPIO{gpio} "
-        f"(tried {', '.join(names)})"
-    )
+    """Delegates to dial_spi_bus.board_pin — one definition, shared by
+    every module that has to resolve a BCM number to a board alias."""
+    return dial_spi_bus.board_pin(board_module, gpio, *aliases)
 
 
 class XPT2046Driver:
