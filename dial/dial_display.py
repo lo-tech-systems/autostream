@@ -23,13 +23,11 @@ import threading
 import time
 from dataclasses import dataclass
 
-from PIL import Image
-
+from dial_display_compositor import DialDisplayCompositor
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
     decode_artwork,
     load_logo,
-    transform_artwork_for_panel,
 )
 from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
@@ -203,6 +201,11 @@ class DialDisplay:
         # coupling; create_dial_display() supplies the real profile-driven
         # resolver, and tests that never swap can leave this unset.
         self._backend_factory_builder = backend_factory_builder
+        # Pixel work (artwork fit, rotate, BGR) lives entirely in the
+        # compositor; this manager does I/O (fetch, decode, load_logo) and
+        # hands finished/raw bases to it. The compositor is stateless — one
+        # shared instance is safe.
+        self._compositor = DialDisplayCompositor()
 
         self._backend: DisplayBackend | None = None
         self._backend_name = "noop"
@@ -510,35 +513,28 @@ class DialDisplay:
             return backend.width, backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
-    def _apply_frame_transform(self, image):
-        """Apply configured rotate/BGR transforms for display hand-off.
-
-        Applied here, at the single point every frame reaches the backend,
-        so self._current_rendered_image stays untransformed in the cache and
-        a rotate/bgr toggle can re-display it under the new settings without
-        re-fetching or re-transforming artwork. Rotate (180°) is applied
-        before the BGR channel swap; the order is arbitrary since the two
-        operations commute, but is kept consistent here.
-
-        This seam is bypassed by the backend-internal clear()/sleep() fills,
-        which paint directly against the backend rather than going through
-        _display_locked(). sleep()'s black fill is swap-symmetric so that is
-        harmless; clear()'s background colour is not — an accepted cosmetic
-        exception, limited to the fallback background and never artwork.
-        """
-        if image is None:
-            return image
-        if self._config.rotate:
-            image = image.transpose(Image.ROTATE_180)
-        if self._config.bgr:
-            image = Image.merge("RGB", image.split()[::-1])
-        return image
-
     def _display_locked(self, image) -> None:
+        """Compose and write *image* to the backend — the single hand-off
+        point every frame reaches on its way to hardware.
+
+        *image* is treated as an already panel-sized base (logo, cached
+        artwork, or a freshly artwork-fitted frame — see _show_artwork) — the
+        compositor here only applies rotate/BGR, so self._current_rendered_
+        image stays untransformed in the cache and a rotate/bgr toggle can
+        re-display it under the new settings without re-fetching or
+        re-transforming artwork.
+        """
         if not (self._backend_open and self._backend is not None):
             return
+        width, height = self._active_panel_dims()
         try:
-            self._backend.display(self._apply_frame_transform(image))
+            composed = self._compositor.compose(
+                image, width, height,
+                rotate=self._config.rotate,
+                bgr=self._config.bgr,
+                is_artwork=False,
+            )
+            self._backend.display(composed)
         except Exception as e:
             self._record_error_locked("display_write_failed")
             self._log_limiter.log(
@@ -709,7 +705,14 @@ class DialDisplay:
             return
 
         width, height = self._active_panel_dims()
-        transformed = transform_artwork_for_panel(image, width, height)
+        # rotate/bgr are deferred to _display_locked() below (and to any
+        # later cached-reuse push) — this call only produces the panel-
+        # fitted, pre-rotate/BGR base that gets cached as
+        # self._current_rendered_image.
+        transformed = self._compositor.compose(
+            image, width, height,
+            rotate=False, bgr=False, is_artwork=True,
+        )
 
         with self._lock:
             if not (self._backend_open and self._backend is not None):

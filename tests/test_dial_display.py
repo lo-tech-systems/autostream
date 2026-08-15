@@ -326,7 +326,7 @@ class TestArtworkRendering:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")) as mock_fetch_art, \
              patch("dial_display.decode_artwork", return_value=fake_image) as mock_decode, \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
             display._poll_once()
 
@@ -509,7 +509,7 @@ class TestIdleSleep:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()  # showing artwork
         assert display.get_status()["showing"] == "artwork"
 
@@ -526,7 +526,7 @@ class TestIdleSleep:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()  # wakes and repaints same artwork url
 
         assert fb.wake_calls == 1
@@ -743,7 +743,7 @@ class TestScreenTypeSwap:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
         assert display.get_status()["showing"] == "artwork"
         assert display._current_rendered_image is not None
@@ -775,7 +775,7 @@ class TestScreenTypeSwap:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
         fb_new.displayed.clear()
 
@@ -871,7 +871,7 @@ class TestRotation:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
         assert display.get_status()["showing"] == "artwork"
         fb.displayed.clear()
@@ -896,7 +896,7 @@ class TestRotation:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
 
         assert list(display._current_rendered_image.getdata()) == list(fake_image.getdata())
@@ -951,7 +951,7 @@ class TestBgr:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
         fb.displayed.clear()
 
@@ -973,7 +973,7 @@ class TestBgr:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
-             patch("dial_display.transform_artwork_for_panel", return_value=fake_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
 
         assert list(display._current_rendered_image.getdata()) == list(fake_image.getdata())
@@ -1007,7 +1007,7 @@ class TestSuperseededFrameRaceGuard:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))), \
-             patch("dial_display.transform_artwork_for_panel", return_value=stale_sized_image):
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=stale_sized_image):
             display._poll_once()
 
         assert fb.displayed == []
