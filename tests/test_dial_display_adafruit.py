@@ -22,6 +22,19 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
+# Import numpy once here, at module load, BEFORE any patch.dict(sys.modules,
+# ...) block runs. Those blocks restore sys.modules to its prior contents on
+# exit, so if the first numpy import in the process happened inside one (via
+# a backend display() call reaching _pack_rgb565), numpy would be evicted on
+# exit and the next import would try to re-initialise its C extension —
+# failing with "cannot load module more than once per process" and taking
+# every later numpy-dependent test with it. Seeding it here keeps it present
+# for the whole session; None simply means numpy is not installed.
+try:  # noqa: SIM105
+    import numpy as _numpy_preloaded  # noqa: F401
+except ImportError:
+    _numpy_preloaded = None
+
 import dial_display_adafruit as dda
 import dial_spi_bus
 from dial_display_adafruit import AdafruitDisplayBackend, AdafruitST7735SBackend
@@ -123,6 +136,35 @@ def _install_fake_hardware_modules_with_alt_board_names():
     return modules, spi_ctor, dio_ctor, st7735_ctor, fake_display
 
 
+def _pushed_frame(fake_display, width, height):
+    """Return the frame the backend actually pushed, as a PIL image.
+
+    The backend has two equivalent push paths: when numpy is available it
+    packs RGB565 itself and writes through the driver's _block() window
+    primitive; otherwise it hands a PIL image to the driver's image().
+    These tests care about the PIXELS that reached the panel, not which
+    path carried them, so resolve whichever was used. Without this a test
+    silently passes on a machine with no numpy and fails on one with it.
+    """
+    if fake_display._block.call_args is not None:
+        args, _ = fake_display._block.call_args
+        x0, y0, x1, y1, packed = args
+        assert (x0, y0, x1, y1) == (0, 0, width - 1, height - 1)
+        img = Image.new("RGB", (width, height))
+        px = img.load()
+        for i in range(width * height):
+            hi, lo = packed[2 * i], packed[2 * i + 1]
+            v = (hi << 8) | lo
+            # Expand 565 back to 888 the same way the panel would.
+            r = ((v >> 11) & 0x1F) << 3
+            g = ((v >> 5) & 0x3F) << 2
+            b = (v & 0x1F) << 3
+            px[i % width, i // width] = (r, g, b)
+        return img
+    args, _ = fake_display.image.call_args
+    return args[0]
+
+
 class TestMockedHardwareBackend:
     def test_open_constructs_st7735s_with_fixed_profile(self):
         modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
@@ -205,9 +247,11 @@ class TestMockedHardwareBackend:
             backend = AdafruitST7735SBackend()
             backend.open()
             backend.clear()
-        args, kwargs = fake_display.image.call_args
-        assert args[0].size == (160, 128)
-        assert args[0].getpixel((0, 0)) == (14, 40, 65)
+        frame = _pushed_frame(fake_display, 160, 128)
+        assert frame.size == (160, 128)
+        # 565 quantisation keeps each channel within one step of the source.
+        r, g, b = frame.getpixel((0, 0))
+        assert abs(r - 14) <= 8 and abs(g - 40) <= 4 and abs(b - 65) <= 8
 
     def test_display_adapts_portrait_image_to_landscape_panel(self):
         modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
@@ -219,10 +263,10 @@ class TestMockedHardwareBackend:
             backend.open()
             backend.display(source)
 
-        args, kwargs = fake_display.image.call_args
-        out = args[0]
+        out = _pushed_frame(fake_display, 160, 128)
         assert out.size == (160, 128)
-        assert out.getpixel((0, 0)) == (14, 40, 65)
+        r, g, b = out.getpixel((0, 0))
+        assert abs(r - 14) <= 8 and abs(g - 40) <= 4 and abs(b - 65) <= 8
 
     def test_display_before_open_is_noop(self):
         backend = AdafruitST7735SBackend()
@@ -275,9 +319,9 @@ class TestMockedHardwareBackend:
             backend.sleep()
 
         assert backlight.value is False
-        args, kwargs = fake_display.image.call_args
-        frame = args[0]
+        frame = _pushed_frame(fake_display, 160, 128)
         assert frame.size == (160, 128)
+        # Black survives 565 exactly, so this stays an equality check.
         assert frame.getpixel((0, 0)) == (0, 0, 0)
         assert frame.getpixel((0, 0)) != dda._BACKGROUND_RGB
 
@@ -588,22 +632,20 @@ class TestPackRgb565:
         assert len(packed) == 160 * 128 * 2
 
     def test_returns_none_and_logs_once_when_numpy_unavailable(self, caplog, monkeypatch):
-        # Simulate numpy being absent via the import hook rather than
-        # poisoning sys.modules["numpy"] — numpy's C extension cannot be
-        # safely re-initialised once evicted from sys.modules ("cannot load
-        # module more than once per process"), which would corrupt every
-        # later test in this process that needs real numpy.
-        import builtins
+        # Simulate numpy being absent by parking None in sys.modules for the
+        # duration: `import numpy` then raises ImportError, which is exactly
+        # the branch under test.
+        #
+        # Do NOT hook builtins.__import__ for this — numpy loads its own C
+        # submodules lazily, so a global hook fires during numpy's internals
+        # too and leaves it half-initialised, which then breaks every later
+        # test in the process with "cannot load module more than once per
+        # process". Parking None keeps the real module object alive and
+        # simply restores the reference afterwards, so nothing is
+        # re-initialised.
         import logging as _logging
 
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "numpy":
-                raise ImportError("simulated: numpy not installed")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+        monkeypatch.setitem(sys.modules, "numpy", None)
 
         image = Image.new("RGB", (4, 4), (1, 2, 3))
         with caplog.at_level(_logging.WARNING):

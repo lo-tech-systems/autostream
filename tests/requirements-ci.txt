@@ -11,3 +11,9 @@ flask
 requests
 pytest-timeout
 pillow
+# numpy is required on the dial itself (the display driver falls back to a
+# per-pixel Python frame conversion without it, which is unusably slow), and
+# the backend packs RGB565 through it. Listed here so CI exercises that fast
+# path rather than silently skipping it — the tests that verify the packing
+# is byte-exact importorskip on numpy, so without this they never run.
+numpy
