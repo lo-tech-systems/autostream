@@ -481,6 +481,9 @@ def _dial_card_html(
               {fw_update_btn}
               <button type="button" class="pill-btn small" style="width:100%;margin-top:{pin_btn_margin_top};"
                       data-dial-action="recover-pin">Reset Lost PIN</button>
+              <p class="dial-pin-no-confirm-msg" style="display:none;margin-top:0.5rem;font-size:0.85em;color:var(--color-text-secondary,#888);">
+                This dial has no rotary control, button or touch panel, so a PIN could not be reset if forgotten.
+              </p>
             </div>
             <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
           </div>
@@ -1656,7 +1659,7 @@ def send_setup_page(
     <div class="hdr modal-hdr" id="dialPinRecoveryModalTitle">Reset Dial PIN</div>
     <div class="bd modal-bd">
       <div id="dialPinRecoveryWaitPanel">
-        <p id="dialPinRecoveryWaitMsg">To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm access by turning the Dial clockwise.</p>
+        <p id="dialPinRecoveryWaitMsg">To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.</p>
       </div>
       <div id="dialPinRecoverySetPanel" style="display:none;">
         <p>Enter a new Dial PIN.</p>
@@ -2999,6 +3002,7 @@ def send_setup_page(
       <script>
         // ── Dial management ────────────────────────────────────────────────
         var _dialPinRecoveryTimer = null;
+        var _dialPinRecoverySeenActive = false;
         var _dialPinModalCard = null;
         var _dialPinModalMode = null; // 'change' | 'unlock'
         var _dialPinRecoveryModalCard = null;
@@ -3095,10 +3099,27 @@ def send_setup_page(
             _dialLockSection(card);
           }}
           var hasPin = card.dataset.pinSet === 'true';
+          var canConfirm = card.dataset.canConfirm !== 'false'; // default true when unknown
           var pinBtn = card.querySelector('[data-dial-action="change-pin"]');
-          if (pinBtn) pinBtn.textContent = hasPin ? 'Change Dial PIN' : 'Set Dial PIN';
           var recoverBtn = card.querySelector('[data-dial-action="recover-pin"]');
-          if (recoverBtn) recoverBtn.disabled = !hasPin;
+          var noConfirmMsg = card.querySelector('.dial-pin-no-confirm-msg');
+          if (pinBtn) pinBtn.textContent = hasPin ? 'Change Dial PIN' : 'Set Dial PIN';
+          // A dial that can never confirm presence can never complete recovery,
+          // so it must not be offered a lock it has no key for: block setting a
+          // PIN in the first place. If a PIN was already set before this became
+          // true (an already-impossible situation), don't strand the user by
+          // hiding everything — keep the reset button visible and explain.
+          if (!canConfirm && !hasPin) {{
+            if (pinBtn) pinBtn.style.display = 'none';
+            if (recoverBtn) recoverBtn.style.display = 'none';
+          }} else {{
+            if (pinBtn) pinBtn.style.display = '';
+            if (recoverBtn) {{
+              recoverBtn.style.display = '';
+              recoverBtn.disabled = !hasPin;
+            }}
+          }}
+          if (noConfirmMsg) noConfirmMsg.style.display = canConfirm ? 'none' : '';
         }}
 
         function refreshDialsCardSub() {{
@@ -3272,6 +3293,7 @@ def send_setup_page(
             if (autoEl && j.auto_update != null) autoEl.checked = !!j.auto_update;
             if (chanEl && j.update_channel != null) chanEl.checked = (j.update_channel === 'dev');
             card.dataset.pinSet = j.pin_set ? 'true' : 'false';
+            card.dataset.canConfirm = j.can_confirm_presence === false ? 'false' : 'true';
             _updateDialLockVisibility(card);
           }} catch(e) {{}}
         }}
@@ -3556,6 +3578,29 @@ def send_setup_page(
           }}
         }}
 
+        function _dialFormatRemaining(ms) {{
+          var totalSec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+          var m = Math.floor(totalSec / 60);
+          var s = totalSec % 60;
+          return m + ':' + (s < 10 ? '0' : '') + s + ' remaining';
+        }}
+
+        function _dialPinRecoveryExpired() {{
+          if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
+          document.getElementById('dialPinRecoveryWaitMsg').textContent =
+            'The recovery window closed without confirmation. Power-cycle the Dial to try again.';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Window closed'; }}
+        }}
+
+        function _dialPinRecoveryCannotConfirm() {{
+          if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
+          document.getElementById('dialPinRecoveryWaitMsg').textContent =
+            'This dial has no rotary control, button or touch panel, so it cannot confirm you are there. PIN recovery cannot complete.';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Cannot confirm presence'; }}
+        }}
+
         function openDialPinRecoveryModal(card) {{
           _dialPinRecoveryModalCard = card;
           var uuid = dialUUID(card);
@@ -3565,7 +3610,7 @@ def send_setup_page(
           document.getElementById('dialPinRecoveryWaitPanel').style.display = '';
           document.getElementById('dialPinRecoverySetPanel').style.display = 'none';
           document.getElementById('dialPinRecoveryWaitMsg').textContent =
-            'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm access by turning the Dial clockwise.';
+            'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.';
           var newInp = document.getElementById('dialPinRecoveryNewInput');
           var confInp = document.getElementById('dialPinRecoveryConfirmInput');
           var errEl = document.getElementById('dialPinRecoveryError');
@@ -3577,6 +3622,7 @@ def send_setup_page(
           if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial…'; }}
           if (cancelBtn) cancelBtn.disabled = false;
           modal.classList.add('show');
+          _dialPinRecoverySeenActive = false;
           if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
           _dialPinRecoveryTimer = setInterval(async function() {{
             try {{
@@ -3586,12 +3632,28 @@ def send_setup_page(
               var pollResult = await _parseDialResponse(r);
               if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery — wait silently
               var body = pollResult.body || {{}};
+              if (body.can_confirm_presence === false) {{
+                _dialPinRecoveryCannotConfirm();
+                return;
+              }}
               if (body.volume_confirmed === true) {{
                 clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null;
                 _dialPinRecoveryTransitionToSet();
-              }} else if (body.active === true) {{
+                return;
+              }}
+              var remainingMs = body.recovery_remaining_ms;
+              var stillActive = body.active === true &&
+                !(typeof remainingMs === 'number' && remainingMs <= 0);
+              if (stillActive) {{
+                _dialPinRecoverySeenActive = true;
                 document.getElementById('dialPinRecoveryWaitMsg').textContent =
-                  'Turn the Dial clockwise once to confirm access.';
+                  "Touch the dial's screen, twist its rotary control, or press its button to confirm you are there. (" +
+                  _dialFormatRemaining(remainingMs) + ')';
+              }} else if (_dialPinRecoverySeenActive) {{
+                // Window was active and is no longer — it expired rather than
+                // never having started, so tell the user instead of leaving
+                // them on "Waiting for Dial…" forever.
+                _dialPinRecoveryExpired();
               }}
             }} catch(e) {{}}
           }}, 2000);

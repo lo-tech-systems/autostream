@@ -440,6 +440,58 @@ class TestProxyGetContracts:
         assert data["name"] == "Test"
         assert data["step_percent"] == 3
 
+    # can_confirm_presence on /configure must reach the browser verbatim —
+    # the webui gates the PIN controls on it and the proxy is generic
+    # pass-through, so this is coverage rather than a proxy code change.
+    def test_configure_can_confirm_presence_passed_through(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"pin_set":true,"can_confirm_presence":false}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/configure")
+        code, data = sent[0]
+        assert code == 200
+        assert data["can_confirm_presence"] is False
+        assert data["pin_set"] is True
+
+    def test_configure_can_confirm_presence_true_passed_through(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"pin_set":false,"can_confirm_presence":true}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/configure")
+        code, data = sent[0]
+        assert code == 200
+        assert data["can_confirm_presence"] is True
+
+    # can_confirm_presence and recovery_remaining_ms on the pin_recovery
+    # status poll must also reach the browser verbatim — the recovery modal
+    # uses both to show a countdown and to detect an expired window.
+    def test_pin_recovery_status_remaining_ms_and_can_confirm_passed_through(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"active":true,"volume_confirmed":false,'
+                 b'"can_confirm_presence":true,"recovery_remaining_ms":512000}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/pin_recovery/status")
+        code, data = sent[0]
+        assert code == 200
+        assert data["active"] is True
+        assert data["can_confirm_presence"] is True
+        assert data["recovery_remaining_ms"] == 512000
+
+    def test_pin_recovery_status_can_confirm_presence_false_passed_through(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"active":true,"volume_confirmed":false,'
+                 b'"can_confirm_presence":false,"recovery_remaining_ms":0}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/pin_recovery/status")
+        code, data = sent[0]
+        assert code == 200
+        assert data["can_confirm_presence"] is False
+        assert data["recovery_remaining_ms"] == 0
+
     # 16. connection closes on success and every failure path (tested in TestProxyCallConnectionClosure)
 
     def test_correct_path_forwarded(self):

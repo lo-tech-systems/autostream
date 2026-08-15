@@ -1359,3 +1359,133 @@ class TestDialCardHtmlStructure:
             fw_version="1.0.0", needs_update=True,
         )
         assert "Update firmware" not in result
+
+
+# ---------------------------------------------------------------------------
+# Lost-PIN recovery UX: wording covers every input type, PIN controls are
+# gated on can_confirm_presence, and the recovery modal detects an expired
+# window instead of waiting forever.
+# ---------------------------------------------------------------------------
+
+class TestDialPinRecoveryWording:
+    """The recovery instructions must not assume a rotary control exists."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_old_clockwise_instruction_removed(self):
+        src = self._src()
+        assert "turning the Dial clockwise" not in src
+        assert "Turn the Dial clockwise" not in src
+
+    def test_initial_instruction_mentions_power_cycle_and_window(self):
+        src = self._src()
+        assert "power-cycling the Dial now" in src
+        assert "10 minutes" in src
+
+    def test_active_window_instruction_covers_all_input_types(self):
+        src = self._src()
+        assert "touch" in src.lower()
+        assert "rotary" in src.lower()
+        assert "button" in src.lower()
+        # The three must appear together in one instruction, not scattered.
+        idx = src.find("Touch the dial's screen")
+        assert idx >= 0, "new all-inputs instruction not found"
+        window = src[idx:idx + 200]
+        assert "rotary" in window.lower()
+        assert "button" in window.lower()
+
+
+class TestDialPinControlsGatedOnCanConfirmPresence:
+    """A dial that can never confirm presence must not be offered a PIN lock."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_dial_load_config_reads_can_confirm_presence(self):
+        src = self._src()
+        start = src.find("async function dialLoadConfig")
+        assert start >= 0
+        end = src.find("async function dialLoadScreenSettings", start)
+        body = src[start:end] if end > 0 else src[start:start + 2000]
+        assert "can_confirm_presence" in body
+        assert "canConfirm" in body
+
+    def test_lock_visibility_gates_pin_controls_on_can_confirm(self):
+        src = self._src()
+        start = src.find("function _updateDialLockVisibility")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        body = src[start:end] if end > 0 else src[start:start + 2000]
+        assert "canConfirm" in body
+        assert "change-pin" in body
+        assert "recover-pin" in body
+        assert "noConfirmMsg" in body
+
+    def test_explanatory_message_element_in_card_html(self):
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert "dial-pin-no-confirm-msg" in result
+        assert "could not be reset" in result
+
+    def test_explanatory_message_toggled_by_can_confirm(self):
+        src = self._src()
+        start = src.find("function _updateDialLockVisibility")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        body = src[start:end] if end > 0 else src[start:start + 2000]
+        assert "noConfirmMsg.style.display" in body
+
+
+class TestDialPinRecoveryCountdownAndExpiry:
+    """The recovery modal must show a countdown and detect an expired window
+    instead of leaving the user on 'Waiting for Dial…' forever."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_countdown_format_helper_present(self):
+        src = self._src()
+        assert "_dialFormatRemaining" in src
+
+    def test_countdown_helper_used_during_polling(self):
+        src = self._src()
+        start = src.find("function openDialPinRecoveryModal")
+        assert start >= 0
+        end = src.find("\n        function _dialPinRecoveryTransitionToSet", start)
+        body = src[start:end] if end > 0 else src[start:start + 3000]
+        assert "_dialFormatRemaining" in body
+        assert "recovery_remaining_ms" in body
+
+    def test_seen_active_flag_reset_on_open(self):
+        src = self._src()
+        assert "_dialPinRecoverySeenActive" in src
+        start = src.find("function openDialPinRecoveryModal")
+        assert start >= 0
+        end = src.find("\n        function _dialPinRecoveryTransitionToSet", start)
+        body = src[start:end] if end > 0 else src[start:start + 3000]
+        assert "_dialPinRecoverySeenActive = false" in body
+        assert "_dialPinRecoverySeenActive = true" in body
+
+    def test_expiry_stops_polling_and_shows_closed_message(self):
+        src = self._src()
+        start = src.find("function _dialPinRecoveryExpired")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        body = src[start:end] if end > 0 else src[start:start + 1000]
+        assert "clearInterval" in body
+        assert "window closed" in body.lower()
+
+    def test_can_confirm_presence_false_short_circuits_wait(self):
+        src = self._src()
+        start = src.find("function _dialPinRecoveryCannotConfirm")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        body = src[start:end] if end > 0 else src[start:start + 1000]
+        assert "clearInterval" in body
+        start2 = src.find("function openDialPinRecoveryModal")
+        end2 = src.find("\n        function _dialPinRecoveryTransitionToSet", start2)
+        poll_body = src[start2:end2] if end2 > 0 else src[start2:start2 + 3000]
+        assert "can_confirm_presence === false" in poll_body
+        assert "_dialPinRecoveryCannotConfirm" in poll_body
