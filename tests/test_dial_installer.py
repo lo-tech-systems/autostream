@@ -599,11 +599,11 @@ class TestDisplayHardwareDeployment:
         assert "WARNING" in fn_text
 
     def test_display_hardware_setup_called_unconditionally(self):
-        """install_display_hardware_packages/add_spi_group/enable_spi0 must run
-        on both fresh installs and --update — same guard-balance check as
-        install_recovery_packages()."""
+        """install_display_hardware_packages/add_spi_group/enable_spi0/enable_i2c
+        must run on both fresh installs and --update — same guard-balance check
+        as install_recovery_packages()."""
         content = self._installer_content()
-        for call in ("install_display_hardware_packages", "add_spi_group", "enable_spi0"):
+        for call in ("install_display_hardware_packages", "add_spi_group", "enable_spi0", "enable_i2c"):
             call_pos = content.find(call)
             assert call_pos != -1, f"{call} not called in autostream_dial_install.sh"
             before = content[:call_pos]
@@ -613,6 +613,77 @@ class TestDisplayHardwareDeployment:
                 f"{call}() is called inside 'if ! $UPDATE' — "
                 "it must be outside so it runs on --update too."
             )
+
+    def test_install_display_hardware_packages_installs_smbus(self):
+        """python3-smbus must be installed for the FT6206/FT6236 I2C touch backend."""
+        content = self._helpers_content()
+        idx = content.find("install_display_hardware_packages()")
+        assert idx != -1
+        fn_text = content[idx:idx + 400]
+        assert "python3-smbus" in fn_text
+
+    def test_enable_i2c_defined_in_helpers(self):
+        """enable_i2c() must be defined in helpers.sh."""
+        content = self._helpers_content()
+        assert "enable_i2c()" in content, (
+            "enable_i2c() not found in installer/dial/helpers.sh"
+        )
+
+    def test_enable_i2c_uses_raspi_config_nonint(self):
+        content = self._helpers_content()
+        idx = content.find("enable_i2c()")
+        assert idx != -1
+        fn_text = content[idx:idx + 700]
+        assert "raspi-config" in fn_text
+        assert "do_i2c 0" in fn_text
+
+    def test_enable_i2c_warns_when_raspi_config_missing(self):
+        content = self._helpers_content()
+        idx = content.find("enable_i2c()")
+        assert idx != -1
+        fn_text = content[idx:idx + 700]
+        assert "WARNING" in fn_text
+
+    def test_enable_i2c_is_non_fatal(self):
+        """enable_i2c() must warn rather than abort, mirroring enable_spi0()'s
+        non-fatal error handling — a dial with no touch panel must still
+        install cleanly."""
+        content = self._helpers_content()
+        idx = content.find("enable_i2c()")
+        assert idx != -1
+        end = content.find("\n}", idx)
+        fn_text = content[idx:end + 2]
+        assert "exit" not in fn_text, (
+            "enable_i2c() must not exit/abort the installer on failure"
+        )
+        assert "|| echo" in fn_text or ("||" in fn_text and "WARNING" in fn_text), (
+            "enable_i2c() must warn (not abort) when raspi-config fails, "
+            "matching enable_spi0()'s || echo WARNING pattern"
+        )
+
+    def test_enable_i2c_called_unconditionally_not_in_conditional(self):
+        """enable_i2c must be called unconditionally, alongside enable_spi0,
+        not guarded by any if/conditional in the installer."""
+        content = self._installer_content()
+        call_pos = content.find("enable_i2c")
+        assert call_pos != -1, "enable_i2c not called in autostream_dial_install.sh"
+        before = content[:call_pos]
+        open_update_guards = before.count("if ! $UPDATE")
+        fi_count = before.count("fi")
+        assert fi_count >= open_update_guards, (
+            "enable_i2c() is called inside 'if ! $UPDATE' — "
+            "it must be outside so it runs on --update too."
+        )
+        # Must appear on its own line, not on the far side of an inline
+        # if/&&/|| conditional guarding the call itself.
+        line = next(
+            (ln for ln in content.splitlines() if ln.strip() == "enable_i2c"),
+            None,
+        )
+        assert line is not None, (
+            "enable_i2c must be called unconditionally on its own line, "
+            "not wrapped in an inline conditional"
+        )
 
     def test_gpio_group_membership_preserved(self):
         """Existing add_gpio_group() call must remain — WP-7 adds spi group

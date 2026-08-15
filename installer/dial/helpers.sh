@@ -82,9 +82,12 @@ add_gpio_group() {
 
 install_display_hardware_packages() {
     # python3-spidev is apt-provided; the SPI display backend needs SPI0 access.
+    # python3-smbus is apt-provided; a capacitive (I2C) touch panel backend
+    # (e.g. FT6206/FT6236) needs it. Both are installed here so the venv sees
+    # them via --system-site-packages.
     # Called unconditionally on fresh install and --update so existing dials
-    # gain SPI support without requiring a re-image.
-    apt-get install -y --no-install-recommends python3-spidev
+    # gain SPI/I2C support without requiring a re-image.
+    apt-get install -y --no-install-recommends python3-spidev python3-smbus
 }
 
 add_spi_group() {
@@ -102,6 +105,22 @@ enable_spi0() {
             || echo "WARNING: raspi-config could not enable SPI0 — enable it manually if a screen is fitted" >&2
     else
         echo "WARNING: raspi-config not found — enable Raspberry Pi SPI0 manually if a screen is fitted" >&2
+    fi
+}
+
+enable_i2c() {
+    # Enables Raspberry Pi I2C for a future capacitive (FT6206/FT6236) touch
+    # panel backend. Called unconditionally: enabling I2C with nothing
+    # attached costs nothing — the bus idles on the fixed pull-ups, no
+    # polling, no interrupts, no measurable boot cost — and GPIO2/3 are not
+    # used by the dial. This avoids re-running the installer when a
+    # capacitive panel is later fitted. Non-fatal on non-Pi platforms or
+    # when raspi-config is unavailable; installs must keep working regardless.
+    if command -v raspi-config >/dev/null 2>&1; then
+        raspi-config nonint do_i2c 0 \
+            || echo "WARNING: raspi-config could not enable I2C — enable it manually if a capacitive touch panel is fitted" >&2
+    else
+        echo "WARNING: raspi-config not found — enable Raspberry Pi I2C manually if a capacitive touch panel is fitted" >&2
     fi
 }
 

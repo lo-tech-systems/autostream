@@ -141,10 +141,13 @@ install_image_packages
 
 # ---- Display hardware (fresh install and --update) ---------------------------
 # SPI enablement and group membership may require a reboot or service restart
-# before hardware access works.
+# before hardware access works. I2C is enabled unconditionally alongside SPI
+# so a capacitive touch panel can be fitted later without re-running the
+# installer — see enable_i2c()'s comment for why this is free when idle.
 install_display_hardware_packages
 add_spi_group
 enable_spi0
+enable_i2c
 
 # ---- Deploy images ----------------------------------------------------------
 mkdir -p /opt/autostream/images
