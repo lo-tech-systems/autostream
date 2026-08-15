@@ -105,13 +105,21 @@ starts (when a PIN is set). To recover:
 1. **Restart the dial service** (or reboot / power-cycle the Pi) to open a
    fresh 10-minute window.
 2. On the dial's card in the **Dials** panel, click **Reset Lost PIN**.
-3. **Turn the dial clockwise** at least once. This physically confirms your
-   presence at the device. Playback is NOT required. The dialog polls the
-   dial and unlocks the new-PIN entry once the turn is detected.
+3. **Confirm you are at the device** with any physical input the dial has —
+   touch the screen, twist the rotary control, or press the button. Whichever
+   of these the dial actually has is enough; you don't need all of them, and
+   playback is NOT required. The dialog polls the dial and unlocks the
+   new-PIN entry as soon as one of them is detected.
 4. Enter and confirm your new PIN.
 
-The recovery window expires after 10 minutes. If it expires, restart the
-service and repeat from step 2.
+A dial with none of these inputs — no rotary control, no button, and no
+working touch panel — can never confirm presence, so it can never complete
+PIN recovery. The autostream UI does not offer to set a PIN on such a dial in
+the first place.
+
+While waiting, the dialog shows a countdown of the time left in the recovery
+window. If the window expires before presence is confirmed, power-cycle the
+dial to open a fresh 10-minute window and repeat from step 2.
 
 ---
 
@@ -257,8 +265,10 @@ not that it has been delivered to any appliance. The volume worker processes
 the queue asynchronously. The response field `target_count` is advisory; the
 worker takes its own fresh snapshot when it processes the delta.
 
-A positive nudge (or `nudge up`) confirms an active PIN-recovery window,
-matching a clockwise physical encoder rotation.
+A nonzero nudge (`nudge up`, `nudge down`, or `nudge --delta N` with `N != 0`)
+confirms an active PIN-recovery window, the same way any deliberate physical
+input on the dial itself does (touch, button press, or encoder rotation in
+either direction).
 
 ### Exit codes
 

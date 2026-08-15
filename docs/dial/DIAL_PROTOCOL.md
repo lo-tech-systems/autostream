@@ -351,21 +351,33 @@ Returns current dial settings.
 
 **Response:**
 ```json
-{"step_percent": 2, "pin_set": true, "name": "Hallway Dial", "version": "1.0.0", "auto_update": false, "update_channel": "stable"}
+{"step_percent": 2, "pin_set": true, "name": "My Dial", "version": "1.0.0", "auto_update": false, "update_channel": "stable", "can_confirm_presence": true}
 ```
 
 | Field | Type | Notes |
 |---|---|---|
 | `update_channel` | string | `"stable"` or `"dev"`. `stable` considers only full GitHub releases; `dev` considers the most recent release including pre-releases. PIN-gated when set via `POST /configure` (same protection as `name`, `step_percent`, `auto_update`). |
+| `can_confirm_presence` | bool | Runtime truth, not config: `true` only if this dial actually constructed at least one input capable of confirming presence for PIN recovery — a working rotary encoder, a working button, or a running touch stack. `false` covers every other case, including a configured touch panel whose driver failed to construct at startup. Set once at startup after input construction finishes; a dial polled before that finishes reports `false`. |
 
 ### `GET /recovery_status`
 
-Returns 404 if no PIN recovery window is active; otherwise:
+Returns 404 if no PIN recovery window is active; the body still carries
+`can_confirm_presence` so a client can distinguish "no window is open" from
+"this dial could never confirm presence even if a window were open":
 ```json
-{"active": true, "volume_confirmed": false}
+{"active": false, "can_confirm_presence": true}
 ```
 
-`volume_confirmed` is set on the first clockwise encoder rotation during the window.
+While a window is active, `200` is returned with the full state:
+```json
+{"active": true, "volume_confirmed": false, "recovery_remaining_ms": 583201, "can_confirm_presence": true}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `volume_confirmed` | bool | Historical field name — it means "presence confirmed", not specifically a volume change. Set `true` by any deliberate physical input on the dial: a touch anywhere on the panel, a physical button press, or the rotary encoder turned in either direction (previously only a clockwise turn, or a nudge sent over the local control socket, counted — that left touch-only, button-only, and screen-only dials unable to ever confirm presence). Once set, stays `true` for the rest of the window. |
+| `recovery_remaining_ms` | int | Milliseconds left in the 10-minute recovery window, clamped at 0. `0` whenever no window is active. Lets a client show a countdown and detect expiry without polling `active` alone. |
+| `can_confirm_presence` | bool | Same runtime-truth field documented under `GET /configure` above. |
 
 ### `POST /update`
 

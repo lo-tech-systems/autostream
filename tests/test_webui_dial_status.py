@@ -588,6 +588,18 @@ class TestDialProtocolDoc:
         # take effect; the doc must say so explicitly.
         assert "restart_required" in text
 
+    def test_dial_protocol_documents_recovery_presence_fields(self):
+        """GET /recovery_status and GET /configure must document the
+        runtime can_confirm_presence field and the recovery countdown, and
+        must no longer claim presence is confirmed by a clockwise turn only."""
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "can_confirm_presence" in text
+        assert "recovery_remaining_ms" in text
+        # volume_confirmed's meaning broadened to "any deliberate input";
+        # the doc must not claim it is set only by a clockwise rotation.
+        assert "set on the first clockwise encoder rotation" not in text
+
 
 # ---------------------------------------------------------------------------
 # Router-level: non-object JSON must NOT trigger HTTP 400 for /api/dial/status
