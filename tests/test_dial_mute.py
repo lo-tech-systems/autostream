@@ -500,6 +500,127 @@ class TestDialMuteFailures:
         assert captured["body"].get("muted") is False
 
 
+class TestDialVolumeInvalidatesMuteSnapshot:
+    """Regression: a manual volume delta must invalidate any stale pre-mute
+    snapshot entry for the outputs it touches (bug: a delta applied while
+    muted -- which unmutes via the current_master==0 special case -- left
+    the old _mute_snapshot entry in place, so a later mute/unmute cycle
+    silently discarded the delta and restored the stale pre-mute level).
+    """
+
+    def _run(self, live, actions):
+        """Run a sequence of ("mute",) / ("delta", n) actions against a
+        shared mutable `live` dict of {output_id: output}, using the real
+        send_dial_mute_post_json / send_dial_volume_post_json handlers with
+        list_outputs/update_output faked against `live`.
+
+        Returns a list of per-action step dicts (one per action, in order):
+        {"response": <captured send_json body>,
+         "volumes": {output_id: volume_percent, ...} (post-action live state),
+         "snapshot": {...} (post-action copy of _mute_snapshot)}
+        so callers can assert on state *after each individual action*, not
+        just the final state once the whole sequence has run.
+        """
+        import autostream_webui_api as api
+        from autostream_webui_api import (
+            send_dial_mute_post_json,
+            send_dial_volume_post_json,
+        )
+
+        api._mute_snapshot.clear()
+        api._mute_pending = None
+
+        def fake_list_outputs(base_url, timeout=None):
+            return _make_list_result(list(live.values()))
+
+        def fake_update(base_url, output_id, volume_percent, timeout):
+            live[output_id].volume_percent = volume_percent
+            return _make_update_result(True)
+
+        parsed = _make_parsed_config(volume_percent=20)
+        steps = []
+
+        def fake_send_json(h, code, body):
+            steps.append({
+                "response": body,
+                "volumes": {oid: o.volume_percent for oid, o in live.items()},
+                "snapshot": dict(api._mute_snapshot),
+            })
+
+        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_api.list_outputs", side_effect=fake_list_outputs), \
+             patch("autostream_webui_api.update_output", side_effect=fake_update):
+            for action in actions:
+                if action[0] == "mute":
+                    send_dial_mute_post_json(MagicMock(), MagicMock(), {"dial_id": "uid"})
+                else:
+                    send_dial_volume_post_json(
+                        MagicMock(), MagicMock(), {"dial_id": "uid", "delta": action[1]}
+                    )
+
+        return steps
+
+    def test_delta_after_mute_survives_a_second_mute_unmute_cycle(self):
+        """mute (40->0, snapshot={o1:40}) -> delta +2 (0->2, must drop the
+        stale snapshot entry) -> mute (2->0, re-snapshots the *current* 2,
+        not the stale 40) -> unmute (must restore 2, not 40)."""
+        live = {"o1": _make_output("o1", 40)}
+
+        steps = self._run(live, [
+            ("mute",),
+            ("delta", 2),
+            ("mute",),
+            ("mute",),  # second mute call is the unmute/restore
+        ])
+
+        # After step 1 (mute): snapshotted at 40, output silenced.
+        assert steps[0]["response"]["muted"] is True
+        assert steps[0]["volumes"]["o1"] == 0
+        assert steps[0]["snapshot"] == {"o1": 40}
+
+        # After step 2 (delta +2 while muted): the current_master==0 special
+        # case applies the delta directly, and the stale snapshot entry for
+        # o1 must be gone -- a manual volume change invalidates the
+        # remembered pre-mute level.
+        assert steps[1]["response"]["ok"] is True
+        assert steps[1]["response"]["volume"] == 2
+        assert steps[1]["volumes"]["o1"] == 2
+        assert "o1" not in steps[1]["snapshot"]
+
+        # After step 3 (mute again): o1 is re-snapshotted at its *current*
+        # volume (2), not the discarded 40.
+        assert steps[2]["response"]["muted"] is True
+        assert steps[2]["snapshot"] == {"o1": 2}
+        assert steps[2]["volumes"]["o1"] == 0
+
+        # After step 4 (unmute/restore): must return to the post-delta
+        # value (2), NOT the stale pre-mute value (40).
+        assert steps[3]["response"]["muted"] is False
+        assert steps[3]["volumes"]["o1"] == 2
+        assert steps[3]["snapshot"] == {}
+
+    def test_plain_mute_then_unmute_still_restores_original_volume(self):
+        """Sanity check that the fix above has not broken the feature the
+        snapshot exists for: with no intervening volume delta, mute then
+        unmute must still restore the exact pre-mute volume."""
+        live = {"o1": _make_output("o1", 65)}
+
+        steps = self._run(live, [
+            ("mute",),
+            ("mute",),  # unmute/restore
+        ])
+
+        assert steps[0]["response"]["muted"] is True
+        assert steps[0]["volumes"]["o1"] == 0
+        assert steps[0]["snapshot"] == {"o1": 65}
+
+        assert steps[1]["response"]["muted"] is False
+        assert steps[1]["volumes"]["o1"] == 65
+        assert steps[1]["snapshot"] == {}
+
+
 # ---------------------------------------------------------------------------
 # dial_volume.py — typed event queue
 # ---------------------------------------------------------------------------

@@ -800,6 +800,8 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
         return
     delta = max(-100, min(100, delta))
 
+    global _mute_snapshot
+
     try:
         parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
@@ -828,6 +830,12 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
             if not r.ok:
                 logging.warning("update_output %s: %s", output.id, r.error)
                 failed += 1
+            else:
+                # A manual delta invalidates any remembered pre-mute level for
+                # this output: the volume it would "restore" to is no longer
+                # what the user last set it to. Only drop it on success -- a
+                # failed update left the volume (and the snapshot) unchanged.
+                _mute_snapshot.pop(output.id, None)
 
     if failed == len(selected):
         send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
