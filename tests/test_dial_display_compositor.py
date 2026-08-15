@@ -23,7 +23,8 @@ for _p in (_DIAL, _CORE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from dial_display_compositor import DialDisplayCompositor  # noqa: E402
+from dial_display_compositor import DialDisplayCompositor, OverlayState  # noqa: E402
+from dial_touch_layout import TouchZone, zones_for  # noqa: E402
 
 
 def _marked_image(size=(4, 4)):
@@ -207,7 +208,11 @@ class TestStatelessness:
 
 
 class TestOverlayInert:
-    def test_overlay_parameter_is_a_no_op(self, compositor):
+    """overlay=None (or an OverlayState with visible=False) must remain a
+    strict no-op — the regression guard for the pre-existing rotate/bgr
+    behaviour now that the overlay is activated."""
+
+    def test_overlay_none_is_a_no_op(self, compositor):
         img = _marked_image()
         without = compositor.compose(
             img, img.width, img.height,
@@ -216,15 +221,150 @@ class TestOverlayInert:
         with_overlay = compositor.compose(
             img, img.width, img.height,
             rotate=True, bgr=True, is_artwork=False,
-            overlay=object(),
+            overlay=None,
         )
         assert list(without.getdata()) == list(with_overlay.getdata())
+
+    def test_not_visible_overlay_is_a_no_op(self, compositor):
+        img = _marked_image()
+        without = compositor.compose(
+            img, img.width, img.height,
+            rotate=True, bgr=True, is_artwork=False,
+        )
+        with_overlay = compositor.compose(
+            img, img.width, img.height,
+            rotate=True, bgr=True, is_artwork=False,
+            overlay=OverlayState(visible=False),
+        )
+        assert list(without.getdata()) == list(with_overlay.getdata())
+
+    def test_default_overlay_state_is_not_visible(self):
+        assert OverlayState().visible is False
 
     def test_overlay_accepted_on_artwork_path_too(self, compositor):
         raw = Image.new("RGB", (300, 300))
         result = compositor.compose(
             raw, 160, 128,
             rotate=False, bgr=False, is_artwork=True,
-            overlay="anything",
+            overlay=OverlayState(visible=False),
         )
         assert result.size == (160, 128)
+
+
+class TestOverlayVisible:
+    """Overlay drawing itself — pixel-level checks against the panel-sized
+    160x128 profile so zone geometry is deterministic."""
+
+    def _panel_image(self, color=(200, 150, 100)):
+        return Image.new("RGB", (160, 128), color)
+
+    def test_visible_overlay_changes_pixels(self, compositor):
+        img = self._panel_image()
+        result = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        assert list(result.getdata()) != list(img.getdata())
+
+    def test_not_visible_is_byte_identical_to_no_overlay(self, compositor):
+        img = self._panel_image()
+        no_overlay = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+        )
+        not_visible = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=False),
+        )
+        assert list(no_overlay.getdata()) == list(not_visible.getdata())
+
+    def test_dim_darkens_mean_brightness(self, compositor):
+        img = self._panel_image(color=(200, 200, 200))
+        result = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+
+        def mean_brightness(im):
+            data = list(im.getdata())
+            total = sum(sum(px) for px in data)
+            return total / (len(data) * 3)
+
+        assert mean_brightness(result) < mean_brightness(img)
+
+    def test_muted_true_and_false_differ_in_mute_zone(self, compositor):
+        img = self._panel_image()
+        muted = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True),
+        )
+        unmuted = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False),
+        )
+        x0, y0, x1, y1 = zones_for(img.width, img.height)[TouchZone.MUTE]
+        muted_region = muted.crop((x0, y0, x1, y1))
+        unmuted_region = unmuted.crop((x0, y0, x1, y1))
+        assert list(muted_region.getdata()) != list(unmuted_region.getdata())
+
+    def test_pressed_zone_highlight_confined_to_its_rectangle(self, compositor):
+        img = self._panel_image()
+        unpressed = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        pressed = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, pressed=TouchZone.DOWN),
+        )
+        zones = zones_for(img.width, img.height)
+        assert list(unpressed.getdata()) != list(pressed.getdata())
+
+        # Outside the pressed zone's rectangle, pixels must be unaffected by
+        # the press (glyphs themselves are identical either way).
+        dx0, dy0, dx1, dy1 = zones[TouchZone.DOWN]
+        for zone, (x0, y0, x1, y1) in zones.items():
+            if zone == TouchZone.DOWN:
+                continue
+            region_a = unpressed.crop((x0, y0, x1, y1))
+            region_b = pressed.crop((x0, y0, x1, y1))
+            assert list(region_a.getdata()) == list(region_b.getdata())
+
+    def test_overlay_composes_before_rotate(self, compositor):
+        img = self._panel_image()
+        overlay = OverlayState(visible=True, muted=True)
+        composed_then_rotated = compositor.compose(
+            img, img.width, img.height,
+            rotate=True, bgr=False, is_artwork=False,
+            overlay=overlay,
+        )
+        drawn_first = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay,
+        )
+        expected = drawn_first.transpose(Image.ROTATE_180)
+        assert list(composed_then_rotated.getdata()) == list(expected.getdata())
+
+    def test_overlay_composes_before_bgr(self, compositor):
+        img = self._panel_image()
+        overlay = OverlayState(visible=True, muted=True)
+        composed_then_swapped = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=True, is_artwork=False,
+            overlay=overlay,
+        )
+        drawn_first = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay,
+        )
+        expected = Image.merge("RGB", drawn_first.split()[::-1])
+        assert list(composed_then_swapped.getdata()) == list(expected.getdata())

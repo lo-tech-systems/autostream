@@ -19,11 +19,21 @@ Two kinds of base image reach compose():
     runs it through the transforms below unchanged.
 
 After the base is panel-sized, compose() applies, in order:
-  1. overlay — RESERVED for a later change (e.g. a status glyph). The
-     parameter exists so callers can start threading it through now, but it
-     is INERT this WP: accepted and otherwise ignored, nothing is drawn.
+  1. overlay — the touch-zone status overlay (mute/down/up glyphs plus a
+     pressed-zone highlight), drawn when OverlayState.visible is true. This
+     step is a DORMANT feature as of this change: nothing in the codebase
+     yet constructs a visible OverlayState, so in practice compose() keeps
+     behaving exactly as before until a future touch-session change starts
+     passing one. overlay=None (the default) or an OverlayState with
+     visible=False are both a strict no-op — same object identity path as
+     before this change, pixel-for-pixel.
   2. rotate (180 degrees, when configured)
   3. BGR channel swap (when configured)
+
+The overlay is drawn BEFORE rotate/bgr so its geometry lives in the same
+compose-space coordinates as dial_touch_layout.zones_for() — the same
+module a future touch session hit-tests against — rather than in
+panel/rotated space.
 
 This is the same rotate-then-BGR logic and ordering that previously lived in
 dial_display.py's _apply_frame_transform, moved here unchanged. As before,
@@ -37,9 +47,48 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-from PIL import Image
+from dataclasses import dataclass
+
+from PIL import Image, ImageDraw, ImageEnhance
 
 from dial_display_image import transform_artwork_for_panel
+from dial_touch_layout import TouchZone, zones_for
+
+# Overlay dim factor: the whole base frame is multiplied down to this
+# fraction of its brightness before the zone glyphs are drawn on top, the
+# same ImageEnhance.Brightness idiom dial_display_image.py uses for the
+# ambient-blur backdrop (see BACKDROP_DARKEN_PERCENT there). 0.4 reads as a
+# ~60% dim — dark enough that the glyphs and the pressed-zone highlight are
+# unambiguous against any artwork, while the dimmed art is still faintly
+# visible behind it.
+OVERLAY_DIM_FACTOR = 0.4
+
+# Glyph stroke colour and the pressed-zone highlight fill, chosen for
+# contrast against the dimmed backdrop produced by OVERLAY_DIM_FACTOR.
+_GLYPH_RGB = (255, 255, 255)
+_PRESSED_FILL_RGB = (255, 255, 255)
+_PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
+
+
+@dataclass(frozen=True)
+class OverlayState:
+    """Immutable snapshot of what the touch-zone overlay should show.
+
+    visible: when False (or when overlay is None entirely), compose() draws
+        nothing and behaves exactly as it did before this feature existed —
+        this is the regression guard the existing compositor tests pin.
+    pressed: the TouchZone currently being pressed, or None if no zone is
+        pressed. Only meaningful when visible is True.
+    muted: tri-state — True draws the muted glyph variant, False the
+        unmuted variant, and None (unknown, e.g. nothing selected/playing)
+        also draws the unmuted variant. See _draw_mute_glyph() for the
+        rationale: "unknown" defaults to the less alarming of the two
+        glyphs rather than guessing a muted state that may not be true.
+    """
+
+    visible: bool = False
+    pressed: TouchZone | None = None
+    muted: bool | None = None
 
 
 class DialDisplayCompositor:
@@ -69,8 +118,9 @@ class DialDisplayCompositor:
         rotate, bgr: transform toggles applied last, in that order.
         is_artwork: when True, runs transform_artwork_for_panel(base, width,
             height) first so the result is panel-fitted.
-        overlay: RESERVED — accepted but never drawn yet; the overlay
-            compositing step lands with the touch UI.
+        overlay: an OverlayState, or None. None or visible=False is a strict
+            no-op (existing behaviour, byte-identical). When visible, drawn
+            in compose-space before rotate/bgr — see module docstring.
         """
         if base is None:
             return base
@@ -79,11 +129,122 @@ class DialDisplayCompositor:
         if is_artwork:
             image = transform_artwork_for_panel(image, width, height)
 
-        # overlay is reserved for a later change; intentionally a no-op here.
-        del overlay
+        if overlay is not None and overlay.visible:
+            image = _draw_overlay(image, image.width, image.height, overlay)
 
         if rotate:
             image = image.transpose(Image.ROTATE_180)
         if bgr:
             image = Image.merge("RGB", image.split()[::-1])
         return image
+
+
+def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayState) -> Image.Image:
+    """Return a new frame: *image* dimmed, with the three zone glyphs and an
+    optional pressed-zone highlight drawn on top, sized from
+    dial_touch_layout.zones_for() so this works at every profile size.
+    """
+    dimmed = ImageEnhance.Brightness(image.convert("RGB")).enhance(OVERLAY_DIM_FACTOR)
+    zones = zones_for(width, height)
+    draw = ImageDraw.Draw(dimmed)
+
+    if overlay.pressed is not None and overlay.pressed in zones:
+        rect = zones[overlay.pressed]
+        _draw_pressed_highlight(dimmed, rect)
+        # Re-create the draw handle bound to the (possibly RGBA-composited)
+        # image so subsequent glyph strokes land on the highlighted frame.
+        draw = ImageDraw.Draw(dimmed)
+
+    _draw_mute_glyph(draw, zones[TouchZone.MUTE], overlay.muted)
+    _draw_minus_glyph(draw, zones[TouchZone.DOWN])
+    _draw_plus_glyph(draw, zones[TouchZone.UP])
+    return dimmed
+
+
+def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
+    """Alpha-composite a translucent highlight wash over *rect* so a press
+    is visibly acknowledged. Confined strictly to the pressed zone's own
+    rectangle — nothing outside it is touched."""
+    x0, y0, x1, y1 = rect
+    overlay_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay_layer).rectangle(
+        [x0, y0, x1 - 1, y1 - 1], fill=(*_PRESSED_FILL_RGB, _PRESSED_FILL_ALPHA)
+    )
+    composited = Image.alpha_composite(image.convert("RGBA"), overlay_layer).convert("RGB")
+    image.paste(composited)
+
+
+def _zone_center_and_span(rect: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    """Return (center_x, center_y, glyph_radius) for a zone rectangle — the
+    glyph is sized from the smaller of the zone's own width/height so it
+    never overflows the (possibly non-square) zone rectangle."""
+    x0, y0, x1, y1 = rect
+    cx = (x0 + x1) // 2
+    cy = (y0 + y1) // 2
+    radius = max(2, min(x1 - x0, y1 - y0) // 4)
+    return cx, cy, radius
+
+
+def _draw_minus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int]) -> None:
+    cx, cy, r = _zone_center_and_span(rect)
+    width = max(1, r // 3)
+    draw.line([(cx - r, cy), (cx + r, cy)], fill=_GLYPH_RGB, width=width)
+
+
+def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int]) -> None:
+    cx, cy, r = _zone_center_and_span(rect)
+    stroke = max(1, r // 3)
+    draw.line([(cx - r, cy), (cx + r, cy)], fill=_GLYPH_RGB, width=stroke)
+    draw.line([(cx, cy - r), (cx, cy + r)], fill=_GLYPH_RGB, width=stroke)
+
+
+def _draw_mute_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], muted: bool | None) -> None:
+    """Draw a simple speaker glyph: a body (rectangle + triangle "cone") plus
+    sound-wave arcs when unmuted, or a diagonal slash through the body when
+    muted.
+
+    muted=True -> muted variant (slash). muted=False -> unmuted variant
+    (arcs). muted=None ("unknown" — nothing selected/playing, so there is no
+    real mute state to report) also draws the unmuted variant: defaulting to
+    "not muted" is the less alarming reading of an unknown state and avoids
+    implying a mute the user never set.
+    """
+    cx, cy, r = _zone_center_and_span(rect)
+    stroke = max(1, r // 4)
+
+    # Speaker body: a small rectangle (the driver) plus a triangle (the
+    # cone), both left-of-center so the wave/slash has room to the right.
+    body_w = max(2, r // 2)
+    body_h = max(2, r)
+    body_left = cx - r
+    rect_box = [body_left, cy - body_h // 2, body_left + body_w, cy + body_h // 2]
+    draw.rectangle(rect_box, fill=_GLYPH_RGB)
+    cone_tip_x = body_left + body_w + r // 2
+    draw.polygon(
+        [
+            (body_left + body_w, cy - body_h // 2),
+            (body_left + body_w, cy + body_h // 2),
+            (cone_tip_x, cy - r),
+            (cone_tip_x, cy + r),
+        ],
+        fill=_GLYPH_RGB,
+    )
+
+    if muted:
+        # Diagonal slash through the whole glyph footprint.
+        draw.line(
+            [(cx - r, cy - r), (cx + r, cy + r)],
+            fill=_GLYPH_RGB,
+            width=stroke,
+        )
+    else:
+        # Sound-wave arcs to the right of the cone.
+        for i in range(1, 3):
+            offset = i * max(1, r // 2)
+            box = [
+                cone_tip_x - r // 3,
+                cy - offset,
+                cone_tip_x + offset,
+                cy + offset,
+            ]
+            draw.arc(box, start=-45, end=45, fill=_GLYPH_RGB, width=stroke)
