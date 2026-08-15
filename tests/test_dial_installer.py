@@ -715,8 +715,8 @@ class TestDisplayHardwareDeployment:
         )
 
     def test_gpio_group_membership_preserved(self):
-        """Existing add_gpio_group() call must remain — WP-7 adds spi group
-        alongside it, not instead of it."""
+        """The gpio group membership must survive alongside the spi group —
+        the display needs both, so adding one must not replace the other."""
         content = self._helpers_content()
         assert "add_gpio_group()" in content
         idx = content.find("add_gpio_group()")
@@ -747,7 +747,8 @@ class TestDialVenvRequirements:
             assert dep in content, f"{dep} missing from requirements.lock"
 
     def test_existing_gpiozero_still_locked(self):
-        """WP-7 must not drop the existing gpiozero/lgpio dependency chain."""
+        """Adding display dependencies must not drop the encoder/button
+        gpiozero/lgpio chain the dial still relies on."""
         content = self.REQUIREMENTS_LOCK.read_text(encoding="utf-8")
         assert "gpiozero==2.0.1" in content
 
