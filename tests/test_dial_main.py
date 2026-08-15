@@ -951,7 +951,7 @@ class TestBuildTouchSourceWiring:
     background thread) faked out."""
 
     @contextmanager
-    def _built(self):
+    def _built(self, confirm_presence=None):
         """Construct via dial_main._build_touch_source() with the mocks
         still active, yielding everything a test needs — the invoked
         callbacks reference module globals (enqueue_delta etc.) resolved at
@@ -980,7 +980,7 @@ class TestBuildTouchSourceWiring:
              patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
              patch("dial_main.enqueue_delta") as mock_delta, \
              patch("dial_main.enqueue_mute_toggle") as mock_mute:
-            result = dm._build_touch_source(cfg, display)
+            result = dm._build_touch_source(cfg, display, confirm_presence=confirm_presence)
             yield cfg, display, result, captured, mock_open, mock_delta, mock_mute
 
     def test_driver_opened_for_configured_controller(self):
@@ -1039,3 +1039,273 @@ class TestBuildTouchSourceWiring:
             assert state.visible is True
             assert state.pressed == TouchZone.UP
             display.notify_touch_activity.assert_called_once()
+
+    def test_reveal_overlay_confirms_presence(self):
+        """The very first touch-down — reveal-only, nothing armed yet — must
+        still confirm presence (see reveal-then-arm in dial_touch.py: a
+        first contact may never reach on_set_pressed_zone at all)."""
+        confirm = MagicMock()
+        with self._built(confirm_presence=confirm) as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_reveal_overlay"]()
+        confirm.assert_called_once()
+
+    def test_set_pressed_zone_confirms_presence(self):
+        """A press that arms immediately (overlay already visible) must also
+        confirm presence."""
+        from dial_touch_layout import TouchZone
+
+        confirm = MagicMock()
+        with self._built(confirm_presence=confirm) as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.DOWN)
+        confirm.assert_called_once()
+
+    def test_confirm_presence_is_optional(self):
+        """confirm_presence defaults to None — callers/tests that don't pass
+        it must not have on_reveal_overlay/on_set_pressed_zone raise."""
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_reveal_overlay"]()
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
+
+
+# ---------------------------------------------------------------------------
+# Lost-PIN recovery: any deliberate physical input confirms presence, and
+# can_confirm_presence reports what actually got constructed at runtime.
+#
+# These run dial_main.main() end-to-end against a REAL DialHTTPServer +
+# RecoveryWindow (constructed without binding a socket) rather than a bare
+# MagicMock, so a wiring mistake (e.g. forgetting to call confirm_volume(),
+# or calling the wrong dial_server's method) cannot be masked by a mock that
+# silently accepts any call/attribute access.
+# ---------------------------------------------------------------------------
+
+class TestPresenceConfirmationWiring:
+    def _real_server(self):
+        import dial_http_server as dhs
+        from dial_config import DialConfig
+
+        cfg = DialConfig(uuid="x", pin="1234")
+        server = dhs.DialHTTPServer.__new__(dhs.DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = threading.Lock()
+        server._recovery_window = dhs.RecoveryWindow(lambda add: None)
+        server._can_confirm_presence = False
+        server._display_status = dhs.NoOpDisplayStatusProvider()
+        server._server = MagicMock()
+        return server
+
+    def _run(self, cfg, server, build_mock=None):
+        import dial_main as dm
+
+        control_kwargs = {}
+
+        def _capture_control(**kwargs):
+            control_kwargs.update(kwargs)
+            return MagicMock()
+
+        mock_encoder_setup = MagicMock(return_value="encoder-handle")
+        mock_button_setup = MagicMock(return_value="button-handle")
+        fake_rpi = MagicMock()
+        fake_rpi.setup_rotary_encoder = mock_encoder_setup
+        fake_rpi.setup_button = mock_button_setup
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "autostream_rpi":
+                return fake_rpi
+            return real_import(name, *args, **kwargs)
+
+        patches = [
+            patch("dial_main._configure_logging"),
+            patch("dial_main.load_config", return_value=cfg),
+            patch("dial_main._reconcile_update_timer"),
+            patch("dial_main._announce_self"),
+            patch("dial_main.DialLED"),
+            patch("dial_main.DialHTTPServer", return_value=server),
+            patch("dial_main.start_playing_browser"),
+            patch("dial_main.stop_playing_browser"),
+            patch("dial_main.start_volume_worker"),
+            patch("dial_main.DialControlServer", side_effect=_capture_control),
+            patch("threading.Event", _QuickEvent),
+            # RecoveryWindow.open() is real here (cfg.pin is set) — mock out
+            # only the timer thread it schedules, not its state transitions.
+            patch("dial_http_server.threading.Timer"),
+            patch("builtins.__import__", side_effect=_fake_import),
+        ]
+        if build_mock is not None:
+            patches.append(patch("dial_main._build_touch_source", build_mock))
+        for p in patches:
+            p.start()
+        try:
+            dm.main()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+        return control_kwargs, mock_encoder_setup, mock_button_setup
+
+    # -- any deliberate input confirms presence --------------------------
+
+    def test_encoder_down_confirms(self):
+        cfg = _make_cfg()  # clk=22, dt=27 already set
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        _, encoder_setup, _ = self._run(cfg, server)
+
+        encoder_setup.assert_called_once()
+        nudge_down_cb = encoder_setup.call_args.args[3]
+        assert server._recovery_window.snapshot()["volume_confirmed"] is False
+        nudge_down_cb()
+        assert server._recovery_window.snapshot()["volume_confirmed"] is True
+
+    def test_nudge_delta_negative_confirms(self):
+        cfg = _make_cfg()
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        control_kwargs, _, _ = self._run(cfg, server)
+
+        assert server._recovery_window.snapshot()["volume_confirmed"] is False
+        control_kwargs["nudge_delta"](-3)
+        assert server._recovery_window.snapshot()["volume_confirmed"] is True
+
+    def test_nudge_delta_zero_does_not_confirm(self):
+        """Unchanged behaviour: a zero delta is not a deliberate input."""
+        cfg = _make_cfg()
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        control_kwargs, _, _ = self._run(cfg, server)
+
+        control_kwargs["nudge_delta"](0)
+        assert server._recovery_window.snapshot()["volume_confirmed"] is False
+
+    def test_button_press_confirms(self):
+        cfg = _make_cfg()
+        cfg.sw_gpio = 23
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        _, _, button_setup = self._run(cfg, server)
+
+        button_setup.assert_called_once()
+        on_press_cb = button_setup.call_args.args[1]
+        assert server._recovery_window.snapshot()["volume_confirmed"] is False
+        on_press_cb()
+        assert server._recovery_window.snapshot()["volume_confirmed"] is True
+
+    def test_touch_contact_confirms(self):
+        """main() must wire confirm_presence=http_server.confirm_volume into
+        _build_touch_source — invoking it must confirm the real recovery
+        window, exactly like the encoder/button paths above."""
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio = None
+        cfg.dt_gpio = None
+        cfg.sw_gpio = None
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        captured = {}
+
+        def build_mock(cfg_arg, display_arg, confirm_presence=None):
+            captured["confirm_presence"] = confirm_presence
+            return MagicMock()
+
+        self._run(cfg, server, build_mock=build_mock)
+
+        assert captured["confirm_presence"].__self__ is server
+        assert captured["confirm_presence"].__func__ is server.confirm_volume.__func__
+        assert server._recovery_window.snapshot()["volume_confirmed"] is False
+        captured["confirm_presence"]()
+        assert server._recovery_window.snapshot()["volume_confirmed"] is True
+
+    # -- can_confirm_presence reflects what actually got constructed -----
+
+    def test_can_confirm_presence_true_for_encoder_and_button(self):
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio, cfg.dt_gpio, cfg.sw_gpio = 22, 27, 23
+        cfg.display = DialDisplayConfig(fitted=False, touch_type="none")
+        server = self._real_server()
+
+        self._run(cfg, server)
+
+        assert server._can_confirm_presence is True
+
+    def test_can_confirm_presence_true_for_encoder_only(self):
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio, cfg.dt_gpio, cfg.sw_gpio = 22, 27, None
+        cfg.display = DialDisplayConfig(fitted=False, touch_type="none")
+        server = self._real_server()
+
+        self._run(cfg, server)
+
+        assert server._can_confirm_presence is True
+
+    def test_can_confirm_presence_true_for_button_only(self):
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio, cfg.dt_gpio, cfg.sw_gpio = None, None, 23
+        cfg.display = DialDisplayConfig(fitted=False, touch_type="none")
+        server = self._real_server()
+
+        self._run(cfg, server)
+
+        assert server._can_confirm_presence is True
+
+    def test_can_confirm_presence_true_for_touch_only(self):
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio, cfg.dt_gpio, cfg.sw_gpio = None, None, None
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        server = self._real_server()
+        build_mock = MagicMock(return_value=MagicMock())
+
+        self._run(cfg, server, build_mock=build_mock)
+
+        assert server._can_confirm_presence is True
+
+    def test_can_confirm_presence_false_for_screen_only(self):
+        """No encoder, no button, touch_type 'none': a lock with no key is
+        worse than no lock, so this dial must report it cannot confirm."""
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio, cfg.dt_gpio, cfg.sw_gpio = None, None, None
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="none")
+        server = self._real_server()
+
+        self._run(cfg, server)
+
+        assert server._can_confirm_presence is False
+
+    def test_can_confirm_presence_false_when_touch_construction_raised(self):
+        """A dial with touch_type configured whose driver failed to load has
+        no WORKING confirmable input, regardless of configuration."""
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.clk_gpio, cfg.dt_gpio, cfg.sw_gpio = None, None, None
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        server = self._real_server()
+        build_mock = MagicMock(side_effect=RuntimeError("no SPI bus"))
+
+        self._run(cfg, server, build_mock=build_mock)
+
+        assert server._can_confirm_presence is False

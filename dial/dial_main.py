@@ -80,7 +80,7 @@ def _reconcile_update_timer(auto_update: bool) -> None:
         )
 
 
-def _build_touch_source(cfg, display):
+def _build_touch_source(cfg, display, confirm_presence=None):
     """Construct and wire a TouchEventSource for cfg.display against the
     already-built *display* manager.
 
@@ -101,6 +101,16 @@ def _build_touch_source(cfg, display):
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
 
+    # Any deliberate contact with the screen proves physical presence — the
+    # reveal-then-arm scheme (see dial_touch.py) means a first touch may only
+    # ever reveal the overlay and never arm/actuate anything, so confirmation
+    # must not wait for an armed zone. on_reveal_overlay fires on that very
+    # first touch-down; on_set_pressed_zone fires whenever a press arms
+    # (either immediately, if the overlay was already visible, or later via
+    # overlay_live()). Together they cover every contact. confirm_presence is
+    # optional so callers/tests that don't care about recovery can omit it.
+    _confirm_presence = confirm_presence or (lambda: None)
+
     controller = get_controller(cfg.display.touch_type)
     profile = get_profile(cfg.display.screen_type)
     driver = open_driver(controller.driver_tag)
@@ -116,6 +126,7 @@ def _build_touch_source(cfg, display):
     state_machine = TouchStateMachine(profile.width, profile.height)
 
     def on_reveal_overlay() -> None:
+        _confirm_presence()
         display.notify_touch_activity()
         display.set_overlay(OverlayState(visible=True))
         # The repaint thread services the overlay signal well ahead of any
@@ -129,6 +140,7 @@ def _build_touch_source(cfg, display):
         display.set_overlay(OverlayState(visible=False))
 
     def on_set_pressed_zone(zone) -> None:
+        _confirm_presence()
         display.notify_touch_activity()
         display.set_overlay(OverlayState(visible=True, pressed=zone))
 
@@ -218,7 +230,9 @@ def main() -> None:
         and hasattr(display, "set_overlay")
     ):
         try:
-            touch_source = _build_touch_source(cfg, display)
+            touch_source = _build_touch_source(
+                cfg, display, confirm_presence=http_server.confirm_volume
+            )
             touch_source.start()
         except Exception as e:
             logging.warning("dial touch: touch stack unavailable (%s) — touch disabled", e)
@@ -233,12 +247,13 @@ def main() -> None:
         return delta
 
     def nudge_down() -> int:
+        http_server.confirm_volume()
         delta = -http_server.step_percent
         enqueue_delta(delta)
         return delta
 
     def nudge_delta(delta: int) -> int:
-        if delta > 0:
+        if delta != 0:
             http_server.confirm_volume()
         enqueue_delta(delta)
         return delta
@@ -280,6 +295,7 @@ def main() -> None:
             encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
 
         def on_press() -> None:
+            http_server.confirm_volume()
             enqueue_mute_toggle()
 
         button = None
@@ -287,6 +303,15 @@ def main() -> None:
             logging.info("button not configured; skipping")
         elif setup_button is not None:
             button = setup_button(cfg.sw_gpio, on_press)
+
+        # Runtime-derived, not config-derived: a dial with clk/dt/sw_gpio set
+        # but whose GPIO init failed (setup_rotary_encoder/setup_button
+        # returning None) must not claim it can confirm presence, and
+        # neither must a dial whose touch stack raised above (touch_source
+        # stays None on that path). See DialHTTPServer.set_can_confirm_presence.
+        http_server.set_can_confirm_presence(
+            encoder is not None or button is not None or touch_source is not None
+        )
 
         while not shutdown_event.wait(5):
             led.set_playing() if get_playing_targets() else led.set_idle()

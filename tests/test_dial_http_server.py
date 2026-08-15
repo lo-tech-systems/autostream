@@ -24,7 +24,7 @@ if _DIAL not in sys.path:
 
 import dial_http_server as dhs
 from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
-from dial_http_server import NoOpDisplayStatusProvider, RecoveryWindow
+from dial_http_server import DialHTTPServer, NoOpDisplayStatusProvider, RecoveryWindow
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +42,14 @@ class FakeDialServer:
         self._recovery_window = MagicMock(spec=RecoveryWindow)
         self._recovery_window._active           = False
         self._recovery_window._volume_confirmed = False
+        self._recovery_window._recovery_remaining_ms = 0
         rw = self._recovery_window
         rw.snapshot.side_effect = lambda: {
             "active": rw._active,
             "volume_confirmed": rw._volume_confirmed,
+            "recovery_remaining_ms": rw._recovery_remaining_ms,
         }
+        self._can_confirm_presence = False
         self._announce_calls: list = []
 
     def update_cfg(self, new_cfg: DialConfig) -> None:
@@ -697,6 +700,47 @@ class TestRecoveryWindowStateMachine:
         timer1.cancel.assert_not_called()  # open() doesn't cancel previous timer explicitly
         assert rw._timer is timer2
 
+    def test_snapshot_remaining_ms_zero_when_inactive(self):
+        rw, _ = self._make()
+        snap = rw.snapshot()
+        assert snap["recovery_remaining_ms"] == 0
+
+    def test_snapshot_remaining_ms_near_full_window_just_after_open(self):
+        rw, _ = self._make()
+        with patch("threading.Timer") as mock_timer_cls:
+            mock_timer_cls.return_value = MagicMock()
+            rw.open()
+        snap = rw.snapshot()
+        assert 0 < snap["recovery_remaining_ms"] <= 600_000
+
+    def test_snapshot_remaining_ms_decreases_over_time(self):
+        rw, _ = self._make()
+        with patch("threading.Timer") as mock_timer_cls, \
+             patch("time.monotonic", return_value=1000.0):
+            mock_timer_cls.return_value = MagicMock()
+            rw.open()
+        with patch("time.monotonic", return_value=1005.0):  # 5s later
+            snap = rw.snapshot()
+        assert snap["recovery_remaining_ms"] == 595_000
+
+    def test_snapshot_remaining_ms_clamps_at_zero_past_the_window(self):
+        rw, _ = self._make()
+        with patch("threading.Timer") as mock_timer_cls, \
+             patch("time.monotonic", return_value=1000.0):
+            mock_timer_cls.return_value = MagicMock()
+            rw.open()
+        with patch("time.monotonic", return_value=1000.0 + 3600):  # 1hr later
+            snap = rw.snapshot()
+        assert snap["recovery_remaining_ms"] == 0
+
+    def test_snapshot_remaining_ms_zero_after_complete(self):
+        rw, _ = self._make()
+        with patch("threading.Timer") as mock_timer_cls:
+            mock_timer_cls.return_value = MagicMock()
+            rw.open()
+        rw.complete()
+        assert rw.snapshot()["recovery_remaining_ms"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Startup timer reconciliation (_reconcile_update_timer)
@@ -1246,6 +1290,117 @@ class TestManagementApiRetained:
         assert result.get("status") in (200, 404), (
             "GET /recovery_status must still return 200 or 404 after setup UI removal"
         )
+
+
+# ---------------------------------------------------------------------------
+# can_confirm_presence + recovery_remaining_ms — lost-PIN recovery on
+# dials without a rotary encoder.
+# ---------------------------------------------------------------------------
+
+class TestCanConfirmPresenceAndRemainingMs:
+    def _get(self, path: str, server) -> dict:
+        result = {}
+        handler_cls = server._make_handler()
+        h = object.__new__(handler_cls)
+        h.path           = path
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        h.do_GET()
+        return result
+
+    def test_configure_includes_can_confirm_presence_false_by_default(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        r = self._get("/configure", server)
+        assert r["status"] == 200
+        assert r["data"]["can_confirm_presence"] is False
+
+    def test_configure_includes_can_confirm_presence_true_when_set(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        server._can_confirm_presence = True
+        r = self._get("/configure", server)
+        assert r["data"]["can_confirm_presence"] is True
+
+    def test_recovery_status_inactive_includes_can_confirm_presence(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        server._can_confirm_presence = True
+        server._recovery_window._active = False
+        r = self._get("/recovery_status", server)
+        assert r["status"] == 404
+        assert r["data"]["can_confirm_presence"] is True
+
+    def test_recovery_status_active_includes_can_confirm_presence_and_remaining_ms(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        server._can_confirm_presence = True
+        server._recovery_window._active = True
+        server._recovery_window._volume_confirmed = False
+        server._recovery_window._recovery_remaining_ms = 543_000
+        r = self._get("/recovery_status", server)
+        assert r["status"] == 200
+        assert r["data"]["active"] is True
+        assert r["data"]["volume_confirmed"] is False
+        assert r["data"]["can_confirm_presence"] is True
+        assert r["data"]["recovery_remaining_ms"] == 543_000
+
+    def test_recovery_status_remaining_ms_decreases_and_clamps_at_zero(self):
+        """End-to-end against a REAL RecoveryWindow (not a mocked snapshot):
+        the value reported over /recovery_status must actually count down and
+        never go negative once the 10-minute window has elapsed."""
+        cfg = DialConfig(uuid="x", pin="1234")
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg            = cfg
+        server._cfg_lock       = threading.Lock()
+        server._recovery_window = RecoveryWindow(on_announce=lambda add: None)
+        server._can_confirm_presence = False
+        server._display_status = NoOpDisplayStatusProvider()
+
+        with patch("threading.Timer") as mock_timer_cls, \
+             patch("time.monotonic", return_value=2000.0):
+            mock_timer_cls.return_value = MagicMock()
+            server._recovery_window.open()
+
+        with patch("time.monotonic", return_value=2000.0 + 60):  # 60s later
+            r1 = self._get("/recovery_status", server)
+        with patch("time.monotonic", return_value=2000.0 + 120):  # 120s later
+            r2 = self._get("/recovery_status", server)
+
+        assert r1["data"]["recovery_remaining_ms"] == 540_000
+        assert r2["data"]["recovery_remaining_ms"] == 480_000
+        assert r2["data"]["recovery_remaining_ms"] < r1["data"]["recovery_remaining_ms"]
+
+        with patch("time.monotonic", return_value=2000.0 + 3600):  # 1hr later
+            r3 = self._get("/recovery_status", server)
+        assert r3["data"]["recovery_remaining_ms"] == 0
+
+    def test_set_can_confirm_presence_updates_real_server(self):
+        cfg = DialConfig(uuid="x")
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._can_confirm_presence = False
+        assert server._can_confirm_presence is False
+        server.set_can_confirm_presence(True)
+        assert server._can_confirm_presence is True
+        server.set_can_confirm_presence(False)
+        assert server._can_confirm_presence is False
+
+    def test_recovery_not_confirmed_403_unchanged_by_new_fields(self):
+        """Sanity check: the existing 403 recovery_not_confirmed behaviour is
+        unaffected by the new can_confirm_presence/recovery_remaining_ms
+        fields on the GET side."""
+        cfg = DialConfig(uuid="x", pin="9999")
+        server = FakeDialServer(cfg)
+        server._recovery_window._active           = True
+        server._recovery_window._volume_confirmed = False
+        r = _call_handler(
+            "/configure",
+            body={"pin_recovery": True, "new_pin": "1234", "name": "X"},
+            setup_server=server,
+        )
+        assert r["status"] == 403
+        assert r["data"]["error"] == "recovery_not_confirmed"
 
     def test_get_update_status_still_reachable(self):
         """GET /update/status must still respond — update flow is retained."""

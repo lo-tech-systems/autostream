@@ -123,18 +123,22 @@ class RecoveryWindow:
       complete()      → PIN replaced: cancel timer, _active=False, announce
     """
 
+    _WINDOW_S = 600
+
     def __init__(self, on_announce: Callable[[bool], None]) -> None:
         self._on_announce      = on_announce
         self._lock             = threading.Lock()
         self._active           = False
         self._volume_confirmed = False
+        self._opened_monotonic: float | None = None
         self._timer: threading.Timer | None = None
 
     def open(self) -> None:
         with self._lock:
             self._volume_confirmed = False
             self._active = True
-            timer = threading.Timer(600, self._expire)
+            self._opened_monotonic = time.monotonic()
+            timer = threading.Timer(self._WINDOW_S, self._expire)
             timer.daemon = True
             self._timer = timer
         timer.start()
@@ -165,11 +169,18 @@ class RecoveryWindow:
         logging.info("PIN recovery: volume confirmed")
 
     def snapshot(self) -> dict:
-        """Return a thread-safe copy of current recovery window state."""
+        """Return a thread-safe copy of current recovery window state,
+        including recovery_remaining_ms — milliseconds left in the 10-minute
+        window, clamped at 0 (0 whenever the window is not active)."""
         with self._lock:
+            remaining_ms = 0
+            if self._active and self._opened_monotonic is not None:
+                elapsed_ms = int((time.monotonic() - self._opened_monotonic) * 1000)
+                remaining_ms = max(0, self._WINDOW_S * 1000 - elapsed_ms)
             return {
                 "active": self._active,
                 "volume_confirmed": self._volume_confirmed,
+                "recovery_remaining_ms": remaining_ms,
             }
 
 
@@ -220,6 +231,12 @@ class DialHTTPServer:
         self._cfg             = cfg
         self._cfg_lock        = threading.Lock()
         self._recovery_window = RecoveryWindow(self._on_announce)
+        # Set by dial_main.py after inputs are actually constructed — reports
+        # what is RUNNING (encoder/button/touch actually built and started),
+        # not merely what cfg says is configured. Defaults False so an early
+        # /configure or /recovery_status poll (before construction finishes)
+        # never overclaims presence-confirmation capability.
+        self._can_confirm_presence = False
         self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
         self._display_status.update_config(cfg.display)
         self._server          = http.server.HTTPServer(
@@ -248,6 +265,13 @@ class DialHTTPServer:
 
     def confirm_volume(self) -> None:
         self._recovery_window.confirm_volume()
+
+    def set_can_confirm_presence(self, value: bool) -> None:
+        """Record whether this dial actually has at least one working
+        confirmable input running right now (encoder, button, or touch —
+        see dial_main.py's construction of each). Called once at startup
+        after construction finishes; reflects runtime reality, not config."""
+        self._can_confirm_presence = bool(value)
 
     def get_runtime_status(self) -> dict:
         """Return a fresh snapshot of runtime state without exposing secrets.
@@ -316,22 +340,28 @@ class DialHTTPServer:
                     with dial_server._cfg_lock:
                         cfg = dial_server._cfg
                     self._send_json(200, {
-                        'step_percent':   cfg.step_percent,
-                        'pin_set':        bool(cfg.pin),
-                        'name':           cfg.name,
-                        'version':        VERSION,
-                        'auto_update':    cfg.auto_update,
-                        'update_channel': cfg.update_channel,
+                        'step_percent':         cfg.step_percent,
+                        'pin_set':              bool(cfg.pin),
+                        'name':                 cfg.name,
+                        'version':              VERSION,
+                        'auto_update':          cfg.auto_update,
+                        'update_channel':       cfg.update_channel,
+                        'can_confirm_presence': dial_server._can_confirm_presence,
                     })
 
                 elif self.path == '/recovery_status':
                     snap = dial_server._recovery_window.snapshot()
                     if not snap['active']:
-                        self._send_json(404, {'active': False})
+                        self._send_json(404, {
+                            'active':               False,
+                            'can_confirm_presence': dial_server._can_confirm_presence,
+                        })
                     else:
                         self._send_json(200, {
-                            'active':           True,
-                            'volume_confirmed': snap['volume_confirmed'],
+                            'active':                 True,
+                            'volume_confirmed':       snap['volume_confirmed'],
+                            'recovery_remaining_ms':  snap['recovery_remaining_ms'],
+                            'can_confirm_presence':   dial_server._can_confirm_presence,
                         })
 
                 elif self.path == '/update/status':
