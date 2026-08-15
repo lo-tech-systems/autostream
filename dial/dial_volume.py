@@ -8,7 +8,11 @@ Rapid encoder events are coalesced: adjacent delta events in the queue are
 summed before dispatch so a burst of detents produces one HTTP round-trip.
 Mute events are preserved in order: deltas before and after a mute event are
 coalesced independently, so the sequence delta+delta+mute+delta dispatches as
-combined-delta, mute-toggle, final-delta.
+combined-delta, mute-toggle, final-delta. Adjacent mute events cancel in
+pairs instead of being preserved: a rapid burst of mute taps would otherwise
+dispatch a backlog of toggles that lands after the user has already stopped
+tapping, flapping the mute state. Cancelling a pair may re-expose a delta
+run on either side, which is then free to merge across the cancelled mutes.
 
 Fan-out is concurrent: one thread per target with a 400 ms network timeout and
 a 600 ms join timeout (200 ms headroom ensures threads finish before clamped
@@ -66,6 +70,8 @@ def _coalesce(first: _Event) -> list[_Event]:
     def _append(ev: _Event) -> None:
         if ev[0] == "delta" and batch and batch[-1][0] == "delta":
             batch[-1] = ("delta", batch[-1][1] + ev[1])  # type: ignore[index]
+        elif ev[0] == "mute" and batch and batch[-1][0] == "mute":
+            batch.pop()  # two adjacent toggles cancel
         else:
             batch.append(ev)
 

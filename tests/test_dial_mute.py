@@ -686,6 +686,38 @@ class TestDialVolumeQueue:
         assert batch[1] == ("mute",)
         assert batch[2] == ("delta", 5)
 
+    def test_coalesce_two_adjacent_mutes_cancel_to_empty_batch(self):
+        self._mod._queue.put(("mute",))
+        batch = self._mod._coalesce(("mute",))
+        # Two adjacent toggles cancel: the batch is empty
+        assert batch == []
+
+    def test_coalesce_three_adjacent_mutes_collapse_to_one(self):
+        self._mod._queue.put(("mute",))
+        self._mod._queue.put(("mute",))
+        batch = self._mod._coalesce(("mute",))
+        # First pair cancels, the third survives
+        assert batch == [("mute",)]
+
+    def test_coalesce_mute_pair_between_deltas_merges_the_deltas(self):
+        self._mod._queue.put(("mute",))
+        self._mod._queue.put(("mute",))
+        self._mod._queue.put(("delta", 3))
+        batch = self._mod._coalesce(("delta", 2))
+        # delta(2), mute, mute, delta(3): the mutes cancel and never took
+        # effect, so the deltas on either side are free to merge into one.
+        assert batch == [("delta", 5)]
+
+    def test_coalesce_single_mute_still_survives_and_splits_deltas(self):
+        # Regression guard: a lone (non-adjacent) mute must still be
+        # preserved and still prevent the surrounding deltas from merging.
+        self._mod._queue.put(("delta", 4))
+        self._mod._queue.put(("mute",))
+        self._mod._queue.put(("delta", 2))
+        batch = self._mod._coalesce(("delta", 1))
+        # 1+4 coalesced, then the surviving mute, then 2
+        assert batch == [("delta", 5), ("mute",), ("delta", 2)]
+
 
 # ---------------------------------------------------------------------------
 # DialConfig — sw_gpio default and key semantics
