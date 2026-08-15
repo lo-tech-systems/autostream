@@ -28,6 +28,7 @@ import io
 import json
 import sys
 import xml.etree.ElementTree as ET
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -424,17 +425,43 @@ class TestCalculateMasterVolume:
         outputs = [_output("a", 40), _output("b", 60)]
         assert calculate_master_volume(outputs) == (50, 2)
 
-    def test_rounding_40_61_matches_python_round(self):
+    def test_rounding_40_61_rounds_up(self):
         outputs = [_output("a", 40), _output("b", 61)]
         vol, count = calculate_master_volume(outputs)
-        assert vol == round((40 + 61) / 2)
+        assert vol == math.ceil((40 + 61) / 2)
         assert count == 2
 
-    def test_rounding_41_62_matches_python_round(self):
+    def test_rounding_41_62_rounds_up(self):
         outputs = [_output("a", 41), _output("b", 62)]
         vol, count = calculate_master_volume(outputs)
-        assert vol == round((41 + 62) / 2)
+        assert vol == math.ceil((41 + 62) / 2)
         assert count == 2
+
+    def test_reports_zero_only_when_every_output_is_zero(self):
+        """A reported 0 means "muted" to consumers, and the appliance's own
+        mute handler treats "muted" as `not any(volume > 0)`. Rounding up is
+        what keeps those two definitions identical: any single non-zero
+        output must lift the reported master above 0.
+        """
+        assert calculate_master_volume(
+            [_output("a", 0), _output("b", 0), _output("c", 0)]
+        )[0] == 0
+        for vols in ([0, 0, 1], [0, 1], [0, 0, 0, 1], [1, 0, 0]):
+            outputs = [_output(str(i), v) for i, v in enumerate(vols)]
+            vol, _ = calculate_master_volume(outputs)
+            assert vol > 0, (
+                f"{vols} has an audible-in-principle output but reported "
+                f"master {vol}, which consumers would read as muted"
+            )
+
+    def test_rounding_up_costs_at_most_one_percent(self):
+        """The displayed level may read one higher than the true mean; it
+        must never drift further than that."""
+        for vols in ([40, 61], [33, 33, 34], [0, 0, 100], [50, 51], [7]):
+            outputs = [_output(str(i), v) for i, v in enumerate(vols)]
+            vol, _ = calculate_master_volume(outputs)
+            mean = sum(vols) / len(vols)
+            assert 0 <= vol - mean < 1
 
     def test_volume_clamped_below_zero(self):
         # Negative volume_percent clamped to 0

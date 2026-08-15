@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -850,7 +851,22 @@ def calculate_master_volume(outputs) -> tuple:
     """Return (master_volume, selected_output_count) for selected outputs.
 
     For each selected output, volume_percent is converted to int and clamped to
-    0..100.  Returns (round(sum/count), count), or (None, 0) when none selected.
+    0..100.  Returns (ceil(sum/count), count), or (None, 0) when none selected.
+
+    Rounds UP, deliberately. Consumers treat a reported 0 as "muted", and with
+    non-negative volumes ceil(mean) == 0 exactly when every selected output is
+    0 — which is the same condition send_dial_mute_post_json() itself uses to
+    decide whether the next mute press mutes or restores. Rounding to nearest
+    broke that equivalence: outputs of [0, 0, 1] average to 0.33 and reported
+    0, so a dial showed "muted" while the appliance still considered itself
+    unmuted, and the next press muted the remaining output instead of
+    restoring — the control appeared dead. Rounding up costs at most one
+    percentage point in the displayed level and makes the two agree exactly.
+
+    Note this is NOT the same rounding as send_dial_volume_post_json()'s own
+    current_master, which stays round-to-nearest on purpose: it feeds the
+    scale-from-zero special case that lifts every output back up when the
+    volume is nudged from silence.
     """
     volumes = [
         max(0, min(100, int(o.volume_percent)))
@@ -859,7 +875,7 @@ def calculate_master_volume(outputs) -> tuple:
     ]
     if not volumes:
         return (None, 0)
-    return (round(sum(volumes) / len(volumes)), len(volumes))
+    return (math.ceil(sum(volumes) / len(volumes)), len(volumes))
 
 
 def _dial_track_id_dict() -> dict:
