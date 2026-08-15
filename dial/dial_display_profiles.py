@@ -68,6 +68,14 @@ class DisplayProfile:
     # the library's base Display.image() rotates each frame in software
     # before sending it, per the rotation value passed to the driver.
     rotation_mechanism: str = "init_table"
+    # Optional MADCTL (0x36) byte written straight after construction, for
+    # panels whose driver hardcodes a portrait init table. The frame path
+    # packs RGB565 itself and writes one full-screen window through
+    # _block(), bypassing the library's Display.image() — so the library's
+    # software rotation never runs and the controller's own scan order is
+    # the only thing that can put the panel in landscape. None leaves the
+    # driver's init table untouched.
+    madctl: int | None = None
     baudrate: int = 16_000_000
     # RESERVED for a future touch panel: controller tag + bus type. Not
     # constructed or read anywhere yet — see the module docstring doctrine.
@@ -138,8 +146,14 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         rotation_mechanism="sw_per_frame",
         baudrate=32_000_000,
     ),
-    # Untested on hardware — nominal values. ILI9341 colour order/GRAM
-    # offsets vary by board and need confirming against real hardware.
+    # The panel is natively portrait: the pinned library hardcodes
+    # MADCTL=0x48 (MX|BGR, no row/column exchange) in its init table and
+    # defaults to width=240, height=320. Declaring 320x240 against that
+    # scan order addresses columns 0..319 on a controller whose column
+    # register spans 0..239, which wraps every row and mangles the image.
+    # madctl=0x28 sets MV (row/column exchange) and keeps BGR, so the
+    # controller scans landscape and a full-screen 320x240 window is valid.
+    # Use the rotate toggle if the chosen mounting wants the other way up.
     "ili9341_320x240": DisplayProfile(
         key="ili9341_320x240",
         label="ILI9341 (320x240)",
@@ -149,7 +163,8 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         x_offset=0,
         y_offset=0,
         rotation=0,
-        rotation_mechanism="sw_per_frame",
+        rotation_mechanism="init_table",
+        madctl=0x28,
         baudrate=32_000_000,
     ),
 }

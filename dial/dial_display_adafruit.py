@@ -36,6 +36,10 @@ _RESET_GPIO = 24
 _CS_GPIO = 8
 _BACKLIGHT_GPIO = 18
 
+# Memory Access Control — the register that selects the controller's scan
+# order. See DisplayProfile.madctl.
+_MADCTL_COMMAND = 0x36
+
 _BACKGROUND_RGB = (14, 40, 65)
 
 # Driver tag -> (module path, class name) for lazy import inside open().
@@ -225,6 +229,12 @@ class AdafruitDisplayBackend(DisplayBackend):
             kwargs["bl"] = backlight
 
         self._display = driver_class(spi, dc, cs, **kwargs)
+
+        if profile.madctl is not None:
+            # Override the driver's hardcoded memory-access-control byte so
+            # the controller scans in the profile's orientation. Must follow
+            # construction: the driver writes its own init table first.
+            self._display.write(_MADCTL_COMMAND, bytes([profile.madctl]))
 
         if not driver_owns_backlight:
             # The driver has no bl= kwarg (ST7789/ILI9341 in the pinned
