@@ -1002,13 +1002,14 @@ class TestDialCardHtmlStructure:
     def test_dial_sync_rotate_enabled_function_present(self):
         src = _setup_page_src()
         assert "function dialSyncScreenControlsEnabled" in src
-        # The fitted condition is computed once and applied to all three
+        # The fitted condition is computed once and applied to all four
         # controls, so the greying can never drift out of step with which
         # controls are actually disabled.
         assert "var off = fittedEl.disabled || !fittedEl.checked;" in src
         assert "rotateEl.disabled = off;" in src
         assert "bgrEl.disabled = off;" in src
         assert "typeEl.disabled = off;" in src
+        assert "touchEl.disabled = off;" in src
         # Old name must be gone entirely -- this was a clean rename, not an alias.
         assert "dialSyncRotateEnabled" not in src
 
@@ -1020,6 +1021,7 @@ class TestDialCardHtmlStructure:
         assert src.count('class="dial-screen-ctl-row"') >= 1
         assert 'dial-screen-bgr-row dial-screen-ctl-row' in src
         assert 'dial-screen-type-row dial-screen-ctl-row' in src
+        assert 'dial-screen-touch-row dial-screen-ctl-row' in src
         # ...the sync function toggles the dimmed state from the same
         # condition that disables the controls...
         assert "row.classList.toggle('is-disabled', off)" in src
@@ -1175,6 +1177,92 @@ class TestDialCardHtmlStructure:
         block = src[idx:next_fn]
         assert "'screen_apply_failed'" in block
         assert "Screen settings could not be applied" in block
+
+    # ── Screen settings (Touch Panel select) ──────────────────────────────────
+
+    def test_touch_select_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert '<select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>' in result
+
+    def test_touch_row_inside_locked_section_after_screen_type(self):
+        """The touch row must live in the locked section, after the
+        screen-type row, and before the Change Dial PIN button."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        locked_idx = result.find("dial-locked-section")
+        type_idx = result.find("dial-screen-type-row")
+        touch_idx = result.find("dial-screen-touch-row")
+        pin_btn_idx = result.find('data-dial-action="change-pin"')
+        assert locked_idx >= 0 and type_idx >= 0 and touch_idx >= 0 and pin_btn_idx >= 0
+        assert locked_idx < type_idx < touch_idx < pin_btn_idx
+
+    def test_touch_row_hidden_by_default(self):
+        """The touch row must be hidden until the dial publishes
+        `supported_touch`."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        touch_row_idx = result.find("dial-screen-touch-row")
+        assert touch_row_idx >= 0
+        touch_row_tag = result[touch_row_idx - 40:touch_row_idx + 80]
+        assert "display:none" in touch_row_tag
+
+    def test_touch_select_populated_and_cleared_in_load(self):
+        """dialLoadScreenSettings must clear existing touch options before
+        repopulating -- it runs on render, authorize, and PIN unlock, so
+        without a clear the options would duplicate."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "touchEl.innerHTML = ''" in body
+        assert "j.supported_touch" in body
+
+    def test_touch_caps_gate_flag_set_and_cleared(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.touchCaps = '1'" in body
+        assert "delete card.dataset.touchCaps" in body
+
+    def test_touch_caps_gate_independent_of_screen_caps(self):
+        """`supported_touch` is a SEPARATE capability array from `supported`
+        -- a dial can publish screen profiles but no touch capability at
+        all, so the two gate flags must be set from different response
+        fields and neither must depend on the other."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "var supported = Array.isArray(j.supported)" in body
+        assert "var supportedTouch = Array.isArray(j.supported_touch)" in body
+        assert "card.dataset.screenCaps = '1'" in body
+        assert "card.dataset.touchCaps = '1'" in body
+
+    def test_touch_save_body_gated_by_supported_touch_caps(self):
+        """The save body must include touch_type only when the touchCaps
+        gate flag is set -- an old dial 400s on an unknown field, which
+        would otherwise break the existing screen controls too. This gate
+        is independent of screenCaps: a dial can support screen profiles
+        without supporting touch."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.touchCaps === '1'" in body
+        assert "screen.touch_type = " in body
+        # The touch gate must be a separate `if` from the screen gate, not
+        # folded into the same condition.
+        touch_gate_idx = body.find("card.dataset.touchCaps === '1'")
+        screen_gate_idx = body.find("card.dataset.screenCaps === '1'")
+        assert screen_gate_idx >= 0 and touch_gate_idx >= 0
+        assert screen_gate_idx != touch_gate_idx
 
     def test_revoke_button_absent_in_source(self):
         """The source must not define a Revoke button element."""

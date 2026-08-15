@@ -470,6 +470,10 @@ def _dial_card_html(
                     <span>Screen Type:</span>
                     <select class="dial-screen-type" data-dial-action="save-screen" disabled></select>
                   </div>
+                  <div class="dial-screen-touch-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Touch Panel:</span>
+                    <select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>
+                  </div>
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
@@ -3040,11 +3044,13 @@ def send_setup_page(
           var rotateEl = card.querySelector('.dial-screen-rotate');
           var bgrEl = card.querySelector('.dial-screen-bgr');
           var typeEl = card.querySelector('.dial-screen-type');
+          var touchEl = card.querySelector('.dial-screen-touch');
           if (!fittedEl || !rotateEl) return;
           var off = fittedEl.disabled || !fittedEl.checked;
           rotateEl.disabled = off;
           if (bgrEl) bgrEl.disabled = off;
           if (typeEl) typeEl.disabled = off;
+          if (touchEl) touchEl.disabled = off;
           // Dim the rows too — a disabled input still renders its label text
           // at full contrast, which reads as available when it is not.
           card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
@@ -3284,8 +3290,10 @@ def send_setup_page(
             var rotateEl = card.querySelector('.dial-screen-rotate');
             var bgrEl = card.querySelector('.dial-screen-bgr');
             var typeEl = card.querySelector('.dial-screen-type');
+            var touchEl = card.querySelector('.dial-screen-touch');
             var bgrRow = card.querySelector('.dial-screen-bgr-row');
             var typeRow = card.querySelector('.dial-screen-type-row');
+            var touchRow = card.querySelector('.dial-screen-touch-row');
             if (fittedEl && j.screen && j.screen.fitted != null) {{
               fittedEl.checked = !!j.screen.fitted;
             }}
@@ -3318,6 +3326,30 @@ def send_setup_page(
               if (bgrRow) bgrRow.style.display = 'none';
               if (typeRow) typeRow.style.display = 'none';
             }}
+            // `supported_touch` is a SEPARATE capability array from
+            // `supported` — a dial can publish screen profiles but no touch
+            // capability at all, and must never receive touch_type in the
+            // save body or its strict whitelist rejects the whole save.
+            var supportedTouch = Array.isArray(j.supported_touch) ? j.supported_touch : [];
+            if (supportedTouch.length > 0) {{
+              card.dataset.touchCaps = '1';
+              if (touchEl) {{
+                touchEl.innerHTML = '';
+                supportedTouch.slice().sort(function(a, b) {{
+                  return String(a.text).localeCompare(String(b.text));
+                }}).forEach(function(opt) {{
+                  var o = document.createElement('option');
+                  o.value = opt.key;
+                  o.textContent = opt.text;
+                  touchEl.appendChild(o);
+                }});
+                if (j.screen && j.screen.touch_type != null) touchEl.value = j.screen.touch_type;
+              }}
+              if (touchRow) touchRow.style.display = 'flex';
+            }} else {{
+              delete card.dataset.touchCaps;
+              if (touchRow) touchRow.style.display = 'none';
+            }}
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
@@ -3332,6 +3364,7 @@ def send_setup_page(
           var rotateEl = card.querySelector('.dial-screen-rotate');
           var bgrEl = card.querySelector('.dial-screen-bgr');
           var typeEl = card.querySelector('.dial-screen-type');
+          var touchEl = card.querySelector('.dial-screen-touch');
           if (!fittedEl || !rotateEl) return;
           // POST /screen/settings replaces the whole object, and any field
           // left out is reset to its default. dialLoadConfig and
@@ -3350,6 +3383,12 @@ def send_setup_page(
           if (card.dataset.screenCaps === '1') {{
             screen.bgr = bgrEl ? bgrEl.checked : false;
             screen.screen_type = typeEl ? typeEl.value : '';
+          }}
+          // Independent capability gate: a dial can support screen profiles
+          // without supporting touch, so touch_type is only ever included
+          // once the dial has published `supported_touch` separately.
+          if (card.dataset.touchCaps === '1') {{
+            screen.touch_type = touchEl ? touchEl.value : '';
           }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{

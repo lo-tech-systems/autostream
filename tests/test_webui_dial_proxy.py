@@ -710,6 +710,72 @@ class TestHandleDialScreenSettings:
         }
         assert "uuid" not in sent_body
 
+    def test_get_passes_through_supported_touch_and_touch_type_verbatim(self):
+        """`supported_touch` is a SEPARATE capability array from `supported`
+        -- a dial can publish screen profiles with no touch capability at
+        all, so touch_type and supported_touch must reach the browser
+        unaltered just like the screen fields do. The proxy is a generic
+        pass-through and must not reshape the payload."""
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":false,"screen_type":"ips_2in","bgr":true,'
+                 b'"touch_type":"resistive"},'
+                 b'"supported":[{"key":"ips_2in","text":"2.0 inch IPS"}],'
+                 b'"supported_touch":[{"key":"resistive","text":"Resistive"},{"key":"capacitive","text":"Capacitive"}],'
+                 b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
+                 b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json") as mock_send, \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_get(MagicMock(), "uuid")
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/screen/settings"
+        code, data = mock_send.call_args[0][1], mock_send.call_args[0][2]
+        assert code == 200
+        assert data["screen"] == {
+            "fitted": True, "rotate": False, "screen_type": "ips_2in", "bgr": True,
+            "touch_type": "resistive",
+        }
+        assert data["supported_touch"] == [
+            {"key": "resistive", "text": "Resistive"},
+            {"key": "capacitive", "text": "Capacitive"},
+        ]
+
+    def test_post_body_with_touch_type_passes_through_verbatim(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":true,"screen_type":"tft_1in3","bgr":false,'
+                 b'"touch_type":"capacitive"},'
+                 b'"runtime":{},"restart_required":false}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_post(
+                MagicMock(),
+                {
+                    "uuid": "my-uuid",
+                    "current_pin": "1234",
+                    "screen": {
+                        "fitted": True, "rotate": True, "screen_type": "tft_1in3",
+                        "bgr": False, "touch_type": "capacitive",
+                    },
+                },
+            )
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/screen/settings"
+        _, call_kwargs = conn.request.call_args
+        sent_body = json.loads(call_kwargs["body"])
+        assert sent_body == {
+            "current_pin": "1234",
+            "screen": {
+                "fitted": True, "rotate": True, "screen_type": "tft_1in3",
+                "bgr": False, "touch_type": "capacitive",
+            },
+        }
+        assert "uuid" not in sent_body
+
 
 # ---------------------------------------------------------------------------
 # Authorize / revoke handler validation
