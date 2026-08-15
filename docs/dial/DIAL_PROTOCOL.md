@@ -128,19 +128,25 @@ not present in `dials.json`.
 UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
 required. Same authorization check as `POST /api/dial/volume`.
 
-Toggles mute across all currently selected OwnTone outputs. A snapshot of pre-mute volumes
-is kept so the restore action can return each output to its original level; the pending
-action (mute or restore) survives partial failures so a retry press completes the
-interrupted operation rather than toggling back too early.
+Applies an **explicit** mute or restore action across all currently selected OwnTone
+outputs. The appliance never infers the action from its own volumes — the dial owns the
+single fleet-wide toggle decision and states it, so every appliance in a fleet performs the
+same action regardless of the level it happens to be sitting at. A snapshot of pre-mute
+volumes is kept so the restore action can return each output to its original level.
+
+Both actions are idempotent: `"mute"` on an already-silent selection and `"restore"` on an
+already-audible one succeed as no-ops. A command lost to a timeout therefore self-corrects
+on the next press rather than leaving that appliance inverted.
 
 **Request body:**
 ```json
-{"dial_id": "<id>"}
+{"dial_id": "<id>", "action": "mute"}
 ```
 
 | Field | Type | Constraints |
 |---|---|---|
 | `dial_id` | string | Dial identity (20 lowercase hex chars); must be present in `dials.json` |
+| `action` | string | Exactly `"mute"` or `"restore"`. Required; case-sensitive |
 
 **Success response (200) — muted:**
 ```json
@@ -158,7 +164,7 @@ interrupted operation rather than toggling back too early.
 ```
 
 Some outputs updated successfully; others failed. Not all outputs failed. (`muted` reflects
-the action that was in progress — `true` while muting, `false` while restoring.)
+the requested action — `true` for `"mute"`, `false` for `"restore"`.)
 
 **Failure responses (200 body, not HTTP error):**
 
@@ -171,6 +177,16 @@ the action that was in progress — `true` while muting, `false` while restoring
 
 **Authorization failure: 403** (empty body). Returned when `dial_id` is absent, empty, or
 not present in `dials.json`. Matches `POST /api/dial/volume` behavior.
+
+**Invalid action: 400**
+```json
+{"ok": false, "error": "invalid_action"}
+```
+
+Returned when `action` is absent, not a string, or not exactly `"mute"` or `"restore"`.
+Authorization is checked **before** the action, so an unauthorized caller receives 403
+rather than 400 even when its action is well-formed — a rejection never reveals whether the
+dial is authorized.
 
 ---
 
@@ -685,6 +701,12 @@ UUID-in-body authorization as `POST /api/dial/volume` and was added to the appli
 without a new mDNS indicator, in the same manner as the `track_id` extension to
 `dial_status=v1` (see §2). A dial firmware built against this protocol version can assume
 `/api/dial/mute` is present; there is no runtime way to detect its absence via mDNS.
+
+`action` became a required field on `/api/dial/mute` after the endpoint moved from an
+implicit toggle to an explicit instruction. Strictly this is a schema break under the rules
+below, but it was taken without a `v2` bump: the endpoint had no deployed dial firmware
+relying on the old body, and there is no mDNS indicator that could have distinguished the
+two forms anyway. A dial predating the change sends no `action` and receives 400.
 
 Breaking changes (new `v2`):
 - Any change to request/response schema that removes or renames required fields.
