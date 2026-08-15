@@ -3,10 +3,18 @@
 Panel geometry (dimensions, offsets, rotation, baudrate) comes from a
 DisplayProfile (see dial_display_profiles.py); wiring (which BCM pins carry
 DC/reset/CS/backlight) is fixed across all profiles and stays in this
-module. Hardware imports (board, busio, digitalio, adafruit_rgb_display)
-happen only inside open(), never at module import time, so a display-disabled
-dial never touches SPI/GPIO and starts normally even when the Adafruit
-package is not installed.
+module. Hardware imports (board, digitalio, adafruit_rgb_display) happen
+only inside open(), never at module import time, so a display-disabled dial
+never touches SPI/GPIO and starts normally even when the Adafruit package is
+not installed.
+
+The SPI0 bus itself is NOT constructed here: it is process-lifetime and
+shared with a future touch controller, so dial_spi_bus.py owns constructing
+it (lazily, on first use) and this backend only ever borrows it via
+dial_spi_bus.get_bus(). close() never deinits it — see close() below.
+dial_spi_bus is pure Python with no hardware imports at module scope, so
+importing it here at module level is safe under the same discipline as
+dial_display_profiles.py.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -14,6 +22,7 @@ from __future__ import annotations
 
 import logging
 
+import dial_spi_bus
 from dial_display import DisplayBackend
 from dial_display_profiles import DEFAULT_PROFILE_KEY, DisplayProfile, backend_name_for, get_profile
 
@@ -130,6 +139,7 @@ class AdafruitDisplayBackend(DisplayBackend):
         self.height = profile.height
         self._display = None
         self._backlight = None
+        self._spi = None
 
     def open(self) -> None:
         profile = self._profile
@@ -139,17 +149,16 @@ class AdafruitDisplayBackend(DisplayBackend):
         driver_class = _resolve_driver_class(profile.driver_tag)
 
         import board
-        import busio
         import digitalio
 
+        # The bus is process-lifetime and shared with a future touch
+        # controller — dial_spi_bus owns constructing (and only
+        # constructing) it exactly once; this backend never tears it down.
         try:
-            spi = busio.SPI(
-                clock=_board_pin(board, 11, "SCLK"),
-                MOSI=_board_pin(board, 10, "MOSI"),
-                MISO=_board_pin(board, 9, "MISO"),
-            )
+            spi = dial_spi_bus.get_bus()
         except Exception as e:
             raise RuntimeError(f"open SPI0 failed: {e}") from e
+        self._spi = spi
 
         cs = _claim_chip_select_or_none(digitalio, _board_pin(board, _CS_GPIO, "CE0"))
         dc = _claim_digital_out(digitalio, _board_pin(board, _DC_GPIO), "GPIO25 data-command")
@@ -184,6 +193,13 @@ class AdafruitDisplayBackend(DisplayBackend):
         self._backlight = backlight
 
     def close(self) -> None:
+        # Deliberately does NOT deinit or release self._spi: the bus is
+        # owned by dial_spi_bus for the lifetime of the process, not by this
+        # backend. A screen_type swap (close() on the old profile's backend
+        # followed by open() on the new one) must not tear the bus out from
+        # under a touch controller sharing it — close() only releases what
+        # this backend uniquely owns (the backlight pin and the driver
+        # object).
         if self._backlight is not None:
             try:
                 self._backlight.value = False
@@ -195,6 +211,7 @@ class AdafruitDisplayBackend(DisplayBackend):
                 pass
             self._backlight = None
         self._display = None
+        self._spi = None
 
     def clear(self) -> None:
         if self._display is None:

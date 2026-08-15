@@ -23,8 +23,19 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_display_adafruit as dda
+import dial_spi_bus
 from dial_display_adafruit import AdafruitDisplayBackend, AdafruitST7735SBackend
 from dial_display_profiles import DISPLAY_PROFILES, get_profile
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_spi_bus():
+    """dial_spi_bus.get_bus() is a process-wide singleton — reset it around
+    every test in this module so one test's fake bus doesn't leak into the
+    next (mirrors _install_fake_hardware_modules()'s per-test module fakes)."""
+    dial_spi_bus._reset_for_tests()
+    yield
+    dial_spi_bus._reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +321,88 @@ class TestMockedHardwareBackend:
 
         args, kwargs = st7735_ctor.call_args
         assert args[2] is None
+
+
+# ---------------------------------------------------------------------------
+# Shared SPI bus ownership: the backend borrows the bus from dial_spi_bus
+# and must never construct or dispose of it itself.
+# ---------------------------------------------------------------------------
+
+class TestSharedSpiBus:
+    def test_open_obtains_bus_from_shared_owner_not_directly(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+
+        # busio.SPI() is called exactly once — by dial_spi_bus.get_bus(),
+        # not a second time directly by the backend.
+        spi_ctor.assert_called_once_with(clock="GPIO11", MOSI="GPIO10", MISO="GPIO9")
+        args, kwargs = st7735_ctor.call_args
+        assert args[0] is spi_ctor.return_value
+
+    def test_two_open_close_cycles_reuse_the_same_bus_object(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            first_spi = backend._spi
+            backend.close()
+
+            backend.open()
+            second_spi = backend._spi
+            backend.close()
+
+        assert first_spi is second_spi
+        # Only ever constructed once across both cycles.
+        spi_ctor.assert_called_once()
+
+    def test_close_leaves_the_shared_bus_usable_not_deinitted(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            bus = dial_spi_bus.get_bus()
+            backend.close()
+
+        # close() must not touch the shared bus at all.
+        bus.deinit.assert_not_called()
+        assert dial_spi_bus.get_bus() is bus
+
+    def test_screen_type_swap_keeps_same_bus(self):
+        """close() on one profile's backend followed by open() on a
+        different profile's backend (a screen_type swap) must not tear the
+        shared bus out from under it — the same bus object comes back."""
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        modules2, dio_ctor2, st7789_ctor, fake_display2 = (
+            _install_fake_hardware_modules_for("st7789", "st7789", "ST7789")
+        )
+        # Keep the same fake busio module (and therefore the same SPI
+        # constructor mock) across both fake-hardware installs so the two
+        # backends observe the identical shared bus.
+        modules2["busio"] = modules["busio"]
+
+        with patch.dict(sys.modules, modules):
+            old_backend = AdafruitST7735SBackend()
+            old_backend.open()
+            old_spi = old_backend._spi
+            old_backend.close()
+
+        with patch.dict(sys.modules, modules2):
+            new_backend = AdafruitDisplayBackend(get_profile("st7789_320x240"))
+            new_backend.open()
+            new_spi = new_backend._spi
+
+        assert new_spi is old_spi
+        spi_ctor.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
