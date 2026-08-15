@@ -349,6 +349,7 @@ def _dial_card_html(
     last_seen: str = "",
     fw_version: str = "",
     needs_update: bool = False,
+    pin_recovery: bool = False,
 ) -> str:
     """Normalised dial card for any authorization/online state.
 
@@ -356,6 +357,15 @@ def _dial_card_html(
       data-authorized  "true" | "false"
       data-online      "true" | "false"
       data-new         present when authorized is False
+
+    pin_recovery renders an additional "Recovery Active" badge alongside the
+    online/offline/new badge, reflecting the dial's mDNS pin_recovery=1 TXT
+    flag as known at page-render time. Callers must not pass True for a dial
+    with no live sighting (offline dials cannot be advertising a recovery
+    window). Because this snapshot can go stale within the 10-minute
+    recovery window, the PIN-recovery modal's own status poller keeps the
+    badge in sync (add/remove) for a card while that modal is open — see
+    openDialPinRecoveryModal()/_dialSetRecoveryBadge() below.
     """
     su = html.escape(uuid)
     nv = html.escape(name or "")
@@ -366,6 +376,11 @@ def _dial_card_html(
         badge_cls, badge_text = "dial-badge-offline", "Offline"
     else:
         badge_cls, badge_text = "dial-badge-new", "New"
+
+    recovery_badge_html = (
+        '<span class="dial-badge dial-badge-recovery">Recovery Active</span>'
+        if pin_recovery else ""
+    )
 
     title_text = html.escape(name if name else uuid[:16])
     fw_span = (
@@ -399,7 +414,10 @@ def _dial_card_html(
                 <div>
                   <span class="dial-card-title">{title_text}</span>{fw_span}
                 </div>
-                <span class="dial-badge {badge_cls}">{badge_text}</span>
+                <span style="display:flex;align-items:center;gap:0.35rem;">
+                  <span class="dial-badge {badge_cls}">{badge_text}</span>
+                  {recovery_badge_html}
+                </span>
               </div>
               <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                 <label class="output-toggle" style="margin:0;">
@@ -1367,6 +1385,7 @@ def send_setup_page(
         _fw = (_sighting.version or "") if _sighting else ""
         _needs_upd = bool(_sighting and _sighting.version and _app_ver and _sighting.version != _app_ver)
         _ls = str(getattr(_entry, "last_seen", "") or "")
+        _pin_recovery = bool(_sighting.pin_recovery) if _sighting is not None else False
         _dial_cards_html += _dial_card_html(
             uuid=_entry.uuid,
             name=_name,
@@ -1375,6 +1394,7 @@ def send_setup_page(
             last_seen=_ls,
             fw_version=_fw,
             needs_update=_needs_upd,
+            pin_recovery=_pin_recovery,
         )
     for _sighting in _all_sightings:
         if _sighting.uuid not in _authorized_uuids:
@@ -1387,6 +1407,7 @@ def send_setup_page(
                 online=True,
                 fw_version=_new_fw,
                 needs_update=_new_needs_upd,
+                pin_recovery=bool(_sighting.pin_recovery),
             )
     if not _dial_cards_html:
         _dial_cards_html = (
@@ -1558,6 +1579,7 @@ def send_setup_page(
 .dial-badge-new{background:var(--color-accent,#007bff);color:#fff;}
 .dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
 .dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
+.dial-badge-recovery{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
 /* Matches the setup list cards' 0.62rem bottom margin so the Dials panel
@@ -3011,6 +3033,27 @@ def send_setup_page(
         var _ICON_PADLOCK_LOCKED = `{ICON_PADLOCK_LOCKED}`;
         var _ICON_PADLOCK_UNLOCKED = `{ICON_PADLOCK_UNLOCKED}`;
 
+        function _dialSetRecoveryBadge(card, active) {{
+          // Keeps the server-rendered "Recovery Active" badge honest for a
+          // card while its PIN-recovery modal is open: the modal already
+          // polls /api/dial/pin_recovery/status/<uuid> every 2s, so this
+          // reuses that response instead of opening a new polling loop.
+          var group = card.querySelector('.dial-badge');
+          if (!group || !group.parentElement) return;
+          var wrap = group.parentElement;
+          var badge = wrap.querySelector('.dial-badge-recovery');
+          if (active) {{
+            if (!badge) {{
+              badge = document.createElement('span');
+              badge.className = 'dial-badge dial-badge-recovery';
+              badge.textContent = 'Recovery Active';
+              wrap.appendChild(badge);
+            }}
+          }} else if (badge) {{
+            badge.remove();
+          }}
+        }}
+
         function setDialAuthorized(card, authorized) {{
           card.dataset.authorized = authorized ? 'true' : 'false';
           if (authorized) {{ delete card.dataset.new; }} else {{ card.dataset.new = 'true'; }}
@@ -3630,8 +3673,18 @@ def send_setup_page(
                 cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
               }});
               var pollResult = await _parseDialResponse(r);
-              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery — wait silently
               var body = pollResult.body || {{}};
+              // A boolean `active` is only ever present when the dial itself
+              // answered — on both the in-recovery 200 and the not-in-recovery
+              // 404 that the proxy tunnels through HTTP 200. Transport
+              // failures carry no `active`, so an unreachable dial leaves the
+              // badge as-is rather than falsely clearing it.
+              if (typeof body.active === 'boolean') {{
+                var pollRemainingMs = body.recovery_remaining_ms;
+                _dialSetRecoveryBadge(card, body.active === true &&
+                  !(typeof pollRemainingMs === 'number' && pollRemainingMs <= 0));
+              }}
+              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery — wait silently
               if (body.can_confirm_presence === false) {{
                 _dialPinRecoveryCannotConfirm();
                 return;
@@ -3708,6 +3761,7 @@ def send_setup_page(
             if (result.ok) {{
               card.dataset.pinSet = 'true';
               _updateDialLockVisibility(card);
+              _dialSetRecoveryBadge(card, false);
               dialMsg(card, 'PIN reset', true);
               closeDialPinRecoveryModal();
             }} else {{

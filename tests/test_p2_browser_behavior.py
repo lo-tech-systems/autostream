@@ -1489,3 +1489,166 @@ class TestDialPinRecoveryCountdownAndExpiry:
         poll_body = src[start2:end2] if end2 > 0 else src[start2:start2 + 3000]
         assert "can_confirm_presence === false" in poll_body
         assert "_dialPinRecoveryCannotConfirm" in poll_body
+
+
+# ---------------------------------------------------------------------------
+# §7.7  Dial card "Recovery Active" badge (pin_recovery surfaced from mDNS)
+# ---------------------------------------------------------------------------
+
+class TestDialCardRecoveryBadge:
+    """The dial card must surface DialSighting.pin_recovery as a badge, and
+    keep it reasonably fresh without a dedicated always-on polling loop."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_badge_renders_when_pin_recovery_true(self):
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=True
+        )
+        assert "Recovery Active" in result
+
+    def test_badge_absent_when_pin_recovery_false(self):
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=False
+        )
+        assert "Recovery Active" not in result
+        assert "dial-badge-recovery" not in result
+
+    def test_badge_defaults_to_absent(self):
+        """pin_recovery defaults to False when a caller omits it."""
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert "Recovery Active" not in result
+
+    def test_badge_has_shared_and_variant_class(self):
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=True
+        )
+        idx = result.find("Recovery Active")
+        assert idx >= 0
+        tag_start = result.rfind("<span", 0, idx)
+        tag = result[tag_start:idx]
+        assert "dial-badge" in tag
+        assert "dial-badge-recovery" in tag
+
+    def test_badge_css_variant_defined(self):
+        src = self._src()
+        idx = src.find(".dial-badge-recovery")
+        assert idx >= 0
+        rule = src[idx:idx + 200]
+        assert "background" in rule
+
+    def test_badge_css_uses_warning_variable_not_new_hex(self):
+        """Should reuse the existing danger/warning colour token rather than
+        inventing a new literal colour, and stay distinct from the other
+        three badge variants (accent/success/muted)."""
+        src = self._src()
+        idx = src.find(".dial-badge-recovery")
+        assert idx >= 0
+        rule = src[idx:idx + 200]
+        assert "var(--color-status-warning" in rule
+
+    def test_badge_coexists_with_online_badge(self):
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=True
+        )
+        assert "dial-badge-online" in result
+        assert "dial-badge-recovery" in result
+        assert "Online" in result
+        assert "Recovery Active" in result
+
+    def test_offline_authorized_dial_without_sighting_never_shows_badge(self):
+        """An authorized-but-offline dial has no live sighting, so it cannot
+        be advertising a recovery window; callers must not be able to pass
+        pin_recovery=True for it in practice, and the render path itself
+        must not surface the badge for an offline card."""
+        sys.path.insert(0, str(REPO_ROOT / "core"))
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=False, pin_recovery=False
+        )
+        assert "Recovery Active" not in result
+        assert 'data-online="false"' in result
+
+    def test_setup_page_loop_ties_pin_recovery_to_sighting_presence(self):
+        """The card-building loop must not pass pin_recovery=True unless a
+        live sighting exists (offline dials never advertise recovery)."""
+        src = self._src()
+        idx = src.find("_pin_recovery = bool(_sighting.pin_recovery) if _sighting is not None else False")
+        assert idx >= 0
+        # And it must actually be threaded into the _dial_card_html call.
+        call_idx = src.find("pin_recovery=_pin_recovery", idx)
+        assert call_idx >= 0
+
+    # ── Freshness mechanism: recovery modal poller keeps the badge honest ──
+
+    def test_recovery_badge_sync_helper_present(self):
+        src = self._src()
+        assert "function _dialSetRecoveryBadge" in src
+
+    def test_recovery_poller_calls_badge_sync_helper(self):
+        """Chosen freshness strategy: reuse the existing per-2s
+        /api/dial/pin_recovery/status/<uuid> poll inside the recovery modal
+        to add/remove the badge live, rather than adding a new polling loop."""
+        src = self._src()
+        start = src.find("function openDialPinRecoveryModal")
+        assert start >= 0
+        end = src.find("\n        function _dialPinRecoveryTransitionToSet", start)
+        body = src[start:end] if end > 0 else src[start:start + 3000]
+        assert "_dialSetRecoveryBadge" in body
+
+    def test_badge_sync_runs_before_the_not_ok_early_return(self):
+        """A dial that is not in a recovery window answers 404, which the
+        proxy tunnels as ok:false with the dial's own active:false in the
+        body. The badge must therefore be synced before the not-ok early
+        return, or an expired window would leave the badge showing until
+        the page is reloaded."""
+        src = self._src()
+        start = src.find("function openDialPinRecoveryModal")
+        assert start >= 0
+        end = src.find("\n        function _dialPinRecoveryTransitionToSet", start)
+        body = src[start:end] if end > 0 else src[start:start + 3000]
+        sync_at = body.find("_dialSetRecoveryBadge")
+        guard_at = body.find("if (!pollResult.ok) return;")
+        assert sync_at >= 0 and guard_at >= 0
+        assert sync_at < guard_at
+
+    def test_badge_sync_skipped_when_dial_did_not_answer(self):
+        """An unreachable dial carries no boolean `active`, so the badge is
+        left as-is rather than being falsely cleared by a transport error."""
+        src = self._src()
+        start = src.find("function openDialPinRecoveryModal")
+        end = src.find("\n        function _dialPinRecoveryTransitionToSet", start)
+        body = src[start:end] if end > 0 else src[start:start + 3000]
+        assert "typeof body.active === 'boolean'" in body
+
+    def test_badge_sync_helper_reads_and_writes_dial_badge_recovery_class(self):
+        src = self._src()
+        start = src.find("function _dialSetRecoveryBadge")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        body = src[start:end] if end > 0 else src[start:start + 1500]
+        assert "dial-badge-recovery" in body
+
+    def test_pin_reset_completion_clears_badge(self):
+        """Once a PIN is successfully set the recovery window is over from
+        the admin's perspective, so the badge should be cleared immediately
+        rather than waiting for the next poll or page reload."""
+        src = self._src()
+        start = src.find("async function handleDialPinRecoveryOk")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        if end < 0:
+            end = src.find("\n        async function ", start + 1)
+        body = src[start:end] if end > 0 else src[start:start + 2000]
+        assert "_dialSetRecoveryBadge(card, false)" in body
