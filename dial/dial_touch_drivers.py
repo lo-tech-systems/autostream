@@ -9,8 +9,8 @@ like dial_display_adafruit._resolve_driver_class().
 
 Two driver tags:
   - "xpt2046" — resistive touch (also covers HR2046/ADS7846 clones), an
-    in-repo SPI implementation with no new pip dependency, sharing the SPI0
-    bus with the display via dial_spi_bus.
+    in-repo SPI implementation with no new pip dependency, on its own SPI1
+    bus via dial_spi_bus (separate from the display's SPI0).
   - "ft6206" — capacitive touch (FT6206/FT6236) over I2C, using whichever
     adafruit_ft6206 library happens to be installed; imported lazily and
     reported cleanly (RuntimeError, not a bare ImportError traceback) if
@@ -23,11 +23,23 @@ from __future__ import annotations
 
 import dial_spi_bus
 
-# Fixed touch wiring (Raspberry Pi), independent of controller choice. CE1
-# is the SPI chip-select the touch controller sits on (the display uses
-# CE0/GPIO8 — see dial_display_adafruit.py); T_IRQ is the touch controller's
-# active-low interrupt line, polled/waited-on by dial_touch.TouchEventSource.
-_TOUCH_CS_GPIO = 7   # CE1
+# Fixed touch wiring (Raspberry Pi), independent of controller choice.
+#
+# The controller sits on SPI1 (see dial_spi_bus.TOUCH_BUS), physically
+# separate from the display's SPI0 — so no header pin has to carry two
+# wires and a frame push can never delay a sample.
+#
+# Chip select is a PLAIN GPIO driven by this driver, not a hardware CE
+# line. Both controllers' CE pins are claimed by the kernel the moment
+# their bus is enabled (spi0 CS0/CS1 on GPIO8/GPIO7, and SPI1's chip
+# select likewise), so a hardware CE cannot be claimed here — and unlike
+# the display, this driver has no fallback to hardware chip-select
+# available, because busio.SPI does not drive CS at all. It must therefore
+# be a GPIO nothing else owns.
+#
+# T_IRQ is the controller's active-low interrupt line, polled/waited-on by
+# dial_touch.TouchEventSource.
+_TOUCH_CS_GPIO = 23   # plain GPIO, driven by this driver
 _TOUCH_IRQ_GPIO = 26  # T_IRQ, active-low
 
 # XPT2046 control-byte command set (12-bit mode, single-ended, power-down
@@ -57,9 +69,9 @@ def _board_pin(board_module, gpio: int, *aliases: str):
 
 class XPT2046Driver:
     """In-repo resistive touch driver for XPT2046 and its HR2046/ADS7846
-    pin-compatible clones. Shares the SPI0 bus constructed by
-    dial_spi_bus.get_bus() with the display; owns nothing but its own chip
-    select.
+    pin-compatible clones. Uses the SPI1 bus constructed by
+    dial_spi_bus.get_bus(TOUCH_BUS) — separate from the display's SPI0 —
+    and owns nothing but its own chip select.
     """
 
     def __init__(self) -> None:
@@ -71,11 +83,11 @@ class XPT2046Driver:
         import digitalio
 
         try:
-            self._spi = dial_spi_bus.get_bus()
+            self._spi = dial_spi_bus.get_bus(dial_spi_bus.TOUCH_BUS)
         except Exception as e:
-            raise RuntimeError(f"open SPI0 failed: {e}") from e
+            raise RuntimeError(f"open SPI1 failed: {e}") from e
 
-        cs = digitalio.DigitalInOut(_board_pin(board, _TOUCH_CS_GPIO, "CE1"))
+        cs = digitalio.DigitalInOut(_board_pin(board, _TOUCH_CS_GPIO))
         cs.switch_to_output(value=True)
         self._cs = cs
 
@@ -96,12 +108,11 @@ class XPT2046Driver:
         Per dial_spi_bus's baudrate contract, the whole acquire-configure-
         transfer-release sequence happens inside a single transaction-lock
         hold, and the baudrate is (re)configured every time — never assumed
-        left over from whichever transaction (display or a previous touch
-        read) last held the bus.
+        left over from a previous read.
         """
         if self._spi is None:
             return None
-        with dial_spi_bus.spi_transaction():
+        with dial_spi_bus.spi_transaction(dial_spi_bus.TOUCH_BUS):
             while not self._spi.try_lock():
                 pass
             try:

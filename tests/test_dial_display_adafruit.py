@@ -43,9 +43,10 @@ from dial_display_profiles import DISPLAY_PROFILES, get_profile
 
 @pytest.fixture(autouse=True)
 def _reset_shared_spi_bus():
-    """dial_spi_bus.get_bus() is a process-wide singleton — reset it around
-    every test in this module so one test's fake bus doesn't leak into the
-    next (mirrors _install_fake_hardware_modules()'s per-test module fakes)."""
+    """dial_spi_bus.get_bus(spec) is a process-wide singleton per bus — reset
+    it around every test in this module so one test's fake bus doesn't leak
+    into the next (mirrors _install_fake_hardware_modules()'s per-test module
+    fakes)."""
     dial_spi_bus._reset_for_tests()
     yield
     dial_spi_bus._reset_for_tests()
@@ -412,12 +413,12 @@ class TestSharedSpiBus:
         with patch.dict(sys.modules, modules):
             backend = AdafruitST7735SBackend()
             backend.open()
-            bus = dial_spi_bus.get_bus()
+            bus = dial_spi_bus.get_bus(dial_spi_bus.DISPLAY_BUS)
             backend.close()
 
         # close() must not touch the shared bus at all.
         bus.deinit.assert_not_called()
-        assert dial_spi_bus.get_bus() is bus
+        assert dial_spi_bus.get_bus(dial_spi_bus.DISPLAY_BUS) is bus
 
     def test_screen_type_swap_keeps_same_bus(self):
         """close() on one profile's backend followed by open() on a
@@ -447,6 +448,22 @@ class TestSharedSpiBus:
 
         assert new_spi is old_spi
         spi_ctor.assert_called_once()
+
+    def test_open_requests_display_bus_specifically(self):
+        """The backend must ask dial_spi_bus for DISPLAY_BUS (SPI0), not
+        just call get_bus() with any argument — a wrong spec here would put
+        display frames on the touch controller's physical bus."""
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        with patch.dict(sys.modules, modules):
+            with patch.object(
+                dial_spi_bus, "get_bus", wraps=dial_spi_bus.get_bus
+            ) as get_bus_spy:
+                backend = AdafruitST7735SBackend()
+                backend.open()
+
+        get_bus_spy.assert_called_once_with(dial_spi_bus.DISPLAY_BUS)
 
 
 # ---------------------------------------------------------------------------

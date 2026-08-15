@@ -8,10 +8,11 @@ only inside open(), never at module import time, so a display-disabled dial
 never touches SPI/GPIO and starts normally even when the Adafruit package is
 not installed.
 
-The SPI0 bus itself is NOT constructed here: it is process-lifetime and
-shared with a future touch controller, so dial_spi_bus.py owns constructing
-it (lazily, on first use) and this backend only ever borrows it via
-dial_spi_bus.get_bus(). close() never deinits it — see close() below.
+The SPI0 bus itself is NOT constructed here: it is process-lifetime, so
+dial_spi_bus.py owns constructing it (lazily, on first use) and this backend
+only ever borrows it via dial_spi_bus.get_bus(DISPLAY_BUS). close() never
+deinits it — see close() below. The touch controller sits on its own
+separate bus (SPI1), so nothing else contends for this one.
 dial_spi_bus is pure Python with no hardware imports at module scope, so
 importing it here at module level is safe under the same discipline as
 dial_display_profiles.py.
@@ -201,7 +202,7 @@ class AdafruitDisplayBackend(DisplayBackend):
         # controller — dial_spi_bus owns constructing (and only
         # constructing) it exactly once; this backend never tears it down.
         try:
-            spi = dial_spi_bus.get_bus()
+            spi = dial_spi_bus.get_bus(dial_spi_bus.DISPLAY_BUS)
         except Exception as e:
             raise RuntimeError(f"open SPI0 failed: {e}") from e
         self._spi = spi

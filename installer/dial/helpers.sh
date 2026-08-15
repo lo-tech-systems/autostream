@@ -114,6 +114,36 @@ enable_spi0() {
     fi
 }
 
+enable_spi1() {
+    # Enables the Raspberry Pi auxiliary SPI1 controller, which the resistive
+    # touch driver uses. raspi-config has no knob for SPI1 (do_spi covers SPI0
+    # only), so this appends the overlay to config.txt directly.
+    #
+    # cs0_pin=16 is deliberate and must not be dropped: the overlay's default
+    # chip-select is GPIO18, which is the display's backlight pin. Moving it
+    # to GPIO16 (unused by the dial) keeps the backlight ours. The touch
+    # driver drives its own chip select from a plain GPIO regardless, because
+    # the kernel claims whichever pin the overlay names.
+    #
+    # Called unconditionally, like enable_i2c: the overlay costs nothing with
+    # no panel attached, and this avoids re-running the installer when a
+    # resistive panel is fitted later. Takes effect on the next boot.
+    local cfg="${1:-/boot/firmware/config.txt}"
+    local line="dtoverlay=spi1-1cs,cs0_pin=16"
+
+    if [[ ! -f "${cfg}" ]]; then
+        echo "WARNING: ${cfg} not found — enable SPI1 manually if a resistive touch panel is fitted" >&2
+        return 0
+    fi
+    # Match any spi1 overlay, however parameterised, so a hand-edited or
+    # previously-installed variant is left alone rather than duplicated.
+    if grep -qE '^[[:space:]]*dtoverlay=spi1(-[0-9]cs)?([[:space:]]*|,.*)$' "${cfg}"; then
+        return 0
+    fi
+    printf '%s\n' "${line}" >> "${cfg}" \
+        || echo "WARNING: could not append SPI1 overlay to ${cfg} — enable it manually if a resistive touch panel is fitted" >&2
+}
+
 enable_i2c() {
     # Enables Raspberry Pi I2C for a future capacitive (FT6206/FT6236) touch
     # panel backend. Called unconditionally: enabling I2C with nothing

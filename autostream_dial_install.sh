@@ -147,6 +147,7 @@ install_image_packages
 install_display_hardware_packages
 add_spi_group
 enable_spi0
+enable_spi1
 enable_i2c
 
 # ---- Deploy images ----------------------------------------------------------

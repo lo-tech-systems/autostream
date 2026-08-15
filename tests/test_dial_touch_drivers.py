@@ -34,9 +34,11 @@ def _reset_spi_bus():
 def _install_fake_board_and_digitalio(monkeypatch, fake_spi):
     """Install fake `board` and `digitalio` modules into sys.modules so the
     driver's lazy `import board` / `import digitalio` inside open() resolve
-    to test doubles, and monkeypatch dial_spi_bus.get_bus() to hand back a
-    controllable fake SPI object."""
-    fake_board = types.SimpleNamespace(GPIO7="GPIO7-pin", CE1="CE1-pin")
+    to test doubles, and monkeypatch dial_spi_bus.get_bus(spec) to hand back
+    a controllable fake SPI object regardless of which spec is passed (the
+    driver's choice of spec is asserted separately, via a spy, where it
+    matters)."""
+    fake_board = types.SimpleNamespace(GPIO23="GPIO23-pin")
     fake_digitalio = types.ModuleType("digitalio")
 
     created_cs = MagicMock(name="cs_digitalinout")
@@ -57,7 +59,7 @@ def _install_fake_board_and_digitalio(monkeypatch, fake_spi):
 
     monkeypatch.setitem(sys.modules, "board", fake_board)
     monkeypatch.setitem(sys.modules, "digitalio", fake_digitalio)
-    monkeypatch.setattr(dial_spi_bus, "get_bus", lambda: fake_spi)
+    monkeypatch.setattr(dial_spi_bus, "get_bus", lambda spec: fake_spi)
     return fake_board, fake_digitalio
 
 
@@ -155,6 +157,65 @@ class TestXPT2046Driver:
     def test_close_is_safe_before_open(self):
         driver = dtd.XPT2046Driver()
         driver.close()  # must not raise
+
+    def test_open_requests_touch_bus_specifically(self, monkeypatch):
+        """The driver must ask dial_spi_bus for TOUCH_BUS (SPI1), not just
+        call get_bus() with any argument — a wrong spec here would put touch
+        samples on the display's physical bus."""
+        fake_spi = FakeSPI()
+        _install_fake_board_and_digitalio(monkeypatch, fake_spi)
+        get_bus_calls = []
+
+        def spy_get_bus(spec):
+            get_bus_calls.append(spec)
+            return fake_spi
+
+        monkeypatch.setattr(dial_spi_bus, "get_bus", spy_get_bus)
+
+        driver = dtd.XPT2046Driver()
+        driver.open()
+
+        assert get_bus_calls == [dial_spi_bus.TOUCH_BUS]
+
+    def test_open_claims_chip_select_on_gpio23_as_plain_output(self, monkeypatch):
+        fake_spi = FakeSPI()
+        fake_board, fake_digitalio = _install_fake_board_and_digitalio(monkeypatch, fake_spi)
+
+        driver = dtd.XPT2046Driver()
+        driver.open()
+
+        assert dtd._TOUCH_CS_GPIO == 23
+        assert driver._cs.pin == "GPIO23-pin"
+        # switch_to_output() proves it is driven as a plain GPIO output —
+        # not a hardware CE line, which this driver has no fallback to.
+        assert driver._cs.value is True
+
+    def test_open_does_not_pass_a_ce1_alias_to_the_pin_resolver(self, monkeypatch):
+        """The touch CS pin must resolve purely from GPIO23/D23-style
+        aliases. A board module exposing only CE1 (no GPIO23/D23) must fail
+        to resolve, proving the driver never asks for a "CE1" alias."""
+        fake_spi = FakeSPI()
+        fake_board = types.SimpleNamespace(CE1="CE1-pin")
+        fake_digitalio = types.ModuleType("digitalio")
+
+        class _DigitalInOut:
+            def __init__(self, pin):
+                self.pin = pin
+
+            def switch_to_output(self, value=False):
+                self.value = value
+
+            def deinit(self):
+                pass
+
+        fake_digitalio.DigitalInOut = _DigitalInOut
+        monkeypatch.setitem(sys.modules, "board", fake_board)
+        monkeypatch.setitem(sys.modules, "digitalio", fake_digitalio)
+        monkeypatch.setattr(dial_spi_bus, "get_bus", lambda spec: fake_spi)
+
+        driver = dtd.XPT2046Driver()
+        with pytest.raises(AttributeError):
+            driver.open()
 
 
 class TestFT6206Driver:
