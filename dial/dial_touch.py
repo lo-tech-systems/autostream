@@ -43,7 +43,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from dial_touch_filter import TouchEventType
+from dial_touch_filter import TouchEvent, TouchEventType
 from dial_touch_layout import TouchZone, zone_at
 
 # Overlay auto-dismisses this long after the last contact sample / release /
@@ -130,6 +130,38 @@ class TouchStateMachine:
             return []
         x, y = self._pending_xy
         return self._arm(x, y, now)
+
+    def force_reveal_only(self) -> list[TouchAction]:
+        """External force-reset: drop whatever zone was armed and stop
+        repeating, without ending the whole session the way a real RELEASE
+        would.
+
+        Used when the display reports (via its non-composited-state
+        Event/generation — see dial_display.DialDisplay._mark_noncomposited_
+        locked) that the screen went dark (cleared or slept) underneath
+        whatever was on it — the geometry an armed zone was sampled against
+        may no longer correspond to anything actually drawn.
+
+        If the finger is still down, this falls back to REVEAL_PENDING —
+        the same phase a fresh touch-down against a hidden overlay starts
+        in — so a later overlay_live() call re-samples the zone from the
+        finger's CURRENT position and re-arms from there, exactly like
+        ordinary reveal-then-arm. It deliberately does NOT require a fresh
+        physical touch-down (unlike config_changed()'s synthetic release,
+        which does) because the finger's continued presence is still a
+        real physical fact — only the on-screen geometry it was judged
+        against is stale.
+
+        If the finger is already up, this simply returns to idle. Never
+        returns any actions of its own; it only clears local state.
+        """
+        self._armed_zone = None
+        self._next_repeat_time = None
+        if self._contact_down:
+            self._phase = _PHASE_REVEAL_PENDING
+        else:
+            self._phase = _PHASE_IDLE
+        return []
 
     def tick(self, now: float) -> list[TouchAction]:
         """Periodic check for repeat-due and dismiss-due, independent of any
@@ -262,6 +294,7 @@ class TouchEventSource:
         irq=None,
         poll_interval_s: float = _POLL_INTERVAL_S,
         idle_tick_interval_s: float = _IDLE_TICK_INTERVAL_S,
+        get_noncomposited_generation=None,
     ) -> None:
         self._driver = driver
         self._filter = touch_filter
@@ -277,6 +310,12 @@ class TouchEventSource:
         self._irq = irq
         self._poll_interval_s = poll_interval_s
         self._idle_tick_interval_s = idle_tick_interval_s
+        # Injected read of dial_display.DialDisplay.noncomposited_generation
+        # — kept injected (not an import) for the same reason as the other
+        # callbacks: this module must not import dial_display. None disables
+        # the check entirely (e.g. in tests that don't care about it).
+        self._get_noncomposited_generation = get_noncomposited_generation
+        self._last_noncomposited_gen = None
         self._thread = None
         self._stop_event = None
 
@@ -303,6 +342,44 @@ class TouchEventSource:
         dispatches any resulting actions."""
         self._dispatch(self._state_machine.overlay_live(self._clock()))
 
+    def config_changed(self) -> None:
+        """Tell the session a live screen settings change (e.g. screen_type,
+        which changes the zone geometry a currently-armed press was sampled
+        against) just landed.
+
+        Delivers a SYNTHETIC RELEASE to the state machine and drops the zone
+        latch — a still-down finger cannot resume where it left off; only a
+        fresh touch-down (a real PRESS from the filter, which requires an
+        actual release-then-recontact) can arm again. This is deliberately
+        stricter than force_reveal_only() (used for the momentary
+        clear/sleep case): a screen_type change can move zone boundaries
+        outright, so resuming the old arm — or even re-sampling from the
+        current position via reveal-then-arm — could land on a zone that
+        means something different now. Safe to call from any thread.
+        """
+        now = self._clock()
+        self._dispatch(
+            self._state_machine.on_filter_event(TouchEvent(TouchEventType.RELEASE, 0, 0, None), now)
+        )
+
+    def _poll_noncomposited(self) -> None:
+        """Check whether the display's non-composited-state generation has
+        advanced since we last looked (screen cleared or slept). If so,
+        force the session back to reveal-only and drop the zone latch — see
+        TouchStateMachine.force_reveal_only(). A no-op when no getter was
+        injected. Cheap (one int read/compare) — safe to call every loop
+        iteration.
+        """
+        if self._get_noncomposited_generation is None:
+            return
+        gen = self._get_noncomposited_generation()
+        if self._last_noncomposited_gen is None:
+            self._last_noncomposited_gen = gen
+            return
+        if gen != self._last_noncomposited_gen:
+            self._last_noncomposited_gen = gen
+            self._dispatch(self._state_machine.force_reveal_only())
+
     # -- main loop -----------------------------------------------------
 
     def _make_default_irq(self):
@@ -313,6 +390,7 @@ class TouchEventSource:
     def _run(self) -> None:
         irq = self._irq if self._irq is not None else self._make_default_irq()
         while not self._stop_event.is_set():
+            self._poll_noncomposited()
             irq.wait_for_active(timeout=self._idle_tick_interval_s)
             if irq.is_active:
                 self._sample_loop(irq)

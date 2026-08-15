@@ -23,7 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from dial_display_compositor import DialDisplayCompositor
+from dial_display_compositor import DialDisplayCompositor, OverlayState
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
     decode_artwork,
@@ -232,6 +232,37 @@ class DialDisplay:
         self._thread: threading.Thread | None = None
         self._log_limiter = _RateLimitedLogger()
 
+        # ---- Touch overlay plumbing -----------------------------------
+        #
+        # LOCK ORDER (binding): self._lock may enclose the SPI/backend push
+        # (see _display_locked). self._overlay_snapshot_lock is a small LEAF
+        # lock used only by set_overlay() to guard the write of a new
+        # OverlayState snapshot; it is ALWAYS acquired standalone and is
+        # NEVER acquired while self._lock is held, and self._lock is NEVER
+        # acquired while it is held. Readers of the snapshot (this class and
+        # the repaint thread) never take it at all — a plain attribute read
+        # of self._overlay_snapshot is a single object-reference read, which
+        # is atomic under the GIL, so no lock is needed to read it safely.
+        # This is what keeps touch cadence off self._lock: set_overlay() is
+        # the only thing the touch thread ever calls into here, and it never
+        # touches self._lock — the touch thread never takes self._lock.
+        self._overlay_snapshot_lock = threading.Lock()
+        self._overlay_snapshot = OverlayState()
+        self._overlay_signal = threading.Event()
+        self._repaint_thread: threading.Thread | None = None
+        self._repaint_stop_event = threading.Event()
+        # The last base image handed to _display_locked (pre-overlay,
+        # pre-rotate/BGR) — logo or panel-fitted artwork. The repaint thread
+        # recomposes THIS against the newest overlay snapshot when only the
+        # overlay changed, so a poll-driven frame is never required just to
+        # show/update/hide the overlay.
+        self._current_base_image = None
+
+        # Non-composited-state notification (screen cleared or asleep) for
+        # the touch side to observe — see _mark_noncomposited_locked().
+        self._noncomposited_event = threading.Event()
+        self._noncomposited_generation = 0
+
     # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
@@ -239,6 +270,7 @@ class DialDisplay:
             if self._config.fitted:
                 self._enable_locked()
         self._stop_event.clear()
+        self._repaint_stop_event.clear()
         try:
             self._thread = threading.Thread(target=self._run, daemon=True, name="dial-display")
             self._thread.start()
@@ -247,9 +279,21 @@ class DialDisplay:
             # sequence (volume control, mDNS, control socket) from running.
             logging.warning("dial display: failed to start polling thread: %s", e)
             self._thread = None
+        try:
+            self._repaint_thread = threading.Thread(
+                target=self._repaint_run, daemon=True, name="dial-display-repaint",
+            )
+            self._repaint_thread.start()
+        except Exception as e:
+            logging.warning("dial display: failed to start repaint thread: %s", e)
+            self._repaint_thread = None
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._repaint_stop_event.set()
+        # Wake the repaint thread out of its Event.wait() so it notices
+        # _repaint_stop_event promptly rather than at its next timeout tick.
+        self._overlay_signal.set()
         if self._thread is not None:
             try:
                 self._thread.join(timeout=2)
@@ -257,6 +301,11 @@ class DialDisplay:
                 # Thread.start() had not finished registering when stop() ran
                 # right behind it — the daemon thread still exits on its own
                 # once _stop_event is set.
+                pass
+        if self._repaint_thread is not None:
+            try:
+                self._repaint_thread.join(timeout=2)
+            except RuntimeError:
                 pass
         with self._lock:
             self._disable_locked()
@@ -358,6 +407,52 @@ class DialDisplay:
         with self._lock:
             self._display_locked(image)
 
+    # ---- touch overlay facade ---------------------------------------------
+
+    def notify_touch_activity(self) -> None:
+        """Tell the display that touch activity happened right now.
+
+        Mirrors the two lines _poll_once() already runs when it finds
+        playing targets present (see the `if targets:` branch below):
+        resets the idle countdown and, if asleep, wakes.
+
+        Deliberate consequence: this does NOT disable idle sleep, only
+        resets it. With nothing playing, the very next poll tick (up to
+        DISPLAY_POLL_INTERVAL_SECONDS later) finds no targets and restarts
+        the idle countdown from this moment. A user who keeps touching the
+        overlay for longer than DISPLAY_IDLE_SLEEP_SECONDS while nothing
+        plays will still eventually see the display sleep underneath them —
+        touch resets idle, it does not disable sleep.
+        """
+        with self._lock:
+            self._idle_started_at = None
+            if self._display_sleeping:
+                self._wake_locked()
+
+    def set_overlay(self, state: OverlayState) -> None:
+        """Publish a new touch-overlay snapshot and signal the repaint
+        thread to recompose/push it.
+
+        Never touches self._lock — see the LOCK ORDER comment in __init__.
+        Safe to call from the touch thread at touch cadence: the write here
+        is a single leaf-lock-guarded assignment, and the actual compose +
+        SPI push happens later, asynchronously, on the repaint thread.
+        """
+        with self._overlay_snapshot_lock:
+            self._overlay_snapshot = state
+        self._overlay_signal.set()
+
+    def noncomposited_generation(self) -> int:
+        """Current non-composited-state generation counter.
+
+        Bumped by _mark_noncomposited_locked() whenever the display clears
+        or sleeps — the touch side polls this once per loop iteration and,
+        on seeing it change, knows whatever overlay/zone geometry it was
+        relying on may no longer be on screen. A plain int read — no lock
+        needed, matching the read discipline used for the overlay snapshot.
+        """
+        return self._noncomposited_generation
+
     # ---- backend lifecycle (caller must hold self._lock) -------------------
 
     def _enable_locked(self) -> None:
@@ -452,6 +547,7 @@ class DialDisplay:
             except Exception as e:
                 logging.debug("dial display: backend clear raised: %s", e)
         self._showing = "noop"
+        self._mark_noncomposited_locked()
 
     def _sleep_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -465,6 +561,34 @@ class DialDisplay:
         self._source_artwork_url = ""
         self._current_rendered_image = None
         logging.info("dial display: idle %ds — sleeping", DISPLAY_IDLE_SLEEP_SECONDS)
+        self._mark_noncomposited_locked()
+
+    def _mark_noncomposited_locked(self) -> None:
+        """Record that the display just moved to a state with nothing of the
+        touch overlay actually on screen (cleared or asleep), for the touch
+        side to notice on its own schedule.
+
+        Called from _clear_locked()/_sleep_locked(), both of which run with
+        self._lock already held. They must NOT call into the touch session
+        synchronously from here: dispatching a "display went dark" action
+        would need the touch session to react, and any handler for that
+        would want the overlay leaf lock — taking that leaf lock while
+        self._lock is held here would be the mirror image of the hazard the
+        LOCK ORDER comment forbids from the touch side (leaf lock nested
+        inside self._lock). A callback would also mean this thread — which
+        may be the HTTP thread inside update_config(), not just the poll
+        thread — ends up running touch-session logic synchronously, on a
+        thread that has no business owning it.
+
+        A threading.Event plus a monotonically increasing generation counter
+        sidesteps both problems: it is pure state, set here and read there,
+        with no call ever crossing from this lock into that one. The touch
+        thread's own loop polls noncomposited_generation() once per
+        iteration and reacts (force back to reveal-only, drop the zone
+        latch) on ITS OWN thread, in ITS OWN time.
+        """
+        self._noncomposited_generation += 1
+        self._noncomposited_event.set()
 
     def _wake_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -519,20 +643,32 @@ class DialDisplay:
 
         *image* is treated as an already panel-sized base (logo, cached
         artwork, or a freshly artwork-fitted frame — see _show_artwork) — the
-        compositor here only applies rotate/BGR, so self._current_rendered_
-        image stays untransformed in the cache and a rotate/bgr toggle can
-        re-display it under the new settings without re-fetching or
-        re-transforming artwork.
+        compositor here only applies overlay/rotate/BGR, so
+        self._current_rendered_image stays untransformed in the cache and a
+        rotate/bgr toggle can re-display it under the new settings without
+        re-fetching or re-transforming artwork.
+
+        Every call here — poll-driven or repaint-driven — composes against
+        the CURRENT overlay snapshot (read with no lock; see the LOCK ORDER
+        comment in __init__), so a poll-driven repaint landing while an
+        overlay is visible (e.g. a track change firing mid-touch-session)
+        recomposes it back in rather than wiping it. *image* is also cached
+        as self._current_base_image so the repaint thread can recompose it
+        against a newer overlay snapshot later, without needing a new base
+        frame from a poll.
         """
         if not (self._backend_open and self._backend is not None):
             return
+        self._current_base_image = image
         width, height = self._active_panel_dims()
+        overlay = self._overlay_snapshot
         try:
             composed = self._compositor.compose(
                 image, width, height,
                 rotate=self._config.rotate,
                 bgr=self._config.bgr,
                 is_artwork=False,
+                overlay=overlay,
             )
             self._backend.display(composed)
         except Exception as e:
@@ -574,6 +710,49 @@ class DialDisplay:
         self._showing = "logo"
         if was_showing == "artwork":
             logging.info("dial display: showing logo (no usable artwork)")
+
+    # ---- overlay repaint loop ----------------------------------------------
+    #
+    # A second, dedicated thread — separate from the poll thread below — so
+    # a touch-driven overlay update never waits behind (or gets coalesced
+    # with) the display's own 6-second poll cadence, and never has to be
+    # dispatched from the touch thread itself (which never takes self._lock;
+    # see the LOCK ORDER comment in __init__).
+
+    def _repaint_run(self) -> None:
+        while not self._repaint_stop_event.is_set():
+            signaled = self._overlay_signal.wait(timeout=1.0)
+            if self._repaint_stop_event.is_set():
+                break
+            if not signaled:
+                # Plain timeout — nothing to do, go back to waiting. This
+                # periodic wake exists only so stop() is noticed promptly
+                # even if no overlay signal ever arrives.
+                continue
+            # Coalesce: clear the event BEFORE doing any work. Any
+            # set_overlay() call that lands after this clear() (including
+            # one that lands while we are still repainting below, under
+            # self._lock) leaves the event set again, so the next
+            # iteration's wait() returns immediately — several rapid
+            # signals that land before we get here collapse into this one
+            # wake, and _display_locked() below always reads whatever the
+            # NEWEST snapshot is at the moment it actually composes, not
+            # whichever one triggered this particular wake.
+            self._overlay_signal.clear()
+            with self._lock:
+                self._repaint_current_locked()
+
+    def _repaint_current_locked(self) -> None:
+        """Recompose the last base frame against the latest overlay snapshot
+        and push it — used by the repaint thread when only the overlay
+        itself changed (no new poll-driven frame). No-op if the backend is
+        closed or nothing has ever been displayed yet.
+        """
+        if not (self._backend_open and self._backend is not None):
+            return
+        if self._current_base_image is None:
+            return
+        self._display_locked(self._current_base_image)
 
     # ---- polling loop ----------------------------------------------------
 

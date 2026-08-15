@@ -28,7 +28,7 @@ from dial_touch import (  # noqa: E402
     TouchEventSource,
     TouchStateMachine,
 )
-from dial_touch_filter import TouchEvent, TouchEventType  # noqa: E402
+from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import TouchZone, zones_for  # noqa: E402
 
 WIDTH, HEIGHT = 160, 128
@@ -340,3 +340,157 @@ class TestTouchEventSource:
         source = TouchEventSource(driver, touch_filter, sm, clock=clock, irq=irq)
         source.start()
         source.stop(join_timeout=0.5)  # must not hang / must not import gpiozero
+
+
+# ---------------------------------------------------------------------------
+# force_reveal_only() — the non-composited-state (screen cleared/slept)
+# force-reset. Distinct from config_changed()'s synthetic release: a
+# still-down finger IS allowed to resume here, via reveal-then-arm, because
+# only the on-screen geometry an armed zone was sampled against went stale —
+# the physical contact itself is still a real, ongoing fact.
+# ---------------------------------------------------------------------------
+
+class TestForceRevealOnly:
+    def test_drops_latch_and_falls_back_to_reveal_pending_when_still_down(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)  # already visible -> arms immediately
+        assert sm.pressed_zone == TouchZone.UP
+
+        actions = sm.force_reveal_only()
+        assert actions == []
+        assert sm.pressed_zone is None
+
+        # Finger still down: overlay_live() re-samples from the CURRENT
+        # position and re-arms, exactly like ordinary reveal-then-arm — no
+        # fresh touch-down required.
+        actions = sm.overlay_live(now=0.5)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
+        assert sm.pressed_zone == TouchZone.UP
+
+    def test_falls_back_to_idle_when_finger_already_up(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        sm.on_filter_event(release_event(UP_XY), now=0.2)
+
+        sm.force_reveal_only()
+
+        assert sm.pressed_zone is None
+        # Not reveal-pending (finger already lifted) — overlay_live() is a
+        # no-op, same as any other time it is called outside that phase.
+        assert sm.overlay_live(now=0.5) == []
+
+
+class TestTouchEventSourceNoncompositedPolling:
+    def test_poll_noncomposited_dispatches_force_reveal_only_on_generation_change(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        gens = iter([0, 0, 1, 1])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_noncomposited_generation=lambda: next(gens),
+        )
+
+        source._poll_noncomposited()  # first call only records the baseline (0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        source._poll_noncomposited()  # unchanged (0 -> 0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        source._poll_noncomposited()  # changed (0 -> 1) -> force-reset
+        assert sm.pressed_zone is None
+
+    def test_no_getter_injected_is_a_no_op(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+
+        source = TouchEventSource(driver, touch_filter, sm)
+        source._poll_noncomposited()  # must not raise, must not change anything
+        assert sm.pressed_zone == TouchZone.UP
+
+    def test_generation_change_forces_reveal_only_via_running_thread(self):
+        """End-to-end through the real background loop, not just the direct
+        _poll_noncomposited() call above."""
+        from dial_touch_filter import TouchFilter as _TF
+
+        clock = FakeClock()
+        irq = FakeIRQ()
+        driver = FakeDriver()
+        touch_filter = _TF(WIDTH, HEIGHT, z_threshold=100)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        gen = {"n": 0}
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            clock=clock, irq=irq,
+            poll_interval_s=0.001, idle_tick_interval_s=0.02,
+            get_noncomposited_generation=lambda: gen["n"],
+        )
+        source.start()
+        try:
+            gen["n"] += 1  # simulate the display clearing/sleeping
+            deadline = time.time() + 1.0
+            while time.time() < deadline and sm.pressed_zone is not None:
+                time.sleep(0.01)
+            assert sm.pressed_zone is None
+        finally:
+            irq.release()
+            source.stop()
+
+
+# ---------------------------------------------------------------------------
+# config_changed() — a live screen settings change (e.g. screen_type, which
+# can move zone boundaries outright). Stricter than force_reveal_only(): a
+# still-down finger must NOT be allowed to resume at all, only a fresh
+# touch-down (real release-then-recontact through the filter).
+# ---------------------------------------------------------------------------
+
+class TestConfigChanged:
+    def test_delivers_synthetic_release_and_clears_latch(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        source = TouchEventSource(driver, touch_filter, sm, clock=lambda: 1.0)
+        source.config_changed()
+
+        assert sm.pressed_zone is None
+
+    def test_still_down_finger_cannot_resume_without_fresh_touch_down(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+
+        source = TouchEventSource(driver, touch_filter, sm, clock=lambda: 1.0)
+        source.config_changed()
+        assert sm.pressed_zone is None
+
+        # Finger still physically down: a real driver/filter would only ever
+        # emit REPEAT (not a new PRESS) until an actual release+recontact.
+        # Feeding a REPEAT straight to the (now IDLE) state machine must do
+        # nothing.
+        actions = sm.on_filter_event(repeat_event(UP_XY), now=1.1)
+        assert actions == []
+        assert sm.pressed_zone is None
+
+        # Only a fresh PRESS (a real release-then-recontact) re-arms.
+        actions = sm.on_filter_event(press_event(UP_XY), now=2.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
+        assert sm.pressed_zone == TouchZone.UP

@@ -30,8 +30,10 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 from dial_config import DialDisplayConfig
+from dial_display_compositor import OverlayState
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
 from dial_mdns import PlayingTarget
+from dial_touch_layout import TouchZone
 import dial_display as dd
 from dial_display import (
     DialDisplay,
@@ -1167,3 +1169,227 @@ class TestActiveBackendDimsPassthrough:
 
         assert fb.displayed
         assert fb.displayed[-1].size == (240, 200)
+
+
+# ---------------------------------------------------------------------------
+# Touch activity notification — mirrors the two lines _poll_once() already
+# runs when it finds playing targets present.
+# ---------------------------------------------------------------------------
+
+class TestNotifyTouchActivity:
+    def test_resets_idle_timer(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()  # idle timer starts (no targets)
+            clock.t += 5.0
+            assert display.get_status()["display_idle_seconds"] == 5
+            display.notify_touch_activity()
+            assert display._idle_started_at is None
+            assert display.get_status()["display_idle_seconds"] == 0
+
+    def test_wakes_a_sleeping_display(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()  # asleep now
+        assert display.get_status()["display_sleeping"] is True
+
+        display.notify_touch_activity()
+
+        assert display.get_status()["display_sleeping"] is False
+        assert fb.wake_calls == 1
+
+    def test_does_not_disable_future_sleep_only_resets_it(self):
+        """Touch resets idle, it does not disable sleep — with nothing
+        playing, the next poll tick restarts the idle countdown from the
+        point of the touch activity."""
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS - 1
+            display.notify_touch_activity()
+            display._poll_once()  # restarts the idle timer from here
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()  # crosses threshold again -> sleeps
+        assert display.get_status()["display_sleeping"] is True
+
+
+# ---------------------------------------------------------------------------
+# Touch overlay — leaf-locked snapshot, dedicated repaint executor, and the
+# non-composited-state notification for the touch side.
+#
+# LOCK ORDER under test: self._lock may enclose the SPI/backend push.
+# self._overlay_snapshot_lock is acquired standalone by set_overlay() and is
+# NEVER acquired while self._lock is held (see dial_display.py's __init__
+# docstring comment for the full statement). The touch thread never takes
+# self._lock at all.
+# ---------------------------------------------------------------------------
+
+class TestOverlaySetAndRepaintExecutor:
+    def test_set_overlay_never_acquires_self_lock(self):
+        """The touch-side entry point (set_overlay) must never touch
+        self._lock — that is what keeps touch cadence off the lock a slow
+        SPI frame push can hold for a while."""
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+
+        # threading.Lock instances are C objects with read-only attributes
+        # (acquire can't be monkeypatched in place), so swap in a wrapper
+        # that records acquisitions and delegates to a real lock.
+        class _SpyLock:
+            def __init__(self):
+                self._real = threading.Lock()
+                self.acquire_calls = 0
+
+            def acquire(self, *args, **kwargs):
+                self.acquire_calls += 1
+                return self._real.acquire(*args, **kwargs)
+
+            def release(self):
+                return self._real.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc_info):
+                self.release()
+
+        spy_lock = _SpyLock()
+        display._lock = spy_lock
+        display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
+
+        assert spy_lock.acquire_calls == 0
+
+    def test_rapid_signals_coalesce_to_one_repaint_of_newest_snapshot(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+
+        done = threading.Event()
+        call_count = {"n": 0}
+        orig_repaint = display._repaint_current_locked
+
+        def counting_repaint():
+            call_count["n"] += 1
+            orig_repaint()
+            done.set()
+
+        display._repaint_current_locked = counting_repaint
+        repaint_thread = threading.Thread(target=display._repaint_run, daemon=True)
+        repaint_thread.start()
+        try:
+            with patch.object(
+                display._compositor, "compose", wraps=display._compositor.compose
+            ) as mock_compose:
+                # Several rapid signals before the repaint thread gets a
+                # chance to wake — must coalesce into exactly one repaint,
+                # of the LAST (newest) snapshot published.
+                for zone in (TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP):
+                    display.set_overlay(OverlayState(visible=True, pressed=zone))
+
+                assert done.wait(timeout=2.0), "repaint thread never woke"
+                # A window for a wrongly-duplicated repaint to also land.
+                time.sleep(0.15)
+
+                assert mock_compose.call_count == 1
+                overlay_used = mock_compose.call_args.kwargs["overlay"]
+                assert overlay_used.pressed == TouchZone.UP
+        finally:
+            display._repaint_stop_event.set()
+            display._overlay_signal.set()
+            repaint_thread.join(timeout=1.0)
+
+        assert call_count["n"] == 1
+
+    def test_poll_driven_repaint_keeps_visible_overlay(self):
+        """A poll-driven repaint (e.g. a track change) while an overlay is
+        visible must recompose it back in, not wipe it."""
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
+
+        fake_image = Image.new("RGB", (128, 160))
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image), \
+             patch.object(
+                 display._compositor, "compose", wraps=display._compositor.compose
+             ) as mock_compose:
+            display._poll_once()  # new artwork -> a real poll-driven push
+
+        assert display.get_status()["showing"] == "artwork"
+        assert mock_compose.called
+        overlay_used = mock_compose.call_args.kwargs["overlay"]
+        assert overlay_used.visible is True
+        assert overlay_used.pressed == TouchZone.UP
+
+    def test_repaint_start_stop_via_public_lifecycle(self):
+        """display.start()/stop() manage the repaint thread alongside the
+        existing poll thread."""
+        display, fb, gt, mu = _make_display(targets=[])
+        display.start()
+        try:
+            assert display._repaint_thread is not None
+            assert display._repaint_thread.is_alive()
+        finally:
+            display.stop()
+        assert not display._repaint_thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Non-composited-state notification — _clear_locked()/_sleep_locked() must
+# only set an Event/generation, never call into the touch session
+# synchronously (that would nest the overlay leaf lock inside self._lock).
+# ---------------------------------------------------------------------------
+
+class TestNoncompositedNotification:
+    def test_clear_locked_bumps_generation_and_sets_event(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        gen_before = display.noncomposited_generation()
+        display._noncomposited_event.clear()
+
+        with display._lock:
+            display._clear_locked()
+
+        assert display.noncomposited_generation() == gen_before + 1
+        assert display._noncomposited_event.is_set()
+
+    def test_sleep_locked_bumps_generation_and_sets_event(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        gen_before = display.noncomposited_generation()
+        display._noncomposited_event.clear()
+
+        with display._lock:
+            display._sleep_locked()
+
+        assert display.noncomposited_generation() == gen_before + 1
+        assert display._noncomposited_event.is_set()
+
+    def test_mark_noncomposited_locked_only_mutates_its_own_state(self):
+        """_mark_noncomposited_locked() must be a pure state update — it must
+        never call out to anything touch-related (there is nothing for it to
+        call: DialDisplay holds no reference to any touch object at all,
+        which is what keeps the leaf lock from ever nesting inside
+        self._lock from this direction)."""
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        assert not hasattr(display, "_touch_source")
+        assert not hasattr(display, "_touch_callback")
+
+        with display._lock:
+            display._mark_noncomposited_locked()
+            display._mark_noncomposited_locked()
+
+        assert display.noncomposited_generation() == 2

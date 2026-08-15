@@ -13,6 +13,7 @@ import signal
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -748,3 +749,293 @@ class TestScreenSettingsLiveApply:
         # this is an unconditional apply-then-persist success path.
         assert display.get_status()["screen_type"] == "st7789_240x240"
         assert display.get_status()["bgr"] is True
+
+
+# ---------------------------------------------------------------------------
+# Touch construction — built AFTER the display, only when fitted AND a real
+# touch controller is selected; its own ImportError/Exception isolation so a
+# missing gpiozero/driver library degrades to no-touch without affecting the
+# display or volume control; .stop() hooked into the same finally teardown
+# as the display and control server.
+# ---------------------------------------------------------------------------
+
+class TestTouchConstruction:
+    def _run(self, cfg_display, build_mock=None, caplog=None):
+        import dial_main as dm
+
+        cfg = _make_cfg()
+        cfg.display = cfg_display
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+        if build_mock is None:
+            build_mock = MagicMock(return_value=MagicMock())
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        patches = [
+            patch("dial_main._configure_logging"),
+            patch("dial_main.load_config", return_value=cfg),
+            patch("dial_main._reconcile_update_timer"),
+            patch("dial_main._announce_self"),
+            patch("dial_main.DialLED"),
+            patch("dial_main.DialHTTPServer", return_value=mock_http),
+            patch("dial_main.start_playing_browser"),
+            patch("dial_main.stop_playing_browser"),
+            patch("dial_main.start_volume_worker"),
+            patch("dial_main.DialControlServer", return_value=mock_control),
+            patch("threading.Event", _QuickEvent),
+            patch("dial_main._build_touch_source", build_mock),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            dm.main()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+        return build_mock
+
+    def test_touch_constructed_when_fitted_and_touch_type_set(self):
+        from dial_config import DialDisplayConfig
+
+        touch_instance = MagicMock()
+        build_mock = MagicMock(return_value=touch_instance)
+
+        self._run(DialDisplayConfig(fitted=True, touch_type="xpt2046"), build_mock)
+
+        build_mock.assert_called_once()
+        touch_instance.start.assert_called_once()
+        touch_instance.stop.assert_called_once()
+
+    def test_not_constructed_when_not_fitted(self):
+        from dial_config import DialDisplayConfig
+
+        build_mock = MagicMock()
+        self._run(DialDisplayConfig(fitted=False, touch_type="xpt2046"), build_mock)
+        build_mock.assert_not_called()
+
+    def test_not_constructed_when_touch_type_none(self):
+        from dial_config import DialDisplayConfig
+
+        build_mock = MagicMock()
+        self._run(DialDisplayConfig(fitted=True, touch_type="none"), build_mock)
+        build_mock.assert_not_called()
+
+    def test_construction_failure_degrades_to_no_touch_dial_still_starts(self, caplog):
+        from dial_config import DialDisplayConfig
+
+        build_mock = MagicMock(side_effect=RuntimeError("no SPI bus"))
+        with caplog.at_level("WARNING"):
+            self._run(DialDisplayConfig(fitted=True, touch_type="xpt2046"), build_mock)
+        assert "touch stack unavailable" in caplog.text
+
+    def test_start_failure_degrades_to_no_touch_and_stop_not_called(self, caplog):
+        from dial_config import DialDisplayConfig
+
+        touch_instance = MagicMock()
+        touch_instance.start.side_effect = RuntimeError("gpiozero missing")
+        build_mock = MagicMock(return_value=touch_instance)
+
+        with caplog.at_level("WARNING"):
+            self._run(DialDisplayConfig(fitted=True, touch_type="xpt2046"), build_mock)
+
+        assert "touch stack unavailable" in caplog.text
+        # The failed instance never made it into the module's touch_source
+        # local, so nothing in the finally block tries to stop it again.
+        touch_instance.stop.assert_not_called()
+
+    def test_encoder_and_button_path_unaffected_by_touch_failure(self, caplog):
+        """A raising touch stack must not affect the (independent) rotary
+        encoder / button setup path."""
+        import dial_main as dm
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        cfg.clk_gpio = 22
+        cfg.dt_gpio = 27
+        cfg.sw_gpio = 23
+
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+        mock_encoder_setup = MagicMock(return_value="encoder-handle")
+        mock_button_setup = MagicMock(return_value="button-handle")
+
+        fake_rpi = MagicMock()
+        fake_rpi.setup_rotary_encoder = mock_encoder_setup
+        fake_rpi.setup_button = mock_button_setup
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "autostream_rpi":
+                return fake_rpi
+            return real_import(name, *args, **kwargs)
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http), \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer", return_value=mock_control), \
+             patch("threading.Event", _QuickEvent), \
+             patch("dial_main._build_touch_source", side_effect=RuntimeError("boom")), \
+             patch("builtins.__import__", side_effect=_fake_import), \
+             caplog.at_level("WARNING"):
+            dm.main()  # must not raise
+
+        mock_encoder_setup.assert_called_once()
+        mock_button_setup.assert_called_once()
+        assert "touch stack unavailable" in caplog.text
+
+    def test_not_constructed_when_display_stack_unavailable(self):
+        """Even if cfg says fitted + a real touch controller, touch must not
+        start against the NoOpDisplayStatusProvider fallback — it has no
+        set_overlay()/notify_touch_activity() for touch to call into."""
+        import builtins
+        import dial_main as dm
+        from dial_config import DialDisplayConfig
+
+        cfg = _make_cfg()
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+        build_mock = MagicMock()
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "dial_display" or name.startswith("dial_display."):
+                raise ImportError("simulated missing Pillow/display stack")
+            return real_import(name, *args, **kwargs)
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http), \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer", return_value=mock_control), \
+             patch("threading.Event", _QuickEvent), \
+             patch("dial_main._build_touch_source", build_mock), \
+             patch("builtins.__import__", side_effect=_fake_import):
+            dm.main()  # must not raise
+
+        build_mock.assert_not_called()
+
+
+class TestBuildTouchSourceWiring:
+    """Direct tests of dial_main._build_touch_source()'s callback wiring,
+    with the hardware-touching pieces (open_driver, TouchEventSource's
+    background thread) faked out."""
+
+    @contextmanager
+    def _built(self):
+        """Construct via dial_main._build_touch_source() with the mocks
+        still active, yielding everything a test needs — the invoked
+        callbacks reference module globals (enqueue_delta etc.) resolved at
+        CALL time, not definition time, so the patches must still be in
+        effect when a test actually invokes a captured callback."""
+        import dial_main as dm
+        from dial_config import DialDisplayConfig
+
+        cfg = MagicMock()
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        cfg.step_percent = 3
+
+        display = MagicMock()
+        display.noncomposited_generation = MagicMock(return_value=0)
+
+        captured = {}
+
+        def fake_touch_event_source(driver, touch_filter, state_machine, **kwargs):
+            captured["driver"] = driver
+            captured["kwargs"] = kwargs
+            instance = MagicMock()
+            captured["instance"] = instance
+            return instance
+
+        with patch("dial_touch_drivers.open_driver") as mock_open, \
+             patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
+             patch("dial_main.enqueue_delta") as mock_delta, \
+             patch("dial_main.enqueue_mute_toggle") as mock_mute:
+            result = dm._build_touch_source(cfg, display)
+            yield cfg, display, result, captured, mock_open, mock_delta, mock_mute
+
+    def test_driver_opened_for_configured_controller(self):
+        with self._built() as (cfg, display, result, captured, mock_open, *_):
+            mock_open.assert_called_once_with("xpt2046")
+            assert captured["driver"] is mock_open.return_value
+            assert result is captured["instance"]
+
+    def test_noncomposited_generation_getter_wired_to_display(self):
+        with self._built() as (cfg, display, result, captured, *_):
+            assert captured["kwargs"]["get_noncomposited_generation"] is display.noncomposited_generation
+
+    def test_volume_up_enqueues_step_percent_and_notifies_activity(self):
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            captured["kwargs"]["on_volume_up"]()
+            mock_delta.assert_called_once_with(3)
+            display.notify_touch_activity.assert_called_once()
+
+    def test_volume_down_enqueues_negative_step_percent(self):
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            captured["kwargs"]["on_volume_down"]()
+            mock_delta.assert_called_once_with(-3)
+            display.notify_touch_activity.assert_called_once()
+
+    def test_mute_toggle_enqueues_mute(self):
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            captured["kwargs"]["on_mute_toggle"]()
+            mock_mute.assert_called_once()
+            display.notify_touch_activity.assert_called_once()
+
+    def test_reveal_overlay_sets_overlay_visible_and_signals_overlay_live(self):
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_reveal_overlay"]()
+
+            display.set_overlay.assert_called_once()
+            state = display.set_overlay.call_args[0][0]
+            assert state.visible is True
+            assert state.pressed is None
+            display.notify_touch_activity.assert_called_once()
+            result.overlay_live.assert_called_once()
+
+    def test_dismiss_overlay_sets_overlay_hidden(self):
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_dismiss_overlay"]()
+
+            state = display.set_overlay.call_args[0][0]
+            assert state.visible is False
+
+    def test_set_pressed_zone_sets_overlay_with_the_zone(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
+
+            state = display.set_overlay.call_args[0][0]
+            assert state.visible is True
+            assert state.pressed == TouchZone.UP
+            display.notify_touch_activity.assert_called_once()

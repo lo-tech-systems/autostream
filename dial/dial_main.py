@@ -80,6 +80,83 @@ def _reconcile_update_timer(auto_update: bool) -> None:
         )
 
 
+def _build_touch_source(cfg, display):
+    """Construct and wire a TouchEventSource for cfg.display against the
+    already-built *display* manager.
+
+    Every import here is deferred to inside this function, exactly like
+    dial_display.create_dial_display() is deferred inside main() — in
+    particular, dial_display_compositor (needed here for OverlayState) pulls
+    in Pillow at module import time, so hoisting any of these imports to
+    module level would defeat the same ImportError isolation the display
+    stack already gets. The caller wraps this whole call in its own
+    try/except so a missing gpiozero/SPI/I2C library, or any other
+    construction failure, degrades to no-touch without taking the display
+    or volume control down with it.
+    """
+    from dial_display_compositor import OverlayState
+    from dial_display_profiles import get_profile
+    from dial_touch import TouchEventSource, TouchStateMachine
+    from dial_touch_controllers import get_controller
+    from dial_touch_drivers import open_driver
+    from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
+
+    controller = get_controller(cfg.display.touch_type)
+    profile = get_profile(cfg.display.screen_type)
+    driver = open_driver(controller.driver_tag)
+    # ft6206 (capacitive) leaves z_threshold unset — it reports already-
+    # "touching" samples with no meaningful analog pressure, so the
+    # threshold check is effectively a no-op for it (see
+    # dial_touch_drivers.FT6206Driver). TouchFilter still needs *some* int
+    # threshold to compare against, so fall back to its own default.
+    z_threshold = (
+        controller.z_threshold if controller.z_threshold is not None else DEFAULT_Z_THRESHOLD
+    )
+    touch_filter = TouchFilter(profile.width, profile.height, z_threshold=z_threshold)
+    state_machine = TouchStateMachine(profile.width, profile.height)
+
+    def on_reveal_overlay() -> None:
+        display.notify_touch_activity()
+        display.set_overlay(OverlayState(visible=True))
+        # The repaint thread services the overlay signal well ahead of any
+        # human-perceptible delay; treating "signaled" as "rendered" here
+        # (rather than blocking on the repaint thread's actual SPI push)
+        # keeps touch dispatch decoupled from frame latency, matching the
+        # rest of this feature's lock-order discipline.
+        touch_source.overlay_live()
+
+    def on_dismiss_overlay() -> None:
+        display.set_overlay(OverlayState(visible=False))
+
+    def on_set_pressed_zone(zone) -> None:
+        display.notify_touch_activity()
+        display.set_overlay(OverlayState(visible=True, pressed=zone))
+
+    def on_volume_up() -> None:
+        display.notify_touch_activity()
+        enqueue_delta(cfg.step_percent)
+
+    def on_volume_down() -> None:
+        display.notify_touch_activity()
+        enqueue_delta(-cfg.step_percent)
+
+    def on_mute_toggle() -> None:
+        display.notify_touch_activity()
+        enqueue_mute_toggle()
+
+    touch_source = TouchEventSource(
+        driver, touch_filter, state_machine,
+        on_reveal_overlay=on_reveal_overlay,
+        on_volume_up=on_volume_up,
+        on_volume_down=on_volume_down,
+        on_mute_toggle=on_mute_toggle,
+        on_dismiss_overlay=on_dismiss_overlay,
+        on_set_pressed_zone=on_set_pressed_zone,
+        get_noncomposited_generation=display.noncomposited_generation,
+    )
+    return touch_source
+
+
 def main() -> None:
     _configure_logging()
 
@@ -123,6 +200,29 @@ def main() -> None:
     start_playing_browser(shutdown_event=shutdown_event)
     display.start()
     start_volume_worker(cfg, get_playing_targets, led)
+
+    # Touch requires a screen (a product decision) — built AFTER the display
+    # and only when the config says both a screen is fitted and a touch
+    # controller is selected. `hasattr(display, "set_overlay")` excludes the
+    # NoOpDisplayStatusProvider fallback above: if the display stack itself
+    # failed to import, there is nothing for touch to draw an overlay onto,
+    # so touch must not start either, regardless of what cfg.display says.
+    # Construction failures here (missing gpiozero, no SPI/I2C, an unknown
+    # driver tag, ...) degrade to no-touch and log it — touch must never
+    # prevent the dial from starting or affect volume control, exactly like
+    # the display stack's own isolation above.
+    touch_source = None
+    if (
+        cfg.display.fitted
+        and cfg.display.touch_type != "none"
+        and hasattr(display, "set_overlay")
+    ):
+        try:
+            touch_source = _build_touch_source(cfg, display)
+            touch_source.start()
+        except Exception as e:
+            logging.warning("dial touch: touch stack unavailable (%s) — touch disabled", e)
+            touch_source = None
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
 
@@ -192,6 +292,8 @@ def main() -> None:
             led.set_playing() if get_playing_targets() else led.set_idle()
     finally:
         stop_playing_browser()
+        if touch_source is not None:
+            touch_source.stop()
         display.stop()
         control_server.stop()
         http_server._server.shutdown()
