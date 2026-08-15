@@ -25,14 +25,21 @@ zone_at(). This module knows nothing about rotation, panel drivers, or
 physical mounting.
 
 LAYOUT SELECTION: chosen purely from the aspect ratio width/height, with a
-threshold of 1.2:
-  - WIDE   (width/height >= 1.2): vertical thirds, left-to-right —
+threshold just above 16:9:
+  - WIDE   (width/height >= 1.8): vertical thirds, left-to-right —
            MUTE | DOWN | UP. Each zone spans the full panel height.
-  - SQUARE (width/height <  1.2): top third is MUTE (full width); the
+  - SQUARE (width/height <  1.8): top third is MUTE (full width); the
            bottom two-thirds is split left/right into DOWN | UP.
 All panels in dial_display_profiles.py are mounted landscape, and these are
 the only two shapes that occur across the profile table, so no other layout
 is defined.
+
+The threshold sits above 16:9 because the square layout reads better on
+real hardware at these sizes — a full-width mute band with the two volume
+controls beneath it gives each target more area than three narrow columns
+do. Every profile in the current table is between 1.0 and 1.33, so they all
+select SQUARE; the WIDE branch is kept for panels wider than 16:9, which
+none of the shipped profiles are.
 
 DEAD ZONES: every boundary between two zones carries a small inert band
 (the "dead zone") on each side, so an imprecise tap near a boundary hits
@@ -60,7 +67,9 @@ from enum import Enum
 
 # width/height at or above this ratio selects the WIDE (vertical thirds)
 # layout; below it selects the SQUARE (top third + bottom split) layout.
-WIDE_ASPECT_THRESHOLD = 1.2
+# Set just above 16:9 so everything up to and including a 16:9 panel gets
+# the square layout — see LAYOUT SELECTION in the module docstring.
+WIDE_ASPECT_THRESHOLD = 1.8
 
 # Dead-zone margin (pixels either side of a boundary) at the reference
 # 160x128 profile. See module docstring for the scaling rule applied by

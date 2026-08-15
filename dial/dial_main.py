@@ -123,7 +123,23 @@ def _build_touch_source(cfg, display, confirm_presence=None):
     z_threshold = (
         controller.z_threshold if controller.z_threshold is not None else DEFAULT_Z_THRESHOLD
     )
-    touch_filter = TouchFilter(profile.width, profile.height, z_threshold=z_threshold)
+    # A 180-degree screen rotation is applied to the frame in software, so
+    # the touch sheet has to be turned the same way or presses land
+    # diagonally opposite what the user sees. Inverting BOTH axes is what
+    # 180 degrees means; it composes with the profile's own axis mapping.
+    rotated = bool(cfg.display.rotate)
+    touch_filter = TouchFilter(
+        profile.width,
+        profile.height,
+        z_threshold=z_threshold,
+        raw_x_min=controller.raw_x_min,
+        raw_x_max=controller.raw_x_max,
+        raw_y_min=controller.raw_y_min,
+        raw_y_max=controller.raw_y_max,
+        swap_xy=profile.touch_swap_xy,
+        invert_x=profile.touch_invert_x != rotated,
+        invert_y=profile.touch_invert_y != rotated,
+    )
     state_machine = TouchStateMachine(profile.width, profile.height)
 
     def on_reveal_overlay() -> None:
@@ -178,6 +194,23 @@ def _build_touch_source(cfg, display, confirm_presence=None):
         on_dismiss_overlay=on_dismiss_overlay,
         on_set_pressed_zone=on_set_pressed_zone,
         get_noncomposited_generation=display.noncomposited_generation,
+        axis_signs=(
+            profile.touch_swap_xy, profile.touch_invert_x, profile.touch_invert_y
+        ),
+    )
+    # Logged on success, not just on failure: without this there is no way
+    # to tell from the journal whether the touch stack came up at all, and
+    # the axis mapping is the first thing to check when presses land in the
+    # wrong place.
+    logging.info(
+        "dial touch: %s ready on %dx%d (raw x %s-%s y %s-%s, swap_xy=%s, "
+        "invert x=%s y=%s, rotate=%s)",
+        controller.key, profile.width, profile.height,
+        controller.raw_x_min, controller.raw_x_max,
+        controller.raw_y_min, controller.raw_y_max,
+        profile.touch_swap_xy,
+        profile.touch_invert_x != rotated, profile.touch_invert_y != rotated,
+        rotated,
     )
     return touch_source
 
@@ -322,6 +355,7 @@ def main() -> None:
         # returning None) must not claim it can confirm presence, and
         # neither must a dial whose touch stack raised above (touch_source
         # stays None on that path). See DialHTTPServer.set_can_confirm_presence.
+        http_server.set_touch_source(touch_source)
         http_server.set_can_confirm_presence(
             encoder is not None or button is not None or touch_source is not None
         )

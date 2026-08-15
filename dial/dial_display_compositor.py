@@ -54,11 +54,12 @@ from dial_touch_layout import TouchZone, zones_for
 # Overlay dim factor: the whole base frame is multiplied down to this
 # fraction of its brightness before the zone glyphs are drawn on top, the
 # same ImageEnhance.Brightness idiom dial_display_image.py uses for the
-# ambient-blur backdrop (see BACKDROP_DARKEN_PERCENT there). 0.4 reads as a
-# ~60% dim — dark enough that the glyphs and the pressed-zone highlight are
+# ambient-blur backdrop (see BACKDROP_DARKEN_PERCENT there). 0.32 reads as a
+# ~68% dim — dark enough that the glyphs and the pressed-zone highlight are
 # unambiguous against any artwork, while the dimmed art is still faintly
-# visible behind it.
-OVERLAY_DIM_FACTOR = 0.4
+# visible behind it. Set against real hardware: 0.4 left bright album art
+# competing with the glyphs.
+OVERLAY_DIM_FACTOR = 0.32
 
 # Glyph stroke colour and the pressed-zone highlight fill, chosen for
 # contrast against the dimmed backdrop produced by OVERLAY_DIM_FACTOR.

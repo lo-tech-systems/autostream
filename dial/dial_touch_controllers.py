@@ -64,7 +64,16 @@ TOUCH_CONTROLLERS: dict[str, TouchController] = {
         raw_x_max=3900,
         raw_y_min=200,
         raw_y_max=3900,
-        z_threshold=100,
+        # Calibrated against real hardware over ~3500 idle samples and a
+        # run of progressively lighter touches:
+        #   idle, nothing on the panel:      max z 176
+        #   lightest deliberate touch:       median z 338 (min single 315)
+        # So the usable window is 176..338, and this sits mid-window. Going
+        # lower buys NO sensitivity — every genuine contact measured read
+        # well above 300 — while walking into the idle noise band. An
+        # earlier value of 20 was set from a much shorter idle sample that
+        # happened to peak at 26, and was well below the real noise floor.
+        z_threshold=250,
     ),
     "ft6206": TouchController(
         key="ft6206",

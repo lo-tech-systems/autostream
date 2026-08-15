@@ -24,6 +24,7 @@ from dial_touch import (  # noqa: E402
     ACTION_VOLUME_UP,
     DISMISS_S,
     FIRST_REPEAT_S,
+    PRESSED_FLASH_S,
     REPEAT_INTERVAL_S,
     TouchEventSource,
     TouchStateMachine,
@@ -63,6 +64,12 @@ def cap_event(xy=(0, 0), zone=None):
 
 def kinds(actions):
     return [a.kind for a in actions]
+
+
+def clears_pressed(actions):
+    """True if any action is the pressed-zone highlight being cleared
+    (ACTION_SET_PRESSED_ZONE with zone=None)."""
+    return any(a.kind == ACTION_SET_PRESSED_ZONE and a.zone is None for a in actions)
 
 
 # ---------------------------------------------------------------------------
@@ -128,10 +135,10 @@ class TestAlreadyVisibleArmsAtTouchDown:
 
 
 # ---------------------------------------------------------------------------
-# Reveal-then-arm
+# Reveal-only first touch
 # ---------------------------------------------------------------------------
 
-class TestRevealThenArm:
+class TestRevealOnlyFirstTouch:
     def test_touch_down_while_hidden_only_reveals(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         assert sm.overlay_visible is False
@@ -151,26 +158,56 @@ class TestRevealThenArm:
         assert actions == []
         assert sm.pressed_zone is None
 
-    def test_still_down_at_overlay_live_arms_from_current_position(self):
+    def test_still_down_at_overlay_live_stays_reveal_only(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.on_filter_event(press_event(UP_XY), now=0.0)
         # Finger slides to DOWN's zone before the overlay renders.
         sm.on_filter_event(repeat_event(DOWN_XY), now=0.1)
         actions = sm.overlay_live(now=0.15)
-        # Armed from the CURRENT (slid-to) position, not the touch-down one,
-        # and that arm acts once immediately.
-        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_DOWN]
-        assert sm.pressed_zone == TouchZone.DOWN
+        # Reveal-only: the zones were not on screen when this contact began,
+        # so overlay_live() never arms, no matter where the finger currently
+        # is. It just returns the session to idle.
+        assert actions == []
+        assert sm.pressed_zone is None
+        assert sm.overlay_visible is True
 
-    def test_repeat_clock_starts_at_overlay_live_not_touchdown(self):
+    def test_reveal_only_contact_never_actuates_however_long_held(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.on_filter_event(press_event(UP_XY), now=0.0)
-        sm.overlay_live(now=2.0)
-        # Nothing due yet just after arming...
-        assert sm.tick(now=2.0 + FIRST_REPEAT_S - 0.01) == []
-        # ...but due FIRST_REPEAT_S after overlay-live, not after touch-down.
-        actions = sm.tick(now=2.0 + FIRST_REPEAT_S)
-        assert kinds(actions) == [ACTION_VOLUME_UP]
+        sm.overlay_live(now=0.1)
+        assert sm.pressed_zone is None
+
+        # Keep the same contact down well past FIRST_REPEAT_S / several
+        # REPEAT_INTERVAL_S — nothing must ever actuate from this press.
+        t = 0.1
+        seen_actuation = False
+        for _ in range(30):
+            t += REPEAT_INTERVAL_S
+            actions = sm.on_filter_event(repeat_event(UP_XY), now=t)
+            actions += sm.tick(now=t)
+            if any(
+                a.kind in (ACTION_VOLUME_UP, ACTION_VOLUME_DOWN, ACTION_MUTE_TOGGLE)
+                for a in actions
+            ):
+                seen_actuation = True
+        assert t > 0.1 + FIRST_REPEAT_S + 4 * REPEAT_INTERVAL_S
+        assert not seen_actuation
+        assert sm.pressed_zone is None
+
+    def test_second_press_after_reveal_only_release_arms_and_actuates(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        sm.overlay_live(now=0.1)
+        sm.on_filter_event(release_event(UP_XY), now=0.2)
+        assert sm.overlay_visible is True
+        assert sm.pressed_zone is None
+
+        # A second, deliberate press while the overlay is still visible arms
+        # and actuates immediately — this is what the first touch could not
+        # do because the zones were not yet on screen.
+        actions = sm.on_filter_event(press_event(UP_XY), now=0.3)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
+        assert sm.pressed_zone == TouchZone.UP
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +355,25 @@ class TestTouchEventSource:
             # Reveal-only so far: the press has not armed, so nothing has
             # actuated even though the finger is on the UP zone.
             assert ("volume-up",) not in cb.calls
-            # Overlay is now "live" per the display side — the still-down
-            # press arms and acts once immediately.
+
+            # Overlay is now "live" per the display side. Reveal-only means
+            # this does NOT arm the still-down press — it stays inert.
             source.overlay_live()
+            assert not any(c[0] == "zone" for c in cb.calls)
+            assert ("volume-up",) not in cb.calls
+
+            # Finger lifts, then a second, deliberate press lands while the
+            # overlay is visible: that one arms and actuates immediately.
+            irq.release()
+            for _ in range(20):
+                clock.advance(0.01)
+                time.sleep(0.005)
+
+            irq.press()
+            for _ in range(20):
+                clock.advance(0.01)
+                time.sleep(0.005)
+
             assert any(c[0] == "zone" for c in cb.calls)
             assert ("volume-up",) in cb.calls
         finally:
@@ -351,7 +404,7 @@ class TestTouchEventSource:
 # ---------------------------------------------------------------------------
 
 class TestForceRevealOnly:
-    def test_drops_latch_and_falls_back_to_reveal_pending_when_still_down(self):
+    def test_drops_latch_and_stays_reveal_only_when_still_down(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm._overlay_visible = True
         sm.on_filter_event(press_event(UP_XY), now=0.0)  # already visible -> arms immediately
@@ -361,10 +414,15 @@ class TestForceRevealOnly:
         assert actions == []
         assert sm.pressed_zone is None
 
-        # Finger still down: overlay_live() re-samples from the CURRENT
-        # position and re-arms, exactly like ordinary reveal-then-arm — no
-        # fresh touch-down required.
+        # Finger still down: overlay_live() is reveal-only like any other
+        # reveal — it does NOT re-arm from the current position anymore.
         actions = sm.overlay_live(now=0.5)
+        assert actions == []
+        assert sm.pressed_zone is None
+
+        # A fresh, deliberate press (overlay already visible) arms and
+        # actuates immediately.
+        actions = sm.on_filter_event(press_event(UP_XY), now=0.6)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
         assert sm.pressed_zone == TouchZone.UP
 
@@ -494,3 +552,153 @@ class TestConfigChanged:
         actions = sm.on_filter_event(press_event(UP_XY), now=2.0)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
         assert sm.pressed_zone == TouchZone.UP
+
+
+# ---------------------------------------------------------------------------
+# PRESSED HIGHLIGHT — UP/DOWN stay lit until release; MUTE self-clears after
+# PRESSED_FLASH_S even with the finger still down.
+# ---------------------------------------------------------------------------
+
+class TestPressedHighlight:
+    @pytest.mark.parametrize(
+        "zone_xy,action_kind",
+        [(UP_XY, ACTION_VOLUME_UP), (DOWN_XY, ACTION_VOLUME_DOWN)],
+    )
+    def test_repeating_zone_stays_lit_while_held_and_clears_only_on_release(
+        self, zone_xy, action_kind
+    ):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(zone_xy), now=0.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, action_kind]
+
+        # Hold well past PRESSED_FLASH_S (and past a couple of repeats) —
+        # a repeating zone must never self-clear while still down.
+        t = 0.0
+        for _ in range(6):
+            t += PRESSED_FLASH_S
+            actions = sm.tick(now=t)
+            assert not clears_pressed(actions)
+        assert t > PRESSED_FLASH_S * 4
+
+        actions = sm.on_filter_event(release_event(zone_xy), now=t)
+        assert kinds(actions).count(ACTION_SET_PRESSED_ZONE) == 1
+        assert clears_pressed(actions)
+        assert sm.pressed_zone is None
+
+    def test_mute_self_clears_after_flash_even_with_finger_still_down(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(MUTE_XY), now=0.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_MUTE_TOGGLE]
+        assert sm.pressed_zone == TouchZone.MUTE
+
+        # Not due yet just before the flash deadline.
+        actions = sm.tick(now=PRESSED_FLASH_S - 0.01)
+        assert not clears_pressed(actions)
+        assert sm.pressed_zone == TouchZone.MUTE
+
+        # Due at the flash deadline, finger still down.
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert clears_pressed(actions)
+        assert sm.pressed_zone is None
+
+        # Later contact/ticks must not re-light it.
+        sm.on_filter_event(repeat_event(MUTE_XY), now=PRESSED_FLASH_S + 0.1)
+        actions = sm.tick(now=PRESSED_FLASH_S + 1.0)
+        assert not clears_pressed(actions)  # nothing left to clear
+        assert sm.pressed_zone is None
+
+    def test_short_tap_clears_highlight_exactly_once(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(MUTE_XY), now=0.0)
+
+        # Released well before PRESSED_FLASH_S.
+        actions = sm.on_filter_event(release_event(MUTE_XY), now=0.05)
+        assert kinds(actions).count(ACTION_SET_PRESSED_ZONE) == 1
+        assert clears_pressed(actions)
+        assert sm.pressed_zone is None
+
+        # A later tick at what would have been the flash deadline must not
+        # emit a second clear — release already cancelled the flash timer.
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert not clears_pressed(actions)
+
+    def test_force_reveal_only_clears_lit_state(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        sm.force_reveal_only()
+        assert sm.pressed_zone is None
+        # And it must not spontaneously reappear on a later tick.
+        assert not clears_pressed(sm.tick(now=10.0))
+
+
+# ---------------------------------------------------------------------------
+# display_config_changed() — live rotate toggle re-derives the filter's axis
+# transform from the profile's UNROTATED signs, XORing in the rotate flag,
+# then delivers the same synthetic release as config_changed().
+# ---------------------------------------------------------------------------
+
+class FakeAxisFilter:
+    """Spy standing in for TouchFilter: records set_axis_transform() calls
+    without needing a real filter/feed() pipeline."""
+
+    def __init__(self):
+        self.calls: list[tuple[bool, bool, bool]] = []
+
+    def set_axis_transform(self, *, swap_xy, invert_x, invert_y):
+        self.calls.append((swap_xy, invert_x, invert_y))
+
+
+class TestDisplayConfigChanged:
+    def test_rotate_true_xors_invert_signs(self):
+        driver = FakeDriver()
+        touch_filter = FakeAxisFilter()
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        source = TouchEventSource(
+            driver, touch_filter, sm, clock=lambda: 1.0,
+            axis_signs=(True, False, True),  # swap, invert_x, invert_y (unrotated)
+        )
+        source.display_config_changed(rotate=True)
+
+        # invert_x/invert_y each XORed with rotate=True; swap is untouched.
+        assert touch_filter.calls == [(True, True, False)]
+        # Synthetic release still delivered.
+        assert sm.pressed_zone is None
+
+    def test_rotate_false_keeps_signs_unchanged(self):
+        driver = FakeDriver()
+        touch_filter = FakeAxisFilter()
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+
+        source = TouchEventSource(
+            driver, touch_filter, sm, clock=lambda: 1.0,
+            axis_signs=(True, False, True),
+        )
+        source.display_config_changed(rotate=False)
+
+        assert touch_filter.calls == [(True, False, True)]
+
+    def test_no_axis_signs_is_a_safe_noop_on_transform(self):
+        driver = FakeDriver()
+        touch_filter = FakeAxisFilter()
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.UP
+
+        # axis_signs defaults to None.
+        source = TouchEventSource(driver, touch_filter, sm, clock=lambda: 1.0)
+        source.display_config_changed(rotate=True)
+
+        assert touch_filter.calls == []  # transform left untouched
+        # The synthetic release is still delivered regardless.
+        assert sm.pressed_zone is None

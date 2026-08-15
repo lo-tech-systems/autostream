@@ -71,12 +71,27 @@ class TestLayoutSelection:
 
     def test_threshold_boundary_values(self):
         # Exactly at the threshold -> WIDE.
-        zones = zones_for(120, 100)  # ratio == 1.2
+        zones = zones_for(180, 100)  # ratio == 1.8
         assert zones[TouchZone.MUTE][1] == 0 and zones[TouchZone.MUTE][3] == 100
 
         # Just under the threshold -> SQUARE.
-        zones = zones_for(119, 100)  # ratio < 1.2
-        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == 119
+        zones = zones_for(179, 100)  # ratio < 1.8
+        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == 179
+
+    def test_sixteen_by_nine_selects_square(self):
+        # 16:9 sits just below the threshold, so a widescreen panel still
+        # gets the full-width mute band rather than three narrow columns.
+        zones = zones_for(1920, 1080)
+        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == 1920
+
+    def test_every_shipped_profile_size_selects_square(self):
+        # Every profile in dial_display_profiles is between 1.0 and 1.33, so
+        # they all take the square layout; WIDE is reserved for panels wider
+        # than 16:9, which none of them are.
+        for width, height in PROFILE_SIZES:
+            zones = zones_for(width, height)
+            assert zones[TouchZone.MUTE][0] == 0, (width, height)
+            assert zones[TouchZone.MUTE][2] == width, (width, height)
 
 
 class TestExactTiling:
@@ -140,15 +155,20 @@ class TestRemainderPolicy:
         assert abs(dw - uw) <= 1
 
     def test_160_wide_remainder_not_in_a_zone(self):
-        # 160/3 = 53.33 — the classic case called out in the spec.
+        # 160x128 is ratio 1.25, so it takes the SQUARE layout: MUTE spans
+        # the full width across the top and DOWN/UP split the bottom. The
+        # remainder policy is checked on the axes that actually get split —
+        # the vertical thirds, and the bottom row's left/right halves.
         width, height = 160, 128
         zones = zones_for(width, height)
         total_zone_pixels = sum(
             (x1 - x0) * (y1 - y0) for (x0, y0, x1, y1) in zones.values()
         )
         assert total_zone_pixels < width * height  # some pixels went to dead zones
-        widths = [zones[z][2] - zones[z][0] for z in (TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP)]
-        assert len(set(widths)) == 1, "remainder leaked into unequal zone widths"
+        down_w = zones[TouchZone.DOWN][2] - zones[TouchZone.DOWN][0]
+        up_w = zones[TouchZone.UP][2] - zones[TouchZone.UP][0]
+        assert down_w == up_w, "remainder leaked into unequal bottom-half widths"
+        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == width
 
 
 class TestZoneAt:

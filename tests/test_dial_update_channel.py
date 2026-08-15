@@ -470,6 +470,7 @@ class TestDialHttpConfigureApi:
             # Set once at startup by dial_main from the inputs it actually
             # constructed; this fake never builds any, so it reports False.
             _can_confirm_presence = False
+            _touch_source = None
             _make_handler = dhs.DialHTTPServer._make_handler
 
             def __init__(self, initial):

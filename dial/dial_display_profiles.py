@@ -76,6 +76,15 @@ class DisplayProfile:
     # the only thing that can put the panel in landscape. None leaves the
     # driver's init table untouched.
     madctl: int | None = None
+    # How a resistive touch sheet's native axes map onto this panel as it is
+    # actually scanned. A touch controller is wired to the sheet, not to the
+    # display controller, so nothing about madctl or rotation reaches it —
+    # a panel put into landscape by its scan order still reports portrait
+    # touch axes, and the mapping has to be stated here per profile.
+    # Applied to normalised coordinates: swap first, then invert.
+    touch_swap_xy: bool = False
+    touch_invert_x: bool = False
+    touch_invert_y: bool = False
     baudrate: int = 16_000_000
     # RESERVED for a future touch panel: controller tag + bus type. Not
     # constructed or read anywhere yet — see the module docstring doctrine.
@@ -165,6 +174,16 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         rotation=0,
         rotation_mechanism="init_table",
         madctl=0x28,
+        # madctl=0x28 sets MV, so the display scans with rows and columns
+        # exchanged while the touch sheet keeps its native axes — hence the
+        # swap. The inversion signs cannot be derived from the datasheet
+        # (they depend on which edge the sheet's tails leave the glass on
+        # this board); these were established against real hardware, with
+        # the panel's 180-degree rotate setting on. They describe the
+        # UNROTATED panel — dial_main XORs the rotate setting in.
+        touch_swap_xy=True,
+        touch_invert_x=True,
+        touch_invert_y=True,
         baudrate=32_000_000,
     ),
 }

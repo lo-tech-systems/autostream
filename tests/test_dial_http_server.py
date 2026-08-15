@@ -50,6 +50,7 @@ class FakeDialServer:
             "recovery_remaining_ms": rw._recovery_remaining_ms,
         }
         self._can_confirm_presence = False
+        self._touch_source = None
         self._announce_calls: list = []
 
     def update_cfg(self, new_cfg: DialConfig) -> None:

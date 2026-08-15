@@ -59,7 +59,14 @@ DEFAULT_Z_THRESHOLD = 100
 
 # Contact/no-contact transitions must hold steady for this long before being
 # trusted, absorbing switch bounce right at the threshold.
-DEBOUNCE_S = 0.02
+#
+# This, not the pressure threshold, is what actually limits how light a
+# touch can be: with the sample loop polling at 10ms, a press must survive
+# one silent settling tick plus this window before it is reported. Measured
+# light touches on real hardware held T_IRQ active for only 10-50ms, so at
+# 20ms the briefest of them were being discarded as bounce no matter how
+# the threshold was set.
+DEBOUNCE_S = 0.01
 
 # Repeat cadence: first REPEAT fires this long after PRESS, then every
 # REPEAT_INTERVAL_S after that.
@@ -107,11 +114,34 @@ class TouchFilter:
         *,
         z_threshold: int = DEFAULT_Z_THRESHOLD,
         median_n: int = MEDIAN_N,
+        raw_x_min: int | None = None,
+        raw_x_max: int | None = None,
+        raw_y_min: int | None = None,
+        raw_y_max: int | None = None,
+        swap_xy: bool = False,
+        invert_x: bool = False,
+        invert_y: bool = False,
     ) -> None:
         self._width = width
         self._height = height
         self._z_threshold = z_threshold
         self._median_n = median_n
+        self._raw_x_min = raw_x_min
+        self._raw_x_max = raw_x_max
+        self._raw_y_min = raw_y_min
+        self._raw_y_max = raw_y_max
+        self._swap_xy = swap_xy
+        self._invert_x = invert_x
+        self._invert_y = invert_y
+        # Resistive controllers report 12-bit ADC counts; capacitive ones
+        # report already-scaled pixel coordinates. Scaling is enabled only
+        # when a full set of raw bounds is supplied, so a capacitive panel
+        # passes through untouched.
+        self._scales = (
+            raw_x_min is not None and raw_x_max is not None
+            and raw_y_min is not None and raw_y_max is not None
+            and raw_x_max > raw_x_min and raw_y_max > raw_y_min
+        )
 
         self._window: list[tuple[int, int, int]] = []
         self._phase = _IDLE
@@ -121,6 +151,55 @@ class TouchFilter:
         self._zone: TouchZone | None = None
         self._last_xy: tuple[int, int] | None = None
         self._capped = False
+
+    def set_axis_transform(self, *, swap_xy: bool, invert_x: bool, invert_y: bool) -> None:
+        """Update the axis mapping in place.
+
+        The screen rotate setting is applied to the frame at runtime, and
+        the touch sheet has to turn with it or presses land diagonally
+        opposite what is drawn. Rebuilding the filter instead would discard
+        the in-flight press lifecycle mid-touch; only the mapping changes
+        here, and the caller is expected to end the press separately.
+        """
+        self._swap_xy = swap_xy
+        self._invert_x = invert_x
+        self._invert_y = invert_y
+
+    def _to_panel_xy(self, rx: int, ry: int) -> tuple[int, int]:
+        """Map one raw controller reading to compose-space pixels.
+
+        Resistive controllers report 12-bit ADC counts spanning the physical
+        sheet, not pixels, and the sheet's axes are the panel's NATIVE ones
+        — a display rotated by its controller's scan order (see
+        DisplayProfile.madctl) does not rotate the touch sheet with it. So
+        the order here matters: normalise to 0..1 against the calibrated
+        raw span first, then swap and invert axes while both are unitless,
+        and only then scale to width/height. Swapping after scaling would
+        mix up two different pixel extents.
+
+        Out-of-range readings are clamped rather than dropped: the
+        calibrated span is deliberately inset from the full 0..4095 ADC
+        range, so a press right at the bezel legitimately reads outside it
+        and must still land in the nearest zone.
+        """
+        if not self._scales:
+            return rx, ry
+
+        nx = (rx - self._raw_x_min) / (self._raw_x_max - self._raw_x_min)
+        ny = (ry - self._raw_y_min) / (self._raw_y_max - self._raw_y_min)
+
+        if self._swap_xy:
+            nx, ny = ny, nx
+        if self._invert_x:
+            nx = 1.0 - nx
+        if self._invert_y:
+            ny = 1.0 - ny
+
+        px = int(nx * self._width)
+        py = int(ny * self._height)
+        px = max(0, min(self._width - 1, px))
+        py = max(0, min(self._height - 1, py))
+        return px, py
 
     def feed(self, raw_sample: tuple[int, int, int] | None, now: float) -> list[TouchEvent]:
         """Feed one raw (x, y, z) sample (or None for "definitely not
@@ -134,8 +213,14 @@ class TouchFilter:
             self._window.append(raw_sample)
             if len(self._window) > self._median_n:
                 self._window.pop(0)
-            mx = int(statistics.median(s[0] for s in self._window))
-            my = int(statistics.median(s[1] for s in self._window))
+            # Median over RAW readings, then map — the mapping is monotonic
+            # per axis, so median-then-map and map-then-median agree, and
+            # keeping the window in raw units leaves the z decision below
+            # reading the same units the driver reported.
+            mx, my = self._to_panel_xy(
+                int(statistics.median(s[0] for s in self._window)),
+                int(statistics.median(s[1] for s in self._window)),
+            )
             # The Z/contact decision deliberately uses THIS tick's raw z, not
             # a median over the window: median-of-N exists to smooth x/y
             # position jitter from a still-pressed finger, not to delay

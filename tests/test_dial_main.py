@@ -668,6 +668,7 @@ class TestScreenSettingsLiveApply:
         server._cfg_lock = __import__("threading").Lock()
         server._display_status = display
         server._recovery_window = MagicMock()
+        server._touch_source = None
 
         assert display.get_status()["fitted"] is False
 
@@ -699,6 +700,7 @@ class TestScreenSettingsLiveApply:
         server._cfg_lock = __import__("threading").Lock()
         server._display_status = display
         server._recovery_window = MagicMock()
+        server._touch_source = None
 
         assert display.get_status()["rotate"] is False
 
@@ -732,6 +734,7 @@ class TestScreenSettingsLiveApply:
         server._cfg_lock = __import__("threading").Lock()
         server._display_status = display
         server._recovery_window = MagicMock()
+        server._touch_source = None
 
         assert display.get_status()["bgr"] is False
         assert display.get_status()["screen_type"] == "st7735s_160x128"

@@ -237,6 +237,7 @@ class DialHTTPServer:
         # /configure or /recovery_status poll (before construction finishes)
         # never overclaims presence-confirmation capability.
         self._can_confirm_presence = False
+        self._touch_source = None
         self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
         self._display_status.update_config(cfg.display)
         self._server          = http.server.HTTPServer(
@@ -265,6 +266,12 @@ class DialHTTPServer:
 
     def confirm_volume(self) -> None:
         self._recovery_window.confirm_volume()
+
+    def set_touch_source(self, touch_source) -> None:
+        """Register the running touch session, if any, so a live screen
+        settings change can remap the touch axes to match the frame. None on
+        a dial with no touch panel. Called once at startup."""
+        self._touch_source = touch_source
 
     def set_can_confirm_presence(self, value: bool) -> None:
         """Record whether this dial actually has at least one working
@@ -607,6 +614,17 @@ class DialHTTPServer:
                     new_display.touch_type != cfg.display.touch_type
                 )
                 runtime = dial_server._display_status.update_config(new_cfg.display)
+                # Rotate is applied to the frame in software; the touch sheet
+                # has to turn with it or every press lands diagonally
+                # opposite the button being looked at. Best-effort: a touch
+                # remap must never fail a settings save.
+                if dial_server._touch_source is not None:
+                    try:
+                        dial_server._touch_source.display_config_changed(
+                            new_display.rotate
+                        )
+                    except Exception as e:
+                        logging.warning("dial touch: axis remap failed (%s)", e)
                 # A failed live apply while fitted is requested surfaces as
                 # last_error == "backend_open_failed" (set by DialDisplay's
                 # degrade-to-noop path — see dial_display.py _enable_locked);

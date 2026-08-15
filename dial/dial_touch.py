@@ -16,18 +16,28 @@ Two classes, deliberately kept separate:
   dial_touch_drivers are imported lazily/defensively so this module stays
   importable on a machine with neither installed.
 
-REVEAL-THEN-ARM: a contact that begins while the overlay is not visible only
-reveals it — no zone is sampled at touch-down. Only when the caller later
-reports (via overlay_live()) that the overlay has actually rendered does the
-session sample the zone, from wherever the finger currently is at that
-moment, and arm — starting the 400ms repeat clock then, not at touch-down.
-If the finger has already lifted by the time overlay_live() is called,
-nothing is actuated; the touch was reveal-only.
+REVEAL-ONLY FIRST TOUCH: a contact that begins while the overlay is not
+visible ONLY reveals it. No zone is sampled, nothing is actuated, however
+long the finger stays down — the user gets to see where the buttons are
+before committing to one. Actuating on that first contact would mean
+pressing a control the user could not yet see.
 
-When the overlay is already visible at touch-down, none of the above
-applies: the press arms immediately, sampling the zone at touch-down and
-starting the repeat clock from touch-down — the zones were already visible
-before the finger landed.
+When the overlay is already visible at touch-down the press arms
+immediately, sampling the zone at touch-down and starting the repeat clock
+from touch-down — the zones were on screen before the finger landed.
+
+PRESSED HIGHLIGHT: arming lights the pressed zone. How it clears depends on
+what the zone does:
+
+  - UP/DOWN repeat while held, so the highlight stays lit for as long as the
+    finger is down and clears on release. It is showing a control that is
+    genuinely still active.
+  - MUTE is single-shot — it fires once and never repeats — so there is no
+    ongoing state to show. It flashes for PRESSED_FLASH_S and clears itself,
+    even if the finger stays down.
+
+Either way the highlight is cleared explicitly rather than left for the next
+unrelated repaint, which made a brief tap look like a stuck button.
 
 DISMISS: ~DISMISS_S after the last *contact sample* (not the last
 touch-down) the overlay is dismissed. Every accepted sample while
@@ -50,12 +60,14 @@ from dial_touch_layout import TouchZone, zone_at
 # cap-stop, whichever is most recent.
 DISMISS_S = 4.0
 
+# How long a single-shot (MUTE) highlight stays lit. Long enough to read as
+# deliberate feedback, short enough that it never looks like a latched
+# state; each change costs one full-frame push. Repeating zones (UP/DOWN)
+# ignore this and stay lit until release — see the module docstring.
+PRESSED_FLASH_S = 0.25
+
 # Mirrored here from dial_touch_filter so TouchStateMachine can run its own
-# repeat clock (needed for the reveal-then-arm case, where arming happens
-# later than the filter's own PRESS-anchored clock) with identical cadence
-# to the filter's, so the "already visible" case — where the state machine's
-# clock and the filter's clock start at the same instant — behaves exactly
-# the same either way.
+# repeat clock with identical cadence to the filter's.
 FIRST_REPEAT_S = 0.4
 REPEAT_INTERVAL_S = 0.15
 
@@ -92,6 +104,8 @@ class TouchStateMachine:
         self._armed_zone: TouchZone | None = None
         self._next_repeat_time: float | None = None
         self._dismiss_deadline: float | None = None
+        self._pressed_until: float | None = None
+        self._pressed_lit = False
 
     # -- read-only state, for a compositor/UI to consult -------------------
 
@@ -101,7 +115,7 @@ class TouchStateMachine:
 
     @property
     def pressed_zone(self) -> TouchZone | None:
-        return self._armed_zone if self._phase == _PHASE_ARMED else None
+        return self._armed_zone if self._pressed_lit else None
 
     # -- inputs --------------------------------------------------------
 
@@ -123,13 +137,14 @@ class TouchStateMachine:
         meaningful while reveal-pending; a no-op otherwise."""
         if self._phase != _PHASE_REVEAL_PENDING:
             return []
-        if not self._contact_down or self._pending_xy is None:
-            # Finger already lifted before the overlay rendered — reveal
-            # only, nothing actuated.
-            self._phase = _PHASE_IDLE
-            return []
-        x, y = self._pending_xy
-        return self._arm(x, y, now)
+        # Reveal only. The contact that summoned the overlay never actuates,
+        # whether or not the finger is still down: until this moment the
+        # zones were not on screen, so acting on it would fire a control the
+        # user could not see. A second, deliberate press does the work.
+        self._phase = _PHASE_IDLE
+        self._pending_xy = None
+        self._reset_dismiss(now)
+        return []
 
     def force_reveal_only(self) -> list[TouchAction]:
         """External force-reset: drop whatever zone was armed and stop
@@ -144,19 +159,18 @@ class TouchStateMachine:
 
         If the finger is still down, this falls back to REVEAL_PENDING —
         the same phase a fresh touch-down against a hidden overlay starts
-        in — so a later overlay_live() call re-samples the zone from the
-        finger's CURRENT position and re-arms from there, exactly like
-        ordinary reveal-then-arm. It deliberately does NOT require a fresh
-        physical touch-down (unlike config_changed()'s synthetic release,
-        which does) because the finger's continued presence is still a
-        real physical fact — only the on-screen geometry it was judged
-        against is stale.
+        in. Since a reveal never actuates, the finger resting there will
+        not act on the stale geometry; a fresh, deliberate press is needed,
+        which is the safe outcome when what was on screen has just been
+        torn down underneath it.
 
         If the finger is already up, this simply returns to idle. Never
         returns any actions of its own; it only clears local state.
         """
         self._armed_zone = None
         self._next_repeat_time = None
+        self._pressed_lit = False
+        self._pressed_until = None
         if self._contact_down:
             self._phase = _PHASE_REVEAL_PENDING
         else:
@@ -169,6 +183,13 @@ class TouchStateMachine:
         (e.g. once per poll tick and once per idle-wait timeout) so repeats
         and the dismiss timeout fire even between filter events."""
         actions: list[TouchAction] = []
+        if self._pressed_until is not None and now >= self._pressed_until:
+            # Single-shot flash over: unlight the zone. Emitted even after a
+            # release has already returned the session to idle, so a tap
+            # shorter than the flash still gets its highlight cleared.
+            self._pressed_until = None
+            self._pressed_lit = False
+            actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
         if self._phase == _PHASE_ARMED and self._next_repeat_time is not None:
             if now >= self._next_repeat_time:
                 if self._armed_zone == TouchZone.UP:
@@ -203,18 +224,28 @@ class TouchStateMachine:
     def _on_repeat(self, event, now: float) -> list[TouchAction]:
         self._contact_down = True
         self._pending_xy = (event.x, event.y)
-        if self._phase == _PHASE_ARMED:
-            self._reset_dismiss(now)
+        # Any contact sample holds the overlay open, armed or not — a finger
+        # resting after a reveal-only touch must not have the zones vanish
+        # from under it.
+        self._reset_dismiss(now)
         return []
 
     def _on_release(self, now: float) -> list[TouchAction]:
         self._contact_down = False
+        actions: list[TouchAction] = []
         if self._phase in (_PHASE_ARMED, _PHASE_REVEAL_PENDING):
             self._phase = _PHASE_IDLE
             self._armed_zone = None
             self._next_repeat_time = None
             self._reset_dismiss(now)
-        return []
+        # A held repeating zone stays lit until exactly here; clear it. A
+        # single-shot flash may already have cleared itself, in which case
+        # there is nothing to emit.
+        if self._pressed_lit:
+            self._pressed_lit = False
+            self._pressed_until = None
+            actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
+        return actions
 
     def _on_cap(self, now: float) -> list[TouchAction]:
         # Implicit release: stop repeating, start the dismiss clock, same as
@@ -233,6 +264,10 @@ class TouchStateMachine:
             return []
         self._phase = _PHASE_ARMED
         self._armed_zone = zone
+        self._pressed_lit = True
+        # Only the single-shot zone self-clears; a repeating one stays lit
+        # while the finger holds it, because it really is still acting.
+        self._pressed_until = now + PRESSED_FLASH_S if zone == TouchZone.MUTE else None
         self._next_repeat_time = now + FIRST_REPEAT_S
         self._reset_dismiss(now)
         # Every zone acts once, immediately, on arm — a tap must do something.
@@ -295,6 +330,7 @@ class TouchEventSource:
         poll_interval_s: float = _POLL_INTERVAL_S,
         idle_tick_interval_s: float = _IDLE_TICK_INTERVAL_S,
         get_noncomposited_generation=None,
+        axis_signs=None,
     ) -> None:
         self._driver = driver
         self._filter = touch_filter
@@ -315,6 +351,10 @@ class TouchEventSource:
         # callbacks: this module must not import dial_display. None disables
         # the check entirely (e.g. in tests that don't care about it).
         self._get_noncomposited_generation = get_noncomposited_generation
+        # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
+        # kept so a live rotate toggle can re-derive the mapping. None when
+        # the caller did not supply them (e.g. tests constructing directly).
+        self._axis_signs = axis_signs
         self._last_noncomposited_gen = None
         self._thread = None
         self._stop_event = None
@@ -341,6 +381,29 @@ class TouchEventSource:
         Safe to call from any thread; forwards to the state machine and
         dispatches any resulting actions."""
         self._dispatch(self._state_machine.overlay_live(self._clock()))
+
+    def display_config_changed(self, rotate: bool) -> None:
+        """Apply a live screen-settings change that affects touch mapping.
+
+        A 180-degree rotate is applied to the frame in software, so the
+        touch axes must invert with it — otherwise every press lands
+        diagonally opposite the button the user is looking at. The profile's
+        own axis signs describe the UNROTATED panel, so rotate is XOR'd in,
+        exactly as dial_main does when first building the filter.
+
+        Also delivers the synthetic release that config_changed() does: the
+        finger cannot carry a press across a remap, because the zone it was
+        sampled against has just moved.
+        """
+        setter = getattr(self._filter, "set_axis_transform", None)
+        if setter is not None and self._axis_signs is not None:
+            swap, base_invert_x, base_invert_y = self._axis_signs
+            setter(
+                swap_xy=swap,
+                invert_x=base_invert_x != rotate,
+                invert_y=base_invert_y != rotate,
+            )
+        self.config_changed()
 
     def config_changed(self) -> None:
         """Tell the session a live screen settings change (e.g. screen_type,
@@ -395,7 +458,20 @@ class TouchEventSource:
             if irq.is_active:
                 self._sample_loop(irq)
             else:
-                self._dispatch(self._state_machine.tick(self._clock()))
+                # Keep feeding the filter "definitely not touching" while
+                # idle, not just once as the sample loop exits. The release
+                # debounce needs a no-contact sample AFTER DEBOUNCE_S has
+                # elapsed to complete; the single feed(None) on the way out
+                # of _sample_loop only starts that timer. Without a second
+                # one the filter stays mid-debounce forever, and the next
+                # contact is read as the same press resuming — so no PRESS
+                # is emitted, the overlay never reveals again, and once the
+                # original press is older than MAX_HOLD_S every later touch
+                # collapses straight to a CAP. One touch works, none after.
+                now = self._clock()
+                for event in self._filter.feed(None, now):
+                    self._handle_filter_event(event, now)
+                self._dispatch(self._state_machine.tick(now))
 
     def _sample_loop(self, irq) -> None:
         while irq.is_active and not self._stop_event.is_set():
