@@ -432,7 +432,8 @@ values from this endpoint.
     "fitted": false,
     "rotate": false,
     "screen_type": "st7735s_160x128",
-    "bgr": false
+    "bgr": false,
+    "touch_type": "none"
   },
   "supported": [
     {"key": "st7735s_160x128", "text": "ST7735S (128x160)"},
@@ -441,11 +442,17 @@ values from this endpoint.
     {"key": "st7789_320x240", "text": "ST7789 (240x320)"},
     {"key": "ili9341_320x240", "text": "ILI9341 (320x240)"}
   ],
+  "supported_touch": [
+    {"key": "none", "text": "None"},
+    {"key": "xpt2046", "text": "Resistive (XPT2046/HR2046)"},
+    {"key": "ft6206", "text": "Capacitive (FT6206/FT6236)"}
+  ],
   "runtime": {
     "fitted": false,
     "rotate": false,
     "screen_type": "st7735s_160x128",
     "bgr": false,
+    "touch_type": "",
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -464,11 +471,14 @@ values from this endpoint.
 | `screen.rotate` | bool | Persisted screen-rotation setting; `true` rotates the display 180 degrees. Optional, defaults to `false` |
 | `screen.screen_type` | string | Persisted display profile key. Optional, defaults to the dial's default profile |
 | `screen.bgr` | bool | Persisted colour-order swap setting. Optional, defaults to `false` |
+| `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright — see **Validation** under `POST /screen/settings` below |
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text"}, ...]` — see **Supported profiles** below |
+| `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** — see **Touch capability gate** below |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
 | `runtime.screen_type` | string | The **active** display profile key — see **Configured vs. active** below |
 | `runtime.bgr` | bool | The **active** colour-order swap setting — see **Configured vs. active** below |
+| `runtime.touch_type` | string | The **active** touch controller key, or `""` when no touch stack is running (including on a dial with no touch code wired up at all) |
 | `runtime.active` | bool | `true` when a non-no-op display path is open |
 | `runtime.backend` | string | Name of the currently active driver (e.g. `noop`, `adafruit_st7735s`) |
 | `runtime.backend_loaded` | bool | `true` once backend imports and hardware open succeeded |
@@ -503,6 +513,17 @@ the presence of a non-empty `supported` array in this response. See **Capability
 compatibility** under `POST /screen/settings` below — this is the cross-firmware-version
 contract clients must follow before ever sending `screen.screen_type` or `screen.bgr`.
 
+**Touch capability gate.** `supported_touch` is a **separate capability from `supported`**.
+A dial can advertise display profiles in `supported` while knowing nothing at all about
+touch — its firmware may predate touch support entirely. A client must not send
+`screen.touch_type` to a dial that did not advertise a non-empty `supported_touch` array,
+and must not infer touch support from the presence (or non-emptiness) of `supported` — the
+two capabilities are independent and must be checked independently. Sending `touch_type` to
+firmware that never advertised `supported_touch` hits the same strict field whitelist
+described under **Capability gate / compatibility** below, and rejects the **entire**
+request with `invalid_screen_settings` — including any otherwise-valid `fitted`/`rotate`
+changes bundled in the same request.
+
 ### `POST /screen/settings`
 
 Accepts the **complete** normalized screen settings object — this endpoint does not apply
@@ -516,7 +537,8 @@ is set, the request must include the current PIN in `current_pin`.
     "fitted": true,
     "rotate": false,
     "screen_type": "st7735s_160x128",
-    "bgr": false
+    "bgr": false,
+    "touch_type": "xpt2046"
   }
 }
 ```
@@ -530,13 +552,15 @@ Successful response:
     "fitted": true,
     "rotate": false,
     "screen_type": "st7735s_160x128",
-    "bgr": false
+    "bgr": false,
+    "touch_type": "xpt2046"
   },
   "runtime": {
     "fitted": true,
     "rotate": false,
     "screen_type": "st7735s_160x128",
     "bgr": false,
+    "touch_type": "",
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -546,13 +570,23 @@ Successful response:
     "display_sleeping": false,
     "display_idle_seconds": 0
   },
-  "restart_required": false
+  "restart_required": true
 }
 ```
 
-`restart_required` is always `false`: the dial applies the fitted, rotate, screen_type,
-and bgr settings live by starting, stopping, or swapping the current display provider
-internally — a screen-type change never requires a process restart.
+(`runtime.touch_type` in this example still reads `""` because a touch controller change
+does not apply live — see **`restart_required`** below; the running process is still the
+one started with the previous `touch_type`.)
+
+`restart_required` reports whether **this specific POST** requires a dial service restart
+before it is fully applied. `fitted`, `rotate`, `screen_type`, and `bgr` all apply live —
+the dial starts, stops, or swaps the current display provider internally, with no restart
+needed for any of them. `touch_type` is the one exception: the touch stack (driver, filter,
+state machine) is built once at dial process startup from the persisted controller choice,
+so a `touch_type` change is saved immediately but has no live effect — the previous touch
+controller (or no touch at all) keeps running until the dial service next restarts.
+`restart_required` is `true` exactly when the request changed `touch_type` from its
+previously-persisted value, and `false` otherwise.
 
 **Capability gate / compatibility.** `screen_type` and `bgr` form **one joint capability**,
 advertised by `GET /screen/settings` returning a non-empty `supported` array (see above).
@@ -567,6 +601,9 @@ This is the cross-version contract between clients and dial firmware:
   (they are optional and default), so an older client that only ever sends
   `fitted`/`rotate` keeps working unchanged against newer dials.
 
+`touch_type` follows the identical rule as its **own, separate** capability — see **Touch
+capability gate** above: gate on `supported_touch`, not on `supported`.
+
 **Validation:**
 
 - `fitted` must be a strict JSON boolean — `0`, `1`, `"true"`, and `"false"` are rejected.
@@ -577,9 +614,12 @@ This is the cross-version contract between clients and dial firmware:
 - `screen_type` is optional and defaults to the dial's default profile when omitted; when
   present it must be a string naming a profile key present in `supported`. An unknown
   value is rejected outright — it is never silently coerced to the default.
+- `touch_type` is optional and defaults to `"none"` when omitted; when present it must be a
+  string naming a controller key present in `supported_touch`. An unknown value is rejected
+  outright, the same as `screen_type`.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
-  `screen` (including a `screen_type`/`bgr` sent to firmware that doesn't support them —
-  see the capability gate above) returns HTTP `400`:
+  `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
+  support them — see the capability gates above) returns HTTP `400`:
   ```json
   {"ok": false, "error": "invalid_screen_settings"}
   ```
@@ -611,8 +651,12 @@ written to disk, and is persisted only if the apply succeeded:
   left unchanged, so a reboot returns to the last working profile rather than booting into
   a broken panel every time.
 - `restart_required` is omitted from the `screen_apply_failed` response body (it is only
-  present on the `ok: true` path) and is `false` whenever it is present — screen-type
-  changes are applied live, without a process restart, whether they succeed or fail.
+  present on the `ok: true` path). `screen_type` changes themselves are always applied
+  live, without a process restart, whether they succeed or fail — apply-then-persist
+  gating is specific to `screen_type` and does not apply to `touch_type` (a `touch_type`
+  change can never fail to "apply" in this sense, since it does nothing live at all; it is
+  always persisted, and its effect is deferred to the next restart — see `restart_required`
+  above).
 
 ---
 

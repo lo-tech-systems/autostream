@@ -99,6 +99,60 @@ backlight (GPIO 18).
 
 ---
 
+## Optional: Touch Panel
+
+A touch panel is entirely optional and independent of the rotary encoder — a
+dial can have an encoder, a touch panel, both, or neither (the encoder and
+button GPIOs are nullable in `/etc/autostream/autostream-dial.json`; see
+*GPIO Wiring* above). Touch **requires a screen to be fitted** — there is no
+touch-only mode.
+
+Two kinds of controller are supported in software:
+
+**Resistive (XPT2046, and its pin-compatible clones HR2046/ADS7846).** This
+shares the display's SPI0 bus (see the wiring table above) with its own,
+separate chip select and interrupt line:
+
+| Touch pin | Pi Zero GPIO (BCM) | Physical pin | Notes |
+|-----------|--------------------|--------------|-------|
+| T_CLK / T_DIN / T_DO | SPI0 SCLK/MOSI/MISO | (shared with display) | Same SPI0 bus as the display |
+| T_CS      | GPIO 7 (SPI0 CE1)   | Pin 26       | Touch controller's own chip select, distinct from the display's CE0 |
+| T_IRQ     | GPIO 26             | Pin 37       | Active-low interrupt; **mandatory** — see below |
+| VCC       | 3.3 V               | Pin 1        | |
+| GND       | GND                 | Pin 6        | |
+
+**T_IRQ (GPIO 26) is mandatory, not optional.** The touch driver waits on
+this line and only takes the shared SPI0 bus while a finger is actually down
+— without it there is no way to know when a touch conversion is worth
+reading, and the driver has no fallback polling mode. Terminate/pull T_IRQ
+per the panel/controller datasheet (resistive touch controllers typically
+need an external pull-up on T_IRQ if the panel breakout doesn't already
+provide one) — this build guide does not prescribe a value beyond what the
+datasheet calls for.
+
+The ILI9341+HR2046 combination is the first resistive-touch build target
+supported in software, using the `xpt2046` driver tag (HR2046 is
+XPT2046-command-compatible). **This combination has not yet been validated
+on physical hardware** — the calibration constants in the touch controller
+table are nominal, datasheet-typical values, not measurements from a real
+panel.
+
+**Capacitive (FT6206/FT6236).** This is an I2C device (not SPI) using the
+Pi's I2C1 bus (GPIO 2/3, physical pins 3/5) plus power/ground; consult the
+specific panel breakout's pinout for its I2C address and any additional
+interrupt/reset lines. The installer enables I2C unconditionally (whether or
+not a capacitive panel is fitted — enabling the bus with nothing attached
+costs nothing at boot). **No capacitive touch hardware has been tested with
+this software at all** — the FT6206/FT6236 driver exists in code but is
+unvalidated end to end; treat it as unproven until confirmed on a physical
+panel.
+
+Do not attempt to wire both a resistive and a capacitive controller to the
+same dial — only one `touch_type` can be active at a time (see
+`docs/dial/SETUP.md`).
+
+---
+
 ## Back-Box Assembly
 
 1. Feed the power cable through the cable entry at the back of the box.

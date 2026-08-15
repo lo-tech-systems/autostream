@@ -64,8 +64,9 @@ Updates* below). Saves automatically when changed.
 Channels* below). Saves automatically when changed.
 
 **Has Screen Fitted**, **Rotate Screen**, **Swap Red/Blue (BGR)**, **Screen
-Type** — Controls for the optional display module (see *Display Screen*
-below). Save automatically when changed.
+Type**, **Touch Panel** — Controls for the optional display module and its
+optional touch panel (see *Display Screen* and *Touch Panel* below). Save
+automatically when changed.
 
 ---
 
@@ -428,6 +429,92 @@ can change if a longer-playing appliance stops.
 - Check `journalctl -u autostream_dial` for `backend_open_failed` or
   `logo_unavailable` — both are non-fatal but mean the screen cannot render;
   volume control is unaffected either way.
+
+---
+
+## Touch Panel (if fitted)
+
+Dials whose screen is a touch panel can control volume and mute directly on
+the screen, in addition to the rotary encoder.
+
+### Where the control lives
+
+The **Touch Panel** selector appears on the dial's card, in the same locked
+settings section as the other screen controls, but only under two
+conditions:
+
+- The dial's firmware advertises touch support at all (older dial firmware
+  that predates touch simply has no **Touch Panel** row).
+- **Has Screen Fitted** is on. Like **Rotate Screen**, **Swap Red/Blue
+  (BGR)**, and **Screen Type**, the **Touch Panel** control greys out
+  together with the rest of the screen controls when no screen is fitted —
+  touch cannot work without a screen, so there is no point offering it.
+
+Choosing **None** disables touch entirely; it is the default.
+
+### Restart required
+
+Unlike every other screen setting, changing the touch controller does
+**not** take effect immediately. The other screen controls (fitted, rotate,
+BGR, screen type) apply live, with no interruption. Touch is different: the
+dial builds its touch driver, filter, and interaction logic once, when the
+dial service starts. Saving a new **Touch Panel** choice is written to the
+dial immediately, but the change only takes effect the next time the dial
+service restarts (a reboot, a firmware update, or a manual service
+restart).
+
+### How the interaction works
+
+The touch panel does not act on the first touch. Touching anywhere on a
+sleeping or idle screen only **reveals** the on-screen controls — the
+volume/mute buttons are not visible, and nothing is actuated, until they
+appear. Touch again (or continue holding) once the controls are showing to
+actually change volume or mute.
+
+Once revealed, the screen dims and shows the on-screen controls: three
+areas divided by thin lines, a mute symbol, a minus, and a plus. The mute
+symbol reflects whether audio is **currently muted** — it is not a fixed
+icon, it updates to show the true mute state.
+
+- **Tap** an area to act once: mute/unmute, step volume down, or step
+  volume up.
+- **Press and hold** the volume areas (minus or plus) to repeat the step
+  automatically: the first repeat fires 0.4 seconds into the hold, then
+  every 0.15 seconds after that for as long as the hold continues. The mute
+  area does not repeat — a single tap is enough, since repeatedly toggling
+  mute at speed serves no purpose.
+
+The controls disappear automatically 4 seconds after the last touch
+contact — there is no dismiss button. Every accepted tap or repeat while
+holding resets that 4-second countdown, so a long hold never dismisses the
+controls out from under a repeating finger. Touching again while the
+controls are still showing acts immediately (no reveal-only step needed),
+since the layout is already visible.
+
+### Layout
+
+The three areas are arranged differently depending on the screen's shape:
+
+- On a **wide** screen (width at least 1.2x the height — for example the
+  shipped 160x128 panel), the areas are three vertical columns spanning the
+  full height, left to right: **mute**, **down**, **up**.
+- On a **square-ish** screen (width less than 1.2x the height), **mute** is
+  a band across the top spanning the full width; **down** and **up** split
+  the remaining area below it, side by side.
+
+Every boundary between areas has a small inactive margin on each side, so
+an imprecise tap near a boundary lands in neither neighbouring area rather
+than the wrong one.
+
+### Hardware validation status
+
+**No touch hardware has been validated on a physical panel in this
+release.** The first target build is an ILI9341 screen paired with an
+HR2046 resistive touch controller, and that combination has not yet been
+confirmed working on real hardware. A capacitive (FT6206/FT6236) touch
+driver also exists in the software, but no capacitive touch hardware has
+been tested with it at all. Treat both as unproven until confirmed on a
+physical panel — see `docs/dial/BUILD-GUIDE.md` for wiring.
 
 ---
 

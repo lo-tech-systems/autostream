@@ -548,6 +548,19 @@ class TestDialProtocolDoc:
         # The capability-gate contract must be spelled out, not just named.
         assert "capability" in text.lower()
 
+    def test_dial_protocol_documents_touch_type_and_supported_touch(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "touch_type" in text
+        assert "supported_touch" in text
+        # supported_touch must be documented as a capability separate from
+        # `supported` — a dial can advertise screen profiles with no touch
+        # capability at all, and clients must gate on supported_touch alone.
+        assert "separate capability" in text.lower()
+        # touch_type is the one screen setting that requires a restart to
+        # take effect; the doc must say so explicitly.
+        assert "restart_required" in text
+
 
 # ---------------------------------------------------------------------------
 # Router-level: non-object JSON must NOT trigger HTTP 400 for /api/dial/status
