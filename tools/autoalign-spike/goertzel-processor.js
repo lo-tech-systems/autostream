@@ -12,14 +12,22 @@
 // is still being seeded, and while the room is essentially silent).
 //
 // Messages posted to the main thread:
-//   { type: 'level', sample, f1, f2, floor1, floor2, active1, active2 }
+//   { type: 'level', sample, f1, f2, floor1, floor2, active1, active2, rmsDb }
 //                                                     -- roughly every 100ms
+//                                                     -- rmsDb: broadband RMS
+//                                                        of the same window,
+//                                                        in dBFS (-90..0)
 //   { type: 'onset', sample }                         -- on each rising edge
 //
 // Messages accepted from the main thread:
 //   { type: 'setThreshold', value }        -- onset sensitivity, expressed
 //                                              as a magnitude multiple (K_HIGH)
 //                                              over the tracked noise floor
+//   { type: 'reset' }                      -- clears the adaptive noise-floor
+//                                              state for all bins; sent on a
+//                                              capture-profile switch, since
+//                                              the new profile's gain scale
+//                                              invalidates the old floor
 //
 // "sample" is the running audio-clock sample count since the worklet
 // was created (i.e. derived from the sample rate, not Date.now()).
@@ -60,8 +68,13 @@ class GoertzelProcessor extends AudioWorkletProcessor {
 
     this.port.onmessage = (e) => {
       const msg = e.data;
-      if (msg && msg.type === 'setThreshold' && typeof msg.value === 'number') {
+      if (!msg) return;
+      if (msg.type === 'setThreshold' && typeof msg.value === 'number') {
         this.kHigh = msg.value;
+      } else if (msg.type === 'reset') {
+        this.levelBin1 = this.makeBin();
+        this.levelBin2 = this.makeBin();
+        this.envBin1 = this.makeBin();
       }
     };
   }
@@ -122,6 +135,17 @@ class GoertzelProcessor extends AudioWorkletProcessor {
     return magnitude / (n / 2);
   }
 
+  // Broadband RMS of a sample window, in dBFS, clamped to -90..0. Used for
+  // the always-on input level meter so gain differences between capture
+  // profiles are visible even without a tone playing.
+  rmsDb(buf) {
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    const db = 20 * Math.log10(Math.max(rms, 1e-9));
+    return Math.max(-90, Math.min(0, db));
+  }
+
   process(inputs) {
     const input = inputs[0];
     if (!input || input.length === 0 || !input[0] || input[0].length === 0) {
@@ -138,6 +162,7 @@ class GoertzelProcessor extends AudioWorkletProcessor {
       if (this.windowFill >= this.windowSize) {
         const f1level = this.goertzel(this.windowBuf, this.f1);
         const f2level = this.goertzel(this.windowBuf, this.f2);
+        const rmsDbVal = this.rmsDb(this.windowBuf);
         const r1 = this.updateBin(this.levelBin1, f1level);
         const r2 = this.updateBin(this.levelBin2, f2level);
         this.port.postMessage({
@@ -148,7 +173,8 @@ class GoertzelProcessor extends AudioWorkletProcessor {
           floor1: r1.floor,
           floor2: r2.floor,
           active1: r1.active,
-          active2: r2.active
+          active2: r2.active,
+          rmsDb: rmsDbVal
         });
         this.windowFill = 0;
       }
