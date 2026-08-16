@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AutoStream output alignment — capability check</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f5f2;
+    --panel: #ffffff;
+    --border: #ddd8ce;
+    --text: #1c1b19;
+    --muted: #6b675f;
+    --accent: #2b6cb0;
+    --good: #1a7f37;
+    --bad: #c0392b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  body {
+    padding: 16px;
+    padding-bottom: 48px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.3rem;
+    margin: 0 0 8px;
+  }
+  p.intro {
+    color: var(--muted);
+    font-size: 0.95rem;
+    line-height: 1.4;
+    margin: 0 0 20px;
+  }
+  section.check {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  section.check h2 {
+    font-size: 1.05rem;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  section.check p.desc {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin: 0 0 10px;
+    line-height: 1.35;
+  }
+  button {
+    font-size: 1rem;
+    padding: 12px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    min-height: 44px;
+    min-width: 44px;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: #fff;
+    color: var(--accent);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .readout {
+    background: #f1efe9;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+  }
+  .status {
+    display: inline-block;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+  }
+  .status.pass { background: #e3f6e6; color: var(--good); }
+  .status.fail { background: #fbe8e6; color: var(--bad); }
+  .status.pending { background: #eee; color: var(--muted); }
+  .bars {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 10px 0;
+  }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+  }
+  .bar-label {
+    width: 78px;
+    flex-shrink: 0;
+    color: var(--muted);
+  }
+  .bar-track {
+    flex: 1;
+    height: 18px;
+    background: #eae7df;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+  }
+  label.field {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin: 10px 0 4px;
+  }
+  input[type="range"] {
+    width: 100%;
+  }
+  input[type="text"] {
+    width: 100%;
+    padding: 10px;
+    font-size: 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  table.kv {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  table.kv td {
+    padding: 3px 4px;
+    vertical-align: top;
+  }
+  table.kv td.k {
+    color: var(--muted);
+    white-space: nowrap;
+    padding-right: 8px;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 24px;
+  }
+</style>
+</head>
+<body>
+
+<h1>AutoStream output alignment — capability check</h1>
+<p class="intro">
+  This page checks whether this device supports the measurements used by
+  AutoStream's automatic output alignment feature. It requests microphone
+  access, listens for short test tones, and measures how consistently it
+  can time repeated sounds. Nothing recorded here leaves the device except
+  where check 4 explicitly navigates away. Run the checks top to bottom.
+</p>
+
+<!-- CHECK 1 -->
+<section class="check">
+  <h2>1. Secure context + microphone <span id="s1-status" class="status pending">pending</span></h2>
+  <p class="desc">Confirms this page is loaded over HTTPS (a "secure context"),
+    and that raw microphone access is available with the browser's own audio
+    processing disabled where possible.</p>
+  <div class="btn-row">
+    <button id="s1-run">Request microphone</button>
+  </div>
+  <div id="s1-readout" class="readout">Not run yet.</div>
+</section>
+
+<!-- CHECK 2 -->
+<section class="check">
+  <h2>2. Tone detection <span id="s2-status" class="status pending">pending</span></h2>
+  <p class="desc">Starts a live 1000&nbsp;Hz / 1250&nbsp;Hz detector. Play a
+    steady tone at one of those frequencies from another device's speaker
+    near this phone's microphone and watch the bars respond.</p>
+  <div class="btn-row">
+    <button id="s2-run">Start tone detection</button>
+    <button id="s2-stop" class="secondary" disabled>Stop</button>
+  </div>
+  <label class="field" for="s2-threshold">Detection threshold: <span id="s2-threshold-val">0.15</span></label>
+  <input type="range" id="s2-threshold" min="0.02" max="0.6" step="0.01" value="0.15">
+  <div class="bars">
+    <div class="bar-row">
+      <div class="bar-label">1000 Hz</div>
+      <div class="bar-track"><div class="bar-fill" id="s2-bar-f1"></div></div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">1250 Hz</div>
+      <div class="bar-track"><div class="bar-fill" id="s2-bar-f2"></div></div>
+    </div>
+  </div>
+  <div id="s2-readout" class="readout">Not started.</div>
+</section>
+
+<!-- CHECK 3 -->
+<section class="check">
+  <h2>3. Timing repeatability <span id="s3-status" class="status pending">pending</span></h2>
+  <p class="desc">Play a repeating 1000&nbsp;Hz burst (e.g. a short beep on a
+    fixed period) from another device. Each onset is timestamped using the
+    audio clock's sample count, not the system clock. Once at least 10
+    onsets are captured, the mean and standard deviation of the intervals
+    between them are shown — the standard deviation is a measure of
+    end-to-end timing repeatability.</p>
+  <div class="btn-row">
+    <button id="s3-run">Start onset capture</button>
+    <button id="s3-reset" class="secondary">Reset</button>
+  </div>
+  <div id="s3-readout" class="readout">No onsets captured yet.</div>
+</section>
+
+<!-- CHECK 4 -->
+<section class="check">
+  <h2>4. Navigation handoff <span id="s4-status" class="status pending">pending</span></h2>
+  <p class="desc">Reads parameters from the URL fragment (the part after
+    <code>#</code>), for example
+    <code>#return=https://example.com/align&amp;x=42</code>, and reports the
+    context this page is running in.</p>
+  <div class="readout" id="s4-fragment">No fragment parameters found.</div>
+  <label class="field">document.referrer</label>
+  <div class="readout" id="s4-referrer"></div>
+  <label class="field">Standalone / home-screen context</label>
+  <div class="readout" id="s4-standalone"></div>
+  <div class="btn-row" style="margin-top:10px;">
+    <button id="s4-test">Test handoff</button>
+  </div>
+  <div id="s4-readout" class="readout">Provide a "return" fragment parameter to enable the handoff test.</div>
+</section>
+
+<footer>SPIKE_V1</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var SPIKE_V1 = 'SPIKE_V1';
+
+  function setStatus(id, kind, text) {
+    var el = document.getElementById(id);
+    el.className = 'status ' + kind;
+    el.textContent = text;
+  }
+
+  function fmt(obj) {
+    try {
+      return JSON.stringify(obj, null, 2);
+    } catch (e) {
+      return String(obj);
+    }
+  }
+
+  // ---------- shared audio state ----------
+  var audioCtx = null;
+  var micStream = null;
+  var micTrack = null;
+  var sourceNode = null;
+  var workletNode = null;
+  var scriptNode = null;
+  var usingWorklet = false;
+
+  var latestLevels = { f1: 0, f2: 0 };
+  var monitoringTone = false;
+
+  var onsets = []; // sample counts
+  var capturingOnsets = false;
+
+  function logScaleWidth(v) {
+    // v is roughly 0..1+; map to a 0-100% bar on a log-ish scale so quiet
+    // signals are still visible.
+    var clamped = Math.max(0, Math.min(2, v));
+    var pct = Math.log10(1 + clamped * 9) * 100; // log10(1..19) -> 0..~1.28
+    pct = Math.min(100, pct * 100 / 128);
+    return pct;
+  }
+
+  function handleLevelMessage(sample, f1, f2) {
+    latestLevels.f1 = f1;
+    latestLevels.f2 = f2;
+    if (!monitoringTone) return;
+
+    var threshold = parseFloat(document.getElementById('s2-threshold').value);
+    document.getElementById('s2-bar-f1').style.width = logScaleWidth(f1) + '%';
+    document.getElementById('s2-bar-f2').style.width = logScaleWidth(f2) + '%';
+
+    var detected = (f1 >= threshold) ? '1000 Hz' : ((f2 >= threshold) ? '1250 Hz' : 'none');
+    setStatus('s2-status', detected !== 'none' ? 'pass' : 'pending', detected !== 'none' ? 'detected' : 'listening');
+
+    document.getElementById('s2-readout').textContent = fmt({
+      sampleClock: sample,
+      f1_1000Hz: f1.toFixed(4),
+      f2_1250Hz: f2.toFixed(4),
+      threshold: threshold,
+      detected: detected
+    });
+  }
+
+  function handleOnsetMessage(sample) {
+    if (!capturingOnsets) return;
+    onsets.push(sample);
+    if (onsets.length > 200) onsets.shift();
+    renderOnsetStats();
+  }
+
+  function renderOnsetStats() {
+    var readout = document.getElementById('s3-readout');
+    if (onsets.length < 2) {
+      readout.textContent = 'Onsets captured: ' + onsets.length + ' (need >= 10 with >= 1 interval to compute stats)';
+      return;
+    }
+    var sr = audioCtx ? audioCtx.sampleRate : 48000;
+    var intervalsMs = [];
+    for (var i = 1; i < onsets.length; i++) {
+      var deltaSamples = onsets[i] - onsets[i - 1];
+      intervalsMs.push((deltaSamples / sr) * 1000);
+    }
+    var out = {
+      onsetsCaptured: onsets.length,
+      intervalsMs: intervalsMs.map(function (x) { return Math.round(x * 100) / 100; })
+    };
+    if (onsets.length >= 10) {
+      var n = intervalsMs.length;
+      var mean = intervalsMs.reduce(function (a, b) { return a + b; }, 0) / n;
+      var variance = intervalsMs.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / n;
+      var stddev = Math.sqrt(variance);
+      out.meanIntervalMs = Math.round(mean * 100) / 100;
+      out.stddevMs = Math.round(stddev * 100) / 100;
+      setStatus('s3-status', 'pass', 'stats ready');
+    } else {
+      setStatus('s3-status', 'pending', onsets.length + '/10 onsets');
+    }
+    readout.textContent = fmt(out);
+  }
+
+  // ---------- Check 1: secure context + mic ----------
+  function runCheck1() {
+    var readout = document.getElementById('s1-readout');
+    var secure = window.isSecureContext;
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('s1-status', 'fail', 'no getUserMedia');
+      readout.textContent = fmt({ isSecureContext: secure, getUserMedia: 'unavailable' });
+      return;
+    }
+
+    var constraints = {
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    };
+
+    navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      micStream = stream;
+      micTrack = stream.getAudioTracks()[0];
+      var settings = micTrack.getSettings ? micTrack.getSettings() : {};
+
+      var AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+
+      setStatus('s1-status', 'pass', 'granted');
+      readout.textContent = fmt({
+        isSecureContext: secure,
+        micPermission: 'granted',
+        trackSettings: settings,
+        audioContextSampleRate: audioCtx.sampleRate
+      });
+
+      setupAudioGraph();
+      document.getElementById('s1-run').textContent = 'Microphone active';
+      document.getElementById('s1-run').disabled = true;
+    }).catch(function (err) {
+      setStatus('s1-status', 'fail', 'denied');
+      readout.textContent = fmt({
+        isSecureContext: secure,
+        micPermission: 'denied',
+        error: String(err && err.name ? err.name : err)
+      });
+    });
+  }
+
+  function setupAudioGraph() {
+    sourceNode = audioCtx.createMediaStreamSource(micStream);
+
+    var thresholdVal = parseFloat(document.getElementById('s2-threshold').value);
+
+    if (window.AudioWorkletNode && audioCtx.audioWorklet) {
+      audioCtx.audioWorklet.addModule('goertzel-processor.js').then(function () {
+        workletNode = new AudioWorkletNode(audioCtx, 'goertzel-processor', {
+          processorOptions: { f1: 1000, f2: 1250, threshold: thresholdVal }
+        });
+        workletNode.port.onmessage = function (e) {
+          var msg = e.data;
+          if (msg.type === 'level') {
+            handleLevelMessage(msg.sample, msg.f1, msg.f2);
+          } else if (msg.type === 'onset') {
+            handleOnsetMessage(msg.sample);
+          }
+        };
+        var silentGain = audioCtx.createGain();
+        silentGain.gain.value = 0;
+        sourceNode.connect(workletNode);
+        workletNode.connect(silentGain);
+        silentGain.connect(audioCtx.destination);
+        usingWorklet = true;
+      }).catch(function (err) {
+        setupScriptProcessorFallback();
+      });
+    } else {
+      setupScriptProcessorFallback();
+    }
+  }
+
+  // Fallback for browsers without AudioWorklet support. Duplicates the
+  // Goertzel logic from goertzel-processor.js but runs on the main thread.
+  function setupScriptProcessorFallback() {
+    usingWorklet = false;
+    var bufferSize = 4096;
+    scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+    var sampleCounter = 0;
+    var windowSize = Math.max(256, Math.round(audioCtx.sampleRate * 0.1));
+    var windowBuf = new Float32Array(windowSize);
+    var windowFill = 0;
+
+    var envSize = Math.max(128, Math.round(audioCtx.sampleRate * 0.01));
+    var envBuf = new Float32Array(envSize);
+    var envFill = 0;
+    var onsetState = 'below';
+
+    function goertzel(samples, freq) {
+      var n = samples.length;
+      var k = Math.round((n * freq) / audioCtx.sampleRate);
+      var w = (2 * Math.PI * k) / n;
+      var cosine = Math.cos(w);
+      var coeff = 2 * cosine;
+      var q0 = 0, q1 = 0, q2 = 0;
+      for (var i = 0; i < n; i++) {
+        q0 = coeff * q1 - q2 + samples[i];
+        q2 = q1;
+        q1 = q0;
+      }
+      var real = q1 - q2 * cosine;
+      var imag = q2 * Math.sin(w);
+      return Math.sqrt(real * real + imag * imag) / (n / 2);
+    }
+
+    scriptNode.onaudioprocess = function (ev) {
+      var input = ev.inputBuffer.getChannelData(0);
+      var output = ev.outputBuffer.getChannelData(0);
+      var threshold = parseFloat(document.getElementById('s2-threshold').value);
+
+      for (var i = 0; i < input.length; i++) {
+        var s = input[i];
+        output[i] = 0; // keep output silent
+
+        windowBuf[windowFill++] = s;
+        if (windowFill >= windowSize) {
+          var f1 = goertzel(windowBuf, 1000);
+          var f2 = goertzel(windowBuf, 1250);
+          handleLevelMessage(sampleCounter + i, f1, f2);
+          windowFill = 0;
+        }
+
+        envBuf[envFill++] = s;
+        if (envFill >= envSize) {
+          var envLevel = goertzel(envBuf, 1000);
+          envFill = 0;
+          var onHi = threshold;
+          var onLo = threshold * 0.6;
+          if (onsetState === 'below' && envLevel >= onHi) {
+            onsetState = 'above';
+            handleOnsetMessage(sampleCounter + i);
+          } else if (onsetState === 'above' && envLevel < onLo) {
+            onsetState = 'below';
+          }
+        }
+      }
+      sampleCounter += input.length;
+    };
+
+    sourceNode.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination);
+  }
+
+  // threshold slider -> worklet
+  document.getElementById('s2-threshold').addEventListener('input', function () {
+    document.getElementById('s2-threshold-val').textContent = this.value;
+    if (workletNode) {
+      workletNode.port.postMessage({ type: 'setThreshold', value: parseFloat(this.value) });
+    }
+  });
+
+  document.getElementById('s1-run').addEventListener('click', runCheck1);
+
+  // ---------- Check 2 ----------
+  document.getElementById('s2-run').addEventListener('click', function () {
+    if (!audioCtx) {
+      document.getElementById('s2-readout').textContent = 'Run check 1 first (microphone required).';
+      return;
+    }
+    monitoringTone = true;
+    document.getElementById('s2-run').disabled = true;
+    document.getElementById('s2-stop').disabled = false;
+    setStatus('s2-status', 'pending', 'listening');
+  });
+  document.getElementById('s2-stop').addEventListener('click', function () {
+    monitoringTone = false;
+    document.getElementById('s2-run').disabled = false;
+    document.getElementById('s2-stop').disabled = true;
+  });
+
+  // ---------- Check 3 ----------
+  document.getElementById('s3-run').addEventListener('click', function () {
+    if (!audioCtx) {
+      document.getElementById('s3-readout').textContent = 'Run check 1 first (microphone required).';
+      return;
+    }
+    capturingOnsets = true;
+    setStatus('s3-status', 'pending', 'capturing');
+  });
+  document.getElementById('s3-reset').addEventListener('click', function () {
+    onsets = [];
+    setStatus('s3-status', 'pending', 'pending');
+    renderOnsetStats();
+  });
+
+  // ---------- Check 4 ----------
+  function parseFragment() {
+    var hash = window.location.hash || '';
+    if (hash.charAt(0) === '#') hash = hash.substring(1);
+    var params = {};
+    if (hash.length === 0) return params;
+    var pairs = hash.split('&');
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i];
+      if (!pair) continue;
+      var idx = pair.indexOf('=');
+      var key, val;
+      if (idx === -1) {
+        key = pair;
+        val = '';
+      } else {
+        key = pair.substring(0, idx);
+        val = pair.substring(idx + 1);
+      }
+      try { key = decodeURIComponent(key); } catch (e) {}
+      try { val = decodeURIComponent(val); } catch (e) {}
+      params[key] = val;
+    }
+    return params;
+  }
+
+  function runCheck4Display() {
+    var params = parseFragment();
+    var fragEl = document.getElementById('s4-fragment');
+    var keys = Object.keys(params);
+    if (keys.length === 0) {
+      fragEl.textContent = 'No fragment parameters found.';
+    } else {
+      fragEl.textContent = fmt(params);
+    }
+
+    document.getElementById('s4-referrer').textContent = document.referrer || '(empty)';
+
+    var isStandalone = false;
+    var reason = [];
+    if (typeof navigator.standalone === 'boolean') {
+      isStandalone = isStandalone || navigator.standalone;
+      reason.push('navigator.standalone=' + navigator.standalone);
+    }
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(display-mode: standalone)').matches;
+      isStandalone = isStandalone || mq;
+      reason.push('display-mode:standalone=' + mq);
+    }
+    document.getElementById('s4-standalone').textContent = fmt({
+      standalone: isStandalone,
+      detail: reason.join(', ')
+    });
+
+    setStatus('s4-status', keys.indexOf('return') !== -1 ? 'pass' : 'pending',
+      keys.indexOf('return') !== -1 ? 'return param present' : 'no return param');
+
+    return params;
+  }
+
+  document.getElementById('s4-test').addEventListener('click', function () {
+    var params = parseFragment();
+    var readout = document.getElementById('s4-readout');
+    if (!params.return) {
+      readout.textContent = 'No "return" fragment parameter set; nothing to navigate to.';
+      return;
+    }
+    var audioClockMs;
+    if (audioCtx) {
+      audioClockMs = Math.round(audioCtx.currentTime * 1000);
+    } else {
+      audioClockMs = Math.round(performance.now());
+    }
+    var target;
+    try {
+      target = new URL(params.return, window.location.href);
+    } catch (e) {
+      readout.textContent = 'Invalid return URL: ' + params.return;
+      return;
+    }
+    target.searchParams.set('result', 'ok');
+    target.searchParams.set('t', String(audioClockMs));
+    target.searchParams.set('echo', params.x || '');
+    readout.textContent = 'Navigating to: ' + target.toString();
+    window.location.href = target.toString();
+  });
+
+  runCheck4Display();
+})();
+</script>
+</body>
+</html>
