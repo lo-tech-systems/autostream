@@ -38,7 +38,7 @@ def _install_fake_board_and_digitalio(monkeypatch, fake_spi):
     a controllable fake SPI object regardless of which spec is passed (the
     driver's choice of spec is asserted separately, via a spy, where it
     matters)."""
-    fake_board = types.SimpleNamespace(GPIO23="GPIO23-pin")
+    fake_board = types.SimpleNamespace(GPIO16="GPIO16-pin")
     fake_digitalio = types.ModuleType("digitalio")
 
     created_cs = MagicMock(name="cs_digitalinout")
@@ -177,22 +177,23 @@ class TestXPT2046Driver:
 
         assert get_bus_calls == [dial_spi_bus.TOUCH_BUS]
 
-    def test_open_claims_chip_select_on_gpio23_as_plain_output(self, monkeypatch):
+    def test_open_claims_chip_select_on_gpio16_as_plain_output(self, monkeypatch):
         fake_spi = FakeSPI()
         fake_board, fake_digitalio = _install_fake_board_and_digitalio(monkeypatch, fake_spi)
 
         driver = dtd.XPT2046Driver()
         driver.open()
 
-        assert dtd._TOUCH_CS_GPIO == 23
-        assert driver._cs.pin == "GPIO23-pin"
+        # Pin 36 on the header, keeping the whole touch harness on 35-40.
+        assert dtd._TOUCH_CS_GPIO == 16
+        assert driver._cs.pin == "GPIO16-pin"
         # switch_to_output() proves it is driven as a plain GPIO output —
         # not a hardware CE line, which this driver has no fallback to.
         assert driver._cs.value is True
 
     def test_open_does_not_pass_a_ce1_alias_to_the_pin_resolver(self, monkeypatch):
-        """The touch CS pin must resolve purely from GPIO23/D23-style
-        aliases. A board module exposing only CE1 (no GPIO23/D23) must fail
+        """The touch CS pin must resolve purely from GPIO16/D16-style
+        aliases. A board module exposing only CE1 (no GPIO16/D16) must fail
         to resolve, proving the driver never asks for a "CE1" alias."""
         fake_spi = FakeSPI()
         fake_board = types.SimpleNamespace(CE1="CE1-pin")

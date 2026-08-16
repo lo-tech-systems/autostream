@@ -81,7 +81,8 @@ selected in software — there is no per-panel wiring variant:
 **GPIO 24 conflict with the optional status LED:** the display's RESET line
 and the optional activity LED (see above) both use GPIO 24. Do not wire both
 at once — if a screen is fitted, set `"led_gpio": null` in
-`/etc/autostream/autostream-dial.json` (the default).
+`/etc/autostream/autostream-dial.json` (the default), or move the LED to one of
+the pins left free by a full build: GPIO 5, 6 or 13 (pins 29, 31, 33).
 
 SPI0 must be enabled (the installer does this via `raspi-config nonint do_spi
 0` when available) and may require a reboot before the display becomes
@@ -93,9 +94,45 @@ the panel's red and blue channels appear swapped, use the **Swap Red/Blue
 breakouts and does not indicate a wiring fault. Changing the screen type or
 the BGR setting applies immediately, with no restart or re-flash required.
 
-SPI1 and alternate GPIO mapping are not supported in this release — SPI1's
-default pins collide with the encoder CLK line (GPIO 17) and the display
-backlight (GPIO 18).
+### Touch panel wiring (optional)
+
+A resistive touch controller (XPT2046, or an HR2046/ADS7846 clone) is wired to
+**SPI1**, physically separate from the display's SPI0. Nothing is shared, so no
+header pin carries two wires and a display refresh can never delay a touch
+sample.
+
+| Touch pin | Pi GPIO (BCM) | Physical pin |
+|-----------|---------------|--------------|
+| T_DO (MISO) | GPIO 19 (SPI1 MISO) | Pin 35 |
+| T_CS        | GPIO 16             | Pin 36 |
+| T_IRQ       | GPIO 26             | Pin 37 |
+| T_DIN (MOSI)| GPIO 20 (SPI1 MOSI) | Pin 38 |
+| T_CLK       | GPIO 21 (SPI1 SCLK) | Pin 40 |
+| VCC         | 3.3 V               | Pin 1  |
+| GND         | GND                 | Pin 39 |
+
+The whole harness is one contiguous block at the end of the header (pins
+35-40), reachable with ordinary jumper leads.
+
+**T_IRQ is mandatory**, not optional. The driver waits on that line rather than
+polling the controller; without it, touch will not work.
+
+The installer enables SPI1 by adding `dtoverlay=spi1-1cs,cs0_pin=12` to
+`config.txt`, and rewrites the line if an older variant is present, so an
+installed or updated dial always ends up on the pin numbering documented here.
+`cs0_pin=12` parks the overlay's own chip select on an unused pin: the kernel
+claims whichever pin it names, and the defaults would take GPIO 18 (the display
+backlight). The touch driver drives GPIO 16 itself, because the SPI library
+does not manage chip select at all. **SPI1 requires a reboot** before
+`/dev/spidev1.0` appears.
+
+After wiring, select the controller from the **Touch Panel** control on the
+main autostream Setup → Dials page. Changing the touch type restarts the dial
+service, which takes around ten seconds.
+
+Capacitive panels (FT6206/FT6236) use I2C instead — the installer enables I2C
+unconditionally so pins 3 and 5 are reserved for them — but that path has not
+yet been validated on hardware.
 
 ---
 

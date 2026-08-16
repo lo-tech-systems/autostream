@@ -119,26 +119,33 @@ enable_spi1() {
     # touch driver uses. raspi-config has no knob for SPI1 (do_spi covers SPI0
     # only), so this appends the overlay to config.txt directly.
     #
-    # cs0_pin=16 is deliberate and must not be dropped: the overlay's default
-    # chip-select is GPIO18, which is the display's backlight pin. Moving it
-    # to GPIO16 (unused by the dial) keeps the backlight ours. The touch
-    # driver drives its own chip select from a plain GPIO regardless, because
-    # the kernel claims whichever pin the overlay names.
+    # cs0_pin=12 parks the overlay's chip select on a pin the dial does not
+    # use, and must not be dropped. The overlay's default is GPIO18 — the
+    # display backlight — and GPIO16 is where the touch driver's own chip
+    # select lives (see dial_touch_drivers._TOUCH_CS_GPIO). The kernel claims
+    # whichever pin the overlay names, so it has to be neither of those.
     #
     # Called unconditionally, like enable_i2c: the overlay costs nothing with
     # no panel attached, and this avoids re-running the installer when a
     # resistive panel is fitted later. Takes effect on the next boot.
     local cfg="${1:-/boot/firmware/config.txt}"
-    local line="dtoverlay=spi1-1cs,cs0_pin=16"
+    local line="dtoverlay=spi1-1cs,cs0_pin=12"
 
     if [[ ! -f "${cfg}" ]]; then
         echo "WARNING: ${cfg} not found — enable SPI1 manually if a resistive touch panel is fitted" >&2
         return 0
     fi
-    # Match any spi1 overlay, however parameterised, so a hand-edited or
-    # previously-installed variant is left alone rather than duplicated.
+    # Rewrite rather than skip. An existing spi1 overlay may name a stale
+    # chip-select pin from an earlier layout, which would silently collide
+    # with the touch chip select and leave touch dead with no obvious cause.
+    # A dial must end up on the documented pin numbering after any install or
+    # update, not merely be left with whatever it happened to have.
     if grep -qE '^[[:space:]]*dtoverlay=spi1(-[0-9]cs)?([[:space:]]*|,.*)$' "${cfg}"; then
-        return 0
+        if grep -qxF "${line}" "${cfg}"; then
+            return 0
+        fi
+        sed -i -E "/^[[:space:]]*dtoverlay=spi1(-[0-9]cs)?([[:space:]]*|,.*)\$/d" "${cfg}" \
+            || { echo "WARNING: could not rewrite the SPI1 overlay in ${cfg}" >&2; return 0; }
     fi
     printf '%s\n' "${line}" >> "${cfg}" \
         || echo "WARNING: could not append SPI1 overlay to ${cfg} — enable it manually if a resistive touch panel is fitted" >&2

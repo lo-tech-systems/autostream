@@ -31,15 +31,20 @@ import dial_spi_bus
 #
 # Chip select is a PLAIN GPIO driven by this driver, not a hardware CE
 # line. Both controllers' CE pins are claimed by the kernel the moment
-# their bus is enabled (spi0 CS0/CS1 on GPIO8/GPIO7, and SPI1's chip
-# select likewise), so a hardware CE cannot be claimed here — and unlike
-# the display, this driver has no fallback to hardware chip-select
-# available, because busio.SPI does not drive CS at all. It must therefore
-# be a GPIO nothing else owns.
+# their bus is enabled (spi0 CS0/CS1 on GPIO8/GPIO7), so a hardware CE
+# cannot be claimed here — and unlike the display, this driver has no
+# fallback to hardware chip-select available, because busio.SPI does not
+# drive CS at all. It must therefore be a GPIO nothing else owns.
+#
+# GPIO16 is free for this because the installer parks the SPI1 overlay's
+# own chip select on GPIO12 (see installer/dial/helpers.sh enable_spi1).
+# That keeps the whole touch harness on physical pins 35-40, one
+# contiguous block at the end of the header, which ordinary jumper leads
+# can reach without doubling wires onto shared pins.
 #
 # T_IRQ is the controller's active-low interrupt line, polled/waited-on by
 # dial_touch.TouchEventSource.
-_TOUCH_CS_GPIO = 23   # plain GPIO, driven by this driver
+_TOUCH_CS_GPIO = 16   # plain GPIO, driven by this driver (physical pin 36)
 _TOUCH_IRQ_GPIO = 26  # T_IRQ, active-low
 
 # XPT2046 control-byte command set (12-bit mode, single-ended, power-down
