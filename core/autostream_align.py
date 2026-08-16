@@ -56,7 +56,7 @@ TONE_CHANNELS = 2
 
 _POLL_INTERVAL_S = 0.5
 
-LAUNCH_HOST = "https://lo-tech.co.uk/as-api/"
+LAUNCH_HOST = "https://lo-tech.co.uk/as-api/autoalign/"
 
 
 @dataclass(frozen=True)
