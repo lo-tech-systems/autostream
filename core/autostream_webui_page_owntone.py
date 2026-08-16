@@ -408,21 +408,28 @@ def send_owntone_setup_page(
             except Exception:
                 cur_off = 0
             cur_off = max(-2000, min(2000, int(cur_off)))
+            # The output id lands inside double-quoted HTML attributes; the
+            # JS must be attribute-escaped like the mode/visibility handlers
+            # below, or json.dumps's quotes terminate the attribute early.
+            _off_reset = f"_owntoneOffsetReset({i}, {json.dumps(out_id)});"
+            _off_input = (
+                f"document.getElementById('off_val_{i}').textContent=this.value+' ms';"
+                f"if(liveEnabled) _owntoneOffsetDebounced({i}, {json.dumps(out_id)}, parseInt(this.value,10));"
+            )
             offset_html = f"""
                   <label style="display:block;margin-top:0.5rem;">
                     <div class="slider-header">
                       <span>Offset:</span>
                       <span id="off_val_{i}">{cur_off} ms</span>
                       <button type="button" class="pill-btn small" style="margin-left:0.5rem;"
-                              onclick="_owntoneOffsetReset({i}, {json.dumps(out_id)});">Reset</button>
+                              onclick="{html.escape(_off_reset)}">Reset</button>
                     </div>
                     <input type="range"
                            id="off_slider_{i}"
                            name="offset_{i}"
                            min="-2000" max="2000" step="10"
                            value="{cur_off}"
-                           oninput="document.getElementById('off_val_{i}').textContent=this.value+' ms';
-                                    if(liveEnabled) _owntoneOffsetDebounced({i}, {json.dumps(out_id)}, parseInt(this.value,10));">
+                           oninput="{html.escape(_off_input)}">
                   </label>
                 """
 
