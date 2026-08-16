@@ -1,0 +1,838 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AutoStream output alignment</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f5f2;
+    --panel: #ffffff;
+    --border: #ddd8ce;
+    --text: #1c1b19;
+    --muted: #6b675f;
+    --accent: #2b6cb0;
+    --good: #1a7f37;
+    --bad: #c0392b;
+    --warn: #9a6b00;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  body {
+    padding: 16px;
+    padding-bottom: 48px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.3rem;
+    margin: 0 0 8px;
+  }
+  h2 {
+    font-size: 1.05rem;
+    margin: 0 0 4px;
+  }
+  p.intro, p.desc {
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.45;
+    margin: 0 0 16px;
+  }
+  section.panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  button {
+    font-size: 1rem;
+    padding: 12px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #fff;
+    min-height: 44px;
+    min-width: 44px;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: #fff;
+    color: var(--accent);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  ul.output-list {
+    list-style: none;
+    margin: 0 0 16px;
+    padding: 0;
+  }
+  ul.output-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.95rem;
+  }
+  ul.output-list li:last-child { border-bottom: none; }
+  ul.output-list .freq {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 10px 0;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.9rem;
+    padding: 8px 10px;
+    background: #f1efe9;
+    border-radius: 8px;
+  }
+  .row .name { font-weight: 600; }
+  .row .state { color: var(--muted); font-size: 0.85rem; }
+  .row.done .state { color: var(--good); font-weight: 600; }
+  .status-line {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 10px 0;
+    min-height: 1.2em;
+  }
+  .banner {
+    background: #fdf3d8;
+    border: 1px solid #e9c96b;
+    color: var(--warn);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+    margin: 10px 0;
+    display: none;
+  }
+  table.results {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin: 10px 0;
+  }
+  table.results th, table.results td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.results th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+  .manual-box {
+    background: #f1efe9;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.8rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    word-break: break-all;
+    margin: 8px 0;
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 24px;
+  }
+  #screen-error { display: none; }
+  #screen-start { display: none; }
+  #screen-listening { display: none; }
+  #screen-done { display: none; }
+</style>
+</head>
+<body>
+
+<h1>AutoStream output alignment</h1>
+
+<!-- ERROR SCREEN -->
+<div id="screen-error">
+  <section class="panel">
+    <h2>This link can't be used</h2>
+    <p class="desc" id="error-message">The page was opened without the information it needs from the audio appliance.</p>
+    <p class="hint">Open this page again from the appliance's alignment screen.</p>
+  </section>
+</div>
+
+<!-- START SCREEN -->
+<div id="screen-start">
+  <p class="intro">
+    This page measures how well your outputs are time-aligned. It listens
+    to short test tones played one output at a time and reports the timing
+    differences back to the appliance. It needs microphone access to do
+    that; nothing is recorded or sent anywhere except the final result.
+  </p>
+  <section class="panel">
+    <h2>Outputs to measure</h2>
+    <ul class="output-list" id="output-list"></ul>
+    <div class="btn-row">
+      <button id="start-btn">Start</button>
+    </div>
+    <div id="start-error" class="hint"></div>
+  </section>
+</div>
+
+<!-- LISTENING SCREEN -->
+<div id="screen-listening">
+  <section class="panel">
+    <h2>Listening</h2>
+    <p class="desc">
+      Hold the phone roughly midway between the outputs, keep the room as
+      quiet as you can, and keep this page open and the screen on until
+      every output shows done.
+    </p>
+    <div class="rows" id="progress-rows"></div>
+    <div class="status-line" id="hearing-line">Waiting for the first tone&hellip;</div>
+    <div class="banner" id="timeout-banner">
+      Still listening. If nothing is completing, check the appliance's
+      volume and try somewhere quieter.
+    </div>
+    <div class="btn-row">
+      <button id="restart-btn" class="secondary">Restart listening</button>
+    </div>
+    <div class="hint" id="wakelock-hint"></div>
+  </section>
+</div>
+
+<!-- DONE SCREEN -->
+<div id="screen-done">
+  <section class="panel">
+    <h2>Measurement complete</h2>
+    <table class="results" id="results-table">
+      <thead>
+        <tr><th>Output</th><th>Offset (ms)</th><th>Spread (ms)</th></tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+    <div class="btn-row">
+      <button id="send-btn">Send results to the appliance</button>
+      <button id="restart-btn-2" class="secondary">Restart listening</button>
+    </div>
+    <p class="hint">
+      If the button above doesn't return you to the appliance, this line
+      can be typed into it manually instead:
+    </p>
+    <div class="manual-box" id="manual-string"></div>
+    <div class="btn-row">
+      <button id="copy-btn" class="secondary">Copy</button>
+    </div>
+    <div class="hint" id="copy-hint"></div>
+  </section>
+</div>
+
+<footer>AutoStream</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- fragment parsing ----------
+
+  function parseFragmentRaw() {
+    var hash = window.location.hash || '';
+    if (hash.charAt(0) === '#') hash = hash.substring(1);
+    var params = {};
+    if (hash.length === 0) return params;
+    var pairs = hash.split('&');
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i];
+      if (!pair) continue;
+      var idx = pair.indexOf('=');
+      var key, val;
+      if (idx === -1) { key = pair; val = ''; }
+      else { key = pair.substring(0, idx); val = pair.substring(idx + 1); }
+      try { key = decodeURIComponent(key); } catch (e) {}
+      params[key] = val; // values decoded per-field below, where structure matters
+    }
+    return params;
+  }
+
+  function decodeField(s) {
+    try { return decodeURIComponent(s); } catch (e) { return s; }
+  }
+
+  // Returns { ok: true, outputs, ret, period, k } or { ok: false, message }
+  function parseProtocol() {
+    var raw = parseFragmentRaw();
+
+    if (!('v' in raw)) {
+      return { ok: false, message: 'No protocol version was supplied.' };
+    }
+    if (decodeField(raw.v) !== '1') {
+      return { ok: false, message: 'This page only understands protocol v1; the appliance sent v=' + decodeField(raw.v) + '.' };
+    }
+    if (!raw.ret) {
+      return { ok: false, message: 'No return address was supplied for the result.' };
+    }
+    if (!raw.p) {
+      return { ok: false, message: 'No burst period was supplied.' };
+    }
+    if (!raw.outs) {
+      return { ok: false, message: 'No output list was supplied.' };
+    }
+
+    var ret = decodeField(raw.ret);
+    var period = parseFloat(decodeField(raw.p));
+    if (!isFinite(period) || period <= 0) {
+      return { ok: false, message: 'The burst period supplied was not a usable number.' };
+    }
+    var k = raw.k ? parseInt(decodeField(raw.k), 10) : null;
+
+    var entries = raw.outs.split(',');
+    var outputs = [];
+    for (var i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      if (!entry) continue;
+      var parts = entry.split('~');
+      if (parts.length !== 3) {
+        return { ok: false, message: 'An output entry was malformed.' };
+      }
+      var id = decodeField(parts[0]);
+      var freq = parseFloat(decodeField(parts[1]));
+      var name = decodeField(parts[2]);
+      if (!id || !isFinite(freq) || freq <= 0) {
+        return { ok: false, message: 'An output entry had an invalid id or frequency.' };
+      }
+      outputs.push({ id: id, freq: freq, name: name || id });
+    }
+    if (outputs.length === 0) {
+      return { ok: false, message: 'The output list was empty.' };
+    }
+
+    return { ok: true, outputs: outputs, ret: ret, period: period, k: k };
+  }
+
+  // ---------- circular phase math ----------
+
+  function wrapPhase(x, p) {
+    var m = x % p;
+    if (m < 0) m += p;
+    return m;
+  }
+
+  // Signed shortest delta a-b, wrapped to (-p/2, p/2].
+  function circDelta(a, b, p) {
+    var d = wrapPhase(a - b, p);
+    if (d > p / 2) d -= p;
+    return d;
+  }
+
+  function circDist(a, b, p) {
+    return Math.abs(circDelta(a, b, p));
+  }
+
+  // Finds the largest group of phases that mutually agree within a
+  // `bandMs`-wide circular band. Returns { count, indices, median, spread }
+  // for the best group found (median/spread only meaningful if the caller
+  // checks count against its own acceptance threshold).
+  function clusterStats(phases, p, bandMs) {
+    var n = phases.length;
+    if (n === 0) return null;
+    var radius = bandMs / 2;
+    var best = null;
+    for (var i = 0; i < n; i++) {
+      var center = phases[i];
+      var members = [];
+      for (var j = 0; j < n; j++) {
+        if (circDist(phases[j], center, p) <= radius) members.push(j);
+      }
+      if (!best || members.length > best.length) best = members;
+    }
+
+    var ref = phases[best[0]];
+    var unwrapped = [];
+    for (var k = 0; k < best.length; k++) {
+      unwrapped.push(ref + circDelta(phases[best[k]], ref, p));
+    }
+    unwrapped.sort(function (a, b) { return a - b; });
+    var mid = Math.floor(unwrapped.length / 2);
+    var medianRaw = (unwrapped.length % 2 === 1)
+      ? unwrapped[mid]
+      : (unwrapped[mid - 1] + unwrapped[mid]) / 2;
+    var median = wrapPhase(medianRaw, p);
+
+    var spread = 0;
+    for (var a = 0; a < best.length; a++) {
+      for (var b2 = a + 1; b2 < best.length; b2++) {
+        var d = circDist(phases[best[a]], phases[best[b2]], p);
+        if (d > spread) spread = d;
+      }
+    }
+
+    return { count: best.length, median: median, spread: spread };
+  }
+
+  // ---------- state ----------
+
+  var protocolInfo = null;   // parseProtocol() result
+  var uniqueFreqs = [];      // [Hz, ...] in first-seen order
+  var freqIndexToOutput = []; // parallel to uniqueFreqs
+
+  var audioCtx = null;
+  var micStream = null;
+  var sourceNode = null;
+  var workletNode = null;
+  var scriptNode = null;
+
+  var wakeLockSentinel = null;
+  var listeningStartedAt = 0;
+  var timeoutTimer = null;
+  var TIMEOUT_MS = 180000;
+  var ONSET_BAND_MS = 30;
+  var ACCEPT_COUNT = 3;
+  var PHASE_HISTORY_CAP = 40;
+
+  var DETECT_THRESHOLD = 0.15;
+
+  // ---------- screen helpers ----------
+
+  function showScreen(id) {
+    var ids = ['screen-error', 'screen-start', 'screen-listening', 'screen-done'];
+    for (var i = 0; i < ids.length; i++) {
+      document.getElementById(ids[i]).style.display = (ids[i] === id) ? 'block' : 'none';
+    }
+  }
+
+  function showError(message) {
+    document.getElementById('error-message').textContent = message;
+    showScreen('screen-error');
+  }
+
+  // ---------- start screen ----------
+
+  function renderOutputList() {
+    var list = document.getElementById('output-list');
+    list.innerHTML = '';
+    for (var i = 0; i < protocolInfo.outputs.length; i++) {
+      var o = protocolInfo.outputs[i];
+      var li = document.createElement('li');
+      var label = document.createElement('span');
+      label.textContent = o.name + (i === 0 ? ' (reference)' : '');
+      var freq = document.createElement('span');
+      freq.className = 'freq';
+      freq.textContent = Math.round(o.freq) + ' Hz';
+      li.appendChild(label);
+      li.appendChild(freq);
+      list.appendChild(li);
+    }
+  }
+
+  // ---------- listening screen ----------
+
+  function renderProgressRows() {
+    var container = document.getElementById('progress-rows');
+    container.innerHTML = '';
+    for (var i = 0; i < protocolInfo.outputs.length; i++) {
+      var o = protocolInfo.outputs[i];
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.id = 'row-' + i;
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = o.name;
+      var state = document.createElement('span');
+      state.className = 'state';
+      state.id = 'row-state-' + i;
+      state.textContent = 'waiting';
+      row.appendChild(name);
+      row.appendChild(state);
+      container.appendChild(row);
+    }
+  }
+
+  function updateRow(index) {
+    var o = protocolInfo.outputs[index];
+    var rowEl = document.getElementById('row-' + index);
+    var stateEl = document.getElementById('row-state-' + index);
+    if (o.accepted) {
+      rowEl.className = 'row done';
+      stateEl.textContent = 'done ✓';
+    } else {
+      var stats = clusterStats(o.phases, protocolInfo.period, ONSET_BAND_MS);
+      var n = stats ? Math.min(stats.count, ACCEPT_COUNT) : 0;
+      stateEl.textContent = o.phases.length === 0 ? 'waiting' : ('collecting ' + n + '/' + ACCEPT_COUNT);
+    }
+  }
+
+  function setHearingLine(text) {
+    document.getElementById('hearing-line').textContent = text;
+  }
+
+  // ---------- onset / level handling ----------
+
+  function handleOnset(freqIndex, sample) {
+    var output = freqIndexToOutput[freqIndex];
+    if (!output || output.accepted) return;
+
+    var phaseMs = wrapPhase((sample / audioCtx.sampleRate) * 1000, protocolInfo.period);
+    output.phases.push(phaseMs);
+    if (output.phases.length > PHASE_HISTORY_CAP) output.phases.shift();
+
+    var stats = clusterStats(output.phases, protocolInfo.period, ONSET_BAND_MS);
+    if (stats && stats.count >= ACCEPT_COUNT) {
+      output.accepted = true;
+      output.median = stats.median;
+      output.spread = stats.spread;
+    }
+
+    var idx = protocolInfo.outputs.indexOf(output);
+    updateRow(idx);
+    checkCompletion();
+  }
+
+  function handleLevel(freqIndex, value) {
+    if (value < DETECT_THRESHOLD * 0.5) {
+      setHearingLine('Listening&hellip;');
+      return;
+    }
+    var output = freqIndexToOutput[freqIndex];
+    if (output) {
+      document.getElementById('hearing-line').innerHTML = 'Hearing: ' + escapeHtml(output.name);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function checkCompletion() {
+    for (var i = 0; i < protocolInfo.outputs.length; i++) {
+      if (!protocolInfo.outputs[i].accepted) return;
+    }
+    finishListening();
+  }
+
+  // ---------- completion ----------
+
+  function encodeField(s) {
+    return encodeURIComponent(s);
+  }
+
+  function finishListening() {
+    if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = null; }
+
+    var ref = protocolInfo.outputs[0];
+    var body = document.getElementById('results-body');
+    body.innerHTML = '';
+
+    var dataEntries = [];
+    var manualEntries = [];
+
+    for (var i = 0; i < protocolInfo.outputs.length; i++) {
+      var o = protocolInfo.outputs[i];
+      var delta = (i === 0) ? 0 : Math.round(circDelta(o.median, ref.median, protocolInfo.period));
+      var spread = Math.round(o.spread);
+
+      var tr = document.createElement('tr');
+      var tdName = document.createElement('td');
+      tdName.textContent = o.name + (i === 0 ? ' (reference)' : '');
+      var tdDelta = document.createElement('td');
+      tdDelta.textContent = String(delta);
+      var tdSpread = document.createElement('td');
+      tdSpread.textContent = String(spread);
+      tr.appendChild(tdName);
+      tr.appendChild(tdDelta);
+      tr.appendChild(tdSpread);
+      body.appendChild(tr);
+
+      dataEntries.push(encodeField(o.id) + '~' + delta + '~' + spread);
+      manualEntries.push(o.id + '=' + delta + '/' + spread);
+    }
+
+    var sep = (protocolInfo.ret.indexOf('?') === -1) ? '?' : '&';
+    var resultUrl = protocolInfo.ret + sep + 'v=1&ref=' + encodeField(ref.id) + '&data=' + dataEntries.join(',');
+
+    document.getElementById('send-btn').onclick = function () {
+      window.location.href = resultUrl;
+    };
+
+    var manualString = 'ref=' + ref.id + ';' + manualEntries.join(';');
+    document.getElementById('manual-string').textContent = manualString;
+
+    document.getElementById('copy-btn').onclick = function () {
+      var hint = document.getElementById('copy-hint');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(manualString).then(function () {
+          hint.textContent = 'Copied.';
+        }, function () {
+          hint.textContent = 'Could not copy automatically; select the text above manually.';
+        });
+      } else {
+        var box = document.getElementById('manual-string');
+        var range = document.createRange();
+        range.selectNodeContents(box);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        try {
+          document.execCommand('copy');
+          hint.textContent = 'Copied.';
+        } catch (e) {
+          hint.textContent = 'Select the text above and copy it manually.';
+        }
+      }
+    };
+
+    showScreen('screen-done');
+  }
+
+  // ---------- restart ----------
+
+  function resetListeningState() {
+    for (var i = 0; i < protocolInfo.outputs.length; i++) {
+      var o = protocolInfo.outputs[i];
+      o.phases = [];
+      o.accepted = false;
+      o.median = null;
+      o.spread = null;
+    }
+    renderProgressRows();
+    setHearingLine('Waiting for the first tone&hellip;');
+    document.getElementById('timeout-banner').style.display = 'none';
+    listeningStartedAt = Date.now();
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    timeoutTimer = setTimeout(function () {
+      document.getElementById('timeout-banner').style.display = 'block';
+    }, TIMEOUT_MS);
+    showScreen('screen-listening');
+  }
+
+  // ---------- audio setup ----------
+
+  function setupAudioGraph() {
+    sourceNode = audioCtx.createMediaStreamSource(micStream);
+
+    if (window.AudioWorkletNode && audioCtx.audioWorklet) {
+      audioCtx.audioWorklet.addModule('goertzel-bank-processor.js').then(function () {
+        workletNode = new AudioWorkletNode(audioCtx, 'goertzel-bank-processor', {
+          processorOptions: { freqs: uniqueFreqs, threshold: DETECT_THRESHOLD }
+        });
+        workletNode.port.onmessage = function (e) {
+          var msg = e.data;
+          if (msg.type === 'onset') {
+            handleOnset(msg.freqIndex, msg.sample);
+          } else if (msg.type === 'level') {
+            handleLevel(msg.freqIndex, msg.value);
+          }
+        };
+        var silentGain = audioCtx.createGain();
+        silentGain.gain.value = 0;
+        sourceNode.connect(workletNode);
+        workletNode.connect(silentGain);
+        silentGain.connect(audioCtx.destination);
+      }).catch(function () {
+        setupScriptProcessorFallback();
+      });
+    } else {
+      setupScriptProcessorFallback();
+    }
+  }
+
+  // Fallback for browsers without AudioWorklet support. Duplicates the
+  // Goertzel-bank logic on the main thread via ScriptProcessorNode, same
+  // idiom as the capability-check spike's fallback.
+  function setupScriptProcessorFallback() {
+    var bufferSize = 4096;
+    scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+    var sampleCounter = 0;
+    var envSize = Math.max(128, Math.round(audioCtx.sampleRate * 0.01));
+    var envBuf = new Float32Array(envSize);
+    var envFill = 0;
+    var onsetState = uniqueFreqs.map(function () { return 'below'; });
+    var hopCount = 0;
+    var levelHopStride = 4;
+
+    function goertzel(samples, freq) {
+      var n = samples.length;
+      var k = Math.round((n * freq) / audioCtx.sampleRate);
+      var w = (2 * Math.PI * k) / n;
+      var cosine = Math.cos(w);
+      var coeff = 2 * cosine;
+      var q0 = 0, q1 = 0, q2 = 0;
+      for (var i = 0; i < n; i++) {
+        q0 = coeff * q1 - q2 + samples[i];
+        q2 = q1;
+        q1 = q0;
+      }
+      var real = q1 - q2 * cosine;
+      var imag = q2 * Math.sin(w);
+      return Math.sqrt(real * real + imag * imag) / (n / 2);
+    }
+
+    scriptNode.onaudioprocess = function (ev) {
+      var input = ev.inputBuffer.getChannelData(0);
+      var output = ev.outputBuffer.getChannelData(0);
+
+      for (var i = 0; i < input.length; i++) {
+        output[i] = 0; // keep output silent
+        envBuf[envFill++] = input[i];
+
+        if (envFill >= envSize) {
+          envFill = 0;
+          var sampleAt = sampleCounter + i;
+
+          var levels = new Array(uniqueFreqs.length);
+          var loudestIdx = 0;
+          for (var fi = 0; fi < uniqueFreqs.length; fi++) {
+            levels[fi] = goertzel(envBuf, uniqueFreqs[fi]);
+            if (levels[fi] > levels[loudestIdx]) loudestIdx = fi;
+          }
+
+          var onHi = DETECT_THRESHOLD;
+          var onLo = DETECT_THRESHOLD * 0.6;
+          var aboveCount = 0, aboveIdx = -1;
+          for (var fj = 0; fj < levels.length; fj++) {
+            if (levels[fj] >= onHi) { aboveCount++; aboveIdx = fj; }
+          }
+
+          if (aboveCount === 1) {
+            if (onsetState[aboveIdx] === 'below') {
+              onsetState[aboveIdx] = 'above';
+              handleOnset(aboveIdx, sampleAt);
+            }
+            for (var fk = 0; fk < levels.length; fk++) {
+              if (fk !== aboveIdx && onsetState[fk] === 'above' && levels[fk] < onLo) {
+                onsetState[fk] = 'below';
+              }
+            }
+          } else if (aboveCount === 0) {
+            for (var fm = 0; fm < levels.length; fm++) {
+              if (onsetState[fm] === 'above' && levels[fm] < onLo) onsetState[fm] = 'below';
+            }
+          }
+
+          hopCount++;
+          if (hopCount >= levelHopStride) {
+            hopCount = 0;
+            handleLevel(loudestIdx, levels[loudestIdx]);
+          }
+        }
+      }
+      sampleCounter += input.length;
+    };
+
+    sourceNode.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination);
+  }
+
+  // ---------- wake lock ----------
+
+  function requestWakeLock() {
+    if (!('wakeLock' in navigator)) {
+      document.getElementById('wakelock-hint').textContent = 'This browser can\'t keep the screen on automatically — please keep it on manually until the measurement finishes.';
+      return;
+    }
+    navigator.wakeLock.request('screen').then(function (sentinel) {
+      wakeLockSentinel = sentinel;
+    }).catch(function () {
+      document.getElementById('wakelock-hint').textContent = 'Please keep the screen on manually until the measurement finishes.';
+    });
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (wakeLockSentinel && document.visibilityState === 'visible' && audioCtx) {
+      requestWakeLock();
+    }
+  });
+
+  // ---------- start button ----------
+
+  function onStartClick() {
+    var startError = document.getElementById('start-error');
+    startError.textContent = '';
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      startError.textContent = 'This browser does not support microphone access.';
+      return;
+    }
+
+    var constraints = {
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    };
+
+    navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      micStream = stream;
+      var AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+      setupAudioGraph();
+      requestWakeLock();
+      resetListeningState();
+    }).catch(function (err) {
+      startError.textContent = 'Microphone access was denied or unavailable (' +
+        (err && err.name ? err.name : String(err)) + '). Please allow microphone access and try again.';
+    });
+  }
+
+  // ---------- init ----------
+
+  function init() {
+    protocolInfo = parseProtocol();
+    if (!protocolInfo.ok) {
+      showError(protocolInfo.message);
+      return;
+    }
+
+    // Build the unique-frequency bank in first-seen order, and map each
+    // output to its bin index.
+    var freqToIndex = {};
+    for (var i = 0; i < protocolInfo.outputs.length; i++) {
+      var o = protocolInfo.outputs[i];
+      o.phases = [];
+      o.accepted = false;
+      o.median = null;
+      o.spread = null;
+
+      var key = String(o.freq);
+      if (!(key in freqToIndex)) {
+        freqToIndex[key] = uniqueFreqs.length;
+        uniqueFreqs.push(o.freq);
+      }
+      freqIndexToOutput[freqToIndex[key]] = o;
+    }
+
+    renderOutputList();
+    document.getElementById('start-btn').addEventListener('click', onStartClick);
+    document.getElementById('restart-btn').addEventListener('click', resetListeningState);
+    document.getElementById('restart-btn-2').addEventListener('click', resetListeningState);
+
+    showScreen('screen-start');
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
