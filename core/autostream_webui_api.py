@@ -2309,6 +2309,25 @@ def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> No
         return
     offset_ms = max(-2000, min(2000, int(raw_offset)))
 
+    try:
+        base_url = _config_snapshot(state).owntone.base_url
+    except Exception:
+        base_url = ""
+
+    # Negative offsets delay this output's local playback relative to the
+    # stream; push it back further than the start buffer can absorb and
+    # playback underruns. Only tighten (never loosen) the -2000ms UI floor,
+    # and only pay for the backend round trip when the request is actually
+    # negative -- the common positive-offset case never needs it.
+    if offset_ms < 0 and base_url:
+        from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
+        from autostream_player_service import get_setting as _get_setting
+        buf_result = _get_setting(base_url, SETTING_START_BUFFER_MS, timeout=1.5)
+        start_buffer_ms = int(buf_result.value) if buf_result.ok else SETTING_START_BUFFER_MS_DEFAULT
+        max_negative = -(start_buffer_ms - 250)
+        if max_negative > -2000:
+            offset_ms = max(max_negative, offset_ms)
+
     from autostream_settings import SettingsStore as _SettingsStore
     _store = getattr(state, "settings", None)
     if not isinstance(_store, _SettingsStore):
@@ -2326,7 +2345,28 @@ def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> No
         return
 
     _owntone_update_live_runtime(state)
-    send_json(handler, 200, {"ok": True, "output_id": output_id, "offset_ms": offset_ms})
+
+    applied_live = False
+    if base_url:
+        from autostream_player_service import get_capabilities as _get_capabilities
+        from autostream_player_service import supports_live_offset as _supports_live_offset
+        try:
+            caps = _get_capabilities(base_url, timeout=2)
+            if caps.can_set_output_offset and _supports_live_offset(base_url, timeout=2):
+                push_result = update_output(base_url, output_id, offset_ms=offset_ms, timeout=2)
+                applied_live = bool(push_result.ok)
+        except Exception:
+            # Store write already succeeded above; owntone being down or
+            # unreachable here is not a failure the caller needs to see --
+            # applied_live=False tells the UI the value is queued, not live.
+            logging.info("send_owntone_output_offset_json: live push failed", exc_info=True)
+
+    send_json(handler, 200, {
+        "ok": True,
+        "output_id": output_id,
+        "offset_ms": offset_ms,
+        "applied_live": applied_live,
+    })
 
 
 def _send_owntone_native_setting_json(

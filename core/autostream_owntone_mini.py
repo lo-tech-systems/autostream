@@ -68,6 +68,17 @@ _MONITOR_FORMAT_PROBE_CACHE_SECONDS = 60.0
 _monitor_format_probe_lock = threading.Lock()
 _monitor_format_probe_cache: dict[str, tuple[float, str]] = {}
 
+# supports_live_offset() probe cache. Same keyed-by-base_url idiom as the
+# monitor-format cache above (resolve_backend() hands back a fresh instance
+# per call, so per-instance caching would never hit) and the same TTL: an
+# owntone-mini update flipping the live_offset flag in /api/config is picked
+# up within a minute rather than needing a cache-invalidation hook. Unlike
+# the monitor-format cache this one has no "unknown" state -- a transport
+# failure just isn't cached, so the next call re-probes once reachable again.
+_LIVE_OFFSET_PROBE_CACHE_SECONDS = 60.0
+_live_offset_probe_lock = threading.Lock()
+_live_offset_probe_cache: dict[str, tuple[float, bool]] = {}
+
 # Maps owntone-mini server mode values to normalized internal mode constants.
 # "auto" is always a valid PUT value but is intentionally omitted from the
 # server's supported_modes list; it is handled separately in normalization.
@@ -257,6 +268,10 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             can_set_output_enabled=True,
             can_set_selected_outputs=True,
             can_set_output_volume=True,
+            # offset_ms is always a genuine, settable field on this backend
+            # (unlike upstream OwnTone); whether a change also takes effect
+            # live mid-session is a separate, build-dependent question --
+            # see supports_live_offset() below.
             can_set_output_offset=True,
             can_submit_output_pin=True,
             can_set_output_mode=True,
@@ -639,6 +654,37 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             )
             for key, spec in _SETTING_SPECS.items()
         ]
+
+    def supports_live_offset(self) -> bool:
+        """Whether this build advertises "live_offset": true in /api/config,
+        i.e. PUT /api/outputs/{id} with offset_ms takes effect mid-session
+        rather than only on the next enable/reconnect.
+
+        offset_ms itself is always a genuine, settable field on this backend
+        (can_set_output_offset=True unconditionally) -- this probe gates only
+        whether a *live* push is worth attempting on an already-selected
+        output. An older mini build without the flag still gets the offset
+        applied via the existing enable/reconnect path; it just won't move
+        live while a track is playing.
+        """
+        cache_key = self._base_url
+        now = time.monotonic()
+        with _live_offset_probe_lock:
+            cached = _live_offset_probe_cache.get(cache_key)
+            if cached is not None and (now - cached[0]) <= _LIVE_OFFSET_PROBE_CACHE_SECONDS:
+                return cached[1]
+
+        config_payload, config_resp, config_err = self._get_json("/api/config")
+        if config_err or config_resp is None or not config_resp.ok or not isinstance(config_payload, dict):
+            # Transport failure: deliberately not cached, so the next call
+            # re-probes rather than sitting on a stale answer once the
+            # backend is reachable again.
+            return False
+
+        supported = bool(config_payload.get("live_offset"))
+        with _live_offset_probe_lock:
+            _live_offset_probe_cache[cache_key] = (now, supported)
+        return supported
 
     def required_monitor_format(self) -> Optional[str]:
         """Dynamic probe (FIFO format-switch): the deployed mini supports

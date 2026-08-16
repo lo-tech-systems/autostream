@@ -377,6 +377,18 @@ class PlayerBackend(ABC):
     def list_supported_settings(self) -> list[SettingDescriptor]:
         """Return normalized settings that this backend supports."""
 
+    def supports_live_offset(self) -> bool:
+        """Whether set_output_offset()/update_output(offset_ms=...) takes
+        effect on an already-selected output without a reconnect.
+
+        Concrete default False: a backend must positively confirm live
+        support (e.g. by probing its own capability advertisement) before a
+        caller skips the "store now, apply on next enable/reconnect"
+        fallback. This mirrors required_monitor_format()'s safe-default
+        idiom above.
+        """
+        return False
+
     def required_monitor_format(self) -> Optional[str]:
         """Return the monitor pipe-input format this backend expects.
 

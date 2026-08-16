@@ -1474,6 +1474,10 @@ def get_capabilities(base_url: str, *, timeout: float = 3.0) -> BackendCapabilit
     return resolve_backend(base_url, timeout=timeout).backend.get_capabilities()
 
 
+def supports_live_offset(base_url: str, *, timeout: float = 3.0) -> bool:
+    return resolve_backend(base_url, timeout=timeout).backend.supports_live_offset()
+
+
 def get_setting(base_url: str, key: str, *, timeout: float = 3.0) -> SettingValueResult:
     return resolve_backend(base_url, timeout=timeout).backend.get_setting(key)
 

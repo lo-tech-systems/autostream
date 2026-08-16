@@ -1029,3 +1029,101 @@ class TestMiniRequiredMonitorFormatProbe:
             second = b.required_monitor_format()
         assert second == "compatible"
         gs.assert_called_once()
+
+
+class TestOwnToneOffsetCapabilityIsFalse:
+    """Genuine upstream OwnTone has no offset_ms field: the adapter must not
+    advertise offset support, and update_output must not send the field."""
+
+    def test_capability_is_false(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        assert b.get_capabilities().can_set_output_offset is False
+
+    def test_update_output_omits_offset_field(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
+            result = b.update_output("1", volume_percent=50, offset_ms=300)
+        assert result.ok is True
+        assert mock_put.call_args[1].get("json") == {"volume": 50}
+
+    def test_update_output_with_only_offset_is_a_no_op_error(self):
+        """offset_ms is the sole field supplied and is dropped entirely, so
+        there is nothing left to send -- mirrors the existing "no fields"
+        contract rather than silently issuing an empty PUT."""
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        with patch("autostream_players._session.put") as mock_put:
+            result = b.update_output("1", offset_ms=300)
+        assert result.ok is False
+        assert result.error_code == "missing_fields"
+        mock_put.assert_not_called()
+
+    def test_supports_live_offset_default_false(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        assert b.supports_live_offset() is False
+
+
+class TestMiniSupportsLiveOffsetProbe:
+    """owntone-mini's supports_live_offset(): reads "live_offset" from
+    /api/config, cached module-level by base_url (mirrors the
+    required_monitor_format() probe cache above)."""
+
+    def setup_method(self):
+        import autostream_owntone_mini as om
+        om._live_offset_probe_cache.clear()
+
+    def _mini(self, base_url="http://mini1:3689"):
+        return OwnToneMiniBackend(base_url=base_url)
+
+    def test_offset_capability_stays_true_regardless_of_live_flag(self):
+        # can_set_output_offset is unconditional -- offset_ms is a real field
+        # on this backend even on builds that predate live mid-session apply.
+        b = self._mini()
+        assert b.get_capabilities().can_set_output_offset is True
+
+    def test_flag_true_returns_true(self):
+        b = self._mini()
+        r = _resp(json_data={"live_offset": True})
+        with patch("autostream_players._session.get", return_value=r) as mock_get:
+            result = b.supports_live_offset()
+        assert result is True
+        mock_get.assert_called_once()
+
+    def test_flag_absent_returns_false(self):
+        b = self._mini()
+        r = _resp(json_data={"product_name": "owntone-mini"})
+        with patch("autostream_players._session.get", return_value=r):
+            result = b.supports_live_offset()
+        assert result is False
+
+    def test_transport_failure_returns_false_and_is_not_cached(self):
+        b = self._mini()
+        with patch("autostream_players._session.get", side_effect=_req_exc()):
+            first = b.supports_live_offset()
+        r = _resp(json_data={"live_offset": True})
+        with patch("autostream_players._session.get", return_value=r) as mock_get:
+            second = b.supports_live_offset()
+        assert first is False
+        assert second is True
+        mock_get.assert_called_once()  # not skipped by a bad cache entry
+
+    def test_result_is_cached_across_calls(self):
+        b = self._mini()
+        r = _resp(json_data={"live_offset": True})
+        with patch("autostream_players._session.get", return_value=r) as mock_get:
+            first = b.supports_live_offset()
+            second = b.supports_live_offset()
+        assert (first, second) == (True, True)
+        mock_get.assert_called_once()
+
+    def test_different_base_urls_have_isolated_cache_entries(self):
+        b1 = self._mini("http://mini-a:3689")
+        b2 = self._mini("http://mini-b:3689")
+        on = _resp(json_data={"live_offset": True})
+        off = _resp(json_data={"live_offset": False})
+        with patch("autostream_players._session.get", return_value=on):
+            r1 = b1.supports_live_offset()
+        with patch("autostream_players._session.get", return_value=off):
+            r2 = b2.supports_live_offset()
+        assert r1 is True
+        assert r2 is False

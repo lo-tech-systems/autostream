@@ -371,6 +371,125 @@ class TestOutputOffset:
         send_owntone_output_offset_json(handler, state, body)
         assert sent["code"] == 400
 
+    def test_live_push_attempted_and_reported_when_capability_true(self, tmp_path):
+        """capability + live-offset both true -> update_output is called and
+        applied_live reflects its result; the store write still happens."""
+        from autostream_webui_api import send_owntone_output_offset_json
+        from autostream_players import ActionResult, BackendCapabilities
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "offset_ms": 300})
+        caps = BackendCapabilities(can_set_output_offset=True)
+        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+             patch("autostream_player_service.get_capabilities", return_value=caps), \
+             patch("autostream_player_service.supports_live_offset", return_value=True), \
+             patch("autostream_webui_api.update_output") as m_update:
+            m_update.return_value = ActionResult(ok=True)
+            send_owntone_output_offset_json(handler, state, body)
+        assert sent["body"]["ok"] is True
+        assert sent["body"]["applied_live"] is True
+        m_update.assert_called_once_with(
+            "http://localhost:3689", "42", offset_ms=300, timeout=2,
+        )
+        snap = store.snapshot()
+        assert snap.owntone.output_offsets_ms.get("42") == 300
+
+    def test_live_push_skipped_when_capability_false(self, tmp_path):
+        from autostream_webui_api import send_owntone_output_offset_json
+        from autostream_players import BackendCapabilities
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "offset_ms": 300})
+        caps = BackendCapabilities(can_set_output_offset=False)
+        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+             patch("autostream_player_service.get_capabilities", return_value=caps), \
+             patch("autostream_player_service.supports_live_offset", return_value=False), \
+             patch("autostream_webui_api.update_output") as m_update:
+            send_owntone_output_offset_json(handler, state, body)
+        assert sent["body"]["ok"] is True
+        assert sent["body"]["applied_live"] is False
+        m_update.assert_not_called()
+
+    def test_ok_and_applied_live_false_when_backend_unreachable(self, tmp_path):
+        """Store write must succeed even when the live push blows up entirely
+        (owntone down / connection refused) -- ok stays True, applied_live False."""
+        from autostream_webui_api import send_owntone_output_offset_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "offset_ms": 300})
+        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+             patch("autostream_player_service.get_capabilities", side_effect=ConnectionError("down")):
+            send_owntone_output_offset_json(handler, state, body)
+        assert sent["code"] == 200
+        assert sent["body"]["ok"] is True
+        assert sent["body"]["applied_live"] is False
+        snap = store.snapshot()
+        assert snap.owntone.output_offsets_ms.get("42") == 300
+
+    def test_negative_offset_clamped_to_start_buffer_derived_floor(self, tmp_path):
+        """start_buffer_ms=1000 -> floor is -(1000-250) = -750, tighter than -2000."""
+        from autostream_webui_api import send_owntone_output_offset_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "offset_ms": -2000})
+        buf_result = MagicMock(ok=True, value=1000)
+        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+             patch("autostream_player_service.get_setting", return_value=buf_result), \
+             patch("autostream_player_service.get_capabilities") as m_caps:
+            m_caps.side_effect = ConnectionError("down")
+            send_owntone_output_offset_json(handler, state, body)
+        assert sent["body"]["offset_ms"] == -750
+        snap = store.snapshot()
+        assert snap.owntone.output_offsets_ms.get("42") == -750
+
+    def test_negative_offset_not_clamped_when_start_buffer_wide_enough(self, tmp_path):
+        """start_buffer_ms=2250 (default) -> floor is -2000, not -(2250-250)=-2000
+        either way; a mid-range negative offset must pass through unchanged."""
+        from autostream_webui_api import send_owntone_output_offset_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "offset_ms": -900})
+        buf_result = MagicMock(ok=True, value=2250)
+        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+             patch("autostream_player_service.get_setting", return_value=buf_result), \
+             patch("autostream_player_service.get_capabilities") as m_caps:
+            m_caps.side_effect = ConnectionError("down")
+            send_owntone_output_offset_json(handler, state, body)
+        assert sent["body"]["offset_ms"] == -900
+
+    def test_start_buffer_lookup_skipped_for_non_negative_offset(self, tmp_path):
+        """The extra backend round trip for the clamp floor is only worth
+        paying when the request is actually negative."""
+        from autostream_webui_api import send_owntone_output_offset_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"output_id": "42", "offset_ms": 900})
+        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+             patch("autostream_player_service.get_setting") as m_get, \
+             patch("autostream_player_service.get_capabilities") as m_caps:
+            m_caps.side_effect = ConnectionError("down")
+            send_owntone_output_offset_json(handler, state, body)
+        m_get.assert_not_called()
+        assert sent["body"]["offset_ms"] == 900
+
 
 # ── Native OwnTone settings ───────────────────────────────────────────────────
 
@@ -631,6 +750,7 @@ class TestOwntoneSetupPage:
         setting_results: dict | None = None,
         outputs: list | None = None,
         can_set_output_mode: bool = False,
+        can_set_output_offset: bool = False,
         config_extra: dict | None = None,
     ):
         """Render the OwnTone setup page with get_setting mocked per setting key.
@@ -642,8 +762,9 @@ class TestOwntoneSetupPage:
 
         `outputs` is a list of OutputInfo instances returned as discovered speakers;
         `can_set_output_mode` toggles capabilities.can_set_output_mode so the mode
-        <select> is rendered instead of a hidden input; `config_extra` is passed
-        through to `_make_config` (e.g. to pre-seed `owntone.airplay_modes`).
+        <select> is rendered instead of a hidden input; `can_set_output_offset`
+        similarly toggles the offset slider; `config_extra` is passed through to
+        `_make_config` (e.g. to pre-seed `owntone.airplay_modes`).
         """
         from autostream_webui_page_owntone import send_owntone_setup_page
         from autostream_players import SaveSettingResult, SettingValueResult
@@ -665,7 +786,7 @@ class TestOwntoneSetupPage:
 
         _cap = MagicMock()
         _cap.can_set_output_mode = can_set_output_mode
-        _cap.can_set_output_offset = False
+        _cap.can_set_output_offset = can_set_output_offset
 
         _default_result = MagicMock()
         _default_result.ok = False
@@ -725,6 +846,35 @@ class TestOwntoneSetupPage:
         audio_idx = html.index("<legend>Audio</legend>")
         speaker_idx = html.index('id="spk_settings_0"')
         assert audio_idx < speaker_idx
+
+    def test_offset_slider_rendered_for_every_output_when_capable(self, tmp_path):
+        """A discovered output with no offset saved yet must still get a
+        slider once the backend advertises can_set_output_offset -- the old
+        "only if it already has an offset" gate is gone."""
+        from autostream_players import OutputInfo
+        output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
+        html = self._render_page(
+            str(tmp_path), outputs=[output], can_set_output_offset=True,
+        )
+        assert 'id="off_slider_0"' in html
+        assert 'id="off_val_0"' in html
+
+    def test_offset_slider_not_rendered_when_incapable(self, tmp_path):
+        from autostream_players import OutputInfo
+        output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
+        html = self._render_page(
+            str(tmp_path), outputs=[output], can_set_output_offset=False,
+        )
+        assert 'id="off_slider_0"' not in html
+
+    def test_offset_reset_button_rendered(self, tmp_path):
+        from autostream_players import OutputInfo
+        output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
+        html = self._render_page(
+            str(tmp_path), outputs=[output], can_set_output_offset=True,
+        )
+        assert "_owntoneOffsetReset(0, " in html
+        assert ">Reset<" in html
 
 
 # ── Buffered-audio toggle rendering ────────────────────────────────────────────

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- new: each AirPlay output's Offset control now takes effect while music is
+  playing — drag the slider and that output shifts within a second or two,
+  so a TV-connected Apple TV can be aligned with other speakers by ear. On
+  buffered receivers the adjustment re-times the receiver without
+  interrupting the audio stream (requires the bundled owntone-mini 1.2.0)
+- improvement: the Offset control is now shown for every AirPlay output,
+  with a numeric readout and a reset button, instead of only appearing for
+  outputs that already had an offset configured
+- fix: large negative offsets are now capped to what the configured start
+  buffer can absorb, preventing underruns on the adjusted output
+- fix: the Offset slider no longer silently does nothing when the appliance
+  is paired with a standard OwnTone server (which has no per-output offset
+  support); the control is hidden there instead
+
 ## Version 0.5.0
 
 - fix: the updating screen no longer briefly claims a new update is already

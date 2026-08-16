@@ -84,7 +84,9 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             can_set_output_enabled=True,
             can_set_selected_outputs=True,
             can_set_output_volume=True,
-            can_set_output_offset=True,
+            # Genuine upstream OwnTone has no offset_ms field on /api/outputs;
+            # an offset PUT is a silent no-op there rather than a real knob.
+            can_set_output_offset=False,
             can_submit_output_pin=True,
             can_set_output_mode=False,
             can_play=True,
@@ -222,11 +224,15 @@ class OwnToneBackend(OwnToneHttpBackendBase):
                 volume = 0
             payload["volume"] = max(0, min(100, volume))
         if offset_ms is not None:
-            try:
-                offset = int(offset_ms)
-            except Exception:
-                offset = 0
-            payload["offset_ms"] = max(-2000, min(2000, offset))
+            # Upstream OwnTone's /api/outputs handler has no offset_ms field
+            # (see can_set_output_offset=False above); silently absorbed here
+            # the same way an unsupported mode is, rather than sent as a
+            # PUT field the server would just ignore.
+            LOG.info(
+                "Output offset is not supported by the %s backend; offset_ms=%r will be ignored.",
+                self.backend_id,
+                offset_ms,
+            )
         if mode is not None:
             LOG.info(
                 "Output mode setting is not supported by the %s backend; mode=%r will be ignored.",

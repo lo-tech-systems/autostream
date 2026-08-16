@@ -402,10 +402,7 @@ def send_owntone_setup_page(
         can_edit_mode = bool(out_id and discovered and output is not None and capabilities.can_set_output_mode)
 
         offset_html = ""
-        if capabilities.can_set_output_offset and out_id and (
-            (output is not None and output.offset_ms is not None)
-            or out_id in parsed.owntone.output_offsets_ms
-        ):
+        if capabilities.can_set_output_offset and out_id:
             try:
                 cur_off = parsed.owntone.output_offsets_ms.get(out_id, 0)
             except Exception:
@@ -416,13 +413,16 @@ def send_owntone_setup_page(
                     <div class="slider-header">
                       <span>Offset:</span>
                       <span id="off_val_{i}">{cur_off} ms</span>
+                      <button type="button" class="pill-btn small" style="margin-left:0.5rem;"
+                              onclick="_owntoneOffsetReset({i}, {json.dumps(out_id)});">Reset</button>
                     </div>
                     <input type="range"
+                           id="off_slider_{i}"
                            name="offset_{i}"
                            min="-2000" max="2000" step="10"
                            value="{cur_off}"
                            oninput="document.getElementById('off_val_{i}').textContent=this.value+' ms';
-                                    if(liveEnabled) _owntoneOffsetDebounced({json.dumps(out_id)}, parseInt(this.value,10));">
+                                    if(liveEnabled) _owntoneOffsetDebounced({i}, {json.dumps(out_id)}, parseInt(this.value,10));">
                   </label>
                 """
 
@@ -594,11 +594,23 @@ def send_owntone_setup_page(
     document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
   }}
   var _owntoneTimers = {{}};
-  function _owntoneOffsetDebounced(outputId, offsetMs) {{
+  function _owntoneOffsetSync(i, offsetMs) {{
+    var slider = document.getElementById('off_slider_' + i);
+    var val = document.getElementById('off_val_' + i);
+    if (slider) slider.value = offsetMs;
+    if (val) val.textContent = offsetMs + ' ms';
+  }}
+  function _owntoneOffsetDebounced(i, outputId, offsetMs) {{
     clearTimeout(_owntoneTimers['offset_' + outputId]);
     _owntoneTimers['offset_' + outputId] = setTimeout(function() {{
-      settingsTransact('/api/owntone/output-offset', {{output_id: outputId, offset_ms: offsetMs}});
+      settingsTransact('/api/owntone/output-offset', {{output_id: outputId, offset_ms: offsetMs}}, {{
+        onSuccess: function(d) {{ _owntoneOffsetSync(i, d.offset_ms); }}
+      }});
     }}, 300);
+  }}
+  function _owntoneOffsetReset(i, outputId) {{
+    _owntoneOffsetSync(i, 0);
+    if (liveEnabled) _owntoneOffsetDebounced(i, outputId, 0);
   }}
   function _owntoneNativeDebounced(key, rawValue, url) {{
     clearTimeout(_owntoneTimers[key]);
