@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""autostream_align.py
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+Orchestrator for the "Align outputs" calibration feature. Cycles a tone
+burst through each selected AirPlay output in turn -- by muting every
+selected output and raising one at a time, outputs stay connected the whole
+time -- so a companion phone page (hosted elsewhere, not part of this
+appliance) can measure arrival phase and hand per-output offsets back via a
+plain GET navigation to /align/result.
+
+Contents:
+  - AlignOutputSnapshot -- one output's captured id/name/volume/offset/freq
+  - AlignArrival        -- one parsed entry from the /align/result handoff
+  - AlignResult          -- the full parsed handoff (ref + arrivals)
+  - parse_result_entries -- parser for the 'data' query parameter
+  - AlignRun             -- run lifecycle: start/abort/finish/cleanup/status
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import subprocess
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+from urllib.parse import quote, unquote
+
+_log = logging.getLogger(__name__)
+
+# ---- Protocol v1 fixed contract (see autostream_align_tone.py for the tone
+# helper side of this contract; do not change these without updating both).
+FREQ_FILE = "/run/autostream-align/freq"
+LOCK_PATH = "/run/autostream-align.lock"
+UNIT_NAME = "autostream-align-tone"
+TONE_HELPER = "/opt/autostream/autostream_align_tone.py"
+PERIOD_MS = 5000
+BURST_MS = 150
+CYCLES_PER_OUTPUT = 6  # k in the launch URL; hold time per output = k * period
+BASE_FREQ_HZ = 1000
+FREQ_STEP_HZ = 250
+MAX_SECONDS = 600  # hard cap on a whole run, regardless of cycle count
+FALLBACK_VOLUME_PERCENT = 50  # used when a snapshot's own volume was 0
+# The tone helper must generate at the rate the backend actually reads the
+# pipe at, or every burst shifts in pitch AND the audible period stretches
+# away from the p the phone page was told, breaking its phase clustering.
+# The live rate is probed from the backend at start(); the fallback covers
+# backends whose pipe rate is not API-readable, which consume 44100.
+FALLBACK_TONE_RATE_HZ = 44100
+TONE_BITS = 16
+TONE_CHANNELS = 2
+
+_SYSTEMD_RUN_CANDIDATES = ("/bin/systemd-run", "/usr/bin/systemd-run")
+FLOCK_BIN = "/usr/bin/flock"
+
+_POLL_INTERVAL_S = 0.5
+
+LAUNCH_HOST = "https://lo-tech.co.uk/as-api/autoalign/"
+
+
+def _find_systemd_run() -> str:
+    for candidate in _SYSTEMD_RUN_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return _SYSTEMD_RUN_CANDIDATES[0]
+
+
+@dataclass(frozen=True)
+class AlignOutputSnapshot:
+    id: str
+    name: str
+    volume_percent: int
+    stored_offset_ms: int
+    freq_hz: int
+
+
+@dataclass(frozen=True)
+class AlignArrival:
+    output_id: str
+    delta_ms: int
+    spread_ms: int
+
+
+@dataclass(frozen=True)
+class AlignResult:
+    ref_output_id: str
+    arrivals: tuple = ()
+
+
+def parse_result_entries(raw: str) -> list:
+    """Parse the 'data' query parameter into AlignArrival entries.
+
+    Each entry is '<urlencoded id>~<delta_ms>~<spread_ms>'. Malformed
+    entries (wrong field count, empty id, non-integer delta/spread) are
+    dropped individually rather than failing the whole parse -- one bad
+    entry from a flaky phone page shouldn't discard every other output's
+    measurement.
+    """
+    arrivals: list = []
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split("~")
+        if len(parts) != 3:
+            continue
+        oid_raw, delta_raw, spread_raw = parts
+        oid = unquote(oid_raw).strip()
+        if not oid:
+            continue
+        try:
+            delta_ms = int(delta_raw)
+            spread_ms = int(spread_raw)
+        except ValueError:
+            continue
+        arrivals.append(AlignArrival(output_id=oid, delta_ms=delta_ms, spread_ms=spread_ms))
+    return arrivals
+
+
+class AlignRun:
+    """Owns the lifecycle of one calibration run.
+
+    A single instance lives on WebUIState (state.align_run) for the life of
+    the process. Not re-entrant across runs -- start() refuses while a run
+    is already active.
+    """
+
+    def __init__(
+        self,
+        *,
+        player_service=None,
+        process_launcher: Optional[Callable[[list], "subprocess.CompletedProcess"]] = None,
+        clock: Optional[Callable[[], float]] = None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
+        freq_file: str = FREQ_FILE,
+        period_ms: int = PERIOD_MS,
+        cycles_per_output: int = CYCLES_PER_OUTPUT,
+        max_seconds: int = MAX_SECONDS,
+        poll_interval_s: float = _POLL_INTERVAL_S,
+    ) -> None:
+        if player_service is None:
+            import autostream_player_service as player_service  # local default
+        self._player_service = player_service
+        self._launch = process_launcher or self._default_launch
+        self._clock = clock or time.monotonic
+        self._sleep = sleep_fn or time.sleep
+        self._freq_file = freq_file
+        self._period_ms = period_ms
+        self._cycles_per_output = cycles_per_output
+        self._hold_seconds = cycles_per_output * (period_ms / 1000.0)
+        self._max_seconds = max_seconds
+        self._poll_interval_s = poll_interval_s
+
+        self._lock = threading.RLock()
+        self._state = "idle"  # idle | running | finishing | error
+        self._snapshots: list = []
+        self._base_url = ""
+        self._started_at = 0.0
+        self._cycle_count = 0
+        self._current_index = 0
+        self._last_error = ""
+        self._launch_url = ""
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._pending_result: Optional[AlignResult] = None
+        self._tone_rate = FALLBACK_TONE_RATE_HZ
+
+    @staticmethod
+    def _default_launch(cmd: list):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+
+    # -- start ----------------------------------------------------------------
+
+    def start(self, *, base_url: str, ret_url: str) -> "tuple[bool, str]":
+        """Attempt to start a run. Returns (ok, error_message_or_launch_url)."""
+        with self._lock:
+            if self._state in ("running", "finishing"):
+                return False, "A calibration run is already in progress"
+            if not base_url:
+                return False, "OwnTone backend is not reachable"
+
+        if self._input_actively_streaming():
+            return False, "Cannot calibrate while an input is actively streaming"
+
+        outputs_result = self._player_service.list_outputs(base_url, timeout=3)
+        if not outputs_result.ok:
+            return False, "Could not list outputs"
+        selected = [o for o in outputs_result.outputs if getattr(o, "selected", False)]
+        if len(selected) < 2:
+            return False, "Select at least two outputs before calibrating"
+
+        snapshots = [
+            AlignOutputSnapshot(
+                id=out.id,
+                name=out.name,
+                volume_percent=int(out.volume_percent or 0),
+                stored_offset_ms=int(out.offset_ms or 0),
+                freq_hz=BASE_FREQ_HZ + FREQ_STEP_HZ * i,
+            )
+            for i, out in enumerate(selected)
+        ]
+
+        launch_url = self._build_launch_url(snapshots, ret_url)
+        self._tone_rate = self._probe_pipe_rate(base_url)
+
+        try:
+            self._write_freq(snapshots[0].freq_hz)
+        except Exception:
+            _log.exception("AlignRun.start: could not write freq file")
+            return False, "Could not prepare calibration"
+
+        for s in snapshots:
+            self._set_volume(base_url, s.id, 0)
+
+        try:
+            self._launch_helper()
+        except Exception:
+            _log.exception("AlignRun.start: could not launch tone helper")
+            self._base_url = base_url
+            self._snapshots = snapshots
+            self.cleanup()
+            return False, "Could not start tone generator"
+
+        with self._lock:
+            self._base_url = base_url
+            self._snapshots = snapshots
+            self._launch_url = launch_url
+            self._state = "running"
+            self._started_at = self._clock()
+            self._cycle_count = 0
+            self._current_index = 0
+            self._last_error = ""
+            self._pending_result = None
+            self._stop_event = threading.Event()
+            thread = threading.Thread(target=self._run_cycle, daemon=True, name="align-cycle")
+            self._thread = thread
+        thread.start()
+
+        return True, launch_url
+
+    def _input_actively_streaming(self) -> bool:
+        """Best-effort check that nothing is actively streaming right now.
+
+        Uses the existing playback-activity tracker; any failure to read it
+        (tracker not initialised, import error) is treated as "not
+        streaming" rather than blocking the feature -- there is no other
+        cheap hook for this today.
+        """
+        try:
+            from autostream_core import get_playback_snapshot
+            snap = get_playback_snapshot()
+            return any(getattr(i, "active", False) for i in snap.inputs.values())
+        except Exception:
+            _log.debug("AlignRun: playback activity check unavailable", exc_info=True)
+            return False
+
+    def _probe_pipe_rate(self, base_url: str) -> int:
+        """The rate the backend reads the pipe at right now. Falls back for
+        backends whose pipe rate is not API-readable (those consume 44100)."""
+        try:
+            from autostream_players import SETTING_PIPE_SAMPLE_RATE
+            result = self._player_service.get_setting(base_url, SETTING_PIPE_SAMPLE_RATE, timeout=3)
+            if getattr(result, "ok", False):
+                rate = int(result.value)
+                if rate > 0:
+                    return rate
+        except Exception:
+            _log.debug("AlignRun: pipe rate probe failed", exc_info=True)
+        return FALLBACK_TONE_RATE_HZ
+
+    def _build_launch_url(self, snapshots: list, ret_url: str) -> str:
+        outs_param = ",".join(
+            f"{quote(s.id, safe='')}~{s.freq_hz}~{quote(s.name, safe='')}"
+            for s in snapshots
+        )
+        return (
+            f"{LAUNCH_HOST}#v=1"
+            f"&ret={quote(ret_url, safe='')}"
+            f"&p={self._period_ms}&k={self._cycles_per_output}&outs={outs_param}"
+        )
+
+    # -- cycle thread -----------------------------------------------------------
+
+    def _run_cycle(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                for i, s in enumerate(self._snapshots):
+                    if self._stop_event.is_set():
+                        return
+                    with self._lock:
+                        self._current_index = i
+                    self._write_freq(s.freq_hz)
+                    vol = s.volume_percent if s.volume_percent > 0 else FALLBACK_VOLUME_PERCENT
+                    self._set_volume(self._base_url, s.id, vol)
+
+                    if self._elapsed() > self._max_seconds:
+                        self._timeout()
+                        return
+
+                    held = self._hold(self._hold_seconds)
+                    self._set_volume(self._base_url, s.id, 0)
+
+                    if not held:
+                        return  # stop() / abort() requested mid-hold
+
+                    if self._elapsed() > self._max_seconds:
+                        self._timeout()
+                        return
+                with self._lock:
+                    self._cycle_count += 1
+        except Exception:
+            _log.exception("AlignRun: cycle failed")
+            with self._lock:
+                self._last_error = "Calibration cycle failed"
+            self._stop_event.set()
+            self.cleanup()
+            with self._lock:
+                self._state = "error"
+
+    def _elapsed(self) -> float:
+        return self._clock() - self._started_at
+
+    def _hold(self, seconds: float) -> bool:
+        """Wait up to *seconds*, polling for a stop request. Returns False if
+        stopped early, True if the hold completed."""
+        deadline = self._clock() + seconds
+        while True:
+            if self._stop_event.is_set():
+                return False
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                return True
+            self._sleep(min(remaining, self._poll_interval_s))
+
+    def _timeout(self) -> None:
+        with self._lock:
+            self._last_error = "Calibration timed out"
+        self._stop_event.set()
+        self.cleanup()
+        with self._lock:
+            self._state = "idle"
+
+    # -- helper process control --------------------------------------------------
+
+    def _launch_helper(self) -> None:
+        systemd_run = _find_systemd_run()
+        cmd = [
+            systemd_run,
+            "--quiet",
+            "--collect",
+            f"--unit={UNIT_NAME}",
+            "--property=Type=exec",
+            "--",
+            FLOCK_BIN, "-n", LOCK_PATH,
+            "python3", TONE_HELPER,
+            "--fifo", self._helper_fifo_path(),
+            "--rate", str(self._tone_rate),
+            "--bits", str(TONE_BITS),
+            "--channels", str(TONE_CHANNELS),
+            "--period-ms", str(self._period_ms),
+            "--burst-ms", str(BURST_MS),
+            "--freq-file", self._freq_file,
+            "--max-seconds", str(self._max_seconds),
+        ]
+        result = self._launch(cmd)
+        if getattr(result, "returncode", 1) != 0:
+            raise RuntimeError(f"systemd-run failed: {getattr(result, 'stderr', '')}")
+
+    def _helper_fifo_path(self) -> str:
+        # Same FIFO the normal audio path feeds into -- calibration owns it
+        # exclusively for the duration of the run (start() already refuses
+        # to begin while an input is actively streaming).
+        try:
+            from autostream_config import FIFO_PATH
+            return FIFO_PATH
+        except Exception:
+            return "/run/autostream-pipes/autostream.fifo"
+
+    def _stop_helper(self) -> None:
+        try:
+            self._launch(["systemctl", "stop", UNIT_NAME])
+        except Exception:
+            _log.debug("AlignRun: stop helper failed", exc_info=True)
+
+    def _write_freq(self, freq_hz: int) -> None:
+        d = os.path.dirname(self._freq_file)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = f"{self._freq_file}.tmp"
+        with open(tmp, "w") as f:
+            f.write(str(int(freq_hz)))
+        os.replace(tmp, self._freq_file)
+
+    def _set_volume(self, base_url: str, output_id: str, volume_percent: int) -> None:
+        try:
+            self._player_service.set_output_volume(base_url, output_id, int(volume_percent), timeout=3)
+        except Exception:
+            _log.debug("AlignRun: set_output_volume(%s) failed", output_id, exc_info=True)
+
+    # -- stop / finish / cleanup --------------------------------------------------
+
+    def abort(self) -> None:
+        """User-requested cancel: stop the cycle, discard any pending result."""
+        with self._lock:
+            if self._state not in ("running", "finishing"):
+                return
+            self._state = "finishing"
+        self._stop_and_join()
+        self.cleanup()
+        with self._lock:
+            self._pending_result = None
+            self._last_error = ""
+            self._state = "idle"
+
+    def finish(self, result: Optional[AlignResult] = None) -> None:
+        """Called when /align/result lands: stop the cycle, restore state,
+        and keep *result* as the pending review-page data. Safe to call even
+        if the run already stopped on its own (timeout/error)."""
+        with self._lock:
+            if self._state == "running":
+                self._state = "finishing"
+        self._stop_and_join()
+        self.cleanup()
+        with self._lock:
+            self._pending_result = result
+            self._last_error = ""
+            self._state = "idle"
+
+    def _stop_and_join(self) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5)
+
+    def cleanup(self) -> None:
+        """Idempotent: stop the helper unit, drop the freq file, restore
+        every snapshot's volume exactly. Always safe to call more than
+        once (e.g. once from the cycle thread on error, once from finish())."""
+        self._stop_helper()
+        try:
+            if os.path.exists(self._freq_file):
+                os.remove(self._freq_file)
+        except Exception:
+            _log.debug("AlignRun: freq file cleanup failed", exc_info=True)
+        with self._lock:
+            snapshots = list(self._snapshots)
+            base_url = self._base_url
+        for s in snapshots:
+            self._set_volume(base_url, s.id, s.volume_percent)
+
+    # -- read-only accessors ----------------------------------------------------
+
+    def status(self) -> dict:
+        with self._lock:
+            state = self._state
+            idx = self._current_index
+            snapshots = list(self._snapshots)
+            cycle_count = self._cycle_count
+            started = self._started_at
+            last_error = self._last_error
+            launch_url = self._launch_url
+            has_pending = self._pending_result is not None
+
+        current = snapshots[idx] if snapshots and 0 <= idx < len(snapshots) else None
+        seconds_remaining = None
+        if state == "running" and started:
+            seconds_remaining = max(0, int(self._max_seconds - (self._clock() - started)))
+
+        return {
+            "state": state,
+            "current_output_id": current.id if current else None,
+            "current_output_name": current.name if current else None,
+            "cycle_count": cycle_count,
+            "seconds_remaining": seconds_remaining,
+            "launch_url": launch_url if state == "running" else "",
+            "last_error": last_error,
+            "has_pending_result": has_pending,
+        }
+
+    def snapshots(self) -> list:
+        with self._lock:
+            return list(self._snapshots)
+
+    def pending_result(self) -> Optional[AlignResult]:
+        with self._lock:
+            return self._pending_result
+
+    def discard_result(self) -> None:
+        with self._lock:
+            self._pending_result = None

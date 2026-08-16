@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""autostream_webui_page_align.py
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+Page renderer and JSON endpoints for the "Align outputs" calibration
+feature (see autostream_align.py for the orchestrator that actually runs
+the tone-burst cycle).
+
+Responsibilities:
+  - GET  /align              -- explains the feature, Start/Abort controls,
+                                 status polling, review table once a result
+                                 has landed.
+  - GET  /align/result       -- handoff from the (separately hosted) phone
+                                 measurement page; parses params, stops the
+                                 run, redirects back to /align to show the
+                                 review table (kept server-side on the
+                                 orchestrator, not in the URL).
+  - POST /api/align/start    -- start a run
+  - POST /api/align/abort    -- cancel a run in progress
+  - GET  /api/align/status   -- poll target for the /align page
+  - POST /api/align/apply    -- apply proposed offsets from a landed result
+  - POST /api/align/discard  -- discard a landed result without applying
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import logging
+
+from autostream_align import parse_result_entries
+from autostream_webui_api import apply_output_offset, send_json
+from autostream_webui_common import (
+    CSRF_RECOVERY_SCRIPT,
+    _config_snapshot,
+    build_page_html,
+    build_top_banner_html,
+)
+from autostream_webui_state import WebUIState
+
+_log = logging.getLogger(__name__)
+
+_OFFSET_CLAMP_MS = 2000
+
+
+# -----------------------------------------------------------------------------
+# /align -- explainer + controls + review table
+# -----------------------------------------------------------------------------
+
+def send_align_page(handler, state: WebUIState) -> None:
+    parsed = None
+    try:
+        parsed = _config_snapshot(state)
+    except Exception:
+        parsed = None
+    dark_mode = parsed.webui.dark_mode if parsed else False
+
+    csrf_token = getattr(handler, "_csrf_token", None) or ""
+    lic_html, lic_spacer = build_top_banner_html()
+
+    review_html = _render_review_section(state)
+
+    body_html = (
+        "<div class='align-page'>"
+        "<h1>Align Outputs</h1>"
+        "<p style='color:var(--color-text-secondary);'>"
+        "This plays a short test tone through each selected AirPlay output in "
+        "turn. Open the link below on your phone, hold it near your speakers, "
+        "and it will measure and hand back timing offsets to line them up."
+        "</p>"
+        "<div class='align-controls' style='margin:1rem 0;'>"
+        "<button type='button' class='pill-btn' id='alignStartBtn' onclick='alignStart()'>Start</button>"
+        "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()' style='display:none;margin-left:0.5rem;'>Abort</button>"
+        "</div>"
+        "<div id='alignStatus' style='margin:1rem 0;color:var(--color-text-secondary);'></div>"
+        "<div id='alignLaunch' style='display:none;margin:1rem 0;'>"
+        "<p>Open this link on your phone:</p>"
+        "<a id='alignLaunchLink' href='#' target='_blank' rel='noopener'>Open calibration page</a>"
+        "</div>"
+        f"<div id='alignReview'>{review_html}</div>"
+        "</div>"
+    )
+
+    head_extra = (
+        f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>\n"
+        + CSRF_RECOVERY_SCRIPT
+        + _ALIGN_SCRIPT
+    )
+
+    html_body = build_page_html(
+        "Align Outputs",
+        body_html,
+        head_extra=head_extra,
+        lic_html=lic_html,
+        lic_spacer=lic_spacer,
+        active_tab="align",
+        dark_mode=dark_mode,
+    )
+    body_bytes = html_body.encode("utf-8")
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body_bytes)))
+    handler.end_headers()
+    handler.wfile.write(body_bytes)
+
+
+def _render_review_section(state: WebUIState) -> str:
+    run = getattr(state, "align_run", None)
+    if run is None:
+        return ""
+    result = run.pending_result()
+    if result is None:
+        return ""
+
+    from autostream_align import AlignArrival
+
+    snapshots = {s.id: s for s in run.snapshots()}
+    arrivals = {a.output_id: a for a in result.arrivals}
+    if result.ref_output_id not in arrivals:
+        # The phone page's data list need not repeat the reference output
+        # itself -- its delta/spread relative to itself is zero by definition.
+        arrivals[result.ref_output_id] = AlignArrival(
+            output_id=result.ref_output_id, delta_ms=0, spread_ms=0
+        )
+
+    rows = []
+    for oid, snap in snapshots.items():
+        arrival = arrivals.get(oid)
+        if arrival is None:
+            continue
+        proposed = max(-_OFFSET_CLAMP_MS, min(_OFFSET_CLAMP_MS, snap.stored_offset_ms - arrival.delta_ms))
+        warn = arrival.spread_ms > 40
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(snap.name)}</td>"
+            f"<td>{arrival.delta_ms} ms</td>"
+            f"<td{' class=\"align-warn\"' if warn else ''}>{arrival.spread_ms} ms"
+            + (" &mdash; noisy measurement" if warn else "")
+            + "</td>"
+            f"<td>{snap.stored_offset_ms} ms</td>"
+            f"<td>{proposed} ms</td>"
+            f"<td><input type='hidden' class='align-offset-id' value='{html.escape(oid)}'>"
+            f"<input type='hidden' class='align-offset-val' value='{proposed}'></td>"
+            "</tr>"
+        )
+
+    return (
+        "<h2>Measurement result</h2>"
+        "<table class='align-review-table'>"
+        "<thead><tr><th>Output</th><th>Measured delta</th><th>Spread</th>"
+        "<th>Current offset</th><th>Proposed offset</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+        "<div style='margin-top:1rem;'>"
+        "<button type='button' class='pill-btn' onclick='alignApply()'>Apply</button>"
+        "<button type='button' class='pill-btn small' onclick='alignDiscard()' style='margin-left:0.5rem;'>Discard</button>"
+        "</div>"
+    )
+
+
+_ALIGN_SCRIPT = """
+<script>
+(function(){
+function alignPoll(){
+  fetch('/api/align/status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    var startBtn=document.getElementById('alignStartBtn');
+    var abortBtn=document.getElementById('alignAbortBtn');
+    var statusEl=document.getElementById('alignStatus');
+    var launchEl=document.getElementById('alignLaunch');
+    var running=(d.state==='running'||d.state==='finishing');
+    if(startBtn)startBtn.disabled=running;
+    if(abortBtn)abortBtn.style.display=running?'':'none';
+    if(statusEl){
+      if(running){
+        var out=d.current_output_name?(' — playing on '+d.current_output_name):'';
+        statusEl.textContent='Calibrating'+out+' (cycle '+(d.cycle_count||0)+')';
+      } else if(d.last_error){
+        statusEl.textContent='Stopped: '+d.last_error;
+      } else {
+        statusEl.textContent='';
+      }
+    }
+    if(launchEl){
+      if(running&&d.launch_url){
+        launchEl.style.display='';
+        var link=document.getElementById('alignLaunchLink');
+        if(link){link.href=d.launch_url;}
+      } else {
+        launchEl.style.display='none';
+      }
+    }
+  }).catch(function(){});
+}
+window.alignStart=function(){
+  fetch('/api/align/start',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+    body:JSON.stringify({})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){
+      var statusEl=document.getElementById('alignStatus');
+      if(statusEl)statusEl.textContent='Could not start: '+(d.error||'error');
+      return;
+    }
+    alignPoll();
+  }).catch(function(){});
+};
+window.alignAbort=function(){
+  fetch('/api/align/abort',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+    body:JSON.stringify({})
+  }).then(function(){alignPoll();}).catch(function(){});
+};
+window.alignApply=function(){
+  var offsets={};
+  document.querySelectorAll('.align-review-table tbody tr').forEach(function(tr){
+    var id=tr.querySelector('.align-offset-id');
+    var val=tr.querySelector('.align-offset-val');
+    if(id&&val)offsets[id.value]=parseInt(val.value,10)||0;
+  });
+  fetch('/api/align/apply',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+    body:JSON.stringify({offsets:offsets})
+  }).then(function(r){return r.json();}).then(function(){
+    window.location.href='/align';
+  }).catch(function(){});
+};
+window.alignDiscard=function(){
+  fetch('/api/align/discard',{
+    method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+    body:JSON.stringify({})
+  }).then(function(){window.location.href='/align';}).catch(function(){});
+};
+document.addEventListener('DOMContentLoaded',function(){
+  alignPoll();
+  setInterval(alignPoll,2000);
+});
+}());
+</script>
+"""
+
+
+# -----------------------------------------------------------------------------
+# GET /align/result -- handoff from the phone measurement page
+# -----------------------------------------------------------------------------
+
+def send_align_result_get(handler, state: WebUIState, query: dict) -> None:
+    """Parse the ?v=&ref=&data= handoff, stop the run, and render the review
+    page (table of outputs with proposed offsets, Apply/Discard)."""
+    from autostream_align import AlignResult
+
+    run = getattr(state, "align_run", None)
+    version = (query.get("v") or [""])[0]
+    ref = (query.get("ref") or [""])[0].strip()
+    data_raw = (query.get("data") or [""])[0]
+
+    if run is not None and version == "1" and ref:
+        arrivals = parse_result_entries(data_raw)
+        run.finish(AlignResult(ref_output_id=ref, arrivals=tuple(arrivals)))
+    elif run is not None:
+        # Malformed handoff -- still stop the run so it doesn't run to
+        # timeout, but don't fabricate a result to show.
+        run.finish(None)
+
+    send_align_page(handler, state)
+
+
+# -----------------------------------------------------------------------------
+# JSON endpoints
+# -----------------------------------------------------------------------------
+
+def send_align_start_json(handler, state: WebUIState) -> None:
+    run = getattr(state, "align_run", None)
+    if run is None:
+        send_json(handler, 200, {"ok": False, "error": "Calibration is unavailable"})
+        return
+
+    try:
+        base_url = _config_snapshot(state).owntone.base_url
+    except Exception:
+        base_url = ""
+
+    # The appliance is served over plain HTTP on the LAN (nginx reverse
+    # proxy in front, no TLS termination here).
+    host = handler.headers.get("Host") or "localhost"
+    ret_url = f"http://{host}/align/result"
+
+    ok, result = run.start(base_url=base_url, ret_url=ret_url)
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": result})
+        return
+    send_json(handler, 200, {"ok": True, "launch_url": result})
+
+
+def send_align_abort_json(handler, state: WebUIState) -> None:
+    run = getattr(state, "align_run", None)
+    if run is not None:
+        run.abort()
+    send_json(handler, 200, {"ok": True})
+
+
+def send_align_status_json(handler, state: WebUIState) -> None:
+    run = getattr(state, "align_run", None)
+    if run is None:
+        send_json(handler, 200, {
+            "state": "idle", "current_output_id": None, "current_output_name": None,
+            "cycle_count": 0, "seconds_remaining": None, "launch_url": "",
+            "last_error": "", "has_pending_result": False,
+        })
+        return
+    send_json(handler, 200, run.status())
+
+
+def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    offsets = payload.get("offsets")
+    if not isinstance(offsets, dict) or not offsets:
+        send_json(handler, 400, {"ok": False, "error": "offsets required"})
+        return
+
+    applied = {}
+    for output_id, raw_offset in offsets.items():
+        result = apply_output_offset(state, output_id, raw_offset)
+        if result.get("ok"):
+            applied[result["output_id"]] = result["offset_ms"]
+
+    run = getattr(state, "align_run", None)
+    if run is not None:
+        run.discard_result()
+
+    send_json(handler, 200, {"ok": True, "applied": applied})
+
+
+def send_align_discard_json(handler, state: WebUIState) -> None:
+    run = getattr(state, "align_run", None)
+    if run is not None:
+        run.discard_result()
+    send_json(handler, 200, {"ok": True})

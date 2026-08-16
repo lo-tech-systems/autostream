@@ -2288,25 +2288,19 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
     send_json(handler, 200, {"ok": True, "output_id": output_id, "mode": mode})
 
 
-def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/owntone/output-offset — set playback offset for a specific output.
+def apply_output_offset(state: WebUIState, output_id: str, raw_offset) -> dict:
+    """Clamp, store, and (best-effort) live-push an output offset.
 
-    Body: {"output_id": "<id>", "offset_ms": <int>}
+    Shared by send_owntone_output_offset_json (POST /api/owntone/output-offset)
+    and the "Align outputs" apply endpoint so both paths clamp/store/push
+    identically. Returns a dict shaped like the JSON body callers already
+    send, minus the "ok" wrapper key that varies slightly by caller.
     """
-    try:
-        payload = json.loads(body or "{}")
-    except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
-        return
-
-    output_id = str(payload.get("output_id") or "").strip()
+    output_id = str(output_id or "").strip()
     if not output_id:
-        send_json(handler, 400, {"ok": False, "error": "output_id required"})
-        return
-    raw_offset = payload.get("offset_ms")
+        return {"ok": False, "error": "output_id required"}
     if isinstance(raw_offset, bool) or not isinstance(raw_offset, (int, float)):
-        send_json(handler, 400, {"ok": False, "error": "offset_ms must be a number"})
-        return
+        return {"ok": False, "error": "offset_ms must be a number"}
     offset_ms = max(-2000, min(2000, int(raw_offset)))
 
     try:
@@ -2331,8 +2325,7 @@ def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> No
     from autostream_settings import SettingsStore as _SettingsStore
     _store = getattr(state, "settings", None)
     if not isinstance(_store, _SettingsStore):
-        send_json(handler, 200, {"ok": False, "error": "Settings store unavailable"})
-        return
+        return {"ok": False, "error": "Settings store unavailable"}
 
     def _mutator(raw: dict) -> None:
         raw.setdefault("owntone", {}).setdefault("offsets", {})[output_id] = offset_ms
@@ -2340,9 +2333,8 @@ def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> No
     try:
         _store.update(_mutator)
     except Exception:
-        logging.exception("send_owntone_output_offset_json: store update failed")
-        send_json(handler, 200, {"ok": False, "error": "Internal error"})
-        return
+        logging.exception("apply_output_offset: store update failed")
+        return {"ok": False, "error": "Internal error"}
 
     _owntone_update_live_runtime(state)
 
@@ -2359,14 +2351,37 @@ def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> No
             # Store write already succeeded above; owntone being down or
             # unreachable here is not a failure the caller needs to see --
             # applied_live=False tells the UI the value is queued, not live.
-            logging.info("send_owntone_output_offset_json: live push failed", exc_info=True)
+            logging.info("apply_output_offset: live push failed", exc_info=True)
 
-    send_json(handler, 200, {
+    return {
         "ok": True,
         "output_id": output_id,
         "offset_ms": offset_ms,
         "applied_live": applied_live,
-    })
+    }
+
+
+def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/output-offset — set playback offset for a specific output.
+
+    Body: {"output_id": "<id>", "offset_ms": <int>}
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    output_id = str(payload.get("output_id") or "").strip()
+    if not output_id:
+        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        return
+    raw_offset = payload.get("offset_ms")
+    if isinstance(raw_offset, bool) or not isinstance(raw_offset, (int, float)):
+        send_json(handler, 400, {"ok": False, "error": "offset_ms must be a number"})
+        return
+
+    send_json(handler, 200, apply_output_offset(state, output_id, raw_offset))
 
 
 def _send_owntone_native_setting_json(

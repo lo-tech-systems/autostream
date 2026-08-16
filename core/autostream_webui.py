@@ -119,6 +119,15 @@ from autostream_webui_dials import (
 )
 from autostream_webui_common import build_nav_bar_html
 from autostream_webui_page_about import send_about_page, send_about_system_json
+from autostream_webui_page_align import (
+    send_align_abort_json,
+    send_align_apply_json,
+    send_align_discard_json,
+    send_align_page,
+    send_align_result_get,
+    send_align_start_json,
+    send_align_status_json,
+)
 from autostream_webui_page_equaliser import send_equaliser_page, send_remote_equaliser_page
 from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
 from autostream_webui_page_logs import handle_logs_download, send_logs_page
@@ -680,6 +689,18 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_about_page(self, STATE)
         elif path == "/api/about/system":
             send_about_system_json(self)
+        elif path == "/align":
+            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path=path):
+                return
+            send_align_page(self, STATE)
+        elif path == "/align/result":
+            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path=path):
+                return
+            send_align_result_get(self, STATE, qs)
+        elif path == "/api/align/status":
+            if not AUTH.require_authenticated_if_pin_enabled(self):
+                return
+            send_align_status_json(self, STATE)
         elif path == "/service":
             send_service_page(self, STATE, flash_msg=msg, flash_type=flash_type)
         elif path == "/logs":
@@ -1058,6 +1079,22 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         elif path == "/api/owntone/output-offset":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
             send_owntone_output_offset_json(self, STATE, body_str)
+
+        elif path == "/api/align/start":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_align_start_json(self, STATE)
+
+        elif path == "/api/align/abort":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_align_abort_json(self, STATE)
+
+        elif path == "/api/align/apply":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_align_apply_json(self, STATE, body_str)
+
+        elif path == "/api/align/discard":
+            if not AUTH.require_authenticated_if_pin_enabled(self): return
+            send_align_discard_json(self, STATE)
 
         elif path == "/api/owntone/uncompressed-audio":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
