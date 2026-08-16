@@ -51,12 +51,12 @@ FALLBACK_VOLUME_PERCENT = 50  # used when a snapshot's own volume was 0
 # The live rate is probed from the backend at start(); the fallback covers
 # backends whose pipe rate is not API-readable, which consume 44100.
 FALLBACK_TONE_RATE_HZ = 44100
-TONE_BITS = 16
+FALLBACK_TONE_BITS = 16
 TONE_CHANNELS = 2
 
 _POLL_INTERVAL_S = 0.5
 
-LAUNCH_HOST = "https://lo-tech.co.uk/as-api/autoalign/"
+LAUNCH_HOST = "https://lo-tech.co.uk/as-api/"
 
 
 @dataclass(frozen=True)
@@ -159,6 +159,7 @@ class AlignRun:
         self._stop_event = threading.Event()
         self._pending_result: Optional[AlignResult] = None
         self._tone_rate = FALLBACK_TONE_RATE_HZ
+        self._tone_bits = FALLBACK_TONE_BITS
 
     # -- start ----------------------------------------------------------------
 
@@ -192,7 +193,7 @@ class AlignRun:
         ]
 
         launch_url = self._build_launch_url(snapshots, ret_url)
-        self._tone_rate = self._probe_pipe_rate(base_url)
+        self._tone_rate, self._tone_bits = self._probe_pipe_format(base_url)
 
         try:
             self._write_freq(snapshots[0].freq_hz)
@@ -245,19 +246,24 @@ class AlignRun:
             _log.debug("AlignRun: playback activity check unavailable", exc_info=True)
             return False
 
-    def _probe_pipe_rate(self, base_url: str) -> int:
-        """The rate the backend reads the pipe at right now. Falls back for
-        backends whose pipe rate is not API-readable (those consume 44100)."""
+    def _probe_pipe_format(self, base_url: str) -> "tuple[int, int]":
+        """The (rate, bits) the backend reads the pipe at right now. Both
+        must match exactly - a width mismatch makes the consumer read the
+        stream at the wrong frame rate and starve. Falls back for backends
+        whose pipe format is not API-readable (those consume 44100/16)."""
+        rate = FALLBACK_TONE_RATE_HZ
+        bits = FALLBACK_TONE_BITS
         try:
-            from autostream_players import SETTING_PIPE_SAMPLE_RATE
+            from autostream_players import SETTING_PIPE_SAMPLE_RATE, SETTING_PIPE_BITS_PER_SAMPLE
             result = self._player_service.get_setting(base_url, SETTING_PIPE_SAMPLE_RATE, timeout=3)
-            if getattr(result, "ok", False):
+            if getattr(result, "ok", False) and int(result.value) > 0:
                 rate = int(result.value)
-                if rate > 0:
-                    return rate
+            result = self._player_service.get_setting(base_url, SETTING_PIPE_BITS_PER_SAMPLE, timeout=3)
+            if getattr(result, "ok", False) and int(result.value) in (16, 32):
+                bits = int(result.value)
         except Exception:
-            _log.debug("AlignRun: pipe rate probe failed", exc_info=True)
-        return FALLBACK_TONE_RATE_HZ
+            _log.debug("AlignRun: pipe format probe failed", exc_info=True)
+        return rate, bits
 
     def _build_launch_url(self, snapshots: list, ret_url: str) -> str:
         outs_param = ",".join(
@@ -345,7 +351,7 @@ class AlignRun:
             TONE_HELPER,
             "--fifo", self._helper_fifo_path(),
             "--rate", str(self._tone_rate),
-            "--bits", str(TONE_BITS),
+            "--bits", str(self._tone_bits),
             "--channels", str(TONE_CHANNELS),
             "--period-ms", str(self._period_ms),
             "--burst-ms", str(BURST_MS),

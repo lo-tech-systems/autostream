@@ -42,7 +42,18 @@ import sys
 import time
 from typing import Callable, Dict, List, Optional
 
-SAMPLE_WIDTH_BYTES = 2  # only 16-bit signed PCM is supported
+# The pipe consumer accepts signed little-endian PCM at 16 or 32 bits per
+# sample; the width must match its configuration exactly or it reads the
+# stream at the wrong frame rate.
+SUPPORTED_BITS = (16, 32)
+
+
+def _typecode(bits: int) -> str:
+    return "h" if bits == 16 else "i"  # array typecodes: 2-byte / 4-byte signed
+
+
+def _sample_peak(bits: int) -> float:
+    return float((1 << (bits - 1)) - 1)
 CHUNK_MS = 50
 RAMP_MS_DEFAULT = 10
 OPEN_NONBLOCK_TIMEOUT_S = 15.0
@@ -79,15 +90,16 @@ def build_tone_burst(
     burst_ms: float,
     amplitude: float,
     ramp_ms: float = RAMP_MS_DEFAULT,
+    bits: int = 16,
 ) -> "array.array[int]":
-    """Interleaved s16 sine burst with raised-cosine ramps on both ends
-    (click suppression). Same signal is duplicated to every channel."""
+    """Interleaved signed-PCM sine burst with raised-cosine ramps on both
+    ends (click suppression). Same signal is duplicated to every channel."""
     n = ms_to_frames(burst_ms, rate)
     if n <= 0:
-        return array.array("h")
+        return array.array(_typecode(bits))
     ramp_n = min(ms_to_frames(ramp_ms, rate), n // 2)
-    peak = amplitude * 32767.0
-    out = array.array("h", bytes(SAMPLE_WIDTH_BYTES * channels * n))
+    peak = amplitude * _sample_peak(bits)
+    out = array.array(_typecode(bits), bytes((bits // 8) * channels * n))
     for i in range(n):
         gain = 1.0
         if ramp_n:
@@ -102,10 +114,10 @@ def build_tone_burst(
     return out
 
 
-def build_silence(frames: int, channels: int) -> "array.array[int]":
+def build_silence(frames: int, channels: int, bits: int = 16) -> "array.array[int]":
     if frames <= 0:
-        return array.array("h")
-    return array.array("h", bytes(SAMPLE_WIDTH_BYTES * channels * frames))
+        return array.array(_typecode(bits))
+    return array.array(_typecode(bits), bytes((bits // 8) * channels * frames))
 
 
 class BurstCache:
@@ -113,12 +125,13 @@ class BurstCache:
     slices/concatenates buffers -- no per-sample math once warmed up."""
 
     def __init__(self, rate: int, channels: int, burst_ms: float, amplitude: float,
-                 ramp_ms: float = RAMP_MS_DEFAULT) -> None:
+                 ramp_ms: float = RAMP_MS_DEFAULT, bits: int = 16) -> None:
         self.rate = rate
         self.channels = channels
         self.burst_ms = burst_ms
         self.amplitude = amplitude
         self.ramp_ms = ramp_ms
+        self.bits = bits
         self._bursts: Dict[int, "array.array[int]"] = {}
         self._silence: Dict[int, "array.array[int]"] = {}
 
@@ -126,7 +139,7 @@ class BurstCache:
         buf = self._bursts.get(freq_hz)
         if buf is None:
             buf = build_tone_burst(
-                freq_hz, self.rate, self.channels, self.burst_ms, self.amplitude, self.ramp_ms,
+                freq_hz, self.rate, self.channels, self.burst_ms, self.amplitude, self.ramp_ms, self.bits,
             )
             self._bursts[freq_hz] = buf
         return buf
@@ -134,7 +147,7 @@ class BurstCache:
     def silence(self, frames: int) -> "array.array[int]":
         buf = self._silence.get(frames)
         if buf is None:
-            buf = build_silence(frames, self.channels)
+            buf = build_silence(frames, self.channels, self.bits)
             self._silence[frames] = buf
         return buf
 
@@ -207,7 +220,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Write a calibration tone pattern into a PCM FIFO.")
     parser.add_argument("--fifo", required=True, help="path to the PCM FIFO to write into")
     parser.add_argument("--rate", type=int, default=44100)
-    parser.add_argument("--bits", type=int, default=16, help="PCM sample width; only 16 is supported")
+    parser.add_argument("--bits", type=int, default=16, help="PCM sample width; 16 or 32")
     parser.add_argument("--channels", type=int, default=2)
     parser.add_argument("--period-ms", type=float, default=5000)
     parser.add_argument("--burst-ms", type=float, default=150)
@@ -216,8 +229,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--amplitude", type=float, default=0.4, help="linear amplitude, 0..1")
     args = parser.parse_args(argv)
 
-    if args.bits != 16:
-        parser.error("--bits: only 16-bit PCM is supported")
+    if args.bits not in SUPPORTED_BITS:
+        parser.error("--bits: only 16- or 32-bit PCM is supported")
     if not (0.0 < args.amplitude <= 1.0):
         parser.error("--amplitude must be > 0 and <= 1")
     if args.rate <= 0 or args.channels <= 0:
@@ -242,7 +255,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"event=error detail={e}", file=sys.stderr)
         return 1
 
-    cache = BurstCache(rate=args.rate, channels=args.channels, burst_ms=args.burst_ms, amplitude=args.amplitude)
+    cache = BurstCache(rate=args.rate, channels=args.channels, burst_ms=args.burst_ms, amplitude=args.amplitude, bits=args.bits)
     chunk_frames = ms_to_frames(CHUNK_MS, args.rate)
     period_frames = ms_to_frames(args.period_ms, args.rate)
     chunk_plan = plan_chunks(period_frames, chunk_frames)
