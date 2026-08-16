@@ -410,7 +410,15 @@
   var ACCEPT_COUNT = 3;
   var PHASE_HISTORY_CAP = 40;
 
-  var DETECT_THRESHOLD = 0.15;
+  // Detection is relative to an adaptive per-frequency noise floor rather
+  // than a fixed magnitude, since real-room background noise varies a lot
+  // between devices and environments (see goertzel-bank-processor.js).
+  // DETECT_SENSITIVITY_DB is how far above that floor a tone must rise
+  // before it is considered "heard"; K_HIGH is the equivalent magnitude
+  // multiple sent to the detector.
+  var DETECT_SENSITIVITY_DB = 18;
+  var DETECT_K_HIGH = Math.pow(10, DETECT_SENSITIVITY_DB / 20);
+  var DETECT_K_LOW = 0.5;
 
   // ---------- screen helpers ----------
 
@@ -508,8 +516,8 @@
     checkCompletion();
   }
 
-  function handleLevel(freqIndex, value) {
-    if (value < DETECT_THRESHOLD * 0.5) {
+  function handleLevel(freqIndex, active) {
+    if (!active) {
       setHearingLine('Listening&hellip;');
       return;
     }
@@ -633,14 +641,14 @@
     if (window.AudioWorkletNode && audioCtx.audioWorklet) {
       audioCtx.audioWorklet.addModule('goertzel-bank-processor.js').then(function () {
         workletNode = new AudioWorkletNode(audioCtx, 'goertzel-bank-processor', {
-          processorOptions: { freqs: uniqueFreqs, threshold: DETECT_THRESHOLD }
+          processorOptions: { freqs: uniqueFreqs, kHigh: DETECT_K_HIGH }
         });
         workletNode.port.onmessage = function (e) {
           var msg = e.data;
           if (msg.type === 'onset') {
             handleOnset(msg.freqIndex, msg.sample);
           } else if (msg.type === 'level') {
-            handleLevel(msg.freqIndex, msg.value);
+            handleLevel(msg.freqIndex, msg.active);
           }
         };
         var silentGain = audioCtx.createGain();
@@ -659,6 +667,12 @@
   // Fallback for browsers without AudioWorklet support. Duplicates the
   // Goertzel-bank logic on the main thread via ScriptProcessorNode, same
   // idiom as the capability-check spike's fallback.
+  // Adaptive noise-floor constants, mirroring goertzel-bank-processor.js.
+  var FLOOR_ALPHA = 0.02;
+  var FLOOR_SEED_WINDOWS = 10;
+  var FLOOR_MIN = 1e-5;
+  var ONSET_ABS_MIN = 1e-4;
+
   function setupScriptProcessorFallback() {
     var bufferSize = 4096;
     scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
@@ -667,9 +681,27 @@
     var envSize = Math.max(128, Math.round(audioCtx.sampleRate * 0.01));
     var envBuf = new Float32Array(envSize);
     var envFill = 0;
-    var onsetState = uniqueFreqs.map(function () { return 'below'; });
+    var bins = uniqueFreqs.map(function () {
+      return { floor: null, seedSum: 0, seedCount: 0, active: false };
+    });
     var hopCount = 0;
     var levelHopStride = 4;
+
+    // Seeds (or reads) one bin's adaptive floor and returns the trigger
+    // and release levels derived from it, same idiom as the worklet.
+    function triggerFor(bin, magnitude) {
+      if (bin.floor === null) {
+        bin.seedSum += magnitude;
+        bin.seedCount++;
+        if (bin.seedCount >= FLOOR_SEED_WINDOWS) {
+          bin.floor = Math.max(FLOOR_MIN, bin.seedSum / bin.seedCount);
+        } else {
+          return { trigger: Infinity, release: Infinity };
+        }
+      }
+      var trigger = Math.max(ONSET_ABS_MIN, DETECT_K_HIGH * bin.floor);
+      return { trigger: trigger, release: trigger * DETECT_K_LOW };
+    }
 
     function goertzel(samples, freq) {
       var n = samples.length;
@@ -707,33 +739,43 @@
             if (levels[fi] > levels[loudestIdx]) loudestIdx = fi;
           }
 
-          var onHi = DETECT_THRESHOLD;
-          var onLo = DETECT_THRESHOLD * 0.6;
+          var triggers = new Array(uniqueFreqs.length);
           var aboveCount = 0, aboveIdx = -1;
           for (var fj = 0; fj < levels.length; fj++) {
-            if (levels[fj] >= onHi) { aboveCount++; aboveIdx = fj; }
+            var t = triggerFor(bins[fj], levels[fj]);
+            triggers[fj] = t;
+            if (levels[fj] > t.trigger) { aboveCount++; aboveIdx = fj; }
           }
 
           if (aboveCount === 1) {
-            if (onsetState[aboveIdx] === 'below') {
-              onsetState[aboveIdx] = 'above';
+            if (!bins[aboveIdx].active) {
+              bins[aboveIdx].active = true;
               handleOnset(aboveIdx, sampleAt);
             }
             for (var fk = 0; fk < levels.length; fk++) {
-              if (fk !== aboveIdx && onsetState[fk] === 'above' && levels[fk] < onLo) {
-                onsetState[fk] = 'below';
+              if (fk !== aboveIdx && bins[fk].active && levels[fk] < triggers[fk].release) {
+                bins[fk].active = false;
               }
             }
           } else if (aboveCount === 0) {
             for (var fm = 0; fm < levels.length; fm++) {
-              if (onsetState[fm] === 'above' && levels[fm] < onLo) onsetState[fm] = 'below';
+              if (bins[fm].active && levels[fm] < triggers[fm].release) bins[fm].active = false;
+            }
+          }
+
+          // Adaptive floor: only quiet bins get pulled toward the current
+          // magnitude, so a burst (or its decay tail) never drags a floor
+          // upward.
+          for (var fn = 0; fn < levels.length; fn++) {
+            if (bins[fn].floor !== null && levels[fn] < triggers[fn].release) {
+              bins[fn].floor = Math.max(FLOOR_MIN, bins[fn].floor + FLOOR_ALPHA * (levels[fn] - bins[fn].floor));
             }
           }
 
           hopCount++;
           if (hopCount >= levelHopStride) {
             hopCount = 0;
-            handleLevel(loudestIdx, levels[loudestIdx]);
+            handleLevel(loudestIdx, bins[loudestIdx].active);
           }
         }
       }

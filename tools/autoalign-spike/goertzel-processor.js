@@ -3,15 +3,32 @@
 // (nominally 1000 Hz and 1250 Hz) over ~100ms windows, and a faster
 // envelope check on the 1000 Hz tone for burst-onset timing.
 //
+// Detection is relative to an adaptive per-frequency noise floor rather
+// than a fixed magnitude threshold, since real-room background noise
+// varies a lot between devices and environments. Each tracked frequency
+// keeps a slow running average of its own "quiet" magnitude, and a burst
+// is flagged once the live magnitude rises a configurable multiple above
+// that floor (falling back to a small absolute floor while the average
+// is still being seeded, and while the room is essentially silent).
+//
 // Messages posted to the main thread:
-//   { type: 'level', sample, f1, f2 }                 -- roughly every 100ms
+//   { type: 'level', sample, f1, f2, floor1, floor2, active1, active2 }
+//                                                     -- roughly every 100ms
 //   { type: 'onset', sample }                         -- on each rising edge
 //
 // Messages accepted from the main thread:
-//   { type: 'setThreshold', value }                   -- onset threshold (0..1)
+//   { type: 'setThreshold', value }        -- onset sensitivity, expressed
+//                                              as a magnitude multiple (K_HIGH)
+//                                              over the tracked noise floor
 //
 // "sample" is the running audio-clock sample count since the worklet
 // was created (i.e. derived from the sample rate, not Date.now()).
+
+const FLOOR_ALPHA = 0.02;      // per analysis window, while at/below the release level
+const FLOOR_SEED_WINDOWS = 10; // windows averaged to seed the initial floor estimate
+const FLOOR_MIN = 1e-5;        // floor never allowed to collapse below this
+const ONSET_ABS_MIN = 1e-4;    // absolute floor under the SNR trigger, for near-silent rooms
+const K_LOW = 0.5;             // release level, as a fraction of the trigger level
 
 class GoertzelProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -20,7 +37,7 @@ class GoertzelProcessor extends AudioWorkletProcessor {
     const opts = (options && options.processorOptions) || {};
     this.f1 = opts.f1 || 1000;
     this.f2 = opts.f2 || 1250;
-    this.threshold = typeof opts.threshold === 'number' ? opts.threshold : 0.15;
+    this.kHigh = typeof opts.kHigh === 'number' ? opts.kHigh : 8;
 
     // ~100ms analysis window for the level bars.
     this.windowSize = Math.max(256, Math.round(sampleRate * 0.1));
@@ -34,14 +51,56 @@ class GoertzelProcessor extends AudioWorkletProcessor {
     this.envFill = 0;
 
     this.sampleCount = 0;
-    this.onsetState = 'below'; // 'below' | 'above'
+
+    // Adaptive noise-floor state, one bin per tracked frequency/window
+    // combination.
+    this.levelBin1 = this.makeBin();
+    this.levelBin2 = this.makeBin();
+    this.envBin1 = this.makeBin();
 
     this.port.onmessage = (e) => {
       const msg = e.data;
       if (msg && msg.type === 'setThreshold' && typeof msg.value === 'number') {
-        this.threshold = msg.value;
+        this.kHigh = msg.value;
       }
     };
+  }
+
+  makeBin() {
+    return { floor: null, seedSum: 0, seedCount: 0, active: false };
+  }
+
+  // Updates one adaptive-floor bin with a fresh magnitude reading and
+  // returns { active, onset, floor }. `onset` is true only on the exact
+  // window where the bin transitions from inactive to active.
+  updateBin(bin, magnitude) {
+    if (bin.floor === null) {
+      bin.seedSum += magnitude;
+      bin.seedCount++;
+      if (bin.seedCount >= FLOOR_SEED_WINDOWS) {
+        bin.floor = Math.max(FLOOR_MIN, bin.seedSum / bin.seedCount);
+      }
+      return { active: false, onset: false, floor: bin.floor || Math.max(FLOOR_MIN, magnitude) };
+    }
+
+    const trigger = Math.max(ONSET_ABS_MIN, this.kHigh * bin.floor);
+    const release = trigger * K_LOW;
+
+    let onset = false;
+    if (!bin.active && magnitude > trigger) {
+      bin.active = true;
+      onset = true;
+    } else if (bin.active && magnitude < release) {
+      bin.active = false;
+    }
+
+    // Only let quiet windows pull the floor -- a burst (or its decay
+    // tail, above the release level) must not drag the floor upward.
+    if (magnitude < release) {
+      bin.floor = Math.max(FLOOR_MIN, bin.floor + FLOOR_ALPHA * (magnitude - bin.floor));
+    }
+
+    return { active: bin.active, onset: onset, floor: bin.floor };
   }
 
   goertzel(samples, freq) {
@@ -79,11 +138,17 @@ class GoertzelProcessor extends AudioWorkletProcessor {
       if (this.windowFill >= this.windowSize) {
         const f1level = this.goertzel(this.windowBuf, this.f1);
         const f2level = this.goertzel(this.windowBuf, this.f2);
+        const r1 = this.updateBin(this.levelBin1, f1level);
+        const r2 = this.updateBin(this.levelBin2, f2level);
         this.port.postMessage({
           type: 'level',
           sample: this.sampleCount + i,
           f1: f1level,
-          f2: f2level
+          f2: f2level,
+          floor1: r1.floor,
+          floor2: r2.floor,
+          active1: r1.active,
+          active2: r2.active
         });
         this.windowFill = 0;
       }
@@ -94,17 +159,12 @@ class GoertzelProcessor extends AudioWorkletProcessor {
         const envLevel = this.goertzel(this.envBuf, this.f1);
         this.envFill = 0;
 
-        const onHi = this.threshold;
-        const onLo = this.threshold * 0.6;
-
-        if (this.onsetState === 'below' && envLevel >= onHi) {
-          this.onsetState = 'above';
+        const r = this.updateBin(this.envBin1, envLevel);
+        if (r.onset) {
           this.port.postMessage({
             type: 'onset',
             sample: this.sampleCount + i
           });
-        } else if (this.onsetState === 'above' && envLevel < onLo) {
-          this.onsetState = 'below';
         }
       }
     }
