@@ -639,7 +639,9 @@
     sourceNode = audioCtx.createMediaStreamSource(micStream);
 
     if (window.AudioWorkletNode && audioCtx.audioWorklet) {
-      audioCtx.audioWorklet.addModule('goertzel-bank-processor.js').then(function () {
+      // Version-tagged so a redeploy busts the browser's independent cache
+      // of the module file; keep in step with the deployed folder version.
+      audioCtx.audioWorklet.addModule('goertzel-bank-processor.js?v=2').then(function () {
         workletNode = new AudioWorkletNode(audioCtx, 'goertzel-bank-processor', {
           processorOptions: { freqs: uniqueFreqs, kHigh: DETECT_K_HIGH }
         });

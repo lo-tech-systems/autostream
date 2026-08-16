@@ -288,13 +288,17 @@
   <div id="s4-readout" class="readout">Provide a "return" fragment parameter to enable the handoff test.</div>
 </section>
 
-<footer id="spike-footer">SPIKE_V3</footer>
+<footer id="spike-footer">SPIKE_V4</footer>
 
 <script>
 (function () {
   'use strict';
 
-  var SPIKE_VERSION = 'SPIKE_V3';
+  var SPIKE_VERSION = 'SPIKE_V4';
+  // The worklet module must carry the page version in its URL: browsers
+  // cache the module file independently of the page, and a stale processor
+  // silently drops the fields newer pages rely on.
+  var EXPECTED_PROCESSOR_VERSION = 4;
   document.getElementById('spike-footer').textContent = SPIKE_VERSION;
 
   function setStatus(id, kind, text) {
@@ -543,13 +547,17 @@
     var kHighVal = dbToKHigh(thresholdDbVal);
 
     if (window.AudioWorkletNode && audioCtx.audioWorklet) {
-      audioCtx.audioWorklet.addModule('goertzel-processor.js').then(function () {
+      audioCtx.audioWorklet.addModule('goertzel-processor.js?v=' + SPIKE_VERSION).then(function () {
         workletNode = new AudioWorkletNode(audioCtx, 'goertzel-processor', {
           processorOptions: { f1: 1000, f2: 1250, kHigh: kHighVal }
         });
         workletNode.port.onmessage = function (e) {
           var msg = e.data;
           if (msg.type === 'level') {
+            if (msg.pv !== EXPECTED_PROCESSOR_VERSION) {
+              setStatus('s2-status', 'fail', 'stale processor v' + (msg.pv || '?') + ' cached — force-reload this page');
+              return;
+            }
             handleLevelMessage(msg.sample, msg.f1, msg.f2, msg.floor1, msg.floor2, msg.active1, msg.active2, msg.rmsDb);
           } else if (msg.type === 'onset') {
             handleOnsetMessage(msg.sample);

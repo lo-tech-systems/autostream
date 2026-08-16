@@ -45,6 +45,10 @@ const ABS_TRIGGER = 0.01;       // magnitude that always triggers (~-40dBFS narr
                                 // regardless of floor history
 const K_LOW = 0.5;              // release level, as a fraction of the trigger level
 
+// Bumped whenever the message contract changes; the page refuses level
+// messages from a stale cached processor rather than misreading them.
+const PROCESSOR_VERSION = 4;
+
 class GoertzelProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -164,6 +168,7 @@ class GoertzelProcessor extends AudioWorkletProcessor {
         const r2 = this.updateBin(this.levelBin2, f2level);
         this.port.postMessage({
           type: 'level',
+          pv: PROCESSOR_VERSION,
           sample: this.sampleCount + i,
           f1: f1level,
           f2: f2level,
