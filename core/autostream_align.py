@@ -164,6 +164,7 @@ class AlignRun:
         self._pending_result: Optional[AlignResult] = None
         self._tone_rate = FALLBACK_TONE_RATE_HZ
         self._tone_bits = FALLBACK_TONE_BITS
+        self._guard_seconds = 3.5  # recomputed at start() from the live stream latency
 
     # -- start ----------------------------------------------------------------
 
@@ -229,6 +230,7 @@ class AlignRun:
 
         launch_url = self._build_launch_url(participants, ret_url)
         self._tone_rate, self._tone_bits = self._probe_pipe_format(base_url)
+        self._guard_seconds = self._compute_guard_seconds(base_url)
 
         try:
             self._write_freq(participants[0].freq_hz)
@@ -312,6 +314,29 @@ class AlignRun:
             _log.debug("AlignRun: pipe format probe failed", exc_info=True)
         return rate, bits
 
+    def _compute_guard_seconds(self, base_url: str) -> float:
+        """Muted settle time at each window switch: the tone stream reaches
+        the receivers a pipe-lead plus a start-buffer after the freq file
+        changes, so the previous window's tone must drain while everything
+        is muted or the next output audibly plays it."""
+        pipe_lead_s = 0.7
+        try:
+            from autostream_align_tone import PIPE_BUFFER_BYTES
+            pipe_lead_s = PIPE_BUFFER_BYTES / float(
+                self._tone_rate * TONE_CHANNELS * (self._tone_bits // 8)
+            )
+        except Exception:
+            _log.debug("AlignRun: pipe lead computation failed", exc_info=True)
+        start_buffer_s = 2.25
+        try:
+            from autostream_players import SETTING_START_BUFFER_MS
+            result = self._player_service.get_setting(base_url, SETTING_START_BUFFER_MS, timeout=3)
+            if getattr(result, "ok", False) and int(result.value) > 0:
+                start_buffer_s = int(result.value) / 1000.0
+        except Exception:
+            _log.debug("AlignRun: start buffer probe failed", exc_info=True)
+        return pipe_lead_s + start_buffer_s + 0.5
+
     def _build_launch_url(self, participants: list, ret_url: str) -> str:
         outs_param = ",".join(
             f"{quote(s.id, safe='')}~{s.freq_hz}~{quote(s.name, safe='')}"
@@ -333,7 +358,16 @@ class AlignRun:
                         return
                     with self._lock:
                         self._current_index = i
+                    # Stream content lags the freq-file write by the pipe
+                    # lead plus the receiver's start buffer, while volume
+                    # changes act immediately -- raising the next output
+                    # right away makes it audibly play the PREVIOUS
+                    # output's queued tone. Switch the frequency first and
+                    # hold everything muted for the stream latency, so each
+                    # window opens onto its own tone.
                     self._write_freq(s.freq_hz)
+                    if not self._hold(self._guard_seconds):
+                        return
                     self._set_volume(self._base_url, s.id, self._volume_percent)
 
                     if self._elapsed() > self._max_seconds:

@@ -694,7 +694,9 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 return
             send_align_page(self, STATE)
         elif path == "/align/result":
-            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path=path):
+            # self.path, not path: the measurement payload arrives in the
+            # query string and must survive the login round-trip.
+            if not AUTH.require_authenticated_if_pin_enabled(self, redirect_path=self.path):
                 return
             send_align_result_get(self, STATE, qs)
         elif path == "/api/align/status":
