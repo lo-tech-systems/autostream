@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -33,9 +34,9 @@ _log = logging.getLogger(__name__)
 
 # ---- Protocol v1 fixed contract (see autostream_align_tone.py for the tone
 # helper side of this contract; do not change these without updating both).
-FREQ_FILE = "/run/autostream-align/freq"
-LOCK_PATH = "/run/autostream-align.lock"
-UNIT_NAME = "autostream-align-tone"
+# Lives in the service's own runtime directory: the appliance process runs
+# as an unprivileged user that cannot create new directories under /run.
+FREQ_FILE = "/run/autostream-pipes/align-freq"
 TONE_HELPER = "/opt/autostream/autostream_align_tone.py"
 PERIOD_MS = 5000
 BURST_MS = 150
@@ -53,19 +54,9 @@ FALLBACK_TONE_RATE_HZ = 44100
 TONE_BITS = 16
 TONE_CHANNELS = 2
 
-_SYSTEMD_RUN_CANDIDATES = ("/bin/systemd-run", "/usr/bin/systemd-run")
-FLOCK_BIN = "/usr/bin/flock"
-
 _POLL_INTERVAL_S = 0.5
 
 LAUNCH_HOST = "https://lo-tech.co.uk/as-api/autoalign/"
-
-
-def _find_systemd_run() -> str:
-    for candidate in _SYSTEMD_RUN_CANDIDATES:
-        if os.path.exists(candidate):
-            return candidate
-    return _SYSTEMD_RUN_CANDIDATES[0]
 
 
 @dataclass(frozen=True)
@@ -144,7 +135,8 @@ class AlignRun:
         if player_service is None:
             import autostream_player_service as player_service  # local default
         self._player_service = player_service
-        self._launch = process_launcher or self._default_launch
+        self._launch = process_launcher or subprocess.Popen
+        self._helper_proc = None
         self._clock = clock or time.monotonic
         self._sleep = sleep_fn or time.sleep
         self._freq_file = freq_file
@@ -167,10 +159,6 @@ class AlignRun:
         self._stop_event = threading.Event()
         self._pending_result: Optional[AlignResult] = None
         self._tone_rate = FALLBACK_TONE_RATE_HZ
-
-    @staticmethod
-    def _default_launch(cmd: list):
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
 
     # -- start ----------------------------------------------------------------
 
@@ -346,16 +334,15 @@ class AlignRun:
     # -- helper process control --------------------------------------------------
 
     def _launch_helper(self) -> None:
-        systemd_run = _find_systemd_run()
+        # Direct child of this process, running as the same unprivileged
+        # user: the FIFO and freq file both live in the service's runtime
+        # directory, and systemd-run/system units are root-only from this
+        # account. sys.executable keeps the service's own interpreter (the
+        # appliance runs from a venv). Cleanup terminates the child; the
+        # helper also self-exits after --max-seconds as a backstop.
         cmd = [
-            systemd_run,
-            "--quiet",
-            "--collect",
-            f"--unit={UNIT_NAME}",
-            "--property=Type=exec",
-            "--",
-            FLOCK_BIN, "-n", LOCK_PATH,
-            "python3", TONE_HELPER,
+            sys.executable,
+            TONE_HELPER,
             "--fifo", self._helper_fifo_path(),
             "--rate", str(self._tone_rate),
             "--bits", str(TONE_BITS),
@@ -365,9 +352,7 @@ class AlignRun:
             "--freq-file", self._freq_file,
             "--max-seconds", str(self._max_seconds),
         ]
-        result = self._launch(cmd)
-        if getattr(result, "returncode", 1) != 0:
-            raise RuntimeError(f"systemd-run failed: {getattr(result, 'stderr', '')}")
+        self._helper_proc = self._launch(cmd)
 
     def _helper_fifo_path(self) -> str:
         # Same FIFO the normal audio path feeds into -- calibration owns it
@@ -380,8 +365,16 @@ class AlignRun:
             return "/run/autostream-pipes/autostream.fifo"
 
     def _stop_helper(self) -> None:
+        proc = self._helper_proc
+        self._helper_proc = None
+        if proc is None:
+            return
         try:
-            self._launch(["systemctl", "stop", UNIT_NAME])
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
         except Exception:
             _log.debug("AlignRun: stop helper failed", exc_info=True)
 
@@ -436,7 +429,7 @@ class AlignRun:
             thread.join(timeout=5)
 
     def cleanup(self) -> None:
-        """Idempotent: stop the helper unit, drop the freq file, restore
+        """Idempotent: stop the helper process, drop the freq file, restore
         every snapshot's volume exactly. Always safe to call more than
         once (e.g. once from the cycle thread on error, once from finish())."""
         self._stop_helper()

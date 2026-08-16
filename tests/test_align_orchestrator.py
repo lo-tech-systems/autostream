@@ -64,22 +64,41 @@ class FakePlayerService:
         self.volume_calls.append((output_id, volume_percent))
 
 
-class FakeCompletedProcess:
-    def __init__(self, returncode=0, stderr=""):
-        self.returncode = returncode
-        self.stderr = stderr
+class FakeProc:
+    """Popen-like handle the orchestrator terminates on cleanup."""
+
+    def __init__(self):
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+    def poll(self):
+        return None
 
 
 class FakeLauncher:
-    """Records every command; systemd-run launches succeed by default."""
+    """Records every spawned command; spawns succeed by default."""
 
     def __init__(self, launch_returncode=0):
         self.calls = []
         self.launch_returncode = launch_returncode
+        self.procs = []
 
     def __call__(self, cmd):
         self.calls.append(list(cmd))
-        return FakeCompletedProcess(returncode=self.launch_returncode)
+        if self.launch_returncode != 0:
+            raise RuntimeError("spawn failed")
+        proc = FakeProc()
+        self.procs.append(proc)
+        return proc
 
 
 class FakeClock:
@@ -332,8 +351,8 @@ def test_abort_stops_helper_and_restores_state():
     status = run.status()
     assert status["state"] == "idle"
     assert status["has_pending_result"] is False
-    stop_calls = [c for c in launcher.calls if c[:2] == ["systemctl", "stop"]]
-    assert len(stop_calls) == 1
+    assert len(launcher.procs) == 1
+    assert launcher.procs[0].terminated is True
 
 
 def test_finish_records_pending_result_and_stops_cycle():
