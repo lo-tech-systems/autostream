@@ -150,7 +150,7 @@ class AlignRun:
         self._state = "idle"  # idle | running | finishing | error
         self._snapshots: list = []  # every available output, for restore
         self._participants: list = []  # chosen outputs only, in cycle order
-        self._touched_ids: set = set()  # outputs muted this run (volume restore)
+        self._touched_ids: list = []  # outputs muted this run (volume restore), in mute order
         self._enabled_ids: list = []  # outputs this run enabled (disable on cleanup)
         self._volume_percent = 0
         self._base_url = ""
@@ -226,7 +226,12 @@ class AlignRun:
         selected_ids = {out.id for out in all_outputs if getattr(out, "selected", False)}
         chosen_ids = set(ids)
         to_enable = [oid for oid in ids if oid not in selected_ids]
-        touched_ids = chosen_ids | selected_ids
+        # Deterministic order (chosen first, then remaining selected): sets
+        # would mute in hash order, which varies run to run.
+        touched_ids = list(ids) + [
+            out.id for out in all_outputs
+            if out.id in selected_ids and out.id not in chosen_ids
+        ]
 
         launch_url = self._build_launch_url(participants, ret_url)
         self._tone_rate, self._tone_bits = self._probe_pipe_format(base_url)
@@ -536,7 +541,7 @@ class AlignRun:
         with self._lock:
             snapshots = list(self._snapshots)
             base_url = self._base_url
-            touched_ids = set(self._touched_ids)
+            touched_ids = list(self._touched_ids)
             enabled_ids = list(self._enabled_ids)
         by_id = {s.id: s for s in snapshots}
         for oid in touched_ids:
