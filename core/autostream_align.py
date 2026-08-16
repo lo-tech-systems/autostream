@@ -38,13 +38,12 @@ _log = logging.getLogger(__name__)
 # as an unprivileged user that cannot create new directories under /run.
 FREQ_FILE = "/run/autostream-pipes/align-freq"
 TONE_HELPER = "/opt/autostream/autostream_align_tone.py"
-PERIOD_MS = 5000
+PERIOD_MS = 4500
 BURST_MS = 150
-CYCLES_PER_OUTPUT = 6  # k in the launch URL; hold time per output = k * period
+CYCLES_PER_OUTPUT = 3  # k in the launch URL; hold time per output = k * period
 BASE_FREQ_HZ = 1000
 FREQ_STEP_HZ = 250
 MAX_SECONDS = 600  # hard cap on a whole run, regardless of cycle count
-FALLBACK_VOLUME_PERCENT = 50  # used when a snapshot's own volume was 0
 # The tone helper must generate at the rate the backend actually reads the
 # pipe at, or every burst shifts in pitch AND the audible period stretches
 # away from the p the phone page was told, breaking its phase clustering.
@@ -66,6 +65,7 @@ class AlignOutputSnapshot:
     volume_percent: int
     stored_offset_ms: int
     freq_hz: int
+    selected: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,7 +148,11 @@ class AlignRun:
 
         self._lock = threading.RLock()
         self._state = "idle"  # idle | running | finishing | error
-        self._snapshots: list = []
+        self._snapshots: list = []  # every available output, for restore
+        self._participants: list = []  # chosen outputs only, in cycle order
+        self._touched_ids: set = set()  # outputs muted this run (volume restore)
+        self._enabled_ids: list = []  # outputs this run enabled (disable on cleanup)
+        self._volume_percent = 0
         self._base_url = ""
         self._started_at = 0.0
         self._cycle_count = 0
@@ -163,7 +167,9 @@ class AlignRun:
 
     # -- start ----------------------------------------------------------------
 
-    def start(self, *, base_url: str, ret_url: str) -> "tuple[bool, str]":
+    def start(
+        self, *, base_url: str, ret_url: str, output_ids: list, volume_percent: int
+    ) -> "tuple[bool, str]":
         """Attempt to start a run. Returns (ok, error_message_or_launch_url)."""
         with self._lock:
             if self._state in ("running", "finishing"):
@@ -171,38 +177,73 @@ class AlignRun:
             if not base_url:
                 return False, "OwnTone backend is not reachable"
 
+        ids = list(output_ids or [])
+        if len(ids) < 2:
+            return False, "Select at least two outputs before calibrating"
+        if not isinstance(volume_percent, int) or not (1 <= volume_percent <= 100):
+            return False, "Invalid calibration volume"
+
         if self._input_actively_streaming():
             return False, "Cannot calibrate while an input is actively streaming"
 
         outputs_result = self._player_service.list_outputs(base_url, timeout=3)
         if not outputs_result.ok:
             return False, "Could not list outputs"
-        selected = [o for o in outputs_result.outputs if getattr(o, "selected", False)]
-        if len(selected) < 2:
-            return False, "Select at least two outputs before calibrating"
+        all_outputs = list(outputs_result.outputs)
+        by_id = {out.id: out for out in all_outputs}
 
+        unknown = [oid for oid in ids if oid not in by_id]
+        if unknown:
+            return False, f"Unknown output: {unknown[0]}"
+
+        # Snapshot every available output (not just the chosen ones) so
+        # cleanup() can restore selection/volume for anything the run
+        # touches, including outputs that were selected but not chosen.
         snapshots = [
             AlignOutputSnapshot(
                 id=out.id,
                 name=out.name,
                 volume_percent=int(out.volume_percent or 0),
                 stored_offset_ms=int(out.offset_ms or 0),
-                freq_hz=BASE_FREQ_HZ + FREQ_STEP_HZ * i,
+                freq_hz=0,
+                selected=bool(getattr(out, "selected", False)),
             )
-            for i, out in enumerate(selected)
+            for out in all_outputs
+        ]
+        participants = [
+            AlignOutputSnapshot(
+                id=by_id[oid].id,
+                name=by_id[oid].name,
+                volume_percent=int(by_id[oid].volume_percent or 0),
+                stored_offset_ms=int(by_id[oid].offset_ms or 0),
+                freq_hz=BASE_FREQ_HZ + FREQ_STEP_HZ * i,
+                selected=bool(getattr(by_id[oid], "selected", False)),
+            )
+            for i, oid in enumerate(ids)
         ]
 
-        launch_url = self._build_launch_url(snapshots, ret_url)
+        selected_ids = {out.id for out in all_outputs if getattr(out, "selected", False)}
+        chosen_ids = set(ids)
+        to_enable = [oid for oid in ids if oid not in selected_ids]
+        touched_ids = chosen_ids | selected_ids
+
+        launch_url = self._build_launch_url(participants, ret_url)
         self._tone_rate, self._tone_bits = self._probe_pipe_format(base_url)
 
         try:
-            self._write_freq(snapshots[0].freq_hz)
+            self._write_freq(participants[0].freq_hz)
         except Exception:
             _log.exception("AlignRun.start: could not write freq file")
             return False, "Could not prepare calibration"
 
-        for s in snapshots:
-            self._set_volume(base_url, s.id, 0)
+        # Outputs the caller chose but that weren't already selected must be
+        # enabled before they can carry the tone. Every touched output
+        # (chosen or already selected) is then muted -- volume 0 is a true
+        # mute at the receiver, so nothing audible plays until its window.
+        for oid in to_enable:
+            self._set_enabled(base_url, oid, True)
+        for oid in touched_ids:
+            self._set_volume(base_url, oid, 0)
 
         try:
             self._launch_helper()
@@ -210,12 +251,18 @@ class AlignRun:
             _log.exception("AlignRun.start: could not launch tone helper")
             self._base_url = base_url
             self._snapshots = snapshots
+            self._touched_ids = touched_ids
+            self._enabled_ids = list(to_enable)
             self.cleanup()
             return False, "Could not start tone generator"
 
         with self._lock:
             self._base_url = base_url
             self._snapshots = snapshots
+            self._participants = participants
+            self._touched_ids = touched_ids
+            self._enabled_ids = list(to_enable)
+            self._volume_percent = volume_percent
             self._launch_url = launch_url
             self._state = "running"
             self._started_at = self._clock()
@@ -265,10 +312,10 @@ class AlignRun:
             _log.debug("AlignRun: pipe format probe failed", exc_info=True)
         return rate, bits
 
-    def _build_launch_url(self, snapshots: list, ret_url: str) -> str:
+    def _build_launch_url(self, participants: list, ret_url: str) -> str:
         outs_param = ",".join(
             f"{quote(s.id, safe='')}~{s.freq_hz}~{quote(s.name, safe='')}"
-            for s in snapshots
+            for s in participants
         )
         return (
             f"{LAUNCH_HOST}#v=1"
@@ -281,14 +328,13 @@ class AlignRun:
     def _run_cycle(self) -> None:
         try:
             while not self._stop_event.is_set():
-                for i, s in enumerate(self._snapshots):
+                for i, s in enumerate(self._participants):
                     if self._stop_event.is_set():
                         return
                     with self._lock:
                         self._current_index = i
                     self._write_freq(s.freq_hz)
-                    vol = s.volume_percent if s.volume_percent > 0 else FALLBACK_VOLUME_PERCENT
-                    self._set_volume(self._base_url, s.id, vol)
+                    self._set_volume(self._base_url, s.id, self._volume_percent)
 
                     if self._elapsed() > self._max_seconds:
                         self._timeout()
@@ -399,6 +445,12 @@ class AlignRun:
         except Exception:
             _log.debug("AlignRun: set_output_volume(%s) failed", output_id, exc_info=True)
 
+    def _set_enabled(self, base_url: str, output_id: str, enabled: bool) -> None:
+        try:
+            self._player_service.set_output_enabled(base_url, output_id, enabled, timeout=3)
+        except Exception:
+            _log.debug("AlignRun: set_output_enabled(%s) failed", output_id, exc_info=True)
+
     # -- stop / finish / cleanup --------------------------------------------------
 
     def abort(self) -> None:
@@ -436,8 +488,11 @@ class AlignRun:
 
     def cleanup(self) -> None:
         """Idempotent: stop the helper process, drop the freq file, restore
-        every snapshot's volume exactly. Always safe to call more than
-        once (e.g. once from the cycle thread on error, once from finish())."""
+        exactly what this run touched -- volume for every muted output, and
+        selection for every output the run enabled. Never deselects
+        anything the run did not itself enable. Always safe to call more
+        than once (e.g. once from the cycle thread on error, once from
+        finish())."""
         self._stop_helper()
         try:
             if os.path.exists(self._freq_file):
@@ -447,8 +502,15 @@ class AlignRun:
         with self._lock:
             snapshots = list(self._snapshots)
             base_url = self._base_url
-        for s in snapshots:
-            self._set_volume(base_url, s.id, s.volume_percent)
+            touched_ids = set(self._touched_ids)
+            enabled_ids = list(self._enabled_ids)
+        by_id = {s.id: s for s in snapshots}
+        for oid in touched_ids:
+            s = by_id.get(oid)
+            if s is not None:
+                self._set_volume(base_url, oid, s.volume_percent)
+        for oid in enabled_ids:
+            self._set_enabled(base_url, oid, False)
 
     # -- read-only accessors ----------------------------------------------------
 
@@ -456,14 +518,14 @@ class AlignRun:
         with self._lock:
             state = self._state
             idx = self._current_index
-            snapshots = list(self._snapshots)
+            participants = list(self._participants)
             cycle_count = self._cycle_count
             started = self._started_at
             last_error = self._last_error
             launch_url = self._launch_url
             has_pending = self._pending_result is not None
 
-        current = snapshots[idx] if snapshots and 0 <= idx < len(snapshots) else None
+        current = participants[idx] if participants and 0 <= idx < len(participants) else None
         seconds_remaining = None
         if state == "running" and started:
             seconds_remaining = max(0, int(self._max_seconds - (self._clock() - started)))

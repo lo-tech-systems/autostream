@@ -57,12 +57,12 @@ def _sample_peak(bits: int) -> float:
 CHUNK_MS = 50
 RAMP_MS_DEFAULT = 10
 OPEN_NONBLOCK_TIMEOUT_S = 15.0
-# ~1.4s of 48k/32-bit stereo. The write loop has no clock of its own: it
+# ~0.7s of 48k/32-bit stereo. The write loop has no clock of its own: it
 # fills the pipe and lets blocking writes pace it, so this is the lead the
 # consumer holds against scheduling jitter. Frequency changes take effect
 # roughly this far behind the freq-file write, which the measurement
 # design's guard bands absorb.
-PIPE_BUFFER_BYTES = 512 * 1024
+PIPE_BUFFER_BYTES = 256 * 1024
 OPEN_RETRY_SLEEP_S = 0.2
 FINAL_SILENCE_MS = 50
 

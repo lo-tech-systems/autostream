@@ -4,7 +4,8 @@ Endpoint tests for the "Align outputs" feature (autostream_webui_page_align.py
 + the /api/align/* routes wired into autostream_webui.py).
 
 Tests cover:
-  - POST /api/align/start: success shape, refusal passthrough
+  - POST /api/align/start: success shape, refusal passthrough, request-body
+    validation (output_ids shape/count, volume range incl. rejecting 0)
   - POST /api/align/abort: calls AlignRun.abort()
   - GET  /api/align/status: returns AlignRun.status() verbatim
   - GET  /align/result: parses v/ref/data, calls AlignRun.finish() with the
@@ -109,13 +110,16 @@ class TestAlignStart:
         handler, sent = _make_handler()
         handler.headers = {"Host": "autostream.local"}
 
-        send_align_start_json(handler, state)
+        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 65})
+        send_align_start_json(handler, state, body)
 
         assert sent["body"]["ok"] is True
         assert sent["body"]["launch_url"].startswith("https://lo-tech.co.uk/")
         kwargs = align_run.start.call_args.kwargs
         assert kwargs["base_url"] == "http://localhost:3689"
         assert kwargs["ret_url"] == "http://autostream.local/align/result"
+        assert kwargs["output_ids"] == ["out-a", "out-b"]
+        assert kwargs["volume_percent"] == 65
 
     def test_refusal_passthrough(self, tmp_path):
         from autostream_webui_page_align import send_align_start_json
@@ -128,7 +132,8 @@ class TestAlignStart:
         handler, sent = _make_handler()
         handler.headers = {"Host": "autostream.local"}
 
-        send_align_start_json(handler, state)
+        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 50})
+        send_align_start_json(handler, state, body)
 
         assert sent["body"]["ok"] is False
         assert "two outputs" in sent["body"]["error"]
@@ -142,9 +147,90 @@ class TestAlignStart:
         handler, sent = _make_handler()
         handler.headers = {"Host": "autostream.local"}
 
-        send_align_start_json(handler, state)
+        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 50})
+        send_align_start_json(handler, state, body)
 
         assert sent["body"]["ok"] is False
+
+    def test_rejects_volume_zero(self, tmp_path):
+        from autostream_webui_page_align import send_align_start_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+        handler.headers = {"Host": "autostream.local"}
+
+        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 0})
+        send_align_start_json(handler, state, body)
+
+        assert sent["code"] == 400
+        assert sent["body"]["ok"] is False
+        align_run.start.assert_not_called()
+
+    def test_rejects_volume_out_of_range(self, tmp_path):
+        from autostream_webui_page_align import send_align_start_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+        handler.headers = {"Host": "autostream.local"}
+
+        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 101})
+        send_align_start_json(handler, state, body)
+
+        assert sent["code"] == 400
+        align_run.start.assert_not_called()
+
+    def test_rejects_fewer_than_two_output_ids(self, tmp_path):
+        from autostream_webui_page_align import send_align_start_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+        handler.headers = {"Host": "autostream.local"}
+
+        body = json.dumps({"output_ids": ["out-a"], "volume": 50})
+        send_align_start_json(handler, state, body)
+
+        assert sent["code"] == 400
+        align_run.start.assert_not_called()
+
+    def test_rejects_malformed_output_ids_structure(self, tmp_path):
+        from autostream_webui_page_align import send_align_start_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+        handler.headers = {"Host": "autostream.local"}
+
+        for bad_ids in (None, "out-a,out-b", ["out-a", ""], ["out-a", 123]):
+            body = json.dumps({"output_ids": bad_ids, "volume": 50})
+            send_align_start_json(handler, state, body)
+            assert sent["code"] == 400
+        align_run.start.assert_not_called()
+
+    def test_rejects_invalid_json(self, tmp_path):
+        from autostream_webui_page_align import send_align_start_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+        handler.headers = {"Host": "autostream.local"}
+
+        send_align_start_json(handler, state, "{not json")
+
+        assert sent["code"] == 400
+        align_run.start.assert_not_called()
 
 
 # ── POST /api/align/abort ────────────────────────────────────────────────────

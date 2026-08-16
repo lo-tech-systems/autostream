@@ -60,6 +60,7 @@ def send_align_page(handler, state: WebUIState) -> None:
     lic_html, lic_spacer = build_top_banner_html()
 
     review_html = _render_review_section(state)
+    outputs_html = _render_outputs_section(state)
 
     body_html = (
         "<div class='align-page'>"
@@ -69,6 +70,7 @@ def send_align_page(handler, state: WebUIState) -> None:
         "turn. Open the link below on your phone, hold it near your speakers, "
         "and it will measure and hand back timing offsets to line them up."
         "</p>"
+        f"{outputs_html}"
         "<div class='align-controls' style='margin:1rem 0;'>"
         "<button type='button' class='pill-btn' id='alignStartBtn' onclick='alignStart()'>Start</button>"
         "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()' style='display:none;margin-left:0.5rem;'>Abort</button>"
@@ -103,6 +105,53 @@ def send_align_page(handler, state: WebUIState) -> None:
     handler.send_header("Content-Length", str(len(body_bytes)))
     handler.end_headers()
     handler.wfile.write(body_bytes)
+
+
+def _render_outputs_section(state: WebUIState) -> str:
+    """Server-rendered checkbox list of available outputs plus the
+    calibration-volume slider. Fetches outputs the same way AlignRun.start
+    does -- best-effort, never fails the page if the backend is down."""
+    try:
+        base_url = _config_snapshot(state).owntone.base_url
+    except Exception:
+        base_url = ""
+
+    outputs = []
+    if base_url:
+        try:
+            import autostream_player_service as player_service
+            result = player_service.list_outputs(base_url, timeout=3)
+            if result.ok:
+                outputs = list(result.outputs)
+        except Exception:
+            _log.debug("align page: could not list outputs", exc_info=True)
+
+    if not outputs:
+        return (
+            "<h2>Select the outputs to calibrate</h2>"
+            "<p style='color:var(--color-text-secondary);'>No outputs available.</p>"
+        )
+
+    rows = []
+    for out in outputs:
+        checked = " checked" if getattr(out, "selected", False) else ""
+        rows.append(
+            "<label class='align-output-row' style='display:block;margin:0.25rem 0;'>"
+            f"<input type='checkbox' class='align-output-checkbox' value='{html.escape(out.id)}'{checked}> "
+            f"{html.escape(out.name)}"
+            "</label>"
+        )
+
+    return (
+        "<h2>Select the outputs to calibrate</h2>"
+        f"<div id='alignOutputs'>{''.join(rows)}</div>"
+        "<div style='margin:1rem 0;'>"
+        "<label for='alignVolume'>Calibration volume: "
+        "<span id='alignVolumeVal'>50</span></label><br>"
+        "<input type='range' id='alignVolume' min='1' max='100' value='50' "
+        "oninput=\"document.getElementById('alignVolumeVal').textContent=this.value;\">"
+        "</div>"
+    )
 
 
 def _render_review_section(state: WebUIState) -> str:
@@ -193,10 +242,14 @@ function alignPoll(){
   }).catch(function(){});
 }
 window.alignStart=function(){
+  var outputIds=[];
+  document.querySelectorAll('.align-output-checkbox:checked').forEach(function(cb){outputIds.push(cb.value);});
+  var volumeEl=document.getElementById('alignVolume');
+  var volume=volumeEl?parseInt(volumeEl.value,10):50;
   fetch('/api/align/start',{
     method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
-    body:JSON.stringify({})
+    body:JSON.stringify({output_ids:outputIds,volume:volume})
   }).then(function(r){return r.json();}).then(function(d){
     if(!d.ok){
       var statusEl=document.getElementById('alignStatus');
@@ -273,10 +326,30 @@ def send_align_result_get(handler, state: WebUIState, query: dict) -> None:
 # JSON endpoints
 # -----------------------------------------------------------------------------
 
-def send_align_start_json(handler, state: WebUIState) -> None:
+def send_align_start_json(handler, state: WebUIState, body: str) -> None:
     run = getattr(state, "align_run", None)
     if run is None:
         send_json(handler, 200, {"ok": False, "error": "Calibration is unavailable"})
+        return
+
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    output_ids = payload.get("output_ids")
+    if (
+        not isinstance(output_ids, list)
+        or len(output_ids) < 2
+        or not all(isinstance(oid, str) and oid.strip() for oid in output_ids)
+    ):
+        send_json(handler, 400, {"ok": False, "error": "output_ids must list at least two outputs"})
+        return
+
+    volume = payload.get("volume")
+    if isinstance(volume, bool) or not isinstance(volume, int) or not (1 <= volume <= 100):
+        send_json(handler, 400, {"ok": False, "error": "volume must be a whole number between 1 and 100"})
         return
 
     try:
@@ -289,7 +362,9 @@ def send_align_start_json(handler, state: WebUIState) -> None:
     host = handler.headers.get("Host") or "localhost"
     ret_url = f"http://{host}/align/result"
 
-    ok, result = run.start(base_url=base_url, ret_url=ret_url)
+    ok, result = run.start(
+        base_url=base_url, ret_url=ret_url, output_ids=output_ids, volume_percent=volume
+    )
     if not ok:
         send_json(handler, 200, {"ok": False, "error": result})
         return

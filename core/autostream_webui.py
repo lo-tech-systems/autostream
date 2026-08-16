@@ -1082,7 +1082,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/align/start":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
-            send_align_start_json(self, STATE)
+            send_align_start_json(self, STATE, body_str)
 
         elif path == "/api/align/abort":
             if not AUTH.require_authenticated_if_pin_enabled(self): return
