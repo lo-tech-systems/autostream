@@ -65,7 +65,7 @@ def send_align_page(handler, state: WebUIState) -> None:
     body_html = (
         "<div class='align-page'>"
         "<h1>Align Outputs</h1>"
-        "<p style='color:var(--color-text-secondary);'>"
+        "<p class='helptext' style='text-align:left;margin-top:0;'>"
         "This plays a short test tone through each selected AirPlay output in "
         "turn. Open the link below on your phone, hold it near your speakers, "
         "and it will measure and hand back timing offsets to line them up."
@@ -75,10 +75,10 @@ def send_align_page(handler, state: WebUIState) -> None:
         "<button type='button' class='pill-btn' id='alignStartBtn' onclick='alignStart()'>Start</button>"
         "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()' style='display:none;margin-left:0.5rem;'>Abort</button>"
         "</div>"
-        "<div id='alignStatus' style='margin:1rem 0;color:var(--color-text-secondary);'></div>"
+        "<div id='alignStatus' class='helptext' style='margin:1rem 0;text-align:left;'></div>"
         "<div id='alignLaunch' style='display:none;margin:1rem 0;'>"
         "<p>Open this link on your phone:</p>"
-        "<a id='alignLaunchLink' href='#' target='_blank' rel='noopener'>Open calibration page</a>"
+        "<a id='alignLaunchLink' class='pill-btn small' href='#' target='_blank' rel='noopener'>Open calibration page</a>"
         "</div>"
         f"<div id='alignReview'>{review_html}</div>"
         "</div>"
@@ -93,6 +93,7 @@ def send_align_page(handler, state: WebUIState) -> None:
     html_body = build_page_html(
         "Align Outputs",
         body_html,
+        extra_css=_ALIGN_EXTRA_CSS,
         head_extra=head_extra,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
@@ -129,25 +130,36 @@ def _render_outputs_section(state: WebUIState) -> str:
     if not outputs:
         return (
             "<h2>Select the outputs to calibrate</h2>"
-            "<p style='color:var(--color-text-secondary);'>No outputs available.</p>"
+            "<p class='helptext' style='text-align:left;'>No outputs available.</p>"
         )
 
     rows = []
     for out in outputs:
-        checked = " checked" if getattr(out, "selected", False) else ""
+        selected = bool(getattr(out, "selected", False))
+        checked = " checked" if selected else ""
+        card_state = "output-card-on" if selected else "output-card-off"
         rows.append(
-            "<label class='align-output-row' style='display:block;margin:0.25rem 0;'>"
-            f"<input type='checkbox' class='align-output-checkbox' value='{html.escape(out.id)}'{checked}> "
-            f"{html.escape(out.name)}"
+            f"<div class='output-card {card_state}'>"
+            "<div class='output-card-head'>"
+            "<div class='output-card-meta'>"
+            f"<div class='output-card-name'>{html.escape(out.name)}</div>"
+            "</div>"
+            "<label class='output-toggle'>"
+            f"<input type='checkbox' class='align-output-checkbox' value='{html.escape(out.id)}'{checked}"
+            " onchange=\"this.closest('.output-card').classList.toggle('output-card-on',this.checked);"
+            "this.closest('.output-card').classList.toggle('output-card-off',!this.checked);\">"
+            "<span class='switch'></span>"
             "</label>"
+            "</div>"
+            "</div>"
         )
 
     return (
         "<h2>Select the outputs to calibrate</h2>"
         f"<div id='alignOutputs'>{''.join(rows)}</div>"
-        "<div style='margin:1rem 0;'>"
-        "<label for='alignVolume'>Calibration volume: "
-        "<span id='alignVolumeVal'>50</span></label><br>"
+        "<div class='output-slider-wrap' style='margin:1rem 0;'>"
+        "<div class='slider-header'><span>Calibration volume</span>"
+        "<span id='alignVolumeVal' class='slider-value'>50</span></div>"
         "<input type='range' id='alignVolume' min='1' max='100' value='50' "
         "oninput=\"document.getElementById('alignVolumeVal').textContent=this.value;\">"
         "</div>"
@@ -206,6 +218,48 @@ def _render_review_section(state: WebUIState) -> str:
         "<button type='button' class='pill-btn small' onclick='alignDiscard()' style='margin-left:0.5rem;'>Discard</button>"
         "</div>"
     )
+
+
+# Scoped styling for elements unique to this page (the review/result table
+# and its noisy-spread warning cell). Everything else on the page reuses
+# sitewide idioms already defined in STYLE_CSS (build_page_html's shared
+# stylesheet) -- .output-card / .output-toggle / .switch for the output
+# list, .slider-header / input[type=range] for the calibration-volume
+# slider, .pill-btn for buttons, .helptext for secondary copy -- so no
+# fonts or colours are declared here outside the CSS custom properties the
+# rest of the site already uses.
+_ALIGN_EXTRA_CSS = """
+.align-review-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  font-size: 0.92rem;
+}
+
+.align-review-table th,
+.align-review-table td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.align-review-table th {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.align-review-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.align-warn {
+  color: var(--color-status-warning);
+  font-weight: 600;
+}
+"""
 
 
 _ALIGN_SCRIPT = """
