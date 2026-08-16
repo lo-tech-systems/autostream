@@ -11,12 +11,12 @@ this appliance drives. Run standalone:
         --freq-file /path/to/freq.txt
 
 The player at the far end suspends and flushes ALL outputs if its read
-deficit exceeds roughly 1500ms, so this writer paces PCM continuously --
-silence between tone bursts is written explicitly, never omitted. Absolute
-per-chunk deadlines (anchored at process start) drive the pacing so that
-scheduling jitter does not accumulate into drift over a long run; the
-blocking FIFO write is the pacing backstop when the reader applies
-backpressure.
+deficit exceeds roughly 1500ms, so this writer supplies PCM continuously --
+silence between tone bursts is written explicitly, never omitted. The loop
+has no clock of its own: the pipe buffer is enlarged to hold over a second
+of audio and blocking writes pace the loop, so the consumer always holds a
+full lead and scheduling jitter on either side cannot starve it. The
+stream timeline is sample-exact by construction.
 
 Public interface (used directly by tests, no FIFO or real clock required):
     read_freq(path)                 -- frequency-file parser
@@ -57,6 +57,12 @@ def _sample_peak(bits: int) -> float:
 CHUNK_MS = 50
 RAMP_MS_DEFAULT = 10
 OPEN_NONBLOCK_TIMEOUT_S = 15.0
+# ~1.4s of 48k/32-bit stereo. The write loop has no clock of its own: it
+# fills the pipe and lets blocking writes pace it, so this is the lead the
+# consumer holds against scheduling jitter. Frequency changes take effect
+# roughly this far behind the freq-file write, which the measurement
+# design's guard bands absorb.
+PIPE_BUFFER_BYTES = 512 * 1024
 OPEN_RETRY_SLEEP_S = 0.2
 FINAL_SILENCE_MS = 50
 
@@ -213,6 +219,17 @@ def open_fifo_for_write(
             f"no reader attached to fifo {path} after {timeout_s:.0f}s ({last_err})"
         )
     os.set_blocking(fd, True)
+    # Grow the pipe buffer so the consumer holds over a second of audio in
+    # hand: writes run ahead until the kernel throttles them, which makes
+    # the feed immune to scheduling jitter on either side of the pipe (the
+    # constrained boards this runs on stall both processes routinely).
+    # Best-effort: a denied or unsupported resize just keeps the default.
+    try:
+        import fcntl
+        F_SETPIPE_SZ = getattr(fcntl, "F_SETPIPE_SZ", 1031)
+        fcntl.fcntl(fd, F_SETPIPE_SZ, PIPE_BUFFER_BYTES)
+    except Exception:
+        pass
     return os.fdopen(fd, "wb", buffering=0)
 
 
@@ -259,17 +276,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     chunk_frames = ms_to_frames(CHUNK_MS, args.rate)
     period_frames = ms_to_frames(args.period_ms, args.rate)
     chunk_plan = plan_chunks(period_frames, chunk_frames)
-    period_seconds = args.period_ms / 1000.0
 
-    t0 = time.monotonic()
-    run_deadline = t0 + args.max_seconds
+    run_deadline = time.monotonic() + args.max_seconds
     print(
         f"event=started fifo={args.fifo} rate={args.rate} channels={args.channels} "
         f"period_ms={args.period_ms:g} burst_ms={args.burst_ms:g}"
     )
 
     last_freq: object = "__unset__"
-    period_index = 0
     try:
         while not stop_requested["stop"] and time.monotonic() < run_deadline:
             freq = read_freq(args.freq_file)
@@ -277,17 +291,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"event=frequency value={freq or 0}")
                 last_freq = freq
             period_buf = build_period_frames(freq, cache, period_frames)
-            period_start = t0 + period_index * period_seconds
+            # No clock: the enlarged pipe buffer plus blocking writes pace
+            # the loop, keeping the consumer's lead full at all times. The
+            # stream timeline stays sample-exact by construction.
             cum_frames = 0
             for frames in chunk_plan:
                 if stop_requested["stop"]:
                     break
-                sleep_until(period_start + cum_frames / args.rate)
                 start_i = cum_frames * args.channels
                 end_i = (cum_frames + frames) * args.channels
                 writer.write(period_buf[start_i:end_i].tobytes())
                 cum_frames += frames
-            period_index += 1
     finally:
         print("event=stopping")
         try:
