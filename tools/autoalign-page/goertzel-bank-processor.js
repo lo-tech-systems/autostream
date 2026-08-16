@@ -35,11 +35,16 @@
 // switch to adaptive floors -- only the per-bin active/onset decision below
 // is different.
 
-const FLOOR_ALPHA = 0.02;      // per ~10ms hop, while at/below the release level
-const FLOOR_SEED_WINDOWS = 10; // hops averaged to seed each bin's initial floor
-const FLOOR_MIN = 1e-5;        // floor never allowed to collapse below this
-const ONSET_ABS_MIN = 1e-4;    // absolute floor under the SNR trigger, for near-silent rooms
-const K_LOW = 0.5;             // release level, as a fraction of the trigger level
+// The floor tracker is asymmetric: it falls quickly and rises very slowly,
+// with no seed phase and no quiet-gating -- a tone already sounding when the
+// mic opens cannot poison the floor for long, and ABS_TRIGGER caps the
+// trigger so a strong tone always detects regardless of floor history.
+const FLOOR_RISE_ALPHA = 0.005; // per ~10ms hop, magnitude above floor
+const FLOOR_FALL_ALPHA = 0.1;   // per ~10ms hop, magnitude below floor
+const FLOOR_MIN = 1e-5;         // floor never allowed to collapse below this
+const ONSET_ABS_MIN = 1e-4;     // absolute floor under the SNR trigger, for near-silent rooms
+const ABS_TRIGGER = 0.01;       // magnitude that always triggers (~-40dBFS narrowband)
+const K_LOW = 0.5;              // release level, as a fraction of the trigger level
 
 class GoertzelBankProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -55,7 +60,7 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
     this.envFill = 0;
 
     this.sampleCount = 0;
-    this.bins = this.freqs.map(() => ({ floor: null, seedSum: 0, seedCount: 0, active: false }));
+    this.bins = this.freqs.map(() => ({ floor: FLOOR_MIN, active: false }));
 
     // Throttle 'level' messages so the port doesn't get ~100/s of traffic.
     this.hopCount = 0;
@@ -69,24 +74,12 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
     };
   }
 
-  // Seeds (or reads) one bin's adaptive floor and returns the trigger and
-  // release levels derived from it. While still seeding, both are Infinity
-  // so the bin can never register as "above" until it has a real floor.
+  // Returns one bin's trigger and release levels from its adaptive floor.
   // Does not decide active/onset -- the "exactly one frequency above"
   // attribution rule spans all bins at once, so that decision is made by
   // the caller in process() once every bin's trigger is known.
   triggerFor(bin, magnitude) {
-    if (bin.floor === null) {
-      bin.seedSum += magnitude;
-      bin.seedCount++;
-      if (bin.seedCount >= FLOOR_SEED_WINDOWS) {
-        bin.floor = Math.max(FLOOR_MIN, bin.seedSum / bin.seedCount);
-      } else {
-        return { trigger: Infinity, release: Infinity };
-      }
-    }
-
-    const trigger = Math.max(ONSET_ABS_MIN, this.kHigh * bin.floor);
+    const trigger = Math.min(Math.max(ONSET_ABS_MIN, this.kHigh * bin.floor), ABS_TRIGGER);
     return { trigger: trigger, release: trigger * K_LOW };
   }
 
@@ -167,13 +160,11 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
         // aboveCount > 1: simultaneous bins above their trigger -- transition
         // noise between bursts. No onset emitted, states left untouched.
 
-        // Adaptive floor: only quiet bins (own magnitude below their own
-        // release level) get pulled toward the current magnitude, so a
-        // burst (or its decay tail) never drags a floor upward.
+        // Asymmetric adaptive floor: rises slowly, falls fast, updated every
+        // hop -- a burst barely lifts it and contamination self-heals.
         for (let fi = 0; fi < nFreqs; fi++) {
-          if (bins[fi].floor !== null && levels[fi] < triggers[fi].release) {
-            bins[fi].floor = Math.max(FLOOR_MIN, bins[fi].floor + FLOOR_ALPHA * (levels[fi] - bins[fi].floor));
-          }
+          const a = levels[fi] > bins[fi].floor ? FLOOR_RISE_ALPHA : FLOOR_FALL_ALPHA;
+          bins[fi].floor = Math.max(FLOOR_MIN, bins[fi].floor + a * (levels[fi] - bins[fi].floor));
         }
 
         this.hopCount++;

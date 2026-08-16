@@ -288,13 +288,13 @@
   <div id="s4-readout" class="readout">Provide a "return" fragment parameter to enable the handoff test.</div>
 </section>
 
-<footer id="spike-footer">SPIKE_V2</footer>
+<footer id="spike-footer">SPIKE_V3</footer>
 
 <script>
 (function () {
   'use strict';
 
-  var SPIKE_VERSION = 'SPIKE_V2';
+  var SPIKE_VERSION = 'SPIKE_V3';
   document.getElementById('spike-footer').textContent = SPIKE_VERSION;
 
   function setStatus(id, kind, text) {
@@ -572,29 +572,25 @@
   // Fallback for browsers without AudioWorklet support. Duplicates the
   // Goertzel logic from goertzel-processor.js but runs on the main thread.
   // Adaptive noise-floor constants, mirroring goertzel-processor.js.
-  var FLOOR_ALPHA = 0.02;
-  var FLOOR_SEED_WINDOWS = 10;
+  // Asymmetric floor tracker: falls quickly, rises very slowly, no seed
+  // phase and no quiet-gating -- a tone already sounding when the mic opens
+  // cannot poison the floor for long, and ABS_TRIGGER means a strong tone
+  // always detects regardless of floor history.
+  var FLOOR_RISE_ALPHA = 0.005;
+  var FLOOR_FALL_ALPHA = 0.1;
   var FLOOR_MIN = 1e-5;
   var ONSET_ABS_MIN = 1e-4;
+  var ABS_TRIGGER = 0.01;
   var K_LOW = 0.5;
 
   function makeFloorBin() {
-    return { floor: null, seedSum: 0, seedCount: 0, active: false };
+    return { floor: FLOOR_MIN, active: false };
   }
 
   // Shared by both the fallback path here and (conceptually) the worklet.
   // kHigh is read fresh each call so the live threshold slider applies.
   function updateFloorBin(bin, magnitude, kHigh) {
-    if (bin.floor === null) {
-      bin.seedSum += magnitude;
-      bin.seedCount++;
-      if (bin.seedCount >= FLOOR_SEED_WINDOWS) {
-        bin.floor = Math.max(FLOOR_MIN, bin.seedSum / bin.seedCount);
-      }
-      return { active: false, onset: false, floor: bin.floor || Math.max(FLOOR_MIN, magnitude) };
-    }
-
-    var trigger = Math.max(ONSET_ABS_MIN, kHigh * bin.floor);
+    var trigger = Math.min(Math.max(ONSET_ABS_MIN, kHigh * bin.floor), ABS_TRIGGER);
     var release = trigger * K_LOW;
 
     var onset = false;
@@ -605,9 +601,8 @@
       bin.active = false;
     }
 
-    if (magnitude < release) {
-      bin.floor = Math.max(FLOOR_MIN, bin.floor + FLOOR_ALPHA * (magnitude - bin.floor));
-    }
+    var alpha = magnitude > bin.floor ? FLOOR_RISE_ALPHA : FLOOR_FALL_ALPHA;
+    bin.floor = Math.max(FLOOR_MIN, bin.floor + alpha * (magnitude - bin.floor));
 
     return { active: bin.active, onset: onset, floor: bin.floor };
   }

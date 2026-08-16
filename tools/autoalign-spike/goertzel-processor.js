@@ -32,11 +32,18 @@
 // "sample" is the running audio-clock sample count since the worklet
 // was created (i.e. derived from the sample rate, not Date.now()).
 
-const FLOOR_ALPHA = 0.02;      // per analysis window, while at/below the release level
-const FLOOR_SEED_WINDOWS = 10; // windows averaged to seed the initial floor estimate
-const FLOOR_MIN = 1e-5;        // floor never allowed to collapse below this
-const ONSET_ABS_MIN = 1e-4;    // absolute floor under the SNR trigger, for near-silent rooms
-const K_LOW = 0.5;             // release level, as a fraction of the trigger level
+// The floor tracker is asymmetric: it falls quickly and rises very slowly,
+// with no seed phase and no quiet-gating. A tone already sounding when the
+// mic opens therefore cannot poison the floor for long (symmetric or
+// quiet-gated trackers latch onto a continuous tone and then nothing can
+// ever trigger), and a short burst barely lifts it.
+const FLOOR_RISE_ALPHA = 0.005; // per analysis window, magnitude above floor
+const FLOOR_FALL_ALPHA = 0.1;   // per analysis window, magnitude below floor
+const FLOOR_MIN = 1e-5;         // floor never allowed to collapse below this
+const ONSET_ABS_MIN = 1e-4;     // absolute floor under the SNR trigger, for near-silent rooms
+const ABS_TRIGGER = 0.01;       // magnitude that always triggers (~-40dBFS narrowband),
+                                // regardless of floor history
+const K_LOW = 0.5;              // release level, as a fraction of the trigger level
 
 class GoertzelProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -80,23 +87,16 @@ class GoertzelProcessor extends AudioWorkletProcessor {
   }
 
   makeBin() {
-    return { floor: null, seedSum: 0, seedCount: 0, active: false };
+    return { floor: FLOOR_MIN, active: false };
   }
 
   // Updates one adaptive-floor bin with a fresh magnitude reading and
   // returns { active, onset, floor }. `onset` is true only on the exact
-  // window where the bin transitions from inactive to active.
+  // window where the bin transitions from inactive to active. The trigger
+  // is capped at ABS_TRIGGER so a strong tone always detects even while
+  // the floor is still recovering from contamination.
   updateBin(bin, magnitude) {
-    if (bin.floor === null) {
-      bin.seedSum += magnitude;
-      bin.seedCount++;
-      if (bin.seedCount >= FLOOR_SEED_WINDOWS) {
-        bin.floor = Math.max(FLOOR_MIN, bin.seedSum / bin.seedCount);
-      }
-      return { active: false, onset: false, floor: bin.floor || Math.max(FLOOR_MIN, magnitude) };
-    }
-
-    const trigger = Math.max(ONSET_ABS_MIN, this.kHigh * bin.floor);
+    const trigger = Math.min(Math.max(ONSET_ABS_MIN, this.kHigh * bin.floor), ABS_TRIGGER);
     const release = trigger * K_LOW;
 
     let onset = false;
@@ -107,11 +107,8 @@ class GoertzelProcessor extends AudioWorkletProcessor {
       bin.active = false;
     }
 
-    // Only let quiet windows pull the floor -- a burst (or its decay
-    // tail, above the release level) must not drag the floor upward.
-    if (magnitude < release) {
-      bin.floor = Math.max(FLOOR_MIN, bin.floor + FLOOR_ALPHA * (magnitude - bin.floor));
-    }
+    const alpha = magnitude > bin.floor ? FLOOR_RISE_ALPHA : FLOOR_FALL_ALPHA;
+    bin.floor = Math.max(FLOOR_MIN, bin.floor + alpha * (magnitude - bin.floor));
 
     return { active: bin.active, onset: onset, floor: bin.floor };
   }

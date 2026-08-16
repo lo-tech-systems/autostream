@@ -667,11 +667,14 @@
   // Fallback for browsers without AudioWorklet support. Duplicates the
   // Goertzel-bank logic on the main thread via ScriptProcessorNode, same
   // idiom as the capability-check spike's fallback.
-  // Adaptive noise-floor constants, mirroring goertzel-bank-processor.js.
-  var FLOOR_ALPHA = 0.02;
-  var FLOOR_SEED_WINDOWS = 10;
+  // Adaptive noise-floor constants, mirroring goertzel-bank-processor.js:
+  // asymmetric tracker (falls fast, rises slowly, no seeding) with an
+  // absolute trigger cap so a strong tone always detects.
+  var FLOOR_RISE_ALPHA = 0.005;
+  var FLOOR_FALL_ALPHA = 0.1;
   var FLOOR_MIN = 1e-5;
   var ONSET_ABS_MIN = 1e-4;
+  var ABS_TRIGGER = 0.01;
 
   function setupScriptProcessorFallback() {
     var bufferSize = 4096;
@@ -682,24 +685,15 @@
     var envBuf = new Float32Array(envSize);
     var envFill = 0;
     var bins = uniqueFreqs.map(function () {
-      return { floor: null, seedSum: 0, seedCount: 0, active: false };
+      return { floor: FLOOR_MIN, active: false };
     });
     var hopCount = 0;
     var levelHopStride = 4;
 
-    // Seeds (or reads) one bin's adaptive floor and returns the trigger
-    // and release levels derived from it, same idiom as the worklet.
+    // Returns one bin's trigger and release levels from its adaptive
+    // floor, same idiom as the worklet.
     function triggerFor(bin, magnitude) {
-      if (bin.floor === null) {
-        bin.seedSum += magnitude;
-        bin.seedCount++;
-        if (bin.seedCount >= FLOOR_SEED_WINDOWS) {
-          bin.floor = Math.max(FLOOR_MIN, bin.seedSum / bin.seedCount);
-        } else {
-          return { trigger: Infinity, release: Infinity };
-        }
-      }
-      var trigger = Math.max(ONSET_ABS_MIN, DETECT_K_HIGH * bin.floor);
+      var trigger = Math.min(Math.max(ONSET_ABS_MIN, DETECT_K_HIGH * bin.floor), ABS_TRIGGER);
       return { trigger: trigger, release: trigger * DETECT_K_LOW };
     }
 
@@ -763,13 +757,11 @@
             }
           }
 
-          // Adaptive floor: only quiet bins get pulled toward the current
-          // magnitude, so a burst (or its decay tail) never drags a floor
-          // upward.
+          // Asymmetric adaptive floor: rises slowly, falls fast, updated
+          // every hop -- bursts barely lift it, contamination self-heals.
           for (var fn = 0; fn < levels.length; fn++) {
-            if (bins[fn].floor !== null && levels[fn] < triggers[fn].release) {
-              bins[fn].floor = Math.max(FLOOR_MIN, bins[fn].floor + FLOOR_ALPHA * (levels[fn] - bins[fn].floor));
-            }
+            var fa = levels[fn] > bins[fn].floor ? FLOOR_RISE_ALPHA : FLOOR_FALL_ALPHA;
+            bins[fn].floor = Math.max(FLOOR_MIN, bins[fn].floor + fa * (levels[fn] - bins[fn].floor));
           }
 
           hopCount++;
