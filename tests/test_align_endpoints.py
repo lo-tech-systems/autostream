@@ -428,6 +428,32 @@ class TestReviewSection:
         state = MagicMock(align_run=align_run)
         assert _render_review_section(state) == ""
 
+    def test_apply_and_rerun_buttons_are_equal_sized_and_labelled(self, tmp_path):
+        from autostream_webui_page_align import _render_review_section
+        align_run = MagicMock()
+        align_run.snapshots.return_value = [
+            AlignOutputSnapshot(id="out-a", name="A", volume_percent=30, stored_offset_ms=0, freq_hz=1000),
+        ]
+        align_run.pending_result.return_value = AlignResult(
+            ref_output_id="out-a",
+            arrivals=(),
+        )
+        state = MagicMock(align_run=align_run)
+
+        html_out = _render_review_section(state)
+
+        # Relabelled from "Discard" -- same discard-then-reload behaviour,
+        # just a name that reflects what the user actually gets: back on
+        # the selection/start screen to try again.
+        assert ">Re-run<" in html_out
+        assert ">Discard<" not in html_out
+        assert "onclick='alignDiscard()'" in html_out
+        # Apply and Re-run are both plain pill-btn -- neither gets "small",
+        # so they render the same size.
+        assert "class='pill-btn' onclick='alignApply()'" in html_out
+        assert "class='pill-btn' onclick='alignDiscard()'" in html_out
+        assert "pill-btn small" not in html_out
+
 
 # ── POST /api/align/apply ────────────────────────────────────────────────────
 
@@ -574,6 +600,15 @@ class TestAlignPagePrivacyAndTitle:
         assert ">Privacy<" in body
         assert "id=\"infoModal\"" in body
         assert "lo-tech.co.uk" in body
+        # Modal copy is honest about the one real request to lo-tech.co.uk
+        # (the page fetch itself, required for HTTPS mic access)...
+        assert "HTTPS" in body
+        # ...that the run's settings ride in the URL fragment, which
+        # browsers don't send to a server...
+        assert "never send" in body
+        # ...and that results go straight back to this device, not the
+        # hosting site.
+        assert "directly to this device" in body
 
 
 # ── Router-level CSRF enforcement ────────────────────────────────────────────

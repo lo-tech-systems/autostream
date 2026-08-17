@@ -677,6 +677,10 @@
   var FLOOR_MIN = 1e-5;
   var ONSET_ABS_MIN = 1e-4;
   var ABS_TRIGGER = 0.01;
+  // Mutual-exclusion hold: a candidate onset on another frequency within
+  // this many ms of audio-clock time cancels both. Mirrors
+  // goertzel-bank-processor.js exactly -- see that file's header comment.
+  var ONSET_EXCLUSION_MS = 300;
 
   function setupScriptProcessorFallback() {
     var bufferSize = 4096;
@@ -691,6 +695,40 @@
     });
     var hopCount = 0;
     var levelHopStride = 4;
+
+    // Onset candidates awaiting their exclusion-window hold, as
+    // { freqIndex, sample }. Mirrors the worklet's pendingOnsets exactly.
+    var exclusionSamples = Math.round(audioCtx.sampleRate * (ONSET_EXCLUSION_MS / 1000));
+    var pendingOnsets = [];
+
+    // Registers a fresh rising edge on freqIndex at sample. Cancels (and is
+    // itself cancelled by) any still-held candidate on a different
+    // frequency within ONSET_EXCLUSION_MS.
+    function registerOnsetCandidate(freqIndex, sample) {
+      var collided = false;
+      for (var i = pendingOnsets.length - 1; i >= 0; i--) {
+        var entry = pendingOnsets[i];
+        if (entry.freqIndex !== freqIndex && (sample - entry.sample) < exclusionSamples) {
+          pendingOnsets.splice(i, 1);
+          collided = true;
+        }
+      }
+      if (!collided) {
+        pendingOnsets.push({ freqIndex: freqIndex, sample: sample });
+      }
+    }
+
+    // Emits any held candidate whose exclusion window has elapsed without a
+    // collision, using its original (not current) sample timestamp.
+    function releaseDueOnsets(nowSample) {
+      for (var i = pendingOnsets.length - 1; i >= 0; i--) {
+        var entry = pendingOnsets[i];
+        if (nowSample - entry.sample >= exclusionSamples) {
+          pendingOnsets.splice(i, 1);
+          handleOnset(entry.freqIndex, entry.sample);
+        }
+      }
+    }
 
     // Returns one bin's trigger and release levels from its adaptive
     // floor, same idiom as the worklet.
@@ -746,7 +784,7 @@
           if (aboveCount === 1) {
             if (!bins[aboveIdx].active) {
               bins[aboveIdx].active = true;
-              handleOnset(aboveIdx, sampleAt);
+              registerOnsetCandidate(aboveIdx, sampleAt);
             }
             for (var fk = 0; fk < levels.length; fk++) {
               if (fk !== aboveIdx && bins[fk].active && levels[fk] < triggers[fk].release) {
@@ -758,6 +796,12 @@
               if (bins[fm].active && levels[fm] < triggers[fm].release) bins[fm].active = false;
             }
           }
+          // aboveCount > 1: simultaneous bins above their trigger -- transition
+          // noise between bursts. No onset emitted, states left untouched.
+
+          // Release any held candidate whose exclusion window has elapsed
+          // clean (no colliding candidate on another frequency arrived).
+          releaseDueOnsets(sampleAt);
 
           // Asymmetric adaptive floor: rises slowly, falls fast, updated
           // every hop -- bursts barely lift it, contamination self-heals.

@@ -34,6 +34,17 @@
 // This attribution rule, and all downstream clustering, is unchanged by the
 // switch to adaptive floors -- only the per-bin active/onset decision below
 // is different.
+//
+// That same-hop check only catches bins that cross their trigger in the
+// exact same ~10ms window. A room echo or a stray noise can instead trip a
+// second frequency a few hops later, which the same-hop rule would happily
+// accept as two clean onsets. To cover that, every onset candidate is held
+// for ONSET_EXCLUSION_MS of audio-clock time before it is actually reported.
+// If a candidate for a *different* frequency shows up while an earlier one
+// is still held, both are doubtful and neither is ever emitted -- only a
+// candidate that survives its whole hold window alone is reported as a real
+// onset. Held onsets keep their original sample timestamp when finally
+// emitted, so the 300ms hold delays *reporting* but not the measured time.
 
 // The floor tracker is asymmetric: it falls quickly and rises very slowly,
 // with no seed phase and no quiet-gating -- a tone already sounding when the
@@ -45,6 +56,8 @@ const FLOOR_MIN = 1e-5;         // floor never allowed to collapse below this
 const ONSET_ABS_MIN = 1e-4;     // absolute floor under the SNR trigger, for near-silent rooms
 const ABS_TRIGGER = 0.01;       // magnitude that always triggers (~-40dBFS narrowband)
 const K_LOW = 0.5;              // release level, as a fraction of the trigger level
+const ONSET_EXCLUSION_MS = 300; // mutual-exclusion hold: a candidate on another
+                                 // frequency within this window cancels both
 
 class GoertzelBankProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -61,6 +74,11 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
 
     this.sampleCount = 0;
     this.bins = this.freqs.map(() => ({ floor: FLOOR_MIN, active: false }));
+
+    // Onset candidates awaiting their exclusion-window hold, as
+    // { freqIndex, sample }. See ONSET_EXCLUSION_MS above.
+    this.exclusionSamples = Math.round(sampleRate * (ONSET_EXCLUSION_MS / 1000));
+    this.pendingOnsets = [];
 
     // Throttle 'level' messages so the port doesn't get ~100/s of traffic.
     this.hopCount = 0;
@@ -81,6 +99,35 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
   triggerFor(bin, magnitude) {
     const trigger = Math.min(Math.max(ONSET_ABS_MIN, this.kHigh * bin.floor), ABS_TRIGGER);
     return { trigger: trigger, release: trigger * K_LOW };
+  }
+
+  // Registers a fresh rising edge on freqIndex at sample. Cancels (and is
+  // itself cancelled by) any still-held candidate on a different frequency
+  // within ONSET_EXCLUSION_MS -- see the file header comment.
+  registerOnsetCandidate(freqIndex, sample) {
+    let collided = false;
+    for (let i = this.pendingOnsets.length - 1; i >= 0; i--) {
+      const entry = this.pendingOnsets[i];
+      if (entry.freqIndex !== freqIndex && (sample - entry.sample) < this.exclusionSamples) {
+        this.pendingOnsets.splice(i, 1);
+        collided = true;
+      }
+    }
+    if (!collided) {
+      this.pendingOnsets.push({ freqIndex: freqIndex, sample: sample });
+    }
+  }
+
+  // Emits any held candidate whose exclusion window has elapsed without a
+  // collision, using its original (not current) sample timestamp.
+  releaseDueOnsets(nowSample) {
+    for (let i = this.pendingOnsets.length - 1; i >= 0; i--) {
+      const entry = this.pendingOnsets[i];
+      if (nowSample - entry.sample >= this.exclusionSamples) {
+        this.pendingOnsets.splice(i, 1);
+        this.port.postMessage({ type: 'onset', sample: entry.sample, freqIndex: entry.freqIndex });
+      }
+    }
   }
 
   goertzel(samples, freq) {
@@ -143,7 +190,7 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
         if (aboveCount === 1) {
           if (!bins[aboveIdx].active) {
             bins[aboveIdx].active = true;
-            this.port.postMessage({ type: 'onset', sample: sampleAt, freqIndex: aboveIdx });
+            this.registerOnsetCandidate(aboveIdx, sampleAt);
           }
           for (let fi = 0; fi < nFreqs; fi++) {
             if (fi !== aboveIdx && bins[fi].active && levels[fi] < triggers[fi].release) {
@@ -159,6 +206,10 @@ class GoertzelBankProcessor extends AudioWorkletProcessor {
         }
         // aboveCount > 1: simultaneous bins above their trigger -- transition
         // noise between bursts. No onset emitted, states left untouched.
+
+        // Release any held candidate whose exclusion window has elapsed
+        // clean (no colliding candidate on another frequency arrived).
+        this.releaseDueOnsets(sampleAt);
 
         // Asymmetric adaptive floor: rises slowly, falls fast, updated every
         // hop -- a burst barely lifts it and contamination self-heals.

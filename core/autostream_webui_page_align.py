@@ -235,7 +235,7 @@ def _render_review_section(state: WebUIState) -> str:
         " proposed offsets to the outputs.</p>"
         "<div style='margin-top:1rem;'>"
         "<button type='button' class='pill-btn' onclick='alignApply()'>Apply</button>"
-        "<button type='button' class='pill-btn small' onclick='alignDiscard()' style='margin-left:0.5rem;'>Discard</button>"
+        "<button type='button' class='pill-btn' onclick='alignDiscard()' style='margin-left:0.5rem;'>Re-run</button>"
         "</div>"
         "<div class='helptext' id='align-apply-status'></div>"
         "</div>"
@@ -386,8 +386,8 @@ window.alignApply=function(){
         +'<tbody>'+rows+'</tbody></table>'
         +'<p class="helptext">The new offsets are live on the outputs now.</p>'
         +'<div style="margin-top:1rem;">'
-        +'<a class="pill-btn" href="/owntone-setup" style="width:100%;display:block;margin-top:0.5rem;">Open Output Settings</a>'
-        +'<a class="pill-btn small" href="/align" style="width:100%;display:block;margin-top:0.5rem;">Run Alignment Again</a>'
+        +'<a class="pill-btn small" href="/owntone-setup" style="width:100%;margin-top:0.5rem;">Open Output Settings</a>'
+        +'<a class="pill-btn small" href="/align" style="width:100%;margin-top:0.5rem;">Run Alignment Again</a>'
         +'</div>';
     }
   }).catch(function(){
@@ -396,12 +396,17 @@ window.alignApply=function(){
   });
 };
 window.alignShowPrivacy=function(){
-  var msg='<p>The measurement page is served from lo-tech.co.uk because browsers '
-    +'only allow microphone access on a secure (HTTPS) site.</p>'
-    +'<p>All listening and analysis happens on your phone itself — no audio is '
-    +'ever recorded or sent anywhere.</p>'
-    +'<p>Nothing at all is sent to lo-tech.co.uk. Only the final timing numbers '
-    +'are handed back to this device.</p>';
+  var msg='<p>This measurement page is downloaded from lo-tech.co.uk because '
+    +'browsers only allow microphone access on a secure (HTTPS) website. '
+    +'Fetching it is a normal page load, like visiting any website — so '
+    +"lo-tech.co.uk's server does see that request happen.</p>"
+    +'<p>The settings for this run (which outputs, which tones) travel in '
+    +'part of the link that browsers never send to a web server, so '
+    +'lo-tech.co.uk does not see them.</p>'
+    +'<p>All listening and analysis happens on your phone itself — no audio '
+    +'is ever recorded or transmitted.</p>'
+    +'<p>Once the measurement finishes, the timing results are sent '
+    +'directly to this device over your own network, not to lo-tech.co.uk.</p>';
   var btnOk=document.getElementById('infoModalOk');
   if(btnOk)btnOk.textContent='Continue';
   showInfoModal('Privacy',msg,true);
