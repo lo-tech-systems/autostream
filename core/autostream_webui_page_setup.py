@@ -1591,6 +1591,11 @@ def send_setup_page(
    which a disabled attribute alone leaves at full contrast. */
 .dial-screen-ctl-row{transition:opacity 0.15s ease;}
 .dial-screen-ctl-row.is-disabled{opacity:0.45;}
+/* A custom switch draws its own state from a hidden checkbox, so a
+   disabled one still looks live and its label stays full contrast.
+   Dim the whole row instead, matching the screen control rows. */
+.dial-card .is-disabled{opacity:0.45;}
+.dial-card .is-disabled .output-toggle{cursor:not-allowed;}
 """
     _bt_pairing_modal_css = ""
     if bt_enabled:
@@ -1660,6 +1665,18 @@ def send_setup_page(
     </div>
   </div>
 </div>""")
+    _dial_result_modal_div = """\
+<div id="dialResultModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialResultModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialResultModalTitle">Dial</div>
+    <div class="bd modal-bd">
+      <p id="dialResultModalMsg"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialResultModalOk">OK</button>
+    </div>
+  </div>
+</div>"""
     _dial_name_modal_div = """\
 <div id="dialNameModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialNameModalTitle">
   <div class="panel modal-panel">
@@ -1748,7 +1765,7 @@ def send_setup_page(
 </div>"""
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_hostname_modal_div}\n"
-        f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_wifi_hotspot_modal_div}\n"
+        f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_dial_result_modal_div}\n{_wifi_hotspot_modal_div}\n"
         f"{_bt_pairing_modal_div}\n"
         f"{INFO_MODAL_HTML}"
     )
@@ -3117,22 +3134,38 @@ def send_setup_page(
           }});
         }}
 
-        // Controls outside dialSyncScreenControlsEnabled()'s reach: the nine
-        // whole-card actions plus the four screen sub-controls it already
-        // manages. dialSetCardBusy(card, true) freezes all of them for an
-        // in-flight operation (e.g. the dial restarting itself); un-busy does
-        // NOT blanket re-enable -- it re-runs dialSyncScreenControlsEnabled()
-        // so a card whose screen isn't fitted comes back with its screen
-        // sub-controls still correctly disabled.
-        var _DIAL_BUSY_SELECTORS = [
-          '.dial-allow', '.dial-lock-btn', '[data-dial-action="change-name"]',
-          '.dial-step', '.dial-autoupdate', '.dial-channel', '.dial-screen-fitted',
-          '[data-dial-action="update"]', '[data-dial-action="recover-pin"]',
-          '.dial-screen-rotate', '.dial-screen-bgr', '.dial-screen-type', '.dial-screen-touch'
-        ];
+        // Freezes every control on one card for an in-flight operation
+        // (the dial restarting itself to apply a new touch controller).
+        //
+        // Queried generically rather than from a hand-listed set of
+        // selectors: an enumeration silently misses whatever is added to
+        // the card later, and each miss looks like a control that stayed
+        // live over a device that is not listening.
+        //
+        // Un-busy RESTORES each control's prior disabled state rather than
+        // enabling everything. Several controls are legitimately disabled
+        // before the operation starts -- the whole settings section is
+        // disabled while it is locked, and the screen sub-controls follow
+        // "Has Screen Fitted" -- so blanket enabling would silently unlock
+        // a locked card.
         function dialSetCardBusy(card, busy) {{
-          _DIAL_BUSY_SELECTORS.forEach(function(sel) {{
-            card.querySelectorAll(sel).forEach(function(el) {{ el.disabled = busy; }});
+          card.querySelectorAll('input, select, button, textarea').forEach(function(el) {{
+            if (busy) {{
+              if (el.dataset.busyPrevDisabled === undefined) {{
+                el.dataset.busyPrevDisabled = el.disabled ? '1' : '0';
+              }}
+              el.disabled = true;
+            }} else if (el.dataset.busyPrevDisabled !== undefined) {{
+              el.disabled = (el.dataset.busyPrevDisabled === '1');
+              delete el.dataset.busyPrevDisabled;
+            }}
+            // Switch-style toggles render from a hidden checkbox, so
+            // disabling the input alone leaves the switch and its label
+            // looking fully available. Dim the row that holds them, the
+            // same treatment the screen control rows already get.
+            var toggle = el.closest ? el.closest('label.output-toggle') : null;
+            var row = toggle ? toggle.parentElement : null;
+            if (row) row.classList.toggle('is-disabled', busy);
           }});
           card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
             row.classList.toggle('is-disabled', busy);
@@ -3317,13 +3350,41 @@ def send_setup_page(
           }}
         }}
 
+        // Single-OK result modal, reusing the dial PIN modals' markup and
+        // classes. A restart outcome arrives up to a minute after the
+        // change, by which time an inline one-liner under the buttons is
+        // easily missed -- especially the failures, which matter most.
+        function _dialShowResultModal(title, message) {{
+          var modal = document.getElementById('dialResultModal');
+          if (!modal) return;
+          var titleEl = document.getElementById('dialResultModalTitle');
+          var msgEl = document.getElementById('dialResultModalMsg');
+          if (titleEl) titleEl.textContent = title;
+          if (msgEl) msgEl.textContent = message;
+          modal.classList.add('show');
+        }}
+
+        function _dialCloseResultModal() {{
+          var modal = document.getElementById('dialResultModal');
+          if (modal) modal.classList.remove('show');
+        }}
+
         function _dialFinishTouchRestartPoll(card, badgeState, message, ok) {{
           _dialTouchPollCancel.delete(card);
           dialSetCardBusy(card, false);
           _dialSetStatusBadge(card, badgeState);
-          dialMsg(card, message, ok);
-          if (ok) {{ setTimeout(function() {{ dialMsg(card, '', true); }}, 2000); }}
+          _dialShowResultModal(_DIAL_CFG_TITLE, message);
         }}
+
+        // Outcome text for the result modal. Which message applies depends
+        // on BOTH the outcome and whether touch was being switched on or
+        // off -- "disabled" is a success, not a lesser one, and a panel
+        // that will not open is a wiring/type problem the user can act on.
+        var _DIAL_CFG_TITLE = 'Dial Configuration';
+        var _DIAL_CFG_OK_ENABLED  = 'Touch panel configured successfully.';
+        var _DIAL_CFG_OK_DISABLED = 'Touch panel disabled.';
+        var _DIAL_CFG_CANNOT_OPEN = 'Touch panel could not be opened. Please check touch panel type and wiring.';
+        var _DIAL_CFG_GENERIC_ERR = 'An error was encountered applying the configuration.';
 
         function dialBeginTouchRestartPoll(card, requestedTouchType) {{
           // A second save on the same card must supersede, not race, a poll
@@ -3346,16 +3407,20 @@ def send_setup_page(
             if (runtimeTouchType === 'failed') {{
               // The dial came back and reported its touch stack failed to
               // open -- a real outcome, not a timeout. Stop waiting now.
-              _dialFinishTouchRestartPoll(card, 'online', 'Touch panel did not start', false);
+              _dialFinishTouchRestartPoll(card, 'online',
+                requestedTouchType === 'none' ? _DIAL_CFG_GENERIC_ERR : _DIAL_CFG_CANNOT_OPEN,
+                false);
               return true;
             }}
             if (runtimeTouchType === requestedTouchType) {{
-              _dialFinishTouchRestartPoll(card, 'online', 'Touch panel updated', true);
+              _dialFinishTouchRestartPoll(card, 'online',
+                requestedTouchType === 'none' ? _DIAL_CFG_OK_DISABLED : _DIAL_CFG_OK_ENABLED,
+                true);
               return true;
             }}
             return false;
           }}, function onTimeout() {{
-            _dialFinishTouchRestartPoll(card, 'offline', 'Dial did not come back online', false);
+            _dialFinishTouchRestartPoll(card, 'offline', _DIAL_CFG_GENERIC_ERR, false);
           }});
           _dialTouchPollCancel.set(card, cancel);
         }}
@@ -3995,6 +4060,8 @@ def send_setup_page(
           if (recoveryConfirmInp) recoveryConfirmInp.addEventListener('keydown', function(ev) {{
             if (ev.key === 'Enter') {{ ev.preventDefault(); handleDialPinRecoveryOk(); }}
           }});
+          var resultOk = document.getElementById('dialResultModalOk');
+          if (resultOk) resultOk.addEventListener('click', _dialCloseResultModal);
           var dialNameOk = document.getElementById('dialNameModalOk');
           var dialNameCancel = document.getElementById('dialNameModalCancel');
           var dialNameInput = document.getElementById('dialNameModalInput');

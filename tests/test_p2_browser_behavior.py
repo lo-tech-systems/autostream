@@ -1097,22 +1097,33 @@ class TestDialCardHtmlStructure:
 
     # ── dialSetCardBusy() ──────────────────────────────────────────────────────
 
-    def test_dial_set_card_busy_covers_all_control_selectors(self):
+    def test_dial_set_card_busy_queries_controls_generically(self):
+        """A hand-listed selector set silently misses controls added to the
+        card later, and each miss is a control left live over a device that
+        is not listening. Set Dial PIN was missed exactly that way."""
         src = _setup_page_src()
         idx = src.find("function dialSetCardBusy(card, busy)")
         assert idx >= 0
-        # The selector list sits immediately above the function in this file.
-        list_idx = src.find("_DIAL_BUSY_SELECTORS = [")
-        assert 0 <= list_idx < idx
-        next_fn = src.find("\nfunction ", idx + 1)
-        block = src[list_idx:next_fn] if next_fn > 0 else src[list_idx:idx + 2000]
-        for selector in [
-            "'.dial-allow'", "'.dial-lock-btn'", "'[data-dial-action=\"change-name\"]'",
-            "'.dial-step'", "'.dial-autoupdate'", "'.dial-channel'", "'.dial-screen-fitted'",
-            "'[data-dial-action=\"update\"]'", "'[data-dial-action=\"recover-pin\"]'",
-            "'.dial-screen-rotate'", "'.dial-screen-bgr'", "'.dial-screen-type'", "'.dial-screen-touch'",
-        ]:
-            assert selector in block, selector
+        block = src[idx:idx + 2000]
+        assert "querySelectorAll('input, select, button, textarea')" in block
+        assert "_DIAL_BUSY_SELECTORS" not in src, "the enumerated list should be gone"
+
+    def test_dial_set_card_busy_restores_prior_disabled_state(self):
+        """Controls disabled before the operation (a locked settings section,
+        screen sub-controls with no screen fitted) must stay disabled after
+        it. Blanket enabling would silently unlock a locked card."""
+        src = _setup_page_src()
+        idx = src.find("function dialSetCardBusy(card, busy)")
+        block = src[idx:idx + 2000]
+        assert "busyPrevDisabled" in block
+        assert "el.disabled = (el.dataset.busyPrevDisabled === '1')" in block
+
+    def test_dial_set_card_busy_covers_the_pin_buttons(self):
+        """Both PIN buttons are plain <button> elements inside the card, so
+        the generic query reaches them."""
+        src = _setup_page_src()
+        assert 'data-dial-action="change-pin"' in src
+        assert 'data-dial-action="recover-pin"' in src
 
     def test_dial_set_card_busy_uses_is_disabled_convention(self):
         src = _setup_page_src()
@@ -1452,7 +1463,7 @@ class TestDialCardHtmlStructure:
     def test_touch_restart_poll_done_condition_restores_card_and_online_badge(self):
         body = self._touch_restart_poll_body(_setup_page_src())
         assert "runtimeTouchType === requestedTouchType" in body
-        assert "_dialFinishTouchRestartPoll(card, 'online', 'Touch panel updated', true);" in body
+        assert "_DIAL_CFG_OK_DISABLED" in body and "_DIAL_CFG_OK_ENABLED" in body
 
     def test_touch_restart_poll_failed_runtime_value_ends_poll_with_its_own_message(self):
         """'failed' is a real outcome (the dial came back and its touch stack
@@ -1463,14 +1474,14 @@ class TestDialCardHtmlStructure:
         idx = body.find("runtimeTouchType === 'failed'")
         end_idx = body.find("return true;", idx)
         block = body[idx:end_idx]
-        assert "_dialFinishTouchRestartPoll(card, 'online', 'Touch panel did not start', false);" in block
+        assert "_DIAL_CFG_CANNOT_OPEN" in block
 
     def test_touch_restart_poll_timeout_restores_card_and_offline_badge(self):
         body = self._touch_restart_poll_body(_setup_page_src())
         assert "function onTimeout() {{" in body
         timeout_idx = body.find("function onTimeout() {{")
         block = body[timeout_idx:timeout_idx + 300]
-        assert "_dialFinishTouchRestartPoll(card, 'offline', 'Dial did not come back online', false);" in block
+        assert "_dialFinishTouchRestartPoll(card, 'offline', _DIAL_CFG_GENERIC_ERR, false);" in block
 
     def test_touch_restart_poll_finish_helper_restores_busy_and_sets_badge(self):
         src = _setup_page_src()
@@ -1480,7 +1491,50 @@ class TestDialCardHtmlStructure:
         body = src[idx:next_fn] if next_fn > 0 else src[idx:idx + 800]
         assert "dialSetCardBusy(card, false)" in body
         assert "_dialSetStatusBadge(card, badgeState)" in body
-        assert "dialMsg(card, message, ok)" in body
+        assert "_dialShowResultModal(_DIAL_CFG_TITLE, message)" in body
+
+    def test_touch_outcome_messages_depend_on_outcome_and_direction(self):
+        """Disabling touch is a success in its own right, and a panel that
+        will not open is a wiring/type problem the user can act on -- so the
+        message depends on BOTH the outcome and which way touch was going."""
+        src = _setup_page_src()
+        assert "var _DIAL_CFG_TITLE = 'Dial Configuration';" in src
+        assert "'Touch panel configured successfully.'" in src
+        assert "'Touch panel disabled.'" in src
+        assert ("'Touch panel could not be opened. "
+                "Please check touch panel type and wiring.'") in src
+        assert "'An error was encountered applying the configuration.'" in src
+
+    def test_disabling_touch_reports_disabled_not_configured(self):
+        src = _setup_page_src()
+        idx = src.find("function dialBeginTouchRestartPoll")
+        block = src[idx:idx + 2500]
+        # Success branch picks the disabled wording only when going to none.
+        assert ("requestedTouchType === 'none' ? _DIAL_CFG_OK_DISABLED "
+                ": _DIAL_CFG_OK_ENABLED") in block
+        # A panel that fails to open is only a wiring hint when enabling.
+        assert ("requestedTouchType === 'none' ? _DIAL_CFG_GENERIC_ERR "
+                ": _DIAL_CFG_CANNOT_OPEN") in block
+        # Timeout is the generic error.
+        assert "_dialFinishTouchRestartPoll(card, 'offline', _DIAL_CFG_GENERIC_ERR, false)" in block
+
+    def test_touch_restart_outcome_uses_a_single_ok_modal(self):
+        """The outcome arrives up to a minute after the change, so it is
+        reported in a modal rather than an inline line that is easy to miss.
+        Reuses the dial PIN modals' markup and classes."""
+        src = _setup_page_src()
+        assert 'id="dialResultModal" class="modal-overlay"' in src
+        assert 'id="dialResultModalOk"' in src
+        assert 'class="btn modal-btn modal-btn-primary" id="dialResultModalOk">OK<' in src
+        # Exactly one button in its footer -- OK only, no Cancel.
+        start = src.find('id="dialResultModal"')
+        end = src.find("</div>", src.find("modal-ft", start))
+        assert src[start:end].count("<button") == 1
+
+    def test_result_modal_ok_button_is_wired_to_close(self):
+        src = _setup_page_src()
+        assert "resultOk.addEventListener('click', _dialCloseResultModal)" in src
+        assert "function _dialCloseResultModal()" in src
 
     def test_second_save_cancels_prior_touch_restart_poll(self):
         """A second save on the same card must cancel the previous poll
