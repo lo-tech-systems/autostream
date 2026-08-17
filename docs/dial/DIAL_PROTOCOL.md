@@ -350,6 +350,17 @@ by a browser dial-management flow. Its native `403` authorization response and H
 application-failure bodies are preserved unchanged and are not subject to the tunneling
 contract above.
 
+### Recovery arm/disarm endpoints
+
+`POST /api/dial/recovery/arm` and `POST /api/dial/recovery/disarm` proxy to the dial's
+`POST /recovery/arm` and `POST /recovery/disarm` respectively (see section 4). Unlike the
+direct volume endpoint above, these are browser dial-management routes: the main appliance
+requires its own authenticated session before proxying the request — the same
+`require_authenticated_if_pin_enabled` gate applied to `/api/dial/configure` and the other
+dial-management routes. The dial itself does not check a PIN on either endpoint; session
+authentication on the appliance side is what stands in for it. See **`POST /recovery/arm`**
+under section 4 for why.
+
 ---
 
 ## 4. Dial HTTP API (port 7842)
@@ -394,6 +405,89 @@ While a window is active, `200` is returned with the full state:
 | `volume_confirmed` | bool | Historical field name — it means "presence confirmed", not specifically a volume change. Set `true` by any deliberate physical input on the dial: a touch anywhere on the panel, a physical button press, or the rotary encoder turned in either direction (previously only a clockwise turn, or a nudge sent over the local control socket, counted — that left touch-only, button-only, and screen-only dials unable to ever confirm presence). Once set, stays `true` for the rest of the window. |
 | `recovery_remaining_ms` | int | Milliseconds left in the 10-minute recovery window, clamped at 0. `0` whenever no window is active. Lets a client show a countdown and detect expiry without polling `active` alone. |
 | `can_confirm_presence` | bool | Same runtime-truth field documented under `GET /configure` above. |
+
+### `POST /recovery/arm`
+
+Writes a PIN-recovery request marker to persistent storage. Writing the marker does not by
+itself open a recovery window — it only records that recovery has been requested. See
+**Recovery arming** below for how a request is turned into an active window.
+
+**No PIN required.** The PIN is what the caller has lost, so requiring it to reach the
+endpoint that recovers it would be circular. Authority instead comes from the caller being
+authenticated to the main appliance: the appliance only proxies this request (via `POST
+/api/dial/recovery/arm`, see section 3) after checking its own session, and completing
+recovery still requires physical presence at the dial afterwards (see **Recovery arming**).
+
+**Request body:** none required; any body is ignored.
+
+**Response (200):**
+```json
+{"ok": true}
+```
+
+Always `200 {"ok": true}`, including when the marker could not be written (for example,
+read-only storage). That failure is logged on the dial, not surfaced to the caller as an
+error — arming is best-effort and idempotently re-triable.
+
+### `POST /recovery/disarm`
+
+Deletes the PIN-recovery request marker written by `POST /recovery/arm` above, withdrawing
+a request that has not yet been consumed. Called by the main appliance's proxy at `POST
+/api/dial/recovery/disarm` under the same session-authentication rule as `POST
+/recovery/arm`. **No PIN required**, for the same reason as `POST /recovery/arm`.
+
+If a recovery window is already active (the request was already consumed at a prior
+startup), disarming does not close that window — the window runs its own independent
+10-minute course once opened; see **Recovery arming** below.
+
+**Request body:** none required; any body is ignored.
+
+**Response (200):**
+```json
+{"ok": true}
+```
+
+Same best-effort semantics as `POST /recovery/arm`: a failure to remove the marker is
+logged, not surfaced as an error.
+
+### Recovery arming
+
+A PIN-recovery request written by `POST /recovery/arm` does not open a recovery window by
+itself. The window opens only the next time the dial process starts, and only when **both**
+of the following are true at that startup:
+
+1. **An explicit request is pending** — the request marker written by `POST /recovery/arm`
+   is present and has not since been disarmed.
+2. **The device was genuinely power-cycled**, not merely restarted. The dial writes a
+   marker file when it starts and deletes it as part of a clean shutdown; the marker
+   surviving to the next startup means the previous stop did not go through the clean-
+   shutdown path — most likely a power loss, or the process being killed outright. An
+   ordinary `systemctl restart`, a `reboot` command, or the self-restart the dial fires
+   after a firmware update or a `touch_type` change (see `POST /screen/settings`) all go
+   through clean shutdown, so **none of these arm recovery** even with a request pending.
+
+Neither condition alone is enough: a survived marker with no pending request is just an
+ordinary power cycle nobody asked for, and a pending request with a clean-shutdown marker
+means a restart happened before the device was ever power-cycled — the request must stay
+armed for a real power cycle later, not fire on that restart. The request marker is
+consumed (deleted) only in the startup where both conditions were checked together; an
+unrelated clean restart between arming and power-cycling leaves the request intact for the
+power cycle that eventually follows.
+
+**Request expiry.** A pending request older than 30 minutes (measured from when `POST
+/recovery/arm` wrote the marker) is not honoured. This hardware has no RTC, so the age
+comparison only runs once the system clock reports itself synchronised; if synchronisation
+never completes, the request is honoured anyway and the skipped age check is logged — a
+dial with broken time sync and a lost PIN would otherwise be permanently unrecoverable.
+
+This 30-minute request-expiry window is separate from, and precedes, the 10-minute
+**recovery window** described under `RecoveryWindow`/`GET /recovery_status` above: the
+30-minute window bounds the time between requesting recovery and actually power-cycling the
+device; the 10-minute window starts only once the device has restarted with recovery armed,
+and bounds the time available to confirm presence and set a new PIN.
+
+A request found on a dial with no PIN configured is still consumed (deleted) at startup,
+but never arms anything — there is nothing to recover.
 
 ### `POST /update`
 

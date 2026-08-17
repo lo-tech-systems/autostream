@@ -97,29 +97,51 @@ attempts are delayed with an increasing backoff (5 seconds, doubling up to
 
 ## Recovering a Lost PIN
 
-If the PIN is forgotten, it can be reset via physical access to the dial.
+If the PIN is forgotten, it can be reset — but the process now starts from
+the main autostream appliance's web interface, not from the dial itself.
+Physical access to the dial alone is no longer enough to reset a lost PIN;
+you also need access to the appliance's web UI.
 
-The 10-minute recovery window opens automatically each time the dial service
-starts (when a PIN is set). To recover:
-
-1. **Restart the dial service** (or reboot / power-cycle the Pi) to open a
-   fresh 10-minute window.
-2. On the dial's card in the **Dials** panel, click **Reset Lost PIN**.
-3. **Confirm you are at the device** with any physical input the dial has —
-   touch the screen, twist the rotary control, or press the button. Whichever
-   of these the dial actually has is enough; you don't need all of them, and
-   playback is NOT required. The dialog polls the dial and unlocks the
-   new-PIN entry as soon as one of them is detected.
-4. Enter and confirm your new PIN.
+1. On the dial's card in the **Dials** panel, click **Reset Lost PIN**.
+2. A dialog asks *"This feature can be used to reset a lost PIN. Continue?"*
+   Confirm to request recovery. Cancelling or closing the dialog at this or
+   any later point withdraws the request (see *Cancelling* below).
+3. The dialog now shows: *"To reset the Dial PIN, start by power-cycling the
+   Dial now. Once it restarts, you have 10 minutes to confirm you are at the
+   device."* **Power-cycle the dial** — disconnect and reconnect its power,
+   or switch off and on the socket/plug it's connected to. A service
+   restart, a `reboot`, or a firmware update does **not** count: only an
+   actual loss of power is accepted as evidence that whoever is requesting
+   recovery has physical access to the device. You have 30 minutes from step
+   2 to power-cycle the dial before the request expires.
+4. Once the dial has restarted after a genuine power cycle, a 10-minute
+   recovery window opens automatically and the dialog's message changes to
+   prompt for presence. **Confirm you are at the device** with any physical
+   input the dial has — touch the screen, twist the rotary control, or press
+   the button. Whichever of these the dial actually has is enough; you don't
+   need all of them, and playback is NOT required. The dialog polls the dial
+   and unlocks the new-PIN entry as soon as one of them is detected.
+5. Enter and confirm your new PIN.
 
 A dial with none of these inputs — no rotary control, no button, and no
 working touch panel — can never confirm presence, so it can never complete
 PIN recovery. The autostream UI does not offer to set a PIN on such a dial in
 the first place.
 
-While waiting, the dialog shows a countdown of the time left in the recovery
-window. If the window expires before presence is confirmed, power-cycle the
-dial to open a fresh 10-minute window and repeat from step 2.
+While waiting at step 4, the dialog shows a countdown of the time left in the
+10-minute recovery window. If that window expires before presence is
+confirmed, the request has been used up — go back to step 1 and request
+recovery again; simply power-cycling the dial a second time does not reopen
+a window on its own.
+
+### Cancelling
+
+Closing the recovery dialog (**Cancel**, the close control, or Escape) at any
+point withdraws the outstanding request. If the dial has not yet been
+power-cycled, the request is discarded and nothing arms. If the dial has
+already been power-cycled and a recovery window is open, closing the dialog
+does not close that window early — once opened, the 10-minute window runs to
+completion (or until a new PIN is set) regardless of the dialog's state.
 
 ---
 
