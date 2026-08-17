@@ -29,6 +29,8 @@ from autostream_webui_dials import (
     handle_dial_configure_get,
     handle_dial_screen_settings_get,
     handle_dial_screen_settings_post,
+    handle_dial_recovery_arm_post,
+    handle_dial_recovery_disarm_post,
     _proxy_get,
     _proxy_post,
     _MAX_PROXY_RESPONSE_BYTES,
@@ -827,6 +829,142 @@ class TestHandleDialScreenSettings:
             },
         }
         assert "uuid" not in sent_body
+
+
+# ---------------------------------------------------------------------------
+# Recovery arm / disarm proxy handlers
+# ---------------------------------------------------------------------------
+
+class TestHandleDialRecoveryArm:
+    def test_missing_uuid_returns_400(self):
+        sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {})
+        code, data = sent[0]
+        assert code == 400
+        assert data["error"] == "missing_uuid"
+
+    def test_non_string_uuid_returns_400(self):
+        sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": 42})
+        code, data = sent[0]
+        assert code == 400
+        assert data["error"] == "missing_uuid"
+
+    def test_forwards_to_recovery_arm_path(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success()
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_recovery_arm_post(MagicMock(), {"uuid": "my-uuid"})
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/recovery/arm"
+
+    def test_no_body_fields_other_than_uuid_forwarded(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success()
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_recovery_arm_post(
+                MagicMock(), {"uuid": "my-uuid", "extra": "should-not-forward"})
+        _, call_kwargs = conn.request.call_args
+        assert call_kwargs["body"] is None
+
+    def test_success_returns_ok_true(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(body=b'{"ok":true}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": "my-uuid"})
+        code, data = sent[0]
+        assert code == 200
+        assert data["ok"] is True
+
+    def test_dial_unreachable_surfaces_existing_tunneled_error(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = MagicMock()
+        conn.request.side_effect = OSError("refused")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": "my-uuid"})
+        code, data = sent[0]
+        assert code == 200
+        assert data["ok"] is False
+        assert data["error"] == "dial_unreachable"
+        assert data["error_status"] == 502
+
+    def test_dial_offline_surfaces_existing_tunneled_error(self):
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+            sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": "unknown"})
+        code, data = sent[0]
+        assert code == 200
+        assert data["ok"] is False
+        assert data["error"] == "dial_offline"
+        assert data["error_status"] == 404
+
+
+class TestHandleDialRecoveryDisarm:
+    def test_missing_uuid_returns_400(self):
+        sent = _capture_sent(handle_dial_recovery_disarm_post, MagicMock(), {})
+        code, data = sent[0]
+        assert code == 400
+        assert data["error"] == "missing_uuid"
+
+    def test_forwards_to_recovery_disarm_path(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success()
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_recovery_disarm_post(MagicMock(), {"uuid": "my-uuid"})
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/recovery/disarm"
+
+    def test_success_returns_ok_true(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(body=b'{"ok":true}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            sent = _capture_sent(handle_dial_recovery_disarm_post, MagicMock(), {"uuid": "my-uuid"})
+        code, data = sent[0]
+        assert code == 200
+        assert data["ok"] is True
+
+    def test_dial_unreachable_surfaces_existing_tunneled_error(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = MagicMock()
+        conn.request.side_effect = OSError("refused")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            sent = _capture_sent(handle_dial_recovery_disarm_post, MagicMock(), {"uuid": "my-uuid"})
+        code, data = sent[0]
+        assert code == 200
+        assert data["ok"] is False
+        assert data["error"] == "dial_unreachable"
+        assert data["error_status"] == 502
+
+
+class TestRecoveryArmDisarmDispatcherRouting:
+    def test_dispatch_routes_arm(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success()
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            dispatch_dial_management_post(
+                MagicMock(), "/api/dial/recovery/arm", {"uuid": "my-uuid"})
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/recovery/arm"
+
+    def test_dispatch_routes_disarm(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success()
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            dispatch_dial_management_post(
+                MagicMock(), "/api/dial/recovery/disarm", {"uuid": "my-uuid"})
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/recovery/disarm"
 
 
 # ---------------------------------------------------------------------------

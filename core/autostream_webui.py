@@ -1125,7 +1125,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             handle_factory_reset_post(self, STATE, AUTH)
 
         elif path in ("/api/dial/authorize", "/api/dial/revoke", "/api/dial/configure",
-                      "/api/dial/pin_recovery/complete"):
+                      "/api/dial/pin_recovery/complete",
+                      "/api/dial/recovery/arm", "/api/dial/recovery/disarm"):
             if not AUTH.require_authenticated_if_pin_enabled(self):
                 return
             dispatch_dial_management_post(self, path, json_obj)

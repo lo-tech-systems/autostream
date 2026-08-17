@@ -198,6 +198,10 @@ def dispatch_dial_management_post(handler, path: str, json_obj) -> None:
         handle_dial_configure_post(handler, body)
     elif path == "/api/dial/pin_recovery/complete":
         handle_dial_pin_recovery_complete_post(handler, body)
+    elif path == "/api/dial/recovery/arm":
+        handle_dial_recovery_arm_post(handler, body)
+    elif path == "/api/dial/recovery/disarm":
+        handle_dial_recovery_disarm_post(handler, body)
     else:
         # Known dispatcher, unknown management path — tunnel the semantic 404
         # so it survives NGINX interception on the browser boundary.
@@ -253,6 +257,22 @@ def handle_dial_pin_recovery_complete_post(handler, json_obj: dict) -> None:
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/configure", body)
+
+
+def handle_dial_recovery_arm_post(handler, json_obj: dict) -> None:
+    uuid = json_obj.get("uuid", "")
+    if not isinstance(uuid, str) or not uuid:
+        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        return
+    _proxy_post(handler, uuid, "/recovery/arm", None)
+
+
+def handle_dial_recovery_disarm_post(handler, json_obj: dict) -> None:
+    uuid = json_obj.get("uuid", "")
+    if not isinstance(uuid, str) or not uuid:
+        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        return
+    _proxy_post(handler, uuid, "/recovery/disarm", None)
 
 
 def handle_dial_configure_get(handler, uuid: str) -> None:
