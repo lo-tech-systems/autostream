@@ -3949,6 +3949,12 @@ def send_setup_page(
                 document.getElementById('dialPinRecoveryWaitMsg').textContent =
                   "Touch the dial's screen, twist its rotary control, or press its button to confirm you are there. (" +
                   _dialFormatRemaining(remainingMs) + ')';
+                // The dial is back and listening; what the flow is waiting
+                // on is no longer the device but the person standing at it.
+                // Leaving the button on "Waiting for Dial" reads as though
+                // nothing has happened yet, when in fact the only remaining
+                // step is theirs.
+                if (okBtn) okBtn.textContent = 'Waiting for user…';
               }} else if (_dialPinRecoverySeenActive) {{
                 // Window was active and is no longer — it expired rather than
                 // never having started, so tell the user instead of leaving

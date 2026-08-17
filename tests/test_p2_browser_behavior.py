@@ -1785,6 +1785,29 @@ class TestDialPinRecoveryCountdownAndExpiry:
         assert "_dialPinRecoveryCannotConfirm" in poll_body
 
 
+class TestDialPinRecoveryWaitLabel:
+    """Once the dial is back and its recovery window is open, the flow is
+    waiting on the person at the device, not on the device. The button label
+    should say so rather than still reading as though the dial is missing."""
+
+    def test_button_starts_waiting_for_dial(self):
+        src = _setup_page_src()
+        idx = src.find("function _dialPinRecoveryBeginWait")
+        assert idx >= 0
+        block = src[idx:idx + 900]
+        assert "okBtn.textContent = 'Waiting for Dial" in block
+
+    def test_button_switches_to_waiting_for_user_once_active(self):
+        src = _setup_page_src()
+        idx = src.find("function _dialPinRecoveryBeginWait")
+        end = src.find("function handleDialPinRecoveryOk", idx)
+        block = src[idx:end] if end > idx else src[idx:idx + 4000]
+        active_at = block.find("if (stillActive)")
+        label_at = block.find("okBtn.textContent = 'Waiting for user")
+        assert active_at >= 0 and label_at > active_at, (
+            "the label change must happen in the still-active branch")
+
+
 class TestDialPinRecoveryTwoStepFlow:
     """Recovery is now requested first and power-cycled second: a confirm
     step arms the request, and only then does the existing power-cycle
