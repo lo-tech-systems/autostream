@@ -694,9 +694,14 @@ class AuthManager:
     def _set_session_cookie(self, handler, session: Session) -> None:
         # We set a pending attribute to be flushed in ConfigWebHandler.end_headers
         # to ensure proper HTTP protocol order (status line first).
+        # Lax, not Strict: cross-site top-level navigations must carry the
+        # session (the alignment measurement page hands results back via a
+        # plain GET from another origin; Strict would force a fresh login on
+        # every handoff). Cross-site POSTs still get no cookie under Lax,
+        # and every state-changing endpoint requires the CSRF token anyway.
         cookie = (
             f"{SESSION_COOKIE_NAME}={session.token}; "
-            f"Max-Age={SESSION_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Strict"
+            f"Max-Age={SESSION_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Lax"
         )
         handler._pending_auth_cookie = cookie
 

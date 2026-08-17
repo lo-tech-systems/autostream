@@ -207,15 +207,20 @@ def _render_review_section(state: WebUIState) -> str:
         )
 
     return (
+        "<div id='align-review-block'>"
         "<h2>Measurement result</h2>"
         "<table class='align-review-table'>"
         "<thead><tr><th>Output</th><th>Measured delta</th><th>Spread</th>"
         "<th>Current offset</th><th>Proposed offset</th><th></th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
+        "<p class='helptext'>Nothing has been saved yet — Apply writes the"
+        " proposed offsets to the outputs.</p>"
         "<div style='margin-top:1rem;'>"
         "<button type='button' class='pill-btn' onclick='alignApply()'>Apply</button>"
         "<button type='button' class='pill-btn small' onclick='alignDiscard()' style='margin-left:0.5rem;'>Discard</button>"
+        "</div>"
+        "<div class='helptext' id='align-apply-status'></div>"
         "</div>"
     )
 
@@ -322,18 +327,48 @@ window.alignAbort=function(){
 };
 window.alignApply=function(){
   var offsets={};
+  var summary=[];
   document.querySelectorAll('.align-review-table tbody tr').forEach(function(tr){
     var id=tr.querySelector('.align-offset-id');
     var val=tr.querySelector('.align-offset-val');
-    if(id&&val)offsets[id.value]=parseInt(val.value,10)||0;
+    if(id&&val){
+      offsets[id.value]=parseInt(val.value,10)||0;
+      summary.push({
+        name:tr.cells[0]?tr.cells[0].textContent:id.value,
+        current:tr.cells[3]?tr.cells[3].textContent:'',
+        proposed:tr.cells[4]?tr.cells[4].textContent:''
+      });
+    }
   });
   fetch('/api/align/apply',{
     method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
     body:JSON.stringify({offsets:offsets})
-  }).then(function(r){return r.json();}).then(function(){
-    window.location.href='/align';
-  }).catch(function(){});
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.ok){
+      var st=document.getElementById('align-apply-status');
+      if(st)st.textContent='Could not apply: '+((d&&d.error)||'error');
+      return;
+    }
+    var rows=summary.map(function(s){
+      return '<tr><td>'+s.name+'</td><td>'+s.current+'</td><td><strong>'+s.proposed+'</strong></td></tr>';
+    }).join('');
+    var block=document.getElementById('align-review-block');
+    if(block){
+      block.innerHTML='<h2>Offsets applied</h2>'
+        +'<table class="align-review-table">'
+        +'<thead><tr><th>Output</th><th>Previous</th><th>New</th></tr></thead>'
+        +'<tbody>'+rows+'</tbody></table>'
+        +'<p class="helptext">The new offsets are live on the outputs now.</p>'
+        +'<div style="margin-top:1rem;">'
+        +'<a class="pill-btn" href="/owntone-setup">Open output settings</a> '
+        +'<a class="pill-btn small" href="/align" style="margin-left:0.5rem;">Run alignment again</a>'
+        +'</div>';
+    }
+  }).catch(function(){
+    var st=document.getElementById('align-apply-status');
+    if(st)st.textContent='Could not apply: network error';
+  });
 };
 window.alignDiscard=function(){
   fetch('/api/align/discard',{
