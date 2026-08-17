@@ -102,8 +102,10 @@ def send_align_page(handler, state: WebUIState) -> None:
         selection_html = (
             f"{outputs_html}"
             "<div class='align-controls' style='margin:1rem 0;'>"
-            "<button type='button' class='pill-btn' id='alignStartBtn' onclick='alignStart()'>Start</button>"
-            "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()' style='display:none;margin-left:0.5rem;'>Abort</button>"
+            "<button type='button' class='pill-btn small' id='alignStartBtn' onclick='alignStart()'"
+            " style='width:100%;margin-top:0.5rem;'>Start</button>"
+            "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()'"
+            " style='display:none;width:100%;margin-top:0.5rem;'>Abort</button>"
             "</div>"
             "<div id='alignStatus' class='helptext' style='margin:1rem 0;text-align:left;'></div>"
             "<div id='alignLaunch' style='display:none;margin:1rem 0;'>"
@@ -187,12 +189,15 @@ def _render_outputs_section(state: WebUIState) -> str:
             f"<div class='output-card {card_state}'>"
             "<div class='output-card-head'>"
             "<div class='output-card-meta'>"
-            f"<div class='output-card-name'>{html.escape(out.name)}</div>"
+            f"<div class='output-card-name'>{html.escape(out.name)}"
+            " <span class='output-state-chip off align-ref-chip'"
+            " style='display:none;margin-left:0.4rem;'>Reference</span></div>"
             "</div>"
             "<label class='output-toggle'>"
             f"<input type='checkbox' class='align-output-checkbox' value='{html.escape(out.id)}'{checked}"
             " onchange=\"this.closest('.output-card').classList.toggle('output-card-on',this.checked);"
-            "this.closest('.output-card').classList.toggle('output-card-off',!this.checked);\">"
+            "this.closest('.output-card').classList.toggle('output-card-off',!this.checked);"
+            "alignUpdateReference();\">"
             "<span class='switch'></span>"
             "</label>"
             "</div>"
@@ -201,6 +206,10 @@ def _render_outputs_section(state: WebUIState) -> str:
 
     return (
         "<h2>Select the outputs to calibrate</h2>"
+        "<p class='helptext' style='text-align:left;'>"
+        "The first selected output below will be used as the reference "
+        "(other outputs will be adjusted to match it)."
+        "</p>"
         f"<div id='alignOutputs'>{''.join(rows)}</div>"
         "<div class='output-slider-wrap' style='margin:1rem 0;'>"
         "<div class='slider-header'><span>Calibration volume</span>"
@@ -446,9 +455,21 @@ window.alignDiscard=function(){
     body:JSON.stringify({})
   }).then(function(){window.location.href='/align';}).catch(function(){});
 };
+window.alignUpdateReference=function(){
+  var first=true;
+  document.querySelectorAll('.align-output-checkbox').forEach(function(cb){
+    var card=cb.closest('.output-card');
+    var chip=card?card.querySelector('.align-ref-chip'):null;
+    if(!chip)return;
+    var isRef=cb.checked&&first;
+    if(cb.checked)first=false;
+    chip.style.display=isRef?'inline-block':'none';
+  });
+};
 document.addEventListener('DOMContentLoaded',function(){
   alignPoll();
   setInterval(alignPoll,2000);
+  alignUpdateReference();
 });
 }());
 </script>
