@@ -2,19 +2,27 @@
 
 ## Unreleased
 
+- new: Speaker Synchronisation — automatic output alignment. The appliance
+  plays a short tone through each selected output in turn while a companion
+  page opened on your phone listens, measures the timing differences, and
+  hands back per-output offsets to review and apply with one tap — so a
+  TV-connected Apple TV can be lined up with other speakers automatically.
+  Reached from the playback page; requires owntone-mini 1.2 or above
+- new: dial touch panels — resistive and capacitive touch controllers are
+  now supported, adding on-screen playback buttons alongside the rotary
+  input, with the controller selectable per dial from the web UI
+- new: dial displays — selectable screen types (ST7735S, ST7789, ILI9341)
+  with per-dial colour-order and rotation controls, support for screen-only
+  builds without rotary hardware, and an ambient-blur backdrop behind
+  album art
+- improvement: dial PIN recovery is now explicitly requested from the web
+  UI, arms only after a power cycle, and accepts any physical input on the
+  dial as proof of presence
 - new: each AirPlay output's Offset control now takes effect while music is
   playing — drag the slider and that output shifts within a second or two,
-  so a TV-connected Apple TV can be aligned with other speakers by ear. On
-  buffered receivers the adjustment re-times the receiver without
-  interrupting the audio stream (requires the bundled owntone-mini 1.2.0)
-- improvement: the Offset control is now shown for every AirPlay output,
-  with a numeric readout and a reset button, instead of only appearing for
-  outputs that already had an offset configured
-- fix: large negative offsets are now capped to what the configured start
-  buffer can absorb, preventing underruns on the adjusted output
-- fix: the Offset slider no longer silently does nothing when the appliance
-  is paired with a standard OwnTone server (which has no per-output offset
-  support); the control is hidden there instead
+  so it can also be aligned by ear. On buffered receivers the adjustment
+  re-times the receiver without interrupting the audio stream (requires
+  owntone-mini 1.2 or above)
 
 ## Version 0.5.0
 
