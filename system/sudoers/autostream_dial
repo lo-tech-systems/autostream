@@ -1,7 +1,7 @@
 # /etc/sudoers.d/autostream_dial
 #
 # Enumerated sudo privileges for the autostream service user.
-# Four verbs only.  write-playing-service and remove-playing-service are NOT
+# Five verbs only.  write-playing-service and remove-playing-service are NOT
 # included — those manage the autostream appliance's playing announcement and
 # are not needed on a dial-only device (co-installation is unsupported).
 #
@@ -13,6 +13,7 @@ autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin u
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin run-updater
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer enable
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin toggle-dial-update-timer disable
+autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin restart-dial-service
 
 # CGI scripts (run as www-data by fcgiwrap) call autostream_admin for offline recovery.
 # update-status needs sudo because /var/lib/autostream is 0750 (www-data cannot traverse it).

@@ -27,6 +27,7 @@ Exactly one of:
   reboot [--delay SECONDS] [reason]
   restart-owntone
   restart-monitor
+  restart-dial-service
   update-status
   version-info
   sethostname HOSTNAME
@@ -828,6 +829,51 @@ def restart_monitor() -> bool:
         return True
 
     log("ERROR", f"restart-monitor: failed rc={rc} stderr='{err}' stdout='{out}'")
+    return False
+
+
+# Bounded wait for `systemctl restart autostream_dial`. systemd's default
+# stop/start timeouts are 90s each and the unit sets neither explicitly, so an
+# unbounded call could block this admin process for a long time if the dial
+# process wedged on SIGTERM. Measured restart cost on real hardware is 8-11s
+# end-to-end (HTTP answering again); 30s leaves generous margin over that
+# while still being well short of systemd's 90s default, so a genuine hang is
+# reported as a failure instead of hanging this process indefinitely. The
+# dial has no wedge history (unlike owntone), so no graceful-window/SIGABRT
+# escalation is used here — see restart_owntone() above for that pattern.
+_RESTART_DIAL_TIMEOUT_SECONDS = 30.0
+
+
+def restart_dial_service() -> bool:
+    """Restart autostream_dial.service (touch-panel reconfiguration).
+
+    Invoked by dial_http_server.py's self-restart trigger after a Touch
+    Panel change is persisted, so the new touch_type takes effect on the
+    next process start. The unit name is a hardcoded literal here and is
+    never derived from caller input — this verb takes zero arguments.
+    """
+    log("INFO", "restart-dial-service: received request")
+    systemctl = find_systemctl()
+    if not systemctl:
+        log("ERROR", "restart-dial-service: systemctl not found")
+        return False
+
+    try:
+        p = subprocess.run(
+            [str(systemctl), "restart", "autostream_dial"],
+            capture_output=True, text=True, timeout=_RESTART_DIAL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        log("ERROR",
+            f"restart-dial-service: timed out after {_RESTART_DIAL_TIMEOUT_SECONDS:.0f}s")
+        return False
+
+    rc, out, err = p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    if rc == 0:
+        log("INFO", "restart-dial-service: success")
+        return True
+
+    log("ERROR", f"restart-dial-service: failed rc={rc} stderr='{err}' stdout='{out}'")
     return False
 
 
@@ -1942,6 +1988,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
 
     subparsers.add_parser(
+        "restart-dial-service",
+        help="Restart the autostream_dial service (touch-panel reconfiguration).",
+    )
+
+    subparsers.add_parser(
         "update-status",
         help="Print the latest installer update status as JSON.",
     )
@@ -2092,6 +2143,10 @@ def main(argv: list[str]) -> int:
 
         if args.command == "restart-monitor":
             ok = restart_monitor()
+            return 0 if ok else 1
+
+        if args.command == "restart-dial-service":
+            ok = restart_dial_service()
             return 0 if ok else 1
 
         if args.command == "update-status":
