@@ -1785,6 +1785,107 @@ class TestDialPinRecoveryCountdownAndExpiry:
         assert "_dialPinRecoveryCannotConfirm" in poll_body
 
 
+class TestDialPinRecoveryTwoStepFlow:
+    """Recovery is now requested first and power-cycled second: a confirm
+    step arms the request, and only then does the existing power-cycle
+    step (poll, confirm-presence, set-PIN) begin."""
+
+    def _src(self) -> str:
+        return _setup_page_src()
+
+    def test_confirm_step_has_exact_wording_and_yes_no_buttons(self):
+        src = self._src()
+        assert "This feature can be used to reset a lost PIN. Continue?" in src
+        idx = src.find("function openDialPinRecoveryModal")
+        assert idx >= 0
+        end = src.find("\n        async function handleDialPinRecoveryConfirmYes", idx)
+        body = src[idx:end] if end > 0 else src[idx:idx + 2000]
+        assert "dialPinRecoveryConfirmPanel" in body
+        assert "okBtn.textContent = 'Yes'" in body
+        assert "cancelBtn.textContent = 'No'" in body
+
+    def test_yes_posts_to_arm_route_before_wait_step_begins(self):
+        src = self._src()
+        idx = src.find("async function handleDialPinRecoveryConfirmYes")
+        assert idx >= 0
+        end = src.find("\n        function _dialPinRecoveryBeginWait", idx)
+        body = src[idx:end] if end > 0 else src[idx:idx + 1500]
+        arm_idx = body.find("_dialPost('/api/dial/recovery/arm'")
+        begin_wait_idx = body.find("_dialPinRecoveryBeginWait(card, uuid)")
+        assert arm_idx >= 0, "arm route not posted from the confirm step"
+        assert begin_wait_idx >= 0, "wait step never started on success"
+        assert arm_idx < begin_wait_idx, "wait step must not start before the arm request completes"
+
+    def test_failed_arm_does_not_advance_to_wait_step(self):
+        src = self._src()
+        idx = src.find("async function handleDialPinRecoveryConfirmYes")
+        assert idx >= 0
+        end = src.find("\n        function _dialPinRecoveryBeginWait", idx)
+        body = src[idx:end] if end > 0 else src[idx:idx + 1500]
+        else_idx = body.find("}} else {{")
+        assert else_idx >= 0
+        else_body = body[else_idx:]
+        assert "_dialPinRecoveryBeginWait" not in else_body, (
+            "a failed arm must not advance to the power-cycle step"
+        )
+        assert "closeDialPinRecoveryModal()" in else_body
+        assert "_dialErrorMessage(result.error)" in else_body
+        # The network-error branch (fetch itself rejecting) must not advance either.
+        catch_idx = body.find("}} catch(e) {{")
+        assert catch_idx >= 0
+        catch_body = body[catch_idx:]
+        assert "_dialPinRecoveryBeginWait" not in catch_body
+        assert "closeDialPinRecoveryModal()" in catch_body
+
+    def test_ok_button_dispatches_by_step(self):
+        src = self._src()
+        assert "if (_dialPinRecoveryStep === 'confirm')" in src
+        assert "handleDialPinRecoveryConfirmYes();" in src
+        assert "if (_dialPinRecoveryStep === 'set')" in src
+
+    def test_close_posts_to_disarm_route(self):
+        """Cancel/close at either step must best-effort disarm."""
+        src = self._src()
+        idx = src.find("function closeDialPinRecoveryModal")
+        assert idx >= 0
+        end = src.find("\n        async function handleDialPinRecoveryOk", idx)
+        body = src[idx:end] if end > 0 else src[idx:idx + 1000]
+        assert "_dialPost('/api/dial/recovery/disarm'" in body
+
+    def test_cancel_button_reaches_close_at_both_steps(self):
+        """A single Cancel/No button handles both the confirm popup and the
+        power-cycle popup, so wiring it once to closeDialPinRecoveryModal
+        covers cancelling either step."""
+        src = self._src()
+        assert "recoveryCancel.addEventListener('click', closeDialPinRecoveryModal)" in src
+
+    def test_wait_step_still_polls_status_and_handles_confirm_presence(self):
+        src = self._src()
+        idx = src.find("function _dialPinRecoveryBeginWait")
+        assert idx >= 0
+        end = src.find("\n        function _dialPinRecoveryTransitionToSet", idx)
+        body = src[idx:end] if end > 0 else src[idx:idx + 3000]
+        assert "_dialGet('/api/dial/pin_recovery/status/'" in body
+        assert "can_confirm_presence === false" in body
+        assert "_dialPinRecoveryCannotConfirm()" in body
+        assert "_dialPinRecoveryTransitionToSet()" in body
+
+    def test_set_pin_step_still_reachable(self):
+        src = self._src()
+        assert "async function handleDialPinRecoveryOk" in src
+        assert "/api/dial/pin_recovery/complete" in src
+
+    def test_can_confirm_presence_suppression_still_applies(self):
+        """A dial that cannot confirm presence must still not be offered
+        the flow at all -- unaffected by the confirm-step addition."""
+        src = self._src()
+        start = src.find("function _updateDialLockVisibility")
+        assert start >= 0
+        end = src.find("\n        function ", start + 1)
+        body = src[start:end]
+        assert "recoverBtn.style.display = 'none'" in body
+
+
 # ---------------------------------------------------------------------------
 # §7.7  Dial card "Recovery Active" badge (pin_recovery surfaced from mDNS)
 # ---------------------------------------------------------------------------

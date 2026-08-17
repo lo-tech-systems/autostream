@@ -1698,7 +1698,10 @@ def send_setup_page(
   <div class="panel modal-panel">
     <div class="hdr modal-hdr" id="dialPinRecoveryModalTitle">Reset Dial PIN</div>
     <div class="bd modal-bd">
-      <div id="dialPinRecoveryWaitPanel">
+      <div id="dialPinRecoveryConfirmPanel">
+        <p id="dialPinRecoveryConfirmMsg">This feature can be used to reset a lost PIN. Continue?</p>
+      </div>
+      <div id="dialPinRecoveryWaitPanel" style="display:none;">
         <p id="dialPinRecoveryWaitMsg">To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.</p>
       </div>
       <div id="dialPinRecoverySetPanel" style="display:none;">
@@ -3046,6 +3049,7 @@ def send_setup_page(
         var _dialPinModalCard = null;
         var _dialPinModalMode = null; // 'change' | 'unlock'
         var _dialPinRecoveryModalCard = null;
+        var _dialPinRecoveryStep = null; // 'confirm' | 'wait' | 'set'
         var _dialNameModalCard = null;
         var _dialUnlockedPins = new WeakMap(); // card → '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
         var _ICON_PADLOCK_LOCKED = `{ICON_PADLOCK_LOCKED}`;
@@ -3850,11 +3854,11 @@ def send_setup_page(
           var uuid = dialUUID(card);
           var modal = document.getElementById('dialPinRecoveryModal');
           if (!modal || !uuid) return;
+          _dialPinRecoveryStep = 'confirm';
           document.getElementById('dialPinRecoveryModalTitle').textContent = 'Reset Dial PIN';
-          document.getElementById('dialPinRecoveryWaitPanel').style.display = '';
+          document.getElementById('dialPinRecoveryConfirmPanel').style.display = '';
+          document.getElementById('dialPinRecoveryWaitPanel').style.display = 'none';
           document.getElementById('dialPinRecoverySetPanel').style.display = 'none';
-          document.getElementById('dialPinRecoveryWaitMsg').textContent =
-            'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.';
           var newInp = document.getElementById('dialPinRecoveryNewInput');
           var confInp = document.getElementById('dialPinRecoveryConfirmInput');
           var errEl = document.getElementById('dialPinRecoveryError');
@@ -3863,9 +3867,54 @@ def send_setup_page(
           if (errEl) {{ errEl.style.display = 'none'; errEl.textContent = ''; }}
           var okBtn = document.getElementById('dialPinRecoveryOk');
           var cancelBtn = document.getElementById('dialPinRecoveryCancel');
-          if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial…'; }}
-          if (cancelBtn) cancelBtn.disabled = false;
+          if (okBtn) {{ okBtn.disabled = false; okBtn.textContent = 'Yes'; }}
+          if (cancelBtn) {{ cancelBtn.disabled = false; cancelBtn.textContent = 'No'; }}
+          if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
           modal.classList.add('show');
+        }}
+
+        // Popup 1 ("This feature can be used to reset a lost PIN. Continue?")
+        // asked the admin, not the device. Only on Yes does the appliance
+        // proxy an arm request to the dial -- if that fails, there is
+        // nothing to wait for, so the flow must not advance to the
+        // power-cycle step or the user would wait for an arm that never
+        // happened.
+        async function handleDialPinRecoveryConfirmYes() {{
+          var card = _dialPinRecoveryModalCard;
+          if (!card) return;
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          var cancelBtn = document.getElementById('dialPinRecoveryCancel');
+          if (okBtn) okBtn.disabled = true;
+          if (cancelBtn) cancelBtn.disabled = true;
+          try {{
+            var result = await _dialPost('/api/dial/recovery/arm', {{uuid: uuid}});
+            if (result.ok) {{
+              _dialPinRecoveryBeginWait(card, uuid);
+            }} else {{
+              dialMsg(card, _dialErrorMessage(result.error), false);
+              closeDialPinRecoveryModal();
+            }}
+          }} catch(e) {{
+            dialMsg(card, 'Network error', false);
+            closeDialPinRecoveryModal();
+          }}
+        }}
+
+        // Popup 2: the existing power-cycle wording and status poll,
+        // unchanged, now started only once the arm request has succeeded.
+        function _dialPinRecoveryBeginWait(card, uuid) {{
+          _dialPinRecoveryStep = 'wait';
+          document.getElementById('dialPinRecoveryConfirmPanel').style.display = 'none';
+          document.getElementById('dialPinRecoveryWaitPanel').style.display = '';
+          document.getElementById('dialPinRecoverySetPanel').style.display = 'none';
+          document.getElementById('dialPinRecoveryWaitMsg').textContent =
+            'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          var cancelBtn = document.getElementById('dialPinRecoveryCancel');
+          if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial…'; }}
+          if (cancelBtn) {{ cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }}
           _dialPinRecoverySeenActive = false;
           if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
           _dialPinRecoveryTimer = setInterval(async function() {{
@@ -3911,6 +3960,7 @@ def send_setup_page(
         }}
 
         function _dialPinRecoveryTransitionToSet() {{
+          _dialPinRecoveryStep = 'set';
           document.getElementById('dialPinRecoveryModalTitle').textContent = 'Set New Dial PIN';
           document.getElementById('dialPinRecoveryWaitPanel').style.display = 'none';
           document.getElementById('dialPinRecoverySetPanel').style.display = '';
@@ -3923,10 +3973,18 @@ def send_setup_page(
         }}
 
         function closeDialPinRecoveryModal() {{
+          var card = _dialPinRecoveryModalCard;
+          var uuid = dialUUID(card);
           _dialPinRecoveryModalCard = null;
+          _dialPinRecoveryStep = null;
           if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
           var modal = document.getElementById('dialPinRecoveryModal');
           if (modal) modal.classList.remove('show');
+          // Best-effort: bounds a forgotten request without relying on the
+          // device clock. A closed browser mid-flow leaves nothing armed.
+          if (uuid) {{
+            _dialPost('/api/dial/recovery/disarm', {{uuid: uuid}}).catch(function() {{}});
+          }}
         }}
 
         async function handleDialPinRecoveryOk() {{
@@ -4055,7 +4113,10 @@ def send_setup_page(
           var recoveryOk = document.getElementById('dialPinRecoveryOk');
           var recoveryCancel = document.getElementById('dialPinRecoveryCancel');
           var recoveryConfirmInp = document.getElementById('dialPinRecoveryConfirmInput');
-          if (recoveryOk) recoveryOk.addEventListener('click', handleDialPinRecoveryOk);
+          if (recoveryOk) recoveryOk.addEventListener('click', function() {{
+            if (_dialPinRecoveryStep === 'confirm') {{ handleDialPinRecoveryConfirmYes(); return; }}
+            if (_dialPinRecoveryStep === 'set') {{ handleDialPinRecoveryOk(); return; }}
+          }});
           if (recoveryCancel) recoveryCancel.addEventListener('click', closeDialPinRecoveryModal);
           if (recoveryConfirmInp) recoveryConfirmInp.addEventListener('keydown', function(ev) {{
             if (ev.key === 'Enter') {{ ev.preventDefault(); handleDialPinRecoveryOk(); }}
