@@ -691,6 +691,24 @@ class TestValidateScreenSettings:
             validate_screen_settings({"fitted": True, "touch_type": 42})
 
 
+class TestRunningMarkerPath:
+    """RUNNING_MARKER_PATH is the unclean-shutdown signal dial_main.py
+    lifecycles — it MUST sit on real disk beside SETTINGS_PATH, never in
+    /run or any other tmpfs (tmpfs is cleared at every boot, which would
+    make the signal permanently absent and silently defeat the whole
+    feature built on top of it)."""
+
+    def test_marker_is_under_the_state_directory(self):
+        assert dc.RUNNING_MARKER_PATH.parent == dc.SETTINGS_PATH.parent
+
+    def test_marker_is_not_under_run(self):
+        assert "/run/" not in dc.RUNNING_MARKER_PATH.as_posix()
+        assert not dc.RUNNING_MARKER_PATH.as_posix().startswith("/run/")
+
+    def test_marker_filename(self):
+        assert dc.RUNNING_MARKER_PATH.name == "running.txt"
+
+
 class TestSaveConfigAtomic:
     def test_settings_path_exists_after_save(self, tmp_path):
         s = tmp_path / "dial-settings.json"

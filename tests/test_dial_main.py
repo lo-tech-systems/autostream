@@ -541,6 +541,144 @@ class TestDialFinalCleanup:
 
 
 # ---------------------------------------------------------------------------
+# Unclean-shutdown signal: running.txt lifecycle.
+#
+# Nothing acts on the signal yet; this only establishes and logs it.
+# Each test patches dial_main.RUNNING_MARKER_PATH to a tmp_path
+# file so nothing touches the real /var/lib/autostream location.
+# ---------------------------------------------------------------------------
+
+class TestRunningMarkerLifecycle:
+    def _run(self, marker_path, caplog=None, touch_side_effect=None, unlink_side_effect=None):
+        import dial_main as dm
+
+        cfg = _make_cfg()
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        patches = [
+            patch("dial_main._configure_logging"),
+            patch("dial_main.load_config", return_value=cfg),
+            patch("dial_main._reconcile_update_timer"),
+            patch("dial_main._announce_self"),
+            patch("dial_main.DialLED"),
+            patch("dial_main.DialHTTPServer", return_value=mock_http),
+            patch("dial_main.start_playing_browser"),
+            patch("dial_main.stop_playing_browser"),
+            patch("dial_main.start_volume_worker"),
+            patch("dial_main.DialControlServer", return_value=mock_control),
+            patch("threading.Event", _QuickEvent),
+            patch("dial_main.RUNNING_MARKER_PATH", marker_path),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            if touch_side_effect is not None:
+                with patch.object(type(marker_path), "touch", side_effect=touch_side_effect):
+                    dm.main()
+            elif unlink_side_effect is not None:
+                with patch.object(type(marker_path), "unlink", side_effect=unlink_side_effect):
+                    dm.main()
+            else:
+                dm.main()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+    def test_marker_created_at_start(self, tmp_path):
+        marker = tmp_path / "running.txt"
+        assert not marker.exists()
+
+        class _NeverShutdown(threading.Event):
+            """Only used to observe the marker exists mid-run — main() still
+            exits via the standard QuickEvent behaviour in _run()."""
+
+        # Simplest check: the marker exists by the time main() returns, since
+        # a clean shutdown deletes it — so assert existence DURING the run by
+        # checking inside a patched _reconcile_update_timer callback instead.
+        seen = {}
+
+        def _observe(*_a, **_kw):
+            seen["exists_after_create"] = marker.exists()
+
+        import dial_main as dm
+
+        cfg = _make_cfg()
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer", side_effect=_observe), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http), \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer", return_value=mock_control), \
+             patch("threading.Event", _QuickEvent), \
+             patch("dial_main.RUNNING_MARKER_PATH", marker):
+            dm.main()
+
+        assert seen["exists_after_create"] is True, (
+            "running marker must exist by the time startup proceeds past "
+            "_reconcile_update_timer(), i.e. it is created early in main()"
+        )
+
+    def test_marker_removed_on_clean_shutdown(self, tmp_path):
+        marker = tmp_path / "running.txt"
+        self._run(marker)
+        assert not marker.exists(), (
+            "running marker must be deleted by the finally block on clean shutdown"
+        )
+
+    def test_survival_detected_and_logged_at_warning(self, tmp_path, caplog):
+        marker = tmp_path / "running.txt"
+        marker.write_text("")  # simulate survival from an unclean previous run
+        with caplog.at_level("WARNING"):
+            self._run(marker, caplog)
+        assert "running marker survived" in caplog.text
+        assert any(r.levelname == "WARNING" for r in caplog.records
+                    if "running marker survived" in r.message)
+
+    def test_no_warning_on_first_boot_when_marker_absent(self, tmp_path, caplog):
+        marker = tmp_path / "running.txt"
+        assert not marker.exists()
+        with caplog.at_level("WARNING"):
+            self._run(marker, caplog)
+        assert "running marker survived" not in caplog.text
+
+    def test_write_failure_does_not_prevent_startup(self, tmp_path, caplog):
+        """A read-only/broken state directory must not stop the dial from
+        starting — creating the marker is best-effort."""
+        marker = tmp_path / "running.txt"
+        with caplog.at_level("WARNING"):
+            self._run(marker, caplog, touch_side_effect=OSError("read-only file system"))
+        # main() must not have raised (the context manager above would have
+        # propagated it) and the failure must be logged.
+        assert "could not create running marker" in caplog.text
+
+    def test_delete_failure_does_not_prevent_shutdown(self, tmp_path, caplog):
+        """A failure to delete the marker must not prevent the rest of the
+        finally block (and thus main()) from completing."""
+        marker = tmp_path / "running.txt"
+        with caplog.at_level("WARNING"):
+            self._run(marker, caplog, unlink_side_effect=OSError("read-only file system"))
+        assert "could not remove running marker" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # End-to-end display selection through the real mDNS registry, and
 # live POST /screen/settings apply against a running DialDisplay.
 # ---------------------------------------------------------------------------

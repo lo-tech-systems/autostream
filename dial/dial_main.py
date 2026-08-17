@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from dial_config import load_config
+from dial_config import RUNNING_MARKER_PATH, load_config
 from dial_control import DialControlServer
 from dial_http_server import (
     ADMIN_CMD,
@@ -77,6 +77,57 @@ def _reconcile_update_timer(auto_update: bool) -> None:
         logging.warning(
             "startup: timer reconciliation raised %s: %s — continuing",
             type(e).__name__, e,
+        )
+
+
+def _check_unclean_shutdown() -> None:
+    """Log a WARNING if the running marker survived from a previous run.
+
+    Its survival means the previous stop did NOT go through the clean-
+    shutdown path in main()'s finally block — most likely a power loss, or
+    the process being killed outright. This WP only establishes and logs
+    the signal; nothing yet acts on it.
+
+    Must be called BEFORE _create_running_marker() recreates the file, or
+    the check would always see the marker this very process just wrote and
+    "detect" an unclean shutdown on every start.
+    """
+    if RUNNING_MARKER_PATH.exists():
+        logging.warning(
+            "autostream-dial: running marker survived from the previous "
+            "run — last shutdown was not clean (power loss or the process "
+            "was killed)"
+        )
+
+
+def _create_running_marker() -> None:
+    """Create the running marker for this run.
+
+    Wrapped in try/except: a dial with a read-only or otherwise broken state
+    directory must still be able to start. Losing this signal only degrades
+    unclean-shutdown detection, it must never take the service down.
+    """
+    try:
+        RUNNING_MARKER_PATH.touch(exist_ok=True)
+    except OSError as e:
+        logging.warning(
+            "autostream-dial: could not create running marker %s: %s",
+            RUNNING_MARKER_PATH, e,
+        )
+
+
+def _remove_running_marker() -> None:
+    """Delete the running marker as part of a clean shutdown.
+
+    Wrapped in try/except: a failure here must never prevent the rest of
+    the shutdown sequence (in main()'s finally block) from completing.
+    """
+    try:
+        RUNNING_MARKER_PATH.unlink(missing_ok=True)
+    except OSError as e:
+        logging.warning(
+            "autostream-dial: could not remove running marker %s: %s",
+            RUNNING_MARKER_PATH, e,
         )
 
 
@@ -234,6 +285,11 @@ def main() -> None:
     cfg = load_config()
     logging.info("autostream-dial starting (version %s, uuid %s)", VERSION, cfg.uuid)
 
+    # Check BEFORE recreating: recreating first would make the marker
+    # "survive" every single start, including this one.
+    _check_unclean_shutdown()
+    _create_running_marker()
+
     _reconcile_update_timer(cfg.auto_update)
     _announce_self(cfg)
 
@@ -371,6 +427,7 @@ def main() -> None:
         while not shutdown_event.wait(5):
             led.set_playing() if get_playing_targets() else led.set_idle()
     finally:
+        _remove_running_marker()
         stop_playing_browser()
         if touch_source is not None:
             touch_source.stop()

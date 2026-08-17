@@ -32,6 +32,18 @@ HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
 SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
 INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 
+# Unclean-shutdown signal (see dial_main.py's running-marker lifecycle):
+# created at every service start, deleted on clean shutdown. Its survival at
+# the next startup is evidence the previous stop was NOT clean (power loss,
+# or the process was killed).
+#
+# This MUST live on real disk, alongside SETTINGS_PATH above — NOT in /run
+# or any other tmpfs. /run is cleared at every boot, so a marker there would
+# always be absent at startup: power cycles would never be detected, and any
+# feature armed off that signal would never arm. That would be a silent,
+# total failure, not a partial degradation.
+RUNNING_MARKER_PATH = Path('/var/lib/autostream/running.txt')
+
 
 def _normalise_dial_channel(value: object) -> str:
     """Return 'dev' only when *value* normalises to 'dev'; otherwise 'stable'."""
