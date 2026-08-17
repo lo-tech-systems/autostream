@@ -270,6 +270,11 @@ def main() -> None:
     # prevent the dial from starting or affect volume control, exactly like
     # the display stack's own isolation above.
     touch_source = None
+    # Runtime readiness signal for GET /screen/settings — distinct from the
+    # persisted cfg.display.touch_type, which changes the instant a POST
+    # saves it even though the running process hasn't restarted yet. See
+    # DialHTTPServer.set_touch_runtime.
+    touch_runtime = "none"
     if (
         cfg.display.fitted
         and cfg.display.touch_type != "none"
@@ -280,9 +285,12 @@ def main() -> None:
                 cfg, display, confirm_presence=http_server.confirm_volume
             )
             touch_source.start()
+            touch_runtime = cfg.display.touch_type
         except Exception as e:
             logging.warning("dial touch: touch stack unavailable (%s) — touch disabled", e)
             touch_source = None
+            touch_runtime = "failed"
+    http_server.set_touch_runtime(touch_runtime)
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
 

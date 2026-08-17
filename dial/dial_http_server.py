@@ -33,6 +33,13 @@ _UPDATE_RESULT_PATH = Path('/var/lib/autostream/update-result.env')
 
 MAX_BODY = 4096  # bytes — rejects oversized bodies before JSON parsing
 
+# POST /screen/settings is unauthenticated when no PIN is configured (the
+# out-of-box state — see the PIN check further down), and the dial's unit
+# has RestartSec=10. Without a floor on trigger frequency, an open restart
+# endpoint is a sustained denial-of-service. This is a security control,
+# not a nicety.
+_TOUCH_RESTART_COOLDOWN_SECONDS = 60
+
 # ---- Version ----------------------------------------------------------------
 
 def _load_version() -> str:
@@ -238,6 +245,9 @@ class DialHTTPServer:
         # never overclaims presence-confirmation capability.
         self._can_confirm_presence = False
         self._touch_source = None
+        self._touch_runtime = ''
+        self._touch_restart_lock = threading.Lock()
+        self._last_touch_restart_monotonic: float | None = None
         self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
         self._display_status.update_config(cfg.display)
         self._server          = http.server.HTTPServer(
@@ -279,6 +289,54 @@ class DialHTTPServer:
         see dial_main.py's construction of each). Called once at startup
         after construction finishes; reflects runtime reality, not config."""
         self._can_confirm_presence = bool(value)
+
+    def set_touch_runtime(self, value: str) -> None:
+        """Record what the touch stack actually did at startup, distinct
+        from cfg.display.touch_type: the running controller key (e.g.
+        "xpt2046") when touch was constructed and started, "none" when
+        touch was deliberately not built (disabled by config or no
+        screen fitted), or "failed" when construction was attempted and
+        raised. Called once at startup after touch construction finishes.
+        This is what makes GET /screen/settings' runtime.touch_type a real
+        signal instead of the persisted config echoed back early."""
+        self._touch_runtime = value
+
+    def _touch_restart_allowed(self) -> bool:
+        """Rate-gate a touch-type restart trigger: refuses more than one
+        per _TOUCH_RESTART_COOLDOWN_SECONDS. Reserves the slot immediately
+        (before the caller actually fires the restart) so two requests
+        racing each other cannot both pass. Call this BEFORE the HTTP
+        response is sent, so the decision can be reflected in the response
+        body — only the actual subprocess launch (fire_touch_restart) has
+        to wait until after the response is flushed."""
+        now = time.monotonic()
+        with self._touch_restart_lock:
+            last = self._last_touch_restart_monotonic
+            if last is not None and (now - last) < _TOUCH_RESTART_COOLDOWN_SECONDS:
+                logging.warning(
+                    "dial touch: restart refused — cooldown active (%.1fs remaining)",
+                    _TOUCH_RESTART_COOLDOWN_SECONDS - (now - last),
+                )
+                return False
+            self._last_touch_restart_monotonic = now
+            return True
+
+    def fire_touch_restart(self) -> None:
+        """Launch the self-restart, fire-and-forget. Must only be called
+        AFTER the HTTP response has been sent: _send_json writes
+        synchronously to wfile on the handler thread, and the server is
+        the stdlib blocking HTTPServer, so triggering first risks the
+        process being torn down mid-write. Uses Popen (never waited on) so
+        the handler thread never blocks; sudo -n fails fast rather than
+        hanging if sudo is ever misconfigured, instead of the bare `sudo`
+        this module's other call sites use. A failed trigger must not fail
+        the settings save — the config is already persisted by the time
+        this runs — so any error here is logged and swallowed."""
+        try:
+            subprocess.Popen(["sudo", "-n", ADMIN_CMD, "restart-dial-service"])
+            logging.info("dial touch: restart triggered (touch_type changed)")
+        except Exception as e:
+            logging.warning("dial touch: restart trigger failed: %s", e)
 
     def get_runtime_status(self) -> dict:
         """Return a fresh snapshot of runtime state without exposing secrets.
@@ -384,7 +442,7 @@ class DialHTTPServer:
                     with dial_server._cfg_lock:
                         cfg = dial_server._cfg
                     runtime = dial_server._display_status.get_status()
-                    runtime.setdefault('touch_type', '')
+                    runtime['touch_type'] = dial_server._touch_runtime
                     self._send_json(200, {
                         'ok':             True,
                         'screen':         {
@@ -661,7 +719,7 @@ class DialHTTPServer:
                         "screen settings apply failed (screen_type=%s) — on-disk config left unchanged",
                         new_display.screen_type,
                     )
-                    runtime.setdefault('touch_type', '')
+                    runtime['touch_type'] = dial_server._touch_runtime
                     self._send_json(200, {
                         'ok':      False,
                         'error':   'screen_apply_failed',
@@ -691,13 +749,21 @@ class DialHTTPServer:
                     new_display.fitted, new_display.rotate, new_display.screen_type,
                     new_display.bgr, new_display.touch_type,
                 )
-                runtime.setdefault('touch_type', '')
+                runtime['touch_type'] = dial_server._touch_runtime
                 # fitted/rotate/bgr/screen_type all apply live. touch_type
                 # does not: the touch stack is constructed once at startup
                 # from the persisted controller, so a change to it only
                 # takes effect on the next service start. Say so rather
-                # than reporting a live apply that did not happen.
-                self._send_json(200, {
+                # than reporting a live apply that did not happen — and,
+                # if the change is real and the cooldown allows it, restart
+                # the service ourselves so it does not sit stale.
+                #
+                # The cooldown gate is decided here so the outcome can be
+                # reflected in the response, but the restart is only
+                # actually FIRED after _send_json returns below — see
+                # DialHTTPServer.fire_touch_restart.
+                restarting = touch_type_changed and dial_server._touch_restart_allowed()
+                response = {
                     'ok':               True,
                     'screen':           {
                         'fitted':      new_cfg.display.fitted,
@@ -708,7 +774,12 @@ class DialHTTPServer:
                     },
                     'runtime':          runtime,
                     'restart_required': touch_type_changed,
-                })
+                }
+                if restarting:
+                    response['restarting'] = True
+                self._send_json(200, response)
+                if restarting:
+                    dial_server.fire_touch_restart()
 
             def _handle_update_check(self) -> None:
                 try:

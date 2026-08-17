@@ -51,6 +51,9 @@ class FakeDialServer:
         }
         self._can_confirm_presence = False
         self._touch_source = None
+        self._touch_runtime = ''
+        self._touch_restart_lock = threading.Lock()
+        self._last_touch_restart_monotonic: float | None = None
         self._announce_calls: list = []
 
     def update_cfg(self, new_cfg: DialConfig) -> None:
@@ -65,6 +68,16 @@ class FakeDialServer:
 
     def _make_handler(self):
         return dhs.DialHTTPServer._make_handler(self)
+
+    # The cooldown gate and the actual restart trigger reuse the real
+    # DialHTTPServer implementation rather than reinventing it here — this
+    # fake exists to exercise dial_http_server.py's handler logic, not to
+    # duplicate it.
+    def _touch_restart_allowed(self) -> bool:
+        return dhs.DialHTTPServer._touch_restart_allowed(self)
+
+    def fire_touch_restart(self) -> None:
+        dhs.DialHTTPServer.fire_touch_restart(self)
 
 
 def _make_handler_cls(cfg: DialConfig | None = None) -> tuple:
@@ -103,8 +116,10 @@ def _call_handler(
 
     result: dict = {}
     save_calls:  list = []
+    call_order:  list = []
 
     def _send_json(status, data):
+        call_order.append("send_json")
         result["status"] = status
         result["data"]   = data
 
@@ -120,8 +135,13 @@ def _call_handler(
     h._send_429   = _send_429
     h.send_error  = _send_error
 
+    def _popen(*args, **kwargs):
+        call_order.append("popen")
+        return MagicMock()
+
     with patch("dial_config.save_config",
-               side_effect=lambda c: save_calls.append(copy.copy(c))):
+               side_effect=lambda c: save_calls.append(copy.copy(c))), \
+         patch("subprocess.Popen", side_effect=_popen) as mock_popen:
         if method == "GET":
             h.do_GET()
         elif method == "POST":
@@ -131,6 +151,8 @@ def _call_handler(
 
     result["save_calls"] = save_calls
     result["server"]     = server
+    result["call_order"] = call_order
+    result["popen_mock"] = mock_popen
     return result
 
 
@@ -892,6 +914,62 @@ class TestScreenSettingsGet:
             "touch_type": "xpt2046",
         }
 
+    def test_runtime_touch_type_reports_running_controller(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
+        handler_cls, server = _make_handler_cls(cfg)
+        server._touch_runtime = "xpt2046"
+        result = {}
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["runtime"]["touch_type"] == "xpt2046"
+
+    def test_runtime_touch_type_none_when_disabled(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, touch_type="none"))
+        handler_cls, server = _make_handler_cls(cfg)
+        server._touch_runtime = "none"
+        result = {}
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["runtime"]["touch_type"] == "none"
+
+    def test_runtime_touch_type_failed_when_construction_raised(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, touch_type="xpt2046"))
+        handler_cls, server = _make_handler_cls(cfg)
+        server._touch_runtime = "failed"
+        result = {}
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["runtime"]["touch_type"] == "failed"
+
+    def test_runtime_touch_type_independent_of_persisted_config(self):
+        """The whole point of runtime.touch_type: it must reflect what is
+        actually RUNNING, not what was just persisted. A dial whose config
+        says X but whose running process is still on Y (pre-restart) must
+        report screen.touch_type == X (persisted) and runtime.touch_type
+        == Y (running) simultaneously."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type="xpt2046",
+        ))
+        handler_cls, server = _make_handler_cls(cfg)
+        server._touch_runtime = "ft6206"
+        result = {}
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"]["touch_type"] == "xpt2046"
+        assert result["data"]["runtime"]["touch_type"] == "ft6206"
+
 
 class TestScreenSettingsPost:
     def setup_method(self):
@@ -1106,6 +1184,167 @@ class TestTouchTypeRestartRequired:
         ))
         r = self._post(cfg, {"fitted": True, "rotate": True, "touch_type": "xpt2046"})
         assert r["data"]["restart_required"] is False
+
+    def test_apply_failure_response_reports_runtime_touch_type_not_dead_default(self):
+        """runtime.touch_type must report the running touch stack on every
+        response that carries it, not a placeholder. This one covers the
+        apply-failure branch."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, screen_type="st7735s_160x128",
+        ))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        server._touch_runtime = "ft6206"
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
+            setup_server=server,
+        )
+        assert r["data"]["error"] == "screen_apply_failed"
+        assert r["data"]["runtime"]["touch_type"] == "ft6206"
+
+    def test_success_response_reports_runtime_touch_type_not_dead_default(self):
+        """Same dead pattern, success branch."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
+        server = FakeDialServer(cfg)
+        server._touch_runtime = "ft6206"
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True}},
+            setup_server=server,
+        )
+        assert r["data"]["runtime"]["touch_type"] == "ft6206"
+
+
+# ---------------------------------------------------------------------------
+# Self-restart on touch_type change (POST /screen/settings)
+# ---------------------------------------------------------------------------
+
+class TestTouchTypeSelfRestart:
+    """The dial restarts itself via `sudo -n autostream_admin
+    restart-dial-service` when touch_type actually changes, fired
+    fire-and-forget (Popen, never waited on) strictly after the HTTP
+    response has been sent, and rate-limited to at most once per
+    dhs._TOUCH_RESTART_COOLDOWN_SECONDS since POST /screen/settings is
+    unauthenticated on a PIN-less dial."""
+
+    def _post_touch_change(self, server, touch_type):
+        return _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "touch_type": touch_type}},
+            setup_server=server,
+        )
+
+    def test_restart_triggered_on_touch_type_change(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        server = FakeDialServer(cfg)
+        r = self._post_touch_change(server, "xpt2046")
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert r["data"]["restarting"] is True
+        r["popen_mock"].assert_called_once_with(
+            ["sudo", "-n", dhs.ADMIN_CMD, "restart-dial-service"]
+        )
+
+    def test_restart_not_triggered_when_touch_type_unchanged(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, touch_type="xpt2046"))
+        server = FakeDialServer(cfg)
+        r = self._post_touch_change(server, "xpt2046")
+        assert r["data"]["restart_required"] is False
+        assert "restarting" not in r["data"]
+        r["popen_mock"].assert_not_called()
+
+    def test_restart_not_triggered_on_validation_failure(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        server = FakeDialServer(cfg)
+        r = self._post_touch_change(server, "no_such_controller")
+        assert r["status"] == 400
+        r["popen_mock"].assert_not_called()
+
+    def test_restart_not_triggered_on_wrong_pin(self):
+        cfg = DialConfig(uuid="x", pin="9999", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "touch_type": "xpt2046"}, "current_pin": "0000"},
+            cfg=cfg,
+        )
+        assert r["status"] == 403
+        r["popen_mock"].assert_not_called()
+
+    def test_restart_fires_strictly_after_response_is_sent(self):
+        """_send_json writes synchronously to wfile on the handler thread;
+        firing the restart before it returns would risk truncating the
+        response. Recording call order (not just that both happened) is
+        the only way to prove this."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        server = FakeDialServer(cfg)
+        r = self._post_touch_change(server, "xpt2046")
+        assert r["call_order"] == ["send_json", "popen"]
+
+    def test_popen_raising_does_not_fail_the_request(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        handler_cls, server = _make_handler_cls(cfg)
+        body_bytes = json.dumps({"screen": {"fitted": True, "touch_type": "xpt2046"}}).encode()
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.rfile          = io.BytesIO(body_bytes)
+        h.client_address = ("127.0.0.1", 1)
+        h.headers        = {"Content-Length": str(len(body_bytes))}
+        result: dict = {}
+        h._send_json  = lambda s, d: result.update(status=s, data=d)
+        h.send_error  = lambda c, *_: result.update(status=c)
+        h._send_429   = lambda w: result.update(status=429)
+
+        with patch("dial_config.save_config", side_effect=lambda c: None), \
+             patch("subprocess.Popen", side_effect=OSError("no sudo")):
+            h._handle_screen_settings()
+
+        assert result["status"] == 200
+        assert result["data"]["ok"] is True
+        assert result["data"]["restarting"] is True
+
+    def test_cooldown_refuses_second_trigger_within_window(self, caplog):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        server = FakeDialServer(cfg)
+        with patch("dial_http_server.time.monotonic", return_value=1000.0):
+            r1 = self._post_touch_change(server, "xpt2046")
+        assert r1["data"]["restarting"] is True
+        assert r1["popen_mock"].call_count == 1
+
+        with patch("dial_http_server.time.monotonic", return_value=1010.0), \
+             caplog.at_level("WARNING"):
+            r2 = self._post_touch_change(server, "ft6206")
+        assert r2["data"]["restart_required"] is True
+        assert "restarting" not in r2["data"]
+        assert r2["popen_mock"].call_count == 0
+        assert any("cooldown" in rec.message for rec in caplog.records)
+
+    def test_cooldown_allows_trigger_after_window_elapses(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, touch_type=DEFAULT_TOUCH_KEY,
+        ))
+        server = FakeDialServer(cfg)
+        with patch("dial_http_server.time.monotonic", return_value=1000.0):
+            self._post_touch_change(server, "xpt2046")
+        with patch(
+            "dial_http_server.time.monotonic",
+            return_value=1000.0 + dhs._TOUCH_RESTART_COOLDOWN_SECONDS + 1,
+        ):
+            r2 = self._post_touch_change(server, "ft6206")
+        assert r2["data"]["restarting"] is True
+        assert r2["popen_mock"].call_count == 1
 
 
 class TestScreenSettingsApplyThenPersist:
@@ -1386,6 +1625,16 @@ class TestCanConfirmPresenceAndRemainingMs:
         assert server._can_confirm_presence is True
         server.set_can_confirm_presence(False)
         assert server._can_confirm_presence is False
+
+    def test_set_touch_runtime_updates_real_server(self):
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._touch_runtime = ''
+        server.set_touch_runtime("xpt2046")
+        assert server._touch_runtime == "xpt2046"
+        server.set_touch_runtime("none")
+        assert server._touch_runtime == "none"
+        server.set_touch_runtime("failed")
+        assert server._touch_runtime == "failed"
 
     def test_recovery_not_confirmed_403_unchanged_by_new_fields(self):
         """Sanity check: the existing 403 recovery_not_confirmed behaviour is

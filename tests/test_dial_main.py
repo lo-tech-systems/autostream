@@ -669,6 +669,7 @@ class TestScreenSettingsLiveApply:
         server._display_status = display
         server._recovery_window = MagicMock()
         server._touch_source = None
+        server._touch_runtime = ''
 
         assert display.get_status()["fitted"] is False
 
@@ -701,6 +702,7 @@ class TestScreenSettingsLiveApply:
         server._display_status = display
         server._recovery_window = MagicMock()
         server._touch_source = None
+        server._touch_runtime = ''
 
         assert display.get_status()["rotate"] is False
 
@@ -735,6 +737,7 @@ class TestScreenSettingsLiveApply:
         server._display_status = display
         server._recovery_window = MagicMock()
         server._touch_source = None
+        server._touch_runtime = ''
 
         assert display.get_status()["bgr"] is False
         assert display.get_status()["screen_type"] == "st7735s_160x128"
@@ -799,6 +802,7 @@ class TestTouchConstruction:
         finally:
             for p in reversed(patches):
                 p.stop()
+        self._last_http = mock_http
         return build_mock
 
     def test_touch_constructed_when_fitted_and_touch_type_set(self):
@@ -849,6 +853,57 @@ class TestTouchConstruction:
         # The failed instance never made it into the module's touch_source
         # local, so nothing in the finally block tries to stop it again.
         touch_instance.stop.assert_not_called()
+
+    # -- set_touch_runtime() reports what actually happened, distinct from
+    #    what set_can_confirm_presence reports (that's presence, this is the
+    #    controller identity for GET /screen/settings' runtime.touch_type) --
+
+    def test_touch_runtime_reports_running_controller_key(self):
+        from dial_config import DialDisplayConfig
+
+        touch_instance = MagicMock()
+        build_mock = MagicMock(return_value=touch_instance)
+
+        self._run(DialDisplayConfig(fitted=True, touch_type="xpt2046"), build_mock)
+
+        self._last_http.set_touch_runtime.assert_called_once_with("xpt2046")
+
+    def test_touch_runtime_none_when_not_fitted(self):
+        from dial_config import DialDisplayConfig
+
+        build_mock = MagicMock()
+        self._run(DialDisplayConfig(fitted=False, touch_type="xpt2046"), build_mock)
+
+        self._last_http.set_touch_runtime.assert_called_once_with("none")
+
+    def test_touch_runtime_none_when_touch_type_none(self):
+        from dial_config import DialDisplayConfig
+
+        build_mock = MagicMock()
+        self._run(DialDisplayConfig(fitted=True, touch_type="none"), build_mock)
+
+        self._last_http.set_touch_runtime.assert_called_once_with("none")
+
+    def test_touch_runtime_failed_when_construction_raised(self, caplog):
+        from dial_config import DialDisplayConfig
+
+        build_mock = MagicMock(side_effect=RuntimeError("no SPI bus"))
+        with caplog.at_level("WARNING"):
+            self._run(DialDisplayConfig(fitted=True, touch_type="xpt2046"), build_mock)
+
+        self._last_http.set_touch_runtime.assert_called_once_with("failed")
+
+    def test_touch_runtime_failed_when_start_raised(self, caplog):
+        from dial_config import DialDisplayConfig
+
+        touch_instance = MagicMock()
+        touch_instance.start.side_effect = RuntimeError("gpiozero missing")
+        build_mock = MagicMock(return_value=touch_instance)
+
+        with caplog.at_level("WARNING"):
+            self._run(DialDisplayConfig(fitted=True, touch_type="xpt2046"), build_mock)
+
+        self._last_http.set_touch_runtime.assert_called_once_with("failed")
 
     def test_encoder_and_button_path_unaffected_by_touch_failure(self, caplog):
         """A raising touch stack must not affect the (independent) rotary
