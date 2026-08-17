@@ -38,11 +38,17 @@ _log = logging.getLogger(__name__)
 # as an unprivileged user that cannot create new directories under /run.
 FREQ_FILE = "/run/autostream-pipes/align-freq"
 TONE_HELPER = "/opt/autostream/autostream_align_tone.py"
-PERIOD_MS = 4500
+PERIOD_MS = 1500
 BURST_MS = 150
-CYCLES_PER_OUTPUT = 3  # k in the launch URL; hold time per output = k * period
-BASE_FREQ_HZ = 1000
-FREQ_STEP_HZ = 250
+CYCLES_PER_OUTPUT = 5  # k in the launch URL; hold time per output = k * period
+# Fixed table rather than a linear ramp: each tone sits at least ~200Hz clear
+# of the 2nd and 3rd harmonics of every lower tone in the table, so a
+# distorted small speaker's harmonics don't land in another output's
+# detection bin and cause misattribution. Assignment is by cycle-order index;
+# more outputs than entries extends the table (see _freq_for_index).
+FREQ_TABLE_HZ = (600, 840, 1450, 2100, 3100, 4600)
+FREQ_TABLE_EXTEND_FACTOR = 1.45
+FREQ_TABLE_MAX_HZ = 8000
 MAX_SECONDS = 600  # hard cap on a whole run, regardless of cycle count
 # The tone helper must generate at the rate the backend actually reads the
 # pipe at, or every burst shifts in pitch AND the audible period stretches
@@ -79,6 +85,25 @@ class AlignArrival:
 class AlignResult:
     ref_output_id: str
     arrivals: tuple = ()
+
+
+def _build_freq_table(count: int) -> "Optional[list]":
+    """Frequencies for *count* participants, by cycle-order index.
+
+    Starts from the fixed FREQ_TABLE_HZ; if more frequencies are needed than
+    the table holds, extends it by repeatedly multiplying the last entry by
+    FREQ_TABLE_EXTEND_FACTOR and rounding to the nearest 10Hz. Returns None
+    if the extension would need to exceed FREQ_TABLE_MAX_HZ before *count*
+    frequencies are available -- there is no more room to keep tones clear
+    of each other's harmonics.
+    """
+    freqs = list(FREQ_TABLE_HZ)
+    while len(freqs) < count:
+        nxt = round((freqs[-1] * FREQ_TABLE_EXTEND_FACTOR) / 10.0) * 10
+        if nxt > FREQ_TABLE_MAX_HZ:
+            return None
+        freqs.append(nxt)
+    return freqs[:count]
 
 
 def parse_result_entries(raw: str) -> list:
@@ -197,6 +222,10 @@ class AlignRun:
         if unknown:
             return False, f"Unknown output: {unknown[0]}"
 
+        freqs = _build_freq_table(len(ids))
+        if freqs is None:
+            return False, "Too many outputs selected to assign distinct calibration tones"
+
         # Snapshot every available output (not just the chosen ones) so
         # cleanup() can restore selection/volume for anything the run
         # touches, including outputs that were selected but not chosen.
@@ -217,7 +246,7 @@ class AlignRun:
                 name=by_id[oid].name,
                 volume_percent=int(by_id[oid].volume_percent or 0),
                 stored_offset_ms=int(by_id[oid].offset_ms or 0),
-                freq_hz=BASE_FREQ_HZ + FREQ_STEP_HZ * i,
+                freq_hz=freqs[i],
                 selected=bool(getattr(by_id[oid], "selected", False)),
             )
             for i, oid in enumerate(ids)

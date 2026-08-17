@@ -494,6 +494,49 @@ def test_discard_calls_run_discard_result(tmp_path):
     assert sent["body"]["ok"] is True
 
 
+# ── /align page: selection hidden while a result is pending ─────────────────
+
+class TestAlignPageSelectionVisibility:
+    def test_selection_and_start_hidden_when_result_pending(self, tmp_path):
+        from autostream_webui_page_align import send_align_page
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        align_run.snapshots.return_value = [
+            AlignOutputSnapshot(id="out-a", name="A", volume_percent=30, stored_offset_ms=0, freq_hz=600),
+        ]
+        align_run.pending_result.return_value = AlignResult(
+            ref_output_id="out-a", arrivals=()
+        )
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+
+        send_align_page(handler, state)
+
+        body = sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8")
+        assert "Measurement result" in body
+        assert "id='alignStartBtn'" not in body
+        assert "id='alignOutputs'" not in body
+        assert "id='alignVolume'" not in body
+
+    def test_selection_and_start_shown_when_no_pending_result(self, tmp_path):
+        from autostream_webui_page_align import send_align_page
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        align_run.pending_result.return_value = None
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+
+        send_align_page(handler, state)
+
+        body = sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8")
+        assert "alignStartBtn" in body
+        assert "Measurement result" not in body
+
+
 # ── Router-level CSRF enforcement ────────────────────────────────────────────
 
 try:

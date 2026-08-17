@@ -60,7 +60,28 @@ def send_align_page(handler, state: WebUIState) -> None:
     lic_html, lic_spacer = build_top_banner_html()
 
     review_html = _render_review_section(state)
-    outputs_html = _render_outputs_section(state)
+    has_pending_result = bool(review_html)
+
+    # While a measurement result is pending review, only the review/summary
+    # flow renders -- the outputs-selection + calibration-volume + Start
+    # section would let the user kick off a new run and lose the one
+    # waiting to be applied/discarded.
+    if has_pending_result:
+        selection_html = ""
+    else:
+        outputs_html = _render_outputs_section(state)
+        selection_html = (
+            f"{outputs_html}"
+            "<div class='align-controls' style='margin:1rem 0;'>"
+            "<button type='button' class='pill-btn' id='alignStartBtn' onclick='alignStart()'>Start</button>"
+            "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()' style='display:none;margin-left:0.5rem;'>Abort</button>"
+            "</div>"
+            "<div id='alignStatus' class='helptext' style='margin:1rem 0;text-align:left;'></div>"
+            "<div id='alignLaunch' style='display:none;margin:1rem 0;'>"
+            "<p>Open this link on your phone:</p>"
+            "<a id='alignLaunchLink' class='pill-btn small' href='#' target='_blank' rel='noopener'>Open calibration page</a>"
+            "</div>"
+        )
 
     body_html = (
         "<div class='align-page'>"
@@ -70,16 +91,7 @@ def send_align_page(handler, state: WebUIState) -> None:
         "turn. Open the link below on your phone, hold it near your speakers, "
         "and it will measure and hand back timing offsets to line them up."
         "</p>"
-        f"{outputs_html}"
-        "<div class='align-controls' style='margin:1rem 0;'>"
-        "<button type='button' class='pill-btn' id='alignStartBtn' onclick='alignStart()'>Start</button>"
-        "<button type='button' class='pill-btn small' id='alignAbortBtn' onclick='alignAbort()' style='display:none;margin-left:0.5rem;'>Abort</button>"
-        "</div>"
-        "<div id='alignStatus' class='helptext' style='margin:1rem 0;text-align:left;'></div>"
-        "<div id='alignLaunch' style='display:none;margin:1rem 0;'>"
-        "<p>Open this link on your phone:</p>"
-        "<a id='alignLaunchLink' class='pill-btn small' href='#' target='_blank' rel='noopener'>Open calibration page</a>"
-        "</div>"
+        f"{selection_html}"
         f"<div id='alignReview'>{review_html}</div>"
         "</div>"
     )
@@ -301,22 +313,30 @@ function alignPoll(){
   }).catch(function(){});
 }
 window.alignStart=function(){
+  var startBtn=document.getElementById('alignStartBtn');
+  var statusEl=document.getElementById('alignStatus');
   var outputIds=[];
   document.querySelectorAll('.align-output-checkbox:checked').forEach(function(cb){outputIds.push(cb.value);});
   var volumeEl=document.getElementById('alignVolume');
   var volume=volumeEl?parseInt(volumeEl.value,10):50;
+  var originalLabel=startBtn?startBtn.textContent:'Start';
+  if(startBtn){startBtn.disabled=true;startBtn.textContent='Starting…';}
+  if(statusEl)statusEl.textContent='';
   fetch('/api/align/start',{
     method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
     body:JSON.stringify({output_ids:outputIds,volume:volume})
   }).then(function(r){return r.json();}).then(function(d){
-    if(!d.ok){
-      var statusEl=document.getElementById('alignStatus');
+    if(!d.ok||!d.launch_url){
+      if(startBtn){startBtn.disabled=false;startBtn.textContent=originalLabel;}
       if(statusEl)statusEl.textContent='Could not start: '+(d.error||'error');
       return;
     }
-    alignPoll();
-  }).catch(function(){});
+    window.location.href=d.launch_url;
+  }).catch(function(){
+    if(startBtn){startBtn.disabled=false;startBtn.textContent=originalLabel;}
+    if(statusEl)statusEl.textContent='Could not start: network error';
+  });
 };
 window.alignAbort=function(){
   fetch('/api/align/abort',{

@@ -800,15 +800,15 @@
     }
   });
 
-  // ---------- start button ----------
+  // ---------- start flow ----------
 
-  function onStartClick() {
-    var startError = document.getElementById('start-error');
-    startError.textContent = '';
-
+  // Shared by the auto-start attempt on load and the manual Start button.
+  // On success, begins listening. On failure, rejects with the caught
+  // error so each caller can decide how to present it (auto-start falls
+  // back quietly; the button shows the error inline).
+  function attemptStart() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      startError.textContent = 'This browser does not support microphone access.';
-      return;
+      return Promise.reject(new Error('unsupported'));
     }
 
     var constraints = {
@@ -819,14 +819,30 @@
       }
     };
 
-    navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+    return navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
       micStream = stream;
       var AC = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AC();
-      setupAudioGraph();
-      requestWakeLock();
-      resetListeningState();
-    }).catch(function (err) {
+      // A context created without a user gesture may start suspended
+      // (notably iOS Safari on first visit); resume() before wiring up the
+      // graph so a caller that never granted a gesture surfaces that as a
+      // rejection here rather than silently listening to nothing.
+      var resumed = audioCtx.state === 'suspended' ? audioCtx.resume() : Promise.resolve();
+      return resumed.then(function () {
+        if (audioCtx.state !== 'running') {
+          throw new Error('suspended');
+        }
+        setupAudioGraph();
+        requestWakeLock();
+        resetListeningState();
+      });
+    });
+  }
+
+  function onStartClick() {
+    var startError = document.getElementById('start-error');
+    startError.textContent = '';
+    attemptStart().catch(function (err) {
       startError.textContent = 'Microphone access was denied or unavailable (' +
         (err && err.name ? err.name : String(err)) + '). Please allow microphone access and try again.';
     });
@@ -864,7 +880,15 @@
     document.getElementById('restart-btn').addEventListener('click', resetListeningState);
     document.getElementById('restart-btn-2').addEventListener('click', resetListeningState);
 
+    // Try to start automatically -- a returning visitor with a remembered
+    // microphone permission gets straight to listening with no tap. If it
+    // throws (no remembered permission, or the platform demands a gesture
+    // -- commonly iOS on first visit), fall back to the start screen with a
+    // plain hint rather than an error; the user just taps Start themselves.
     showScreen('screen-start');
+    attemptStart().catch(function () {
+      document.getElementById('start-error').textContent = 'Tap Start to allow microphone access.';
+    });
   }
 
   init();

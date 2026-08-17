@@ -33,6 +33,9 @@ from autostream_align import (
     AlignArrival,
     AlignResult,
     AlignRun,
+    FREQ_TABLE_HZ,
+    FREQ_TABLE_MAX_HZ,
+    _build_freq_table,
     parse_result_entries,
 )
 
@@ -263,9 +266,9 @@ def test_launch_url_and_frequencies_follow_cycle_order():
     outs_part = launch_url.split("outs=", 1)[1]
     entries = outs_part.split(",")
     assert len(entries) == 3
-    assert entries[0].startswith("out-a~1000~")
-    assert entries[1].startswith("out-b~1250~")
-    assert entries[2].startswith("out-c~1500~")
+    assert entries[0].startswith("out-a~600~")
+    assert entries[1].startswith("out-b~840~")
+    assert entries[2].startswith("out-c~1450~")
     assert "ret=http%3A%2F%2Fhost%2Falign%2Fresult" in launch_url
     run.abort()
 
@@ -277,7 +280,7 @@ def test_start_writes_freq_file_for_first_output():
     ok, _ = _start(run, outputs)
     assert ok is True
     with open(freq_file) as f:
-        assert f.read().strip() == "1000"
+        assert f.read().strip() == "600"
     run.abort()
 
 
@@ -438,6 +441,39 @@ def test_discard_result_clears_pending():
     assert run.pending_result() is not None
     run.discard_result()
     assert run.pending_result() is None
+
+
+# ── Frequency table ────────────────────────────────────────────────────────
+
+def test_freq_table_uses_fixed_entries_within_table_size():
+    assert _build_freq_table(len(FREQ_TABLE_HZ)) == list(FREQ_TABLE_HZ)
+
+
+def test_freq_table_extends_beyond_fixed_entries():
+    freqs = _build_freq_table(len(FREQ_TABLE_HZ) + 1)
+    assert freqs[: len(FREQ_TABLE_HZ)] == list(FREQ_TABLE_HZ)
+    # Extension multiplies the previous entry (4600) by 1.45, rounded to 10Hz.
+    assert freqs[len(FREQ_TABLE_HZ)] == 6670
+    assert all(f <= FREQ_TABLE_MAX_HZ for f in freqs)
+
+
+def test_freq_table_refuses_when_extension_would_exceed_cap():
+    # 6 fixed entries extend to a 7th (6670Hz) within the cap, but the 8th
+    # extension step (9670Hz) exceeds FREQ_TABLE_MAX_HZ (8000), so 9
+    # distinct frequencies cannot be produced.
+    assert _build_freq_table(len(FREQ_TABLE_HZ) + 1) is not None
+    assert _build_freq_table(len(FREQ_TABLE_HZ) + 2) is None
+
+
+def test_start_refuses_when_too_many_outputs_for_frequency_table(monkeypatch):
+    import autostream_align as align_mod
+
+    monkeypatch.setattr(align_mod, "_build_freq_table", lambda n: None)
+    outputs = [FakeOutput("a", "A", True, 30), FakeOutput("b", "B", True, 30)]
+    run, _, _, _ = _make_run(outputs)
+    ok, err = _start(run, outputs)
+    assert ok is False
+    assert "Too many outputs" in err
 
 
 # ── parse_result_entries ───────────────────────────────────────────────────
