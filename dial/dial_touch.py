@@ -451,7 +451,29 @@ class TouchEventSource:
         return DigitalInputDevice(_T_IRQ_GPIO, pull_up=True)
 
     def _run(self) -> None:
-        irq = self._irq if self._irq is not None else self._make_default_irq()
+        # Close only what this thread created. An injected irq belongs to
+        # whoever passed it in (tests, mostly) and closing it here would
+        # release a device the owner still holds a reference to.
+        owned_irq = None
+        if self._irq is not None:
+            irq = self._irq
+        else:
+            irq = owned_irq = self._make_default_irq()
+        try:
+            self._loop(irq)
+        finally:
+            if owned_irq is not None:
+                # Without this the T_IRQ GPIO stays claimed for the life of
+                # the process: stop() ends the thread but the pin is never
+                # given back, so anything that later re-opens the touch
+                # stack (a restart-free reconfigure, a test, an orderly
+                # shutdown) finds it busy.
+                try:
+                    owned_irq.close()
+                except Exception:
+                    pass
+
+    def _loop(self, irq) -> None:
         while not self._stop_event.is_set():
             self._poll_noncomposited()
             irq.wait_for_active(timeout=self._idle_tick_interval_s)

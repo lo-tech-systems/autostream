@@ -440,6 +440,80 @@ class TestForceRevealOnly:
         assert sm.overlay_live(now=0.5) == []
 
 
+class TestIrqLifecycle:
+    """The T_IRQ device must be given back when the thread ends.
+
+    A leaked device holds the GPIO for the life of the process: stop()
+    returns, but anything that later re-opens the touch stack finds the pin
+    busy. Process exit hides it, which is exactly why it needs a test.
+    """
+
+    def _source(self, irq=None, make_default=None):
+        src = TouchEventSource(
+            driver=FakeDriver(),
+            touch_filter=TouchFilter(160, 128),
+            state_machine=TouchStateMachine(160, 128),
+            on_reveal_overlay=lambda: None,
+            on_volume_up=lambda: None,
+            on_volume_down=lambda: None,
+            on_mute_toggle=lambda: None,
+            on_dismiss_overlay=lambda: None,
+            on_set_pressed_zone=lambda z: None,
+            irq=irq,
+            idle_tick_interval_s=0.01,
+            poll_interval_s=0.01,
+        )
+        if make_default is not None:
+            src._make_default_irq = make_default
+        return src
+
+    def test_self_created_irq_is_closed_when_the_thread_stops(self):
+        created = FakeIRQ()
+        created.closed = False
+        created.close = lambda: setattr(created, "closed", True)
+
+        src = self._source(irq=None, make_default=lambda: created)
+        src.start()
+        time.sleep(0.05)
+        src.stop()
+
+        assert created.closed is True, "T_IRQ device leaked — GPIO stays claimed"
+
+    def test_injected_irq_is_not_closed(self):
+        """An injected device belongs to the caller; closing it here would
+        release something the owner still holds."""
+        injected = FakeIRQ()
+        injected.closed = False
+        injected.close = lambda: setattr(injected, "closed", True)
+
+        src = self._source(irq=injected)
+        src.start()
+        time.sleep(0.05)
+        src.stop()
+
+        assert injected.closed is False
+
+    def test_irq_is_closed_even_if_the_loop_raises(self):
+        """Driven on this thread, not via start(): a crash in a background
+        thread is reported as an unhandled-thread-exception warning rather
+        than a failure, so the close must be asserted synchronously."""
+        created = FakeIRQ()
+        created.closed = False
+        created.close = lambda: setattr(created, "closed", True)
+
+        src = self._source(irq=None, make_default=lambda: created)
+        src._stop_event = threading.Event()
+
+        def _boom(irq):
+            raise RuntimeError("boom")
+
+        src._loop = _boom
+        with pytest.raises(RuntimeError):
+            src._run()
+
+        assert created.closed is True
+
+
 class TestTouchEventSourceNoncompositedPolling:
     def test_poll_noncomposited_dispatches_force_reveal_only_on_generation_change(self):
         driver = FakeDriver()
