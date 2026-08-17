@@ -427,6 +427,75 @@ class TestPINRecovery:
 
 
 # ---------------------------------------------------------------------------
+# PIN-recovery arm/disarm endpoints — write/delete the request file that
+# dial_main.py evaluates at the next startup. Deliberately unauthenticated:
+# a PIN cannot gate the endpoint that exists to recover a forgotten PIN.
+# ---------------------------------------------------------------------------
+
+class TestRecoveryArmDisarmEndpoints:
+    def test_arm_writes_request_file(self, tmp_path):
+        cfg = DialConfig(uuid="x", pin="9999")
+        request_path = tmp_path / "pin_reset.txt"
+        assert not request_path.exists()
+        with patch("dial_http_server.PIN_RESET_PATH", request_path):
+            r = _call_handler("/recovery/arm", cfg=cfg)
+        assert r["status"] == 200
+        assert r["data"] == {"ok": True}
+        assert request_path.exists()
+
+    def test_disarm_deletes_request_file(self, tmp_path):
+        cfg = DialConfig(uuid="x", pin="9999")
+        request_path = tmp_path / "pin_reset.txt"
+        request_path.write_text("")
+        with patch("dial_http_server.PIN_RESET_PATH", request_path):
+            r = _call_handler("/recovery/disarm", cfg=cfg)
+        assert r["status"] == 200
+        assert r["data"] == {"ok": True}
+        assert not request_path.exists()
+
+    def test_disarm_is_idempotent_when_no_request_file(self, tmp_path):
+        cfg = DialConfig(uuid="x", pin="9999")
+        request_path = tmp_path / "pin_reset.txt"
+        assert not request_path.exists()
+        with patch("dial_http_server.PIN_RESET_PATH", request_path):
+            r = _call_handler("/recovery/disarm", cfg=cfg)
+        assert r["status"] == 200
+        assert r["data"] == {"ok": True}
+
+    def test_arm_requires_no_pin_even_when_one_is_set(self, tmp_path):
+        """No current_pin/pin_recovery field is supplied at all — a PIN check
+        here would be circular, since the PIN is the thing being recovered."""
+        cfg = DialConfig(uuid="x", pin="9999")
+        request_path = tmp_path / "pin_reset.txt"
+        with patch("dial_http_server.PIN_RESET_PATH", request_path):
+            r = _call_handler("/recovery/arm", cfg=cfg, body={})
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+
+    def test_disarm_requires_no_pin_even_when_one_is_set(self, tmp_path):
+        cfg = DialConfig(uuid="x", pin="9999")
+        request_path = tmp_path / "pin_reset.txt"
+        request_path.write_text("")
+        with patch("dial_http_server.PIN_RESET_PATH", request_path):
+            r = _call_handler("/recovery/disarm", cfg=cfg, body={})
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+
+    def test_arm_write_failure_does_not_raise_and_still_responds_ok(self, tmp_path, caplog):
+        """Best-effort like the running-marker helpers: a broken state
+        directory must not take the endpoint down."""
+        cfg = DialConfig(uuid="x", pin="9999")
+        request_path = tmp_path / "pin_reset.txt"
+        with patch("dial_http_server.PIN_RESET_PATH", request_path), \
+             patch.object(type(request_path), "touch", side_effect=OSError("read-only")), \
+             caplog.at_level("WARNING"):
+            r = _call_handler("/recovery/arm", cfg=cfg)
+        assert r["status"] == 200
+        assert r["data"] == {"ok": True}
+        assert "could not write" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # Save failure and timer rollback
 # ---------------------------------------------------------------------------
 

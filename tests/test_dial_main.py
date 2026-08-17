@@ -9,6 +9,7 @@ Covers:
 """
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -676,6 +677,236 @@ class TestRunningMarkerLifecycle:
         with caplog.at_level("WARNING"):
             self._run(marker, caplog, unlink_side_effect=OSError("read-only file system"))
         assert "could not remove running marker" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# PIN-recovery arm-request evaluation: the clock-sync-aware age check in
+# isolation (no dial_main.main() involved, no real sleeping).
+# ---------------------------------------------------------------------------
+
+class TestRecoveryRequestWithinWindow:
+    def test_fresh_request_within_window_when_synced(self, tmp_path):
+        import dial_main as dm
+
+        request = tmp_path / "pin_reset.txt"
+        request.write_text("")
+        sync_marker = tmp_path / "synchronized"
+        sync_marker.write_text("")
+
+        assert dm._recovery_request_within_window(
+            request, sync_marker_path=sync_marker
+        ) is True
+
+    def test_stale_request_not_within_window_when_synced(self, tmp_path):
+        import dial_main as dm
+
+        request = tmp_path / "pin_reset.txt"
+        request.write_text("")
+        old = time.time() - dm._RECOVERY_REQUEST_MAX_AGE_S - 60
+        os.utime(request, (old, old))
+        sync_marker = tmp_path / "synchronized"
+        sync_marker.write_text("")
+
+        assert dm._recovery_request_within_window(
+            request, sync_marker_path=sync_marker
+        ) is False
+
+    def test_unsynced_clock_honours_arm_and_logs_skip(self, tmp_path, caplog):
+        """No sync marker at all: the function must poll (via the injected
+        sleep, never a real one) up to the timeout and then fail open."""
+        import dial_main as dm
+
+        request = tmp_path / "pin_reset.txt"
+        request.write_text("")
+        sync_marker = tmp_path / "never_appears"
+        sleeps = []
+
+        with caplog.at_level("WARNING"):
+            result = dm._recovery_request_within_window(
+                request, sync_marker_path=sync_marker, sleep=sleeps.append,
+            )
+
+        assert result is True
+        assert "clock not yet synchronised" in caplog.text
+        # Polled via the injected callable — never a real time.sleep — for
+        # the full timeout, in fixed intervals.
+        assert sleeps == [dm._TIMESYNC_POLL_INTERVAL_S] * (
+            dm._TIMESYNC_POLL_TIMEOUT_S // dm._TIMESYNC_POLL_INTERVAL_S
+        )
+
+    def test_clock_syncs_mid_poll_then_applies_age_rule(self, tmp_path):
+        """If the sync marker appears partway through the poll, the age rule
+        is applied rather than falling through to the fail-open path."""
+        import dial_main as dm
+
+        request = tmp_path / "pin_reset.txt"
+        request.write_text("")
+        sync_marker = tmp_path / "synchronized"
+        calls = []
+
+        def fake_sleep(interval):
+            calls.append(interval)
+            if len(calls) == 2:
+                sync_marker.write_text("")
+
+        result = dm._recovery_request_within_window(
+            request, sync_marker_path=sync_marker, sleep=fake_sleep,
+        )
+
+        assert result is True
+        assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# PIN-recovery arming decision wired through dial_main.main(): arm only when
+# the running marker survived AND a request file is present, consuming the
+# request only in that branch. Each test patches RUNNING_MARKER_PATH,
+# PIN_RESET_PATH and _TIMESYNC_MARKER_PATH to tmp_path files so nothing
+# touches the real /var/lib/autostream or /run locations.
+# ---------------------------------------------------------------------------
+
+class TestRecoveryArmingDecision:
+    def _run(
+        self, tmp_path, *, running_marker_present, request_present,
+        cfg_pin="1234", synced=True, request_mtime_offset=0.0, caplog=None,
+    ):
+        import dial_main as dm
+
+        cfg = _make_cfg()
+        cfg.pin = cfg_pin
+
+        running_marker = tmp_path / "running.txt"
+        if running_marker_present:
+            running_marker.write_text("")
+
+        request_path = tmp_path / "pin_reset.txt"
+        if request_present:
+            request_path.write_text("")
+            if request_mtime_offset:
+                t = time.time() + request_mtime_offset
+                os.utime(request_path, (t, t))
+
+        sync_marker = tmp_path / "synchronized"
+        if synced:
+            sync_marker.write_text("")
+
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        patches = [
+            patch("dial_main._configure_logging"),
+            patch("dial_main.load_config", return_value=cfg),
+            patch("dial_main._reconcile_update_timer"),
+            patch("dial_main._announce_self"),
+            patch("dial_main.DialLED"),
+            patch("dial_main.DialHTTPServer", return_value=mock_http),
+            patch("dial_main.start_playing_browser"),
+            patch("dial_main.stop_playing_browser"),
+            patch("dial_main.start_volume_worker"),
+            patch("dial_main.DialControlServer", return_value=mock_control),
+            patch("threading.Event", _QuickEvent),
+            patch("dial_main.RUNNING_MARKER_PATH", running_marker),
+            patch("dial_main.PIN_RESET_PATH", request_path),
+            patch("dial_main._TIMESYNC_MARKER_PATH", sync_marker),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            if caplog is not None:
+                with caplog.at_level("WARNING"):
+                    dm.main()
+            else:
+                dm.main()
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+        return mock_http, request_path
+
+    def test_both_present_arms(self, tmp_path):
+        mock_http, _ = self._run(
+            tmp_path, running_marker_present=True, request_present=True
+        )
+        mock_http.begin_recovery_window.assert_called_once()
+
+    def test_running_marker_absent_does_not_arm(self, tmp_path):
+        mock_http, _ = self._run(
+            tmp_path, running_marker_present=False, request_present=True
+        )
+        mock_http.begin_recovery_window.assert_not_called()
+
+    def test_request_absent_does_not_arm(self, tmp_path):
+        mock_http, _ = self._run(
+            tmp_path, running_marker_present=True, request_present=False
+        )
+        mock_http.begin_recovery_window.assert_not_called()
+
+    def test_no_pin_configured_does_not_arm(self, tmp_path):
+        mock_http, _ = self._run(
+            tmp_path, running_marker_present=True, request_present=True,
+            cfg_pin=None,
+        )
+        mock_http.begin_recovery_window.assert_not_called()
+
+    def test_request_deleted_only_in_both_present_branch(self, tmp_path):
+        _, request_path = self._run(
+            tmp_path, running_marker_present=True, request_present=True
+        )
+        assert not request_path.exists()
+
+    def test_request_survives_when_running_marker_absent(self, tmp_path):
+        """An unrelated restart between arming and power-cycling (clean
+        shutdown, so the running marker does NOT survive) must leave the
+        request intact rather than silently disarming it."""
+        _, request_path = self._run(
+            tmp_path, running_marker_present=False, request_present=True
+        )
+        assert request_path.exists()
+
+    def test_fresh_request_arms_when_synced(self, tmp_path):
+        mock_http, request_path = self._run(
+            tmp_path, running_marker_present=True, request_present=True,
+        )
+        mock_http.begin_recovery_window.assert_called_once()
+
+    def test_stale_request_does_not_arm_when_synced(self, tmp_path):
+        mock_http, request_path = self._run(
+            tmp_path, running_marker_present=True, request_present=True,
+            request_mtime_offset=-(30 * 60 + 60),
+        )
+        mock_http.begin_recovery_window.assert_not_called()
+        # Still consumed: the both-present branch was entered even though
+        # the age check failed.
+        assert not request_path.exists()
+
+    def test_unsynced_clock_honours_arm_and_logs_skip(self, tmp_path, caplog, monkeypatch):
+        import dial_main as dm
+
+        # Shrink the poll timeout for this test only, so main() cannot block
+        # on a real wait if this ever regresses to using real time.sleep.
+        monkeypatch.setattr(dm, "_TIMESYNC_POLL_TIMEOUT_S", 0)
+
+        mock_http, _ = self._run(
+            tmp_path, running_marker_present=True, request_present=True,
+            synced=False, caplog=caplog,
+        )
+
+        mock_http.begin_recovery_window.assert_called_once()
+        assert "clock not yet synchronised" in caplog.text
+
+    def test_no_wait_when_no_request_file(self, tmp_path):
+        """A normal boot with no pending request must never even reach the
+        age/sync check — nothing should delay startup."""
+        with patch("dial_main._recovery_request_within_window") as mock_eval:
+            self._run(
+                tmp_path, running_marker_present=True, request_present=False
+            )
+        mock_eval.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1436,8 +1667,21 @@ class TestPresenceConfirmationWiring:
         server._server = MagicMock()
         return server
 
-    def _run(self, cfg, server, build_mock=None):
+    def _run(self, cfg, server, tmp_path, build_mock=None):
         import dial_main as dm
+
+        # Recovery is now armed only when the running marker survived AND a
+        # request file is present (see dial_main._recovery_request_within_
+        # window) — these tests are about confirm-presence wiring into an
+        # already-armed window, not about the arming decision itself, so
+        # simulate an armed window directly: a survived marker, a fresh
+        # request, and a synchronised clock.
+        running_marker = tmp_path / "running.txt"
+        running_marker.write_text("")
+        pin_reset = tmp_path / "pin_reset.txt"
+        pin_reset.write_text("")
+        sync_marker = tmp_path / "synchronized"
+        sync_marker.write_text("")
 
         control_kwargs = {}
 
@@ -1479,6 +1723,9 @@ class TestPresenceConfirmationWiring:
             # only the timer thread it schedules, not its state transitions.
             patch("dial_http_server.threading.Timer"),
             patch("builtins.__import__", side_effect=_fake_import),
+            patch("dial_main.RUNNING_MARKER_PATH", running_marker),
+            patch("dial_main.PIN_RESET_PATH", pin_reset),
+            patch("dial_main._TIMESYNC_MARKER_PATH", sync_marker),
         ]
         if build_mock is not None:
             patches.append(patch("dial_main._build_touch_source", build_mock))
@@ -1494,12 +1741,12 @@ class TestPresenceConfirmationWiring:
 
     # -- any deliberate input confirms presence --------------------------
 
-    def test_encoder_down_confirms(self):
+    def test_encoder_down_confirms(self, tmp_path):
         cfg = _make_cfg()  # clk=22, dt=27 already set
         cfg.pin = "1234"
         server = self._real_server()
 
-        _, encoder_setup, _ = self._run(cfg, server)
+        _, encoder_setup, _ = self._run(cfg, server, tmp_path)
 
         encoder_setup.assert_called_once()
         nudge_down_cb = encoder_setup.call_args.args[3]
@@ -1507,35 +1754,35 @@ class TestPresenceConfirmationWiring:
         nudge_down_cb()
         assert server._recovery_window.snapshot()["volume_confirmed"] is True
 
-    def test_nudge_delta_negative_confirms(self):
+    def test_nudge_delta_negative_confirms(self, tmp_path):
         cfg = _make_cfg()
         cfg.pin = "1234"
         server = self._real_server()
 
-        control_kwargs, _, _ = self._run(cfg, server)
+        control_kwargs, _, _ = self._run(cfg, server, tmp_path)
 
         assert server._recovery_window.snapshot()["volume_confirmed"] is False
         control_kwargs["nudge_delta"](-3)
         assert server._recovery_window.snapshot()["volume_confirmed"] is True
 
-    def test_nudge_delta_zero_does_not_confirm(self):
+    def test_nudge_delta_zero_does_not_confirm(self, tmp_path):
         """Unchanged behaviour: a zero delta is not a deliberate input."""
         cfg = _make_cfg()
         cfg.pin = "1234"
         server = self._real_server()
 
-        control_kwargs, _, _ = self._run(cfg, server)
+        control_kwargs, _, _ = self._run(cfg, server, tmp_path)
 
         control_kwargs["nudge_delta"](0)
         assert server._recovery_window.snapshot()["volume_confirmed"] is False
 
-    def test_button_press_confirms(self):
+    def test_button_press_confirms(self, tmp_path):
         cfg = _make_cfg()
         cfg.sw_gpio = 23
         cfg.pin = "1234"
         server = self._real_server()
 
-        _, _, button_setup = self._run(cfg, server)
+        _, _, button_setup = self._run(cfg, server, tmp_path)
 
         button_setup.assert_called_once()
         on_press_cb = button_setup.call_args.args[1]
@@ -1543,7 +1790,7 @@ class TestPresenceConfirmationWiring:
         on_press_cb()
         assert server._recovery_window.snapshot()["volume_confirmed"] is True
 
-    def test_touch_contact_confirms(self):
+    def test_touch_contact_confirms(self, tmp_path):
         """main() must wire confirm_presence=http_server.confirm_volume into
         _build_touch_source — invoking it must confirm the real recovery
         window, exactly like the encoder/button paths above."""
@@ -1563,7 +1810,7 @@ class TestPresenceConfirmationWiring:
             captured["confirm_presence"] = confirm_presence
             return MagicMock()
 
-        self._run(cfg, server, build_mock=build_mock)
+        self._run(cfg, server, tmp_path, build_mock=build_mock)
 
         assert captured["confirm_presence"].__self__ is server
         assert captured["confirm_presence"].__func__ is server.confirm_volume.__func__
@@ -1573,7 +1820,7 @@ class TestPresenceConfirmationWiring:
 
     # -- can_confirm_presence reflects what actually got constructed -----
 
-    def test_can_confirm_presence_true_for_encoder_and_button(self):
+    def test_can_confirm_presence_true_for_encoder_and_button(self, tmp_path):
         from dial_config import DialDisplayConfig
 
         cfg = _make_cfg()
@@ -1581,11 +1828,11 @@ class TestPresenceConfirmationWiring:
         cfg.display = DialDisplayConfig(fitted=False, touch_type="none")
         server = self._real_server()
 
-        self._run(cfg, server)
+        self._run(cfg, server, tmp_path)
 
         assert server._can_confirm_presence is True
 
-    def test_can_confirm_presence_true_for_encoder_only(self):
+    def test_can_confirm_presence_true_for_encoder_only(self, tmp_path):
         from dial_config import DialDisplayConfig
 
         cfg = _make_cfg()
@@ -1593,11 +1840,11 @@ class TestPresenceConfirmationWiring:
         cfg.display = DialDisplayConfig(fitted=False, touch_type="none")
         server = self._real_server()
 
-        self._run(cfg, server)
+        self._run(cfg, server, tmp_path)
 
         assert server._can_confirm_presence is True
 
-    def test_can_confirm_presence_true_for_button_only(self):
+    def test_can_confirm_presence_true_for_button_only(self, tmp_path):
         from dial_config import DialDisplayConfig
 
         cfg = _make_cfg()
@@ -1605,11 +1852,11 @@ class TestPresenceConfirmationWiring:
         cfg.display = DialDisplayConfig(fitted=False, touch_type="none")
         server = self._real_server()
 
-        self._run(cfg, server)
+        self._run(cfg, server, tmp_path)
 
         assert server._can_confirm_presence is True
 
-    def test_can_confirm_presence_true_for_touch_only(self):
+    def test_can_confirm_presence_true_for_touch_only(self, tmp_path):
         from dial_config import DialDisplayConfig
 
         cfg = _make_cfg()
@@ -1618,11 +1865,11 @@ class TestPresenceConfirmationWiring:
         server = self._real_server()
         build_mock = MagicMock(return_value=MagicMock())
 
-        self._run(cfg, server, build_mock=build_mock)
+        self._run(cfg, server, tmp_path, build_mock=build_mock)
 
         assert server._can_confirm_presence is True
 
-    def test_can_confirm_presence_false_for_screen_only(self):
+    def test_can_confirm_presence_false_for_screen_only(self, tmp_path):
         """No encoder, no button, touch_type 'none': a lock with no key is
         worse than no lock, so this dial must report it cannot confirm."""
         from dial_config import DialDisplayConfig
@@ -1632,11 +1879,11 @@ class TestPresenceConfirmationWiring:
         cfg.display = DialDisplayConfig(fitted=True, touch_type="none")
         server = self._real_server()
 
-        self._run(cfg, server)
+        self._run(cfg, server, tmp_path)
 
         assert server._can_confirm_presence is False
 
-    def test_can_confirm_presence_false_when_touch_construction_raised(self):
+    def test_can_confirm_presence_false_when_touch_construction_raised(self, tmp_path):
         """A dial with touch_type configured whose driver failed to load has
         no WORKING confirmable input, regardless of configuration."""
         from dial_config import DialDisplayConfig
@@ -1647,6 +1894,6 @@ class TestPresenceConfirmationWiring:
         server = self._real_server()
         build_mock = MagicMock(side_effect=RuntimeError("no SPI bus"))
 
-        self._run(cfg, server, build_mock=build_mock)
+        self._run(cfg, server, tmp_path, build_mock=build_mock)
 
         assert server._can_confirm_presence is False

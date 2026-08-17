@@ -709,6 +709,22 @@ class TestRunningMarkerPath:
         assert dc.RUNNING_MARKER_PATH.name == "running.txt"
 
 
+class TestPinResetPath:
+    """PIN_RESET_PATH is the PIN-recovery arm-request file dial_main.py
+    consumes at startup — same real-disk placement rule as
+    RUNNING_MARKER_PATH above and for the same reason."""
+
+    def test_path_is_under_the_state_directory(self):
+        assert dc.PIN_RESET_PATH.parent == dc.SETTINGS_PATH.parent
+
+    def test_path_is_not_under_run(self):
+        assert "/run/" not in dc.PIN_RESET_PATH.as_posix()
+        assert not dc.PIN_RESET_PATH.as_posix().startswith("/run/")
+
+    def test_path_filename(self):
+        assert dc.PIN_RESET_PATH.name == "pin_reset.txt"
+
+
 class TestSaveConfigAtomic:
     def test_settings_path_exists_after_save(self, tmp_path):
         s = tmp_path / "dial-settings.json"

@@ -7,7 +7,8 @@ the dial (name, PIN, step size, auto-update).  It does not serve a browser-
 facing setup UI; dial configuration is done through the appliance web interface.
 
 Routes: GET /configure, POST /configure, GET /recovery_status,
-GET /update/status, GET /update/check, POST /update.
+GET /update/status, GET /update/check, POST /update,
+POST /recovery/arm, POST /recovery/disarm.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from dial_config import InvalidScreenSettings, _read_env_file, validate_screen_settings
+from dial_config import InvalidScreenSettings, PIN_RESET_PATH, _read_env_file, validate_screen_settings
 from dial_display_profiles import DEFAULT_PROFILE_KEY, list_profiles
 from dial_touch_controllers import list_controllers
 
@@ -467,8 +468,41 @@ class DialHTTPServer:
                     self._handle_update()
                 elif self.path == '/screen/settings':
                     self._handle_screen_settings()
+                elif self.path == '/recovery/arm':
+                    self._handle_recovery_arm()
+                elif self.path == '/recovery/disarm':
+                    self._handle_recovery_disarm()
                 else:
                     self.send_error(404)
+
+            # These two endpoints deliberately do NOT run the PIN check that
+            # /configure and /screen/settings apply (compare _handle_configure
+            # and _handle_screen_settings above). Recovery exists to let an
+            # admin who has forgotten the PIN get it back — requiring the PIN
+            # to reach the endpoint that recovers it would be circular. What
+            # stands in for authentication here is that only the appliance's
+            # authenticated web UI is expected to call these (it proxies the
+            # request after checking its own login), and completing recovery
+            # still requires physical presence at the dial afterwards. See
+            # dial_main.py for the startup rule that turns a written request
+            # into an actually-armed recovery window.
+            def _handle_recovery_arm(self) -> None:
+                try:
+                    PIN_RESET_PATH.touch(exist_ok=True)
+                except OSError as e:
+                    logging.warning(
+                        "recovery arm: could not write %s: %s", PIN_RESET_PATH, e
+                    )
+                self._send_json(200, {'ok': True})
+
+            def _handle_recovery_disarm(self) -> None:
+                try:
+                    PIN_RESET_PATH.unlink(missing_ok=True)
+                except OSError as e:
+                    logging.warning(
+                        "recovery disarm: could not remove %s: %s", PIN_RESET_PATH, e
+                    )
+                self._send_json(200, {'ok': True})
 
             def _handle_configure(self) -> None:
                 body = self._read_body()

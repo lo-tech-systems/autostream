@@ -44,6 +44,17 @@ INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 # total failure, not a partial degradation.
 RUNNING_MARKER_PATH = Path('/var/lib/autostream/running.txt')
 
+# PIN-recovery arm request (see dial_main.py's startup arming decision):
+# written by the dial's unauthenticated arm endpoint when an admin requests
+# recovery, deleted by the disarm endpoint or once consumed at the next
+# startup. Its mtime is the request time, used to expire stale requests.
+#
+# Same placement rule as RUNNING_MARKER_PATH above and for the same reason:
+# this MUST live on real disk, not /run. A tmpfs copy would vanish at every
+# reboot, and a power cycle is exactly the event this file is meant to
+# survive across — losing it there would silently defeat the feature.
+PIN_RESET_PATH = Path('/var/lib/autostream/pin_reset.txt')
+
 
 def _normalise_dial_channel(value: object) -> str:
     """Return 'dev' only when *value* normalises to 'dev'; otherwise 'stable'."""
