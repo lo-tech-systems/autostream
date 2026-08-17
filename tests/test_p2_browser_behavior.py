@@ -888,12 +888,19 @@ class TestDialCardHtmlStructure:
         assert "display" in body
 
     def test_set_dial_authorized_updates_badge(self):
+        # setDialAuthorized() no longer hardcodes the badge class/text -- it
+        # delegates to _dialSetStatusBadge(), which owns the tri-state (+
+        # Configuring) mapping. Assert the delegation, not the old inline
+        # class-name literals.
         src = _setup_page_src()
         start = src.find("function setDialAuthorized")
         assert start >= 0
         next_fn = src.find("\nfunction ", start + 1)
         body = src[start:next_fn] if next_fn > 0 else src[start:start + 2000]
-        assert "dial-badge" in body
+        assert "_dialSetStatusBadge(card," in body
+        assert "dial-badge-online" not in body
+        assert "dial-badge-offline" not in body
+        assert "dial-badge-new" not in body
 
     # ── focusout guard prevents save on unauthorized cards ───────────────────
 
@@ -1055,6 +1062,133 @@ class TestDialCardHtmlStructure:
         unlock_block = src[unlock_idx:next_fn_after_unlock]
         assert "dialSyncScreenControlsEnabled(card)" in lock_block
         assert "dialSyncScreenControlsEnabled(card)" in unlock_block
+
+    # ── _dialSetStatusBadge extraction + Configuring state ────────────────────
+
+    def test_dial_set_status_badge_helper_covers_all_four_states(self):
+        src = _setup_page_src()
+        idx = src.find("function _dialSetStatusBadge(card, state)")
+        assert idx >= 0
+        next_fn = src.find("\nfunction ", idx + 1)
+        body = src[idx:next_fn] if next_fn > 0 else src[idx:idx + 2000]
+        assert "online: ['dial-badge-online', 'Online']" in body
+        assert "offline: ['dial-badge-offline', 'Offline']" in body
+        assert "new: ['dial-badge-new', 'New']" in body
+        assert "configuring: ['dial-badge-configuring', 'Configuring']" in body
+
+    def test_set_dial_authorized_delegates_to_status_badge_helper(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function setDialAuthorized(card, authorized)")
+        assert fn_idx >= 0
+        next_fn = src.find("\nfunction ", fn_idx + 1)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 2000]
+        assert "_dialSetStatusBadge(card, authorized ? (online ? 'online' : 'offline') : 'new')" in body
+
+    def test_configuring_badge_css_uses_warning_token(self):
+        src = _setup_page_src()
+        assert (
+            ".dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}"
+            in src
+        )
+        # Same token as the existing amber recovery badge -- not a new color.
+        recovery_idx = src.find(".dial-badge-recovery{")
+        configuring_idx = src.find(".dial-badge-configuring{")
+        assert recovery_idx >= 0 and configuring_idx >= 0
+
+    # ── dialSetCardBusy() ──────────────────────────────────────────────────────
+
+    def test_dial_set_card_busy_covers_all_control_selectors(self):
+        src = _setup_page_src()
+        idx = src.find("function dialSetCardBusy(card, busy)")
+        assert idx >= 0
+        # The selector list sits immediately above the function in this file.
+        list_idx = src.find("_DIAL_BUSY_SELECTORS = [")
+        assert 0 <= list_idx < idx
+        next_fn = src.find("\nfunction ", idx + 1)
+        block = src[list_idx:next_fn] if next_fn > 0 else src[list_idx:idx + 2000]
+        for selector in [
+            "'.dial-allow'", "'.dial-lock-btn'", "'[data-dial-action=\"change-name\"]'",
+            "'.dial-step'", "'.dial-autoupdate'", "'.dial-channel'", "'.dial-screen-fitted'",
+            "'[data-dial-action=\"update\"]'", "'[data-dial-action=\"recover-pin\"]'",
+            "'.dial-screen-rotate'", "'.dial-screen-bgr'", "'.dial-screen-type'", "'.dial-screen-touch'",
+        ]:
+            assert selector in block, selector
+
+    def test_dial_set_card_busy_uses_is_disabled_convention(self):
+        src = _setup_page_src()
+        idx = src.find("function dialSetCardBusy(card, busy)")
+        next_fn = src.find("\nfunction ", idx + 1)
+        body = src[idx:next_fn]
+        assert "row.classList.toggle('is-disabled', busy)" in body
+
+    def test_dial_set_card_busy_unbusy_resyncs_screen_controls_not_blanket_enable(self):
+        """On un-busy the helper must re-run dialSyncScreenControlsEnabled()
+        rather than unconditionally enabling every control -- otherwise a
+        card whose screen isn't fitted comes back with its screen
+        sub-controls wrongly enabled."""
+        src = _setup_page_src()
+        idx = src.find("function dialSetCardBusy(card, busy)")
+        next_fn = src.find("\nfunction ", idx + 1)
+        body = src[idx:next_fn]
+        assert "if (!busy) {{" in body
+        assert "dialSyncScreenControlsEnabled(card);" in body
+
+    # ── _dialGet() and its call sites ─────────────────────────────────────────
+
+    def test_dial_get_helper_defined_alongside_fetch_and_post(self):
+        src = _setup_page_src()
+        idx = src.find("async function _dialGet(path)")
+        assert idx >= 0
+        next_fn = src.find("\nfunction ", idx + 1)
+        alt_next_fn = src.find("\nasync function ", idx + 1)
+        candidates = [n for n in (next_fn, alt_next_fn) if n > 0]
+        end = min(candidates) if candidates else idx + 500
+        body = src[idx:end]
+        assert "_dialFetch(path, {{cache: 'no-store'}})" in body
+
+    def test_dial_get_call_sites_moved_off_hand_rolled_fetch(self):
+        """The three former hand-rolled GET call sites (dialLoadConfig,
+        dialLoadScreenSettings, the PIN-recovery poller) must go through
+        _dialGet() rather than attaching X-CSRF-Token by hand."""
+        src = _setup_page_src()
+        assert src.count("_dialGet(") >= 3
+
+        load_config_idx = src.find("async function dialLoadConfig(card)")
+        load_config_next = src.find("async function dialLoadScreenSettings(card)", load_config_idx)
+        load_config_body = src[load_config_idx:load_config_next]
+        assert "_dialGet('/api/dial/configure/'" in load_config_body
+        assert "headers: {{'X-CSRF-Token'" not in load_config_body
+
+        load_screen_idx = src.find("async function dialLoadScreenSettings(card)")
+        load_screen_next = src.find("async function dialSaveScreenSettings", load_screen_idx)
+        load_screen_body = src[load_screen_idx:load_screen_next]
+        assert "_dialGet('/api/dial/screen/settings/'" in load_screen_body
+        assert "headers: {{'X-CSRF-Token'" not in load_screen_body
+
+        recovery_poll_idx = src.find("_dialPinRecoveryTimer = setInterval")
+        assert recovery_poll_idx >= 0
+        recovery_poll_end = src.find("}}, 2000);", recovery_poll_idx)
+        recovery_poll_body = src[recovery_poll_idx:recovery_poll_end]
+        assert "_dialGet('/api/dial/pin_recovery/status/'" in recovery_poll_body
+        assert "headers: {{'X-CSRF-Token'" not in recovery_poll_body
+
+    # ── dialPollUntil() bounded poller ─────────────────────────────────────────
+
+    def test_dial_poll_until_has_deadline_and_token_guard(self):
+        src = _setup_page_src()
+        idx = src.find("function dialPollUntil(intervalMs, deadlineMs, checkFn, onTimeout)")
+        assert idx >= 0
+        next_fn = src.find("\nasync function ", idx + 1)
+        body = src[idx:next_fn] if next_fn > 0 else src[idx:idx + 2000]
+        # Wall-clock deadline, not an attempt counter.
+        assert "Date.now() + deadlineMs" in body
+        assert "Date.now() >= deadlineAt" in body
+        # Generation-token guard so a superseded/cancelled poll's in-flight
+        # checkFn() promise bails instead of racing.
+        assert "active !== token" in body
+        # Cancellable, and never leaves a dangling interval.
+        assert "return function cancel()" in body
+        assert body.count("clearInterval(timerId)") >= 3
 
     def test_dial_save_screen_settings_sends_rotate(self):
         src = _setup_page_src()
@@ -1263,6 +1397,112 @@ class TestDialCardHtmlStructure:
         screen_gate_idx = body.find("card.dataset.screenCaps === '1'")
         assert screen_gate_idx >= 0 and touch_gate_idx >= 0
         assert screen_gate_idx != touch_gate_idx
+
+    # ── Self-restart poll after a touch-controller change ─────────────────────
+
+    def _touch_restart_poll_body(self, src):
+        idx = src.find("function dialBeginTouchRestartPoll(card, requestedTouchType)")
+        assert idx >= 0
+        next_fn = src.find("\nasync function ", idx + 1)
+        return src[idx:next_fn] if next_fn > 0 else src[idx:idx + 3000]
+
+    def test_save_branches_on_restarting_flag(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "result.body && result.body.restarting === true" in body
+        assert "dialBeginTouchRestartPoll(card, screen.touch_type)" in body
+
+    def test_touch_restart_poll_sets_busy_and_configuring_badge_together(self):
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "dialSetCardBusy(card, true)" in body
+        assert "_dialSetStatusBadge(card, 'configuring')" in body
+        busy_idx = body.find("dialSetCardBusy(card, true)")
+        badge_idx = body.find("_dialSetStatusBadge(card, 'configuring')")
+        assert busy_idx >= 0 and badge_idx >= 0
+
+    def test_touch_restart_poll_clears_recovery_badge(self):
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "_dialSetRecoveryBadge(card, false)" in body
+
+    def test_touch_restart_poll_targets_runtime_touch_type_not_screen(self):
+        """The plan's central trap: screen.touch_type is the PERSISTED value
+        and flips to the new controller from the OLD, not-yet-restarted
+        process, so polling it would report success instantly and verify
+        nothing. Only runtime.touch_type reflects what is actually running."""
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "runtime.touch_type" in body
+        assert "runtime ? runtime.touch_type : null" in body
+        assert "pollResult.body.screen" not in body
+        assert re.search(r"\bscreen\.touch_type\b", body) is None
+
+    def test_touch_restart_poll_uses_dial_poll_until_with_exact_interval_and_deadline(self):
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "dialPollUntil(1000, 60000," in body
+
+    def test_touch_restart_poll_unreachable_response_is_not_treated_as_error(self):
+        """While the dial is down the proxy returns ok:false
+        (dial_unreachable/dial_offline) -- expected, must keep polling
+        silently rather than ending the poll or showing an error."""
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "if (!pollResult.ok) return false;" in body
+
+    def test_touch_restart_poll_done_condition_restores_card_and_online_badge(self):
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "runtimeTouchType === requestedTouchType" in body
+        assert "_dialFinishTouchRestartPoll(card, 'online', 'Touch panel updated', true);" in body
+
+    def test_touch_restart_poll_failed_runtime_value_ends_poll_with_its_own_message(self):
+        """'failed' is a real outcome (the dial came back and its touch stack
+        failed to open), not a timeout -- it must stop the poll immediately
+        with a message distinct from the timeout message."""
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "runtimeTouchType === 'failed'" in body
+        idx = body.find("runtimeTouchType === 'failed'")
+        end_idx = body.find("return true;", idx)
+        block = body[idx:end_idx]
+        assert "_dialFinishTouchRestartPoll(card, 'online', 'Touch panel did not start', false);" in block
+
+    def test_touch_restart_poll_timeout_restores_card_and_offline_badge(self):
+        body = self._touch_restart_poll_body(_setup_page_src())
+        assert "function onTimeout() {{" in body
+        timeout_idx = body.find("function onTimeout() {{")
+        block = body[timeout_idx:timeout_idx + 300]
+        assert "_dialFinishTouchRestartPoll(card, 'offline', 'Dial did not come back online', false);" in block
+
+    def test_touch_restart_poll_finish_helper_restores_busy_and_sets_badge(self):
+        src = _setup_page_src()
+        idx = src.find("function _dialFinishTouchRestartPoll(card, badgeState, message, ok)")
+        assert idx >= 0
+        next_fn = src.find("\nfunction ", idx + 1)
+        body = src[idx:next_fn] if next_fn > 0 else src[idx:idx + 800]
+        assert "dialSetCardBusy(card, false)" in body
+        assert "_dialSetStatusBadge(card, badgeState)" in body
+        assert "dialMsg(card, message, ok)" in body
+
+    def test_second_save_cancels_prior_touch_restart_poll(self):
+        """A second save on the same card must cancel the previous poll
+        rather than run two concurrently."""
+        src = _setup_page_src()
+        fn_idx = src.find("function dialBeginTouchRestartPoll(card, requestedTouchType)")
+        assert fn_idx >= 0
+        next_fn = src.find("\nasync function ", fn_idx + 1)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 3000]
+        assert "_dialCancelTouchRestartPoll(card);" in body
+        # The cancel must happen before a new poll is started, not after.
+        cancel_idx = body.find("_dialCancelTouchRestartPoll(card);")
+        new_poll_idx = body.find("var cancel = dialPollUntil(")
+        assert 0 <= cancel_idx < new_poll_idx
+        # And the cancel helper itself must invoke the stored cancel() and
+        # clear the map entry, not just drop the reference.
+        cancel_fn_idx = src.find("function _dialCancelTouchRestartPoll(card)")
+        assert cancel_fn_idx >= 0
+        cancel_fn_next = src.find("\nfunction ", cancel_fn_idx + 1)
+        cancel_fn_body = src[cancel_fn_idx:cancel_fn_next]
+        assert "cancel();" in cancel_fn_body
+        assert "_dialTouchPollCancel.delete(card);" in cancel_fn_body
 
     def test_revoke_button_absent_in_source(self):
         """The source must not define a Revoke button element."""

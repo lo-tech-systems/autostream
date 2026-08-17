@@ -1580,6 +1580,7 @@ def send_setup_page(
 .dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
 .dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
 .dial-badge-recovery{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
 /* Matches the setup list cards' 0.62rem bottom margin so the Dials panel
@@ -3054,6 +3055,23 @@ def send_setup_page(
           }}
         }}
 
+        // Single source of truth for the tri-state (+ Configuring) status
+        // badge, so setDialAuthorized() and the restart-in-progress flow
+        // can't drift by hardcoding the class/text mapping twice.
+        function _dialSetStatusBadge(card, state) {{
+          var badge = card.querySelector('.dial-badge');
+          if (!badge) return;
+          var map = {{
+            online: ['dial-badge-online', 'Online'],
+            offline: ['dial-badge-offline', 'Offline'],
+            new: ['dial-badge-new', 'New'],
+            configuring: ['dial-badge-configuring', 'Configuring'],
+          }};
+          var entry = map[state] || map.offline;
+          badge.className = 'dial-badge ' + entry[0];
+          badge.textContent = entry[1];
+        }}
+
         function setDialAuthorized(card, authorized) {{
           card.dataset.authorized = authorized ? 'true' : 'false';
           if (authorized) {{ delete card.dataset.new; }} else {{ card.dataset.new = 'true'; }}
@@ -3061,14 +3079,8 @@ def send_setup_page(
           if (allow) allow.checked = authorized;
           var config = card.querySelector('.dial-config');
           if (config) config.style.display = authorized ? '' : 'none';
-          var badge = card.querySelector('.dial-badge');
-          if (badge) {{
-            var online = card.dataset.online === 'true';
-            badge.className = 'dial-badge ' + (authorized
-              ? (online ? 'dial-badge-online' : 'dial-badge-offline')
-              : 'dial-badge-new');
-            badge.textContent = authorized ? (online ? 'Online' : 'Offline') : 'New';
-          }}
+          var online = card.dataset.online === 'true';
+          _dialSetStatusBadge(card, authorized ? (online ? 'online' : 'offline') : 'new');
           if (authorized) {{
             var titleEl = card.querySelector('.dial-card-title');
             var nameInput = card.querySelector('.dial-name');
@@ -3103,6 +3115,31 @@ def send_setup_page(
           card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
             row.classList.toggle('is-disabled', off);
           }});
+        }}
+
+        // Controls outside dialSyncScreenControlsEnabled()'s reach: the nine
+        // whole-card actions plus the four screen sub-controls it already
+        // manages. dialSetCardBusy(card, true) freezes all of them for an
+        // in-flight operation (e.g. the dial restarting itself); un-busy does
+        // NOT blanket re-enable -- it re-runs dialSyncScreenControlsEnabled()
+        // so a card whose screen isn't fitted comes back with its screen
+        // sub-controls still correctly disabled.
+        var _DIAL_BUSY_SELECTORS = [
+          '.dial-allow', '.dial-lock-btn', '[data-dial-action="change-name"]',
+          '.dial-step', '.dial-autoupdate', '.dial-channel', '.dial-screen-fitted',
+          '[data-dial-action="update"]', '[data-dial-action="recover-pin"]',
+          '.dial-screen-rotate', '.dial-screen-bgr', '.dial-screen-type', '.dial-screen-touch'
+        ];
+        function dialSetCardBusy(card, busy) {{
+          _DIAL_BUSY_SELECTORS.forEach(function(sel) {{
+            card.querySelectorAll(sel).forEach(function(el) {{ el.disabled = busy; }});
+          }});
+          card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
+            row.classList.toggle('is-disabled', busy);
+          }});
+          if (!busy) {{
+            dialSyncScreenControlsEnabled(card);
+          }}
         }}
 
         function _dialLockSection(card) {{
@@ -3225,6 +3262,104 @@ def send_setup_page(
           }});
         }}
 
+        async function _dialGet(path) {{
+          return _dialFetch(path, {{cache: 'no-store'}});
+        }}
+
+        // Polls checkFn at intervalMs until it resolves truthy (done) or
+        // deadlineMs elapses, then calls onTimeout. Returns a cancel()
+        // function. Guards against a checkFn() promise resolving after the
+        // poll was stopped/superseded -- the same generation-token shape as
+        // pollRepeatNote(), scoped per call so unrelated dial cards polling
+        // concurrently can't cancel each other.
+        function dialPollUntil(intervalMs, deadlineMs, checkFn, onTimeout) {{
+          var token = {{}};
+          var active = token;
+          var deadlineAt = Date.now() + deadlineMs;
+          var timerId = setInterval(function() {{
+            if (active !== token) {{ clearInterval(timerId); return; }}
+            if (Date.now() >= deadlineAt) {{
+              clearInterval(timerId);
+              active = null;
+              onTimeout();
+              return;
+            }}
+            Promise.resolve(checkFn()).then(function(done) {{
+              if (active !== token) return;  // cancelled/superseded while awaiting
+              if (done) {{ clearInterval(timerId); active = null; }}
+            }}).catch(function() {{
+              // Keep polling to the deadline. A check that throws is the
+              // normal case while the target is restarting; swallowing it
+              // here keeps that from surfacing as an unhandled rejection
+              // and from ending the poll early.
+            }});
+          }}, intervalMs);
+          return function cancel() {{
+            active = null;
+            clearInterval(timerId);
+          }};
+        }}
+
+        // ── Dial self-restart after a touch-controller change ──────────────
+        // The dial persists the new touch_type and THEN restarts, so
+        // screen.touch_type (built from persisted config) reports the new
+        // value instantly from the old, not-yet-restarted process -- polling
+        // it would report success immediately and verify nothing.
+        // runtime.touch_type is the one field that reflects what is
+        // actually running, so that -- and only that -- is what gets polled.
+        var _dialTouchPollCancel = new WeakMap(); // card → cancel() of an in-flight restart poll
+
+        function _dialCancelTouchRestartPoll(card) {{
+          var cancel = _dialTouchPollCancel.get(card);
+          if (cancel) {{
+            cancel();
+            _dialTouchPollCancel.delete(card);
+          }}
+        }}
+
+        function _dialFinishTouchRestartPoll(card, badgeState, message, ok) {{
+          _dialTouchPollCancel.delete(card);
+          dialSetCardBusy(card, false);
+          _dialSetStatusBadge(card, badgeState);
+          dialMsg(card, message, ok);
+          if (ok) {{ setTimeout(function() {{ dialMsg(card, '', true); }}, 2000); }}
+        }}
+
+        function dialBeginTouchRestartPoll(card, requestedTouchType) {{
+          // A second save on the same card must supersede, not race, a poll
+          // already in flight for that card.
+          _dialCancelTouchRestartPoll(card);
+          var uuid = dialUUID(card);
+          dialSetCardBusy(card, true);
+          _dialSetStatusBadge(card, 'configuring');
+          // A restart clears the dial's in-memory recovery window, so a
+          // stale "Recovery Active" badge left showing would be a lie.
+          _dialSetRecoveryBadge(card, false);
+          var cancel = dialPollUntil(1000, 60000, async function() {{
+            var pollResult = await _dialGet('/api/dial/screen/settings/' + encodeURIComponent(uuid));
+            // The dial is unreachable for most of this window; the proxy
+            // reports that as ok:false (dial_unreachable/dial_offline).
+            // Expected -- keep polling silently, it is not an error.
+            if (!pollResult.ok) return false;
+            var runtime = pollResult.body && pollResult.body.runtime;
+            var runtimeTouchType = runtime ? runtime.touch_type : null;
+            if (runtimeTouchType === 'failed') {{
+              // The dial came back and reported its touch stack failed to
+              // open -- a real outcome, not a timeout. Stop waiting now.
+              _dialFinishTouchRestartPoll(card, 'online', 'Touch panel did not start', false);
+              return true;
+            }}
+            if (runtimeTouchType === requestedTouchType) {{
+              _dialFinishTouchRestartPoll(card, 'online', 'Touch panel updated', true);
+              return true;
+            }}
+            return false;
+          }}, function onTimeout() {{
+            _dialFinishTouchRestartPoll(card, 'offline', 'Dial did not come back online', false);
+          }});
+          _dialTouchPollCancel.set(card, cancel);
+        }}
+
         async function dialToggleAllow(card, checked) {{
           var uuid = dialUUID(card);
           if (!uuid) return;
@@ -3319,10 +3454,7 @@ def send_setup_page(
           var uuid = dialUUID(card);
           if (!uuid) return;
           try {{
-            var r = await fetch('/api/dial/configure/' + encodeURIComponent(uuid), {{
-              cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
-            }});
-            var loadResult = await _parseDialResponse(r);
+            var loadResult = await _dialGet('/api/dial/configure/' + encodeURIComponent(uuid));
             if (!loadResult.ok) return;
             var j = loadResult.body;
             var stepEl = card.querySelector('.dial-step');
@@ -3345,10 +3477,7 @@ def send_setup_page(
           var uuid = dialUUID(card);
           if (!uuid) return;
           try {{
-            var r = await fetch('/api/dial/screen/settings/' + encodeURIComponent(uuid), {{
-              cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
-            }});
-            var loadResult = await _parseDialResponse(r);
+            var loadResult = await _dialGet('/api/dial/screen/settings/' + encodeURIComponent(uuid));
             if (!loadResult.ok) return;
             var j = loadResult.body;
             var fittedEl = card.querySelector('.dial-screen-fitted');
@@ -3471,8 +3600,15 @@ def send_setup_page(
           try {{
             var result = await _dialPost('/api/dial/screen/settings', body);
             if (result.ok) {{
-              dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
-              dialSyncScreenControlsEnabled(card);
+              if (result.body && result.body.restarting === true) {{
+                // The dial is restarting itself to apply the new touch
+                // controller -- hand off to the bounded poll instead of the
+                // ordinary immediate-success path.
+                dialBeginTouchRestartPoll(card, screen.touch_type);
+              }} else {{
+                dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
+                dialSyncScreenControlsEnabled(card);
+              }}
             }}
             else {{
               dialMsg(card, _dialErrorMessage(result.error), false);
@@ -3669,10 +3805,7 @@ def send_setup_page(
           if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
           _dialPinRecoveryTimer = setInterval(async function() {{
             try {{
-              var r = await fetch('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid), {{
-                cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
-              }});
-              var pollResult = await _parseDialResponse(r);
+              var pollResult = await _dialGet('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid));
               var body = pollResult.body || {{}};
               // A boolean `active` is only ever present when the dial itself
               // answered — on both the in-recovery 200 and the not-in-recovery
