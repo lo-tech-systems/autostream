@@ -461,3 +461,52 @@ def test_parse_result_entries_drops_malformed_entries():
 def test_parse_result_entries_empty():
     assert parse_result_entries("") == []
     assert parse_result_entries(None) == []
+
+
+# ── Pipe-format probe robustness ──────────────────────────────────────────
+
+class _FailingGetSettingService(FakePlayerService):
+    def get_setting(self, base_url, key, timeout=3):
+        raise RuntimeError("backend hiccup")
+
+
+class _UnsupportedGetSettingService(FakePlayerService):
+    class _Result:
+        ok = False
+        unsupported = True
+        value = None
+
+    def get_setting(self, base_url, key, timeout=3):
+        return self._Result()
+
+
+def test_refuses_when_pipe_format_probe_fails_transiently():
+    outputs = [FakeOutput("a", "A", True, 30), FakeOutput("b", "B", True, 30)]
+    player = _FailingGetSettingService(outputs)
+    run = AlignRun(
+        player_service=player,
+        process_launcher=FakeLauncher(),
+        clock=FakeClock().clock,
+        sleep_fn=lambda s: None,
+        freq_file=tempfile.mktemp(prefix="align-freq-"),
+    )
+    ok, err = run.start(base_url="http://localhost:3689", ret_url="http://host/align/result",
+                        output_ids=["a", "b"], volume_percent=50)
+    assert ok is False
+    assert "stream format" in err
+
+
+def test_falls_back_when_pipe_format_unsupported():
+    outputs = [FakeOutput("a", "A", True, 30), FakeOutput("b", "B", True, 30)]
+    player = _UnsupportedGetSettingService(outputs)
+    run = AlignRun(
+        player_service=player,
+        process_launcher=FakeLauncher(),
+        clock=FakeClock().clock,
+        sleep_fn=lambda s: None,
+        freq_file=tempfile.mktemp(prefix="align-freq-"),
+    )
+    ok, _ = run.start(base_url="http://localhost:3689", ret_url="http://host/align/result",
+                      output_ids=["a", "b"], volume_percent=50)
+    assert ok is True
+    run.abort()

@@ -234,7 +234,10 @@ class AlignRun:
         ]
 
         launch_url = self._build_launch_url(participants, ret_url)
-        self._tone_rate, self._tone_bits = self._probe_pipe_format(base_url)
+        pipe_format = self._probe_pipe_format(base_url)
+        if pipe_format is None:
+            return False, "Could not read the player's stream format; please try again"
+        self._tone_rate, self._tone_bits = pipe_format
         self._guard_seconds = self._compute_guard_seconds(base_url)
 
         try:
@@ -300,23 +303,45 @@ class AlignRun:
             _log.debug("AlignRun: playback activity check unavailable", exc_info=True)
             return False
 
-    def _probe_pipe_format(self, base_url: str) -> "tuple[int, int]":
+    def _probe_pipe_format(self, base_url: str) -> "Optional[tuple[int, int]]":
         """The (rate, bits) the backend reads the pipe at right now. Both
-        must match exactly - a width mismatch makes the consumer read the
-        stream at the wrong frame rate and starve. Falls back for backends
-        whose pipe format is not API-readable (those consume 44100/16)."""
-        rate = FALLBACK_TONE_RATE_HZ
-        bits = FALLBACK_TONE_BITS
-        try:
-            from autostream_players import SETTING_PIPE_SAMPLE_RATE, SETTING_PIPE_BITS_PER_SAMPLE
-            result = self._player_service.get_setting(base_url, SETTING_PIPE_SAMPLE_RATE, timeout=3)
-            if getattr(result, "ok", False) and int(result.value) > 0:
-                rate = int(result.value)
-            result = self._player_service.get_setting(base_url, SETTING_PIPE_BITS_PER_SAMPLE, timeout=3)
-            if getattr(result, "ok", False) and int(result.value) in (16, 32):
-                bits = int(result.value)
-        except Exception:
-            _log.debug("AlignRun: pipe format probe failed", exc_info=True)
+        must match exactly - a mismatch makes the consumer read the stream
+        at the wrong frame rate, starving playback with garbled audio, so a
+        TRANSIENT probe failure returns None and the run must not start on
+        a guess. A backend that reports the settings as unsupported is an
+        older build whose pipe genuinely runs at the fallback format."""
+        if not hasattr(self._player_service, "get_setting"):
+            return FALLBACK_TONE_RATE_HZ, FALLBACK_TONE_BITS
+
+        from autostream_players import SETTING_PIPE_SAMPLE_RATE, SETTING_PIPE_BITS_PER_SAMPLE
+
+        def read(key):
+            """(value, transient_failure): value None when unsupported."""
+            for attempt in range(3):
+                result = None
+                try:
+                    result = self._player_service.get_setting(base_url, key, timeout=3)
+                except Exception:
+                    _log.debug("AlignRun: pipe format probe error", exc_info=True)
+                if result is not None and getattr(result, "unsupported", False):
+                    return None, False
+                if result is not None and getattr(result, "ok", False):
+                    try:
+                        return int(result.value), False
+                    except (TypeError, ValueError):
+                        return None, False
+                if attempt < 2:
+                    self._sleep(1.0)
+            return None, True
+
+        rate_value, failed = read(SETTING_PIPE_SAMPLE_RATE)
+        if failed:
+            return None
+        bits_value, failed = read(SETTING_PIPE_BITS_PER_SAMPLE)
+        if failed:
+            return None
+        rate = rate_value if (rate_value or 0) > 0 else FALLBACK_TONE_RATE_HZ
+        bits = bits_value if bits_value in (16, 32) else FALLBACK_TONE_BITS
         return rate, bits
 
     def _compute_guard_seconds(self, base_url: str) -> float:
