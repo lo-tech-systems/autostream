@@ -37,7 +37,7 @@ _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
 # 65,537 bytes is rejected as dial_bad_response before JSON parsing.
 _MAX_PROXY_RESPONSE_BYTES = 64 * 1024  # 65,536
 
-# Default error identifiers for tunneled target statuses (§6.4 of the work plan).
+# Default error identifiers for tunneled target statuses.
 _TARGET_STATUS_ERRORS: dict[int, str] = {
     404: "not_found",
     502: "dial_bad_response",

@@ -844,7 +844,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         # /api/dial/volume and /api/dial/mute: return HTTP 400 for non-object
         # JSON bodies so that malformed requests are rejected before UUID auth.
         # /api/dial/status: non-object JSON bodies are passed as {} to the
-        # handler, which returns HTTP 403 for missing dial_id (per spec §3.4).
+        # handler, which returns HTTP 403 for missing dial_id.
         if path in ("/api/dial/volume", "/api/dial/mute"):
             if content_type == "application/json" and body_str and not isinstance(json_obj, dict):
                 self.send_error(400, "JSON object required")

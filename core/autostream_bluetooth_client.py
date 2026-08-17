@@ -199,7 +199,7 @@ def bluetooth_capture_label(status: Optional[dict]) -> str:
 
     ``status`` is the cached/live daemon ``status`` reply (or None when the
     service is absent/unreachable).  Exactly the three label strings pinned
-    by the LLD (§6.2): "Bluetooth: <name>", "Bluetooth (not paired)",
+    as: "Bluetooth: <name>", "Bluetooth (not paired)",
     "Bluetooth (service unavailable)".
     """
     if not isinstance(status, dict) or status.get("ok") is not True:
