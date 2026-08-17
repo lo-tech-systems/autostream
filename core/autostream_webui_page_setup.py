@@ -551,6 +551,12 @@ def send_setup_page(
             style="width:100%;margin-top:0.5rem;">
             More Owntone Settings
           </button>
+          <button type="button"
+            onclick="flushPendingToServer().then(function() { window.location.href='/align'; })"
+            class="pill-btn small"
+            style="width:100%;margin-top:0.5rem;">
+            Run Speaker Synchronisation
+          </button>
         """
     _auto_update_checked = " checked" if parsed.updates.auto_update else ""
     _prerelease_checked = " checked" if parsed.updates.update_channel == "dev" else ""

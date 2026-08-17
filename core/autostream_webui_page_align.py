@@ -31,6 +31,7 @@ import logging
 
 from autostream_align import parse_result_entries
 from autostream_webui_api import apply_output_offset, send_json
+from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_HTML, INFO_MODAL_SCRIPT
 from autostream_webui_common import (
     CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
@@ -85,12 +86,14 @@ def send_align_page(handler, state: WebUIState) -> None:
 
     body_html = (
         "<div class='align-page'>"
-        "<h1>Align Outputs</h1>"
+        "<h1>Speaker Synchronisation</h1>"
         "<p class='helptext' style='text-align:left;margin-top:0;'>"
         "This plays a short test tone through each selected AirPlay output in "
         "turn. Open the link below on your phone, hold it near your speakers, "
         "and it will measure and hand back timing offsets to line them up."
         "</p>"
+        "<button type='button' class='pill-btn small' style='width:100%;margin-top:0.5rem;' "
+        "onclick='alignShowPrivacy()'>Privacy</button>"
         f"{selection_html}"
         f"<div id='alignReview'>{review_html}</div>"
         "</div>"
@@ -99,17 +102,19 @@ def send_align_page(handler, state: WebUIState) -> None:
     head_extra = (
         f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>\n"
         + CSRF_RECOVERY_SCRIPT
+        + INFO_MODAL_SCRIPT
         + _ALIGN_SCRIPT
     )
 
     html_body = build_page_html(
-        "Align Outputs",
+        "Speaker Synchronisation",
         body_html,
-        extra_css=_ALIGN_EXTRA_CSS,
+        extra_css=f"{COMMON_MODAL_CSS}\n{_ALIGN_EXTRA_CSS}",
         head_extra=head_extra,
+        body_prefix=INFO_MODAL_HTML,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
-        active_tab="align",
+        active_tab="setup",
         dark_mode=dark_mode,
     )
     body_bytes = html_body.encode("utf-8")
@@ -381,14 +386,25 @@ window.alignApply=function(){
         +'<tbody>'+rows+'</tbody></table>'
         +'<p class="helptext">The new offsets are live on the outputs now.</p>'
         +'<div style="margin-top:1rem;">'
-        +'<a class="pill-btn" href="/owntone-setup">Open output settings</a> '
-        +'<a class="pill-btn small" href="/align" style="margin-left:0.5rem;">Run alignment again</a>'
+        +'<a class="pill-btn" href="/owntone-setup" style="width:100%;display:block;margin-top:0.5rem;">Open Output Settings</a>'
+        +'<a class="pill-btn small" href="/align" style="width:100%;display:block;margin-top:0.5rem;">Run Alignment Again</a>'
         +'</div>';
     }
   }).catch(function(){
     var st=document.getElementById('align-apply-status');
     if(st)st.textContent='Could not apply: network error';
   });
+};
+window.alignShowPrivacy=function(){
+  var msg='<p>The measurement page is served from lo-tech.co.uk because browsers '
+    +'only allow microphone access on a secure (HTTPS) site.</p>'
+    +'<p>All listening and analysis happens on your phone itself — no audio is '
+    +'ever recorded or sent anywhere.</p>'
+    +'<p>Nothing at all is sent to lo-tech.co.uk. Only the final timing numbers '
+    +'are handed back to this device.</p>';
+  var btnOk=document.getElementById('infoModalOk');
+  if(btnOk)btnOk.textContent='Continue';
+  showInfoModal('Privacy',msg,true);
 };
 window.alignDiscard=function(){
   fetch('/api/align/discard',{

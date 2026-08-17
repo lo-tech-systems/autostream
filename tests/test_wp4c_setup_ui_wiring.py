@@ -455,6 +455,17 @@ class TestPlaybackPanelCardSplit:
         audio_path_idx = panel.index('id="general_audio_path"')
         assert button_idx > audio_path_idx
 
+    def test_align_button_below_owntone_button(self, tmp_path):
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        # "Run Speaker Synchronisation" links to /align and sits directly
+        # below the "More Owntone Settings" button.
+        owntone_idx = panel.index("More Owntone Settings")
+        align_idx = panel.index("Run Speaker Synchronisation")
+        assert align_idx > owntone_idx
+        assert "/align" in panel
+
     def test_audio_path_dropdown_offers_maximum_quality_on_high_perf(self, tmp_path):
         with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)

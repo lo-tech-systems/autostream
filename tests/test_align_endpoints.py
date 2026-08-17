@@ -537,6 +537,45 @@ class TestAlignPageSelectionVisibility:
         assert "Measurement result" not in body
 
 
+# ── /align page: title/heading + Privacy modal ──────────────────────────────
+
+class TestAlignPagePrivacyAndTitle:
+    def test_title_and_heading_are_speaker_synchronisation(self, tmp_path):
+        from autostream_webui_page_align import send_align_page
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        align_run.pending_result.return_value = None
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+
+        send_align_page(handler, state)
+
+        body = sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8")
+        assert "<title>Speaker Synchronisation</title>" in body
+        assert "<h1>Speaker Synchronisation</h1>" in body
+        assert "Align Outputs" not in body
+
+    def test_privacy_button_and_modal_present(self, tmp_path):
+        from autostream_webui_page_align import send_align_page
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        align_run.pending_result.return_value = None
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+
+        send_align_page(handler, state)
+
+        body = sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8")
+        assert "onclick='alignShowPrivacy()'" in body
+        assert ">Privacy<" in body
+        assert "id=\"infoModal\"" in body
+        assert "lo-tech.co.uk" in body
+
+
 # ── Router-level CSRF enforcement ────────────────────────────────────────────
 
 try:
