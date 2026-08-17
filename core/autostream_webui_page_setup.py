@@ -544,19 +544,37 @@ def send_setup_page(
         return
 
     h1 = "Setup"
-    owntone_button_html = """
-          <button type="button"
-            onclick="flushPendingToServer().then(function() { window.location.href='/owntone-setup'; })"
-            class="pill-btn small"
-            style="width:100%;margin-top:0.5rem;">
-            More Owntone Settings
-          </button>
+    # Speaker synchronisation writes per-output offsets, which need
+    # owntone-mini 1.2 or above (a standard OwnTone server silently ignores
+    # them) -- hide the entry point on backends without the capability.
+    # Fail open on a transient backend error: the align page itself
+    # refuses to start against an unsupported backend.
+    _align_supported = True
+    try:
+        from autostream_player_service import get_capabilities as _get_capabilities
+        _align_supported = bool(
+            _get_capabilities(parsed.owntone.base_url, timeout=3).can_set_output_offset
+        )
+    except Exception:
+        pass
+    _align_button_html = (
+        """
           <button type="button"
             onclick="flushPendingToServer().then(function() { window.location.href='/align'; })"
             class="pill-btn small"
             style="width:100%;margin-top:0.5rem;">
             Run Speaker Synchronisation
-          </button>
+          </button>"""
+        if _align_supported
+        else ""
+    )
+    owntone_button_html = f"""
+          <button type="button"
+            onclick="flushPendingToServer().then(function() {{ window.location.href='/owntone-setup'; }})"
+            class="pill-btn small"
+            style="width:100%;margin-top:0.5rem;">
+            More Owntone Settings
+          </button>{_align_button_html}
         """
     _auto_update_checked = " checked" if parsed.updates.auto_update else ""
     _prerelease_checked = " checked" if parsed.updates.update_channel == "dev" else ""

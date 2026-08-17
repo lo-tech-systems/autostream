@@ -99,8 +99,10 @@ def _make_handler():
 # ── POST /api/align/start ───────────────────────────────────────────────────
 
 class TestAlignStart:
-    def test_success_returns_launch_url(self, tmp_path):
+    def test_success_returns_launch_url(self, tmp_path, monkeypatch):
+        import autostream_webui_page_align as page_mod
         from autostream_webui_page_align import send_align_start_json
+        monkeypatch.setattr(page_mod, "_offsets_supported", lambda state: True)
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -121,8 +123,10 @@ class TestAlignStart:
         assert kwargs["output_ids"] == ["out-a", "out-b"]
         assert kwargs["volume_percent"] == 65
 
-    def test_refusal_passthrough(self, tmp_path):
+    def test_refusal_passthrough(self, tmp_path, monkeypatch):
+        import autostream_webui_page_align as page_mod
         from autostream_webui_page_align import send_align_start_json
+        monkeypatch.setattr(page_mod, "_offsets_supported", lambda state: True)
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -682,3 +686,24 @@ def test_align_post_routes_require_csrf(path, stub_target):
         handler.do_POST()
 
     stub.assert_not_called()
+
+
+class TestAlignCapabilityGate:
+    def test_start_refused_without_offset_support(self, tmp_path, monkeypatch):
+        import autostream_webui_page_align as page_mod
+        from autostream_webui_page_align import send_align_start_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        align_run = MagicMock()
+        state = _make_state(config_path, state_path, store, align_run=align_run)
+        handler, sent = _make_handler()
+        handler.headers = {"Host": "autostream.local"}
+        monkeypatch.setattr(page_mod, "_offsets_supported", lambda state: False)
+
+        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 65})
+        send_align_start_json(handler, state, body)
+
+        assert sent["body"]["ok"] is False
+        assert "offset" in sent["body"]["error"].lower()
+        align_run.start.assert_not_called()

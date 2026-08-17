@@ -45,6 +45,24 @@ _log = logging.getLogger(__name__)
 _OFFSET_CLAMP_MS = 2000
 
 
+def _offsets_supported(state: WebUIState) -> bool:
+    """Whether the connected player backend supports per-output offsets.
+
+    Speaker synchronisation is meaningless without them: a run could
+    measure, but applying the result would change nothing audible (a
+    standard OwnTone server ignores the offset field entirely). Fails
+    closed on a transport error -- start() would fail anyway, and the
+    page shows a clear notice instead of controls that cannot work.
+    """
+    try:
+        from autostream_player_service import get_capabilities
+        base_url = _config_snapshot(state).owntone.base_url
+        return bool(get_capabilities(base_url, timeout=3).can_set_output_offset)
+    except Exception:
+        _log.debug("align: capability probe failed", exc_info=True)
+        return False
+
+
 # -----------------------------------------------------------------------------
 # /align -- explainer + controls + review table
 # -----------------------------------------------------------------------------
@@ -69,6 +87,16 @@ def send_align_page(handler, state: WebUIState) -> None:
     # waiting to be applied/discarded.
     if has_pending_result:
         selection_html = ""
+    elif not _offsets_supported(state):
+        # A standard OwnTone server has no per-output offset support, so a
+        # calibration run could measure but never apply anything.
+        selection_html = (
+            "<p class='helptext' style='text-align:left;'>"
+            "Speaker synchronisation needs owntone-mini 1.2 or above, which "
+            "supports per-output playback offsets. The connected player does "
+            "not, so calibration is unavailable on this system."
+            "</p>"
+        )
     else:
         outputs_html = _render_outputs_section(state)
         selection_html = (
@@ -486,6 +514,15 @@ def send_align_start_json(handler, state: WebUIState, body: str) -> None:
         base_url = _config_snapshot(state).owntone.base_url
     except Exception:
         base_url = ""
+
+    # Authoritative capability gate: without per-output offset support the
+    # run could measure but Apply would change nothing audible.
+    if not _offsets_supported(state):
+        send_json(handler, 200, {
+            "ok": False,
+            "error": "The connected player does not support per-output offsets",
+        })
+        return
 
     # The appliance is served over plain HTTP on the LAN (nginx reverse
     # proxy in front, no TLS termination here).
