@@ -480,7 +480,7 @@ values from this endpoint.
     "rotate": false,
     "screen_type": "st7735s_160x128",
     "bgr": false,
-    "touch_type": "",
+    "touch_type": "none",
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -506,7 +506,7 @@ values from this endpoint.
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
 | `runtime.screen_type` | string | The **active** display profile key — see **Configured vs. active** below |
 | `runtime.bgr` | bool | The **active** colour-order swap setting — see **Configured vs. active** below |
-| `runtime.touch_type` | string | The **active** touch controller key, or `""` when no touch stack is running (including on a dial with no touch code wired up at all) |
+| `runtime.touch_type` | string | What the touch stack **actually did at startup**, set once after touch construction finishes. One of: the constructed controller key (e.g. `"xpt2046"`) when touch was built and started; `"none"` when touch was deliberately not built (disabled by config, or no screen fitted); `"failed"` when construction was attempted and raised. Polled before startup construction finishes, it reads `""` — the same early-poll caveat as `can_confirm_presence` under `GET /configure`. This is distinct from `screen.touch_type` (the persisted configuration), which changes the instant a `POST /screen/settings` saves it even though the running process has not restarted to pick it up yet |
 | `runtime.active` | bool | `true` when a non-no-op display path is open |
 | `runtime.backend` | string | Name of the currently active driver (e.g. `noop`, `adafruit_st7735s`) |
 | `runtime.backend_loaded` | bool | `true` once backend imports and hardware open succeeded |
@@ -571,7 +571,8 @@ is set, the request must include the current PIN in `current_pin`.
 }
 ```
 
-Successful response:
+Successful response — request changed `touch_type` from `"none"` to `"xpt2046"`, and a
+restart was actually fired for it:
 
 ```json
 {
@@ -588,7 +589,7 @@ Successful response:
     "rotate": false,
     "screen_type": "st7735s_160x128",
     "bgr": false,
-    "touch_type": "",
+    "touch_type": "none",
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -598,23 +599,51 @@ Successful response:
     "display_sleeping": false,
     "display_idle_seconds": 0
   },
-  "restart_required": true
+  "restart_required": true,
+  "restarting": true
 }
 ```
 
-(`runtime.touch_type` in this example still reads `""` because a touch controller change
-does not apply live — see **`restart_required`** below; the running process is still the
-one started with the previous `touch_type`.)
+(`runtime.touch_type` in this example still reads `"none"` — the previously-running
+state — because the touch controller change does not apply live; see **`restart_required`**
+below. The `restarting: true` field means the dial has already begun restarting its own
+service by the time this response arrives; poll `GET /screen/settings` afterwards to see
+`runtime.touch_type` reflect `"xpt2046"`.)
 
 `restart_required` reports whether **this specific POST** requires a dial service restart
 before it is fully applied. `fitted`, `rotate`, `screen_type`, and `bgr` all apply live —
 the dial starts, stops, or swaps the current display provider internally, with no restart
 needed for any of them. `touch_type` is the one exception: the touch stack (driver, filter,
 state machine) is built once at dial process startup from the persisted controller choice,
-so a `touch_type` change is saved immediately but has no live effect — the previous touch
-controller (or no touch at all) keeps running until the dial service next restarts.
-`restart_required` is `true` exactly when the request changed `touch_type` from its
-previously-persisted value, and `false` otherwise.
+so a `touch_type` change is saved immediately but has no live effect until the dial process
+restarts. `restart_required` is `true` exactly when the request changed `touch_type` from
+its previously-persisted value, and `false` otherwise. Its meaning is unchanged by the
+self-restart behaviour described next — it still reports what this POST requires, not
+whether a restart has been triggered.
+
+**Self-restart on `touch_type` change.** The dial does not wait for an operator to restart
+it: whenever `restart_required` is `true`, it fires its own service restart immediately
+after this response has been sent, so the new `touch_type` takes effect without further
+action. Measured restart time on real hardware is 8–11 seconds; the dial's HTTP API and
+volume path are unavailable for that window.
+
+To let a client show this without polling blind, a second field, `restarting`, is present
+**only when a restart is actually being fired for this request**:
+
+- `restarting: true` — present when `restart_required` is `true` and the restart was
+  triggered.
+- `restarting` is **absent** (not sent as `false`) whenever no restart fires for this
+  request — either because `touch_type` did not change (`restart_required: false`), or
+  because it did change but a self-restart already fired within the last 60 seconds and
+  this one was refused. The dial allows at most one self-triggered restart per 60 seconds
+  and logs a refusal at `WARNING`; the floor exists because `POST /screen/settings` is
+  unauthenticated whenever no PIN is configured, and an unauthenticated, unthrottled restart
+  trigger would otherwise be a denial-of-service vector. A refused restart still returns
+  `restart_required: true` and `ok: true` — the setting is saved either way — but without
+  `restarting`, so a client should not assume the dial is about to become unreachable.
+
+`restarting` never appears when `restart_required` is `false` or absent (the
+`screen_apply_failed` path below never sets it).
 
 **Capability gate / compatibility.** `screen_type` and `bgr` form **one joint capability**,
 advertised by `GET /screen/settings` returning a non-empty `supported` array (see above).

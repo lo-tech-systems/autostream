@@ -462,16 +462,28 @@ conditions:
 
 Choosing **None** disables touch entirely; it is the default.
 
-### Restart required
+### Changing the Touch Panel setting restarts the dial
 
 Unlike every other screen setting, changing the touch controller does
 **not** take effect immediately. The other screen controls (fitted, rotate,
 BGR, screen type) apply live, with no interruption. Touch is different: the
 dial builds its touch driver, filter, and interaction logic once, when the
-dial service starts. Saving a new **Touch Panel** choice is written to the
-dial immediately, but the change only takes effect the next time the dial
-service restarts (a reboot, a firmware update, or a manual service
-restart).
+dial service starts.
+
+To pick up the new setting without asking you to intervene, the dial
+restarts its own service automatically as soon as you save a changed
+**Touch Panel** choice. The restart takes roughly ten seconds. While it is
+in progress, the dial's card shows a **Configuring** badge and that dial's
+controls are disabled; the page polls the dial and re-enables its controls
+automatically once the restart completes. You don't need to reboot or
+power-cycle the dial yourself for a touch panel change to take effect.
+
+If you save another touch panel change again within a few seconds of the
+last one, the dial may not restart a second time immediately — it limits
+itself to one self-restart per minute so that this setting can't be used to
+knock a dial offline repeatedly. The new setting is still saved; it simply
+takes effect on the next restart (including the next reboot or firmware
+update) if this happens.
 
 ### How the interaction works
 
