@@ -63,6 +63,9 @@ OPEN_NONBLOCK_TIMEOUT_S = 15.0
 # roughly this far behind the freq-file write, which the measurement
 # design's guard bands absorb.
 PIPE_BUFFER_BYTES = 256 * 1024
+# How far ahead of realtime the paced writer runs: the first LEAD_S of audio
+# goes out immediately, then the absolute schedule holds this lead steady.
+LEAD_S = 0.6
 OPEN_RETRY_SLEEP_S = 0.2
 FINAL_SILENCE_MS = 50
 
@@ -284,6 +287,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     last_freq: object = "__unset__"
+    t0 = time.monotonic()
+    total_frames_written = 0
     try:
         while not stop_requested["stop"] and time.monotonic() < run_deadline:
             freq = read_freq(args.freq_file)
@@ -291,17 +296,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"event=frequency value={freq or 0}")
                 last_freq = freq
             period_buf = build_period_frames(freq, cache, period_frames)
-            # No clock: the enlarged pipe buffer plus blocking writes pace
-            # the loop, keeping the consumer's lead full at all times. The
-            # stream timeline stays sample-exact by construction.
             cum_frames = 0
+            # Paced writes with a bounded lead: each chunk is due LEAD_S
+            # ahead of its realtime position (absolute schedule anchored at
+            # t0, so jitter never accumulates into drift). The consumer's
+            # input loop has no throttle of its own - it reads whatever is
+            # offered, so supply must approximate realtime - while the lead
+            # plus the enlarged pipe buffer absorb scheduling stalls on
+            # either side.
             for frames in chunk_plan:
                 if stop_requested["stop"]:
                     break
+                sleep_until(t0 + total_frames_written / args.rate - LEAD_S)
                 start_i = cum_frames * args.channels
                 end_i = (cum_frames + frames) * args.channels
                 writer.write(period_buf[start_i:end_i].tobytes())
                 cum_frames += frames
+                total_frames_written += frames
     finally:
         print("event=stopping")
         try:

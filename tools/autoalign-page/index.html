@@ -518,7 +518,7 @@
 
   function handleLevel(freqIndex, active) {
     if (!active) {
-      setHearingLine('Listening&hellip;');
+      setHearingLine('Listening…');
       return;
     }
     var output = freqIndexToOutput[freqIndex];
@@ -623,7 +623,7 @@
       o.spread = null;
     }
     renderProgressRows();
-    setHearingLine('Waiting for the first tone&hellip;');
+    setHearingLine('Waiting for the first tone…');
     document.getElementById('timeout-banner').style.display = 'none';
     listeningStartedAt = Date.now();
     if (timeoutTimer) clearTimeout(timeoutTimer);
