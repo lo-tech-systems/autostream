@@ -456,7 +456,13 @@ class TestPlaybackPanelCardSplit:
         assert button_idx > audio_path_idx
 
     def test_align_button_below_owntone_button(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        # The align entry point renders only when the backend supports
+        # per-output offsets -- pin the capability so the assertion does
+        # not depend on what (if anything) answers on the backend port.
+        caps = MagicMock()
+        caps.can_set_output_offset = True
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True), \
+             patch("autostream_player_service.get_capabilities", return_value=caps):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         # "Run Speaker Synchronisation" links to /align and sits directly
@@ -465,6 +471,16 @@ class TestPlaybackPanelCardSplit:
         align_idx = panel.index("Run Speaker Synchronisation")
         assert align_idx > owntone_idx
         assert "/align" in panel
+
+    def test_align_button_hidden_without_offset_support(self, tmp_path):
+        caps = MagicMock()
+        caps.can_set_output_offset = False
+        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True), \
+             patch("autostream_player_service.get_capabilities", return_value=caps):
+            html = _SetupRenderer().render(tmp_path)
+        panel = self._playback_panel(html)
+        assert "Run Speaker Synchronisation" not in panel
+        assert "More Owntone Settings" in panel
 
     def test_audio_path_dropdown_offers_maximum_quality_on_high_perf(self, tmp_path):
         with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
