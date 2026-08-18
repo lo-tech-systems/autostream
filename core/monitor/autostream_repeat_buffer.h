@@ -170,20 +170,65 @@ public:
     // frees the last remaining chunk, even if empty: the buffer always keeps
     // at least one chunk once anything has been appended, so a Reader always
     // has a valid head to clamp to (unit test U2).  Latches truncated_head().
+    //
+    // Thin wrapper over evict_front(): this call site simply discards the
+    // returned Chunk (and with it, the storage), which is exactly the
+    // "free it" semantic this function's name promises. The fixed-capacity
+    // arena's own recycle path (allocate_chunk()) calls evict_front()
+    // directly instead, because it wants that same eviction bookkeeping
+    // WITHOUT losing the storage -- see evict_front()'s own comment.
     void drop_oldest_chunk()
     {
-        if (_chunks.size() <= 1)
-            return;
-        _total_bytes -= _chunks.front().used;   // keep the incremental counter exact
-        _chunks.pop_front();
-        ++_head_seq;
-        _truncated_head = true;
+        evict_front();
+    }
+
+    // Adds one committed chunk's worth of raw storage to the spare pool: a
+    // loop-step primitive the CONTROLLER drives, chunk by chunk, to build a
+    // fixed arena incrementally rather than in one giant up-front
+    // allocation. Built on the existing allocate_chunk_storage() (no new
+    // allocation code path), then memset to all-zero -- this is not about
+    // the zero VALUE (allocate_chunk() below always sets used = 0 before any
+    // byte of a spare chunk is ever read back), it is about touching every
+    // page. Under Linux's default memory-overcommit policy, a fresh
+    // new[]/malloc reserves address space but not physical RAM; the pages
+    // are not actually charged against the system until something writes to
+    // them. Skipping this memset would mean "successfully preallocated N
+    // chunks" is a lie the kernel is free to call at the worst possible
+    // moment -- the first real write deep into a long recording, at which
+    // point overcommit failure is a SIGKILL from the OOM killer, not a
+    // catchable bad_alloc. Committing the pages here, one 16 MiB chunk at a
+    // time, on the controller's own incremental loop (see RepeatController::maybe_build_arena()), is what turns "the arena exists" into a fact rather than
+    // a promise. Also latches the fixed-capacity flag (see allocate_chunk())
+    // -- calling this even once switches the buffer from legacy
+    // grow-and-free mode into fixed-arena recycle mode for the rest of its
+    // life (clear()/steal_chunks() are what turn it back off). Returns false
+    // on allocation failure (out of address space -- distinct from the
+    // overcommit case this function exists to defend against), leaving the
+    // spare pool and the fixed-capacity flag exactly as they were.
+    bool preallocate_one_more_chunk()
+    {
+        auto storage = allocate_chunk_storage(_chunk_bytes);
+        if (!storage)
+            return false;
+        std::memset(storage.get(), 0, _chunk_bytes);
+        _spare_storage.push_back(std::move(storage));
+        _fixed_capacity = true;
+        return true;
     }
 
     // Removes bytes_from_end bytes from the tail, across chunk boundaries.
     // The caller (silence trim) has already frame-aligned the byte count.
     // Clamped to total_bytes() — truncating "the whole buffer" empties
     // it cleanly rather than underflowing.
+    //
+    // In fixed-capacity mode (see allocate_chunk()/preallocate_one_more_
+    // chunk()), an emptied tail chunk's storage is returned to the spare
+    // pool instead of being destroyed -- the per-session end-of-recording
+    // silence trim runs every session, and destroying chunks here would
+    // silently erode the arena's total capacity, one trim at a time, until
+    // nothing was left of a reservation the controller believes is still
+    // intact. Legacy (non-fixed) mode keeps today's exact behaviour: the
+    // chunk is popped and its storage freed with it.
     void truncate_tail(size_t bytes_from_end)
     {
         size_t remaining = bytes_from_end;
@@ -203,7 +248,11 @@ public:
                 // append() after a full truncate behaves like a fresh buffer
                 // with the same chunk size).
                 if (_chunks.size() > 1)
+                {
+                    if (_fixed_capacity)
+                        _spare_storage.push_back(std::move(c.data));
                     _chunks.pop_back();
+                }
             }
             else
             {
@@ -218,13 +267,54 @@ public:
                                                     // desync the two
     }
 
+    // Session start without freeing: every existing chunk's storage is
+    // returned to the spare pool -- as if it had never been drawn out of it
+    // -- and the buffer's cursors reset to a fresh, empty state, but the
+    // arena's total committed page count (chunk_count() + spare_chunk_
+    // count()) is unchanged. The next session's appends reuse this exact
+    // storage front-first via allocate_chunk()'s spare-pool draw, never
+    // touching new/delete -- this is what "the arena persists across
+    // sessions, only cursors reset" actually means at the
+    // storage level. Distinct from clear()/steal_chunks(), which genuinely
+    // free everything and are used only when the feature is being disabled,
+    // not between sessions.
+    //
+    // Contract: the caller (RepeatController) must guarantee no live Reader
+    // spans this call. A Reader tracks position as an absolute chunk
+    // sequence number (see the Reader class comment) and clamps forward when
+    // its chunk has merely been dropped from the head -- but reset_cursors()
+    // renumbers the ENTIRE sequence back to zero, so a Reader constructed
+    // before this call has no well-defined relationship to the buffer
+    // afterward; nothing here detects or guards against that case. The
+    // state machine already guarantees Recording and Replaying are mutually
+    // exclusive on one controller, which is what makes this safe in
+    // practice.
+    void reset_cursors()
+    {
+        while (!_chunks.empty())
+        {
+            _spare_storage.push_back(std::move(_chunks.front().data));
+            _chunks.pop_front();
+        }
+        _head_seq       = 0;
+        _total_bytes    = 0;
+        _truncated_head = false;
+    }
+
     // Frees everything; resets to a brand-new buffer of the same chunk size.
+    // Also frees the spare pool and clears the fixed-capacity flag (see
+    // preallocate_one_more_chunk()) -- this is the feature-disable call, the
+    // one place a fixed arena is actually torn down rather than merely
+    // having its cursors reset (reset_cursors(), above, is the between-
+    // sessions call while the feature stays enabled).
     void clear()
     {
         _chunks.clear();
+        _spare_storage.clear();
         _head_seq        = 0;
         _truncated_head  = false;
         _total_bytes     = 0;
+        _fixed_capacity  = false;
     }
 
     // Detaches (moves out) every chunk and returns them, leaving *this*
@@ -239,13 +329,29 @@ public:
     // the local variable that receives this return value BEFORE the
     // lock_guard, so it is destroyed AFTER the lock_guard per C++'s
     // reverse-order-of-construction local destruction rule).
-    std::deque<Chunk> steal_chunks()
+    //
+    // A fixed arena also has spare-pool storage (chunks preallocated but
+    // never drawn into _chunks -- see preallocate_one_more_chunk()), which
+    // is just as expensive to destroy and just as much in need of an
+    // outside-the-lock free. out_spare_storage, if non-null, receives that
+    // pool (moved out, same deferred-destruction contract as the returned
+    // deque -- declare it before the same lock_guard the return value's
+    // receiving variable is declared before). Left as an optional out-param
+    // rather than folding spare storage into the return type so every
+    // existing legacy caller (which never had a spare pool to worry about)
+    // keeps compiling unchanged. Also clears the fixed-capacity flag, same
+    // as clear() -- like clear(), this is a feature-disable call.
+    std::deque<Chunk> steal_chunks(std::deque<std::unique_ptr<uint8_t[]>>* out_spare_storage = nullptr)
     {
         std::deque<Chunk> stolen = std::move(_chunks);
         _chunks.clear();
+        if (out_spare_storage)
+            *out_spare_storage = std::move(_spare_storage);
+        _spare_storage.clear();
         _head_seq       = 0;
         _truncated_head = false;
         _total_bytes    = 0;
+        _fixed_capacity = false;
         return stolen;
     }
 
@@ -264,6 +370,39 @@ public:
 
     size_t chunk_bytes() const { return _chunk_bytes; }
     size_t chunk_count() const { return _chunks.size(); }
+
+    // Number of chunks currently sitting in the spare pool -- preallocated
+    // (and, for reset_cursors()/truncate_tail()'s returns, previously
+    // committed) storage not currently part of _chunks. Together with
+    // chunk_count() this is the arena's true page-committed footprint; see
+    // arena_bytes() below.
+    size_t spare_chunk_count() const { return _spare_storage.size(); }
+
+    // True once preallocate_one_more_chunk() has ever been called (and
+    // stays true until clear()/steal_chunks() tears the arena down). While
+    // true, allocate_chunk() never calls new -- it draws from the spare pool
+    // or recycles the front chunk instead (see allocate_chunk()'s own
+    // comment). Exposed mainly for tests; production callers drive this
+    // indirectly via preallocate_one_more_chunk()/clear()/steal_chunks()
+    // rather than setting it themselves -- there is no public setter.
+    bool fixed_capacity() const { return _fixed_capacity; }
+
+    // Total bytes currently committed to this arena: (chunk_count() +
+    // spare_chunk_count()) * chunk_bytes(). Zero outside fixed-capacity
+    // mode, by construction (chunk_count() alone is the meaningful figure
+    // for the legacy grow-and-free buffer, and spare_chunk_count() is
+    // always zero there since nothing but preallocate_one_more_chunk() ever
+    // populates the spare pool). This, not total_bytes() (which only counts
+    // bytes actually WRITTEN so far), is the figure that should back a
+    // status surface's "arena size" reporting -- total_bytes() dips after
+    // every reset_cursors()/truncate_tail() even though the arena itself
+    // hasn't shrunk.
+    size_t arena_bytes() const
+    {
+        if (!_fixed_capacity)
+            return 0;
+        return (_chunks.size() + _spare_storage.size()) * _chunk_bytes;
+    }
 
     // -------------------------------------------------------------------
     // Reader — sequential cursor for replay.
@@ -339,8 +478,83 @@ public:
     };
 
 private:
+    // Shared eviction bookkeeping for the front (oldest) chunk -- factored
+    // out so drop_oldest_chunk() (discards the returned chunk) and
+    // allocate_chunk()'s fixed-capacity recycle path (reuses the returned
+    // chunk's storage as the new back chunk) share the EXACT SAME
+    // consequences for every other piece of buffer state: _total_bytes
+    // debited by the evicted chunk's `used`, _head_seq advanced, and
+    // truncated_head() latched. That last part matters even on the recycle
+    // path: a live Reader's clamp_to_head() only knows "the head moved
+    // forward", not "the head moved forward because of memory pressure" vs
+    // "because the arena wrapped" -- recycling under a fixed arena and
+    // dropping under the legacy grow-and-free buffer are the same event
+    // from a Reader's point of view, by construction, because they share
+    // this one code path rather than parallel copies that could drift.
+    //
+    // Never evicts the only remaining chunk (returns a default-constructed
+    // Chunk, whose `data` is null) -- the buffer always keeps at least one
+    // chunk once anything has been appended, so a Reader always has a valid
+    // head to clamp to (unit test U2). Callers MUST check the returned
+    // Chunk's `data` for null before relying on it.
+    Chunk evict_front()
+    {
+        if (_chunks.size() <= 1)
+            return Chunk{};
+        Chunk front = std::move(_chunks.front());
+        _total_bytes -= front.used;   // keep the incremental counter exact
+        _chunks.pop_front();
+        ++_head_seq;
+        _truncated_head = true;
+        return front;
+    }
+
+    // Grows _chunks by exactly one chunk. Three sources, tried in order:
+    //
+    //   1. The spare pool (preallocate_one_more_chunk()'s committed
+    //      storage, or storage handed back by reset_cursors()/
+    //      truncate_tail() in fixed-capacity mode) -- adopted with
+    //      used = 0. This is the common case once an arena has been built:
+    //      append() never actually touches new/delete during normal
+    //      recording, only at arena-build time.
+    //   2. If the spare pool is empty AND fixed_capacity() is true (the
+    //      arena is fully committed and every one of its chunks is already
+    //      live in _chunks, all full): RECYCLE. evict_front() donates the
+    //      current front chunk's storage, which becomes the new back chunk
+    //      with used = 0 -- this is the wrap-around/keeps-last-N-minutes
+    //      mechanism. Deliberately never calls new here:
+    //      a fixed arena's whole point is that its footprint stops growing
+    //      once built, however long recording continues. If evict_front()
+    //      itself refuses (only one chunk exists -- see its own comment),
+    //      this returns false: a one-chunk arena that is already full and
+    //      has nothing to recycle simply cannot accept more data, which is
+    //      the correct, if degenerate, outcome for an arena that small.
+    //   3. Neither of the above (fixed_capacity() is false -- the legacy,
+    //      pre-arena buffer): fall back to a normal heap allocation, exactly
+    //      as this function always has.
     bool allocate_chunk()
     {
+        if (!_spare_storage.empty())
+        {
+            Chunk c;
+            c.data     = std::move(_spare_storage.front());
+            _spare_storage.pop_front();
+            c.capacity = _chunk_bytes;
+            c.used     = 0;
+            _chunks.push_back(std::move(c));
+            return true;
+        }
+
+        if (_fixed_capacity)
+        {
+            Chunk recycled = evict_front();
+            if (!recycled.data)
+                return false;   // only one chunk exists; nothing to recycle
+            recycled.used = 0;
+            _chunks.push_back(std::move(recycled));
+            return true;
+        }
+
         Chunk c;
         c.capacity = _chunk_bytes;
         try
@@ -361,11 +575,41 @@ private:
     size_t _head_seq       = 0;      // absolute sequence number of _chunks.front()
     bool   _truncated_head = false;
 
+    // Fixed-capacity arena support. Both default to the
+    // legacy grow-and-free buffer's behaviour: an empty spare pool and
+    // _fixed_capacity == false mean allocate_chunk() always falls through to
+    // its normal `new` path, so every existing caller/test that never calls
+    // preallocate_one_more_chunk() sees no behaviour change whatsoever.
+    //
+    // _spare_storage holds committed (see preallocate_one_more_chunk()'s own
+    // comment on why memset matters) chunk storage that is not currently
+    // part of _chunks -- either preallocated ahead of first use, or handed
+    // back by reset_cursors()/truncate_tail() once the arena exists.
+    // allocate_chunk() always drains this before ever recycling or calling
+    // new. A deque (not a vector) for the same O(1)-pop-front reason
+    // _chunks itself is one; front-vs-back order within the pool has no
+    // behavioural meaning (unlike _chunks, where order IS the recording's
+    // chronology), push_back/pop_front here is just "a FIFO queue of
+    // interchangeable free blocks".
+    std::deque<std::unique_ptr<uint8_t[]>> _spare_storage;
+
+    // Latched true by preallocate_one_more_chunk(), cleared by clear()/
+    // steal_chunks(). Selects allocate_chunk()'s policy: false is the
+    // legacy "grow via new, no ceiling" buffer; true is the fixed arena
+    // ("never grow past what was committed, recycle the front chunk when
+    // full instead"). Deliberately no public setter beyond
+    // preallocate_one_more_chunk() -- entering fixed-capacity mode is a
+    // side effect of actually building the arena, not a mode switch a
+    // caller can flip on an empty/legacy buffer and expect anything
+    // sensible to happen.
+    bool _fixed_capacity = false;
+
     // Incremental mirror of "sum of every chunk's `used`", maintained by
     // every mutator (append_with_preallocated/drop_oldest_chunk/
-    // truncate_tail/clear/steal_chunks) so total_bytes() is O(1) instead of
-    // O(chunk count) -- this sits on RepeatController::get_status()'s poll
-    // path and must not scale with recording length.
+    // truncate_tail/clear/steal_chunks/reset_cursors) so total_bytes() is
+    // O(1) instead of O(chunk count) -- this sits on
+    // RepeatController::get_status()'s poll path and must not scale with
+    // recording length.
     size_t _total_bytes    = 0;
 };
 
@@ -568,6 +812,127 @@ inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
     // fall back to the floor anyway and let the sliding window (memory
     // guard + head truncation) do its normal job during recording.
     return codec_choice_for_bitrate_kbps(kMp2BitrateFloorKbps);
+}
+
+
+// =============================================================================
+// ArenaPlan / plan_arena() — fixed-arena sizing
+//
+// The controller calls this exactly once, at enable time (and again on any
+// re-plan, which is always a disable+enable by design -- there is
+// no in-place resize). Its output is what preallocate_one_more_chunk()'s
+// incremental commit loop then aims for, chunk by chunk. This function does
+// no allocation itself and touches no RepeatBuffer instance -- pure sizing
+// arithmetic over the same inputs pick_codec_for_target() already uses, so
+// it is unit-testable without any buffer/allocation machinery at all.
+// =============================================================================
+
+struct ArenaPlan
+{
+    CodecChoice codec;             // Unavailable => the feature cannot run at all
+    size_t      arena_bytes;       // whole chunks; 0 when codec == Unavailable
+    long        capacity_seconds;  // arena_bytes / byte_rate_for(codec, ...) -- the
+                                    // REPORTED, truthfully-delivered duration (D5)
+};
+
+// Sizes a fixed arena for the "repeat" feature.
+//
+// pinned_codec == CodecChoice::Unavailable is the sentinel for "auto": the
+// codec is chosen by handing effective_available_mib/target_minutes/
+// sample_rate_hz to pick_codec_for_target() VERBATIM -- this function never
+// re-implements or duplicates that tier walk (ladder + kMp2BitrateFloorKbps
+// hard floor). Any other pinned_codec value skips the ladder outright: the
+// caller has fixed quality (RepeatController's codec-pin config path), and
+// this function only sizes the arena and reports how much duration that
+// buys. This is where duration degradation actually happens, and it falls
+// out of the sizing arithmetic below for free -- no separate branch needed,
+// for either the auto-picked-160k-floor case or an explicitly pinned codec:
+// when even the cheapest/pinned tier's target footprint doesn't fit
+// usable RAM, arena_bytes is simply capped at usable_bytes (rounded to whole
+// chunks) and capacity_seconds comes out smaller than target_minutes asked
+// for -- a valid, honestly reported outcome ("X minutes requested, Y
+// minutes delivered"), not a refusal.
+//
+// Sizing, once the codec is known:
+//   usable_bytes = max(0, effective_available_mib - kFreeRamFloorMib), in
+//     bytes -- the exact same floor discipline pick_codec_for_target()
+//     applies at the selection step, reapplied here at the sizing step so
+//     the two can never disagree about how much RAM is actually claimable.
+//   target_footprint_bytes = byte_rate_for(codec, sample_rate_hz) *
+//     clamp(target_minutes, kMinRepeatTargetMinutes, kMaxRepeatTargetMinutes)
+//     * 60 -- same clamp pick_codec_for_target() applies internally.
+//   raw_bytes = min(target_footprint_bytes, usable_bytes).
+//   arena_bytes = raw_bytes rounded DOWN to a whole number of chunk_bytes --
+//     a fixed arena is only ever built from whole committed chunks
+//     (preallocate_one_more_chunk()'s own loop-step granularity), so a
+//     fractional last chunk is never claimed. EXCEPT: if usable_bytes itself
+//     covers at least one whole chunk but raw_bytes rounds down to zero
+//     (target_footprint_bytes smaller than one chunk -- a tiny target on a
+//     huge chunk size, or an artificially small chunk_bytes in a test),
+//     exactly one chunk is still claimed -- an arena that can hold
+//     SOMETHING is preferred over refusing outright over a rounding
+//     artifact.
+//   Zero whole chunks fit at all (usable_bytes < chunk_bytes, which is also
+//     what a non-positive effective_available_mib collapses to once the
+//     floor subtraction clamps usable_mib to 0) => the codec is forced to
+//     Unavailable and arena_bytes/capacity_seconds are both 0, regardless of
+//     what the ladder/pin chose -- the feature genuinely cannot run in this
+//     little RAM.
+//   capacity_seconds = arena_bytes / byte_rate_for(codec, sample_rate_hz) --
+//     integer division, so this is the EXACT number of whole seconds the
+//     committed arena_bytes guarantees, never rounded up past what actually
+//     fits. This, alongside the caller's original target_minutes
+//     (reported separately as requested_minutes -- D5), is the
+//     requested-vs-delivered honesty surface the whole redesign exists for.
+inline ArenaPlan plan_arena(long effective_available_mib, int target_minutes,
+                             long sample_rate_hz, CodecChoice pinned_codec,
+                             size_t chunk_bytes = RepeatBuffer::kDefaultChunkBytes)
+{
+    CodecChoice codec = (pinned_codec == CodecChoice::Unavailable)
+        ? pick_codec_for_target(effective_available_mib, target_minutes, sample_rate_hz)
+        : pinned_codec;
+
+    long usable_mib = effective_available_mib - kFreeRamFloorMib;
+    if (usable_mib < 0)
+        usable_mib = 0;
+    long long usable_bytes = static_cast<long long>(usable_mib) * 1024ll * 1024ll;
+
+    int clamped_target_minutes = target_minutes;
+    if (clamped_target_minutes < kMinRepeatTargetMinutes)
+        clamped_target_minutes = kMinRepeatTargetMinutes;
+    if (clamped_target_minutes > kMaxRepeatTargetMinutes)
+        clamped_target_minutes = kMaxRepeatTargetMinutes;
+    long long target_seconds = static_cast<long long>(clamped_target_minutes) * 60;
+
+    long rate = byte_rate_for(codec, sample_rate_hz);
+    long long target_footprint_bytes =
+        (rate > 0) ? static_cast<long long>(rate) * target_seconds : 0;
+
+    long long raw_bytes = (target_footprint_bytes < usable_bytes)
+        ? target_footprint_bytes : usable_bytes;
+
+    long long chunk_count = 0;
+    if (chunk_bytes > 0)
+    {
+        chunk_count = raw_bytes / static_cast<long long>(chunk_bytes);
+        if (chunk_count == 0 && usable_bytes >= static_cast<long long>(chunk_bytes))
+            chunk_count = 1;   // usable RAM fits one whole chunk even though the
+                                // target footprint alone rounded down to zero
+    }
+
+    ArenaPlan plan;
+    if (rate <= 0 || chunk_count <= 0)
+    {
+        plan.codec            = CodecChoice::Unavailable;
+        plan.arena_bytes       = 0;
+        plan.capacity_seconds  = 0;
+        return plan;
+    }
+
+    plan.codec           = codec;
+    plan.arena_bytes      = static_cast<size_t>(chunk_count * static_cast<long long>(chunk_bytes));
+    plan.capacity_seconds = static_cast<long>(static_cast<long long>(plan.arena_bytes) / rate);
+    return plan;
 }
 
 // max_recording_seconds = ((available_mib - 64 MiB) + held_bytes) / byte_rate

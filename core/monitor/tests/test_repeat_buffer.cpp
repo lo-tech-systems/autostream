@@ -21,9 +21,12 @@
 // test, buildable with a bare g++.
 //
 // Build (on Linux/WSL, from repo root):
-//   g++ -std=c++17 -Wall -Wextra -O2 -I core/monitor \
-//       core/monitor/tests/test_repeat_buffer.cpp \
+//   g++ -std=c++17 -Wall -Wextra -O2 -I core/monitor
+//       core/monitor/tests/test_repeat_buffer.cpp
 //       -o /tmp/test_repeat_buffer && /tmp/test_repeat_buffer
+//   (the three lines above are one command; a shell needs a trailing
+//   backslash to continue them, omitted here so this comment itself
+//   doesn't trip -Wcomment's "backslash-newline in a // comment" warning)
 // =============================================================================
 
 #include "autostream_repeat_buffer.h"
@@ -450,6 +453,172 @@ static void test_u14_byte_rate_for_new_tiers()
     CHECK(codec_choice_for_bitrate_kbps(384) == CodecChoice::Mp2_384, "U14: 384 -> Mp2_384");
     CHECK(codec_choice_for_bitrate_kbps(128) == CodecChoice::Unavailable,
           "U14: a legal-but-below-floor MP2 bitrate is not in this ladder's table");
+}
+
+// ---------------------------------------------------------------------------
+// plan_arena — fixed-arena sizing
+//
+// Worked-number cases throughout (not formula-mirroring the implementation)
+// so each CHECK is an independent, hand-computed expectation -- the same
+// style as U6's "worked example" block above. A small, exact test chunk
+// size (1,000,000 or 50,000,000 bytes, never the 16 MiB production value)
+// keeps the arithmetic tractable by hand while still exercising real
+// flooring/rounding behaviour.
+// ---------------------------------------------------------------------------
+
+static void test_plan_arena()
+{
+    const long kSampleRate = 48000;
+
+    // ── Auto: PCM tier fits comfortably (footprint well under usable) ──
+    {
+        const int target_minutes = 10;              // kMinRepeatTargetMinutes -> 600 s
+        const size_t chunk_bytes = 1000000;          // 1e6-byte test chunk
+        const long usable_mib = 200;
+        const long available_mib = usable_mib + kFreeRamFloorMib;
+
+        ArenaPlan plan = plan_arena(available_mib, target_minutes, kSampleRate,
+                                     CodecChoice::Unavailable /*auto*/, chunk_bytes);
+
+        CHECK(plan.codec == CodecChoice::PcmS16,
+              "plan_arena: PCM footprint (115.2 MB) fits usable (200 MB) -> PcmS16 (auto)");
+        // footprint = 192000 B/s * 600 s = 115,200,000; usable = 209,715,200;
+        // raw = 115,200,000; chunks = floor(115200000/1000000) = 115.
+        CHECK(plan.arena_bytes == 115000000u,
+              "plan_arena: PCM case arena_bytes floors to whole 1e6-byte chunks (115 of them)");
+        // 115,000,000 / 192,000 = 598.958... -> floor 598.
+        CHECK(plan.capacity_seconds == 598,
+              "plan_arena: PCM case capacity_seconds is the exact floor of arena_bytes/byte_rate");
+    }
+
+    // ── Auto: an MP2 tier fits, PCM does not ──
+    {
+        const int target_minutes = 10;               // 600 s
+        const size_t chunk_bytes = 1000000;
+        const long usable_mib = 20;                   // usable_bytes = 20,971,520
+        const long available_mib = usable_mib + kFreeRamFloorMib;
+
+        ArenaPlan plan = plan_arena(available_mib, target_minutes, kSampleRate,
+                                     CodecChoice::Unavailable, chunk_bytes);
+
+        // PCM needs 115.2 MB (no); Mp2_384 needs 28.8 MB (no); Mp2_320 needs
+        // 24.0 MB (no); Mp2_256 needs 19.2 MB (yes, <= 20.97 MB) -> Mp2_256.
+        CHECK(plan.codec == CodecChoice::Mp2_256,
+              "plan_arena: usable fits Mp2_256 but not a higher tier or PCM -> Mp2_256 (auto)");
+        // raw = min(19,200,000, 20,971,520) = 19,200,000; chunks = floor(19200000/1000000) = 19.
+        CHECK(plan.arena_bytes == 19000000u,
+              "plan_arena: MP2-tier case arena_bytes floors to 19 whole 1e6-byte chunks");
+        // 19,000,000 / 32,000 = 593.75 -> floor 593.
+        CHECK(plan.capacity_seconds == 593,
+              "plan_arena: MP2-tier case capacity_seconds is the exact floor of arena_bytes/byte_rate");
+    }
+
+    // ── Auto: even the 160 kbps floor's footprint doesn't fit -- duration
+    //    degrades (the "X minutes requested, Y minutes delivered" outcome)
+    //    rather than the feature refusing to run. ──
+    {
+        const int target_minutes = kMaxRepeatTargetMinutes;   // 600 min = 36000 s requested
+        const size_t chunk_bytes = 1000000;
+        const long usable_mib = 1;                             // usable_bytes = 1,048,576
+        const long available_mib = usable_mib + kFreeRamFloorMib;
+
+        ArenaPlan plan = plan_arena(available_mib, target_minutes, kSampleRate,
+                                     CodecChoice::Unavailable, chunk_bytes);
+
+        CHECK(plan.codec == CodecChoice::Mp2_160,
+              "plan_arena: usable too small for any tier's target footprint -> Mp2_160 floor (auto)");
+        // Mp2_160 footprint (720,000,000) dwarfs usable (1,048,576) -> raw
+        // clamps to usable; chunks = floor(1048576/1000000) = 1.
+        CHECK(plan.arena_bytes == 1000000u,
+              "plan_arena: floor case arena_bytes clamps to usable, rounded down to 1 whole chunk");
+        // 1,000,000 / 20,000 = 50 exactly.
+        CHECK(plan.capacity_seconds == 50,
+              "plan_arena: floor case capacity_seconds is exact (no remainder)");
+        CHECK(plan.capacity_seconds < target_minutes * 60,
+              "plan_arena: delivered duration is far below what was requested -- degradation, not refusal");
+    }
+
+    // ── Pinned codec: skips the ladder entirely; duration degrades the same
+    //    way a natural floor-fallback would, but at the CALLER's chosen
+    //    quality rather than the ladder's own choice. ──
+    {
+        const int target_minutes = 80;                // kDefaultRepeatTargetMinutes -> 4800 s
+        const size_t chunk_bytes = 1000000;
+        const long usable_mib = 50;                    // usable_bytes = 52,428,800
+        const long available_mib = usable_mib + kFreeRamFloorMib;
+
+        ArenaPlan plan = plan_arena(available_mib, target_minutes, kSampleRate,
+                                     CodecChoice::Mp2_384, chunk_bytes);
+
+        CHECK(plan.codec == CodecChoice::Mp2_384,
+              "plan_arena: pinned codec is never overridden by the ladder");
+        // Mp2_384 footprint (230,400,000) far exceeds usable (52,428,800) ->
+        // raw clamps to usable; chunks = floor(52428800/1000000) = 52.
+        CHECK(plan.arena_bytes == 52000000u,
+              "plan_arena: pinned case arena_bytes clamps to usable, rounded down to 52 whole chunks");
+        // 52,000,000 / 48,000 = 1083.33... -> floor 1083.
+        CHECK(plan.capacity_seconds == 1083,
+              "plan_arena: pinned case capacity_seconds is the exact floor of arena_bytes/byte_rate");
+        CHECK(plan.capacity_seconds < target_minutes * 60,
+              "plan_arena: pinned quality is kept; DURATION degrades instead, same as the auto floor case");
+    }
+
+    // ── Minimum-one-chunk edge: the target footprint alone rounds down to
+    //    zero whole chunks, but usable RAM covers exactly one chunk -- an
+    //    arena that can hold something is preferred over Unavailable. ──
+    {
+        const int target_minutes = 10;                 // 600 s
+        const size_t chunk_bytes = 50000000;            // 50 MB test chunk, deliberately large
+        const long usable_mib = 50;                      // usable_bytes = 52,428,800 (>= 1 chunk)
+        const long available_mib = usable_mib + kFreeRamFloorMib;
+
+        ArenaPlan plan = plan_arena(available_mib, target_minutes, kSampleRate,
+                                     CodecChoice::Mp2_160, chunk_bytes);
+
+        // Mp2_160 footprint = 20,000 * 600 = 12,000,000 -- smaller than one
+        // 50,000,000-byte chunk, so floor(12000000/50000000) == 0, but
+        // usable_bytes (52,428,800) covers a whole chunk -> bumped to 1.
+        CHECK(plan.codec == CodecChoice::Mp2_160,
+              "plan_arena: min-one-chunk edge -- pinned codec still selected");
+        CHECK(plan.arena_bytes == chunk_bytes,
+              "plan_arena: min-one-chunk edge -- exactly one chunk claimed despite the tiny footprint");
+        CHECK(plan.capacity_seconds == 2500,
+              "plan_arena: min-one-chunk edge -- capacity_seconds == chunk_bytes / byte_rate exactly");
+    }
+
+    // ── Same footprint, but usable RAM doesn't even cover one whole chunk:
+    //    the min-one-chunk bump does NOT apply -- zero chunks -> Unavailable. ──
+    {
+        const int target_minutes = 10;
+        const size_t chunk_bytes = 50000000;
+        const long usable_mib = 1;                        // usable_bytes = 1,048,576 (< 1 chunk)
+        const long available_mib = usable_mib + kFreeRamFloorMib;
+
+        ArenaPlan plan = plan_arena(available_mib, target_minutes, kSampleRate,
+                                     CodecChoice::Mp2_160, chunk_bytes);
+
+        CHECK(plan.codec == CodecChoice::Unavailable,
+              "plan_arena: usable RAM below one whole chunk -> Unavailable, even with a pinned codec");
+        CHECK(plan.arena_bytes == 0, "plan_arena: Unavailable -> arena_bytes is 0");
+        CHECK(plan.capacity_seconds == 0, "plan_arena: Unavailable -> capacity_seconds is 0");
+    }
+
+    // ── Zero / negative available_mib -> Unavailable (the floor subtraction
+    //    clamps usable_mib to 0, same as pick_codec_for_target()'s own
+    //    clamp) -- never a crash, never a negative arena. ──
+    {
+        ArenaPlan plan_zero = plan_arena(0, 80, kSampleRate, CodecChoice::Unavailable, 1000000);
+        CHECK(plan_zero.codec == CodecChoice::Unavailable,
+              "plan_arena: available_mib == 0 -> Unavailable");
+        CHECK(plan_zero.arena_bytes == 0 && plan_zero.capacity_seconds == 0,
+              "plan_arena: available_mib == 0 -> arena_bytes and capacity_seconds both 0");
+
+        ArenaPlan plan_negative = plan_arena(-500, 80, kSampleRate, CodecChoice::Unavailable, 1000000);
+        CHECK(plan_negative.codec == CodecChoice::Unavailable,
+              "plan_arena: negative available_mib -> Unavailable, not a crash or UB");
+        CHECK(plan_negative.arena_bytes == 0 && plan_negative.capacity_seconds == 0,
+              "plan_arena: negative available_mib -> arena_bytes and capacity_seconds both 0");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -904,6 +1073,335 @@ static void test_u13_total_bytes_invariant()
     for (const auto& ch : stolen)
         stolen_sum += ch.used;
     CHECK(stolen_sum == 20, "U13: steal_chunks's returned container carries all the bytes");
+}
+
+// ---------------------------------------------------------------------------
+// preallocate_one_more_chunk / spare pool — the fixed-arena build primitive
+// ---------------------------------------------------------------------------
+
+static void test_preallocate_and_spare_pool()
+{
+    const size_t kChunk = 16;
+    RepeatBuffer buf(kChunk);
+
+    CHECK(!buf.fixed_capacity(), "prealloc: buffer starts in legacy (non-fixed) mode");
+    CHECK(buf.spare_chunk_count() == 0, "prealloc: spare pool starts empty");
+    CHECK(buf.arena_bytes() == 0, "prealloc: arena_bytes is 0 outside fixed-capacity mode");
+
+    CHECK(buf.preallocate_one_more_chunk(), "prealloc: first preallocate succeeds");
+    CHECK(buf.preallocate_one_more_chunk(), "prealloc: second preallocate succeeds");
+    CHECK(buf.preallocate_one_more_chunk(), "prealloc: third preallocate succeeds");
+    CHECK(buf.spare_chunk_count() == 3, "prealloc: spare pool grows by exactly one per call");
+    CHECK(buf.fixed_capacity(), "prealloc: fixed-capacity flag latches true on first call");
+    CHECK(buf.chunk_count() == 0, "prealloc: preallocating alone never touches _chunks");
+    CHECK(buf.arena_bytes() == 3 * kChunk, "prealloc: arena_bytes reflects spare-only committed storage");
+
+    // append() must consume spare storage before ever calling new: filling
+    // exactly the 3 preallocated chunks' worth must draw all 3 from the
+    // spare pool, leaving the committed total (chunk_count + spare_chunk_
+    // count) unchanged throughout.
+    auto data = make_pattern(40);   // 16 + 16 + 8 -- exactly the 3 preallocated chunks
+    CHECK(buf.append(data.data(), data.size()), "prealloc: append succeeds using only spare storage");
+    CHECK(buf.chunk_count() == 3, "prealloc: append drew exactly 3 chunks from the spare pool");
+    CHECK(buf.spare_chunk_count() == 0, "prealloc: spare pool fully drained by the append");
+    CHECK(buf.arena_bytes() == 3 * kChunk,
+          "prealloc: arena_bytes unchanged after the append -- storage only moved, never freed/regrown");
+
+    // Design-correction regression test: chunks fill FRONT-first. append()
+    // always writes into _chunks.back() (the newest chunk); the first bytes
+    // appended must therefore end up in the FRONT chunk of the deque, not
+    // the back -- the property that breaks if preallocated spare storage
+    // were ever spliced directly into _chunks ahead of time (the rejected
+    // design) instead of being adopted, one
+    // chunk at a time, by allocate_chunk() as append() actually needs it.
+    RepeatBuffer::Reader reader(buf);
+    std::vector<uint8_t> out(40);
+    size_t n = reader.next(out.data(), out.size());
+    CHECK(n == 40, "prealloc: reader recovers every appended byte");
+    CHECK(std::memcmp(out.data(), data.data(), 40) == 0,
+          "prealloc: content is byte-identical and in original (front-first) order");
+
+    // Allocation failure leaves the spare pool and flag untouched -- not
+    // exercised here (this pure test binary cannot force bad_alloc safely),
+    // but preallocate_one_more_chunk()'s own doc comment states the
+    // contract; covered by inspection, not a runtime assertion.
+}
+
+// ---------------------------------------------------------------------------
+// Wrap-around — fixed arena, keep appending past capacity: recycling, not
+// growth; truncated_head latches; total_bytes never exceeds arena capacity;
+// surviving content is EXACTLY the last-N bytes (the keeps-last-N-minutes
+// semantic the arena is defined to keep).
+// ---------------------------------------------------------------------------
+
+static void test_wrap_around_keeps_last_n_bytes()
+{
+    const size_t kChunk = 16;
+    const int kArenaChunks = 4;
+    RepeatBuffer buf(kChunk);
+    for (int i = 0; i < kArenaChunks; ++i)
+        CHECK(buf.preallocate_one_more_chunk(), "wrap: build a 4-chunk arena");
+    const size_t kArenaBytes = kArenaChunks * kChunk;   // 64
+
+    auto fill = make_pattern(kArenaBytes, 0);
+    CHECK(buf.append(fill.data(), fill.size()), "wrap: filling the whole arena succeeds");
+    CHECK(buf.total_bytes() == kArenaBytes, "wrap: total_bytes == arena size once exactly full");
+    CHECK(!buf.truncated_head(), "wrap: truncated_head still false -- nothing evicted yet, only filled");
+
+    // Keep appending past capacity: every further byte must recycle the
+    // front chunk rather than grow the arena.
+    auto more = make_pattern(kChunk * 2, 200);   // 2 more chunks' worth, forces 2 recycles
+    CHECK(buf.append(more.data(), more.size()), "wrap: append past capacity recycles instead of failing");
+    CHECK(buf.truncated_head(), "wrap: truncated_head latches once recycling evicts a chunk");
+    CHECK(buf.total_bytes() <= kArenaBytes, "wrap: total_bytes never exceeds arena capacity");
+    CHECK(buf.total_bytes() == kArenaBytes, "wrap: total_bytes settles back at exactly full capacity");
+    CHECK(buf.chunk_count() + buf.spare_chunk_count() == static_cast<size_t>(kArenaChunks),
+          "wrap: total committed chunk count is unchanged by recycling");
+
+    // Surviving content is EXACTLY the last kArenaBytes bytes of everything
+    // ever appended (fill ++ more), byte-exact -- the defined keeps-last-N-
+    // minutes semantic, not a pressure symptom.
+    std::vector<uint8_t> everything;
+    everything.insert(everything.end(), fill.begin(), fill.end());
+    everything.insert(everything.end(), more.begin(), more.end());
+    std::vector<uint8_t> expected_tail(everything.end() - static_cast<long>(kArenaBytes), everything.end());
+
+    RepeatBuffer::Reader reader(buf);
+    std::vector<uint8_t> out(buf.total_bytes());
+    size_t n = reader.next(out.data(), out.size());
+    CHECK(n == buf.total_bytes(), "wrap: reader returns exactly total_bytes");
+    CHECK(out.size() == expected_tail.size(), "wrap: surviving size matches the expected tail size");
+    CHECK(std::memcmp(out.data(), expected_tail.data(), out.size()) == 0,
+          "wrap: surviving content is exactly the last arena-bytes worth appended, nothing else");
+}
+
+// ---------------------------------------------------------------------------
+// Recycle vs Reader — two-lap clamping (U5's analogue for recycling instead
+// of dropping) plus the CONTENT assertion the arena redesign calls for: a
+// Reader positioned inside the chunk about to be recycled must never yield
+// the chunk's NEW (post-recycle) bytes as though they were the old data it
+// was reading. ASan cannot see this class of bug (the memory is valid, just
+// stale/reused) -- only a byte-value assertion catches it.
+// ---------------------------------------------------------------------------
+
+static void test_recycle_vs_reader_content()
+{
+    const size_t kChunk = 8;
+    const int kArenaChunks = 3;
+    RepeatBuffer buf(kChunk);
+    for (int i = 0; i < kArenaChunks; ++i)
+        CHECK(buf.preallocate_one_more_chunk(), "recycle: build a 3-chunk arena");
+    const size_t kArenaBytes = kArenaChunks * kChunk;   // 24
+
+    // Fill the arena with an "old" pattern (single repeated byte, so any
+    // stray survivor is trivially identifiable).
+    std::vector<uint8_t> old_data(kArenaBytes, 0xAA);
+    CHECK(buf.append(old_data.data(), old_data.size()), "recycle: fill arena with the old pattern");
+
+    // A Reader positioned partway into the FRONT chunk -- the one about to
+    // be recycled first.
+    RepeatBuffer::Reader reader(buf);
+    std::vector<uint8_t> peek(4);
+    size_t got = reader.next(peek.data(), peek.size());
+    CHECK(got == 4, "recycle: reader reads partway into the front (soon-to-be-recycled) chunk");
+    for (uint8_t b : peek)
+        CHECK(b == 0xAA, "recycle: reader's initial partial read sees the old pattern");
+
+    // Two full laps of recycling: append 2 * arena_bytes more, tagged with a
+    // DIFFERENT byte value, forcing every original chunk to be evicted and
+    // reused twice over (two-lap clamping, the recycle analogue of U5).
+    std::vector<uint8_t> new_data(kArenaBytes * 2, 0x55);
+    CHECK(buf.append(new_data.data(), new_data.size()),
+          "recycle: appending two full laps recycles every chunk repeatedly");
+    CHECK(buf.truncated_head(), "recycle: truncated_head latches across repeated recycling");
+    CHECK(buf.total_bytes() == kArenaBytes, "recycle: total_bytes stays pinned at arena capacity");
+    CHECK(buf.chunk_count() + buf.spare_chunk_count() == static_cast<size_t>(kArenaChunks),
+          "recycle: committed chunk count never grows across repeated recycling");
+
+    // The stale reader must clamp forward to the new head on its next read
+    // (two-lap analogue of U5), and everything it recovers from that point
+    // must be entirely new-pattern bytes -- the exact storage its cursor
+    // used to point into has since been recycled and overwritten.
+    std::vector<uint8_t> rest(kArenaBytes);
+    size_t total = 0;
+    while (total < rest.size())
+    {
+        size_t n = reader.next(rest.data() + total, rest.size() - total);
+        if (n == 0)
+            break;
+        total += n;
+    }
+    CHECK(total == kArenaBytes, "recycle: clamped reader recovers a full arena's worth from the new head");
+    bool saw_old_pattern = false;
+    for (uint8_t b : rest)
+        if (b == 0xAA)
+            saw_old_pattern = true;
+    CHECK(!saw_old_pattern,
+          "recycle: clamped reader never yields old-pattern bytes presented as current data");
+    bool all_new_pattern = true;
+    for (uint8_t b : rest)
+        if (b != 0x55)
+            all_new_pattern = false;
+    CHECK(all_new_pattern, "recycle: every recovered byte is the new pattern, none stale");
+}
+
+// ---------------------------------------------------------------------------
+// reset_cursors — session start without freeing, distinct from clear()
+// ---------------------------------------------------------------------------
+
+static void test_reset_cursors_distinct_from_clear()
+{
+    const size_t kChunk = 16;
+    RepeatBuffer buf(kChunk);
+    for (int i = 0; i < 3; ++i)
+        CHECK(buf.preallocate_one_more_chunk(), "reset_cursors: build a 3-chunk arena");
+
+    auto data = make_pattern(40, 0);   // 16 + 16 + 8 -- uses all 3 preallocated chunks
+    CHECK(buf.append(data.data(), data.size()), "reset_cursors: fill the arena via the spare pool");
+    buf.drop_oldest_chunk();   // exercise truncated_head/_head_seq before reset
+    CHECK(buf.truncated_head(), "reset_cursors: sanity -- truncated_head set before reset");
+    CHECK(buf.chunk_count() == 2, "reset_cursors: sanity -- one chunk dropped, two remain");
+
+    const size_t total_committed = buf.chunk_count() + buf.spare_chunk_count();   // 2
+
+    buf.reset_cursors();
+
+    // Distinct from clear(): storage is RETAINED, not freed -- every chunk
+    // that existed goes back to the spare pool instead of being destroyed.
+    CHECK(buf.chunk_count() == 0, "reset_cursors: _chunks emptied");
+    CHECK(buf.spare_chunk_count() == total_committed,
+          "reset_cursors: every retained chunk's storage returns to the spare pool");
+    CHECK(buf.total_bytes() == 0, "reset_cursors: total_bytes reset to 0");
+    CHECK(!buf.truncated_head(), "reset_cursors: truncated_head cleared for the fresh session");
+    CHECK(buf.fixed_capacity(),
+          "reset_cursors: fixed-capacity flag survives -- the arena itself is not torn down");
+    CHECK(buf.arena_bytes() == total_committed * kChunk,
+          "reset_cursors: arena_bytes (spare-only now) is unchanged by the reset");
+
+    // Subsequent appends reuse the retained storage front-first: appending
+    // exactly total_committed chunks' worth must succeed purely from spare
+    // storage, with the committed total never growing.
+    auto fresh_data = make_pattern(total_committed * kChunk, 100);
+    CHECK(buf.append(fresh_data.data(), fresh_data.size()),
+          "reset_cursors: post-reset append succeeds purely from retained storage");
+    CHECK(buf.chunk_count() + buf.spare_chunk_count() == total_committed,
+          "reset_cursors: retained storage total is unchanged by the post-reset append");
+
+    // A fresh Reader after reset sees only the new session's data.
+    RepeatBuffer::Reader reader(buf);
+    std::vector<uint8_t> out(fresh_data.size());
+    size_t n = reader.next(out.data(), out.size());
+    CHECK(n == fresh_data.size(), "reset_cursors: fresh reader recovers all post-reset bytes");
+    CHECK(std::memcmp(out.data(), fresh_data.data(), out.size()) == 0,
+          "reset_cursors: fresh reader sees only new-session data, byte-exact");
+}
+
+// ---------------------------------------------------------------------------
+// truncate_tail — fixed-capacity mode keeps chunk storage; legacy mode is
+// unchanged (U3 already covers the byte-level behaviour both modes share;
+// this covers the storage-retention difference between them).
+// ---------------------------------------------------------------------------
+
+static void test_truncate_tail_fixed_vs_legacy_storage()
+{
+    // Fixed mode: an emptied tail chunk's storage returns to the spare
+    // pool -- the committed total (chunk_count + spare_chunk_count) is
+    // unchanged by a trim, even though chunk_count() itself drops.
+    {
+        const size_t kChunk = 16;
+        RepeatBuffer buf(kChunk);
+        for (int i = 0; i < 3; ++i)
+            CHECK(buf.preallocate_one_more_chunk(), "truncate_tail fixed: build a 3-chunk arena");
+
+        auto data = make_pattern(40, 0);   // 16 + 16 + 8
+        buf.append(data.data(), data.size());
+        const size_t total_committed = buf.chunk_count() + buf.spare_chunk_count();   // 3
+
+        buf.truncate_tail(24);   // removes the 8-byte tail chunk + 16 of the middle one (mirrors U3)
+        CHECK(buf.total_bytes() == 16, "truncate_tail fixed: bytes reduced exactly as legacy mode would");
+        CHECK(buf.chunk_count() + buf.spare_chunk_count() == total_committed,
+              "truncate_tail fixed: emptied tail chunk's storage moves to spare -- total is unchanged");
+        CHECK(buf.spare_chunk_count() >= 1,
+              "truncate_tail fixed: at least the just-emptied tail chunk is now in the spare pool");
+    }
+
+    // Legacy (non-fixed) mode: unchanged from before the arena rework --
+    // an emptied tail chunk is destroyed, not retained; the spare pool
+    // never gets involved because fixed_capacity() was never turned on.
+    {
+        const size_t kChunk = 16;
+        RepeatBuffer buf(kChunk);
+        auto data = make_pattern(40, 0);
+        buf.append(data.data(), data.size());
+        CHECK(!buf.fixed_capacity(), "truncate_tail legacy: sanity -- never entered fixed-capacity mode");
+
+        buf.truncate_tail(24);
+        CHECK(buf.total_bytes() == 16, "truncate_tail legacy: bytes reduced exactly as before");
+        CHECK(buf.spare_chunk_count() == 0,
+              "truncate_tail legacy: spare pool stays empty -- storage is freed, not retained");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// steal_chunks / clear — release the spare pool too, and reset the
+// fixed-capacity flag (feature-disable path)
+// ---------------------------------------------------------------------------
+
+static void test_steal_and_clear_release_spare_pool()
+{
+    // steal_chunks(): the out-param carries the spare pool so the caller
+    // can destroy it outside the lock, same as the returned deque.
+    {
+        const size_t kChunk = 16;
+        RepeatBuffer buf(kChunk);
+        for (int i = 0; i < 3; ++i)
+            CHECK(buf.preallocate_one_more_chunk(), "steal: build a 3-chunk arena");
+        auto data = make_pattern(24, 0);   // 16 + 8 -- uses 2 of the 3 preallocated chunks
+        buf.append(data.data(), data.size());
+        CHECK(buf.chunk_count() == 2, "steal: sanity -- 2 chunks in use");
+        CHECK(buf.spare_chunk_count() == 1, "steal: sanity -- 1 spare chunk remains");
+
+        std::deque<std::unique_ptr<uint8_t[]>> spare_out;
+        auto stolen = buf.steal_chunks(&spare_out);
+        CHECK(stolen.size() == 2, "steal: returns the in-use chunks");
+        CHECK(spare_out.size() == 1, "steal: out-param carries the spare pool too");
+        CHECK(buf.chunk_count() == 0 && buf.spare_chunk_count() == 0,
+              "steal: buffer left with neither in-use nor spare storage");
+        CHECK(!buf.fixed_capacity(), "steal: fixed-capacity flag resets -- this is the feature-disable path");
+
+        // Legacy call sites (no out-param) must still compile and behave:
+        // the spare pool is simply discarded (freed) rather than handed
+        // back, never leaked and never left dangling on the buffer.
+        for (int i = 0; i < 2; ++i)
+            CHECK(buf.preallocate_one_more_chunk(), "steal (no out-param): sanity -- repopulate the spare pool");
+        CHECK(buf.spare_chunk_count() == 2, "steal (no out-param): sanity -- spare pool populated");
+        auto stolen2 = buf.steal_chunks();
+        CHECK(stolen2.empty(), "steal (no out-param): no in-use chunks to return here");
+        CHECK(buf.spare_chunk_count() == 0,
+              "steal (no out-param): spare pool is cleared from the buffer either way");
+    }
+
+    // clear() also releases the spare pool and resets the fixed-capacity flag.
+    {
+        const size_t kChunk = 16;
+        RepeatBuffer buf(kChunk);
+        for (int i = 0; i < 3; ++i)
+            CHECK(buf.preallocate_one_more_chunk(), "clear: build a 3-chunk arena");
+        auto data = make_pattern(16, 0);
+        buf.append(data.data(), data.size());
+        CHECK(buf.spare_chunk_count() == 2, "clear: sanity -- spare pool populated before clear");
+
+        buf.clear();
+        CHECK(buf.chunk_count() == 0 && buf.spare_chunk_count() == 0,
+              "clear: both in-use and spare storage released");
+        CHECK(!buf.fixed_capacity(), "clear: fixed-capacity flag resets to legacy mode");
+        CHECK(buf.arena_bytes() == 0, "clear: arena_bytes reports 0 once out of fixed-capacity mode");
+
+        // Buffer remains usable afterward, back in legacy grow-and-free mode.
+        auto more = make_pattern(5, 9);
+        CHECK(buf.append(more.data(), more.size()), "clear: append still works after clear() (legacy mode)");
+        CHECK(!buf.fixed_capacity(), "clear: a plain append() after clear() does not re-enter fixed-capacity mode");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1964,11 +2462,18 @@ int main()
     test_u6_pick_codec_for_target();
     test_u7_max_recording_seconds();
     test_u14_byte_rate_for_new_tiers();
+    test_plan_arena();
     test_u8_meminfo_parse();
     test_u9_silence_trim_accounting();
     test_tail_trim_end_to_end();
     test_u12_steal_chunks();
     test_u13_total_bytes_invariant();
+    test_preallocate_and_spare_pool();
+    test_wrap_around_keeps_last_n_bytes();
+    test_recycle_vs_reader_content();
+    test_reset_cursors_distinct_from_clear();
+    test_truncate_tail_fixed_vs_legacy_storage();
+    test_steal_and_clear_release_spare_pool();
     test_u15_onset_gate();
     test_u16_preroll_ring();
     test_u17_tail_marker();
