@@ -1568,7 +1568,7 @@ struct RepeatDecision
     bool do_request_fade_out      = false;
     bool do_request_abort         = false;
     bool do_request_pending_start = false;
-    bool do_free_recording        = false;   // free_recording_locked()
+    bool do_free_recording        = false;   // discard_recording_locked() (arena persists -- see its own comment)
     bool do_begin_replay          = false;   // begin_replay_locked()
 
     RepeatLogTag log_tag = RepeatLogTag::None;
@@ -1694,8 +1694,8 @@ struct RepeatDecision
 // ┌────────────┬────────────────────────────────────────────────────────────┐
 // │ state      │ InputStopped (input_index; wrapper already matched origin)  │
 // ├────────────┼────────────────────────────────────────────────────────────┤
-// │ Idle       │ Apply: FreeRecording (matches free_recording_locked()'s own │
-// │ Hold       │   no-op-if-already-idle semantics)                          │
+// │ Idle       │ Apply: FreeRecording (matches discard_recording_locked()'s  │
+// │ Hold       │   own no-op-if-already-idle semantics)                      │
 // │ Pending    │ Apply: FreeRecording                                        │
 // │ Recording  │ Apply: FreeRecording (wrapper does the bounded drain wait   │
 // │            │   before calling this, unchanged)                           │
@@ -1996,17 +1996,18 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
             {
                 // Admit-before-free (see perform_pending_start()'s comment
                 // for the full ordering): the old held recording is
-                // DELIBERATELY NOT freed here any more -- do_free_recording
-                // stays false. _buffer (and _onset/_trim/_preroll_ring/
+                // DELIBERATELY NOT discarded here -- do_free_recording stays
+                // false. _buffer (and _onset/_trim/_preroll_ring/
                 // _tail_marker) are left completely untouched, still holding
                 // the finished recording exactly as Hold left them, all the
-                // way through Pending. Freeing is deferred to
-                // perform_pending_start(): on admission it steals the old
-                // buffer's chunks (freeing them outside the lock, same
-                // discipline as free_recording_locked()) immediately before
-                // handing the buffer to the new session; on refusal it frees
-                // nothing at all and PendingStartFailed reverts to Hold
-                // instead of Idle so the old recording survives -- see that
+                // way through Pending. Discarding is deferred to
+                // perform_pending_start(): on admission it calls _buffer.
+                // reset_cursors() (the arena persists -- this returns the old
+                // recording's chunks to the spare pool, nothing is freed)
+                // immediately before handing the buffer to the new session;
+                // on refusal it discards nothing at all and PendingStartFailed
+                // reverts to Hold instead of Idle so the old recording
+                // survives -- see that
                 // cell below. Enabled/Idle handling below is otherwise
                 // unchanged from before this fix.
                 if (enabled_cfg)
@@ -2349,14 +2350,6 @@ public:
     // Called by RepeatRecorder's worker thread for each drained block.
     void process_recorder_samples(const float* interleaved, int frames, bool above_threshold);
 
-    // Called by RepeatRecorder's worker thread once per outer loop iteration
-    // (~every 50 ms, regardless of ring activity) so a cached /proc/meminfo
-    // reading stays available for get_status()'s max_recording_seconds even
-    // while enabled-but-idle. Internally throttled to a real file
-    // read at most every kMemCheckIntervalSeconds; a no-op while disabled or
-    // while a session is Recording (that path maintains its own reading).
-    void maybe_refresh_idle_meminfo_cache();
-
     // Whether replay is currently serving as the source of truth for
     // input_index's track-ID/snapshot data -- true while REPLAYING
     // or FADING_OUT and input_index == the recording's origin_input. Used by
@@ -2396,15 +2389,6 @@ private:
     friend class ReplayEngine;
     friend class RepeatRecorder;   // calls perform_pending_start()
 
-    // Detaches the current recording's chunks (cheap, under
-    // _repeat_mutex) and returns them for the CALLER to destroy after
-    // releasing the lock -- see RepeatBuffer::steal_chunks()'s comment for
-    // the exact declaration-order pattern every call site uses. Caller
-    // holds _repeat_mutex; the returned container must be kept alive (by a
-    // local variable declared BEFORE the caller's lock_guard) until after
-    // the lock is released.
-    std::deque<RepeatBuffer::Chunk> free_recording_locked();
-
     // Single mutation choke points: every direct write to the
     // _state/_state_fast pair or the _origin_input/_origin_input_fast pair
     // funnels through exactly one of these two, so the atomic-mirror
@@ -2414,7 +2398,7 @@ private:
     // _repeat_mutex (same precondition as every other *_locked() helper in
     // this class; this codebase has no "assert mutex held by this thread"
     // idiom elsewhere, so this is documented, not asserted, consistent with
-    // free_recording_locked()/begin_replay_locked() above). Also logs the
+    // discard_recording_locked()/begin_replay_locked() above). Also logs the
     // transition at LOG_DEBUG (the finest granularity already used for
     // repeat's non-terminal events, e.g. the CaptureStarted "ignoring"
     // messages below -- this codebase has no separate DIAG level).
@@ -2424,22 +2408,23 @@ private:
 
     // Applies a RepeatDecision from decide_repeat_transition() --
     // writes the mirror fields it flags (via the choke points above) and
-    // runs the flagged side-effect calls (free_recording_locked(),
-    // begin_replay_locked(), ReplayEngine commands,
+    // runs the flagged side-effect calls (discard_recording_locked() for
+    // do_free_recording -- see that function's own comment for why this no
+    // longer tears the arena down, unlike the pre-arena free_recording_
+    // locked() it replaces --, begin_replay_locked(), ReplayEngine commands,
     // _recorder.request_pending_start()), plus the transition-specific
     // LOG_INFO/LOG_DEBUG the original branch used to print (see
     // RepeatLogTag). Does NOT touch _armed (no fast mirror; the six
     // wrappers still write it directly, exactly where they do today) and
     // does NOT do the drain-wait / unlock-relock choreography --
     // callers keep doing that exactly where they do today, calling this
-    // only once a decision is ready to commit. Returns any chunks freed by
-    // a do_free_recording side effect (empty when none), so the caller
-    // can keep them alive in its own pre-lock_guard local until after the
-    // lock releases, exactly as free_recording_locked()'s direct callers do.
-    // See the state x event matrix comment above this function's definition
-    // in autostream_repeat.cpp.
-    std::deque<RepeatBuffer::Chunk> handle_event_locked(RepeatEvent event,
-                                                          const RepeatEventCtx& ctx = RepeatEventCtx{});
+    // only once a decision is ready to commit. void return: discard_
+    // recording_locked() frees nothing (the arena persists), so unlike the
+    // pre-arena design there is no deque of freed chunks for a caller to
+    // keep alive past the lock release. See the state x event matrix
+    // comment above this function's definition in autostream_repeat.cpp.
+    void handle_event_locked(RepeatEvent event,
+                              const RepeatEventCtx& ctx = RepeatEventCtx{});
 
     // Begins replay from a HOLD recording. Caller holds _repeat_mutex. Used
     // by notify_capture_stopped() (armed at capture-stop), set_armed()
@@ -2463,55 +2448,66 @@ private:
     // _repeat_mutex held across the flip's own duration beyond this call).
     void set_fifo_owner(FifoOwner owner);
 
-    // Applies the 64 MiB free-RAM floor using an
-    // ALREADY-FETCHED MemInfo -- this function itself never calls
-    // read_meminfo(), so it is safe to call while holding _repeat_mutex
-    // (the caller is responsible for having done the actual /proc read
-    // outside the lock). Sheds oldest chunks until back above the floor.
-    void apply_memory_guard_locked(const MemInfo& mem);
-
-    // One raw block's worth of encode()+chunk-alloc+append+trim-accounting,
-    // factored out of process_recorder_samples() so the same logic serves
-    // both a live recorder block and a block drained from the pre-roll ring
-    // after onset confirms. Caller holds `lock` (== _repeat_mutex)
-    // and has already verified _state == Recording && _encoder; this
-    // function may unlock/relock `lock` internally (chunk preallocation / a
-    // periodic meminfo read), exactly as the pre-extraction body did, and
-    // re-validates after reacquiring -- becomes a no-op if the session ended
-    // while unlocked. Caller must re-check _state/_encoder itself before any
-    // further call in the same outer iteration (see process_recorder_
-    // samples()'s ring-drain loop).
-    void encode_and_append_locked(std::unique_lock<std::mutex>& lock,
-                                   const float* interleaved, int frames,
+    // One raw block's worth of encode()+append+trim-accounting, factored out
+    // of process_recorder_samples() so the same logic serves both a live
+    // recorder block and a block drained from the pre-roll ring after onset
+    // confirms. Caller holds _repeat_mutex for the whole call (unlike the
+    // pre-arena design, this never unlocks/relocks: append() in fixed-arena
+    // mode draws from the spare pool or recycles the front chunk -- both a
+    // pointer move, not an allocation or a /proc read -- so there is nothing
+    // left on this path that needs to happen outside the lock). Caller has
+    // already verified _state == Recording && _encoder.
+    void encode_and_append_locked(const float* interleaved, int frames,
                                    bool above_threshold);
 
-public:
-    // Public (unlike the rest of this private section) purely so
-    // test_repeat_transitions.cpp can static_assert both values directly
-    // rather than duplicating the literals -- RepeatController has no other
-    // reason to expose them.
-    //
-    // Margin ABOVE kFreeRamFloorMib (autostream_repeat_buffer.h) a new
-    // session's admission gate keeps: kFreeRamFloorMib is the steady-state
-    // floor apply_memory_guard_locked() drops chunks to defend once a
-    // recording is already running, but starting a brand-new session needs
-    // a little extra slack above that floor for the encoder's own one-time
-    // setup allocation, so admission is stricter than the in-session guard.
-    // Value preserves the original (110 - 96 = 14 MiB) relationship this
-    // gate was chosen with, from back when kFreeRamFloorMib was 96 --
-    // re-deriving kMinAvailableMibForStart from the floor plus this margin
-    // means a future change to the floor (zram/swap tuning) automatically
-    // carries through to the admission gate instead of the two drifting
-    // apart the way they had until now.
-    static constexpr long   kSessionAdmissionMarginMib = 14;
-    // Recording is refused below this threshold regardless of pinned
-    // codec (the pinned codec "skips the ladder" for quality-tier selection,
-    // not for this base availability gate). See kSessionAdmissionMarginMib
-    // immediately above for the derivation; currently 64 + 14 = 78 MiB.
-    static constexpr long   kMinAvailableMibForStart =
-        kFreeRamFloorMib + kSessionAdmissionMarginMib;
+    // Incremental arena-build loop step, called once per RepeatRecorder
+    // worker-thread tick (same call site maybe_refresh_idle_meminfo_cache()
+    // used to occupy) whenever enabled() but no arena exists yet (plan.codec
+    // == Unavailable && !_buffer.fixed_capacity()). See the .cpp definition
+    // for the settle-window/meminfo-read/per-chunk-floor-check/early-stop/
+    // arena-ready-kick design (D3).
+    void maybe_build_arena();
+
+    // Session-start-without-teardown: _buffer.reset_cursors() + the same
+    // encoder/trim/onset/tail-marker/preroll/state resets free_recording_
+    // locked() used to do, MINUS the arena teardown -- the arena's committed
+    // storage is left exactly as it was (reset_cursors() returns every chunk
+    // to the spare pool without freeing anything). Used everywhere a
+    // decide_repeat_transition() cell sets do_free_recording (see the matrix
+    // comment above handle_event_locked() -- every one of those cells means
+    // "the CURRENT recording is being discarded", never "tear down the
+    // arena"; teardown is now a separate, narrower operation -- see
+    // teardown_arena_locked()). Caller holds _repeat_mutex.
+    void discard_recording_locked();
+
+    // Feature-disable teardown: _buffer.steal_chunks(&out_spare) hands back
+    // BOTH the live-chunk deque and the spare pool for the caller to destroy
+    // outside _repeat_mutex (same declare-before-lock-guard discipline as
+    // every other steal_chunks() call site -- see that function's own
+    // comment), and resets _arena_plan/_active_codec/_unavailable_reason to
+    // Unavailable. Called ONLY from set_enabled(false) (after the EnabledOff
+    // event has already discarded any in-flight recording), stop(), and the
+    // config-change re-plan (set_enabled() again, treating an in-place
+    // target/codec change as an internal off+on) -- see why teardown is deliberately rarer than discard.
+    // Caller holds _repeat_mutex. Returns the live-chunk deque (the spare
+    // pool is returned via out_spare) -- same return-plus-outparam shape as
+    // RepeatBuffer::steal_chunks() itself, one layer up.
+    std::deque<RepeatBuffer::Chunk> teardown_arena_locked(
+        std::deque<std::unique_ptr<uint8_t[]>>& out_spare);
+
 private:
-    static constexpr double kMemCheckIntervalSeconds  = 30.0;
+    // Boot settle: when the daemon starts with repeat already enabled (a
+    // config-load EnabledOn, not a runtime toggle), the arena build
+    // (maybe_build_arena()) must not start until process uptime reaches this
+    // many seconds -- sibling services (owntone-mini, Vibra, ...) are still
+    // claiming their own footprints for a few seconds after boot, and sizing
+    // the arena against a transient reading from that window would under- or
+    // over-commit relative to steady state. Runtime toggles (the socket API,
+    // after the daemon has been up for a while) trivially satisfy this the
+    // instant they fire. Checked once, against a monotonic timestamp
+    // captured at controller construction (_construct_time) -- see
+    // maybe_build_arena().
+    static constexpr double kArenaSettleSeconds = 30.0;
     // Trailing pad kept ahead of the tail cut, shared by both close-time
     // trims: the marker-based cut (last-sustained-run end + this pad, the
     // normal case once onset has confirmed) and the silence-timeout
@@ -2669,7 +2665,7 @@ private:
     // may start committing audio; PreRollRing holds the raw backlog while
     // onset is still pending so nothing is lost once it confirms. Both are
     // (re)initialised at session start (perform_pending_start()) and cleared
-    // at session end/discard (free_recording_locked(), notify_capture_
+    // at session end/discard (discard_recording_locked(), notify_capture_
     // stopped()) -- see process_recorder_samples()'s implementation comment
     // for the full state machine.
     OnsetGate    _onset;
@@ -2686,7 +2682,6 @@ private:
     // members' own comment for the exact call sites.
     TailMarker   _tail_marker;
     std::unique_ptr<RepeatEncoder>  _encoder;
-    double       _last_mem_check_time    = 0.0;
     // Monotonic timestamp set at begin_replay_locked(); 0.0 when no replay
     // has started this Hold cycle. Used with _origin_minimum_playback_seconds
     // to compute whether an active replay is still within its minimum
@@ -2696,16 +2691,56 @@ private:
     uint64_t     _dropped_frames_baseline = 0;
     std::vector<uint8_t> _encode_scratch;
 
-    // Idle-status meminfo cache: maintained ONLY by
-    // maybe_refresh_idle_meminfo_cache(), called from RepeatRecorder's
-    // worker thread -- never read from /proc/meminfo on get_status()'s own
-    // call path. -1 means "no reading yet" (get_status() reports 0/
-    // unavailable in that window, e.g. briefly after daemon startup). Stores
-    // MemInfo::effective_available_mib() (swap-aware), not raw MemAvailable,
-    // since every consumer of this cache feeds it into sizing (get_status()'s
-    // idle max_recording_seconds/codec pick).
-    long         _cached_available_mib     = -1;
-    double       _last_idle_mem_check_time = 0.0;
+    // ── Fixed arena ─────────────────────
+    //
+    // The current plan for the arena this controller has (attempted to)
+    // build. codec == Unavailable means no arena exists (either never built,
+    // or torn down by teardown_arena_locked()); "arena ready" is exactly
+    // plan.codec != Unavailable && _buffer.fixed_capacity() (both conditions
+    // together, not either alone -- fixed_capacity() alone would be true
+    // mid-build too, before a single chunk has actually been committed to
+    // this plan). Only ever written by maybe_build_arena() (the build loop)
+    // and teardown_arena_locked() (resets to Unavailable); read by
+    // perform_pending_start() (session start), get_status() (D5), and
+    // maybe_build_arena() itself (to know whether a build is even needed).
+    ArenaPlan    _arena_plan{CodecChoice::Unavailable, 0, 0};
+    // True from the first build tick (the meminfo read + plan_arena() call)
+    // until the build finalizes (target reached, an early stop, or zero
+    // chunks achievable) -- distinguishes "no arena, build not yet started"
+    // from "no arena, build in progress" for perform_pending_start()'s
+    // arena_not_ready-vs-insufficient_memory refusal wording. Cleared by
+    // maybe_build_arena() itself on finalization and by teardown_arena_
+    // locked() (a torn-down arena is not a build in progress).
+    bool         _arena_build_in_progress = false;
+    // Monotonic timestamp captured once, at controller construction --
+    // maybe_build_arena()'s boot-settle gate (kArenaSettleSeconds) measures
+    // process uptime against this rather than an absolute clock, matching
+    // every other timestamp in this class (get_monotonic_time()).
+    double       _construct_time = 0.0;
+    // Earliest monotonic time the NEXT arena-build attempt may start.
+    // Written by maybe_build_arena()'s two insufficient-memory finalize
+    // paths (now + kArenaSettleSeconds) so a memory-starved appliance
+    // retries the build on a bounded cadence instead of re-reading
+    // /proc/meminfo every ~50 ms worker tick, forever. Zero (the initial
+    // value) never throttles; teardown deliberately leaves it alone -- a
+    // teardown after a SUCCESSFUL build implies memory was sufficient, so
+    // the follow-up build a config-change re-plan wants runs unthrottled.
+    double       _next_build_attempt_time = 0.0;
+
+    // Arena-ready kick: tracks
+    // whether a PERMITTED input is currently capturing, updated
+    // unconditionally by notify_capture_started()/notify_capture_stopped()
+    // (regardless of _state -- cheap, under the lock those functions already
+    // hold), so that when a build in flight during the settle window
+    // completes, maybe_build_arena() can dispatch a synthetic CaptureStarted
+    // for the input that was already capturing rather than waiting for the
+    // next should_capture edge (which, for audio already playing at boot,
+    // may never come -- see maybe_build_arena()'s own comment for the gap
+    // this closes). _capture_active_input is meaningless while
+    // !_capture_active (left at whatever it last was, never reset to a
+    // sentinel -- every reader checks _capture_active first).
+    bool         _capture_active       = false;
+    int          _capture_active_input = 0;
 
     // Fast lock-free mirrors of _enabled_cfg/_state/_origin_input, updated
     // under _repeat_mutex whenever those change, read without a lock by

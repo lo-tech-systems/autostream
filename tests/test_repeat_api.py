@@ -302,11 +302,17 @@ class TestP2LiveApplyNotReload:
         assert resp["live"] is True
 
     def test_codec_calls_live_setter_with_current_enabled(self, tmp_path):
+        """Enabled, and the daemon-reported codec differs from the newly
+        saved value: this exercises the off/on pulse (see
+        TestP2LiveCodecPulse for the full matrix)."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "auto"}), \
+             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
-        m.assert_called_once_with(True, "pcm", 33)
+        assert m.call_count == 2
+        assert m.call_args_list[0].args == (False, "pcm", 33)
+        assert m.call_args_list[1].args == (True, "pcm", 33)
         assert resp["live"] is True
 
     def test_enabled_does_not_debounce_coordinator_reload(self, tmp_path):
@@ -402,6 +408,74 @@ class TestP2LiveTargetMinutesPulse:
         with patch("autostream_webui_api.get_repeat_status", return_value=None), \
              patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
+        assert resp["live"] is True
+        assert m.call_count == 2
+
+
+class TestP2LiveCodecPulse:
+    """_live_repeat_codec: mirrors _live_repeat_target_minutes -- the
+    daemon-reported codec (get_repeat_status()) is used as the "previous
+    value" for the changed/unchanged comparison, because by the time this
+    live_fn runs the settings store already holds the NEW value (comparing
+    against the snapshot would always see "no change")."""
+
+    def test_disabled_makes_no_daemon_calls(self, tmp_path):
+        """Repeat currently off: the new codec just persists; the enable
+        path forwards it later, so nothing should be pushed now."""
+        state, _ = _make_state(str(tmp_path))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+            resp, _ = _post_settings(state, "repeat.codec", "mp2_192")
+        assert resp["ok"] is True
+        assert resp["live"] is True
+        m.assert_not_called()
+
+    def test_unchanged_value_makes_no_daemon_calls(self, tmp_path):
+        """Enabled, and the daemon already reports the same codec the
+        browser just saved: no pulse."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+            resp, _ = _post_settings(state, "repeat.codec", "mp2_192")
+        assert resp["ok"] is True
+        assert resp["live"] is True
+        m.assert_not_called()
+
+    def test_changed_value_pulses_off_then_on_exactly_once_each(self, tmp_path):
+        """Enabled, and the daemon-reported codec differs from the newly
+        saved value: exactly one off call followed by exactly one on call,
+        both carrying the new codec and the current target_minutes."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True, "target_minutes": 80}))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+            resp, _ = _post_settings(state, "repeat.codec", "pcm")
+        assert resp["ok"] is True
+        assert resp["live"] is True
+        assert m.call_count == 2
+        assert m.call_args_list[0].args == (False, "pcm", 80)
+        assert m.call_args_list[1].args == (True, "pcm", 80)
+
+    def test_pulse_failure_reports_live_error(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
+        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+             patch("autostream_webui_api.set_live_repeat_enabled", side_effect=[True, False]):
+            resp, _ = _post_settings(state, "repeat.codec", "pcm")
+        assert resp["ok"] is True
+        assert resp["live"] is False
+        assert "live_error" in resp
+
+    def test_unknown_daemon_status_treated_as_changed(self, tmp_path):
+        """No cached daemon status (old binary / never polled yet): the
+        safer default is to pulse rather than silently skip the daemon
+        push."""
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
+        with patch("autostream_webui_api.get_repeat_status", return_value=None), \
+             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+            resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["live"] is True
         assert m.call_count == 2
 

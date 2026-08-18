@@ -716,21 +716,13 @@ static void test_pending_start_outcomes()
 }
 
 // ---------------------------------------------------------------------------
-// Constant derivations: kMinAvailableMibForStart == kFreeRamFloorMib +
-// kSessionAdmissionMarginMib (78 == 64 + 14) and kFadeSeconds == 1.0 -- both
-// changes 3 and 4. Compile-time checks so a future edit to either input
-// constant without updating the derivation comment fails the build, not
-// just this test binary.
+// Constant derivations: the admission-gate constants (kMinAvailableMibForStart
+// / kSessionAdmissionMarginMib) were retired in the fixed-arena redesign (C2)
+// -- admission is now "does an arena exist", not a free-RAM threshold, so
+// there is nothing left to derive here. kFadeSeconds == 1.0 (change 4) still
+// applies unchanged.
 // ---------------------------------------------------------------------------
 
-static_assert(kFreeRamFloorMib == 64, "kFreeRamFloorMib moved -- re-check the admission gate derivation");
-static_assert(RepeatController::kSessionAdmissionMarginMib == 14,
-              "margin constant changed -- re-check the 110 -> 78 derivation comment");
-static_assert(RepeatController::kMinAvailableMibForStart ==
-                  kFreeRamFloorMib + RepeatController::kSessionAdmissionMarginMib,
-              "admission gate must stay derived from the floor + margin");
-static_assert(RepeatController::kMinAvailableMibForStart == 78,
-              "expected 64 + 14 == 78");
 static_assert(ReplayEngine::kFadeSeconds == 1.0, "expected fade shortened to 1.0 s");
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 //   - CodecChoice / pick_codec_for_target() / byte_rate_for() — the codec
 //     ladder that picks recording quality to guarantee a target duration in
 //     free RAM.
-//   - max_recording_seconds() — the sliding-window sizing formula.
+//   - ArenaPlan / plan_arena() — the fixed-arena sizing formula (D1).
 //   - parse_meminfo_text() — a pure parser for /proc/meminfo TEXT; the file
 //     I/O wrapper that reads the real file lives in the impure .cpp.
 //   - SilenceTrimAccountant — byte-accounting helper for the end-of-recording
@@ -73,23 +73,42 @@ public:
     {
     }
 
-    // Appends len bytes, allocating new chunks as needed.  The recorder only
-    // ever appends whole encoded frames (MP2 frame or PCM sample-aligned
-    // block), so chunk boundaries always land on frame boundaries by
-    // construction — this function does not need to know about frames.
+    // Appends len bytes, allocating new chunks as needed (in fixed-capacity
+    // arena mode -- see preallocate_one_more_chunk() -- "allocating" means
+    // drawing from the spare pool or recycling the front chunk; see
+    // allocate_chunk()). The recorder only ever appends whole encoded frames
+    // (MP2 frame or PCM sample-aligned block), so chunk boundaries always
+    // land on frame boundaries by construction — this function does not need
+    // to know about frames.
     //
     // Returns false only if a new chunk allocation itself failed (out of
-    // memory).  The memory-guard *policy* — checking /proc/meminfo before
-    // allocating and calling drop_oldest_chunk() pre-emptively to stay above
-    // the free-RAM floor — is orchestrated by the impure RepeatRecorder;
-    // this pure buffer just tries to grow and reports hard allocation
-    // failure.
-    //
-    // Thin wrapper over append_with_preallocated() so the incremental
-    // _total_bytes bookkeeping only needs to live in one place.
+    // memory / address space -- effectively unreachable once an arena is
+    // built, since allocate_chunk() then only draws from the spare pool or
+    // recycles, never calling new). The legacy (non-arena) memory-guard
+    // *policy* this function's OOM contract exists for -- checking
+    // /proc/meminfo before allocating and calling drop_oldest_chunk()
+    // pre-emptively to stay above the free-RAM floor -- was orchestrated by
+    // the impure RepeatController; the fixed-arena model
+    // replaces that per-append policy with the up-front build loop instead.
     bool append(const uint8_t* data, size_t len)
     {
-        return append_with_preallocated(nullptr, data, len);
+        size_t written = 0;
+        while (written < len)
+        {
+            if (_chunks.empty() || _chunks.back().used == _chunks.back().capacity)
+            {
+                if (!allocate_chunk())
+                    return false;
+            }
+            Chunk& c = _chunks.back();
+            size_t space = c.capacity - c.used;
+            size_t n     = (len - written < space) ? (len - written) : space;
+            std::memcpy(c.data.get() + c.used, data + written, n);
+            c.used += n;
+            _total_bytes += n;
+            written += n;
+        }
+        return true;
     }
 
     // Allocates one chunk's worth of raw storage, WITHOUT touching this (or
@@ -110,60 +129,6 @@ public:
         {
             return nullptr;
         }
-    }
-
-    // Same contract as append(), except: if a NEW chunk turns out to be
-    // needed for this call and `preallocated` is non-null, that storage is
-    // ADOPTED as the new chunk instead of this function calling `new`
-    // itself. `preallocated` must have been sized via
-    // allocate_chunk_storage(chunk_bytes()) by the caller; if it is null,
-    // or if more than one new chunk is needed in a single call (never
-    // happens in practice — production block sizes are always far smaller
-    // than chunk_bytes()), any additional chunks beyond the first fall back
-    // to a normal internal allocation, exactly like append(). If a new
-    // chunk was predicted but turns out not to be needed after all (the
-    // caller's "will this need a new chunk?" check raced with something —
-    // should not happen given single-writer discipline, but is harmless
-    // either way), `preallocated` is simply destroyed when this function
-    // returns.
-    bool append_with_preallocated(std::unique_ptr<uint8_t[]> preallocated,
-                                   const uint8_t* data, size_t len)
-    {
-        bool consumed_preallocated = false;
-        size_t written = 0;
-        while (written < len)
-        {
-            if (_chunks.empty() || _chunks.back().used == _chunks.back().capacity)
-            {
-                if (!consumed_preallocated && preallocated)
-                {
-                    Chunk c;
-                    c.data     = std::move(preallocated);
-                    c.capacity = _chunk_bytes;
-                    c.used     = 0;
-                    _chunks.push_back(std::move(c));
-                    consumed_preallocated = true;
-                }
-                else if (!allocate_chunk())
-                {
-                    // _total_bytes must equal the sum of every chunk's
-                    // `used` at all times, including on this early-return
-                    // failure path (some bytes may already have been
-                    // committed to earlier chunks this same call) -- so it
-                    // is updated per-iteration below (c.used += n), never
-                    // just once at the end.
-                    return false;
-                }
-            }
-            Chunk& c = _chunks.back();
-            size_t space = c.capacity - c.used;
-            size_t n     = (len - written < space) ? (len - written) : space;
-            std::memcpy(c.data.get() + c.used, data + written, n);
-            c.used += n;
-            _total_bytes += n;
-            written += n;
-        }
-        return true;
     }
 
     // Frees the oldest (front) chunk — the sliding-window mechanism.  Never
@@ -933,37 +898,6 @@ inline ArenaPlan plan_arena(long effective_available_mib, int target_minutes,
     plan.arena_bytes      = static_cast<size_t>(chunk_count * static_cast<long long>(chunk_bytes));
     plan.capacity_seconds = static_cast<long>(static_cast<long long>(plan.arena_bytes) / rate);
     return plan;
-}
-
-// max_recording_seconds = ((available_mib - 64 MiB) + held_bytes) / byte_rate
-//
-// held_bytes is the recording's current size (0 at a fresh begin_session(),
-// >0 mid-recording — the bytes already held don't need "new" headroom).  If
-// available_mib is already at/under the floor, the headroom term is clamped
-// to zero rather than going negative (the driving case: this is what
-// happens right before drop_oldest_chunk() kicks in).
-inline long max_recording_seconds(CodecChoice codec, long available_mib,
-                                   size_t held_bytes,
-                                   long sample_rate_hz)
-{
-    if (codec == CodecChoice::Unavailable)
-        return 0;
-
-    long rate = byte_rate_for(codec, sample_rate_hz);
-    if (rate <= 0)
-        return 0;
-
-    long long headroom_mib = static_cast<long long>(available_mib) - kFreeRamFloorMib;
-    long long headroom_bytes = headroom_mib * 1024ll * 1024ll +
-                                static_cast<long long>(held_bytes);
-    if (headroom_bytes < 0)
-        headroom_bytes = 0;
-
-    long long seconds = headroom_bytes / rate;
-    if (seconds < 0)
-        seconds = 0;
-
-    return static_cast<long>(seconds);
 }
 
 

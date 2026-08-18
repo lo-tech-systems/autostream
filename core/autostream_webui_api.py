@@ -1412,12 +1412,36 @@ def _live_repeat_enabled(state: object, value: object) -> bool:
 
 
 def _live_repeat_codec(state: object, value: object) -> bool:
+    """Apply a codec-pin change while repeat is enabled.
+
+    Same off/on toggle shape as _live_repeat_target_minutes() below (repeat
+    arena redesign): a plain set_enabled(enabled, new_codec)
+    call with the daemon already enabled used to just rewrite the pinned
+    codec in place, with no re-plan of the (now fixed-per-arena) codec the
+    daemon actually records at. Pulsing off then on drives the daemon's own
+    config-change re-plan (RepeatController::set_enabled() -- an internal
+    disable+enable when target_minutes or codec actually changes while
+    staying enabled) so a codec pin takes effect immediately instead of only
+    at the next unrelated enable/disable. See _live_repeat_target_minutes()'s
+    own docstring for the staleness caveat, which applies identically here.
+    """
     from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
     if not isinstance(settings, _SettingsStore):
         return False
     snap = settings.snapshot()
-    return bool(set_live_repeat_enabled(snap.repeat.enabled, str(value), snap.repeat.target_minutes))
+    if not snap.repeat.enabled:
+        return True
+
+    new_codec = str(value)
+    status = get_repeat_status() or {}
+    previous_codec = status.get("codec")
+    if previous_codec == new_codec:
+        return True
+
+    off_ok = set_live_repeat_enabled(False, new_codec, snap.repeat.target_minutes)
+    on_ok = set_live_repeat_enabled(True, new_codec, snap.repeat.target_minutes)
+    return bool(off_ok) and bool(on_ok)
 
 
 def _live_repeat_target_minutes(state: object, value: object) -> bool:

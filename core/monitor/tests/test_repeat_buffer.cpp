@@ -5,7 +5,7 @@
 //
 // Unit tests for the header-only, pure repeat-feature core:
 // autostream_repeat_buffer.h (RepeatBuffer/Reader, codec ladder,
-// max_recording_seconds, /proc/meminfo parse, silence-trim accounting,
+// ArenaPlan/plan_arena, /proc/meminfo parse, silence-trim accounting,
 // onset-gated recording's SustainTracker/OnsetGate/PreRollRing, and the tail
 // offset gate's TailMarker).
 //
@@ -367,60 +367,6 @@ static void test_u6_pick_codec_for_target()
 }
 
 // ---------------------------------------------------------------------------
-// U7 — max_recording_seconds
-// ---------------------------------------------------------------------------
-
-static void test_u7_max_recording_seconds()
-{
-    // The buffer is bounded ONLY by the free-RAM floor + codec ladder, so
-    // max_recording_seconds() is a straight headroom/rate computation with
-    // no min()-against-a-target step.
-
-    // Fresh start, huge headroom: at 192k with 1000 MiB available, headroom
-    // = (1000-64) MiB = 936 MiB, giving a large-but-exact number of seconds
-    // (no cap kicks in to truncate it to some fixed target).
-    // MP2 byte rates are bitrate-derived and rate-independent (see
-    // byte_rate_for()'s comment); 48000 is passed explicitly throughout this
-    // test since byte_rate_for() takes no default sample_rate_hz argument.
-    long rate192 = byte_rate_for(CodecChoice::Mp2_192, 48000);
-    long long expect_huge = (936LL * 1024 * 1024) / rate192;
-    long s = max_recording_seconds(CodecChoice::Mp2_192, 1000, 0, 48000);
-    CHECK(s == expect_huge, "U7: fresh start, huge headroom -> exact headroom/rate, uncapped");
-
-    // Mid-recording (held > 0): held bytes count toward the available
-    // duration without needing fresh headroom for them.
-    size_t held = static_cast<size_t>(rate192) * 60;  // 60 s already held
-    long s_mid = max_recording_seconds(CodecChoice::Mp2_192, 98 /*just above floor*/, held, 48000);
-    CHECK(s_mid > 0, "U7: mid-recording with held bytes is > 0");
-    long long expect_mid = (34LL * 1024 * 1024 + static_cast<long long>(held)) / rate192;
-    CHECK(s_mid == expect_mid, "U7: mid-recording matches headroom+held/rate exactly");
-
-    // Below-floor: available_mib at/under the 64 MiB floor with nothing held
-    // yields zero (this is the condition that triggers drop_oldest_chunk in
-    // the impure recorder).
-    long s_floor = max_recording_seconds(CodecChoice::Mp2_192, 64, 0, 48000);
-    CHECK(s_floor == 0, "U7: at the free-RAM floor with held=0 -> 0 seconds");
-    long s_below_floor = max_recording_seconds(CodecChoice::Mp2_192, 10, 0, 48000);
-    CHECK(s_below_floor == 0, "U7: below the free-RAM floor with held=0 -> 0 seconds");
-
-    // PCM tier: uses the sample-rate-dependent byte rate, still uncapped.
-    long rate_pcm = byte_rate_for(CodecChoice::PcmS16, 48000);
-    long long expect_pcm = (936LL * 1024 * 1024) / rate_pcm;
-    long s_pcm = max_recording_seconds(CodecChoice::PcmS16, 1000, 0, 48000);
-    CHECK(s_pcm == expect_pcm, "U7: PCM tier headroom/rate, uncapped");
-
-    // More available RAM simply yields more seconds -- no target ceiling to
-    // saturate at.
-    long s_2000 = max_recording_seconds(CodecChoice::Mp2_224, 2000, 0, 48000);
-    long s_4000 = max_recording_seconds(CodecChoice::Mp2_224, 4000, 0, 48000);
-    CHECK(s_4000 > s_2000, "U7: more available RAM -> strictly more seconds, uncapped");
-
-    // Unavailable codec always yields zero regardless of headroom.
-    long s_unavail = max_recording_seconds(CodecChoice::Unavailable, 2000, 0, 48000);
-    CHECK(s_unavail == 0, "U7: Unavailable codec -> 0 seconds always");
-}
-
-// ---------------------------------------------------------------------------
 // U14 — byte_rate_for() for the new tiers (256/320/384 kbps)
 // ---------------------------------------------------------------------------
 
@@ -436,13 +382,6 @@ static void test_u14_byte_rate_for_new_tiers()
           "U14: Mp2_256 byte rate is sample-rate-independent");
     CHECK(byte_rate_for(CodecChoice::Mp2_384, 44100) == byte_rate_for(CodecChoice::Mp2_384, 48000),
           "U14: Mp2_384 byte rate is sample-rate-independent");
-
-    // max_recording_seconds extends cleanly to the new tiers via the same
-    // headroom/rate formula as every other tier.
-    long rate320 = byte_rate_for(CodecChoice::Mp2_320, 48000);
-    long long expect = (936LL * 1024 * 1024) / rate320;
-    CHECK(max_recording_seconds(CodecChoice::Mp2_320, 1000, 0, 48000) == expect,
-          "U14: max_recording_seconds works for a new tier (Mp2_320)");
 
     // codec_choice_for_bitrate_kbps round-trips through the legal table.
     CHECK(codec_choice_for_bitrate_kbps(160) == CodecChoice::Mp2_160, "U14: 160 -> Mp2_160");
@@ -1010,69 +949,6 @@ static void test_u12_steal_chunks()
     auto more = make_pattern(5, 200);
     CHECK(buf.append(more.data(), more.size()), "U12: append still works after steal_chunks");
     CHECK(buf.total_bytes() == 5, "U12: post-steal append lands correctly");
-}
-
-// ---------------------------------------------------------------------------
-// U13 — total_bytes incremental invariant across every mutator, including
-// the preallocated-chunk append path
-// ---------------------------------------------------------------------------
-
-// Recomputes the "true" total from the outside: appends are tracked by the
-// test itself (chunk internals are private), so this cross-checks
-// total_bytes() against an independently-maintained running total after
-// every single mutating call in a mixed sequence.
-static void test_u13_total_bytes_invariant()
-{
-    const size_t kChunk = 16;
-    RepeatBuffer buf(kChunk);
-    size_t expected = 0;
-
-    auto a = make_pattern(10);
-    CHECK(buf.append(a.data(), a.size()), "U13: append #1 succeeds");
-    expected += 10;
-    CHECK(buf.total_bytes() == expected, "U13: total_bytes tracks append #1");
-
-    // append_with_preallocated with a real preallocated chunk, forcing a
-    // rollover (10 used of 16 in the current chunk; this append needs 10
-    // more, which does not fit -- a new chunk is required).
-    auto b = make_pattern(10, 50);
-    auto storage = RepeatBuffer::allocate_chunk_storage(buf.chunk_bytes());
-    CHECK(storage != nullptr, "U13: allocate_chunk_storage succeeds");
-    CHECK(buf.append_with_preallocated(std::move(storage), b.data(), b.size()),
-          "U13: append_with_preallocated succeeds");
-    expected += 10;
-    CHECK(buf.total_bytes() == expected, "U13: total_bytes tracks the preallocated append");
-
-    // append_with_preallocated with a NULL preallocated pointer behaves
-    // exactly like append() (falls back to internal allocation).
-    auto c = make_pattern(30, 100);   // forces further rollovers
-    CHECK(buf.append_with_preallocated(nullptr, c.data(), c.size()),
-          "U13: append_with_preallocated(nullptr, ...) succeeds");
-    expected += 30;
-    CHECK(buf.total_bytes() == expected, "U13: total_bytes tracks a null-preallocated append");
-
-    buf.drop_oldest_chunk();
-    expected = buf.total_bytes();   // drop_oldest_chunk's exact byte delta is
-                                     // already covered by U2; here we only
-                                     // need total_bytes to still be internally
-                                     // consistent for the rest of the sequence
-    size_t after_drop = expected;
-
-    buf.truncate_tail(7);
-    expected = after_drop - std::min<size_t>(7, after_drop);
-    CHECK(buf.total_bytes() == expected, "U13: total_bytes tracks truncate_tail");
-
-    buf.clear();
-    CHECK(buf.total_bytes() == 0, "U13: total_bytes is 0 after clear()");
-
-    auto d = make_pattern(20, 150);
-    buf.append(d.data(), d.size());
-    auto stolen = buf.steal_chunks();
-    CHECK(buf.total_bytes() == 0, "U13: total_bytes is 0 after steal_chunks()");
-    size_t stolen_sum = 0;
-    for (const auto& ch : stolen)
-        stolen_sum += ch.used;
-    CHECK(stolen_sum == 20, "U13: steal_chunks's returned container carries all the bytes");
 }
 
 // ---------------------------------------------------------------------------
@@ -2460,14 +2336,12 @@ int main()
     test_u4_reader_sequential();
     test_u5_reader_survives_drop();
     test_u6_pick_codec_for_target();
-    test_u7_max_recording_seconds();
     test_u14_byte_rate_for_new_tiers();
     test_plan_arena();
     test_u8_meminfo_parse();
     test_u9_silence_trim_accounting();
     test_tail_trim_end_to_end();
     test_u12_steal_chunks();
-    test_u13_total_bytes_invariant();
     test_preallocate_and_spare_pool();
     test_wrap_around_keeps_last_n_bytes();
     test_recycle_vs_reader_content();
