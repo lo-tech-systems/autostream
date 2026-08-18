@@ -480,10 +480,14 @@ REPEAT_CODEC_CHOICES = (
 REPEAT_CODEC_DEFAULT = "auto"
 
 # Target-duration goal (minutes) the "auto" codec ladder tries to guarantee
-# in currently-usable RAM (core/monitor/autostream_repeat_buffer.h's
-# pick_codec_for_target(), kMinRepeatTargetMinutes/kMaxRepeatTargetMinutes).
-# The Settings-page dropdown offers only 33 (Vinyl) / 80 (CD); direct
-# config-file edits keep the wider clamped range below.
+# in currently-usable RAM. Consumed once, when the fixed recording arena is
+# built (or re-built after a config change) -- not re-picked per session --
+# by core/monitor/autostream_repeat_buffer.h's plan_arena(), which sizes the
+# arena and, for "auto", resolves the codec via pick_codec_for_target()
+# (kMinRepeatTargetMinutes/kMaxRepeatTargetMinutes clamp the value below to
+# the same range both functions apply internally). The Settings-page
+# dropdown offers only 33 (Vinyl) / 80 (CD); direct config-file edits keep
+# the wider clamped range below.
 REPEAT_TARGET_MINUTES_DEFAULT = 33
 REPEAT_TARGET_MINUTES_MIN = 10
 REPEAT_TARGET_MINUTES_MAX = 600

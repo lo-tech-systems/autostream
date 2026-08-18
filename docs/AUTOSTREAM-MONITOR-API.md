@@ -734,29 +734,32 @@ Request fields:
 - `enabled`
   - `true` to record every capture session; `false` to disable
 - `codec`
-  - one of `auto` (target-duration selection picks a tier from free RAM at
-    each recording start -- see below), `mp2_160`, `mp2_192`, `mp2_224`,
-    `mp2_256`, `mp2_320`, `mp2_384`, or `pcm` (pinned; still subject to the
-    base 78 MiB session-admission gate and the 64 MiB floor/sliding window)
+  - one of `auto` (target-duration selection picks a tier from free RAM
+    once, when the recording arena is planned at enable time -- see below),
+    `mp2_160`, `mp2_192`, `mp2_224`, `mp2_256`, `mp2_320`, `mp2_384`, or
+    `pcm` (pinned; the arena is still capped at usable RAM, so a pinned
+    codec degrades DURATION rather than quality when the target does not
+    fit)
   - defaults to `auto` if omitted or empty
 - `target_minutes` (optional, integer, 10..600)
-  - the recording duration the `auto` codec ladder tries to GUARANTEE in
-    currently-usable RAM (MemAvailable, minus whatever is currently swapped
-    out, minus a 64 MiB free-RAM floor). Selection: PCM s16 if PCM's
-    footprint for `target_minutes` fits usable RAM; else the highest legal
-    MP2 stereo bitrate (160/192/224/256/320/384 kbps) whose footprint fits,
-    never below 160 kbps. If omitted entirely, the currently-configured
-    value is left unchanged (defaults to 33 minutes the first time the
-    daemon is started, never reset back to 33 by a later call that simply
-    doesn't mention it). Out-of-range values are clamped to [10, 600].
-    `target_minutes` is a SELECTION goal only, not an admission gate or a
-    hard cap: once a session starts, the sliding window still behaves
-    exactly as before (bounded only by that same 64 MiB floor and the
-    chosen tier's byte rate) -- a recording can
-    run past `target_minutes` if RAM allows, or fall short of it under
-    memory pressure (head truncation), and if even 160 kbps's target
-    footprint doesn't fit, the session still starts at 160 kbps rather than
-    being refused.
+  - the recording duration the arena is planned to hold. The plan is
+    derived once, at enable time, from currently-usable RAM (MemAvailable,
+    minus whatever is currently swapped out, minus a 64 MiB free-RAM
+    floor). Selection: PCM s16 if PCM's footprint for `target_minutes` fits
+    usable RAM; else the highest legal MP2 stereo bitrate
+    (160/192/224/256/320/384 kbps) whose footprint fits, never below
+    160 kbps; below the 160 kbps floor the arena is capped at usable RAM
+    and DURATION degrades instead -- the achieved capacity is what
+    `max_recording_seconds` then reports (requested vs delivered; see
+    `requested_minutes` in the status block). If omitted entirely, the
+    currently-configured value is left unchanged (defaults to 33 minutes
+    the first time the daemon is started, never reset back to 33 by a later
+    call that simply doesn't mention it). Out-of-range values are clamped
+    to [10, 600]. The arena is a fixed reservation, not a per-session gate:
+    a recording longer than the arena's capacity keeps running and wraps,
+    holding the most recent audio (`recording.truncated_head`). Changing
+    `target_minutes` (or the codec) while enabled frees the arena and
+    re-plans it, discarding any recording in progress.
   - The web UI's Settings page offers a "Vinyl (33 minutes)" / "CD (80
     minutes)" choice (set via the persisted `repeat.target_minutes` setting;
     see `core/autostream_config.py`'s `RepeatConfig`). Direct config-file
@@ -980,6 +983,7 @@ Success response:
     "armed":true,
     "codec":"auto",
     "target_minutes":80,
+    "requested_minutes":80,
     "max_recording_seconds":20340,
     "effective_codec":"mp2_256",
     "recording":{
@@ -1106,50 +1110,56 @@ Top-level fields:
   - `codec`: current codec policy (`auto`|`mp2_160`|`mp2_192`|`mp2_224`|
     `mp2_256`|`mp2_320`|`mp2_384`|`pcm`)
   - `target_minutes`: current target-duration goal (default 33; see
-    `set_repeat_enabled` above) -- what the `auto` ladder tries to
-    guarantee, not a hard cap on the sliding window
-  - `max_recording_seconds`: sliding-window size in seconds, computed from
-    usable RAM (MemAvailable, minus whatever is currently swapped out, minus
-    a 64 MiB free-RAM floor) and the resolved codec tier's byte rate -- the
-    window itself still has no fixed-duration cap (bounded only by that same
-    64 MiB floor + the resolved tier's byte rate). Available whenever
-    `enabled` is `true`, not just while a
-    recording is active: while recording, this is the value computed when
-    that session started; while enabled but idle/holding, it is computed on
-    demand from a periodically-refreshed free-RAM reading, reflecting what a
-    session started right now would get (using the ladder's pick for the
-    *current* free RAM when `codec == "auto"`). `0` only when genuinely
-    unavailable: `enabled` is `false`, or no free-RAM reading has landed yet
-    (a brief window right after daemon startup or re-enabling)
-  - `effective_codec`: the tier `max_recording_seconds` assumes -- the active
-    session's codec while recording, else the tier a session started right
-    now would resolve to (e.g. `mp2_256`, `pcm`). Empty string when the
-    estimate is unavailable. The setup page renders the two together
-    ("Buffer: 84 mins (256Kbps MP2)").
+    `set_repeat_enabled` above) -- what the arena plan aims to hold, not a
+    per-session cap
+  - `requested_minutes`: the same target, echoed as the requested half of
+    the requested-vs-delivered pair (`0` while `enabled` is `false`); the
+    delivered half is `max_recording_seconds`. The setup page states both
+    when the arena fell short ("80 minutes requested; 52 minutes at the
+    selected quality fit in memory")
+  - `max_recording_seconds`: the arena's capacity in seconds -- the fixed
+    reservation made at enable time (usable RAM at that moment: MemAvailable
+    minus swapped-out memory minus a 64 MiB free-RAM floor, capped at the
+    target's footprint) divided by the resolved codec tier's byte rate.
+    Stable between polls: it changes only when the arena is re-planned
+    (enable, or a target/codec change), never with moment-to-moment free
+    RAM. `0` when `enabled` is `false`, or while the arena has not been
+    built yet (the boot-settle window and the incremental build itself),
+    or when the build was refused for memory
+  - `effective_codec`: the arena's codec -- fixed for the arena's lifetime,
+    used by every session recorded into it (e.g. `mp2_256`, `pcm`). Empty
+    string while no arena exists. The setup page renders capacity and codec
+    together ("Buffer: 84 mins (256Kbps MP2)").
   - `recording.active`: `true` while a recording is in progress (`false`
     while `replay.active` is `true` -- recording and replay are never both
     active at once; recording while replaying is out of scope)
   - `recording.seconds`: approximate recorded duration (`bytes / byte_rate`
     for the resolved codec)
   - `recording.bytes`: bytes currently held in the recording buffer
-  - `recording.truncated_head`: `true` once the sliding window has dropped at
-    least one chunk from the head under memory pressure or the target-length
-    cap; replay only ever plays the retained tail in that case
+  - `recording.truncated_head`: `true` once the recording has wrapped the
+    arena -- the session ran longer than the arena's capacity, the oldest
+    chunk was recycled in place, and what is held (and replayed) is the most
+    recent audio. The defined keeps-last-N behaviour of a fixed arena, not a
+    memory-pressure symptom
   - `recording.origin_input`: input index (`1` or `2`) that produced the
     recording; `0` if none
   - `recording.dropped_frames`: frames dropped by the recorder's encode ring
     since the current/most recent recording began (ring overrun, e.g. under
     CPU starvation); the live FIFO path is never affected by this
-  - `recording.unavailable_reason`: `null` normally; `"insufficient_memory"`
-    when a capture session started with `enabled:true` but effective free RAM
-    was below the 78 MiB session-admission minimum (the 64 MiB floor plus a
-    14 MiB margin), so no recording was started for that session;
+  - `recording.unavailable_reason`: `null` normally; `"arena_not_ready"`
+    when a capture session started with `enabled:true` before the arena
+    finished building (the boot-settle window or mid-build -- the session
+    is started automatically the moment the build completes if the input is
+    still capturing); `"insufficient_memory"` when the arena build itself
+    was refused because not even one 16 MiB chunk fit above the 64 MiB
+    free-RAM floor (retried on a bounded cadence);
     `"encoder_init_failed"` on the (defensive, should not occur) case where
     codec encoder construction itself fails
-  - admission is evaluated BEFORE any previously held recording is freed. If a
-    live interrupt confirms and the new session is then refused for memory, the
-    controller reverts to holding the old recording, which stays replayable,
-    rather than ending up with neither
+  - session-start readiness is evaluated BEFORE any previously held recording
+    is discarded. If a live interrupt confirms and the new session is then
+    refused (arena not ready, or encoder construction failed), the controller
+    reverts to holding the old recording, which stays replayable, rather than
+    ending up with neither
   - `replay.active`: `true` while the recording is looping back into the FIFO
     (including the disarm fade-out window -- see `set_repeat_armed`)
   - `replay.position_seconds` / `replay.duration_seconds`: playback position

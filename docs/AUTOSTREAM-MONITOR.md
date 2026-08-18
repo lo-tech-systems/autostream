@@ -62,18 +62,22 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     replay untouched
   - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
     pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
-    The codec/bitrate tier is chosen to GUARANTEE a target recording
+    The recording lives in a FIXED ARENA reserved once, when the feature is
+    enabled: the codec/bitrate tier is chosen to fit a target recording
     duration (`target_minutes`, default 33) in whatever RAM is usable
     (MemAvailable, minus whatever is currently swapped out, minus a 64 MiB
     free-RAM floor) -- PCM if it fits, else the highest legal MP2 bitrate
     (160/192/224/256/320/384 kbps) that fits, never below the 160 kbps
-    floor. The sliding window itself still has no hard cap: once recording,
-    it is bounded ONLY by that same 64 MiB free-RAM floor and the chosen
-    tier's byte rate -- `target_minutes` is a goal for
-    tier SELECTION, not an admission gate or a truncation point; a session
-    that can't even fit 160 kbps's target footprint still starts at 160 kbps
-    and simply rolls past target_minutes and truncates its head sooner under
-    memory pressure, same as any other tier
+    floor. Below that floor, DURATION degrades instead of quality: the
+    arena is capped at what usable RAM holds and the achieved capacity is
+    reported truthfully (requested vs delivered). The arena is committed
+    incrementally on the worker thread (one page-touched chunk at a time,
+    re-checking the floor between chunks, after a boot-settle delay) and
+    persists across sessions -- session start only resets cursors inside
+    it. Once full, the arena wraps: the oldest chunk is recycled in place,
+    so a longer-than-capacity session always holds the most recent audio.
+    Disabling the feature (or changing `target_minutes`/the pinned codec)
+    frees the arena and re-plans it
   - `ReplayEngine` is a dedicated I/O-bound thread that decodes (libmpg123 for
     the MP2 tier) and paces playback via the reader's own consumption of the
     FIFO, looping until stopped; see `set_repeat_enabled`, `set_repeat_armed`,

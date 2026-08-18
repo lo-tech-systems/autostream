@@ -638,8 +638,9 @@ inline void convert_to_pipe_format(const int16_t* in_s16, size_t n_samples,
 // the socket API's "target_minutes" field) in whatever free RAM is currently
 // usable, rather than from fixed free-RAM thresholds. See
 // pick_codec_for_target() below. A pinned codec (config) still skips the
-// ladder but goes through max_recording_seconds() for the free-RAM-floor
-// math exactly the same way.
+// ladder but goes through plan_arena()'s own sizing (below) for the
+// free-RAM-floor arithmetic exactly the same way. Selection (auto or pinned)
+// happens once, at arena-build time -- not re-picked per session.
 enum class CodecChoice
 {
     Unavailable,
@@ -704,14 +705,17 @@ inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
     }
 }
 
-// The free-RAM floor: the sliding window keeps (available_mib - 64 MiB)
-// worth of headroom on top of what is already held, converted to a duration
-// at the codec's byte rate. The buffer has no fixed target-duration cap: it
-// is bounded ONLY by this floor and the codec ladder -- it buffers as much
-// as it can, for as long as free RAM allows. 64 MiB is the smallest reserve
-// that still leaves the appliance headroom for its other processes while
-// the buffer grows; on small-memory appliances it also buys roughly half
-// an hour of extra recording time at the MP2 tier versus a larger floor.
+// The free-RAM floor: subtracted from available RAM before any sizing
+// arithmetic -- both at codec SELECTION (pick_codec_for_target(), below) and
+// at arena SIZING/incremental commit (plan_arena() and the controller's
+// per-chunk build-loop check, autostream_repeat.cpp's maybe_build_arena()) --
+// so the two can never disagree about how much RAM is actually claimable.
+// Once the arena is built it is a fixed reservation, not a moving window: the
+// floor governs how big a stationary arena is allowed to be, not an ongoing
+// grow/shrink budget. 64 MiB is the smallest reserve that still leaves the
+// appliance headroom for its other processes while the arena is built; on
+// small-memory appliances it also buys roughly half an hour of extra
+// recording time at the MP2 tier versus a larger floor.
 constexpr long kFreeRamFloorMib = 64;
 
 // Target-duration codec selection.
@@ -719,11 +723,10 @@ constexpr long kFreeRamFloorMib = 64;
 // Aims to GUARANTEE target_minutes of recording in whatever RAM is
 // currently usable:
 //
-//   usable_mib = max(0, available_mib - kFreeRamFloorMib)   -- same floor/
-//     margin discipline apply_memory_guard_locked() already enforces during
-//     a live recording; this reuses it at the SELECTION step too, so the
-//     tier chosen at session start is never one that the guard would
-//     immediately start shrinking.
+//   usable_mib = max(0, available_mib - kFreeRamFloorMib)   -- the same
+//     floor plan_arena() (below) reapplies at the SIZING step, so the tier
+//     chosen here and the arena actually built from it can never disagree
+//     about how much RAM is claimable.
 //
 //   1. If PCM-s16's footprint for target_minutes fits usable_mib, choose PCM
 //      (best quality, no compression) -- footprint is sample-rate-dependent
@@ -735,15 +738,17 @@ constexpr long kFreeRamFloorMib = 64;
 //      (bitrate_kbps*1000/8 * target_seconds) fits usable_mib.
 //   3. HARD FLOOR: never select below kMp2BitrateFloorKbps (160 kbps). If
 //      even 160 kbps's target-duration footprint does not fit, the target
-//      is a GOAL, not an admission gate -- fall back to 160 kbps anyway
-//      (the recording still starts, it will just roll past target_minutes
-//      and truncate its head sooner under memory pressure, exactly as
-//      apply_memory_guard_locked() already handles for any tier).
+//      is a GOAL, not an admission gate -- fall back to 160 kbps anyway and
+//      let plan_arena() size the arena as large as usable RAM allows at that
+//      tier, which comes out SMALLER than target_minutes asked for. That is
+//      a valid, truthfully reported outcome ("X minutes requested, Y minutes
+//      delivered"), not a refusal.
 //
-// This function does not itself apply the base kMinAvailableMibForStart
-// admission gate (RepeatController::kMinAvailableMibForStart) -- callers
-// already check that separately before calling this, so this never has to
-// decide "refuse to record".
+// This function never itself refuses to record -- it always returns a
+// concrete tier (falling back to the 160 kbps floor in the worst case).
+// plan_arena() is the one place that can still resolve to
+// CodecChoice::Unavailable, and only when usable RAM cannot fit even one
+// whole arena chunk.
 inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
                                           long sample_rate_hz)
 {
@@ -774,8 +779,10 @@ inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
     }
 
     // Even the floor bitrate's target footprint doesn't fit usable RAM:
-    // fall back to the floor anyway and let the sliding window (memory
-    // guard + head truncation) do its normal job during recording.
+    // fall back to the floor anyway and let plan_arena() size the arena as
+    // large as usable RAM allows at that tier -- a truthfully smaller
+    // delivered duration than requested, not a refusal (see this function's
+    // own doc comment and plan_arena()'s, below).
     return codec_choice_for_bitrate_kbps(kMp2BitrateFloorKbps);
 }
 
