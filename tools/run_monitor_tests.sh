@@ -2,14 +2,60 @@
 # run_monitor_tests.sh — build and run the native monitor unit tests.
 #
 # Usage (from repo root):
-#   bash tools/run_monitor_tests.sh
+#   bash tools/run_monitor_tests.sh              # normal -O2 build of every suite
+#   bash tools/run_monitor_tests.sh --sanitize   # ASan/UBSan build of the repeat suites
 #
 # Requirements (Linux only):
 #   apt-get install g++ libasound2-dev libsamplerate0-dev
 #
+# --sanitize rebuilds and reruns the two repeat-feature suites (the ones
+# exercising the buffer's chunk recycling and the controller transition
+# table) under -fsanitize=address,undefined: use-after-free at chunk seams,
+# heap overflow across chunk boundaries, and UB in the sizing arithmetic.
+# GCC's sanitizers cover the same classes as clang's and g++ is already the
+# only compiler this script (and CI) assumes. Note the known blind spot:
+# a stale Reader over a RECYCLED chunk is valid, owned memory — ASan cannot
+# flag it — so that class is covered by content-assertion unit tests in
+# test_repeat_buffer.cpp instead, which run in both modes.
+#
 # Exit code: 0 if all tests pass, 1 if any fail, 2 if build fails.
 
 set -euo pipefail
+
+if [ "${1:-}" = "--sanitize" ]; then
+    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    MONITOR_DIR="$REPO_ROOT/core/monitor"
+    TEST_DIR="$MONITOR_DIR/tests"
+    BUILD_DIR="${TMPDIR:-/tmp}/autostream_monitor_tests_sanitize"
+    SAN_FLAGS="-std=c++17 -Wall -Wextra -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer"
+
+    mkdir -p "$BUILD_DIR"
+
+    echo "=== [sanitize] Building test_repeat_buffer (ASan/UBSan) ==="
+    # shellcheck disable=SC2086  # SAN_FLAGS is a deliberate word-split flag list
+    g++ $SAN_FLAGS -I "$MONITOR_DIR" \
+        "$TEST_DIR/test_repeat_buffer.cpp" \
+        -o "$BUILD_DIR/test_repeat_buffer"
+
+    echo "=== [sanitize] Building test_repeat_transitions (ASan/UBSan) ==="
+    # shellcheck disable=SC2086
+    g++ $SAN_FLAGS -I "$MONITOR_DIR" \
+        "$TEST_DIR/test_repeat_transitions.cpp" \
+        -lpthread \
+        -o "$BUILD_DIR/test_repeat_transitions"
+
+    echo ""
+    echo "=== [sanitize] Running test_repeat_buffer ==="
+    "$BUILD_DIR/test_repeat_buffer"
+
+    echo ""
+    echo "=== [sanitize] Running test_repeat_transitions ==="
+    "$BUILD_DIR/test_repeat_transitions"
+
+    echo ""
+    echo "All sanitized repeat suites passed."
+    exit 0
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MONITOR_DIR="$REPO_ROOT/core/monitor"
