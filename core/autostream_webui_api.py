@@ -2250,6 +2250,7 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
         "raop",
         "airplay2",
         "airplay2_buffered",
+        "airplay2_buffered_24",
         "airplay2_surround_stereo",
         "airplay2_surround_upmix",
     }

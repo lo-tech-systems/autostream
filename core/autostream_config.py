@@ -88,6 +88,7 @@ VALID_AIRPLAY_MODES = (
     "raop",
     "airplay2",
     "airplay2_buffered",
+    "airplay2_buffered_24",
     "airplay2_surround_stereo",
     "airplay2_surround_upmix",
 )
@@ -97,6 +98,7 @@ VALID_AIRPLAY_MODES = (
 # DEFAULT_AIRPLAY_MODE.
 BUFFERED_AIRPLAY_MODES = (
     "airplay2_buffered",
+    "airplay2_buffered_24",
     "airplay2_surround_stereo",
     "airplay2_surround_upmix",
 )

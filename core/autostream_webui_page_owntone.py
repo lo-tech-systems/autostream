@@ -446,6 +446,8 @@ def send_owntone_setup_page(
                     label = "AirPlay 2"
                 elif supported_mode == "airplay2_buffered":
                     label = "AirPlay 2 (buffered)"
+                elif supported_mode == "airplay2_buffered_24":
+                    label = "AirPlay 2 (buffered lossless)"
                 elif supported_mode == "airplay2_surround_stereo":
                     label = "AirPlay 2 (stereo for 5.1 systems)"
                 elif supported_mode == "airplay2_surround_upmix":

@@ -25,6 +25,7 @@ from autostream_players import (
     OUTPUT_MODE_AIRPLAY1,
     OUTPUT_MODE_AIRPLAY2,
     OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    OUTPUT_MODE_AIRPLAY2_BUFFERED_24,
     OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
     OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
     OutputInfo,
@@ -87,6 +88,7 @@ _MINI_SERVER_TO_BACKEND_MODE: dict[str, str] = {
     "raop": OUTPUT_MODE_AIRPLAY1,
     "airplay2": OUTPUT_MODE_AIRPLAY2,
     "airplay2_buffered": OUTPUT_MODE_AIRPLAY2_BUFFERED,
+    "airplay2_buffered_24": OUTPUT_MODE_AIRPLAY2_BUFFERED_24,
     "airplay2_surround_stereo": OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO,
     "airplay2_surround_upmix": OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX,
 }
@@ -483,6 +485,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
                 "raop",
                 "airplay2",
                 "airplay2_buffered",
+                "airplay2_buffered_24",
                 "airplay2_surround_stereo",
                 "airplay2_surround_upmix",
             ):
