@@ -1321,6 +1321,16 @@ struct RepeatStatus
     std::string codec                = "auto";   // configured policy: auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm
     int         target_minutes       = kDefaultRepeatTargetMinutes;   // target-duration goal
     long        max_recording_seconds = 0;
+    // The requested-vs-delivered honesty surface (design D5): what was
+    // ASKED for, in whole minutes, at the moment the arena was (re)planned --
+    // i.e. _target_minutes_cfg. Companion to max_recording_seconds above,
+    // which is what the arena actually DELIVERS: below the codec ladder's
+    // 160 kbps floor, capacity_seconds degrades instead of quality, so the
+    // two figures can legitimately diverge ("80 minutes requested, 50
+    // minutes delivered" is a valid, truthfully reported outcome -- not a
+    // bug). 0 when disabled; a UI shows both numbers together rather than
+    // inferring degradation from either alone.
+    int         requested_minutes    = 0;
     // The tier the estimate above actually assumes: the ACTIVE session's
     // codec while Recording, else the tier a session started right now would
     // get (same pick_codec_for_target() the idle estimate ran). Empty when

@@ -2054,7 +2054,10 @@ HOME_CARDS_SCRIPT = """
       if (replaying) {
         var pos = _fmtRepeatTime(replay.position_seconds), dur = _fmtRepeatTime(replay.duration_seconds);
         title = pos + ' / ' + dur;
-        if (recording.truncated_head) title += ' · tail only';
+        // truncated_head is the DEFINED wrap semantic (keeps the last N
+        // minutes), not a pressure symptom -- the suffix describes what's
+        // held, not what was lost.
+        if (recording.truncated_head) title += ' · most recent kept';
       } else if (armed) {
         title = recording.active ? 'Buffering…' : 'Waiting for playback';
       }

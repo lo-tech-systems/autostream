@@ -45,8 +45,9 @@ static MemInfo read_meminfo()
 #ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
     // Test-only: if /tmp/.autostream_repeat_test_force_meminfo_mib exists, its
     // content (a decimal MiB value) overrides the real /proc/meminfo read.
-    // This lets memory floor / sliding window behaviour be exercised
-    // deterministically and safely, without physically ballooning a test
+    // This lets arena-build floor-check behaviour (partial/achieved-capacity
+    // builds, arena_not_ready) be exercised deterministically and safely,
+    // without physically ballooning a test
     // device's RAM down near actual exhaustion (which risks OOM-killing
     // unrelated processes on a shared, page-cache-heavy system where
     // MemAvailable's reclaimable-cache estimate makes genuine exhaustion
@@ -1965,6 +1966,12 @@ RepeatStatus RepeatController::get_status() const
     s.armed   = _armed;
     s.codec   = _codec_cfg;
     s.target_minutes = _target_minutes_cfg;
+    // requested_minutes: the honesty-surface companion to
+    // max_recording_seconds below (design D5) -- what was asked for, not
+    // what the arena delivers. Only meaningful while the feature is
+    // enabled; 0 disabled, matching max_recording_seconds's own
+    // enabled-only convention.
+    s.requested_minutes = _enabled_cfg ? _target_minutes_cfg : 0;
 
     if (_state == RepeatState::Recording)
     {

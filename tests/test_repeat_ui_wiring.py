@@ -239,6 +239,27 @@ class TestSetupCustomiseRepeatControls:
         # The note logic must not gate on recording state at all.
         assert "repeat.recording.active" not in html
 
+    def test_note_reports_requested_vs_delivered_when_degraded(self, tmp_path):
+        """When the arena couldn't fit the requested target at the
+        selected quality (requested_minutes > delivered minutes), the note
+        must state both figures honestly rather than silently showing only
+        the smaller delivered number as if it were the ask."""
+        html = _render_setup_page(tmp_path)
+        assert "var requestedMins = Number(repeat.requested_minutes)" in html
+        assert (
+            "requestedMins + ' minutes requested; ' + deliveredMins"
+            in html
+        )
+        assert "minutes at the selected quality fit in memory" in html
+        assert "deliveredMins < requestedMins" in html
+
+    def test_note_keeps_todays_wording_when_target_met(self, tmp_path):
+        """When delivered capacity meets/exceeds the request, the note keeps
+        the existing single-figure "Buffer: N mins (codec)" wording -- the
+        degraded phrasing is additive, not a replacement."""
+        html = _render_setup_page(tmp_path)
+        assert "'Buffer: ' + deliveredMins + ' mins'" in html
+
 
 class TestSetupBufferTargetSelect:
     """The buffer-target dropdown (Vinyl 33 / CD 80) added under the "Enable
@@ -551,8 +572,13 @@ class TestHomeRepeatButton:
         assert ".repeat-btn.active" in html or "repeat-btn.active" in html
 
     def test_update_repeat_button_shows_progress_and_truncated_hint_in_title(self):
+        """truncated_head is the DEFINED wrap semantic (keeps the last N
+        minutes), not a pressure symptom -- the tooltip suffix says what's
+        held ('most recent kept'), not the old capacity-loss framing
+        ('tail only')."""
         html = _render_airplay_page(repeat_enabled=True)
-        assert "if (recording.truncated_head) title += ' · tail only';" in html
+        assert "if (recording.truncated_head) title += ' · most recent kept';" in html
+        assert "· tail only" not in html
         assert "btn.title = title;" in html
 
     def test_click_handler_stops_replay_or_disarms_or_arms(self):

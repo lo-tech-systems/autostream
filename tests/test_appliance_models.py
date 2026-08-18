@@ -471,6 +471,26 @@ class TestBuildHomeStateLocal:
             result = models.build_home_state(str(cfg_path))
         assert result["repeat"] == repeat_block
 
+    def test_repeat_requested_minutes_survives_passthrough(self, tmp_path):
+        """requested_minutes (the requested-vs-delivered honesty surface)
+        is a new daemon-side field with no local whitelist to update --
+        the repeat block is passed through verbatim, so it must survive
+        untouched like any other repeat key."""
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        repeat_block = {
+            "enabled": True, "armed": False,
+            "requested_minutes": 80, "max_recording_seconds": 3120,
+        }
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6], \
+             patch("autostream_appliance_models.get_session_state",
+                   return_value={"active": False, "source": None}), \
+             patch("autostream_appliance_models.get_repeat_status", return_value=repeat_block):
+            result = models.build_home_state(str(cfg_path))
+        assert result["repeat"]["requested_minutes"] == 80
+        assert result["repeat"] == repeat_block
+
     def test_repeat_key_absent_when_daemon_never_reported(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         patches = self._patch_home(cfg_path)
