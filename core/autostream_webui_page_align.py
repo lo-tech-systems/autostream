@@ -246,13 +246,16 @@ def _render_review_section(state: WebUIState) -> str:
             continue
         proposed = max(-_OFFSET_CLAMP_MS, min(_OFFSET_CLAMP_MS, snap.stored_offset_ms - arrival.delta_ms))
         warn = arrival.spread_ms > 40
+        # Assembled outside the f-string: a backslash inside an f-string
+        # expression is a syntax error before Python 3.12, and the oldest
+        # supported appliances run 3.11.
+        warn_attr = ' class="align-warn"' if warn else ""
+        warn_note = " &mdash; noisy measurement" if warn else ""
         rows.append(
             "<tr>"
             f"<td>{html.escape(snap.name)}</td>"
             f"<td>{arrival.delta_ms} ms</td>"
-            f"<td{' class=\"align-warn\"' if warn else ''}>{arrival.spread_ms} ms"
-            + (" &mdash; noisy measurement" if warn else "")
-            + "</td>"
+            f"<td{warn_attr}>{arrival.spread_ms} ms{warn_note}</td>"
             f"<td>{snap.stored_offset_ms} ms</td>"
             f"<td>{proposed} ms</td>"
             f"<td><input type='hidden' class='align-offset-id' value='{html.escape(oid)}'>"
