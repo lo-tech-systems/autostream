@@ -49,13 +49,32 @@ uv pip install --python "$VENV/bin/python" -q -r tests/requirements-ci.txt
 
 echo "Interpreter: $("$VENV/bin/python" --version)"
 
+# When the repo sits on a Windows mount, run from a native-filesystem
+# mirror: per-file I/O across the mount boundary multiplies suite time
+# roughly tenfold. The mirror includes .git (one test reads history via
+# git show) and syncs incrementally, so refreshes take seconds.
+RUN_DIR="$(pwd)"
+case "$RUN_DIR" in
+  /mnt/*)
+    MIRROR="$HOME/.cache/autostream-ci-tree"
+    echo "Mirroring working tree to $MIRROR (native filesystem)..."
+    mkdir -p "$MIRROR"
+    rsync -a --delete \
+      --exclude ".venv*" --exclude "__pycache__" --exclude ".tmp-pycache" \
+      --exclude ".pytest_cache" --exclude "node_modules" \
+      --exclude ".agents" --exclude ".claude" --exclude "docs/working" \
+      ./ "$MIRROR/"
+    RUN_DIR="$MIRROR"
+    ;;
+esac
+
 # CI job "offline-tests", command verbatim.
-"$VENV/bin/python" -m pytest tests/ -q --ignore=tests/playwright --timeout=60
+(cd "$RUN_DIR" && "$VENV/bin/python" -m pytest tests/ -q --ignore=tests/playwright --timeout=60)
 
 if [ "${1:-}" = "--env" ]; then
   # CI job "wsl-tests". The script manages its own tool checks; run it under
   # the CI-matched interpreter.
-  PATH="$(pwd)/$VENV/bin:$PATH" bash scripts/run_wsl_tests.sh
+  (cd "$RUN_DIR" && PATH="$VENV/bin:$PATH" bash scripts/run_wsl_tests.sh)
 fi
 
 echo "CI-local gate passed (python $PYVER)."
