@@ -11,6 +11,7 @@ AGENTS.md
 # Virtual environments
 venv/
 .venv/
+.venv-ci/
 env/
 .env/
 
