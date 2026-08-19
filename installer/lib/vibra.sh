@@ -9,7 +9,7 @@
 # Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
 VIBRA_REPO="https://github.com/lo-tech-systems/vibra-mini.git"
-VIBRA_VERSION="v1.0.0"
+VIBRA_VERSION="v1.0.1"
 VIBRA_INSTALL_PREFIX="/opt/autostream/vibra"
 # Control socket the running daemon answers on; matches
 # core/track_id/vibra_client.py's DEFAULT_SOCKET_PATH and the systemd unit's
