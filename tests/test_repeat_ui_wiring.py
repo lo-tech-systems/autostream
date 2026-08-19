@@ -240,17 +240,20 @@ class TestSetupCustomiseRepeatControls:
         assert "repeat.recording.active" not in html
 
     def test_note_reports_requested_vs_delivered_when_degraded(self, tmp_path):
-        """When the arena couldn't fit the requested target at the
-        selected quality (requested_minutes > delivered minutes), the note
-        must state both figures honestly rather than silently showing only
-        the smaller delivered number as if it were the ask."""
+        """When the arena couldn't fit the requested target
+        (requested_minutes > delivered minutes), the note must state both
+        figures honestly rather than silently showing only the smaller
+        delivered number as if it were the ask -- and it must name the
+        ACTUAL bitrate the arena records at (the ladder picked it; the user
+        configured a duration, not a quality)."""
         html = _render_setup_page(tmp_path)
         assert "var requestedMins = Number(repeat.requested_minutes)" in html
         assert (
             "requestedMins + ' minutes requested; ' + deliveredMins"
             in html
         )
-        assert "minutes at the selected quality fit in memory" in html
+        assert "(codecLabel ? ' at ' + codecLabel : '')" in html
+        assert "fit in memory" in html
         assert "deliveredMins < requestedMins" in html
 
     def test_note_keeps_todays_wording_when_target_met(self, tmp_path):

@@ -2934,18 +2934,21 @@ def send_setup_page(
               // monitor builds -> omit the parenthetical.
               var codecLabel = _repeatCodecLabel(repeat.effective_codec);
               var deliveredMins = Math.round(maxSecs / 60);
-              // requested_minutes (D5 honesty surface): what was asked for,
-              // vs. deliveredMins, what the arena actually fit at the
-              // selected quality. Below the codec ladder's floor, duration
-              // degrades instead of quality -- when that has visibly
-              // happened (whole-minute comparison), say so plainly rather
-              // than reporting the smaller figure as if it were the ask.
-              // Older monitor builds omit requested_minutes entirely, so
-              // this falls back to today's single-figure wording.
+              // requested_minutes (honesty surface): what was asked for,
+              // vs. deliveredMins, what the arena actually fit. Below the
+              // codec ladder's floor, duration degrades instead of quality
+              // -- when that has visibly happened (whole-minute
+              // comparison), say so plainly rather than reporting the
+              // smaller figure as if it were the ask, and name the ACTUAL
+              // bitrate the arena records at (the ladder picked it; the
+              // user configured a duration, not a quality). Older monitor
+              // builds omit requested_minutes entirely, so this falls back
+              // to the single-figure wording.
               var requestedMins = Number(repeat.requested_minutes);
               if (Number.isFinite(requestedMins) && requestedMins > 0 && deliveredMins < requestedMins) {{
                 noteEl.textContent = requestedMins + ' minutes requested; ' + deliveredMins
-                                     + ' minutes at the selected quality fit in memory';
+                                     + ' minutes' + (codecLabel ? ' at ' + codecLabel : '')
+                                     + ' fit in memory';
               }} else {{
                 noteEl.textContent = 'Buffer: ' + deliveredMins + ' mins'
                                      + (codecLabel ? ' (' + codecLabel + ')' : '');

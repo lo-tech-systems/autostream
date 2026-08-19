@@ -151,31 +151,48 @@ public:
     // loop-step primitive the CONTROLLER drives, chunk by chunk, to build a
     // fixed arena incrementally rather than in one giant up-front
     // allocation. Built on the existing allocate_chunk_storage() (no new
-    // allocation code path), then memset to all-zero -- this is not about
-    // the zero VALUE (allocate_chunk() below always sets used = 0 before any
-    // byte of a spare chunk is ever read back), it is about touching every
-    // page. Under Linux's default memory-overcommit policy, a fresh
-    // new[]/malloc reserves address space but not physical RAM; the pages
-    // are not actually charged against the system until something writes to
-    // them. Skipping this memset would mean "successfully preallocated N
-    // chunks" is a lie the kernel is free to call at the worst possible
-    // moment -- the first real write deep into a long recording, at which
-    // point overcommit failure is a SIGKILL from the OOM killer, not a
-    // catchable bad_alloc. Committing the pages here, one 16 MiB chunk at a
-    // time, on the controller's own incremental loop (see RepeatController::maybe_build_arena()), is what turns "the arena exists" into a fact rather than
-    // a promise. Also latches the fixed-capacity flag (see allocate_chunk())
-    // -- calling this even once switches the buffer from legacy
-    // grow-and-free mode into fixed-arena recycle mode for the rest of its
-    // life (clear()/steal_chunks() are what turn it back off). Returns false
-    // on allocation failure (out of address space -- distinct from the
-    // overcommit case this function exists to defend against), leaving the
-    // spare pool and the fixed-capacity flag exactly as they were.
+    // allocation code path), then every page is touched through a VOLATILE
+    // write -- this is not about the stored value (allocate_chunk() below
+    // always sets used = 0 before any byte of a spare chunk is ever read
+    // back), it is about physically committing the pages. Under Linux's
+    // default memory-overcommit policy, a fresh new[]/malloc reserves
+    // address space but not physical RAM; the pages are not charged against
+    // the system until something writes to them. Skipping the touch would
+    // mean "successfully preallocated N chunks" is a lie the kernel is free
+    // to call at the worst possible moment -- the first real write deep
+    // into a long recording, at which point overcommit failure is a SIGKILL
+    // from the OOM killer, not a catchable bad_alloc.
+    //
+    // Volatile, NOT memset: a plain memset-to-zero over freshly allocated
+    // memory is exactly the dead store the optimizer is entitled to remove
+    // (and demonstrably does at -O2 -- an arena "committed" that way showed
+    // Rss 0 across every chunk in /proc/<pid>/smaps, i.e. not one page was
+    // ever faulted in, silently reintroducing the OOM-kill exposure this
+    // function exists to close). One volatile store per 4 KiB page cannot
+    // be elided and faults each page in for a few thousand stores per
+    // 16 MiB chunk -- negligible against the page-fault cost itself.
+    //
+    // Committing the pages here, one chunk at a time on the controller's
+    // own incremental loop (see RepeatController::maybe_build_arena()), is
+    // what turns "the arena exists" into a fact rather than a promise.
+    // Also latches the fixed-capacity flag (see allocate_chunk()) --
+    // calling this even once switches the buffer from legacy grow-and-free
+    // mode into fixed-arena recycle mode for the rest of its life
+    // (clear()/steal_chunks() are what turn it back off). Returns false on
+    // allocation failure (out of address space -- distinct from the
+    // overcommit case the page touch defends against), leaving the spare
+    // pool and the fixed-capacity flag exactly as they were.
     bool preallocate_one_more_chunk()
     {
         auto storage = allocate_chunk_storage(_chunk_bytes);
         if (!storage)
             return false;
-        std::memset(storage.get(), 0, _chunk_bytes);
+        volatile uint8_t* pages = storage.get();
+        constexpr size_t kPageBytes = 4096;
+        for (size_t off = 0; off < _chunk_bytes; off += kPageBytes)
+            pages[off] = 0;
+        if (_chunk_bytes > 0)
+            pages[_chunk_bytes - 1] = 0;   // last page, if not stride-aligned
         _spare_storage.push_back(std::move(storage));
         _fixed_capacity = true;
         return true;
@@ -834,16 +851,14 @@ struct ArenaPlan
 //     clamp(target_minutes, kMinRepeatTargetMinutes, kMaxRepeatTargetMinutes)
 //     * 60 -- same clamp pick_codec_for_target() applies internally.
 //   raw_bytes = min(target_footprint_bytes, usable_bytes).
-//   arena_bytes = raw_bytes rounded DOWN to a whole number of chunk_bytes --
-//     a fixed arena is only ever built from whole committed chunks
-//     (preallocate_one_more_chunk()'s own loop-step granularity), so a
-//     fractional last chunk is never claimed. EXCEPT: if usable_bytes itself
-//     covers at least one whole chunk but raw_bytes rounds down to zero
-//     (target_footprint_bytes smaller than one chunk -- a tiny target on a
-//     huge chunk size, or an artificially small chunk_bytes in a test),
-//     exactly one chunk is still claimed -- an arena that can hold
-//     SOMETHING is preferred over refusing outright over a rounding
-//     artifact.
+//   arena_bytes = raw_bytes rounded to a whole number of chunk_bytes -- a
+//     fixed arena is only ever built from whole committed chunks
+//     (preallocate_one_more_chunk()'s own loop-step granularity). The
+//     rounding direction favours meeting the target: UP to the next whole
+//     chunk whenever usable_bytes covers it (so a target that works out at
+//     9.14 chunks is delivered as 10, at-or-just-past the ask, rather than
+//     9, just short of it while RAM sits unused), DOWN only when the extra
+//     chunk genuinely does not fit.
 //   Zero whole chunks fit at all (usable_bytes < chunk_bytes, which is also
 //     what a non-positive effective_available_mib collapses to once the
 //     floor subtraction clamps usable_mib to 0) => the codec is forced to
@@ -887,9 +902,17 @@ inline ArenaPlan plan_arena(long effective_available_mib, int target_minutes,
     if (chunk_bytes > 0)
     {
         chunk_count = raw_bytes / static_cast<long long>(chunk_bytes);
-        if (chunk_count == 0 && usable_bytes >= static_cast<long long>(chunk_bytes))
-            chunk_count = 1;   // usable RAM fits one whole chunk even though the
-                                // target footprint alone rounded down to zero
+        // Round UP to the next whole chunk when usable RAM covers it, down
+        // only when it does not: an 80-minute target that works out at 9.14
+        // chunks must not be quietly delivered as 78 minutes ("80 requested,
+        // 79 delivered") while plenty of RAM sits unused -- the partial
+        // chunk is claimed whole and capacity comes out AT or a little past
+        // the target instead of just short of it. This also subsumes the
+        // minimum-one-chunk case (a sub-chunk target on a machine with room
+        // for one chunk rounds up to exactly that one chunk).
+        if (raw_bytes % static_cast<long long>(chunk_bytes) != 0
+            && (chunk_count + 1) * static_cast<long long>(chunk_bytes) <= usable_bytes)
+            ++chunk_count;
     }
 
     ArenaPlan plan;

@@ -422,12 +422,14 @@ static void test_plan_arena()
         CHECK(plan.codec == CodecChoice::PcmS16,
               "plan_arena: PCM footprint (115.2 MB) fits usable (200 MB) -> PcmS16 (auto)");
         // footprint = 192000 B/s * 600 s = 115,200,000; usable = 209,715,200;
-        // raw = 115,200,000; chunks = floor(115200000/1000000) = 115.
-        CHECK(plan.arena_bytes == 115000000u,
-              "plan_arena: PCM case arena_bytes floors to whole 1e6-byte chunks (115 of them)");
-        // 115,000,000 / 192,000 = 598.958... -> floor 598.
-        CHECK(plan.capacity_seconds == 598,
-              "plan_arena: PCM case capacity_seconds is the exact floor of arena_bytes/byte_rate");
+        // raw = 115,200,000 -> 115 whole chunks + a remainder, and the 116th
+        // chunk (116,000,000 total) still fits usable -> rounds UP to 116,
+        // delivering at-or-past the target rather than just short of it.
+        CHECK(plan.arena_bytes == 116000000u,
+              "plan_arena: PCM case rounds UP to 116 whole 1e6-byte chunks (usable covers it)");
+        // 116,000,000 / 192,000 = 604.16... -> floor 604 (>= the 600 s ask).
+        CHECK(plan.capacity_seconds == 604,
+              "plan_arena: PCM case capacity_seconds meets the target after the round-up");
     }
 
     // ── Auto: an MP2 tier fits, PCM does not ──
@@ -444,12 +446,14 @@ static void test_plan_arena()
         // 24.0 MB (no); Mp2_256 needs 19.2 MB (yes, <= 20.97 MB) -> Mp2_256.
         CHECK(plan.codec == CodecChoice::Mp2_256,
               "plan_arena: usable fits Mp2_256 but not a higher tier or PCM -> Mp2_256 (auto)");
-        // raw = min(19,200,000, 20,971,520) = 19,200,000; chunks = floor(19200000/1000000) = 19.
-        CHECK(plan.arena_bytes == 19000000u,
-              "plan_arena: MP2-tier case arena_bytes floors to 19 whole 1e6-byte chunks");
-        // 19,000,000 / 32,000 = 593.75 -> floor 593.
-        CHECK(plan.capacity_seconds == 593,
-              "plan_arena: MP2-tier case capacity_seconds is the exact floor of arena_bytes/byte_rate");
+        // raw = min(19,200,000, 20,971,520) = 19,200,000 -> 19 whole chunks
+        // + a remainder, and the 20th chunk (20,000,000 total) still fits
+        // usable (20,971,520) -> rounds UP to 20.
+        CHECK(plan.arena_bytes == 20000000u,
+              "plan_arena: MP2-tier case rounds UP to 20 whole 1e6-byte chunks (usable covers it)");
+        // 20,000,000 / 32,000 = 625 exactly (>= the 600 s ask).
+        CHECK(plan.capacity_seconds == 625,
+              "plan_arena: MP2-tier case capacity_seconds meets the target after the round-up");
     }
 
     // ── Auto: even the 160 kbps floor's footprint doesn't fit -- duration
@@ -515,8 +519,9 @@ static void test_plan_arena()
                                      CodecChoice::Mp2_160, chunk_bytes);
 
         // Mp2_160 footprint = 20,000 * 600 = 12,000,000 -- smaller than one
-        // 50,000,000-byte chunk, so floor(12000000/50000000) == 0, but
-        // usable_bytes (52,428,800) covers a whole chunk -> bumped to 1.
+        // 50,000,000-byte chunk, so the whole-chunk count starts at 0, but
+        // usable_bytes (52,428,800) covers a whole chunk -> the round-up
+        // rule claims exactly one.
         CHECK(plan.codec == CodecChoice::Mp2_160,
               "plan_arena: min-one-chunk edge -- pinned codec still selected");
         CHECK(plan.arena_bytes == chunk_bytes,
