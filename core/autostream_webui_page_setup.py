@@ -2918,7 +2918,7 @@ def send_setup_page(
           if (codec === 'pcm' || codec === 'pcm_s16') return '16-bit PCM';
           return String(codec);
         }}
-        async function refreshRepeatSetupNote() {{
+        async function refreshRepeatSetupNote(expectedRequestedMins) {{
           var noteEl = document.getElementById('repeat-max-time-note');
           var unavailEl = document.getElementById('repeat-unavailable-note');
           var populated = false;
@@ -2927,6 +2927,19 @@ def send_setup_page(
             var d = await r.json();
             var repeat = (d && d.repeat) || null;
             if (!repeat) return false;  // absent on old monitor binaries -- feature unsupported
+            // Freshness gate for the just-changed-a-setting poll: the status
+            // cache lags the change by a second or two, so the first
+            // snapshot after a target change is usually the OLD arena's
+            // figure -- accepting it would freeze the note on stale text
+            // (and once the rebuild starts, capacity reads 0 until the new
+            // arena finalizes). Only accept a snapshot whose
+            // requested_minutes matches what was just set; monitor builds
+            // too old to report requested_minutes can't signal freshness at
+            // all, so they are accepted as-is rather than rejected forever.
+            if (expectedRequestedMins !== undefined
+                && repeat.requested_minutes !== undefined
+                && Number(repeat.requested_minutes) !== expectedRequestedMins)
+              return false;
             var maxSecs = Number(repeat.max_recording_seconds);
             if (noteEl && Number.isFinite(maxSecs) && maxSecs > 0) {{
               // effective_codec: the tier the estimate assumes (monitor
@@ -2969,20 +2982,33 @@ def send_setup_page(
           return populated;
         }}
         var _repeatToggleToken = 0;
-        // The daemon takes a few seconds to compute the buffer estimate after
-        // repeat is (re-)enabled or its target changes, and the status cache
-        // backing /api/status only refreshes on its own ~1-2s poll -- retry
-        // briefly rather than leaving the note stale until the panel is reopened.
-        function pollRepeatNote() {{
+        // After a target/enable change the daemon tears the arena down and
+        // rebuilds it (typically well under a second), but the status cache
+        // backing /api/status refreshes on its own ~1-2s poll -- so the note
+        // switches to "Calculating…" immediately and polls until a FRESH
+        // figure (requested_minutes matching the new target, capacity
+        // recomputed) is back, rather than either freezing on the stale
+        // pre-change text or flashing the old figure as if it were the
+        // answer. If nothing fresh arrives within the window (e.g. an old
+        // monitor build that never reports requested_minutes alongside a
+        // rejected match), a final unconditional refresh shows whatever the
+        // daemon does report instead of leaving "Calculating…" stuck.
+        function pollRepeatNote(expectedRequestedMins) {{
           var myToken = ++_repeatToggleToken;
           var attempts = 0;
-          var maxAttempts = 8;
+          var maxAttempts = 12;
+          var noteEl = document.getElementById('repeat-max-time-note');
+          if (noteEl) noteEl.textContent = 'Calculating…';
           (function poll() {{
             if (myToken !== _repeatToggleToken) return;  // superseded by a later change
             attempts++;
-            refreshRepeatSetupNote().then(function(ok) {{
-              if (ok || myToken !== _repeatToggleToken || attempts >= maxAttempts) return;
-              setTimeout(poll, 1000);
+            refreshRepeatSetupNote(expectedRequestedMins).then(function(ok) {{
+              if (ok || myToken !== _repeatToggleToken) return;
+              if (attempts >= maxAttempts) {{
+                refreshRepeatSetupNote();  // last resort: accept any figure
+                return;
+              }}
+              setTimeout(poll, 700);
             }});
           }})();
         }}
@@ -3003,11 +3029,13 @@ def send_setup_page(
             }}
             return;
           }}
-          pollRepeatNote();
+          var targetVal = targetSelect ? parseInt(targetSelect.value, 10) : undefined;
+          pollRepeatNote(Number.isFinite(targetVal) ? targetVal : undefined);
         }}
         function onRepeatTargetChange(value) {{
-          settingsSaveField('repeat.target_minutes', parseInt(value, 10));
-          pollRepeatNote();
+          var target = parseInt(value, 10);
+          settingsSaveField('repeat.target_minutes', target);
+          pollRepeatNote(Number.isFinite(target) ? target : undefined);
         }}
         function onHostnameToggle(checked) {{
           var cb = document.getElementById('webui_control_other_appliances');

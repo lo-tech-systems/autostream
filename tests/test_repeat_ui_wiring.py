@@ -187,9 +187,10 @@ class TestSetupCustomiseRepeatControls:
 
     def test_enable_toggle_wrapper_retries_and_clears_on_disable(self, tmp_path):
         html = _render_setup_page(tmp_path)
-        # Retry loop: bounded attempts, stopping early once the note populates.
+        # Retry loop: bounded attempts, stopping early once a FRESH note
+        # populates (the freshness argument threads through).
         assert "maxAttempts" in html
-        assert "refreshRepeatSetupNote().then(function(ok)" in html
+        assert "refreshRepeatSetupNote(expectedRequestedMins).then(function(ok)" in html
         # Overlapping-toggle guard.
         assert "_repeatToggleToken" in html
         # Disable path clears both notes rather than leaving a stale value.
@@ -321,15 +322,33 @@ class TestSetupBufferTargetSelect:
         html = _render_setup_page(tmp_path)
         assert 'onchange="onRepeatTargetChange(this.value)"' in html
         assert "function onRepeatTargetChange(value)" in html
-        assert "settingsSaveField('repeat.target_minutes', parseInt(value, 10))" in html
+        assert "settingsSaveField('repeat.target_minutes', target)" in html
 
     def test_onchange_reuses_shared_poll_helper(self, tmp_path):
         html = _render_setup_page(tmp_path)
-        assert "function pollRepeatNote()" in html
+        assert "function pollRepeatNote(expectedRequestedMins)" in html
         change_start = html.find("function onRepeatTargetChange(value)")
         assert change_start != -1
-        change_body = html[change_start:change_start + 200]
-        assert "pollRepeatNote()" in change_body
+        change_body = html[change_start:change_start + 300]
+        assert "pollRepeatNote(Number.isFinite(target) ? target : undefined)" in change_body
+
+    def test_target_change_shows_calculating_and_gates_on_freshness(self, tmp_path):
+        """A target change must (a) immediately show 'Calculating…' rather
+        than leaving the old figure up as if it were the answer, (b) reject
+        status snapshots whose requested_minutes doesn't match the
+        just-selected target (the /api/status cache lags the change, so the
+        first snapshot back is usually the OLD arena's figure), and (c) fall
+        back to an unconditional refresh after the retry window so an old
+        monitor build that never reports requested_minutes can't leave
+        'Calculating…' stuck forever."""
+        html = _render_setup_page(tmp_path)
+        assert "noteEl.textContent = 'Calculating…'" in html
+        assert "Number(repeat.requested_minutes) !== expectedRequestedMins" in html
+        assert "repeat.requested_minutes !== undefined" in html
+        poll_start = html.find("function pollRepeatNote(expectedRequestedMins)")
+        assert poll_start != -1
+        poll_body = html[poll_start:poll_start + 1200]
+        assert "refreshRepeatSetupNote();  // last resort: accept any figure" in poll_body
 
     def test_toggle_handler_flips_select_disabled_state(self, tmp_path):
         html = _render_setup_page(tmp_path)
