@@ -1190,7 +1190,7 @@ void RepeatController::perform_pending_start()
         if (_state != RepeatState::Pending)
             return;   // superseded already (e.g. notify_capture_stopped() raced in first)
         input_index = _origin_input;
-        arena_ready = _arena_plan.codec != CodecChoice::Unavailable && _buffer.fixed_capacity();
+        arena_ready = arena_ready_locked();
         codec       = _arena_plan.codec;
     }
 
@@ -1295,19 +1295,27 @@ void RepeatController::maybe_build_arena()
     bool need_build;
     {
         std::lock_guard<std::mutex> lock(_repeat_mutex);
-        bool arena_ready = _arena_plan.codec != CodecChoice::Unavailable && _buffer.fixed_capacity();
         double now = get_monotonic_time();
+        // An IN-PROGRESS build always continues, unconditionally and first:
+        // fixed_capacity() latches on the very first committed chunk, so any
+        // "is the arena ready?" test is already true one tick into a
+        // multi-tick build -- gating continuation on NOT-ready (as this once
+        // did) froze every build at its first tick's chunks, with status
+        // reporting the full planned capacity for an arena that mostly
+        // did not exist. arena_ready_locked() encodes the corrected
+        // definition (finalized, not merely started).
+        //
         // _next_build_attempt_time throttles retry after a FAILED build
         // (insufficient memory): without it, a memory-starved appliance
         // would re-read /proc/meminfo and re-derive the plan on every ~50 ms
         // tick, forever. A failed build instead schedules its next attempt
         // kArenaSettleSeconds out -- the retry itself is deliberate (RAM
         // freed later means the arena eventually builds, self-healing), only
-        // its cadence is bounded. An in-progress build is never throttled.
-        need_build = !arena_ready
-            && (_arena_build_in_progress
-                || ((now - _construct_time) >= kArenaSettleSeconds
-                    && now >= _next_build_attempt_time));
+        // its cadence is bounded.
+        need_build = _arena_build_in_progress
+            || (!arena_ready_locked()
+                && (now - _construct_time) >= kArenaSettleSeconds
+                && now >= _next_build_attempt_time);
     }
     if (!need_build)
         return;
@@ -1319,9 +1327,10 @@ void RepeatController::maybe_build_arena()
         // since the check above.
         if (!_enabled_cfg)
             return;
-        if (_arena_plan.codec != CodecChoice::Unavailable && _buffer.fixed_capacity())
+        if (arena_ready_locked())
             return;   // a racing build (should not happen -- one worker thread
-                       // drives this -- but defensive) already finished
+                       // drives this -- but defensive) already FINALIZED;
+                       // an in-progress build falls through and continues
         first_tick = !_arena_build_in_progress;
         if (first_tick)
             _arena_build_in_progress = true;
@@ -1995,8 +2004,7 @@ RepeatStatus RepeatController::get_status() const
         // such, covering both "disabled" and "enabled but the build hasn't
         // finished/started yet" (e.g. the settle window, or a still-running
         // multi-tick build for a large arena).
-        bool arena_ready = _arena_plan.codec != CodecChoice::Unavailable && _buffer.fixed_capacity();
-        if (arena_ready)
+        if (arena_ready_locked())
         {
             s.max_recording_seconds = _arena_plan.capacity_seconds;
             s.effective_codec       = codec_choice_to_string(_arena_plan.codec);

@@ -2705,15 +2705,33 @@ private:
     //
     // The current plan for the arena this controller has (attempted to)
     // build. codec == Unavailable means no arena exists (either never built,
-    // or torn down by teardown_arena_locked()); "arena ready" is exactly
-    // plan.codec != Unavailable && _buffer.fixed_capacity() (both conditions
-    // together, not either alone -- fixed_capacity() alone would be true
-    // mid-build too, before a single chunk has actually been committed to
-    // this plan). Only ever written by maybe_build_arena() (the build loop)
-    // and teardown_arena_locked() (resets to Unavailable); read by
+    // or torn down by teardown_arena_locked()). "Arena ready" is
+    // arena_ready_locked() below -- ALL THREE conditions, not any subset:
+    // fixed_capacity() latches on the FIRST committed chunk, so plan-plus-
+    // fixed-capacity alone is already true one tick into a ten-chunk build,
+    // and treating that as ready is precisely the stall that once froze
+    // every build at two chunks while status confidently reported the full
+    // planned capacity (see arena_ready_locked()'s own comment). Only ever
+    // written by maybe_build_arena() (the build loop) and
+    // teardown_arena_locked() (resets to Unavailable); read by
     // perform_pending_start() (session start), get_status() (D5), and
     // maybe_build_arena() itself (to know whether a build is even needed).
     ArenaPlan    _arena_plan{CodecChoice::Unavailable, 0, 0};
+
+    // The single definition of "the arena exists and is usable": a plan was
+    // derived, at least one chunk is committed under it, AND the build has
+    // FINALIZED (finalization is what recomputes capacity_seconds from the
+    // achieved chunk count -- until then the plan's figure is an intention,
+    // not a fact). Callers: maybe_build_arena()'s need-build gate (an
+    // in-progress build must keep running -- it is never "ready"),
+    // perform_pending_start()'s admission, and get_status()'s reporting.
+    // Caller holds _repeat_mutex.
+    bool arena_ready_locked() const
+    {
+        return _arena_plan.codec != CodecChoice::Unavailable
+            && _buffer.fixed_capacity()
+            && !_arena_build_in_progress;
+    }
     // True from the first build tick (the meminfo read + plan_arena() call)
     // until the build finalizes (target reached, an early stop, or zero
     // chunks achievable) -- distinguishes "no arena, build not yet started"
