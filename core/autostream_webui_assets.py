@@ -480,6 +480,19 @@ INFO_MODAL_SCRIPT = """
 </script>
 """
 
+# Buttonless modal shown by settingsTransact (see AUTOSAVE_JS below) while a
+# restart-required setting's daemon restart is in flight. No footer/buttons —
+# it dismisses itself once /api/owntone/ready reports the restart finished.
+RESTART_MODAL_HTML = """
+<div id="restartModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="restartModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="restartModalTitle">Applying setting&hellip;</div>
+    <div class="bd modal-bd">
+      <p>OwnTone is restarting to apply the change. Playback will pause briefly.</p>
+    </div>
+  </div>
+</div>"""
+
 APPLIANCE_SELECTOR_CSS = """
   .appliance-selector{position:relative;display:inline-flex;align-items:center;}
   .appliance-selector-btn{display:inline-flex;align-items:center;gap:4px;padding:0.22rem 0.6rem;border-radius:999px;background:var(--color-surface-raised);border:1px solid var(--color-border);color:var(--color-text-secondary);font-size:0.82rem;font-weight:500;cursor:pointer;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;}
@@ -2024,6 +2037,68 @@ AUTOSAVE_JS = """
     return Promise.all(promises);
   };
 
+  // Buttonless "Applying setting…" modal for restart-required autosaves. The
+  // restart itself is coalesced 0.75s after the save response, so an
+  // immediate ready-poll can see the daemon still up with no restart in
+  // progress — dismissal therefore waits for either an observed in_progress
+  // state or a minimum elapsed window before trusting "not in progress" as
+  // "finished". A hard timeout gives up and reports failure via the status
+  // line instead of polling forever.
+  var _restartPollTimer = null;
+  var _restartHardTimer = null;
+  var _restartSawInProgress = false;
+  var _restartStartedAt = 0;
+  var _restartLastMessage = '';
+
+  function _restartModalEl() {
+    return document.getElementById('restartModal');
+  }
+
+  function _restartDismiss(statusMessage) {
+    var m = _restartModalEl();
+    if (m) m.classList.remove('show');
+    if (_restartPollTimer) { clearTimeout(_restartPollTimer); _restartPollTimer = null; }
+    if (_restartHardTimer) { clearTimeout(_restartHardTimer); _restartHardTimer = null; }
+    if (statusMessage) _setStatus(statusMessage);
+  }
+
+  function _restartPoll() {
+    fetch('/api/owntone/ready', {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(j) {
+      var restart = j.restart || {};
+      if (restart.message) _restartLastMessage = restart.message;
+      if (restart.in_progress) _restartSawInProgress = true;
+      var elapsed = Date.now() - _restartStartedAt;
+      if (j.ok && !restart.in_progress && (_restartSawInProgress || elapsed >= 3000)) {
+        // A restart that ran and failed leaves the daemon up but the change
+        // unapplied — surface its message rather than dismissing silently.
+        if (_restartSawInProgress && restart.ok === false) {
+          _restartDismiss(_restartLastMessage || 'OwnTone restart failed');
+        } else {
+          _restartDismiss();
+        }
+        return;
+      }
+      _restartPollTimer = setTimeout(_restartPoll, 1000);
+    }).catch(function() {
+      _restartPollTimer = setTimeout(_restartPoll, 1000);
+    });
+  }
+
+  function _restartBegin() {
+    var m = _restartModalEl();
+    if (!m) return;  // page has no restart modal — degrade to no-op
+    m.classList.add('show');
+    _restartSawInProgress = false;
+    _restartStartedAt = Date.now();
+    _restartLastMessage = '';
+    if (_restartPollTimer) clearTimeout(_restartPollTimer);
+    if (_restartHardTimer) clearTimeout(_restartHardTimer);
+    _restartPollTimer = setTimeout(_restartPoll, 1000);
+    _restartHardTimer = setTimeout(function() {
+      _restartDismiss(_restartLastMessage || 'OwnTone restart timed out');
+    }, 30000);
+  }
+
   window.settingsTransact = function(url, payload, opts) {
     opts = opts || {};
     _setStatus('Applying…');
@@ -2039,6 +2114,7 @@ AUTOSAVE_JS = """
         return;
       }
       _setStatus('Saved');
+      if (d.restart_required) { _restartBegin(); }
       setTimeout(function() {
         var el = _getStatus();
         if (el && el.textContent === 'Saved') el.textContent = '';

@@ -998,7 +998,9 @@ class TestOwntoneSetupPage:
     def test_autosave_functions_present(self, tmp_path):
         html = self._render_page(str(tmp_path))
         assert "_owntoneOffsetDebounced" in html
-        assert "_owntoneNativeDebounced" in html
+        # Retired with the Start Buffer slider->select conversion; its
+        # only caller was the slider's debounced oninput handler.
+        assert "_owntoneNativeDebounced" not in html
 
     def test_settings_transact_available(self, tmp_path):
         html = self._render_page(str(tmp_path))
@@ -1016,12 +1018,13 @@ class TestOwntoneSetupPage:
         assert "/api/owntone/grace-period" not in html
 
     def test_audio_fieldset_rendered_before_speaker_cards(self, tmp_path):
-        """The Audio fieldset (buffered audio / uncompressed / start buffer) must
-        render above the per-speaker cards, not below them."""
+        """The AirPlay Settings fieldset (buffered audio / uncompressed / start
+        buffer / user agent) must render above the per-speaker cards, not below
+        them."""
         from autostream_players import OutputInfo
         output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
         html = self._render_page(str(tmp_path), outputs=[output])
-        audio_idx = html.index("<legend>Audio</legend>")
+        audio_idx = html.index("<legend>AirPlay Settings</legend>")
         speaker_idx = html.index('id="spk_settings_0"')
         assert audio_idx < speaker_idx
 
@@ -1259,3 +1262,145 @@ class TestOwntoneRestartDebounce:
             import time; time.sleep(0.15)
 
         state.begin_owntone_restart.assert_called_once()
+
+
+# ── User-agent field rendering ──────────────────────────────────────────────
+
+class TestUserAgentFieldRendering:
+    """The AirPlay User Agent field follows the same three render states as
+    buffered audio: omitted when unsupported, disabled-with-note when
+    the backend is merely unreachable, editable and onchange-bound when
+    available."""
+
+    def _result(self, ok, value=None, unsupported=False):
+        r = MagicMock()
+        r.ok = ok
+        r.value = value
+        r.unsupported = unsupported
+        return r
+
+    def _input_tag(self, html: str) -> str:
+        idx = html.index('name="user_agent"')
+        tag_start = html.rindex("<input", 0, idx)
+        tag_end = html.index(">", idx)
+        return html[tag_start:tag_end + 1]
+
+    def test_field_omitted_when_unsupported(self, tmp_path):
+        from autostream_players import SETTING_USER_AGENT
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_USER_AGENT: self._result(ok=False, unsupported=True)},
+        )
+        assert 'name="user_agent"' not in html
+
+    def test_field_disabled_with_note_when_unreachable(self, tmp_path):
+        from autostream_players import SETTING_USER_AGENT
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_USER_AGENT: self._result(ok=False, unsupported=False)},
+        )
+        tag = self._input_tag(html)
+        assert "disabled" in tag
+        assert "OwnTone is not reachable; the current value could not be read." in html
+
+    def test_field_present_bound_to_endpoint_and_value_escaped(self, tmp_path):
+        from autostream_players import SETTING_USER_AGENT
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_USER_AGENT: self._result(ok=True, value='AirPlay/1" onmouseover="x')},
+        )
+        tag = self._input_tag(html)
+        assert "disabled" not in tag
+        assert "&quot;" in tag  # value's embedded quote must be escaped, not break the attribute
+        assert 'value="AirPlay/1" onmouseover="x' not in tag
+        assert "onchange=" in tag
+        assert "/api/owntone/user-agent" in tag
+        # Commit semantics: no debounced oninput hook on this field, and
+        # nothing named user-agent's endpoint from an oninput attribute.
+        assert "oninput=" not in tag
+
+
+# ── Start Buffer drop-down ──────────────────────────────────────────────────
+
+class TestStartBufferSelect:
+    def _result(self, ok, value=None, unsupported=False):
+        r = MagicMock()
+        r.ok = ok
+        r.value = value
+        r.unsupported = unsupported
+        return r
+
+    def _select_html(self, html: str) -> str:
+        marker = 'name="start_buffer_ms"'
+        start = html.index(marker)
+        tag_open_start = html.rindex("<select", 0, start)
+        end = html.index("</select>", start) + len("</select>")
+        return html[tag_open_start:end]
+
+    def test_renders_select_not_range_and_retires_debounced_helper(self, tmp_path):
+        from autostream_players import SETTING_START_BUFFER_MS
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_START_BUFFER_MS: self._result(ok=True, value=2250)},
+        )
+        assert 'name="start_buffer_ms"' in html
+        assert 'type="range"' not in html
+        assert "_owntoneNativeDebounced" not in html
+
+    def test_options_span_300_to_3500(self, tmp_path):
+        from autostream_players import SETTING_START_BUFFER_MS
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_START_BUFFER_MS: self._result(ok=True, value=2250)},
+        )
+        select_html = self._select_html(html)
+        assert '<option value="300"' in select_html
+        assert '<option value="500"' in select_html
+        assert '<option value="3500"' in select_html
+
+    def test_off_list_value_gets_its_own_selected_option(self, tmp_path):
+        """A value stored via the old 50ms-step slider (or curl) must still
+        render, selected, rather than silently snapping to a list value."""
+        from autostream_players import SETTING_START_BUFFER_MS
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_START_BUFFER_MS: self._result(ok=True, value=2300)},
+        )
+        select_html = self._select_html(html)
+        assert '<option value="2300" selected>2300</option>' in select_html
+
+    def test_onchange_bound_to_endpoint(self, tmp_path):
+        from autostream_players import SETTING_START_BUFFER_MS
+        html = TestOwntoneSetupPage()._render_page(
+            str(tmp_path),
+            {SETTING_START_BUFFER_MS: self._result(ok=True, value=2250)},
+        )
+        select_html = self._select_html(html)
+        assert "onchange=" in select_html
+        assert "/api/owntone/start-buffer" in select_html
+
+
+# ── Restart modal ───────────────────────────────────────────────────────────
+
+class TestRestartModal:
+    """Buttonless "Applying setting…" modal, hooked once in settingsTransact
+    so every restart-required autosave (user_agent, uncompressed_alac,
+    start_buffer_ms, ...) surfaces the restart instead of bouncing the
+    daemon silently."""
+
+    def test_modal_markup_has_no_footer_or_buttons(self):
+        from autostream_webui_assets import RESTART_MODAL_HTML
+        assert 'id="restartModal"' in RESTART_MODAL_HTML
+        assert "modal-overlay" in RESTART_MODAL_HTML
+        assert "modal-ft" not in RESTART_MODAL_HTML
+        assert "<button" not in RESTART_MODAL_HTML
+
+    def test_settings_transact_gates_on_restart_required(self):
+        from autostream_webui_assets import AUTOSAVE_JS
+        assert "d.restart_required" in AUTOSAVE_JS
+        assert "/api/owntone/ready" in AUTOSAVE_JS
+
+    def test_rendered_page_contains_modal_and_hook(self, tmp_path):
+        html = TestOwntoneSetupPage()._render_page(str(tmp_path))
+        assert 'id="restartModal"' in html
+        assert "d.restart_required" in html

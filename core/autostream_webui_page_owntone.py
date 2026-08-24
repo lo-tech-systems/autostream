@@ -39,6 +39,7 @@ from autostream_players import (
     SETTING_START_BUFFER_MS_MIN,
     SETTING_START_BUFFER_MS_STEP,
     SETTING_UNCOMPRESSED_ALAC,
+    SETTING_USER_AGENT,
 )
 from autostream_player_service import (
     get_capabilities,
@@ -48,7 +49,7 @@ from autostream_player_service import (
 )
 from autostream_sysutils import run_admin_cmd
 from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
-from autostream_webui_assets import AUTOSAVE_JS
+from autostream_webui_assets import AUTOSAVE_JS, COMMON_MODAL_CSS, RESTART_MODAL_HTML
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
 
@@ -357,6 +358,14 @@ def send_owntone_setup_page(
         start_buffer_ms = SETTING_START_BUFFER_MS_DEFAULT
     start_buffer_available = bool(start_buffer_result.ok)
 
+    user_agent_result = get_setting(
+        parsed.owntone.base_url,
+        SETTING_USER_AGENT,
+        timeout=3,
+    )
+    user_agent_shown = not user_agent_result.unsupported
+    user_agent_value = str(user_agent_result.value) if user_agent_result.ok and user_agent_result.value is not None else ""
+
     speakers_html = ""
     for i, row in enumerate(row_specs):
         spk = str(row["name"])
@@ -546,29 +555,74 @@ def send_owntone_setup_page(
                 'from the backend just now. Refresh to try again.</div>'
             )
 
-    # Start buffer: autosave (debounced) in configured mode
-    _buf_oninput = (
-        f"document.getElementById('start_buffer_val').textContent=this.value+' ms';"
-        f"if(liveEnabled) _owntoneNativeDebounced('start_buffer', this.value, '/api/owntone/start-buffer');"
+    # Start buffer: a drop-down, one save per deliberate choice (no debounce).
+    # A stored value off this list (old 50ms-step slider, or set via curl) gets
+    # its own selected option so the page never silently changes it.
+    _buf_step_values = list(range(500, SETTING_START_BUFFER_MS_MAX + 1, 250))
+    _buf_options_values = [SETTING_START_BUFFER_MS_MIN] + _buf_step_values
+    if start_buffer_ms not in _buf_options_values:
+        _buf_options_values.append(start_buffer_ms)
+        _buf_options_values.sort()
+    _buf_options = "".join(
+        f'<option value="{v}"{" selected" if v == start_buffer_ms else ""}>{v}</option>'
+        for v in _buf_options_values
+    )
+    _buf_change = (
+        "if(liveEnabled) settingsTransact('/api/owntone/start-buffer',"
+        " {value: parseInt(this.value,10)});"
     )
     _buf_html = (
         '<label style="display:block;margin-top:0.75rem;">'
-        '<div class="slider-header"><span>Start Buffer (ms):</span>'
-        f'<span id="start_buffer_val">{start_buffer_ms} ms</span></div>'
-        f'<input type="range" name="start_buffer_ms"'
-        f' min="{SETTING_START_BUFFER_MS_MIN}" max="{SETTING_START_BUFFER_MS_MAX}"'
-        f' step="{SETTING_START_BUFFER_MS_STEP}" value="{start_buffer_ms}"'
-        f' oninput="{html.escape(_buf_oninput)}"></label>'
+        '<span>Start Buffer (ms)</span>'
+        f'<select name="start_buffer_ms" onchange="{html.escape(_buf_change)}">'
+        f'{_buf_options}</select></label>'
     ) if start_buffer_available else (
         '<div class="storage-meta" style="margin-top:0.75rem;">'
         'This backend does not currently expose start-buffer control.</div>'
     )
 
+    # User-agent: free-text, restart-required, autosaves on blur/Enter (onchange)
+    # rather than mid-typing. Omitted entirely when the backend genuinely lacks
+    # the setting; shown disabled with a note when the daemon is merely
+    # unreachable — unsupported and unreachable are not the same thing.
+    _user_agent_html = ""
+    if user_agent_shown:
+        _ua_value_attr = html.escape(user_agent_value)
+        _ua_disabled = not user_agent_result.ok
+        _ua_onchange_attr = ""
+        if not _ua_disabled:
+            _ua_oc = (
+                f"var v=this.value.trim();"
+                f"if(v==={json.dumps(user_agent_value)}) return;"
+                f"if(liveEnabled) settingsTransact('/api/owntone/user-agent', {{value: v}});"
+            )
+            _ua_onchange_attr = f' onchange="{html.escape(_ua_oc)}"'
+        _user_agent_html = (
+            '<label style="display:block;margin-top:0.75rem;">'
+            '<span>AirPlay User Agent</span>'
+            f'<input type="text" name="user_agent" value="{_ua_value_attr}"'
+            ' maxlength="255" autocomplete="off" spellcheck="false"'
+            ' style="width:100%;box-sizing:border-box;"'
+            f'{" disabled" if _ua_disabled else ""}'
+            f'{_ua_onchange_attr}></label>'
+        )
+        if _ua_disabled:
+            _user_agent_html += (
+                '<div class="storage-meta">OwnTone is not reachable; the current '
+                'value could not be read.</div>'
+            )
+        else:
+            _user_agent_html += (
+                '<div class="storage-meta">Changing this restarts OwnTone. Clearing '
+                "it restores the default, derived from the daemon's own "
+                'product/version string.</div>'
+            )
+
     # Audio leads the page: buffered audio and start buffer are the settings a
     # user comes here to change, and buffered audio also governs which modes the
     # per-speaker cards below are allowed to offer.
     _audio_fieldset_html = (
-        f"<fieldset><legend>Audio</legend>"
+        f"<fieldset><legend>AirPlay Settings</legend>"
         + _buffered_audio_html
         + f"<div style='display:flex;align-items:center;gap:0.75rem;'>"
         + f"<label class='output-toggle' style='margin:0;'>"
@@ -579,6 +633,7 @@ def send_owntone_setup_page(
         + f"</div>"
         + ('<div class="storage-meta">This backend does not currently expose uncompressed-audio control.</div>' if not uncompressed_supported else '')
         + _buf_html
+        + _user_agent_html
         + f"</fieldset>"
     )
 
@@ -589,6 +644,8 @@ def send_owntone_setup_page(
         + f"<p class='actions' style='margin:1rem 0;display:flex;justify-content:space-between;align-items:center;gap:0.75rem;'>"
         + f"<a href='/owntone-setup' class='pill-btn small' style='font-weight:500;border:1px solid #ccc;'>\u21bb Refresh</a>"
         + f"</p>"
+        + '<div id="autosave-status" aria-live="polite" '
+        + 'style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>'
         + f"<div>"
         + _audio_fieldset_html
         + speakers_html
@@ -620,16 +677,12 @@ def send_owntone_setup_page(
     _owntoneOffsetSync(i, 0);
     if (liveEnabled) _owntoneOffsetDebounced(i, outputId, 0);
   }}
-  function _owntoneNativeDebounced(key, rawValue, url) {{
-    clearTimeout(_owntoneTimers[key]);
-    _owntoneTimers[key] = setTimeout(function() {{
-      settingsTransact(url, {{value: parseInt(rawValue, 10)}});
-    }}, 500);
-  }}
 </script>"""
     html_body = build_page_html(
         "Owntone Setup",
         _body_html,
+        extra_css=COMMON_MODAL_CSS,
+        body_prefix=RESTART_MODAL_HTML,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         body_suffix=_body_suffix,
