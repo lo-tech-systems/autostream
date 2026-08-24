@@ -54,7 +54,10 @@ _svc_info: dict[str, tuple[str, str, str]] = {}
 _id_hostnames: dict[str, set[str]] = {}
 # IDs excluded from the registry due to hostname conflict
 _conflict_ids: set[str] = set()
-# Rate-limit conflict logging to one warning per ID
+# Rate-limit conflict logging to one warning per ID, for as long as that ID
+# remains known to the registry. Discarded in _on_appliance_remove() when the
+# ID's last sighting disappears, so this stays bounded by currently-known
+# peers rather than growing for every ID ever seen in conflict.
 _conflict_logged: set[str] = set()
 
 
@@ -175,6 +178,7 @@ def _on_appliance_remove(appliance_id: str, sighting: Optional[ApplianceSighting
             _svc_info.pop(k, None)
         _id_hostnames.pop(appliance_id, None)
         _conflict_ids.discard(appliance_id)
+        _conflict_logged.discard(appliance_id)
     if sighting is not None and sighting.ip:
         evict_session_for_ip(sighting.ip)
     for fn in _peer_removal_callbacks:

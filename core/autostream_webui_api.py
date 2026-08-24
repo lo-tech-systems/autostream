@@ -57,6 +57,7 @@ from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     REPEAT_CODEC_CHOICES,
+    VALID_AIRPLAY_MODES,
     is_valid_monitor_device_id,
     load_config,
     load_state,
@@ -71,6 +72,7 @@ from autostream_config import (
     save_config,
     save_state,
     set_input_mode,
+    suggested_silence_threshold_dbfs,
 )
 from autostream_rpi import is_high_performance_pi
 from autostream_dials import is_dial_authorized
@@ -96,6 +98,7 @@ from autostream_core import (
     set_live_repeat_enabled,
     update_live_owntone_runtime,
     update_live_silence_seconds,
+    update_live_silence_threshold_dbfs,
     update_playback_input_config,
 )
 from autostream_appliance_models import (
@@ -107,6 +110,7 @@ from autostream_appliance_models import (
     apply_output_mutation,
     build_equaliser_state,
     build_home_state,
+    sanitize_output_body,
 )
 from autostream_player_service import (
     list_outputs,
@@ -133,25 +137,40 @@ from autostream_webui_service_schema import (
     _time_display,
 )
 from autostream_webui_state import WebUIState
+from autostream_debounce import default_debouncer
+from autostream_settings_schema import (
+    CrossFieldValidationError,
+    LiveClass,
+    cross_validate_capture_device_unique,
+    cross_validate_hostname_visibility_cascade,
+    get_field_spec,
+    register_field,
+)
 
 
 # -----------------------------------------------------------------------------
 # Service config field map (field name → config section, key, normaliser)
 # Generated from _SERVICE_ITEMS so field names and normalisers stay in sync
 # with the page schema without needing a parallel hard-coded dict.
+#
+# Rows are also registered into the shared SETTINGS_SCHEMA table
+# (autostream_settings_schema.py), using the exact same section/key/
+# normaliser values -- this dict's own shape and values are unchanged, it
+# is now just built by the same registration call that populates the
+# shared table, rather than a second, separately maintained structure.
 # -----------------------------------------------------------------------------
 
 _SERVICE_FIELD_MAP: dict = {}
 for _si in _SERVICE_ITEMS:
     for _n in (1, 2):
         _sec = f"audio{_n}"
-        _SERVICE_FIELD_MAP[f"service_{_si.key}_life_hours_input{_n}"] = (
-            _sec, _si.hours_config_key, _si.hours_normalizer,
-        )
+        _hours_path = f"service_{_si.key}_life_hours_input{_n}"
+        register_field(_hours_path, _sec, _si.hours_config_key, normalise=_si.hours_normalizer)
+        _SERVICE_FIELD_MAP[_hours_path] = (_sec, _si.hours_config_key, _si.hours_normalizer)
         if _si.years_config_key and _si.years_normalizer:
-            _SERVICE_FIELD_MAP[f"service_{_si.key}_life_years_input{_n}"] = (
-                _sec, _si.years_config_key, _si.years_normalizer,
-            )
+            _years_path = f"service_{_si.key}_life_years_input{_n}"
+            register_field(_years_path, _sec, _si.years_config_key, normalise=_si.years_normalizer)
+            _SERVICE_FIELD_MAP[_years_path] = (_sec, _si.years_config_key, _si.years_normalizer)
 
 
 # -----------------------------------------------------------------------------
@@ -1146,32 +1165,12 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
         send_json(handler, 500, {"ok": False, "error": "internal_error"})
         return
 
-    # Sanitize: forward only the documented operation fields, never raw browser body
-    sanitized: dict = {"id": out_id}
-    op = str(body.get("op") or "").strip().lower()
-    if op == "pin":
-        pin_val = str(body.get("pin") or "")
-        if not pin_val:
-            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-            return
-        sanitized["op"] = "pin"
-        sanitized["pin"] = pin_val
-    elif op == "":
-        selected_raw = body.get("selected")
-        if not isinstance(selected_raw, bool):
-            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-            return
-        sanitized["selected"] = selected_raw
-        raw_vol = body.get("volume")
-        if raw_vol is not None:
-            try:
-                sanitized["volume"] = max(0, min(100, int(raw_vol)))
-            except (ValueError, TypeError):
-                sanitized["volume"] = 50
-        else:
-            sanitized["volume"] = 50
-    else:
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+    # Same preserved error-priority ordering as before this extraction: the
+    # out_id/config checks above run first, then the shared sanitiser
+    # validates the op/pin/selected/volume shape.
+    sanitized, sanitize_error = sanitize_output_body(body)
+    if sanitize_error is not None:
+        send_json(handler, 400, {"ok": False, "error": sanitize_error})
         return
 
     result = apply_output_mutation(
@@ -1505,10 +1504,10 @@ def _validate_audio_path(value: object) -> str:
     if v not in AUDIO_PATH_CHOICES:
         raise ValueError(f"Value must be one of {', '.join(AUDIO_PATH_CHOICES)}")
     if v == "max" and not is_high_performance_pi():
-        # Defends against a stale browser tab (Maximum Quality is filtered
+        # Defends against a stale browser tab (the Best tier is filtered
         # out of the rendered options on this hardware, see settings_card_html
         # in autostream_webui_page_setup.py) or a hand-crafted request.
-        raise ValueError("Maximum Quality is only available on Pi 4/5-class hardware")
+        raise ValueError("Best quality is only available on Pi 4/5-class hardware")
     return v
 
 
@@ -1580,15 +1579,19 @@ def _validate_track_id_silence(value: object) -> float:
     return normalize_track_id_track_change_silence_seconds(value)
 
 
-# Debounce helpers — module-level timer state protected by a threading lock.
+# Debounce helpers.
+#
+# _debounce_coordinator_reload keeps its own ad hoc threading.Timer/lock/
+# global trio rather than the shared primitive below: the reload flag it
+# signals is already an idempotent threading.Event, so this timer may be
+# deletable outright rather than migrated onto the shared debouncer. Do
+# not touch it here.
+#
 # The coordinator reload timer calls save_now() before signalling so the
 # coordinator always reads up-to-date settings from disk.
 
 _coordinator_reload_lock = threading.Lock()
 _coordinator_reload_timer: Optional[threading.Timer] = None
-
-_track_id_rebuild_lock = threading.Lock()
-_track_id_rebuild_timer: Optional[threading.Timer] = None
 
 
 def _debounce_coordinator_reload(state: object, delay: float = 0.3) -> None:
@@ -1609,25 +1612,24 @@ def _debounce_coordinator_reload(state: object, delay: float = 0.3) -> None:
         _coordinator_reload_timer.start()
 
 
+# The one genuine debounce-of-a-live-push case among this module's two
+# reload timers: built on the shared autostream_debounce.Debouncer (one
+# implementation, greppable) instead of its own bespoke
+# threading.Timer/lock/global trio. Same coalescing behaviour: a call
+# arriving within `delay` of the previous one replaces it, and only the
+# last-registered snapshot read actually runs.
 def _debounce_track_id_rebuild(state: object, delay: float = 0.3) -> None:
-    global _track_id_rebuild_timer
-    with _track_id_rebuild_lock:
-        if _track_id_rebuild_timer is not None:
-            _track_id_rebuild_timer.cancel()
+    def _do_rebuild():
+        from autostream_settings import SettingsStore as _SettingsStore
+        settings = getattr(state, "settings", None)
+        if isinstance(settings, _SettingsStore):
+            try:
+                snap = settings.snapshot()
+                apply_track_id_config_live_from_parsed(snap)
+            except Exception:
+                logging.exception("debounced track-ID rebuild failed")
 
-        def _do_rebuild():
-            from autostream_settings import SettingsStore as _SettingsStore
-            settings = getattr(state, "settings", None)
-            if isinstance(settings, _SettingsStore):
-                try:
-                    snap = settings.snapshot()
-                    apply_track_id_config_live_from_parsed(snap)
-                except Exception:
-                    logging.exception("debounced track-ID rebuild failed")
-
-        _track_id_rebuild_timer = threading.Timer(delay, _do_rebuild)
-        _track_id_rebuild_timer.daemon = True
-        _track_id_rebuild_timer.start()
+    default_debouncer().trigger("track_id_rebuild", delay, _do_rebuild)
 
 
 def _live_capture_1(state: object, value: object) -> bool:
@@ -1696,7 +1698,14 @@ def _live_turntable_1(state: object, value: object) -> bool:
             bearing_life_hours=snap.audio1.bearing_life_hours,
             bearing_life_years=snap.audio1.bearing_life_years,
         )
-    _debounce_coordinator_reload(state)
+    # Turntable mode only changes the derived silence threshold, which the
+    # monitor daemon accepts as a live configure_input() field on a running
+    # input -- so this never needs a coordinator teardown. Fall back to the
+    # existing reload debounce only if that live push could not be applied
+    # (e.g. daemon unreachable), so the setting still takes effect the same
+    # way it always has.
+    if not update_live_silence_threshold_dbfs(1, suggested_silence_threshold_dbfs(bool(value))):
+        _debounce_coordinator_reload(state)
     return True
 
 
@@ -1716,7 +1725,10 @@ def _live_turntable_2(state: object, value: object) -> bool:
             bearing_life_hours=snap.audio2.bearing_life_hours,
             bearing_life_years=snap.audio2.bearing_life_years,
         )
-    _debounce_coordinator_reload(state)
+    # See _live_turntable_1: live push of the derived threshold, reload
+    # debounce only as a fallback if the daemon push fails.
+    if not update_live_silence_threshold_dbfs(2, suggested_silence_threshold_dbfs(bool(value))):
+        _debounce_coordinator_reload(state)
     return True
 
 
@@ -1738,52 +1750,83 @@ class _DuplicateCaptureDeviceError(Exception):
     """
 
 
-# Maps public dotted field name → (section, key, validator, live_fn_or_None)
+# Maps public dotted field name → (section, key, validator, live_fn_or_None).
+#
+# Each row below is registered into the shared SETTINGS_SCHEMA table
+# (autostream_settings_schema.py) via the same call that builds this dict,
+# rather than living only here -- the validator functions and live_fn
+# callables themselves are unchanged (same bodies, same error strings),
+# only their bookkeeping is single-sourced. form_coerce is set for the
+# handful of fields handle_setup_post's hand-parsed form also writes
+# (POST /setup), reusing the exact same raw-string normaliser it already
+# called directly -- see autostream_settings_schema.py's module docstring
+# for why the JSON API's validate and the form's form_coerce are two
+# different callables for the same field (typed JSON value vs. plain form
+# string). The form path's lack of bounds-checking on several of these
+# fields is a pre-existing, deliberately-untouched inconsistency, not a
+# new bug.
+def _reg_settings_field(path, section, key, validate, live=None, form_coerce=None,
+                         cross_validate=None, mutate=None, live_class=LiveClass.PASSIVE):
+    register_field(path, section, key, validate, live=live, form_coerce=form_coerce,
+                    cross_validate=cross_validate, mutate=mutate, live_class=live_class)
+    return (section, key, validate, live)
+
+
+def _mutate_turntable(raw: dict, section: str, key: str, value: object) -> None:
+    """FieldSpec.mutate override for audio{1,2}.turntable: the on-disk write
+    isn't a flat ``raw[section][key] = value`` assignment -- ``set_input_mode``
+    also derives ``silence_threshold_dbfs`` atomically alongside the flag.
+    Unchanged from the logic ``send_settings_post_json`` used to special-
+    case inline for this field.
+    """
+    set_input_mode(raw, int(section[-1]), bool(value))
+
+
 _SETTINGS_FIELDS: dict = {
     # Personalisation (no live effect)
-    "webui.dark_mode":                          ("webui",   "dark_mode",                         _validate_bool,            None),
-    "webui.show_master_volume":                 ("webui",   "show_master_volume",                 _validate_bool,            None),
-    "webui.show_input_detail":                  ("webui",   "show_input_detail",                  _validate_bool,            None),
-    "webui.show_hostname_on_home":              ("webui",   "show_hostname_on_home",              _validate_bool,            None),
-    "webui.control_other_appliances":           ("webui",   "control_other_appliances",           _validate_bool,            None),
-    "webui.output_usage_poll_interval_seconds": ("webui",   "output_usage_poll_interval_seconds", _validate_poll_interval,   None),
-    "updates.update_channel":                   ("updates", "update_channel",                     _validate_update_channel,  None),
+    "webui.dark_mode":                          _reg_settings_field("webui.dark_mode", "webui", "dark_mode", _validate_bool),
+    "webui.show_master_volume":                 _reg_settings_field("webui.show_master_volume", "webui", "show_master_volume", _validate_bool),
+    "webui.show_input_detail":                  _reg_settings_field("webui.show_input_detail", "webui", "show_input_detail", _validate_bool),
+    "webui.show_hostname_on_home":              _reg_settings_field("webui.show_hostname_on_home", "webui", "show_hostname_on_home", _validate_bool, cross_validate=cross_validate_hostname_visibility_cascade),
+    "webui.control_other_appliances":           _reg_settings_field("webui.control_other_appliances", "webui", "control_other_appliances", _validate_bool),
+    "webui.output_usage_poll_interval_seconds": _reg_settings_field("webui.output_usage_poll_interval_seconds", "webui", "output_usage_poll_interval_seconds", _validate_poll_interval, form_coerce=normalize_output_usage_poll_interval),
+    "updates.update_channel":                   _reg_settings_field("updates.update_channel", "updates", "update_channel", _validate_update_channel),
     # Audio input gain/EQ (live: monitor)
-    "audio1.gain_db":                           ("audio1",  "gain_db",                            _validate_gain_db,         _live_gain_1),
-    "audio2.gain_db":                           ("audio2",  "gain_db",                            _validate_gain_db,         _live_gain_2),
-    "audio1.eq_40hz_db":                        ("audio1",  "eq_40hz_db",                         _validate_gain_db,         _live_eq_1),
-    "audio1.eq_100hz_db":                       ("audio1",  "eq_100hz_db",                        _validate_gain_db,         _live_eq_1),
-    "audio1.eq_8khz_db":                        ("audio1",  "eq_8khz_db",                         _validate_gain_db,         _live_eq_1),
-    "audio2.eq_40hz_db":                        ("audio2",  "eq_40hz_db",                         _validate_gain_db,         _live_eq_2),
-    "audio2.eq_100hz_db":                       ("audio2",  "eq_100hz_db",                        _validate_gain_db,         _live_eq_2),
-    "audio2.eq_8khz_db":                        ("audio2",  "eq_8khz_db",                         _validate_gain_db,         _live_eq_2),
+    "audio1.gain_db":                           _reg_settings_field("audio1.gain_db", "audio1", "gain_db", _validate_gain_db, _live_gain_1, live_class=LiveClass.LIVE),
+    "audio2.gain_db":                           _reg_settings_field("audio2.gain_db", "audio2", "gain_db", _validate_gain_db, _live_gain_2, live_class=LiveClass.LIVE),
+    "audio1.eq_40hz_db":                        _reg_settings_field("audio1.eq_40hz_db", "audio1", "eq_40hz_db", _validate_gain_db, _live_eq_1, live_class=LiveClass.LIVE),
+    "audio1.eq_100hz_db":                       _reg_settings_field("audio1.eq_100hz_db", "audio1", "eq_100hz_db", _validate_gain_db, _live_eq_1, live_class=LiveClass.LIVE),
+    "audio1.eq_8khz_db":                        _reg_settings_field("audio1.eq_8khz_db", "audio1", "eq_8khz_db", _validate_gain_db, _live_eq_1, live_class=LiveClass.LIVE),
+    "audio2.eq_40hz_db":                        _reg_settings_field("audio2.eq_40hz_db", "audio2", "eq_40hz_db", _validate_gain_db, _live_eq_2, live_class=LiveClass.LIVE),
+    "audio2.eq_100hz_db":                       _reg_settings_field("audio2.eq_100hz_db", "audio2", "eq_100hz_db", _validate_gain_db, _live_eq_2, live_class=LiveClass.LIVE),
+    "audio2.eq_8khz_db":                        _reg_settings_field("audio2.eq_8khz_db", "audio2", "eq_8khz_db", _validate_gain_db, _live_eq_2, live_class=LiveClass.LIVE),
     # OwnTone playback defaults (live: owntone runtime)
-    "owntone.output_name":                      ("owntone", "output_name",                        _validate_output_name,     _live_owntone_name),
-    "owntone.volume_percent":                   ("owntone", "volume_percent",                     _validate_volume_percent,  _live_owntone_volume),
+    "owntone.output_name":                      _reg_settings_field("owntone.output_name", "owntone", "output_name", _validate_output_name, _live_owntone_name, live_class=LiveClass.LIVE),
+    "owntone.volume_percent":                   _reg_settings_field("owntone.volume_percent", "owntone", "volume_percent", _validate_volume_percent, _live_owntone_volume, live_class=LiveClass.LIVE),
     # Silence detection (live: monitor)
-    "general.silence_seconds":                  ("general", "silence_seconds",                    _validate_silence_seconds,        _live_silence),
+    "general.silence_seconds":                  _reg_settings_field("general.silence_seconds", "general", "silence_seconds", _validate_silence_seconds, _live_silence, live_class=LiveClass.LIVE),
     # Audio Path (live: owntone resample_quality push + monitor --src args)
-    "general.audio_path":                       ("general", "audio_path",                         _validate_audio_path,             _live_audio_path),
+    "general.audio_path":                       _reg_settings_field("general.audio_path", "general", "audio_path", _validate_audio_path, _live_audio_path, live_class=LiveClass.RELOAD),
     # Audio input capture device (live: coordinator reload debounce)
-    "audio1.capture_device":                    ("audio1",  "capture_device",                     _validate_capture_device,         _live_capture_1),
-    "audio2.capture_device":                    ("audio2",  "capture_device",                     _validate_capture_device,         _live_capture_2),
+    "audio1.capture_device":                    _reg_settings_field("audio1.capture_device", "audio1", "capture_device", _validate_capture_device, _live_capture_1, cross_validate=cross_validate_capture_device_unique, live_class=LiveClass.RELOAD),
+    "audio2.capture_device":                    _reg_settings_field("audio2.capture_device", "audio2", "capture_device", _validate_capture_device, _live_capture_2, cross_validate=cross_validate_capture_device_unique, live_class=LiveClass.RELOAD),
     # audio1 enabled (live: playback tracker + coordinator reload debounce)
-    "audio1.enabled":                           ("audio1",  "enabled",                            _validate_bool,                   _live_audio1_enabled),
+    "audio1.enabled":                           _reg_settings_field("audio1.enabled", "audio1", "enabled", _validate_bool, _live_audio1_enabled, live_class=LiveClass.RELOAD),
     # Audio2 enabled (live: playback tracker + coordinator reload debounce)
-    "audio2.enabled":                           ("audio2",  "enabled",                            _validate_bool,                   _live_audio2_enabled),
+    "audio2.enabled":                           _reg_settings_field("audio2.enabled", "audio2", "enabled", _validate_bool, _live_audio2_enabled, live_class=LiveClass.RELOAD),
     # Turntable mode (atomic mutation with derived silence_threshold; live: playback tracker + coordinator reload debounce)
-    "audio1.turntable":                         ("audio1",  "turntable",                          _validate_bool,                   _live_turntable_1),
-    "audio2.turntable":                         ("audio2",  "turntable",                          _validate_bool,                   _live_turntable_2),
+    "audio1.turntable":                         _reg_settings_field("audio1.turntable", "audio1", "turntable", _validate_bool, _live_turntable_1, mutate=_mutate_turntable, live_class=LiveClass.RELOAD),
+    "audio2.turntable":                         _reg_settings_field("audio2.turntable", "audio2", "turntable", _validate_bool, _live_turntable_2, mutate=_mutate_turntable, live_class=LiveClass.RELOAD),
     # Track identification (live: track-ID rebuild debounce)
-    "track_identification.enabled":             ("track_identification", "enabled",               _validate_bool,                   _live_track_id),
-    "track_identification.analysis_lead_in_seconds": ("track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id),
-    "track_identification.refresh_seconds":     ("track_identification", "refresh_seconds",        _validate_track_id_refresh,       _live_track_id),
-    "track_identification.track_change_silence_seconds": ("track_identification", "track_change_silence_seconds", _validate_track_id_silence, _live_track_id),
+    "track_identification.enabled":             _reg_settings_field("track_identification.enabled", "track_identification", "enabled", _validate_bool, _live_track_id, live_class=LiveClass.RELOAD),
+    "track_identification.analysis_lead_in_seconds": _reg_settings_field("track_identification.analysis_lead_in_seconds", "track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id, form_coerce=normalize_track_id_analysis_lead_in_seconds, live_class=LiveClass.RELOAD),
+    "track_identification.refresh_seconds":     _reg_settings_field("track_identification.refresh_seconds", "track_identification", "refresh_seconds", _validate_track_id_refresh, _live_track_id, form_coerce=normalize_track_id_refresh_seconds, live_class=LiveClass.RELOAD),
+    "track_identification.track_change_silence_seconds": _reg_settings_field("track_identification.track_change_silence_seconds", "track_identification", "track_change_silence_seconds", _validate_track_id_silence, _live_track_id, form_coerce=normalize_track_id_track_change_silence_seconds, live_class=LiveClass.RELOAD),
     # Repeat recording (live: monitor daemon; NOT _debounce_coordinator_reload
     # -- toggling this must not tear down the playback it governs)
-    "repeat.enabled":                           ("repeat",  "enabled",                            _validate_bool,                   _live_repeat_enabled),
-    "repeat.codec":                             ("repeat",  "codec",                              _validate_repeat_codec,           _live_repeat_codec),
-    "repeat.target_minutes":                    ("repeat",  "target_minutes",                     _validate_repeat_target_minutes,  _live_repeat_target_minutes),
+    "repeat.enabled":                           _reg_settings_field("repeat.enabled", "repeat", "enabled", _validate_bool, _live_repeat_enabled, live_class=LiveClass.LIVE),
+    "repeat.codec":                             _reg_settings_field("repeat.codec", "repeat", "codec", _validate_repeat_codec, _live_repeat_codec, live_class=LiveClass.LIVE),
+    "repeat.target_minutes":                    _reg_settings_field("repeat.target_minutes", "repeat", "target_minutes", _validate_repeat_target_minutes, _live_repeat_target_minutes, live_class=LiveClass.LIVE),
 }
 
 
@@ -1905,31 +1948,19 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
             })
             return
 
-    def _mutator(raw: dict) -> None:
-        # Authoritative cross-input exclusivity check: re-checked here,
-        # against the raw copy the store is about to commit, so it is
-        # atomic under SettingsStore._lock — this is what actually closes
-        # the TOCTOU window the fast-path check above can't close on its
-        # own (two concurrent POSTs could otherwise both pass the snapshot
-        # check before either commits).
-        if field in ("audio1.capture_device", "audio2.capture_device") and normalized:
-            other_section = "audio2" if field == "audio1.capture_device" else "audio1"
-            other_value = str(raw.get(other_section, {}).get("capture_device") or "").strip()
-            if other_value == normalized:
-                raise _DuplicateCaptureDeviceError(
-                    "That device is already assigned to the other input; choose a different device or reassign it first"
-                )
-        if field in ("audio1.turntable", "audio2.turntable"):
-            set_input_mode(raw, int(section[-1]), bool(normalized))
-            return
-        raw.setdefault(section, {})[key] = normalized
-        # Turning off hostname display also forces control_other_appliances off.
-        if field == "webui.show_hostname_on_home" and not normalized:
-            raw.setdefault("webui", {})["control_other_appliances"] = False
-
+    # Dispatches through SettingsStore.set()'s internal "already
+    # normalised" entry point -- the mutation (including the turntable's
+    # non-flat write and the hostname-visibility cascade) and the live-push
+    # side effect are the schema row's own `mutate`/`cross_validate`/
+    # `live_fn` (see the row registrations above), not logic hand-rolled at
+    # this call site. The authoritative cross-input exclusivity check is
+    # `cross_validate_capture_device_unique`, run from inside `_set_normalized`
+    # against the raw copy about to be committed -- same atomicity guarantee
+    # (under SettingsStore._lock) as any single-field mutator.
+    spec = get_field_spec(field)
     try:
-        settings.update(_mutator)
-    except _DuplicateCaptureDeviceError as e:
+        outcome = settings._set_normalized(spec, normalized, state=state)
+    except CrossFieldValidationError as e:
         send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
         return
     except Exception:
@@ -1939,14 +1970,15 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
 
     resp: dict = {"ok": True, "field": field, "value": normalized}
     if live_fn is not None:
-        try:
-            live_ok = bool(live_fn(state, normalized))
-        except Exception:
-            logging.exception("send_settings_post_json: live effect failed for %s", field)
-            live_ok = False
-        resp["live"] = live_ok
-        if not live_ok:
-            resp["live_error"] = "Live effect could not be applied"
+        resp["live"] = outcome.live
+        if not outcome.live:
+            resp["live_error"] = outcome.live_error
+    # outcome.reload_scheduled (SetOutcome.reload_scheduled) is
+    # deliberately NOT added to the wire response here -- this endpoint's
+    # response shape must stay byte-identical to what callers already
+    # depend on. The field is available to any in-process caller of
+    # settings.set()/_set_normalized() via the returned SetOutcome; wiring it
+    # onto the wire is a separate, later decision.
     send_json(handler, 200, resp)
 
 
@@ -2313,6 +2345,47 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
     send_json(handler, 200, {"ok": True, "output_id": output_id, "mode": mode})
 
 
+# -----------------------------------------------------------------------------
+# Per-output settings are keyed by a runtime-discovered output name/id, so
+# they don't fit a flat dotted-path schema row -- SETTINGS_SCHEMA.get_field_spec()
+# matches a concrete path such as "owntone.offsets.abc123" against a
+# registered template row ("owntone.offsets.*") on an exact-path lookup
+# miss (see autostream_settings_schema.py's get_field_spec()). Only the
+# per-output offset's static -2000..2000 clamp lives on its row (below,
+# apply_output_offset); the dynamic negative-offset tightening (start-buffer-
+# size-dependent, queried live from the owntone backend) is not a static
+# schema bound and correctly stays a pre-clamp step the handler still does
+# before committing. The AirPlay-mode row is registered for schema
+# completeness -- it is the second field with the same runtime-keyed shape --
+# but send_owntone_output_mode_json's own validation is left
+# untouched here, for two reasons that make folding it in a behaviour change
+# rather than a consolidation:
+#   1. Reject vs coerce. The handler's accepted-value set is exactly
+#      VALID_AIRPLAY_MODES, but it *rejects* anything outside it with a 400
+#      and an enumerated error message. This row's validate callable is
+#      normalize_airplay_mode(), which silently coerces an unknown mode to
+#      DEFAULT_AIRPLAY_MODE -- so routing the handler through the row would
+#      turn a hard rejection into a silent fallback.
+#   2. The buffered-mode availability gate (BUFFERED_AIRPLAY_MODES vs the
+#      backend's live buffered-audio setting) depends on runtime state, not
+#      a static enum bound, so it cannot live on the row at all.
+# This row stays declarative-only for now.
+def _validate_output_offset_ms(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("offset_ms must be a number")
+    return max(-2000, min(2000, int(value)))
+
+
+register_field(
+    "owntone.offsets.*", "owntone", "offsets", _validate_output_offset_ms,
+    bounds=(-2000, 2000), live_class=LiveClass.LIVE,
+)
+register_field(
+    "owntone.airplay_modes.*", "owntone", "airplay_modes", normalize_airplay_mode,
+    enum=frozenset(VALID_AIRPLAY_MODES), live_class=LiveClass.LIVE,
+)
+
+
 def apply_output_offset(state: WebUIState, output_id: str, raw_offset) -> dict:
     """Clamp, store, and (best-effort) live-push an output offset.
 
@@ -2324,9 +2397,15 @@ def apply_output_offset(state: WebUIState, output_id: str, raw_offset) -> dict:
     output_id = str(output_id or "").strip()
     if not output_id:
         return {"ok": False, "error": "output_id required"}
-    if isinstance(raw_offset, bool) or not isinstance(raw_offset, (int, float)):
-        return {"ok": False, "error": "offset_ms must be a number"}
-    offset_ms = max(-2000, min(2000, int(raw_offset)))
+    # Static -2000..2000 clamp lives on the "owntone.offsets.*"
+    # template schema row (registered above); same clamp, same error
+    # message, only its declaration moved.
+    offset_path = f"owntone.offsets.{output_id}"
+    offset_spec = get_field_spec(offset_path)
+    try:
+        offset_ms = offset_spec.validate(raw_offset)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
 
     try:
         base_url = _config_snapshot(state).owntone.base_url
@@ -2352,11 +2431,11 @@ def apply_output_offset(state: WebUIState, output_id: str, raw_offset) -> dict:
     if not isinstance(_store, _SettingsStore):
         return {"ok": False, "error": "Settings store unavailable"}
 
-    def _mutator(raw: dict) -> None:
-        raw.setdefault("owntone", {}).setdefault("offsets", {})[output_id] = offset_ms
-
     try:
-        _store.update(_mutator)
+        # offset_ms here may have been dynamically tightened (start-buffer-
+        # size-dependent) beyond the static schema bound already applied
+        # above -- _set_normalized commits it as-is.
+        _store._set_normalized(offset_spec, offset_ms, path=offset_path)
     except Exception:
         logging.exception("apply_output_offset: store update failed")
         return {"ok": False, "error": "Internal error"}

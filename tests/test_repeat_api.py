@@ -1173,10 +1173,39 @@ class TestMonitorFormatReconcileWiring:
             ok = _resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
                 MagicMock(), repeat_enabled=True, repeat_codec="mp2_224",
+                audio_path="balanced",
             )
         assert ok is True
         monfmt.assert_called_once_with(
             "http://localhost:3689", status_dict, timeout=3.0, audio_path="balanced",
+        )
+
+    def test_resync_calls_monitor_format_reconcile_with_none_audio_path_by_default(self):
+        """audio_path now defaults to None (unknown), not the "balanced"
+        fallback -- callers must pass a value explicitly to get anything
+        else. reconcile_monitor_format() still runs; it owns the
+        no-persisted-tier fallback itself."""
+        client = self._mock_client_for_resync()
+        status_dict = {"output_format": "native"}
+        client.get_status.return_value = status_dict
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.reconcile_monitor_format") as monfmt, \
+             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core.push_resample_quality"), \
+             patch("autostream_core.sync_monitor_args_for_audio_path"), \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+            monfmt.return_value = MagicMock(ok=True, error="", error_code="")
+            fmt.return_value = MagicMock(ok=True, error="", error_code="")
+            ok = _resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=True, repeat_codec="mp2_224",
+            )
+        assert ok is True
+        monfmt.assert_called_once_with(
+            "http://localhost:3689", status_dict, timeout=3.0, audio_path=None,
         )
 
     def test_resync_monitor_format_reconcile_runs_before_pipe_format_reconcile(self):

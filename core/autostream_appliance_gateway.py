@@ -47,6 +47,7 @@ from autostream_appliance_models import (
     apply_output_mutation,
     build_equaliser_state,
     build_home_state,
+    sanitize_output_body,
 )
 from autostream_appliances import (
     ApplianceSighting,
@@ -762,29 +763,12 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
         _gateway_error_to_browser(handler, resolution)
         return
 
-    # Sanitize body — only the two documented schemas are accepted.
-    sanitized: dict = {"id": out_id}
-    op = str(body.get("op") or "").strip().lower()
-    if op == "pin":
-        pin_val = str(body.get("pin") or "")
-        if not pin_val:
-            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-            return
-        sanitized["op"] = "pin"
-        sanitized["pin"] = pin_val
-    elif op == "":
-        selected_raw = body.get("selected")
-        if not isinstance(selected_raw, bool):
-            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-            return
-        sanitized["selected"] = selected_raw
-        raw_vol = body.get("volume")
-        try:
-            sanitized["volume"] = max(0, min(100, int(raw_vol))) if raw_vol is not None else 50
-        except (ValueError, TypeError):
-            sanitized["volume"] = 50
-    else:
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+    # Same preserved error-priority ordering as before this extraction: the
+    # out_id/resolution checks above run first, then the shared sanitiser
+    # validates the op/pin/selected/volume shape.
+    sanitized, sanitize_error = sanitize_output_body(body)
+    if sanitize_error is not None:
+        send_json(handler, 400, {"ok": False, "error": sanitize_error})
         return
 
     if resolution == "bound":

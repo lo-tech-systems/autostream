@@ -19,6 +19,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch, call
 
@@ -26,6 +27,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
+import autostream_core as _core_mod
+from autostream_core import AudioMonitor, MonitorClient
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
@@ -74,6 +77,35 @@ def _post(state, field: str, value: Any):
 def _post_resp(state, field, value):
     r = _post(state, field, value)
     return r["code"], r["body"]
+
+
+def _make_live_monitor(input_index: int, **overrides) -> AudioMonitor:
+    """Construct a running AudioMonitor for live-push tests, with the same
+    dependency patching test_audio_monitor_coordination.py's helper uses so
+    construction has no filesystem/socket side effects."""
+    defaults = dict(
+        input_index=input_index,
+        input_device="hw:0,0",
+        silence_threshold_dbfs=-60.0,
+        silence_seconds=5,
+        fifo_path="/tmp/test.fifo",
+        owntone_base_url="http://localhost:3689",
+        owntone_output_name="Test Speaker",
+        owntone_volume_percent=50,
+    )
+    defaults.update(overrides)
+    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+        mock_cache_cls.return_value.get_manual_hint.return_value = None
+        mock_get_pub.side_effect = lambda path: MagicMock()
+        return AudioMonitor(**defaults)
+
+
+def _fake_connected(client):
+    @contextmanager
+    def _cm(*args, **kwargs):
+        yield client
+    return _cm
 
 
 # ── Validators ────────────────────────────────────────────────────────────────
@@ -282,6 +314,41 @@ class TestTurntableDerivedThreshold:
         assert update_count[0] == 1
 
 
+# ── Turntable live push vs. reload fallback ───────────────────────────────────
+
+class TestTurntableLiveApply:
+    def test_turntable_change_pushed_live_without_reload(self, tmp_path):
+        """Turntable mode only changes the derived silence threshold, which
+        the monitor daemon accepts as a live configure_input() field on a
+        running input -- a successful live push must not also fall back to
+        the coordinator reload debounce."""
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1, silence_threshold_dbfs=-60.0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_webui_api.update_playback_input_config", return_value=True):
+            code, resp = _post_resp(state, "audio1.turntable", True)
+        assert resp["ok"] is True
+        mock_client.configure_input.assert_called_once()
+        m_deb.assert_not_called()
+
+    def test_turntable_change_falls_back_to_reload_on_live_push_failure(self, tmp_path):
+        """If the live threshold push cannot reach the monitor daemon, the
+        existing reload debounce must still fire so the setting is not
+        silently dropped -- same fallback behaviour as before this field
+        gained a live path."""
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1, silence_threshold_dbfs=-60.0)
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_webui_api.update_playback_input_config", return_value=True):
+            code, resp = _post_resp(state, "audio1.turntable", True)
+        assert resp["ok"] is True
+        m_deb.assert_called_once()
+
+
 # ── Coordinator reload debounce ───────────────────────────────────────────────
 
 class TestCoordinatorReloadDebounce:
@@ -467,41 +534,31 @@ class TestTrackIdRebuildDebounce:
         m.assert_called_once()
 
     def test_debounce_rebuild_uses_fresh_snapshot(self, tmp_path):
-        """Timer callback takes a fresh snapshot, not the one from scheduling time."""
+        """Timer callback takes a fresh snapshot, not the one from scheduling
+        time. Exercises the real, now shared-Debouncer-backed
+        _debounce_track_id_rebuild directly (its own threading.Timer/lock/
+        global trio was deleted in favour of autostream_debounce.Debouncer)."""
         state, store = _make_state(str(tmp_path))
         rebuilt_with = []
         fired = threading.Event()
 
         import autostream_webui_api as _api
 
-        def _patched_debounce(s, delay=0.3):
-            with _api._track_id_rebuild_lock:
-                if _api._track_id_rebuild_timer is not None:
-                    _api._track_id_rebuild_timer.cancel()
+        def _capture(snap):
+            rebuilt_with.append(snap)
+            fired.set()
 
-                def _do():
-                    from autostream_settings import SettingsStore as _SS
-                    settings = getattr(s, "settings", None)
-                    if isinstance(settings, _SS):
-                        snap = settings.snapshot()
-                        rebuilt_with.append(snap)
-                    fired.set()
+        # Schedule rebuild via the real debounce function, at a short delay.
+        with patch.object(_api, "apply_track_id_config_live_from_parsed", side_effect=_capture):
+            _api._debounce_track_id_rebuild(state, delay=0.05)
 
-                t = threading.Timer(0.05, _do)
-                t.daemon = True
-                t.start()
-                _api._track_id_rebuild_timer = t
+            # Mutate store after scheduling, before timer fires
+            def _late_change(raw):
+                raw.setdefault("track_identification", {})["refresh_seconds"] = 666
+            store.update(_late_change)
 
-        # Schedule rebuild
-        with patch.object(_api, "_debounce_track_id_rebuild", _patched_debounce):
-            _post_resp(state, "track_identification.enabled", True)
+            fired.wait(timeout=1.0)
 
-        # Mutate store after scheduling, before timer fires
-        def _late_change(raw):
-            raw.setdefault("track_identification", {})["refresh_seconds"] = 666
-        store.update(_late_change)
-
-        fired.wait(timeout=1.0)
         assert len(rebuilt_with) == 1
         # Fresh snapshot includes the late change
         assert rebuilt_with[0].track_identification.refresh_seconds == 666

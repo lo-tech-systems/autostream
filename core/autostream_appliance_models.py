@@ -46,6 +46,7 @@ from autostream_player_service import (
 )
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_rpi import get_appliance_id
+from autostream_settings_schema import register_field
 from autostream_sysutils import get_system_hostname
 from autostream_webui_common import get_app_version, locked_load_config
 
@@ -141,6 +142,44 @@ _OUTPUT_EQ_BOOL_FIELDS = frozenset({"auto_trim_enabled"})
 _OUTPUT_EQ_ALL_FIELDS = _OUTPUT_EQ_DB_FIELDS | _OUTPUT_EQ_BOOL_FIELDS
 _OUTPUT_EQ_DB_MIN = -12.0
 _OUTPUT_EQ_DB_MAX = 12.0
+
+
+# -----------------------------------------------------------------------------
+# Settings schema registration: the third of the four dispatch paths this
+# consolidates. apply_eq_field()/apply_eq_reset() below used to clamp/normalise each of
+# these seven output_eq fields inline; that clamp/normalise logic now lives
+# in one place per field (_clamp_output_eq_db / _normalize_output_eq_bool,
+# both verbatim extractions of the previous inline bodies -- same clamp
+# bounds, same "Value must be numeric" error message), registered into the
+# shared SETTINGS_SCHEMA table so apply_eq_field looks them up by path
+# instead of branching on field name inline.
+# -----------------------------------------------------------------------------
+
+def _clamp_output_eq_db(value_raw: object) -> float:
+    """Coerce+clamp one output_eq dB-valued field. Same body as the inline
+    logic apply_eq_field() used before this migration: non-numeric input
+    raises "Value must be numeric"; any numeric input is silently clamped to
+    [_OUTPUT_EQ_DB_MIN, _OUTPUT_EQ_DB_MAX] rather than rejected.
+    """
+    try:
+        value = float(value_raw)
+    except ValueError:
+        raise ValueError("Value must be numeric")
+    return max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, value))
+
+
+def _normalize_output_eq_bool(value_raw: object) -> bool:
+    """Coerce one output_eq bool-valued field (currently just
+    auto_trim_enabled). Same body as apply_eq_field()'s previous inline
+    ``value_raw.lower() in ("true", "1", "yes")`` check.
+    """
+    return value_raw.lower() in ("true", "1", "yes")
+
+
+for _eq_field in _OUTPUT_EQ_DB_FIELDS:
+    register_field(f"output_eq.{_eq_field}", "output_eq", _eq_field, _clamp_output_eq_db)
+for _eq_field in _OUTPUT_EQ_BOOL_FIELDS:
+    register_field(f"output_eq.{_eq_field}", "output_eq", _eq_field, _normalize_output_eq_bool)
 
 
 def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
@@ -415,8 +454,11 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
     if field not in _OUTPUT_EQ_ALL_FIELDS:
         raise ValueError(f"Unknown field: {field!r}")
 
+    from autostream_settings_schema import SETTINGS_SCHEMA
+    _spec = SETTINGS_SCHEMA[f"output_eq.{field}"]
+
     if field in _OUTPUT_EQ_BOOL_FIELDS:
-        normalised_bool = value_raw.lower() in ("true", "1", "yes")
+        normalised_bool = _spec.validate(value_raw)
         normalised_str = "true" if normalised_bool else "false"
         try:
             if _store is not None:
@@ -432,12 +474,7 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
             return False, normalised_str, str(e)
         return True, normalised_str, ""
 
-    try:
-        value = float(value_raw)
-    except ValueError:
-        raise ValueError("Value must be numeric")
-
-    value = max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, value))
+    value = _spec.validate(value_raw)
     normalised_str = f"{value:.1f}"
 
     try:
@@ -505,6 +542,55 @@ def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # Shared output mutation
 # ---------------------------------------------------------------------------
+
+def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
+    """Derive the trusted output-mutation body from a raw browser/peer JSON body.
+
+    Shared by the local federation-server handler
+    (``send_federation_output_json`` in autostream_webui_api.py) and the
+    gateway client handler (``send_gateway_output_json`` in
+    autostream_appliance_gateway.py) so the two write paths that forward a
+    browser's POST body across the federation boundary re-derive the exact
+    same accepted-field set from the exact same logic, rather than
+    hand-duplicating it. Only the documented ``{"id", "op", "pin"}`` and
+    ``{"id", "selected", "volume"}`` shapes are accepted; every other field
+    on the raw body is dropped.
+
+    Returns ``(sanitized, None)`` on success, or ``(None, error_code)`` on
+    rejection, where *error_code* is one of "missing_output_id" or
+    "invalid_request_body" (matching the wire error codes both call sites
+    already emit).
+    """
+    out_id = str(body.get("id") or "").strip()
+    if not out_id:
+        return None, "missing_output_id"
+
+    sanitized: dict = {"id": out_id}
+    op = str(body.get("op") or "").strip().lower()
+    if op == "pin":
+        pin_val = str(body.get("pin") or "")
+        if not pin_val:
+            return None, "invalid_request_body"
+        sanitized["op"] = "pin"
+        sanitized["pin"] = pin_val
+    elif op == "":
+        selected_raw = body.get("selected")
+        if not isinstance(selected_raw, bool):
+            return None, "invalid_request_body"
+        sanitized["selected"] = selected_raw
+        raw_vol = body.get("volume")
+        if raw_vol is not None:
+            try:
+                sanitized["volume"] = max(0, min(100, int(raw_vol)))
+            except (ValueError, TypeError):
+                sanitized["volume"] = 50
+        else:
+            sanitized["volume"] = 50
+    else:
+        return None, "invalid_request_body"
+
+    return sanitized, None
+
 
 def apply_output_mutation(
     owntone_base_url: str,
