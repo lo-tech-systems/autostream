@@ -18,6 +18,11 @@ Threat model note
 Flow
 1) If PIN.TXT exists (and is valid), unauthenticated requests to protected routes
    are redirected to /auth?next=<path>.
+   A user-configured PIN override takes precedence over the boot-partition
+   PIN. If the override is present but malformed (bad characters, wrong
+   length, or unreadable), the factory boot-partition PIN is used instead
+   when one is valid; only if no valid PIN exists anywhere does auth become
+   disabled.
 2) GET /auth renders a PIN entry page.
 3) Client computes proof = SHA256(nonce + PIN) and POSTs JSON to /api/auth/verify.
 4) Server recomputes and compares; if OK, issues a random session cookie (24h).
@@ -189,14 +194,19 @@ class AuthManager:
         self,
         config_path: str,
         state_path: str = STATE_PATH,
-        style_css: str = "",
+        style_link: str = "",
         banner_html: str = "",
         nav_html: str = "",
         title: str = "Autostream",
     ) -> None:
         self._config_path = config_path
         self._state_path = state_path
-        self.style_css = style_css
+        # Ready-made <head> HTML (the shared theme.css <link> plus, when
+        # present, LICENSE_BANNER_CSS as an inline <style>) -- not raw CSS.
+        # Built by the caller (autostream_webui.py) at construction time,
+        # since AuthManager is imported by autostream_webui_common and so
+        # cannot import get_app_version() from it without a circular import.
+        self.style_link = style_link
         self.banner_html = banner_html
         self.nav_html = nav_html
         self.title = title
@@ -309,15 +319,35 @@ class AuthManager:
                 source,
             )
             if not pin or not PIN_REGEX.match(pin):
-                # Config override is present but invalid — boot-file PIN is not tried.
-                # Without this warning a bad INI edit silently locks out the boot-file PIN.
+                # Config override is present but malformed (bad characters,
+                # wrong length, or the state file could not be read). A
+                # corrupt/typo'd override must not silently strip PIN
+                # protection from the appliance, so fall back to the factory
+                # (boot-partition) PIN when one is available and valid.
+                # The PIN value itself is never logged, only presence/status.
                 LOG.warning(
-                    "Config PIN override is present but invalid "
-                    "(boot-file PIN will not be tried). path=%r status=%s pin_len=%s",
+                    "Config PIN override is present but invalid; "
+                    "falling back to the factory PIN if available. "
+                    "path=%r status=%s pin_len=%s",
                     path,
                     status,
                     len(pin) if pin else None,
                 )
+                override_path, override_mtime, override_status = path, mtime, status
+                boot_pin, boot_path, boot_mtime, boot_status = self._read_pin_file()
+                if boot_pin and PIN_REGEX.match(boot_pin):
+                    pin, path, mtime, status = boot_pin, boot_path, boot_mtime, boot_status
+                    source = "boot"
+                    LOG.warning(
+                        "Using the factory PIN in place of the malformed config override."
+                    )
+                else:
+                    # No usable factory PIN either. Report the override's own
+                    # status/path (e.g. invalid/unreadable) rather than the
+                    # factory read's, since the override is the reason the
+                    # appliance has no PIN — this keeps the reported status
+                    # meaningful instead of introducing a new combined state.
+                    pin, path, mtime, status = None, override_path, override_mtime, override_status
         else:
             pin, path, mtime, status = self._read_pin_file()
             source = "boot"
@@ -346,7 +376,10 @@ class AuthManager:
             )
             return pin
 
-        # Unconfigured PIN (lockdown)
+        # No usable PIN anywhere (override missing/malformed with no valid
+        # factory fallback, or factory PIN itself missing/invalid). Auth
+        # is disabled in this state (see is_enabled/requires_auth) rather
+        # than locking the appliance down.
         self._pin_value = None
         self._pin_path = path
         self._pin_mtime = mtime
@@ -732,13 +765,12 @@ class AuthManager:
             pass
 
         html = self._render_auth_page(next_path=next_path, nonce=nonce, error=bool(err), dark_mode=dark_mode)
-        body = html.encode("utf-8")
 
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
+        # Local import: autostream_webui_common already imports from this
+        # module (FLASH_COOKIE_NAME), so a module-level import here would be
+        # circular.
+        from autostream_webui_common import send_html
+        send_html(handler, 200, html)
 
     def handle_auth_verify(self, handler, body_bytes: bytes) -> None:
         """POST /api/auth/verify
@@ -941,9 +973,7 @@ class AuthManager:
             <meta charset=\"utf-8\" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
             <title>{self.title} • Authentication</title>
-            <style>
-            {self.style_css}
-            </style>
+            {self.style_link}
             </head>
             <body{body_cls}>
             <div class=\"container\">

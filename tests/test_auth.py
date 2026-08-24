@@ -25,7 +25,9 @@ from autostream_auth import (
     AuthManager,
     MAX_FAILED_ATTEMPTS,
     MAX_NONCES_PER_CLIENT,
+    PIN_STATUS_INVALID,
     PIN_STATUS_MISSING,
+    PIN_STATUS_OK,
     PIN_STATUS_UNREADABLE,
     SESSION_COOKIE_NAME,
 )
@@ -311,11 +313,16 @@ class TestPostAuthPreservesSession:
 class TestMalformedStateFile:
 
     def test_get_pin_if_enabled_treats_malformed_state_as_unreadable(self, tmp_path):
-        """JSONDecodeError from load_state is caught; result is None and status UNREADABLE."""
+        """JSONDecodeError from load_state is caught; result is None and status UNREADABLE.
+
+        No factory PIN is available in this scenario, so the fallback finds
+        nothing usable and the override's own UNREADABLE status is reported.
+        """
         state = tmp_path / "state.json"
         state.write_text("{not valid json}")
         mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
-        result = mgr.get_pin_if_enabled()
+        with patch.object(mgr, "_read_pin_file", return_value=(None, None, None, PIN_STATUS_MISSING)):
+            result = mgr.get_pin_if_enabled()
         assert result is None
         assert mgr.get_pin_status() == PIN_STATUS_UNREADABLE
 
@@ -331,6 +338,173 @@ class TestMalformedStateFile:
         code, body = mgr.set_pin("newpin1234")
         assert code == 500
         assert body["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 7b. Malformed override -> factory PIN fallback
+#
+# Full resolution matrix:
+#   (a) no override, valid factory PIN      -> factory PIN used, source=boot
+#   (b) valid override                      -> override used, source=config
+#   (c) override present but malformed      -> factory PIN used if valid,
+#                                               else no PIN anywhere (open),
+#                                               reporting the override's own
+#                                               status rather than the
+#                                               factory read's
+#   (d) neither override nor factory PIN    -> no PIN anywhere (open)
+# ---------------------------------------------------------------------------
+
+def _write_state_with_pin_override(tmp_path, pin_override: str):
+    import json
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"auth": {"pin_override": pin_override}}))
+    return state
+
+
+class TestMalformedOverrideFactoryFallback:
+
+    def test_valid_override_does_not_consult_factory_pin(self, tmp_path):
+        """(b) A well-formed override is used as-is; the boot file is never read."""
+        state = _write_state_with_pin_override(tmp_path, "goodpin1")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(mgr, "_read_pin_file") as read_boot:
+            result = mgr.get_pin_if_enabled()
+        read_boot.assert_not_called()
+        assert result == "goodpin1"
+        assert mgr.get_pin_status() == PIN_STATUS_OK
+
+    def test_no_override_uses_valid_factory_pin(self, tmp_path):
+        """(a) No override present: the factory PIN is used directly."""
+        state = tmp_path / "state.json"  # never written -> no override present
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result == "factorypin"
+        assert mgr.get_pin_status() == PIN_STATUS_OK
+
+    def test_malformed_override_bad_chars_falls_back_to_valid_factory_pin(self, tmp_path):
+        """(c) Regex-invalid override + valid factory PIN -> factory PIN accepted."""
+        state = _write_state_with_pin_override(tmp_path, "bad pin!!")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result == "factorypin"
+        assert mgr.get_pin_status() == PIN_STATUS_OK
+
+    def test_malformed_override_too_short_falls_back_to_valid_factory_pin(self, tmp_path):
+        """(c) Too-short override + valid factory PIN -> factory PIN accepted."""
+        state = _write_state_with_pin_override(tmp_path, "abc")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result == "factorypin"
+
+    def test_malformed_override_too_long_falls_back_to_valid_factory_pin(self, tmp_path):
+        """(c) Too-long override + valid factory PIN -> factory PIN accepted."""
+        state = _write_state_with_pin_override(tmp_path, "x" * 21)
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result == "factorypin"
+
+    def test_malformed_override_no_factory_pin_leaves_appliance_open(self, tmp_path):
+        """(c) Malformed override + no valid factory PIN -> no PIN anywhere.
+
+        This preserves today's no-PIN-anywhere behaviour (auth disabled)
+        rather than inventing a new lockdown state.
+        """
+        state = _write_state_with_pin_override(tmp_path, "bad pin!!")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=(None, None, None, PIN_STATUS_MISSING),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result is None
+        assert mgr.get_pin_status() == PIN_STATUS_INVALID
+        assert mgr.is_enabled() is False
+
+    def test_unreadable_override_falls_back_to_valid_factory_pin(self, tmp_path):
+        """(c) State file unreadable (bad JSON) + valid factory PIN -> factory PIN accepted."""
+        state = tmp_path / "state.json"
+        state.write_text("{not valid json}")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result == "factorypin"
+        assert mgr.get_pin_status() == PIN_STATUS_OK
+
+    def test_unreadable_override_no_factory_pin_preserves_unreadable_status(self, tmp_path):
+        """(c) State file unreadable + no valid factory PIN -> status stays UNREADABLE,
+        not the factory read's MISSING status, so the operator can see the real cause."""
+        state = tmp_path / "state.json"
+        state.write_text("{not valid json}")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=(None, None, None, PIN_STATUS_MISSING),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result is None
+        assert mgr.get_pin_status() == PIN_STATUS_UNREADABLE
+
+    def test_no_override_no_factory_pin_unchanged(self, tmp_path):
+        """(d) Neither override nor factory PIN present -> unchanged MISSING/open behaviour."""
+        state = tmp_path / "state.json"  # never written -> no override present
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=(None, None, None, PIN_STATUS_MISSING),
+        ):
+            result = mgr.get_pin_if_enabled()
+        assert result is None
+        assert mgr.get_pin_status() == PIN_STATUS_MISSING
+        assert mgr.is_enabled() is False
+
+    def test_fallback_warning_does_not_log_pin_value(self, tmp_path, caplog):
+        """The fallback warning must never leak the override's (or factory's) PIN text."""
+        import logging
+        state = _write_state_with_pin_override(tmp_path, "S3cr3t!Bad")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with caplog.at_level(logging.WARNING, logger="autostream_auth"):
+            with patch.object(
+                mgr, "_read_pin_file",
+                return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+            ):
+                mgr.get_pin_if_enabled()
+        all_messages = "\n".join(r.getMessage() for r in caplog.records)
+        assert "S3cr3t" not in all_messages
+        assert "factorypin" not in all_messages
+
+    def test_malformed_override_fallback_uses_boot_source_not_early_window(self, tmp_path):
+        """After falling back, the PIN in use is sourced as 'boot', so the
+        30-minute early-uptime recovery window (which only triggers when a
+        *separate* config override is in effect) is correctly not engaged —
+        the factory PIN is already the primary PIN in this state, not a
+        secondary recovery path."""
+        state = _write_state_with_pin_override(tmp_path, "bad pin!!")
+        mgr = AuthManager(config_path="dummy.ini", state_path=str(state))
+        with patch.object(
+            mgr, "_read_pin_file",
+            return_value=("factorypin", "/boot/pin.txt", 123.0, PIN_STATUS_OK),
+        ):
+            mgr.get_pin_if_enabled()
+        assert mgr._pin_source == "boot"
 
 
 # ---------------------------------------------------------------------------
