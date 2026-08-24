@@ -63,6 +63,12 @@ _POLL_INTERVAL_S = 0.5
 
 LAUNCH_HOST = "https://lo-tech.co.uk/as-api/autoalign/"
 
+# Single-flight key the mute->tone->hold->mute cycle runs under on the
+# process-wide task pool. Replaces the run's own bespoke daemon thread; the
+# run's idle/running/finishing/error state machine (below) is unchanged and
+# remains the run's own internal bookkeeping.
+ALIGN_RUN_TASK_KEY = "align-run"
+
 
 @dataclass(frozen=True)
 class AlignOutputSnapshot:
@@ -184,7 +190,14 @@ class AlignRun:
         self._current_index = 0
         self._last_error = ""
         self._launch_url = ""
-        self._thread: Optional[threading.Thread] = None
+        # Set whenever no cycle is in flight (idle at construction); cleared
+        # just before the cycle is submitted to the task pool, set again by
+        # _run_cycle's own finally block once it returns for any reason.
+        # This is what _stop_and_join() waits on -- equivalent to the old
+        # threading.Thread.join(timeout=5), but independent of *how* the
+        # cycle is scheduled (task-pool worker vs. a raw thread).
+        self._cycle_done = threading.Event()
+        self._cycle_done.set()
         self._stop_event = threading.Event()
         self._pending_result: Optional[AlignResult] = None
         self._tone_rate = FALLBACK_TONE_RATE_HZ
@@ -196,7 +209,16 @@ class AlignRun:
     def start(
         self, *, base_url: str, ret_url: str, output_ids: list, volume_percent: int
     ) -> "tuple[bool, str]":
-        """Attempt to start a run. Returns (ok, error_message_or_launch_url)."""
+        """Attempt to start a run. Returns (ok, error_message_or_launch_url).
+
+        Does NOT itself check whether the backend advertises per-output
+        offset support (the UNSUPPORTED_BACKEND precondition) -- that gate
+        already exists one layer up, in
+        autostream_webui_page_align.py's _offsets_supported()/
+        "Authoritative capability gate" check ahead of this call, and in
+        the page-render path itself, so an unsupported backend never
+        reaches here in practice.
+        """
         with self._lock:
             if self._state in ("running", "finishing"):
                 return False, "A calibration run is already in progress"
@@ -310,11 +332,43 @@ class AlignRun:
             self._last_error = ""
             self._pending_result = None
             self._stop_event = threading.Event()
-            thread = threading.Thread(target=self._run_cycle, daemon=True, name="align-cycle")
-            self._thread = thread
-        thread.start()
+            self._cycle_done.clear()
+
+        # Run the mute->tone->hold->mute cycle on the process-wide task pool
+        # under the "align-run" single-flight key instead of a bespoke
+        # threading.Thread. The self._state check above
+        # (taken under self._lock, before any output is touched) is still
+        # what makes a concurrent second start() see "already in progress" --
+        # that guard, like the rest of start()'s all-or-nothing precondition
+        # sequence, cannot itself move onto the pool without letting two
+        # concurrent callers race through output-muting side effects before
+        # either submission lands. The pool's own single-flight admission is
+        # the second, defense-in-depth layer that actually prevents two
+        # cycles ever running under this key at once -- the same
+        # belt-and-braces relationship _fire_owntone_hang_restart() has with
+        # its own rate limiter (autostream_core.py), where the pool rejecting
+        # a submission is "not expected to be hit in practice."
+        pool = self._get_task_pool()
+        submitted = pool.submit(ALIGN_RUN_TASK_KEY, self._run_cycle)
+        if not submitted:
+            _log.error(
+                "AlignRun.start: task pool rejected the align-run submission "
+                "(unexpected -- start() already guards against a concurrent run)"
+            )
+            with self._lock:
+                self._cycle_done.set()
+            self.cleanup()
+            with self._lock:
+                self._last_error = ""
+                self._state = "idle"
+            return False, "A calibration run is already in progress"
 
         return True, launch_url
+
+    @staticmethod
+    def _get_task_pool():
+        from autostream_core import get_task_pool
+        return get_task_pool()
 
     def _input_actively_streaming(self) -> bool:
         """Best-effort check that nothing is actively streaming right now.
@@ -407,9 +461,22 @@ class AlignRun:
             f"&p={self._period_ms}&k={self._cycles_per_output}&outs={outs_param}"
         )
 
-    # -- cycle thread -----------------------------------------------------------
+    # -- cycle job (task-pool) --------------------------------------------------
 
     def _run_cycle(self) -> None:
+        # This is now the task-pool job body (submitted under
+        # ALIGN_RUN_TASK_KEY, see start()) rather than a Thread target --
+        # the mute->tone->hold->mute stepping logic, guard pauses, and hold
+        # durations below are byte-for-byte unchanged from the bespoke-thread
+        # version; only what schedules/runs this method changed. The finally
+        # block is new: it is what lets _stop_and_join() wait for this job to
+        # actually finish without needing a Thread object to join().
+        try:
+            self._run_cycle_body()
+        finally:
+            self._cycle_done.set()
+
+    def _run_cycle_body(self) -> None:
         try:
             while not self._stop_event.is_set():
                 for i, s in enumerate(self._participants):
@@ -575,16 +642,18 @@ class AlignRun:
 
     def _stop_and_join(self) -> None:
         self._stop_event.set()
-        thread = self._thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=5)
+        # Equivalent to the old threading.Thread.join(timeout=5): block
+        # until _run_cycle's finally block signals it has actually returned,
+        # regardless of whether the task-pool worker is still warming up,
+        # already running, or has already finished.
+        self._cycle_done.wait(timeout=5)
 
     def cleanup(self) -> None:
         """Idempotent: stop the helper process, drop the freq file, restore
         exactly what this run touched -- volume for every muted output, and
         selection for every output the run enabled. Never deselects
         anything the run did not itself enable. Always safe to call more
-        than once (e.g. once from the cycle thread on error, once from
+        than once (e.g. once from the cycle job on error, once from
         finish())."""
         self._stop_helper()
         try:

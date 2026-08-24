@@ -77,24 +77,7 @@ static MemInfo read_meminfo()
 
     std::ostringstream ss;
     ss << f.rdbuf();
-    MemInfo mi = parse_meminfo_text(ss.str());
-
-    // This process's own VmSwap, so effective_available_mib() can exclude
-    // it from the swap deduction (see MemInfo::effective_available_mib()):
-    // a retained-but-dormant repeat buffer that has migrated to swap is not
-    // a liability against a new session the way another process's swap use
-    // is. /proc/self/status is always readable by the reading process
-    // itself; a missing file (should not happen) or a missing/malformed
-    // VmSwap line both simply leave this at 0, same as a swapless kernel.
-    std::ifstream status_f("/proc/self/status");
-    if (status_f)
-    {
-        std::ostringstream status_ss;
-        status_ss << status_f.rdbuf();
-        mi.own_swap_mib = parse_status_vmswap_mib(status_ss.str());
-    }
-
-    return mi;
+    return parse_meminfo_text(ss.str());
 }
 
 

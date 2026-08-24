@@ -936,11 +936,10 @@ inline ArenaPlan plan_arena(long effective_available_mib, int target_minutes,
 //
 // Parses the MemAvailable field (the kernel's estimate of memory available
 // for new allocations without swapping — the correct field for this purpose,
-// since it accounts for reclaimable page cache), plus SwapTotal/SwapFree.
-// This function takes the file's TEXT content as a string so it is fully
-// unit-testable on canned input with zero file I/O; the wrapper that
-// actually reads /proc/meminfo from disk is impure and lives in the daemon
-// .cpp.
+// since it accounts for reclaimable page cache). This function takes the
+// file's TEXT content as a string so it is fully unit-testable on canned
+// input with zero file I/O; the wrapper that actually reads /proc/meminfo
+// from disk is impure and lives in the daemon .cpp.
 // =============================================================================
 
 // Sentinel returned in available_mib when the field could not be found/parsed
@@ -950,59 +949,18 @@ constexpr long kMemInfoParseError = -1;
 struct MemInfo
 {
     long available_mib  = kMemInfoParseError;
-    long swap_total_mib = 0;
-    long swap_free_mib  = 0;
-
-    // This process's own currently-swapped-out memory (VmSwap from
-    // /proc/self/status), in MiB. A process that deliberately retains a
-    // large buffer across sessions (so it can be replayed later) will, over
-    // time, have some of that dormant buffer migrate to swap under memory
-    // pressure -- those pages are reclaimed/reused the moment a new session
-    // actually needs the RAM, so they are not a real liability against a new
-    // allocation the way another process's swapped-out memory is. Kept
-    // separate from swap_total_mib/swap_free_mib (which describe
-    // system-wide swap, not attributable to any one process) so
-    // effective_available_mib() can tell the two apart.
-    long own_swap_mib   = 0;
 
     bool ok() const { return available_mib >= 0; }
 
-    // On zram swap, pages that have been swapped out stay resident in RAM in
-    // compressed form, so MemAvailable alone over-promises what a new
-    // allocation can actually claim before the system comes under real
-    // pressure. Deducting the (uncompressed) size of what is currently
-    // swapped out is deliberately conservative: it treats that memory as
-    // still spoken for, even though some of it is compressed smaller in
-    // practice. swap_used is swap_total_mib - swap_free_mib, clamped at >= 0
-    // (a malformed or absent swap line yields 0 for that field, so swap_used
-    // is 0 and this equals available_mib exactly).
-    //
-    // Only OTHER processes' swap is treated as spoken-for, though: this
-    // process's own swapped-out pages (own_swap_mib) are excluded from the
-    // deduction, since a new session reclaims/reuses that memory rather than
-    // competing with it. own_swap_mib is clamped to swap_used before
-    // subtracting (own VmSwap cannot legitimately exceed total used swap,
-    // but a defensive clamp keeps the external-swap term from going negative
-    // on a torn/inconsistent read) -- external_swap = swap_used - own_swap
-    // is then never negative.
+    // The effective-available figure is exactly MemAvailable, with no swap
+    // adjustment: these appliances are autostream-owned and swap is
+    // zram-only, so charging swapped-out pages against MemAvailable
+    // double-counts memory the kernel has already accounted for. The floor
+    // discipline that guards actual admission/sizing (kFreeRamFloorMib) is
+    // applied separately by callers, not folded into this figure.
     long effective_available_mib() const
     {
-        long swap_used = swap_total_mib - swap_free_mib;
-        if (swap_used < 0)
-            swap_used = 0;
-
-        long own_swap = own_swap_mib;
-        if (own_swap < 0)
-            own_swap = 0;
-        if (own_swap > swap_used)
-            own_swap = swap_used;
-
-        long external_swap = swap_used - own_swap;
-
-        long effective = available_mib - external_swap;
-        if (effective < 0)
-            effective = 0;
-        return effective;
+        return available_mib;
     }
 };
 
@@ -1045,14 +1003,11 @@ namespace autostream_meminfo_detail
     }
 }
 
-// Parses lines of the form "MemAvailable:    123456 kB" / "SwapTotal:  ...
-// kB" / "SwapFree:  ... kB" (any run of whitespace between the fields; the
-// trailing unit is expected to be "kB" per the kernel's documented format).
-// Other lines are ignored. Malformed candidate lines (field present but the
-// numeric value doesn't parse) are also ignored, as if the field were
-// absent — this function never throws. Only MemAvailable governs ok():
-// SwapTotal/SwapFree missing or malformed yields 0 for that field without
-// affecting ok() or available_mib.
+// Parses lines of the form "MemAvailable:    123456 kB" (any run of
+// whitespace between the fields; the trailing unit is expected to be "kB"
+// per the kernel's documented format). Other lines are ignored. A malformed
+// candidate line (field present but the numeric value doesn't parse) is
+// also ignored, as if the field were absent — this function never throws.
 inline MemInfo parse_meminfo_text(const std::string& text)
 {
     using autostream_meminfo_detail::try_parse_kib_field;
@@ -1060,8 +1015,6 @@ inline MemInfo parse_meminfo_text(const std::string& text)
     MemInfo result;
 
     bool have_available  = false;
-    bool have_swap_total = false;
-    bool have_swap_free  = false;
 
     size_t search_from = 0;
     while (search_from < text.size())
@@ -1083,65 +1036,12 @@ inline MemInfo parse_meminfo_text(const std::string& text)
                     result.available_mib = mib;
                     have_available = true;
                 }
-                continue;  // first (and only expected) MemAvailable line wins
+                break;  // first (and only expected) MemAvailable line wins
             }
         }
-
-        if (!have_swap_total && try_parse_kib_field(line, "SwapTotal:", result.swap_total_mib))
-        {
-            have_swap_total = true;
-            continue;
-        }
-
-        if (!have_swap_free && try_parse_kib_field(line, "SwapFree:", result.swap_free_mib))
-        {
-            have_swap_free = true;
-            continue;
-        }
     }
 
-    return result;  // any field never found/parsed keeps its default (available_mib
-                     // stays kMemInfoParseError; swap_total_mib/swap_free_mib stay 0)
-}
-
-
-// =============================================================================
-// /proc/self/status TEXT parser — this process's own VmSwap
-//
-// Parses the "VmSwap:" line (kB) from /proc/self/status TEXT -- the amount
-// of THIS process's memory currently swapped out, needed by
-// MemInfo::effective_available_mib() to tell "swap this process's own
-// retained-but-dormant buffer holds" apart from "swap other processes are
-// genuinely using". Same pure-parser-over-text style as
-// parse_meminfo_text() and for the same reason: unit-testable on canned
-// input with zero file I/O; the wrapper that reads the real file lives in
-// the impure .cpp alongside read_meminfo()'s own file I/O.
-// =============================================================================
-
-// A kernel/build with no swap configured (or a status format without swap
-// accounting) simply omits the VmSwap line; unlike MemAvailable there is no
-// "parse error" state here -- absent just means 0.
-inline long parse_status_vmswap_mib(const std::string& text)
-{
-    using autostream_meminfo_detail::try_parse_kib_field;
-
-    long vmswap_mib = 0;
-
-    size_t search_from = 0;
-    while (search_from < text.size())
-    {
-        size_t line_end = text.find('\n', search_from);
-        if (line_end == std::string::npos)
-            line_end = text.size();
-
-        std::string line = text.substr(search_from, line_end - search_from);
-        search_from = line_end + 1;
-
-        if (try_parse_kib_field(line, "VmSwap:", vmswap_mib))
-            break;  // found (whether or not the numeric value itself parsed)
-    }
-
-    return vmswap_mib;
+    return result;  // never found/parsed keeps available_mib at kMemInfoParseError
 }
 
 

@@ -65,10 +65,9 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     The recording lives in a FIXED ARENA reserved once, when the feature is
     enabled: the codec/bitrate tier is chosen to fit a target recording
     duration (`target_minutes`, default 33) in whatever RAM is usable
-    (MemAvailable, minus whatever is currently swapped out, minus a 64 MiB
-    free-RAM floor) -- PCM if it fits, else the highest legal MP2 bitrate
-    (160/192/224/256/320/384 kbps) that fits, never below the 160 kbps
-    floor. Below that floor, DURATION degrades instead of quality: the
+    (MemAvailable, minus a 64 MiB free-RAM floor) -- PCM if it fits, else
+    the highest legal MP2 bitrate (160/192/224/256/320/384 kbps) that fits,
+    never below the 160 kbps floor. Below that floor, DURATION degrades instead of quality: the
     arena is capped at what usable RAM holds and the achieved capacity is
     reported truthfully (requested vs delivered). The arena is committed
     incrementally on the worker thread (one page-touched chunk at a time,

@@ -151,10 +151,11 @@ def _make_run(outputs, list_ok=True, launch_returncode=0, freq_file=None, **kwar
     return run, player, fake_launcher, fake_clock
 
 
-def _wait_thread(run, timeout=2.0):
-    thread = run._thread
-    if thread is not None:
-        thread.join(timeout=timeout)
+def _wait_cycle(run, timeout=2.0):
+    # AlignRun's cycle now runs as a task-pool job (see autostream_align.py's
+    # ALIGN_RUN_TASK_KEY / _cycle_done) rather than a bespoke Thread; waiting
+    # on _cycle_done is the equivalent of the old thread.join(timeout=...).
+    run._cycle_done.wait(timeout=timeout)
 
 
 def _start(run, outputs=None, output_ids=None, volume_percent=50,
@@ -226,6 +227,38 @@ def test_refuses_when_already_running():
     assert ok2 is False
     assert "already in progress" in err2
     run.abort()
+
+
+class _RejectingTaskPool:
+    """Stands in for the process-wide task pool's single-flight admission
+    gate rejecting a submission -- exercises the defensive path in
+    AlignRun.start() that mirrors the pool's own "already in progress"
+    outcome even when reached (task-pool migration)."""
+
+    def submit(self, key, fn, *args, **kwargs):
+        return False
+
+
+def test_pool_rejection_yields_same_already_in_progress_outcome_and_restores(monkeypatch):
+    outputs = [FakeOutput("out-a", "A", True, 42), FakeOutput("out-b", "B", True, 17)]
+    run, player, launcher, clock = _make_run(outputs, cycles_per_output=1)
+    monkeypatch.setattr(run, "_get_task_pool", lambda: _RejectingTaskPool())
+
+    ok, err = _start(run, outputs)
+
+    # Same outcome a caller sees from the ordinary state-guarded "already
+    # running" refusal (test_refuses_when_already_running above) -- whether
+    # the pool rejects the submission via its own admission gate or via the
+    # state check that runs ahead of it, the caller-visible result is
+    # identical.
+    assert ok is False
+    assert "already in progress" in err
+    assert run.status()["state"] == "idle"
+    # Restore-on-every-exit-path holds here too: outputs were muted before
+    # the submission was attempted, so a rejected submission must still put
+    # them back exactly as abort/timeout/error/complete do.
+    assert ("out-a", 42) in player.volume_calls[-2:]
+    assert ("out-b", 17) in player.volume_calls[-2:]
 
 
 def test_refuses_when_input_actively_streaming(monkeypatch):
@@ -382,7 +415,7 @@ def test_cleanup_runs_on_error_mid_cycle():
 
     _start(run, outputs)
     run._write_freq = flaky_write_freq
-    _wait_thread(run, timeout=1.0)
+    _wait_cycle(run, timeout=1.0)
 
     status = run.status()
     assert status["state"] == "error"
@@ -398,10 +431,14 @@ def test_timeout_stops_and_cleans_up():
     outputs = [FakeOutput("out-a", "A", True, 30), FakeOutput("out-b", "B", True, 30)]
     run, player, launcher, clock = _make_run(outputs, cycles_per_output=1, max_seconds=0)
     _start(run, outputs)
-    _wait_thread(run, timeout=1.0)
+    _wait_cycle(run, timeout=1.0)
     status = run.status()
     assert status["state"] == "idle"
     assert "timed out" in status["last_error"]
+    # The "timeout" exit path restores every touched output, same as the
+    # abort/error/complete paths.
+    assert ("out-a", 30) in player.volume_calls[-2:]
+    assert ("out-b", 30) in player.volume_calls[-2:]
 
 
 # ── abort() / finish() ─────────────────────────────────────────────────────
@@ -417,6 +454,10 @@ def test_abort_stops_helper_and_restores_state():
     assert status["has_pending_result"] is False
     assert len(launcher.procs) == 1
     assert launcher.procs[0].terminated is True
+    # The "abort" exit path restores every touched output; abort() joins the
+    # cycle before cleaning up, so the restores are the last calls made.
+    assert ("out-a", 30) in player.volume_calls[-2:]
+    assert ("out-b", 30) in player.volume_calls[-2:]
 
 
 def test_finish_records_pending_result_and_stops_cycle():
@@ -430,6 +471,10 @@ def test_finish_records_pending_result_and_stops_cycle():
     assert status["state"] == "idle"
     assert status["has_pending_result"] is True
     assert run.pending_result() is result
+    # The "complete" exit path restores exactly like abort/timeout/error do
+    # (this invariant carries over unchanged).
+    assert ("out-a", 30) in player.volume_calls[-2:]
+    assert ("out-b", 30) in player.volume_calls[-2:]
 
 
 def test_discard_result_clears_pending():

@@ -732,6 +732,58 @@ class TestUpdateLiveSilenceSeconds:
 
 
 # ---------------------------------------------------------------------------
+# update_live_silence_threshold_dbfs
+# ---------------------------------------------------------------------------
+
+class TestUpdateLiveSilenceThresholdDbfs:
+    def test_returns_true_with_no_matching_monitor(self):
+        result = core.update_live_silence_threshold_dbfs(0, -40.0)
+        assert result is True
+
+    def test_invalid_value_returns_false(self):
+        _make_monitor(input_index=0)
+        result = core.update_live_silence_threshold_dbfs(0, "not-a-number")
+        assert result is False
+
+    def test_pushes_configure_input_for_matching_monitor_only(self):
+        mon0 = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
+        mon1 = _make_monitor(input_index=1, silence_threshold_dbfs=-50.0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert result is True
+        assert mock_client.configure_input.call_count == 1
+        args, _ = mock_client.configure_input.call_args
+        assert args[0] == 0
+        assert args[2] == -35.0
+
+    def test_returns_false_when_client_unavailable(self):
+        _make_monitor(input_index=0)
+        with patch.object(core, "_connected_monitor", _fake_connected(None)):
+            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert result is False
+
+    def test_returns_false_when_configure_input_fails(self):
+        _make_monitor(input_index=0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = False
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert result is False
+
+    def test_updates_only_matching_monitor_threshold_on_success(self):
+        mon0 = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
+        mon1 = _make_monitor(input_index=1, silence_threshold_dbfs=-50.0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert mon0.silence_threshold_dbfs == -35.0
+        assert mon1.silence_threshold_dbfs == -50.0
+
+
+# ---------------------------------------------------------------------------
 # set_live_monitor_log_level / update_live_platform_log_level
 # ---------------------------------------------------------------------------
 

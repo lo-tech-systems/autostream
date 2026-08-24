@@ -425,8 +425,11 @@ class TestStartupWifiWatcherForwarding:
 
 class TestStaticSystemFactsStartupAudit:
     def test_audit_runs_after_logging_and_before_webui_startup(self):
+        # These three run-once startup steps live in _bootstrap() (a pure
+        # extraction into its own helper), not inline in run_autostream()
+        # itself -- inspect _bootstrap's source for the ordering instead.
         import inspect
-        src = inspect.getsource(_core_mod.run_autostream)
+        src = inspect.getsource(_core_mod._bootstrap)
         idx_logging = src.find("setup_logging(")
         idx_audit = src.find("audit_static_system_facts()")
         idx_webui = src.find("webui_thread = start_webui")

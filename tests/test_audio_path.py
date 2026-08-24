@@ -349,6 +349,255 @@ class TestReconcileAudioPathStartup:
 
 
 # ---------------------------------------------------------------------------
+# autostream_core: _fresh_audio_path() -- fresh settings-store read for the
+# reconnect resync (never a disk read, never a cached snapshot fallback)
+# ---------------------------------------------------------------------------
+
+class TestFreshAudioPath:
+    def test_returns_current_store_snapshot_value(self, tmp_path):
+        import autostream_core as core
+        store, _writer = _make_settings_store(tmp_path, {"general": {"audio_path": "fast"}})
+        try:
+            assert core._fresh_audio_path(store) == "fast"
+        finally:
+            store.close(save=False)
+
+    def test_reflects_in_memory_update_without_a_disk_flush(self, tmp_path):
+        """A store mutation is visible to _fresh_audio_path() immediately,
+        before the background save cycle (here disabled via a very long
+        interval) has written anything to disk."""
+        import autostream_core as core
+        store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "balanced"}})
+        try:
+            store.update(
+                lambda r: r.setdefault("general", {}).update({"audio_path": "fast"})
+            )
+            assert writer.call_count == 0
+            assert core._fresh_audio_path(store) == "fast"
+        finally:
+            store.close(save=False)
+
+    def test_settings_none_returns_none(self):
+        import autostream_core as core
+        assert core._fresh_audio_path(None) is None
+
+    def test_snapshot_raising_returns_none_not_raise(self):
+        import autostream_core as core
+        store = MagicMock()
+        store.snapshot.side_effect = RuntimeError("store unavailable")
+        assert core._fresh_audio_path(store) is None
+
+
+# ---------------------------------------------------------------------------
+# autostream_core: _resync_monitor_daemon() audio_path freshness + skip-on-
+# unknown semantics
+# ---------------------------------------------------------------------------
+
+class TestResyncAudioPathFreshness:
+    def _mock_client(self):
+        c = MagicMock()
+        c.set_fifo.return_value = True
+        c.set_log_level.return_value = True
+        c.set_repeat_enabled.return_value = True
+        return c
+
+    def test_none_audio_path_skips_backend_sync_but_still_reconciles_format(self, caplog):
+        """With audio_path unresolved (None), reconcile_monitor_format() is
+        still called (format enforcement is snapshot-free and must not be
+        skipped) but _sync_audio_path_backend() is not -- pushing a derived
+        resample_quality/tier from an unknown source value would be a
+        guess."""
+        import autostream_core as core
+
+        client = self._mock_client()
+        status_dict = {"output_format": "native"}
+        client.get_status.return_value = status_dict
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.reconcile_monitor_format") as monfmt, \
+             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core._sync_audio_path_backend") as sync_backend, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             caplog.at_level("WARNING"):
+            rf.return_value = MagicMock(ok=True, message="")
+            monfmt.return_value = MagicMock(ok=True, error="", error_code="")
+            fmt.return_value = MagicMock(ok=True, error="", error_code="")
+            ok = core._resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), audio_path=None,
+            )
+        assert ok is True
+        monfmt.assert_called_once_with(
+            "http://localhost:3689", status_dict, timeout=3.0, audio_path=None,
+        )
+        sync_backend.assert_not_called()
+        assert any(
+            r.levelname == "WARNING" and "audio_path" in r.message
+            for r in caplog.records
+        )
+
+    def test_race_replay_fresh_store_read_leaves_matching_env_untouched(self, tmp_path):
+        """Replays the reconnect race: a stale cfg-shaped snapshot holds
+        "balanced" but is never consulted -- the resync is wired to
+        audio_path derived from a fresh store read (here "fast", matching
+        what is already persisted in the env file), so the tier owner's own
+        idempotence check finds a match and neither rewrites the env file
+        nor requests a restart."""
+        import autostream_core as core
+
+        store, _writer = _make_settings_store(tmp_path, {"general": {"audio_path": "fast"}})
+        stale_cfg_audio_path = "balanced"  # what a pre-change loop snapshot would hold; unused
+        assert stale_cfg_audio_path != store.snapshot().general.audio_path
+
+        env_path = tmp_path / "monitor_args.env"
+        env_path.write_text("AUTOSTREAM_MONITOR_ARGS=--src fast\n", encoding="utf-8")
+
+        client = self._mock_client()
+        client.get_status.return_value = {"output_format": "native"}
+        backend = MagicMock()
+        backend.required_monitor_format.return_value = "native"
+        resolved = svc.ResolvedBackend(
+            backend_id="owntone-mini", backend=backend, detection_confident=True,
+        )
+
+        try:
+            with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(env_path)), \
+                 patch.object(svc, "resolve_backend", return_value=resolved), \
+                 patch.object(svc, "_restart_monitor_async") as restart_mock, \
+                 patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+                 patch("autostream_core.reconcile_monitor_format") as monfmt, \
+                 patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+                 patch("autostream_core.push_resample_quality"), \
+                 patch("autostream_core.apply_input_gain", return_value=True), \
+                 patch("autostream_core.apply_input_eq", return_value=True), \
+                 patch("autostream_core._apply_output_eq_config", return_value=True):
+                rf.return_value = MagicMock(ok=True, message="")
+                monfmt.return_value = MagicMock(ok=True, error="", error_code="")
+                fmt.return_value = MagicMock(ok=True, error="", error_code="")
+                ok = core._resync_monitor_daemon(
+                    client, [], "/tmp/test.fifo", "http://localhost:3689",
+                    MagicMock(), audio_path=core._fresh_audio_path(store),
+                )
+            assert ok is True
+            assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
+            restart_mock.assert_not_called()
+        finally:
+            store.close(save=False)
+
+    def test_store_updated_disk_stale_env_matches_store_stays_unchanged(self, tmp_path):
+        """The decisive freshness case. The settings store has already been
+        updated to "fast" but the on-disk json is still the pre-change
+        "balanced" (background dirty-save has not run yet -- the writer
+        below is never invoked). The env file already carries the fast
+        tier. The resync must take audio_path from the store, not from
+        disk: a disk-read implementation would return "balanced" here (the
+        read succeeds; the bytes are merely stale) and clobber the env
+        file, reproducing the exact failure this fixes."""
+        import autostream_core as core
+
+        store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "balanced"}})
+        store.update(
+            lambda r: r.setdefault("general", {}).update({"audio_path": "fast"})
+        )
+        assert writer.call_count == 0  # disk genuinely never touched by this update
+
+        env_path = tmp_path / "monitor_args.env"
+        env_path.write_text("AUTOSTREAM_MONITOR_ARGS=--src fast\n", encoding="utf-8")
+
+        client = self._mock_client()
+        client.get_status.return_value = {"output_format": "native"}
+        backend = MagicMock()
+        backend.required_monitor_format.return_value = "native"
+        resolved = svc.ResolvedBackend(
+            backend_id="owntone-mini", backend=backend, detection_confident=True,
+        )
+
+        try:
+            with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(env_path)), \
+                 patch.object(svc, "resolve_backend", return_value=resolved), \
+                 patch.object(svc, "_restart_monitor_async") as restart_mock, \
+                 patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+                 patch("autostream_core.reconcile_monitor_format") as monfmt, \
+                 patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+                 patch("autostream_core.push_resample_quality"), \
+                 patch("autostream_core.apply_input_gain", return_value=True), \
+                 patch("autostream_core.apply_input_eq", return_value=True), \
+                 patch("autostream_core._apply_output_eq_config", return_value=True):
+                rf.return_value = MagicMock(ok=True, message="")
+                monfmt.return_value = MagicMock(ok=True, error="", error_code="")
+                fmt.return_value = MagicMock(ok=True, error="", error_code="")
+                ok = core._resync_monitor_daemon(
+                    client, [], "/tmp/test.fifo", "http://localhost:3689",
+                    MagicMock(), audio_path=core._fresh_audio_path(store),
+                )
+            assert ok is True
+            assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
+            restart_mock.assert_not_called()
+        finally:
+            store.close(save=False)
+
+    def test_skip_then_converge(self, tmp_path, caplog):
+        """Store unavailable on one pass: env untouched, skip logged at
+        WARNING. A later pass with the store available behaves normally
+        (tier owner rewrites/no-ops correctly against fresh data)."""
+        import autostream_core as core
+
+        env_path = tmp_path / "monitor_args.env"
+        env_path.write_text("AUTOSTREAM_MONITOR_ARGS=--src fast\n", encoding="utf-8")
+
+        client = self._mock_client()
+        client.get_status.return_value = {"output_format": "native"}
+        backend = MagicMock()
+        backend.required_monitor_format.return_value = "native"
+        resolved = svc.ResolvedBackend(
+            backend_id="owntone-mini", backend=backend, detection_confident=True,
+        )
+
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(env_path)), \
+             patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_restart_monitor_async") as restart_mock, \
+             patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.reconcile_monitor_format") as monfmt, \
+             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_core.push_resample_quality"), \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             caplog.at_level("WARNING"):
+            rf.return_value = MagicMock(ok=True, message="")
+            monfmt.return_value = MagicMock(ok=True, error="", error_code="")
+            fmt.return_value = MagicMock(ok=True, error="", error_code="")
+
+            # Pass 1: store unavailable.
+            ok = core._resync_monitor_daemon(
+                client, [], "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), audio_path=core._fresh_audio_path(None),
+            )
+            assert ok is True
+            assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
+            restart_mock.assert_not_called()
+            assert any(
+                r.levelname == "WARNING" and "audio_path" in r.message
+                for r in caplog.records
+            )
+
+            # Pass 2: store available, same value already persisted -> the
+            # tier owner's idempotence check still finds a match.
+            store, _writer = _make_settings_store(tmp_path, {"general": {"audio_path": "fast"}})
+            try:
+                ok = core._resync_monitor_daemon(
+                    client, [], "/tmp/test.fifo", "http://localhost:3689",
+                    MagicMock(), audio_path=core._fresh_audio_path(store),
+                )
+            finally:
+                store.close(save=False)
+            assert ok is True
+            assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
+            restart_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # autostream_webui_api: server-side validation + live change flow
 # ---------------------------------------------------------------------------
 

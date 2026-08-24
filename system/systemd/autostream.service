@@ -22,6 +22,11 @@ Wants=autostream_monitor.service vibra-mini.service
 User=autostream
 Group=autostream
 
+# Below default priority: this is the UI/control coordinator, not the media
+# path itself; see autostream_monitor.service and owntone.service for the
+# units that must outrank it.
+Nice=5
+
 # Project directory
 WorkingDirectory=/opt/autostream
 

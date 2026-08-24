@@ -16,6 +16,10 @@ Group=autostream
 UMask=022
 WorkingDirectory=/opt/autostream
 
+# Media path must outrank default-priority housekeeping; see autostream.service
+# and owntone.service for the rest of the ladder.
+Nice=-12
+
 # FIFO format-switch: optional file supplying AUTOSTREAM_MONITOR_ARGS
 # (currently only ever "--compatible" or empty). The leading "-" makes a
 # missing file non-fatal, so a fresh install with no file yet still starts

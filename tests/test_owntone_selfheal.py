@@ -39,10 +39,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
+    _carry_forward_hang_watchdog,
     _maybe_run_owntone_hang_watchdog,
     _OwntoneHangWatchdog,
     _OwntoneReconcileTracker,
     _reconcile_owntone_outputs_if_wiped,
+    _SelfHeal,
     clear_user_silence_latch,
     get_owntone_selfheal_state,
     note_user_output_action,
@@ -659,6 +661,53 @@ class TestOwntoneHangWatchdogPure:
         probe.assert_not_called()
 
 
+class TestCarryForwardHangWatchdog:
+    """A config reload re-enters run_autostream's startup path, which must
+    not hand the hang watchdog a clean slate -- the 10-minute restart rate
+    limit is a hard ceiling that has to survive a reload exactly as it
+    already survives a monitor-daemon reconnect."""
+
+    def test_rate_limit_state_carried_into_new_instance(self):
+        previous = _OwntoneHangWatchdog()
+        previous.maybe_fire(
+            session_active=True,
+            fifo_status={"stalled_seconds": previous.STALL_THRESHOLD_SECONDS + 1},
+            now=100.0, owntone_reachable_fn=lambda: True,
+        )
+        assert previous.restart_count == 1
+
+        rebuilt = _carry_forward_hang_watchdog(previous)
+
+        assert rebuilt.restart_count == 1
+        assert rebuilt._last_restart_at == 100.0
+
+    def test_rebuilt_watchdog_stays_rate_limited_shortly_after_reload(self):
+        """Simulates: watchdog fires, a reload happens, and the stall is
+        still present moments later -- must not fire a second restart."""
+        previous = _OwntoneHangWatchdog()
+        stalled = {"stalled_seconds": previous.STALL_THRESHOLD_SECONDS + 1}
+        previous.maybe_fire(
+            session_active=True, fifo_status=stalled, now=100.0,
+            owntone_reachable_fn=lambda: True,
+        )
+
+        rebuilt = _carry_forward_hang_watchdog(previous)
+
+        assert rebuilt.maybe_fire(
+            session_active=True, fifo_status=stalled, now=105.0,
+            owntone_reachable_fn=lambda: True,
+        ) is False
+        assert rebuilt.restart_count == 1
+
+    def test_fresh_watchdog_carries_forward_vacuous_state(self):
+        """A never-fired watchdog (first process start) carries forward
+        cleanly -- carry-forward is safe to apply unconditionally."""
+        previous = _OwntoneHangWatchdog()
+        rebuilt = _carry_forward_hang_watchdog(previous)
+        assert rebuilt.restart_count == 0
+        assert rebuilt._last_restart_at == float("-inf")
+
+
 class TestMaybeRunOwntoneHangWatchdogWiring:
     def test_fires_restart_command_via_run_admin_cmd(self):
         wd = _OwntoneHangWatchdog()
@@ -666,14 +715,15 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
         fake_result = MagicMock(returncode=0, stderr="")
         with patch("autostream_core.list_outputs") as mock_list, \
              patch("autostream_core.run_admin_cmd", return_value=fake_result) as mock_admin, \
-             patch("autostream_core.threading.Thread") as mock_thread_cls:
+             patch.object(core._task_pool, "submit") as mock_submit:
             mock_list.return_value = SimpleNamespace(ok=True)
-            # Run the worker function synchronously instead of on a thread,
-            # so the assertion below can observe run_admin_cmd's call.
-            def _run_now(target=None, name=None, daemon=None):
-                target()
-                return MagicMock()
-            mock_thread_cls.side_effect = _run_now
+            # Run the submitted worker function synchronously instead of on
+            # the task pool's real background thread, so the assertion below
+            # can observe run_admin_cmd's call.
+            def _run_now(key, fn, *args, **kwargs):
+                fn(*args, **kwargs)
+                return True
+            mock_submit.side_effect = _run_now
 
             _maybe_run_owntone_hang_watchdog(wd, status, True, BASE_URL, 1000.0)
 
@@ -729,11 +779,11 @@ class TestSelfHealComposition:
         stalled_status = {"fifo": {"stalled_seconds": watchdog.STALL_THRESHOLD_SECONDS + 5}}
         with patch("autostream_core.list_outputs", return_value=SimpleNamespace(ok=True)), \
              patch("autostream_core.run_admin_cmd", side_effect=_fake_run_admin_cmd), \
-             patch("autostream_core.threading.Thread") as mock_thread_cls:
-            def _run_now(target=None, name=None, daemon=None):
-                target()
-                return MagicMock()
-            mock_thread_cls.side_effect = _run_now
+             patch.object(core._task_pool, "submit") as mock_submit:
+            def _run_now(key, fn, *args, **kwargs):
+                fn(*args, **kwargs)
+                return True
+            mock_submit.side_effect = _run_now
 
             _maybe_run_owntone_hang_watchdog(watchdog, stalled_status, True, BASE_URL, base)
             # Immediately stalled again: rate-limited, must not fire twice.
@@ -1012,3 +1062,62 @@ class TestStatusPassthrough:
         assert body["nested"]["worse"] is None
         assert body["nested"]["fine"] == 1.5
         assert body["nested"]["list"] == [None, 2]
+
+
+# ── _SelfHeal grouping ───────────────────────────────────────────────────
+
+class TestSelfHealGrouping:
+    """_SelfHeal gathers the three self-heal mechanisms under one namespace:
+    the already-free reconcile/watchdog pieces are re-exposed unchanged, and
+    AudioMonitor._maybe_retry_owntone delegates its logic to
+    _SelfHeal.maybe_retry_owntone() while keeping its original bound-method
+    call surface."""
+
+    def test_reconcile_tracker_class_is_the_original(self):
+        assert _SelfHeal.ReconcileTracker is _OwntoneReconcileTracker
+
+    def test_hang_watchdog_class_is_the_original(self):
+        assert _SelfHeal.HangWatchdog is _OwntoneHangWatchdog
+
+    def test_reconcile_outputs_if_wiped_is_the_original_function(self):
+        assert _SelfHeal.reconcile_outputs_if_wiped is _reconcile_owntone_outputs_if_wiped
+
+    def test_maybe_run_hang_watchdog_is_the_original_function(self):
+        assert _SelfHeal.maybe_run_hang_watchdog is _maybe_run_owntone_hang_watchdog
+
+    def test_audio_monitor_delegate_calls_selfheal_with_same_args(self):
+        mon = _make_monitor()
+        with patch.object(_SelfHeal, "maybe_retry_owntone") as m_retry:
+            mon._maybe_retry_owntone(123.0, replay_origin=True, monitor_status={"a": 1})
+
+        m_retry.assert_called_once_with(
+            mon, 123.0, replay_origin=True, monitor_status={"a": 1},
+        )
+
+    def test_maybe_retry_owntone_bails_out_when_idle_and_not_replay_origin(self):
+        """Same short-circuit the original AudioMonitor method had: not
+        capturing and not the replay origin means no OwnTone work at all --
+        exercised here directly against the moved _SelfHeal implementation."""
+        mon = _make_monitor()
+        mon.is_capturing = False
+
+        with patch("autostream_core.reconcile_fifo_with_backend") as m_fifo:
+            _SelfHeal.maybe_retry_owntone(mon, 100.0, replay_origin=False)
+
+        m_fifo.assert_not_called()
+
+    def test_maybe_retry_owntone_via_audiomonitor_reaches_selfheal_body(self):
+        """End-to-end: calling the AudioMonitor-bound method (the real call
+        site every production caller uses) still runs the moved logic --
+        confirms the delegate is not a no-op stub."""
+        mon = _make_monitor()
+        mon.is_capturing = True
+        mon._owntone_enabled_ok = False
+        mon._owntone_last_attempt = 0.0
+
+        with patch("autostream_core.reconcile_fifo_with_backend") as m_fifo:
+            m_fifo.return_value = SimpleNamespace(ok=False, message="down")
+            mon._maybe_retry_owntone(1000.0)
+
+        m_fifo.assert_called_once()
+

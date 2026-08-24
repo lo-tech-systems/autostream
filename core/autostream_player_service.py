@@ -498,6 +498,17 @@ def _extract_monitor_output_format(
     return rate_int, bits_int
 
 
+# Per-key in-flight guard for the two restart-spawn functions below, so a
+# second concurrent restart request for the same key is a no-op rather than
+# stacking a duplicate "sudo -n autostream_admin restart-*" subprocess call
+# on top of one already running -- mirroring the rate-limit protection
+# _OwntoneHangWatchdog already has (autostream_core.py), just keyed by
+# in-flight identity instead of a time window. Checked-and-added before the
+# worker thread starts, cleared in the worker's own finally block.
+_RESTART_INFLIGHT: set = set()
+_RESTART_INFLIGHT_LOCK = threading.Lock()
+
+
 def _restart_owntone_backend_async(base_url: str) -> None:
     """Fire-and-forget owntone-mini process restart request.
 
@@ -513,6 +524,16 @@ def _restart_owntone_backend_async(base_url: str) -> None:
     run_admin_cmd(); this does the same directly, without depending on
     WebUIState (out of scope for this module).
     """
+    key = "restart-owntone"
+    with _RESTART_INFLIGHT_LOCK:
+        if key in _RESTART_INFLIGHT:
+            LOG.debug(
+                "Pipe-format reconcile: restart-owntone already in flight, "
+                "skipping duplicate request for %s.", base_url,
+            )
+            return
+        _RESTART_INFLIGHT.add(key)
+
     def _worker() -> None:
         try:
             p = run_admin_cmd(["restart-owntone"], timeout=20.0)
@@ -530,6 +551,9 @@ def _restart_owntone_backend_async(base_url: str) -> None:
             LOG.exception(
                 "Pipe-format reconcile: restart-owntone raised for %s", base_url
             )
+        finally:
+            with _RESTART_INFLIGHT_LOCK:
+                _RESTART_INFLIGHT.discard(key)
 
     threading.Thread(
         target=_worker, name="owntone-format-reconcile-restart", daemon=True
@@ -943,12 +967,14 @@ def _resample_quality_for_audio_path(audio_path: str) -> str:
     )
 
 
-def _monitor_args_for_format(desired_format: str, audio_path: str = "balanced") -> str:
+def _monitor_args_for_format(
+    desired_format: str, audio_path: str = "balanced", *, src_tier: Optional[str] = None,
+) -> str:
     parts = []
     if desired_format == "compatible":
         parts.append("--compatible")
     parts.append("--src")
-    parts.append(_src_tier_for_audio_path(audio_path))
+    parts.append(src_tier if src_tier is not None else _src_tier_for_audio_path(audio_path))
     return " ".join(parts)
 
 
@@ -971,10 +997,30 @@ def _read_current_monitor_args() -> Optional[str]:
     return None
 
 
-def _write_monitor_args_env_file(desired_format: str, audio_path: str = "balanced") -> bool:
+def _current_src_tier() -> Optional[str]:
+    """Return the --src tier currently persisted in monitor_args.env, or
+    None if the file/line/flag is absent or the value is not a recognised
+    tier keyword.
+    """
+    current = _read_current_monitor_args()
+    if not current:
+        return None
+    tokens = current.split()
+    for i, token in enumerate(tokens):
+        if token == "--src" and i + 1 < len(tokens):
+            candidate = tokens[i + 1]
+            if candidate in ("fast", "medium", "best"):
+                return candidate
+            return None
+    return None
+
+
+def _write_monitor_args_env_file(
+    desired_format: str, audio_path: str = "balanced", *, src_tier: Optional[str] = None,
+) -> bool:
     from autostream_sysutils import atomic_write_file
 
-    args = _monitor_args_for_format(desired_format, audio_path)
+    args = _monitor_args_for_format(desired_format, audio_path, src_tier=src_tier)
     try:
         atomic_write_file(
             MONITOR_ARGS_ENV_PATH,
@@ -998,8 +1044,19 @@ def _write_monitor_args_env_file(desired_format: str, audio_path: str = "balance
 def _restart_monitor_async(desired_format: str, reported_format: str) -> None:
     """Fire-and-forget monitor restart request, mirroring
     _restart_owntone_backend_async() above (same run_admin_cmd() /
-    "sudo -n autostream_admin <verb>" pattern, new "restart-monitor" verb).
+    "sudo -n autostream_admin <verb>" pattern, new "restart-monitor" verb,
+    same per-key in-flight guard via _RESTART_INFLIGHT).
     """
+    key = "restart-monitor"
+    with _RESTART_INFLIGHT_LOCK:
+        if key in _RESTART_INFLIGHT:
+            LOG.debug(
+                "Monitor-format reconcile: restart-monitor already in flight, "
+                "skipping duplicate request.",
+            )
+            return
+        _RESTART_INFLIGHT.add(key)
+
     def _worker() -> None:
         try:
             p = run_admin_cmd(["restart-monitor"], timeout=20.0)
@@ -1016,6 +1073,9 @@ def _restart_monitor_async(desired_format: str, reported_format: str) -> None:
                 )
         except Exception:
             LOG.exception("Monitor-format reconcile: restart-monitor raised")
+        finally:
+            with _RESTART_INFLIGHT_LOCK:
+                _RESTART_INFLIGHT.discard(key)
 
     threading.Thread(
         target=_worker, name="monitor-format-reconcile-restart", daemon=True,
@@ -1035,11 +1095,13 @@ def reconcile_monitor_format(
     desired = resolve_backend(base_url).backend.required_monitor_format()
     reported = _extract_reported_monitor_format(monitor_status)
 
-    *audio_path* only affects the composed --src tier written on a mismatch
-    pass (see _monitor_args_for_format()); it plays no part in the
-    native/compatible comparison below. A same-format --src-only change (the
-    Audio Path dropdown, with the pipe format unchanged) does not flow
-    through here -- see sync_monitor_args_for_audio_path() for that path.
+    A mismatch pass preserves whatever --src tier is already persisted in
+    the env file (see _current_src_tier()); *audio_path* only supplies the
+    composed --src tier when no tier is currently persisted, and plays no
+    part in the native/compatible comparison below. A same-format --src-only
+    change (the Audio Path dropdown, with the pipe format unchanged) does
+    not flow through here -- see sync_monitor_args_for_audio_path() for that
+    path.
 
     Guarantees (mirrors reconcile_pipe_format_with_backend()'s above):
       - Idempotent: a matching pass never writes the env file or restarts.
@@ -1126,7 +1188,7 @@ def reconcile_monitor_format(
             state["needs_retry"] = False
         return FormatReconcileResult(ok=True)
 
-    if not _write_monitor_args_env_file(desired_format, audio_path):
+    if not _write_monitor_args_env_file(desired_format, audio_path, src_tier=_current_src_tier()):
         with _monitor_format_reconcile_state_lock:
             already_logged = state.get("last_logged_state") == log_key
             state["last_logged_state"] = log_key

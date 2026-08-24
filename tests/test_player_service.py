@@ -913,6 +913,7 @@ class TestReconcileMonitorFormat(_MonitorFormatReconcileTestHelpers):
     def test_mismatch_writes_env_file_and_restarts(self):
         resolved = self._resolved("compatible")
         with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_current_src_tier", return_value=None), \
              patch.object(svc, "_write_monitor_args_env_file", return_value=True) as write_mock, \
              patch.object(svc, "_restart_monitor_async") as restart_mock:
             result = svc.reconcile_monitor_format(
@@ -921,8 +922,51 @@ class TestReconcileMonitorFormat(_MonitorFormatReconcileTestHelpers):
         assert result.ok is True
         assert result.changed is True
         assert result.restart_requested is True
-        write_mock.assert_called_once_with("compatible", "balanced")
+        write_mock.assert_called_once_with("compatible", "balanced", src_tier=None)
         restart_mock.assert_called_once_with("compatible", "native")
+
+    def test_mismatch_rewrite_preserves_persisted_tier_over_stale_audio_path(self, tmp_path):
+        """The tier already persisted in the env file wins over whatever
+        audio_path the caller passes in on a format-mismatch rewrite -- a
+        caller-supplied audio_path may be stale relative to what was last
+        written."""
+        target = tmp_path / "monitor_args.env"
+        target.write_text("AUTOSTREAM_MONITOR_ARGS=--src fast\n", encoding="utf-8")
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)), \
+             patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_restart_monitor_async") as restart_mock:
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"}, audio_path="balanced",
+            )
+        assert result.changed is True
+        assert result.restart_requested is True
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible --src fast\n"
+        restart_mock.assert_called_once()
+
+    def test_mismatch_rewrite_falls_back_to_audio_path_tier_when_no_tier_persisted(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)), \
+             patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_restart_monitor_async"):
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"}, audio_path="max",
+            )
+        assert result.changed is True
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible --src best\n"
+
+    def test_mismatch_rewrite_falls_back_to_default_tier_when_audio_path_none(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        resolved = self._resolved("compatible")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)), \
+             patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_restart_monitor_async"):
+            result = svc.reconcile_monitor_format(
+                "http://localhost:3689", {"output_format": "native"}, audio_path=None,
+            )
+        assert result.changed is True
+        assert target.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--compatible --src medium\n"
 
     def test_env_write_failure_no_restart_and_retried_next_pass(self):
         resolved = self._resolved("compatible")
@@ -1095,6 +1139,7 @@ class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestH
 
         confident = self._resolved("native", backend_id="owntone-mini", confident=True)
         with patch.object(svc, "resolve_backend", return_value=confident), \
+             patch.object(svc, "_current_src_tier", return_value=None), \
              patch.object(svc, "_write_monitor_args_env_file", return_value=True) as write_mock2, \
              patch.object(svc, "_restart_monitor_async") as restart_mock2:
             result = svc.reconcile_monitor_format(
@@ -1102,7 +1147,7 @@ class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestH
             )
         assert result.changed is True
         assert result.restart_requested is True
-        write_mock2.assert_called_once_with("native", "balanced")
+        write_mock2.assert_called_once_with("native", "balanced", src_tier=None)
         restart_mock2.assert_called_once_with("native", "compatible")
 
     def test_confident_full_owntone_still_enforces_compatible(self):
@@ -1111,6 +1156,7 @@ class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestH
         static "compatible" requirement."""
         resolved = self._resolved("compatible", backend_id="owntone", confident=True)
         with patch.object(svc, "resolve_backend", return_value=resolved), \
+             patch.object(svc, "_current_src_tier", return_value=None), \
              patch.object(svc, "_write_monitor_args_env_file", return_value=True) as write_mock, \
              patch.object(svc, "_restart_monitor_async") as restart_mock:
             result = svc.reconcile_monitor_format(
@@ -1118,7 +1164,7 @@ class TestReconcileMonitorFormatDetectionConfidence(_MonitorFormatReconcileTestH
             )
         assert result.changed is True
         assert result.restart_requested is True
-        write_mock.assert_called_once_with("compatible", "balanced")
+        write_mock.assert_called_once_with("compatible", "balanced", src_tier=None)
         restart_mock.assert_called_once_with("compatible", "native")
 
 
@@ -1150,6 +1196,43 @@ class TestWriteMonitorArgsEnvFile:
              patch("autostream_sysutils.atomic_write_file", side_effect=OSError("disk full")):
             ok = svc._write_monitor_args_env_file("compatible")
         assert ok is False
+
+
+class TestCurrentSrcTier:
+    def test_missing_file_returns_none(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            assert svc._current_src_tier() is None
+
+    def test_extracts_tier_from_native_line(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        target.write_text("AUTOSTREAM_MONITOR_ARGS=--src medium\n", encoding="utf-8")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            assert svc._current_src_tier() == "medium"
+
+    def test_extracts_tier_from_compatible_line(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        target.write_text("AUTOSTREAM_MONITOR_ARGS=--compatible --src best\n", encoding="utf-8")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            assert svc._current_src_tier() == "best"
+
+    def test_empty_value_line_returns_none(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        target.write_text("AUTOSTREAM_MONITOR_ARGS=\n", encoding="utf-8")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            assert svc._current_src_tier() is None
+
+    def test_missing_src_flag_returns_none(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        target.write_text("AUTOSTREAM_MONITOR_ARGS=--compatible\n", encoding="utf-8")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            assert svc._current_src_tier() is None
+
+    def test_unrecognised_tier_keyword_returns_none(self, tmp_path):
+        target = tmp_path / "monitor_args.env"
+        target.write_text("AUTOSTREAM_MONITOR_ARGS=--src turbo\n", encoding="utf-8")
+        with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(target)):
+            assert svc._current_src_tier() is None
 
 
 class TestRestartMonitorAsync:

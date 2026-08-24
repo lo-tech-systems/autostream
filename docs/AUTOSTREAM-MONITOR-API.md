@@ -744,10 +744,9 @@ Request fields:
 - `target_minutes` (optional, integer, 10..600)
   - the recording duration the arena is planned to hold. The plan is
     derived once, at enable time, from currently-usable RAM (MemAvailable,
-    minus whatever is currently swapped out, minus a 64 MiB free-RAM
-    floor). Selection: PCM s16 if PCM's footprint for `target_minutes` fits
-    usable RAM; else the highest legal MP2 stereo bitrate
-    (160/192/224/256/320/384 kbps) whose footprint fits, never below
+    minus a 64 MiB free-RAM floor). Selection: PCM s16 if PCM's footprint
+    for `target_minutes` fits usable RAM; else the highest legal MP2
+    stereo bitrate (160/192/224/256/320/384 kbps) whose footprint fits, never below
     160 kbps; below the 160 kbps floor the arena is capped at usable RAM
     and DURATION degrades instead -- the achieved capacity is what
     `max_recording_seconds` then reports (requested vs delivered; see
@@ -1119,8 +1118,8 @@ Top-level fields:
     selected quality fit in memory")
   - `max_recording_seconds`: the arena's capacity in seconds -- the fixed
     reservation made at enable time (usable RAM at that moment: MemAvailable
-    minus swapped-out memory minus a 64 MiB free-RAM floor, capped at the
-    target's footprint) divided by the resolved codec tier's byte rate.
+    minus a 64 MiB free-RAM floor, capped at the target's footprint)
+    divided by the resolved codec tier's byte rate.
     Stable between polls: it changes only when the arena is re-planned
     (enable, or a target/codec change), never with moment-to-moment free
     RAM. `0` when `enabled` is `false`, or while the arena has not been

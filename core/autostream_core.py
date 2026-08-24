@@ -14,6 +14,7 @@ and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
 """
 
+import concurrent.futures
 import contextlib
 import os
 import json
@@ -27,7 +28,7 @@ import signal
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
@@ -72,6 +73,7 @@ from autostream_player_service import (
 )
 from autostream_rpi import is_high_performance_pi
 from autostream_playback_stats import (
+    DEFAULT_FLUSH_INTERVAL_SECONDS,
     DEFAULT_STYLUS_LIFE_HOURS,
     InputPlaybackSnapshot,
     MaintenanceResetResult,
@@ -96,6 +98,55 @@ from autostream_sysutils import (
 
 stop_flag = threading.Event()
 reload_flag = threading.Event()
+
+# --------------------------------------------------------------------------- #
+# Module-level locks/events, grouped by conceptual store (documentation only  #
+# -- the grouping below is descriptive; the locks/events themselves are not   #
+# consolidated into a single object).                                        #
+# --------------------------------------------------------------------------- #
+#
+# Process-wide signals (not tied to any store):
+#   stop_flag, reload_flag                    -- shutdown/reload requests
+#   (log_queue -- async log fan-out, bounded 1000 -- is function-local to
+#    the logging-setup call today, not a module-level global; listed here
+#    only because an earlier gap-analysis pass described it as module-level)
+#
+# Independent, single-purpose locks (each guards something distinct enough
+# that folding it into a group below would blur its meaning):
+#   _monitors_lock                            -- all_monitors list
+#   _track_id_request_gate                    -- process-wide identification
+#                                                 single-flight admission gate
+#                                                 (semaphore-shaped, not a
+#                                                 plain data lock -- do not
+#                                                 merge with anything else)
+#   _playing_lock                             -- Avahi "playing" announcement
+#                                                 file state
+#   _nowplaying_republish_lock                -- one-shot republish-request flag
+#
+# "Session/output-arbitration state" group -- all three read together by the
+# zero-output-watchdog-equivalent logic (_reconcile_owntone_outputs_if_wiped):
+#   _session_state_lock                       -- {active, source} session
+#                                                 summary for API reads
+#   _last_user_output_action_lock             -- last user-output-toggle
+#                                                 timestamp (selfheal input)
+#   _user_silence_latch_lock                  -- deliberate-silence flag
+#                                                 (selfheal input)
+#
+# "Monitor-runtime read-cache" group -- daemon-status-derived caches consumed
+# by the Web UI's /api/status, not coordinator-internal arbitration state:
+#   _monitor_runtime_info_lock                -- MonitorRuntimeInfo (daemon
+#                                                 connection/build/level)
+#   _repeat_status_lock                       -- last-polled repeat-feature
+#                                                 status dict
+#   _owntone_selfheal_state_lock              -- selfheal fire-count/
+#                                                 last-fired diagnostics
+#
+# Class-level (not module-level, listed here for completeness):
+#   MonitorClient._lock                       -- serializes daemon-socket
+#                                                 commands across coordinator
+#                                                 + track-ID worker threads
+#   AudioMonitor._ti_state_lock                -- identification dispatch
+#                                                 state vs. _apply_track_id_service
 
 
 def request_config_reload() -> None:
@@ -122,6 +173,84 @@ _track_id_service = None  # Optional[TrackIdentificationService]
 # Process-wide identification admission gate.  A non-blocking acquire is attempted
 # before every worker dispatch; at most one identification request runs globally.
 _track_id_request_gate = threading.Lock()
+
+
+class TaskPool:
+    """Small bounded thread pool with single-flight-per-key submission.
+
+    A fixed-size `ThreadPoolExecutor` backs the pool; `submit(key, fn, ...)`
+    is a no-op (returns False, nothing scheduled) when a task already
+    in flight under the same key -- callers that need "at most one
+    in-flight task per key" get it for free, rather than each new
+    backgrounded operation hand-rolling its own `threading.Thread(...)`
+    call and rate-limit/inflight bookkeeping.
+
+    Not itself a queue: a rejected (duplicate-key) submission is dropped,
+    not deferred -- matching every current call site's existing shape
+    (a rate-limited watchdog restart, a gate-admitted identification
+    worker), none of which need a submission to wait its turn.
+    """
+
+    def __init__(self, max_workers: int = 2) -> None:
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="taskpool",
+        )
+        self._inflight: dict[str, "concurrent.futures.Future"] = {}
+        self._lock = threading.Lock()
+
+    def submit(self, key: str, fn, *args, **kwargs) -> bool:
+        """Submit fn(*args, **kwargs) under single-flight key *key*.
+
+        Returns True if a task was scheduled, False if a task already
+        in flight under *key* (submission is then a no-op).
+        """
+        with self._lock:
+            existing = self._inflight.get(key)
+            if existing is not None and not existing.done():
+                return False
+
+            def _run() -> None:
+                try:
+                    fn(*args, **kwargs)
+                finally:
+                    # Single-flight-per-key guarantees no other submission
+                    # for this key can be accepted while _run is executing
+                    # (the check above only passes once the prior future is
+                    # done, which -- for a ThreadPoolExecutor future -- is
+                    # only true once _run itself has returned), so it is
+                    # always safe to unconditionally drop this key's entry
+                    # here rather than compare-and-clear against a future
+                    # reference not yet in scope.
+                    with self._lock:
+                        self._inflight.pop(key, None)
+
+            future = self._executor.submit(_run)
+            self._inflight[key] = future
+            return True
+
+    def is_inflight(self, key: str) -> bool:
+        with self._lock:
+            future = self._inflight.get(key)
+            return future is not None and not future.done()
+
+
+# Process-wide task pool: the one place backgrounded, single-flight-per-key
+# work is scheduled (currently: the OwnTone hang-watchdog restart, per-input
+# track identification, and -- via get_task_pool() below -- autostream_align's
+# "align-run" job). See TaskPool.
+_task_pool = TaskPool(max_workers=2)
+
+
+def get_task_pool() -> "TaskPool":
+    """Return the process-wide task pool.
+
+    External modules that need to schedule work under this pool's
+    single-flight-per-key contract (e.g. autostream_align.AlignRun, gap
+    35 Section 4.1) call this instead of reaching into the private
+    _task_pool global directly.
+    """
+    return _task_pool
+
 
 def _build_track_id_service(cfg) -> Optional[object]:
     """Build and return a TrackIdentificationService from config, or None."""
@@ -792,6 +921,70 @@ def update_live_silence_seconds(
         return False
 
 
+def update_live_silence_threshold_dbfs(
+    input_index: int,
+    silence_threshold_dbfs: float,
+    *,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply a live silence-threshold update to one input's running monitor.
+
+    silence_threshold_dbfs is just another configure_input() field, so the
+    same live-reconfigure path used by update_live_silence_seconds applies
+    here -- only the one matching monitor is touched, since the threshold is
+    per-input rather than shared. Returns True on success (including when
+    the input has no running monitor to push to), False if the live update
+    could not be applied and the caller should fall back to a config reload.
+    """
+    try:
+        live_threshold_dbfs = float(silence_threshold_dbfs)
+    except Exception:
+        logging.warning(
+            "Could not update live silence threshold: invalid value %r",
+            silence_threshold_dbfs,
+        )
+        return False
+
+    with _monitors_lock:
+        target = next(
+            (m for m in all_monitors if m.input_index == input_index), None
+        )
+
+    if target is None:
+        return True
+
+    try:
+        with _connected_monitor(socket_path) as client:
+            if client is None:
+                logging.warning(
+                    "Could not connect to monitor daemon for live silence threshold update.",
+                )
+                return False
+
+            if not client.configure_input(
+                target.input_index,
+                target.input_device,
+                live_threshold_dbfs,
+                target.silence_seconds,
+                target.track_change_silence_seconds,
+                target.minimum_playback_seconds,
+            ):
+                logging.warning(
+                    "Live silence threshold update failed for input %d.",
+                    target.input_index,
+                )
+                return False
+
+            with _monitors_lock:
+                for monitor in all_monitors:
+                    if monitor.input_index == input_index:
+                        monitor.silence_threshold_dbfs = live_threshold_dbfs
+            return True
+    except Exception as e:
+        logging.warning("Could not update live silence threshold: %s", e)
+        return False
+
+
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
     with _monitors_lock:
@@ -1386,10 +1579,30 @@ class _OwntoneHangWatchdog:
         return True
 
 
+def _carry_forward_hang_watchdog(previous: "_OwntoneHangWatchdog") -> "_OwntoneHangWatchdog":
+    """Build the hang watchdog for a new outer-loop pass, preserving the
+    prior instance's restart-rate-limit state.
+
+    A config reload re-enters the same startup code path as first process
+    launch, which would otherwise hand back a brand-new watchdog with its
+    10-minute restart rate limit vacuously satisfied -- permitting an
+    immediate second forced OwnTone restart right after a reload, even if
+    one had just fired moments before. That limit is a hard ceiling meant to
+    survive a reload exactly as it already survives a monitor-daemon
+    reconnect (which deliberately leaves this watchdog untouched); only the
+    restart bookkeeping carries forward here, nothing else.
+    """
+    watchdog = _OwntoneHangWatchdog()
+    watchdog._last_restart_at = previous._last_restart_at
+    watchdog.restart_count = previous.restart_count
+    return watchdog
+
+
 def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
     """Background (non-blocking) autostream_admin restart-owntone request.
 
-    Runs run_admin_cmd() in a daemon thread -- the same "sudo -n
+    Runs run_admin_cmd() via the process-wide task pool under the
+    single-flight key "owntone-restart" -- the same "sudo -n
     autostream_admin restart-owntone" invocation the Web UI's owntone-setup
     restart button uses (autostream_webui_page_owntone.py's
     _restart_owntone_worker) -- so the coordinator poll loop (0.5 s cadence)
@@ -1397,6 +1610,14 @@ def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
     (_reconcile_owntone_outputs_if_wiped) picks up the resulting
     zero-selected-outputs state on a later poll and re-enables outputs; this
     function does not attempt to re-enable anything itself.
+
+    This is a low-risk fit for the task pool:
+    _OwntoneHangWatchdog.maybe_fire() already rate-limits calls
+    into this function to at most once per RESTART_RATE_LIMIT_SECONDS
+    (600s), and this is the function's only call site, so the pool's
+    single-flight guard is a defensive no-op in practice, never expected to
+    actually reject a submission -- no code path today needs two concurrent
+    restart-owntone calls in flight.
     """
     logging.warning(
         "OwnTone-hang watchdog: FIFO stalled for %.1fs with OwnTone reachable; "
@@ -1417,7 +1638,11 @@ def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
         except Exception:
             logging.exception("OwnTone-hang watchdog: restart-owntone raised")
 
-    threading.Thread(target=_worker, name="owntone-hang-watchdog-restart", daemon=True).start()
+    if not _task_pool.submit("owntone-restart", _worker):
+        logging.debug(
+            "OwnTone-hang watchdog: restart-owntone already in flight; "
+            "skipping duplicate request."
+        )
 
 
 def _maybe_run_owntone_hang_watchdog(
@@ -1455,6 +1680,140 @@ def _maybe_run_owntone_hang_watchdog(
         except (TypeError, ValueError):
             stalled_seconds = 0.0
     _fire_owntone_hang_restart(owntone_base_url, stalled_seconds)
+
+
+# --------------------------------------------------------------------------- #
+# Self-heal grouping                                                          #
+# --------------------------------------------------------------------------- #
+#
+# _reconcile_owntone_outputs_if_wiped / _OwntoneReconcileTracker and
+# _OwntoneHangWatchdog / _maybe_run_owntone_hang_watchdog / _fire_owntone_
+# hang_restart (all defined immediately above) are free functions/classes,
+# not AudioMonitor methods. _SelfHeal gathers all three self-heal mechanisms
+# under one namespace so a reader has one place to look for "what self-heals
+# this process," rather than three independently-discovered pieces.
+# AudioMonitor._maybe_retry_owntone's substantive logic lives here as
+# _SelfHeal.maybe_retry_owntone() (self -> monitor); AudioMonitor keeps a
+# thin one-line delegate under its original name so every existing call site
+# (m._maybe_retry_owntone(...), patch.object(mon, "_maybe_retry_owntone"))
+# keeps working exactly as before.
+class _SelfHeal:
+    """Namespace grouping the three self-heal mechanisms: zero-output
+    reconcile, hang watchdog, and OwnTone output-retry. See module comment
+    above."""
+
+    ReconcileTracker = _OwntoneReconcileTracker
+    HangWatchdog = _OwntoneHangWatchdog
+
+    reconcile_outputs_if_wiped = staticmethod(_reconcile_owntone_outputs_if_wiped)
+    maybe_run_hang_watchdog = staticmethod(_maybe_run_owntone_hang_watchdog)
+
+    @staticmethod
+    def maybe_retry_owntone(
+        monitor: "AudioMonitor",
+        now: float,
+        replay_origin: bool = False,
+        monitor_status: Optional[dict] = None,
+    ) -> None:
+        """Periodically retry refreshing currently selected OwnTone outputs
+        for one AudioMonitor. Same body as AudioMonitor._maybe_retry_owntone(),
+        with `self` renamed to `monitor`, no logic change.
+
+        *replay_origin* is True when this monitor's input is the current
+        replay's origin_input: this input isn't "capturing" while
+        replay plays its buffer, but it is still the session's audible
+        source, so the retry must not bail out as if idle. Defaults to False
+        so existing capture-driven call sites are unaffected.
+
+        *monitor_status* is the poll loop's most recent client.get_status()
+        result, if the caller has one in hand -- passed through to
+        retry_pending_format_reconcile() below. Callers
+        without a fresh status handy (e.g. the replay-session-start path)
+        may omit it: a pending format retry just waits for the next call
+        that does have one, which for the main poll-loop call site is at
+        most one poll interval away.
+        """
+        if not monitor.is_capturing and not replay_origin:
+            return
+        if not monitor.owntone_base_url:
+            return
+        if monitor._owntone_enabled_ok:
+            return
+        if (now - monitor._owntone_last_attempt) < monitor.OWNTONE_RETRY_SECONDS:
+            return
+        monitor._owntone_last_attempt = now
+
+        fifo_result = reconcile_fifo_with_backend(
+            monitor.owntone_base_url,
+            monitor.fifo_path,
+            timeout=3.0,
+            update_timeout_s=5.0,
+            update_interval_s=2.0,
+        )
+        if not fifo_result.ok:
+            monitor._owntone_recovery_log.fail(now)
+            monitor._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Skipping OwnTone recovery while FIFO/backend reconciliation failed: %s",
+                fifo_result.message or "reconcile failed",
+            )
+            return
+
+        outputs = monitor._get_owntone_outputs()
+        if outputs is None:
+            monitor._owntone_recovery_log.fail(now)
+            monitor._throttled_owntone_log(
+                now,
+                logging.WARNING,
+                "Skipping OwnTone selected-output refresh: outputs API unavailable.",
+            )
+            return
+
+        # outputs is not None: the outputs probe above just confirmed
+        # owntone-mini is reachable -- exactly the moment to retry a
+        # still-pending pipe-format reconcile, in case a
+        # startup/reconnect-time partial save is still waiting for the
+        # backend to come back. Cheap no-op (zero HTTP traffic) whenever
+        # nothing is pending, so this costs nothing in the steady state.
+        retry_pending_format_reconcile(monitor.owntone_base_url, monitor_status)
+
+        if not monitor._has_any_selected_outputs(outputs):
+            if user_silence_latch_active():
+                # The user deliberately disabled the last selected output
+                # through the Web UI; do not re-apply the default output
+                # while the latch is active (cleared by the user enabling an
+                # output, or by the session ending). The FIFO/format
+                # reconcile work above still ran this cycle -- only the
+                # output-enable/default-apply step is skipped here.
+                return
+            if not monitor._auto_select_default_output(now, outputs, reason="retry"):
+                monitor._throttled_owntone_log(
+                    now,
+                    logging.INFO,
+                    "No outputs selected during capture; default fallback not available yet.",
+                )
+                return
+            outputs = monitor._get_owntone_outputs()
+            if outputs is None or not monitor._has_any_selected_outputs(outputs):
+                return
+
+        if monitor._refresh_selected_outputs(outputs):
+            monitor._owntone_recovery_log.ok(now)
+            monitor._owntone_enabled_ok = True
+            # Outputs were just re-applied after a backend restart/state
+            # loss: the backend's queue holds only its startup defaults, so
+            # the on-screen now-playing would show those until the next
+            # natural push. Have the poll loop re-send the current bundle.
+            request_nowplaying_republish()
+            return
+
+        monitor._owntone_recovery_log.fail(now)
+        monitor._throttled_owntone_log(
+            now,
+            logging.WARNING,
+            "OwnTone selected-output refresh failed during capture; will retry.",
+        )
 
 
 def handle_signal(signum, frame):
@@ -2990,18 +3349,36 @@ class AudioMonitor:
             self._ti_inflight_token = worker_token
             self._ti_last_attempt = now
 
+            # Scheduled on the process-wide task pool under a per-input
+            # single-flight key -- same worker function, same args, just
+            # scheduled via _task_pool.submit() instead of a raw
+            # threading.Thread(...).start(). The
+            # process-wide _track_id_request_gate above is still the true
+            # admission control (at most one identification in flight across
+            # all inputs); this per-input key is a second, redundant guard
+            # that should never actually reject a submission in practice.
+            # _ti_worker's own completion contract (release the gate, clear
+            # _ti_inflight/_ti_inflight_token in its `finally`) is untouched.
+            submitted = False
             try:
-                threading.Thread(
-                    target=self._ti_worker,
-                    args=(bytes(pcm_bytes), rate, worker_token, dispatch_gen),
-                    daemon=True,
-                    name=f"track-id-{self.input_index}",
-                ).start()
+                submitted = _task_pool.submit(
+                    f"track-id-{self.input_index}",
+                    self._ti_worker,
+                    bytes(pcm_bytes), rate, worker_token, dispatch_gen,
+                )
             except Exception:
                 logging.warning(
-                    "track_id[%d]: Thread.start() failed; releasing gate.",
+                    "track_id[%d]: task pool submit() raised; releasing gate.",
                     self.input_index, exc_info=True,
                 )
+            else:
+                if not submitted:
+                    logging.warning(
+                        "track_id[%d]: task pool submit() rejected (already in "
+                        "flight for this input); releasing gate.",
+                        self.input_index,
+                    )
+            if not submitted:
                 _track_id_request_gate.release()
                 if self._ti_inflight_token is worker_token:
                     self._ti_inflight = False
@@ -3010,6 +3387,7 @@ class AudioMonitor:
     def _ti_worker(self, pcm16_mono: bytes, sample_rate: int, worker_token: object, dispatch_gen: int) -> None:
         """Run identification in the background and schedule the next attempt."""
         from track_id.models import (
+            TrackIDProviderUnreachableError,
             TrackIDRateLimitedError,
             TrackIDUpstreamRejectionError,
             STATE_ERROR, STATE_IDENTIFIED, STATE_NOT_FOUND,
@@ -3127,11 +3505,33 @@ class AudioMonitor:
                 )
                 self._schedule_track_id_after(now, TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS, "upstream_rejection")
             elif isinstance(exc, TrackIDRateLimitedError):
+                # Honor a provider-supplied Retry-After-equivalent value
+                # when present and positive; otherwise fall back to the
+                # fixed constant.
+                retry_after = getattr(exc, "retry_after_seconds", None)
+                if isinstance(retry_after, (int, float)) and retry_after > 0:
+                    backoff = float(retry_after)
+                    logging.warning(
+                        "track_id[%d]: rate limited; backing off %.0fs (provider Retry-After)",
+                        self.input_index, backoff,
+                    )
+                else:
+                    backoff = TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+                    logging.warning(
+                        "track_id[%d]: rate limited; backing off %ds",
+                        self.input_index, backoff,
+                    )
+                self._schedule_track_id_after(now, backoff, "rate_limit")
+            elif isinstance(exc, TrackIDProviderUnreachableError):
+                # "Provider unreachable" (network/DNS/timeout) shares the
+                # rate-limit backoff bucket rather than the generic
+                # config-error one: a flaky network should not be retried
+                # more aggressively than an explicit rate limit.
                 logging.warning(
-                    "track_id[%d]: rate limited; backing off %ds",
+                    "track_id[%d]: provider unreachable; backing off %ds",
                     self.input_index, TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS,
                 )
-                self._schedule_track_id_after(now, TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS, "rate_limit")
+                self._schedule_track_id_after(now, TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS, "provider_unreachable")
             else:
                 logging.warning(
                     "track_id[%d]: worker error: %s; retry in %.0fs.",
@@ -3162,100 +3562,16 @@ class AudioMonitor:
     ) -> None:
         """Periodically retry refreshing currently selected OwnTone outputs.
 
-        *replay_origin* is True when this monitor's input is the current
-        replay's origin_input: this input isn't "capturing" while
-        replay plays its buffer, but it is still the session's audible
-        source, so the retry must not bail out as if idle. Defaults to False
-        so existing capture-driven call sites are unaffected.
-
-        *monitor_status* is the poll loop's most recent client.get_status()
-        result, if the caller has one in hand -- passed through to
-        retry_pending_format_reconcile() below. Callers
-        without a fresh status handy (e.g. the replay-session-start path)
-        may omit it: a pending format retry just waits for the next call
-        that does have one, which for the main poll-loop call site is at
-        most one poll interval away.
+        Thin delegate onto _SelfHeal.maybe_retry_owntone(): the substantive
+        logic lives there, grouped with the other two self-heal mechanisms.
+        Kept as a bound method under its original
+        name so every existing call site (m._maybe_retry_owntone(...),
+        patch.object(mon, "_maybe_retry_owntone")) keeps working unchanged.
+        See _SelfHeal.maybe_retry_owntone()'s docstring for the full
+        *replay_origin* / *monitor_status* contract.
         """
-        if not self.is_capturing and not replay_origin:
-            return
-        if not self.owntone_base_url:
-            return
-        if self._owntone_enabled_ok:
-            return
-        if (now - self._owntone_last_attempt) < self.OWNTONE_RETRY_SECONDS:
-            return
-        self._owntone_last_attempt = now
-
-        fifo_result = reconcile_fifo_with_backend(
-            self.owntone_base_url,
-            self.fifo_path,
-            timeout=3.0,
-            update_timeout_s=5.0,
-            update_interval_s=2.0,
-        )
-        if not fifo_result.ok:
-            self._owntone_recovery_log.fail(now)
-            self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Skipping OwnTone recovery while FIFO/backend reconciliation failed: %s",
-                fifo_result.message or "reconcile failed",
-            )
-            return
-
-        outputs = self._get_owntone_outputs()
-        if outputs is None:
-            self._owntone_recovery_log.fail(now)
-            self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Skipping OwnTone selected-output refresh: outputs API unavailable.",
-            )
-            return
-
-        # outputs is not None: the outputs probe above just confirmed
-        # owntone-mini is reachable -- exactly the moment to retry a
-        # still-pending pipe-format reconcile, in case a
-        # startup/reconnect-time partial save is still waiting for the
-        # backend to come back. Cheap no-op (zero HTTP traffic) whenever
-        # nothing is pending, so this costs nothing in the steady state.
-        retry_pending_format_reconcile(self.owntone_base_url, monitor_status)
-
-        if not self._has_any_selected_outputs(outputs):
-            if user_silence_latch_active():
-                # The user deliberately disabled the last selected output
-                # through the Web UI; do not re-apply the default output
-                # while the latch is active (cleared by the user enabling an
-                # output, or by the session ending). The FIFO/format
-                # reconcile work above still ran this cycle -- only the
-                # output-enable/default-apply step is skipped here.
-                return
-            if not self._auto_select_default_output(now, outputs, reason="retry"):
-                self._throttled_owntone_log(
-                    now,
-                    logging.INFO,
-                    "No outputs selected during capture; default fallback not available yet.",
-                )
-                return
-            outputs = self._get_owntone_outputs()
-            if outputs is None or not self._has_any_selected_outputs(outputs):
-                return
-
-        if self._refresh_selected_outputs(outputs):
-            self._owntone_recovery_log.ok(now)
-            self._owntone_enabled_ok = True
-            # Outputs were just re-applied after a backend restart/state
-            # loss: the backend's queue holds only its startup defaults, so
-            # the on-screen now-playing would show those until the next
-            # natural push. Have the poll loop re-send the current bundle.
-            request_nowplaying_republish()
-            return
-
-        self._owntone_recovery_log.fail(now)
-        self._throttled_owntone_log(
-            now,
-            logging.WARNING,
-            "OwnTone selected-output refresh failed during capture; will retry.",
+        _SelfHeal.maybe_retry_owntone(
+            self, now, replay_origin=replay_origin, monitor_status=monitor_status,
         )
 
     def _throttled_owntone_log(self, now: float, level: int, msg: str, *args) -> None:
@@ -3491,6 +3807,28 @@ def _reconcile_audio_path_startup(settings) -> None:
     )
 
 
+def _fresh_audio_path(settings) -> Optional[str]:
+    """Return general.audio_path from a fresh snapshot of the canonical
+    in-memory settings store.
+
+    Returns None if the store is unavailable or the snapshot cannot be
+    taken -- callers must treat None as "unknown, skip audio-path
+    enforcement this pass", never fall back to a cached cfg snapshot (a
+    stale snapshot acting where fresh data was unavailable is exactly the
+    failure mode this exists to prevent). Deliberately not a disk read:
+    json persistence lags the in-memory store by up to the dirty-save
+    interval, and a successful read of pre-change bytes is
+    indistinguishable from fresh data.
+    """
+    if settings is None:
+        return None
+    try:
+        return settings.snapshot().general.audio_path
+    except Exception:
+        logging.debug("settings.snapshot() raised while reading audio_path", exc_info=True)
+        return None
+
+
 def _sync_audio_path_backend(base_url: str, audio_path: str) -> None:
     """Push the resample_quality knob and recompose/restart monitor args for
     *audio_path*, tolerating any backend/transport failure (both callees
@@ -3550,7 +3888,7 @@ def _resync_monitor_daemon(
     repeat_enabled: bool = False,
     repeat_codec: str = "auto",
     repeat_target_minutes: Optional[int] = None,
-    audio_path: str = AUDIO_PATH_DEFAULT,
+    audio_path: Optional[str] = None,
 ) -> bool:
     """Re-send the full daemon state after reconnect.
 
@@ -3562,6 +3900,12 @@ def _resync_monitor_daemon(
     set_repeat_enabled is the one exception: an old binary that does not
     recognise the command must not fail the whole resync, so its result is
     logged but not treated as fatal.
+
+    audio_path is None when the caller could not obtain a fresh value (e.g.
+    the settings store was unavailable at resync time): format enforcement
+    below still runs since it is snapshot-free by design, but the
+    audio_path-derived backend sync leg is skipped for this pass rather than
+    guessing from stale data.
     """
     fifo_result = reconcile_fifo_with_backend(
         owntone_base_url,
@@ -3630,9 +3974,18 @@ def _resync_monitor_daemon(
     # treatment as the reconciles above -- see _sync_audio_path_backend().
     # Gated on format_status like reconcile_monitor_format()'s own no-op
     # path above: a monitor that cannot report status right now must not be
-    # used as a reason to contact the playback backend at all.
-    if format_status:
+    # used as a reason to contact the playback backend at all. Also gated on
+    # audio_path itself: None means the caller could not obtain a fresh
+    # value, and pushing a derived resample_quality/tier from an unknown
+    # source value would be a guess. The next startup lap, reconnect, or
+    # settings change re-attempts with fresh data.
+    if format_status and audio_path is not None:
         _sync_audio_path_backend(owntone_base_url, audio_path)
+    elif format_status:
+        logging.warning(
+            "audio_path unavailable from the settings store; skipping "
+            "audio-path enforcement for this reconnect pass."
+        )
 
     if not client.set_fifo(fifo_path):
         logging.warning("set_fifo failed after reconnect; will retry.")
@@ -3944,25 +4297,116 @@ def _check_webui_thread(thread) -> None:
         raise RuntimeError("Web UI thread has exited unexpectedly; shutting down")
 
 
-def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
-    """Run autostream using the given config file path.
+# --------------------------------------------------------------------------- #
+# Named-interval table                                                        #
+# --------------------------------------------------------------------------- #
+# One small table of (name, period, callback) rows, consulted once per        #
+# coordinator-loop tick, immediately before time.sleep(). This is the "one    #
+# way to run a periodic task" convention for anything slower than the loop's  #
+# own 500ms cadence. Adding a new periodic task means adding one row here,    #
+# not spawning a thread or hand-rolling a counter.                           #
+#
+# Tick-frequency checks that already carry their own internal rate limit
+# (the OwnTone zero-output reconcile and hang watchdog) are intentionally
+# not put on this table -- they are cheap enough, and already self-limiting
+# enough, that a dedicated table row would add indirection without benefit.
+@dataclass
+class _NamedInterval:
+    """One row in the named-interval table.
 
-    Connects to the autostream_monitor daemon, configures inputs, and runs
-    the coordinator loop until a stop signal is received.
+    `callback` runs at most once every `period_s`, driven synchronously from
+    the coordinator loop's own tick -- no dedicated thread or timer.
+    """
 
-    If start_webui is provided it is called with (config_path, settings=settings)
-    to start the optional web UI in a background thread.
+    name: str
+    period_s: float
+    callback: Callable[[], None]
+    last_run: float = 0.0
 
-    If settings is None a SettingsStore is created internally and closed when
-    the coordinator exits.  Pass an externally-owned store to share the same
-    in-memory config between the coordinator and the Web UI.
+
+class _IntervalTable:
+    """A tiny in-process scheduler: a list of `_NamedInterval` rows, checked
+    once per coordinator-loop tick via `tick()`.
+
+    Not a thread of its own -- `tick()` must be called synchronously from the
+    existing loop body, immediately before the loop's own sleep.
+    """
+
+    def __init__(self) -> None:
+        self._intervals: list[_NamedInterval] = []
+
+    def register(self, name: str, period_s: float, callback: Callable[[], None]) -> None:
+        self._intervals.append(_NamedInterval(name=name, period_s=period_s, callback=callback))
+
+    def tick(self, now: Optional[float] = None) -> None:
+        """Run any row whose period has elapsed since it last ran.
+
+        A freshly-registered row (never run, `last_run == 0.0`) fires on the
+        first tick it's eligible for, matching the cadence a plain
+        `if <condition>: callback()` check would have had at startup.
+        """
+        now = time.time() if now is None else now
+        for interval in self._intervals:
+            if now - interval.last_run >= interval.period_s:
+                interval.last_run = now
+                interval.callback()
+
+
+@dataclass(frozen=True)
+class _TickSnapshot:
+    """Read-only per-tick snapshot of one poll cycle's status/repeat/
+    replay-origin state, built once immediately after those values are
+    read from get_status() and consulted by the ingest call sites below
+    instead of each one re-deriving them from three loose locals.
+
+    Populated from exactly the same source reads, at exactly the same
+    point in the coordinator loop, that fed those calls before this
+    snapshot existed -- a mechanical wrapper, not a logic change.
+    TIMING-SENSITIVE: constructed once per 500ms tick.
+    """
+
+    status_by_index: dict
+    repeat_status: Optional[dict]
+    replay_origin_idx: Optional[int]
+
+    def status_for(self, input_index: int) -> Optional[dict]:
+        return self.status_by_index.get(input_index)
+
+    def is_replay_origin(self, input_index: int) -> bool:
+        return input_index == self.replay_origin_idx
+
+
+@dataclass
+class _BootstrapResult:
+    """Everything run_autostream()'s startup-retry and coordinator-loop
+    phases need out of one-time process bootstrap. See _bootstrap()."""
+
+    settings: object
+    own_settings: bool
+    cfg: object
+    webui_thread: object
+    socket_path: str
+    version: str
+    poll_interval: float
+    switch_silence_seconds: float
+
+
+def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
+    """Run-once process bootstrap: settings store, signal handlers, logging,
+    startup log-level policy, static-facts audit, playback-tracker init,
+    install-state read, optional Web UI thread start, poll-cadence
+    constants, stale-Avahi cleanup, output-usage poller start.
+
+    Split out of run_autostream() -- every line here runs exactly once and
+    has no loop-carried state dependency on the startup-retry or
+    coordinator-loop phases.
     """
     from autostream_settings import SettingsStore as _SettingsStore
-    _own_settings = settings is None
+    own_settings = settings is None
     if settings is None:
         settings = _SettingsStore(config_path)
 
-    global _playing_announced, _reconcile_started
+    global _playing_announced
     _install_signal_handlers()
     cfg = settings.snapshot()
     setup_logging(cfg.general.log_file, cfg.general.log_level)
@@ -3986,8 +4430,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         webui_thread = start_webui(config_path, settings=settings)
 
     socket_path = get_monitor_socket_path()
-    POLL_INTERVAL = 0.5          # seconds between get_status() polls
-    SWITCH_SILENCE_SECONDS = 5.0 # how long current input must be silent before switching
+    poll_interval = 0.5          # seconds between get_status() polls
+    switch_silence_seconds = 5.0 # how long current input must be silent before switching
 
     # Remove any stale playing announcement from a previous crash, then
     # sync _playing_announced to filesystem truth so _sync_playing_announcement
@@ -3996,128 +4440,219 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     _playing_announced = _AVAHI_PLAYING_PATH.exists()
     _start_output_usage_poller(cfg)
 
-    # Outer loop: runs once normally; repeats after a config reload.
+    return _BootstrapResult(
+        settings=settings,
+        own_settings=own_settings,
+        cfg=cfg,
+        webui_thread=webui_thread,
+        socket_path=socket_path,
+        version=version,
+        poll_interval=poll_interval,
+        switch_silence_seconds=switch_silence_seconds,
+    )
+
+
+@dataclass
+class _StartupResult:
+    """Outcome of run_autostream()'s startup-retry phase. See
+    _await_startup().
+
+    `abort=True` means the caller must `return` from run_autostream
+    immediately, without teardown or the final settings flush -- this
+    reproduces the original inline `return` statements' behavior exactly
+    (the unconfigured-and-no-webui and stop-flag-while-waiting-for-config
+    cases). Otherwise the caller inspects `monitors`: None means stop_flag
+    was set (or the retry loop otherwise exited without success) and the
+    outer reload loop should `break`; a list means startup succeeded.
+    """
+
+    monitors: Optional[list["AudioMonitor"]]
+    cfg: object
+    fifo_path: Optional[str]
+    abort: bool = False
+
+
+def _await_startup(
+    config_path: str,
+    settings,
+    client: "MonitorClient",
+    webui_thread,
+    cfg,
+    start_webui,
+    socket_path: str,
+) -> _StartupResult:
+    """Startup-retry phase: wait out an unconfigured device, connect to the
+    monitor daemon, and reconcile FIFO/pipe-format/monitor-format, retrying
+    on any transient failure until stop_flag is set or startup succeeds.
+
+    Split out of run_autostream() -- same body, same retry/continue/break
+    structure, just callable in isolation. See _StartupResult for the
+    return contract.
+    """
+    fifo_path: Optional[str] = None
+    monitors: Optional[list["AudioMonitor"]] = None
+
     while not stop_flag.is_set():
-        client = MonitorClient(socket_path)
-        monitors: Optional[list[AudioMonitor]] = None
-
-        # ── Startup / configuration phase ────────────────────────────────────
-        while not stop_flag.is_set():
-            if unconfigured(config_path):
-                if start_webui is None:
-                    logging.error("Configuration is incomplete; cannot start without a valid INI.")
-                    return
-                logging.info(
-                    "Configuration is incomplete or has an invalid device format; "
-                    "starting in setup mode and waiting for Web UI changes.",
-                )
-                while not stop_flag.is_set() and unconfigured(config_path):
-                    _check_webui_thread(webui_thread)
-                    time.sleep(1.0)
-                if stop_flag.is_set():
-                    return
-                cfg = settings.snapshot()
-                continue
-
-            # SD-swap / fill-missing audio_path write-back, sequenced before
-            # the first monitor-format reconcile call site below. Idempotent
-            # (see _reconcile_audio_path_startup()'s docstring), so re-running
-            # it on every lap of this loop -- including connect-retry laps --
-            # settles to a no-op after the first successful correction.
-            _reconcile_audio_path_startup(settings)
-
+        if unconfigured(config_path):
+            if start_webui is None:
+                logging.error("Configuration is incomplete; cannot start without a valid INI.")
+                return _StartupResult(monitors=None, cfg=cfg, fifo_path=fifo_path, abort=True)
+            logging.info(
+                "Configuration is incomplete or has an invalid device format; "
+                "starting in setup mode and waiting for Web UI changes.",
+            )
+            while not stop_flag.is_set() and unconfigured(config_path):
+                _check_webui_thread(webui_thread)
+                time.sleep(1.0)
+            if stop_flag.is_set():
+                return _StartupResult(monitors=None, cfg=cfg, fifo_path=fifo_path, abort=True)
             cfg = settings.snapshot()
-            fifo_path = cfg.general.fifo_path
-            _ensure_playback_tracker(cfg)
+            continue
 
-            if not client.connect():
-                logging.warning(
-                    "Cannot connect to autostream_monitor at %s; retrying in 5 s.",
-                    socket_path,
-                )
-                _check_webui_thread(webui_thread)
-                time.sleep(5.0)
-                continue
+        # SD-swap / fill-missing audio_path write-back, sequenced before
+        # the first monitor-format reconcile call site below. Idempotent
+        # (see _reconcile_audio_path_startup()'s docstring), so re-running
+        # it on every lap of this loop -- including connect-retry laps --
+        # settles to a no-op after the first successful correction.
+        _reconcile_audio_path_startup(settings)
 
-            fifo_result = reconcile_fifo_with_backend(cfg.owntone.base_url, fifo_path, timeout=3.0)
-            if not fifo_result.ok:
-                logging.error(
-                    "Could not reconcile audio FIFO/backend during startup: %s",
-                    fifo_result.message or "reconcile failed",
-                )
-                client.close()
-                _check_webui_thread(webui_thread)
-                time.sleep(5.0)
-                continue
+        cfg = settings.snapshot()
+        fifo_path = cfg.general.fifo_path
+        _ensure_playback_tracker(cfg)
 
-            # Monitor-format reconcile, same placement logic as the reconnect
-            # path in _resync_monitor_daemon: sequenced BEFORE the
-            # pipe-format (owntone-mini-side) reconcile below, since a
-            # monitor restart requested here re-enters this startup loop via
-            # the `client.connect()` retry above and the pipe-format
-            # reconcile naturally re-runs against the post-restart report on
-            # that next lap. Unconditionally non-fatal to startup.
-            format_status = client.get_status()
-            monitor_format_result = reconcile_monitor_format(
-                cfg.owntone.base_url, format_status, timeout=3.0,
-                audio_path=cfg.general.audio_path,
+        if not client.connect():
+            logging.warning(
+                "Cannot connect to autostream_monitor at %s; retrying in 5 s.",
+                socket_path,
             )
-            if monitor_format_result.error or monitor_format_result.error_code:
-                logging.debug(
-                    "Monitor-format reconcile during startup: %s",
-                    monitor_format_result.message,
-                )
+            _check_webui_thread(webui_thread)
+            time.sleep(5.0)
+            continue
 
-            # Format reconcile, same
-            # placement logic as the reconnect path in _resync_monitor_daemon:
-            # sequenced after the FIFO-path reconcile (whose own restart-
-            # coupled action is a synchronous /api/update call, already
-            # finished by now -- nothing for a real process restart to race
-            # with), and unconditionally non-fatal to startup, mirroring
-            # fifo_result's own soft-failure-tolerant siblings below.
-            format_result = reconcile_pipe_format_with_backend(
-                cfg.owntone.base_url, format_status, timeout=3.0,
+        fifo_result = reconcile_fifo_with_backend(cfg.owntone.base_url, fifo_path, timeout=3.0)
+        if not fifo_result.ok:
+            logging.error(
+                "Could not reconcile audio FIFO/backend during startup: %s",
+                fifo_result.message or "reconcile failed",
             )
-            if format_result.error or format_result.error_code:
-                logging.debug(
-                    "Pipe-format reconcile during startup: %s",
-                    format_result.message,
-                )
-
-            # audio_path backend sync: same tolerant, never-fails-startup
-            # treatment as the reconciles above -- see _sync_audio_path_backend().
-            # Gated on format_status like reconcile_monitor_format()'s own
-            # no-op path above: a monitor that cannot report status right
-            # now must not be used as a reason to contact the playback
-            # backend at all.
-            if format_status:
-                _sync_audio_path_backend(cfg.owntone.base_url, cfg.general.audio_path)
-
-            if not client.set_fifo(fifo_path):
-                logging.warning("set_fifo(%r) failed during startup; retrying in 5 s.", fifo_path)
-                client.close()
-                _check_webui_thread(webui_thread)
-                time.sleep(5.0)
-                continue
-
-            if cfg.owntone.base_url:
-                pipe_ready_result = ensure_pipe_source_ready(cfg.owntone.base_url, timeout=3)
-                if pipe_ready_result.ok:
-                    logging.info("OwnTone pipe source is indexed and ready.")
-                else:
-                    logging.warning(
-                        "OwnTone pipe source is not indexed yet; "
-                        "playback start may fail until backend refresh succeeds (%s).",
-                        pipe_ready_result.message or "not ready",
-                    )
-
-            monitors = _configure_startup_monitors(client, cfg, fifo_path)
-            if monitors is not None:
-                break
-
             client.close()
             _check_webui_thread(webui_thread)
             time.sleep(5.0)
+            continue
+
+        # Monitor-format reconcile, same placement logic as the reconnect
+        # path in _resync_monitor_daemon: sequenced BEFORE the
+        # pipe-format (owntone-mini-side) reconcile below, since a
+        # monitor restart requested here re-enters this startup loop via
+        # the `client.connect()` retry above and the pipe-format
+        # reconcile naturally re-runs against the post-restart report on
+        # that next lap. Unconditionally non-fatal to startup.
+        format_status = client.get_status()
+        monitor_format_result = reconcile_monitor_format(
+            cfg.owntone.base_url, format_status, timeout=3.0,
+            audio_path=cfg.general.audio_path,
+        )
+        if monitor_format_result.error or monitor_format_result.error_code:
+            logging.debug(
+                "Monitor-format reconcile during startup: %s",
+                monitor_format_result.message,
+            )
+
+        # Format reconcile, same
+        # placement logic as the reconnect path in _resync_monitor_daemon:
+        # sequenced after the FIFO-path reconcile (whose own restart-
+        # coupled action is a synchronous /api/update call, already
+        # finished by now -- nothing for a real process restart to race
+        # with), and unconditionally non-fatal to startup, mirroring
+        # fifo_result's own soft-failure-tolerant siblings below.
+        format_result = reconcile_pipe_format_with_backend(
+            cfg.owntone.base_url, format_status, timeout=3.0,
+        )
+        if format_result.error or format_result.error_code:
+            logging.debug(
+                "Pipe-format reconcile during startup: %s",
+                format_result.message,
+            )
+
+        # audio_path backend sync: same tolerant, never-fails-startup
+        # treatment as the reconciles above -- see _sync_audio_path_backend().
+        # Gated on format_status like reconcile_monitor_format()'s own
+        # no-op path above: a monitor that cannot report status right
+        # now must not be used as a reason to contact the playback
+        # backend at all.
+        if format_status:
+            _sync_audio_path_backend(cfg.owntone.base_url, cfg.general.audio_path)
+
+        if not client.set_fifo(fifo_path):
+            logging.warning("set_fifo(%r) failed during startup; retrying in 5 s.", fifo_path)
+            client.close()
+            _check_webui_thread(webui_thread)
+            time.sleep(5.0)
+            continue
+
+        if cfg.owntone.base_url:
+            pipe_ready_result = ensure_pipe_source_ready(cfg.owntone.base_url, timeout=3)
+            if pipe_ready_result.ok:
+                logging.info("OwnTone pipe source is indexed and ready.")
+            else:
+                logging.warning(
+                    "OwnTone pipe source is not indexed yet; "
+                    "playback start may fail until backend refresh succeeds (%s).",
+                    pipe_ready_result.message or "not ready",
+                )
+
+        monitors = _configure_startup_monitors(client, cfg, fifo_path)
+        if monitors is not None:
+            break
+
+        client.close()
+        _check_webui_thread(webui_thread)
+        time.sleep(5.0)
+
+    return _StartupResult(monitors=monitors, cfg=cfg, fifo_path=fifo_path, abort=False)
+
+
+def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
+    """Run autostream using the given config file path.
+
+    Connects to the autostream_monitor daemon, configures inputs, and runs
+    the coordinator loop until a stop signal is received.
+
+    If start_webui is provided it is called with (config_path, settings=settings)
+    to start the optional web UI in a background thread.
+
+    If settings is None a SettingsStore is created internally and closed when
+    the coordinator exits.  Pass an externally-owned store to share the same
+    in-memory config between the coordinator and the Web UI.
+    """
+    global _reconcile_started
+
+    bootstrap = _bootstrap(config_path, start_webui, settings)
+    settings = bootstrap.settings
+    _own_settings = bootstrap.own_settings
+    cfg = bootstrap.cfg
+    webui_thread = bootstrap.webui_thread
+    socket_path = bootstrap.socket_path
+    version = bootstrap.version
+    POLL_INTERVAL = bootstrap.poll_interval
+    SWITCH_SILENCE_SECONDS = bootstrap.switch_silence_seconds
+
+    # Fresh at process start; carried forward (not reconstructed) across
+    # every outer-loop pass below so its restart rate limit survives both
+    # reconnects and reloads -- see _carry_forward_hang_watchdog.
+    owntone_hang_watchdog = _OwntoneHangWatchdog()
+
+    # Outer loop: runs once normally; repeats after a config reload.
+    while not stop_flag.is_set():
+        client = MonitorClient(socket_path)
+
+        # ── Startup / configuration phase ────────────────────────────────────
+        startup = _await_startup(config_path, settings, client, webui_thread, cfg, start_webui, socket_path)
+        cfg = startup.cfg
+        fifo_path = startup.fifo_path
+        monitors = startup.monitors
+        if startup.abort:
+            return
 
         if stop_flag.is_set() or monitors is None:
             client.close()
@@ -4154,12 +4689,27 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # failure path below, since either one leaving the loop unable to
         # reach the daemon is the same observable outage to an operator.
         monitor_daemon_recovery_log = _RecoveryLog("autostream_monitor connection")
-        # OwnTone-restart reconcile + hang watchdog: same fresh-per-(re)start
-        # / .reset()-on-reconnect lifecycle as session_tracker above -- a
-        # stale pre-reload/pre-reconnect streak or rate-limit window must
+        # OwnTone-restart reconcile: same fresh-per-(re)start /
+        # .reset()-on-reconnect lifecycle as session_tracker above -- a
+        # stale pre-reload/pre-reconnect zero-selected-outputs streak must
         # never carry across a resync.
         owntone_reconcile_tracker = _OwntoneReconcileTracker()
-        owntone_hang_watchdog = _OwntoneHangWatchdog()
+        # Hang watchdog is the deliberate exception: its restart rate limit
+        # carries forward across both reload and reconnect (see
+        # _carry_forward_hang_watchdog and the reconnect branch below).
+        owntone_hang_watchdog = _carry_forward_hang_watchdog(owntone_hang_watchdog)
+
+        # Named-interval table: lower-frequency work registers a row here
+        # instead of being interleaved ad hoc in the loop body below. Fresh
+        # per (re)start, matching session_tracker/owntone_*_tracker above --
+        # a row's last-run time must not carry across a reload/reconnect.
+        def _flush_stats() -> None:
+            t = _playback_tracker
+            if t is not None:
+                t.maybe_flush()
+
+        interval_table = _IntervalTable()
+        interval_table.register("stats_flush", DEFAULT_FLUSH_INTERVAL_SECONDS, _flush_stats)
 
         try:
             while not stop_flag.is_set():
@@ -4201,7 +4751,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                         cfg.repeat.enabled,
                         cfg.repeat.codec,
                         cfg.repeat.target_minutes,
-                        cfg.general.audio_path,
+                        _fresh_audio_path(settings),
                     ):
                         _set_monitor_runtime_info(connected=False)
                         reconnect_at = time.time() + 5.0
@@ -4269,6 +4819,17 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # cycle, not a later, possibly-stale repeat_status.
                 replay_origin_idx = _replay_origin_input(repeat_status)
 
+                # Read-only per-tick snapshot bundling the three values just
+                # computed above, so the ingest call sites below (and the
+                # OwnTone-retry / track-ID-trigger calls further down) read
+                # from one object instead of re-deriving from three loose
+                # locals. See _TickSnapshot.
+                tick_snapshot = _TickSnapshot(
+                    status_by_index=status_by_index,
+                    repeat_status=repeat_status,
+                    replay_origin_idx=replay_origin_idx,
+                )
+
                 # Two-pass update so that callbacks see the final state of ALL
                 # monitors, not a partially-updated snapshot.  This prevents
                 # spurious OwnTone stop/disable when one input hands off to
@@ -4277,10 +4838,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 stopped: list[AudioMonitor] = []
 
                 for m in monitors:
-                    if m.input_index in status_by_index:
+                    status_entry = tick_snapshot.status_for(m.input_index)
+                    if status_entry is not None:
                         transition = m._ingest_status(
-                            status_by_index[m.input_index],
-                            replay_origin=(m.input_index == replay_origin_idx),
+                            status_entry,
+                            replay_origin=tick_snapshot.is_replay_origin(m.input_index),
                         )
                         if transition == "started":
                             started.append(m)
@@ -4291,7 +4853,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # activity, rather than the broader capture window that
                 # includes the silence timeout used to detect playback end.
                 for m in monitors:
-                    m._sync_playback_tracker_state(repeat_status)
+                    m._sync_playback_tracker_state(tick_snapshot.repeat_status)
 
                 # Per-input duties only (track-ID scheduling + logging); see
                 # _on_capture_started/_on_capture_stopped docstrings. Fire
@@ -4393,23 +4955,24 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                             logging.info("No active input selected.")
 
                 # ── Flush pending allow_capture changes and OwnTone retries ───
-                # replay_origin_idx was already computed above from this same
-                # snapshot, before the ingest loop.
+                # tick_snapshot was already built above from this same poll
+                # cycle's status/replay-origin read, before the ingest loop.
                 now = time.time()
                 for m in monitors:
                     m.apply_allow_capture(client)
                     m._maybe_retry_owntone(
                         now,
-                        replay_origin=(m.input_index == replay_origin_idx),
+                        replay_origin=tick_snapshot.is_replay_origin(m.input_index),
                         monitor_status=status,
                     )
                     m.maybe_trigger_track_identification(
-                        client, now, replay_origin=(m.input_index == replay_origin_idx),
+                        client, now, replay_origin=tick_snapshot.is_replay_origin(m.input_index),
                     )
 
-                tracker = _playback_tracker
-                if tracker is not None:
-                    tracker.maybe_flush()
+                # ── Named-interval table ───────────────────────────────────────
+                # Lower-frequency work (currently: stats flush) runs from here,
+                # immediately before the tick sleep. See _IntervalTable above.
+                interval_table.tick()
 
                 time.sleep(POLL_INTERVAL)
 
