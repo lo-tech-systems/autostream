@@ -25,13 +25,14 @@ from autostream_appliances import get_all_appliances
 from autostream_core import OUTPUT_PEQ_BANDS, get_live_monitor_output_rate
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
-from autostream_webui_assets import APPLIANCE_SELECTOR_CSS
+from autostream_webui_assets import APPLIANCE_SELECTOR_CSS, REFRESH_APPLIANCE_SELECTOR_SCRIPT
 from autostream_webui_common import (
     CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
+    send_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -597,19 +598,7 @@ function updateSelectorFromAppliances(appliances,currentId,currentPage){
   if(nameEl&&cur) nameEl.textContent=String(cur.hostname||'autostream');
 }
 
-function refreshApplianceSelector(){
-  fetch('/api/appliances',{cache:'no-store'})
-    .then(function(r){return r.json();})
-    .then(function(data){
-      if(!data||!data.ok||!Array.isArray(data.appliances)) return;
-      var el=document.getElementById('appliance-selector');
-      var currentId=el?(el.getAttribute('data-current-id')||window.__LOCAL_ID||''):(window.__LOCAL_ID||'');
-      var currentPage=el?(el.getAttribute('data-current-page')||'equaliser'):'equaliser';
-      updateSelectorFromAppliances(data.appliances,currentId,currentPage);
-    })
-    .catch(function(){});
-}
-"""
+""" + REFRESH_APPLIANCE_SELECTOR_SCRIPT
 
 
 # -----------------------------------------------------------------------------
@@ -658,6 +647,7 @@ def send_equaliser_page(
     _head_extra = (
         f"<script>"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
+        f"window.__SELECTOR_CURRENT_PAGE='equaliser';"
         f"window.__POLL_URL='{_poll_url}';"
         f"</script>"
     )
@@ -682,12 +672,7 @@ def send_equaliser_page(
         active_tab="equaliser",
         dark_mode=dark_mode,
     )
-    body_bytes = page.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, page)
 
 
 # -----------------------------------------------------------------------------
@@ -998,17 +983,7 @@ function updateSelectorFromAppliances(appliances,currentId,currentPage){
   var cur=appliances.find(function(a){return a.id===currentId;});
   if(nameEl&&cur)nameEl.textContent=String(cur.hostname||'autostream');
 }
-function refreshApplianceSelector(){
-  fetch('/api/appliances',{cache:'no-store'})
-    .then(function(r){return r.json();})
-    .then(function(data){
-      if(!data||!data.ok||!Array.isArray(data.appliances))return;
-      var el=document.getElementById('appliance-selector');
-      var currentId=el?(el.getAttribute('data-current-id')||window.__REMOTE_AID||''):(window.__REMOTE_AID||'');
-      var currentPage=el?(el.getAttribute('data-current-page')||'equaliser'):'equaliser';
-      updateSelectorFromAppliances(data.appliances,currentId,currentPage);
-    }).catch(function(){});
-}
+""" + REFRESH_APPLIANCE_SELECTOR_SCRIPT + """
 window.addEventListener('DOMContentLoaded',function(){
   initApplianceSelector();refreshApplianceSelector();
   setInterval(function(){if(!document.hidden)refreshApplianceSelector();},15000);
@@ -1076,6 +1051,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         f"window.__REMOTE_AID='{html.escape(appliance_id)}';"
         f"window.__REMOTE_HOSTNAME='{html.escape(_remote_hostname)}';"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
+        f"window.__SELECTOR_CURRENT_PAGE='equaliser';"
         f"</script>\n"
         + CSRF_RECOVERY_SCRIPT
         + _REMOTE_EQUALISER_SCRIPT
@@ -1117,14 +1093,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         dark_mode=dark_mode,
         remote_id=appliance_id,
     )
-    body_bytes = page.encode("utf-8")
     try:
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body_bytes)))
-        handler.end_headers()
-        handler.wfile.write(body_bytes)
-    except (BrokenPipeError, ConnectionResetError):
-        pass
+        send_html(handler, 200, page)
     except Exception:
         pass

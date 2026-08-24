@@ -41,6 +41,7 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_player_service import config_airplay_mode_to_backend
+from autostream_settings_schema import SETTINGS_SCHEMA, CrossFieldValidationError
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
 from autostream_webui_common import (
@@ -89,6 +90,23 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
 # -----------------------------------------------------------------------------
 # Setup form POST
+#
+# Only the fields below whose value-normalisation is already the exact
+# same shared function the JSON settings API's schema rows carry
+# (webui.output_usage_poll_interval_seconds and the three
+# track_identification.* fields, each via SETTINGS_SCHEMA[path].form_coerce)
+# are routed through the schema table here. Every other field this handler
+# parses (gain_db, the EQ bands, silence_seconds, volume_percent, capture
+# devices, ...) is deliberately left as its pre-existing bare float()/int()/
+# str cast: this form has never enforced the JSON API's bounds/enum checks
+# on those fields (e.g. a gain_db outside [-10, 10] is silently accepted
+# here today, while POST /api/settings rejects it). This is a known,
+# pre-existing inconsistency between the two write paths, left alone until
+# a single settings.set() entry point exists to hang one shared rule off.
+# Routing those fields through the JSON API's stricter validators here
+# would be a real behaviour change (previously-accepted values start
+# failing the whole form save), not a consolidation, so this does not do
+# it.
 # -----------------------------------------------------------------------------
 
 def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
@@ -112,6 +130,30 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             new_audio1_turntable = "audio_turntable" in form
             new_audio2_turntable = "audio2_turntable" in form
 
+            # The setup form previously did not enforce the cross-input
+            # capture-device uniqueness invariant that POST /api/settings
+            # has always enforced -- a form submission assigning the same
+            # device to both inputs was silently accepted. This is a
+            # deliberate behaviour fix, not a silent side effect: both
+            # write paths now call the same schema-declared
+            # cross_validate_capture_device_unique() (autostream_settings_
+            # schema.py), so a duplicate assignment is rejected here exactly
+            # as it already was via the JSON API.
+            #
+            # Checked HERE, before anything below it, because this is the
+            # first irreversible side effect boundary: set_system_hostname()
+            # writes to the live system immediately and is NOT rolled back by
+            # the error page this rejection renders. The invariant runs
+            # against a synthetic raw dict holding the two incoming form
+            # values -- cfg still carries the OLD audio2 device at this point,
+            # so passing cfg here would compare the wrong pair.
+            new_audio1_device = fld("audio_capture_device", p.audio1.capture_device)
+            new_audio2_device = fld("audio2_capture_device", p.audio2.capture_device)
+            SETTINGS_SCHEMA["audio1.capture_device"].cross_validate(
+                {"audio2": {"capture_device": new_audio2_device}},
+                "audio1", "capture_device", new_audio1_device,
+            )
+
             # Hostname
             old_hn = get_system_hostname()
             nh = fld("system_hostname").strip()
@@ -121,7 +163,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
             # Config updates
             a1 = cfg.setdefault("audio1", {})
-            a1["capture_device"] = fld("audio_capture_device", p.audio1.capture_device)
+            a1["capture_device"] = new_audio1_device
             new_audio1_threshold = set_input_mode(cfg, 1, new_audio1_turntable)
             a1["gain_db"] = float(fld("audio1_gain_db", str(p.audio1.gain_db)))
             a1["eq_40hz_db"] = float(fld("audio1_eq_40hz_db", str(p.audio1.eq_40hz_db)))
@@ -131,7 +173,7 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
 
             a2 = cfg.setdefault("audio2", {})
             a2["enabled"] = bool(new_audio2_enabled)
-            a2["capture_device"] = fld("audio2_capture_device", p.audio2.capture_device)
+            a2["capture_device"] = new_audio2_device
             new_audio2_threshold = set_input_mode(cfg, 2, new_audio2_turntable)
             a2["gain_db"] = float(fld("audio2_gain_db", str(p.audio2.gain_db)))
             a2["eq_40hz_db"] = float(fld("audio2_eq_40hz_db", str(p.audio2.eq_40hz_db)))
@@ -161,19 +203,24 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                 webui["dark_mode"] = bool("webui_dark_mode" in form)
                 new_show_hostname = bool("webui_show_hostname_on_home" in form)
                 webui["show_hostname_on_home"] = new_show_hostname
-                # Enforce dependency: control_other_appliances requires show_hostname_on_home.
-                if not new_show_hostname:
-                    webui["control_other_appliances"] = False
-                elif "webui_control_other_appliances_present" in form:
+                # Enforce dependency: control_other_appliances requires
+                # show_hostname_on_home. Uses the same schema-declared cascade
+                # POST /api/settings uses (cross_validate_hostname_visibility_
+                # cascade), not a second hand-written copy of the same rule.
+                SETTINGS_SCHEMA["webui.show_hostname_on_home"].cross_validate(
+                    cfg, "webui", "show_hostname_on_home", new_show_hostname
+                )
+                if new_show_hostname and "webui_control_other_appliances_present" in form:
                     webui["control_other_appliances"] = bool("webui_control_other_appliances" in form)
                 # advertise_appliance is intentionally NOT saved here — it requires
                 # a successful privileged service operation before being persisted.
                 # That field-level update happens after this block.
 
             if "webui_output_usage_poll_interval_present" in form:
-                from autostream_config import normalize_output_usage_poll_interval
                 webui = cfg.setdefault("webui", {})
-                webui["output_usage_poll_interval_seconds"] = normalize_output_usage_poll_interval(
+                webui["output_usage_poll_interval_seconds"] = SETTINGS_SCHEMA[
+                    "webui.output_usage_poll_interval_seconds"
+                ].form_coerce(
                     fld("webui_output_usage_poll_interval_seconds", "3")
                 )
 
@@ -212,17 +259,17 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                     TRACK_ID_DEFAULT_PROVIDER,
                     TRACK_ID_DEFAULT_RETRY_SECONDS,
                     TRACK_ID_DEFAULT_SNAPSHOT_SECONDS,
-                    normalize_track_id_analysis_lead_in_seconds,
-                    normalize_track_id_refresh_seconds,
-                    normalize_track_id_track_change_silence_seconds,
                 )
                 ti.setdefault("provider", p.track_identification.provider or TRACK_ID_DEFAULT_PROVIDER)
-                ti["analysis_lead_in_seconds"] = normalize_track_id_analysis_lead_in_seconds(
-                    fld("ti_analysis_lead_in_seconds"))
-                ti["refresh_seconds"] = normalize_track_id_refresh_seconds(
-                    fld("ti_refresh_seconds"))
-                ti["track_change_silence_seconds"] = normalize_track_id_track_change_silence_seconds(
-                    fld("ti_track_change_silence_seconds"))
+                ti["analysis_lead_in_seconds"] = SETTINGS_SCHEMA[
+                    "track_identification.analysis_lead_in_seconds"
+                ].form_coerce(fld("ti_analysis_lead_in_seconds"))
+                ti["refresh_seconds"] = SETTINGS_SCHEMA[
+                    "track_identification.refresh_seconds"
+                ].form_coerce(fld("ti_refresh_seconds"))
+                ti["track_change_silence_seconds"] = SETTINGS_SCHEMA[
+                    "track_identification.track_change_silence_seconds"
+                ].form_coerce(fld("ti_track_change_silence_seconds"))
                 ti.setdefault("snapshot_seconds", TRACK_ID_DEFAULT_SNAPSHOT_SECONDS)
                 ti.setdefault("retry_seconds", TRACK_ID_DEFAULT_RETRY_SECONDS)
                 ti.pop("interval_seconds", None)  # remove legacy field
@@ -365,6 +412,11 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
             request_config_reload()
         elif _track_id_changed:
             apply_track_id_config_live(state.config_path)
+    except CrossFieldValidationError as e:
+        # Same schema-declared invariant POST /api/settings enforces
+        # (see the cross_validate call above) -- surfaced here with its own
+        # message rather than falling through to the generic "Save failed".
+        send_setup_page(handler, state, auth, flash_msg=str(e), flash_type="error")
     except Exception:
         logging.exception("handle_setup_post: unexpected failure during save")
         send_setup_page(handler, state, auth, flash_msg="Save failed", flash_type="error")

@@ -311,15 +311,19 @@ class TestLocalHomeOutputsEmptyDebounce:
         assert "__OUTPUTS_EMPTY_COUNT" not in local_home_html
 
     def test_time_based_debounce_present(self, local_home_html):
+        # Local Home's output-poll body migrated onto the shared Poller helper:
+        # the fetch/in-flight-guard wrapper moved into poll.js, leaving
+        # this page's own onOutputsPollData(j) as the onData callback holding
+        # the empty-list debounce logic that's specific to this one poller.
         assert "__OUTPUTS_EMPTY_SINCE" in local_home_html
-        fn_idx = local_home_html.index("async function refreshOutputsState")
+        fn_idx = local_home_html.index("function onOutputsPollData")
         fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
         fn_body = local_home_html[fn_idx:fn_end]
         assert "Date.now() - window.__OUTPUTS_EMPTY_SINCE" in fn_body
         assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS" in fn_body
 
     def test_non_empty_outputs_resets_empty_since(self, local_home_html):
-        fn_idx = local_home_html.index("async function refreshOutputsState")
+        fn_idx = local_home_html.index("function onOutputsPollData")
         fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
         fn_body = local_home_html[fn_idx:fn_end]
         assert "window.__OUTPUTS_EMPTY_SINCE = null;" in fn_body
@@ -328,7 +332,7 @@ class TestLocalHomeOutputsEmptyDebounce:
         """A non-array outputs field (missing despite ok:true) must be treated
         as unknown, not as a confirmed empty list -- and must not consume or
         reset the empty-tolerance timer."""
-        fn_idx = local_home_html.index("async function refreshOutputsState")
+        fn_idx = local_home_html.index("function onOutputsPollData")
         fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
         fn_body = local_home_html[fn_idx:fn_end]
         unknown_idx = fn_body.index("!Array.isArray(j.outputs)")

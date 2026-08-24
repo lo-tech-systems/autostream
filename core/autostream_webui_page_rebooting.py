@@ -15,13 +15,21 @@ from __future__ import annotations
 
 import html
 
-from autostream_webui_assets import STYLE_CSS, VIEWPORT_META
-from autostream_webui_common import build_top_banner_html
+from autostream_webui_assets import VIEWPORT_META
+from autostream_webui_common import build_top_banner_html, get_app_version, send_html
 from autostream_webui_state import WebUIState
 
 
 def send_rebooting_page(handler, state: WebUIState, auth) -> None:
     """Render the reboot holding page."""
+    # This page deliberately does not go through build_page_html():
+    # it doesn't want the nav-bar/shell machinery -- there's nowhere
+    # useful to navigate to while the appliance is rebooting -- so it builds its
+    # own minimal document instead. It still links the shared theme.css just like
+    # every other page (nginx serves /static/ directly, independent of the app,
+    # so the stylesheet loads fine even this close to shutdown); only a few
+    # page-specific rules are inlined below.
+    #
     # Minimum time (ms) before we even attempt to return to '/'.
     # The reboot API schedules with a 3 s delay; shutdown and boot take time on
     # slower hardware.
@@ -34,13 +42,15 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
         f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
     )
 
+    style_link = f'<link rel="stylesheet" href="/static/theme.css?v={html.escape(get_app_version())}">'
+
     body = f"""<!doctype html>
       <html lang="en">
       <head>
         <meta charset="utf-8">{VIEWPORT_META}
         <title>Rebooting\u2026</title>
+        {style_link}
         <style>
-          {STYLE_CSS}
           body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }}
           .box {{ max-width: 42rem; margin: 2rem auto; padding: 1.25rem; border: 1px solid #ddd; border-radius: 12px; background:#fff; }}
           .muted {{ color: #666; }}
@@ -114,9 +124,4 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
       </body>
       </html>
     """
-    body_bytes = body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, body)

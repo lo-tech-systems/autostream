@@ -47,7 +47,7 @@ from autostream_player_service import (
     output_supported_config_modes,
 )
 from autostream_sysutils import run_admin_cmd
-from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config
+from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
 from autostream_webui_assets import AUTOSAVE_JS
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
@@ -169,6 +169,10 @@ def send_owntone_ready_json(handler, state) -> None:
 
 def send_owntone_restarting_page(handler, state) -> None:
     """Simple 'restarting' page that polls /api/owntone/ready and redirects when ready."""
+    # This holding page deliberately does not go through build_page_html()/the shared
+    # extra_css channel: it is a minimal standalone document shown while OwnTone
+    # itself is restarting, so it does not depend on the shared theme.css asset or
+    # any other autostream module state.
     # Allow a caller-provided next target, defaulting to owntone setup.
     qs = parse_qs(urlparse(handler.path).query)
     next_path = (qs.get("next", []) or ["/owntone-setup"])[0]
@@ -219,12 +223,7 @@ def send_owntone_restarting_page(handler, state) -> None:
       </body>
       </html>
     """
-    body_bytes = body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, body)
 
 
 # -----------------------------------------------------------------------------
@@ -639,9 +638,4 @@ def send_owntone_setup_page(
         dark_mode=parsed.webui.dark_mode,
         head_extra=csrf_meta,
     )
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, html_body)

@@ -32,6 +32,7 @@ from autostream_webui_common import (
     _config_snapshot,
     build_page_html,
     build_top_banner_html,
+    send_html,
 )
 
 from autostream_webui_state import WebUIState
@@ -241,12 +242,7 @@ def send_logs_page(
         active_tab="about",
         dark_mode=dark_mode,
     )
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, html_body)
 
 
 def handle_logs_download(handler) -> None:

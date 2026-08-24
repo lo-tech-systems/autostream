@@ -99,19 +99,32 @@ class _CapturingHandler:
         return self._buf
 
 
-def _render_production_setup_page() -> bytes:
+def _render_production_setup_page() -> tuple[bytes, dict[str, bytes]]:
     """Invoke the real send_setup_page() with mocked hardware deps.
 
-    Returns UTF-8 bytes of the complete HTML that a configured appliance
-    serves at /setup.  Any breakage in the production renderer, its CSS, or
-    its embedded JavaScript will cause this function to raise or return empty
-    bytes, which in turn fails the base_url fixture and all browser tests.
+    Returns (full_page_html_bytes, {card_key: card_detail_json_bytes}).
+
+    send_setup_page() is summary-rows-plus-empty-panels shaped: the
+    nine detail panels are not inlined into the /setup response, so
+    the stub server also needs each card's lazy `GET /api/setup/card/<key>`
+    response pre-rendered (via handle_setup_card_get()) to serve when the
+    real browser-side openPanel() JS fetches it -- without this, panel
+    bodies would just show the client's "Could not load this section"
+    fallback and every control-presence assertion below would fail.
+
+    Any breakage in the production renderer, its CSS, or its embedded
+    JavaScript will cause this function to raise or return empty bytes,
+    which in turn fails the base_url fixture and all browser tests.
     """
     sys.path.insert(0, str(REPO_ROOT / "core"))
 
     # Import lazily so the module is only loaded when the stub starts.
-    from autostream_webui_state import WebUIState            # noqa: PLC0415
-    from autostream_webui_page_setup import send_setup_page  # noqa: PLC0415
+    from autostream_webui_state import WebUIState  # noqa: PLC0415
+    from autostream_webui_page_setup import (  # noqa: PLC0415
+        CARDS,
+        handle_setup_card_get,
+        send_setup_page,
+    )
 
     auth = MagicMock()
     auth.get_csrf_token.return_value = ""
@@ -144,13 +157,19 @@ def _render_production_setup_page() -> bytes:
                    return_value=[]):
             send_setup_page(handler, state, auth)
 
+            card_html: dict[str, bytes] = {}
+            for card in CARDS:
+                card_handler = _CapturingHandler()
+                handle_setup_card_get(card_handler, state, auth, card.key)
+                card_html[card.key] = card_handler._buf.getvalue()
+
     html_bytes = handler._buf.getvalue()
     if not html_bytes:
         raise RuntimeError(
             "send_setup_page() produced no output — "
             "check _MINIMAL_CONFIG, mocked dependencies, and autostream_config.py"
         )
-    return html_bytes
+    return html_bytes, card_html
 
 
 # ---------------------------------------------------------------------------
@@ -159,13 +178,46 @@ def _render_production_setup_page() -> bytes:
 
 # Populated once per session by the base_url fixture before the server starts.
 _STUB_HTML_BYTES: bytes = b""
+# Keyed by card key, each value is the JSON body handle_setup_card_get()
+# produced for that card ({"ok": true, "html": "..."}), pre-rendered once so
+# the stub server can answer the browser's lazy per-card fetch.
+_STUB_CARD_JSON: dict = {}
 
 
 class _StubHandler(BaseHTTPRequestHandler):
     """Serve production-rendered HTML for page requests and JSON stubs for /api/."""
 
     def do_GET(self) -> None:
-        if self.path.startswith("/api/"):
+        if self.path.startswith("/static/"):
+            # Serve the real nginx/static/* files (poll.js, theme.css,
+            # render_fragments.js, ...) so scripts the real page's <script
+            # src="/static/..."> tags load (e.g. Poller, referenced by the
+            # Setup page's activeOnly pollers) actually execute instead
+            # of erroring on this server's default (non-static) HTML body.
+            rel = self.path.split("?", 1)[0][len("/static/"):]
+            static_path = (REPO_ROOT / "nginx" / "static" / rel).resolve()
+            static_root = (REPO_ROOT / "nginx" / "static").resolve()
+            if static_root in static_path.parents and static_path.is_file():
+                body = static_path.read_bytes()
+                ct = "text/css" if static_path.suffix == ".css" else "application/javascript"
+            else:
+                body = b""
+                ct = "text/plain"
+            self.send_response(200 if body else 404)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/api/setup/card/"):
+            # Lazy per-card detail fetch: serve the pre-rendered
+            # {ok, html} body for this specific card, not the generic
+            # catch-all below (which has no "html" key and would leave
+            # every panel showing the client's load-failure fallback).
+            key = self.path.rsplit("/", 1)[-1]
+            body = _STUB_CARD_JSON.get(key, b'{"ok": false, "error": "unknown_card"}')
+            ct = "application/json"
+        elif self.path.startswith("/api/"):
             # Return a catch-all JSON response so the real page's XHR polling
             # (refreshOwntoneOutputs, update-status poller, etc.) does not
             # raise unhandled promise rejections.
@@ -202,8 +254,8 @@ def base_url():
         return
 
     # Render production HTML once; raise clearly if the renderer is broken.
-    global _STUB_HTML_BYTES
-    _STUB_HTML_BYTES = _render_production_setup_page()
+    global _STUB_HTML_BYTES, _STUB_CARD_JSON
+    _STUB_HTML_BYTES, _STUB_CARD_JSON = _render_production_setup_page()
 
     server = HTTPServer(("127.0.0.1", 0), _StubHandler)
     port = server.server_address[1]
@@ -333,3 +385,131 @@ class TestAccessibility:
             assert el.inner_text().strip(), (
                 f"A .setup-list-card-title has no text: {el.inner_html()[:80]}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for the lazily-fetched Setup detail panels.
+# ---------------------------------------------------------------------------
+
+def _open_setup_panel(page: "Page", title: str) -> None:
+    page.locator(
+        ".setup-list-card", has=page.locator(".setup-list-card-title", has_text=title)
+    ).first.click()
+
+
+def _close_setup_panel(page: "Page", panel_id: str) -> None:
+    page.locator(f"#{panel_id} .setup-detail-back button").click()
+
+
+
+
+# ---------------------------------------------------------------------------
+# Lazy per-card detail fetch must not corrupt the other cards' summaries.
+#
+# Every collapsed summary row is *derived from that card's detail-panel
+# controls* by refreshSetupCardSubs(), which the Back button fires. Once the
+# panels load lazily, a card the user never opened has no controls in the DOM
+# at all -- so an ungated refresh reads every control as absent and rewrites
+# the correct server-rendered summary as "Off" / "No speaker selected . 0%" /
+# "Not configured". Opening one card and going Back must leave every other
+# card's summary exactly as the server rendered it.
+# ---------------------------------------------------------------------------
+
+@_requires_browser
+class TestLazyPanelsPreserveSummaries:
+    def _summaries(self, page: "Page") -> dict:
+        return {
+            el.get_attribute("id"): el.inner_text()
+            for el in page.locator(".setup-list-card-sub").all()
+        }
+
+    def test_back_from_one_panel_leaves_other_summaries_intact(
+        self, page: "Page", base_url: str
+    ):
+        page.goto(f"{base_url}/setup")
+        page.wait_for_load_state("networkidle")
+        before = self._summaries(page)
+        assert before.get("track-id-card-sub"), "expected a server-rendered Track ID summary"
+
+        _open_setup_panel(page, "Bluetooth")
+        expect(page.locator("#panel-bluetooth")).to_be_visible()
+        _close_setup_panel(page, "panel-bluetooth")
+        page.wait_for_timeout(250)
+
+        assert self._summaries(page) == before, (
+            "closing a panel rewrote other cards' summary rows -- "
+            "refreshSetupCardSubs() read never-fetched panels' absent controls"
+        )
+
+
+
+
+# ---------------------------------------------------------------------------
+# The two confirmed visibility/scope polling bugs, verified in a real
+# browser.
+#
+# Previously the Bluetooth link-status poll and the network-adapter-info poll
+# were bare `setInterval(..., 5000)` calls with no visibility check and no tie
+# to their own detail panel: both kept hitting the appliance every 5s forever,
+# whether or not their panel was open and whether or not the tab was even
+# visible. They are now `Poller({activeOnly: true})` instances started by
+# openPanel() and stopped by closePanel(), so the poll must be absent before
+# the panel is ever opened, present while it is open, and absent again once
+# it closes. Asserting only "the source says Poller(...)" would not catch a
+# missing .start()/.stop() wiring, which is the part that actually fixes the
+# bug -- hence a real browser and real request counting.
+# ---------------------------------------------------------------------------
+
+_POLL_WINDOW_MS = 6000  # > the 5s poll interval, so a live poll must fire
+
+
+def _assert_poll_is_panel_scoped(page: "Page", base_url: str, api_path: str,
+                                 card_title: str, panel_id: str) -> None:
+    page.goto(f"{base_url}/setup")
+    page.wait_for_load_state("networkidle")
+
+    hits: list[str] = []
+    page.on("request", lambda r: hits.append(r.url) if api_path in r.url else None)
+
+    # 1. Panel never opened -> the poll must not be running at all.
+    page.wait_for_timeout(_POLL_WINDOW_MS)
+    assert not hits, (
+        f"{api_path} was polled {len(hits)}x with {panel_id} closed -- the "
+        f"activeOnly Poller is running when it should be inert"
+    )
+
+    # 2. Panel open -> the poll runs.
+    _open_setup_panel(page, card_title)
+    expect(page.locator(f"#{panel_id}")).to_be_visible()
+    page.wait_for_timeout(_POLL_WINDOW_MS)
+    while_open = len(hits)
+    assert while_open >= 2, (
+        f"{api_path} was polled only {while_open}x in {_POLL_WINDOW_MS}ms with "
+        f"{panel_id} open -- expected an immediate poll plus at least one 5s tick"
+    )
+
+    # 3. Panel closed again -> the poll stops. Allow a moment for a request
+    #    already in flight at close time to land before taking the baseline.
+    _close_setup_panel(page, panel_id)
+    page.wait_for_timeout(500)
+    at_close = len(hits)
+    page.wait_for_timeout(_POLL_WINDOW_MS)
+    assert len(hits) == at_close, (
+        f"{api_path} was polled {len(hits) - at_close}x more after {panel_id} "
+        f"closed -- closePanel() did not stop the Poller"
+    )
+
+
+@_requires_browser
+class TestPanelScopedPolling:
+    def test_bluetooth_link_status_poll_is_panel_scoped(self, page: "Page", base_url: str):
+        _assert_poll_is_panel_scoped(
+            page, base_url, "/api/bluetooth/status", "Bluetooth", "panel-bluetooth"
+        )
+
+    def test_network_adapter_poll_is_panel_scoped(self, page: "Page", base_url: str):
+        _assert_poll_is_panel_scoped(
+            page, base_url, "/api/network/status", "System", "panel-system"
+        )
+
+

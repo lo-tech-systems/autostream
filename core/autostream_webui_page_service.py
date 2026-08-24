@@ -40,6 +40,7 @@ from autostream_webui_common import (
     _fallback_input_snapshot,
     build_page_html,
     build_top_banner_html,
+    send_html,
 )
 
 from autostream_webui_service_schema import (
@@ -625,9 +626,4 @@ def send_service_page(
         service_warn=service_warn,
         dark_mode=parsed.webui.dark_mode if parsed else False,
     )
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, html_body)

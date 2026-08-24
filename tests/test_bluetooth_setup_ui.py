@@ -93,10 +93,10 @@ class _SetupRenderer:
         audio1_capture_device: str = "hw:1,0",
         audio2_capture_device: str = "hw:2,0",
     ) -> str:
-        from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
+        from _setup_card_test_helpers import render_full_setup_with_cards
 
         cfg = _minimal_cfg(
             tmp_path,
@@ -136,10 +136,10 @@ class _SetupRenderer:
             with patch.object(
                 state, "get_monitor_devices", return_value=(monitor_devices or [])
             ):
-                send_setup_page(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
         store.close(save=False)
-        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+        return html
 
 
 BT_LOOPBACK_HW = "hw:CARD=ASBT,DEV=1"
@@ -311,8 +311,12 @@ class TestBluetoothEnabledUnpaired:
         assert "function _btForgetCurrent()" in html
 
     def test_status_endpoint_polled(self, html):
+        # Migrated onto the shared Poller (activeOnly, so it only
+        # polls while the Bluetooth panel is open -- fixes the confirmed
+        # backgrounded-tab poll-forever bug) instead of a bare setInterval.
         assert "/api/bluetooth/status" in html
-        assert "setInterval(_btRefreshLinkStatus, 5000)" in html
+        assert "_btStatusPoller = Poller(" in html
+        assert "activeOnly: true" in html
 
     def test_onchange_branch_present_for_input1(self, html):
         assert "if (isBluetoothDevice(this.value) && !btPaired) { openBtPairingModal(1, this); return; }" in html

@@ -104,10 +104,10 @@ def _render_setup_page(
     repeat_target_minutes: int = 33,
     minimum_playback_seconds: int = 30,
 ) -> str:
-    from autostream_webui_page_setup import send_setup_page
     from autostream_settings import SettingsStore
     from autostream_webui_state import WebUIState
     from autostream_players import ListOutputsResult
+    from _setup_card_test_helpers import render_full_setup_with_cards
 
     cfg = _minimal_cfg(
         tmp_path,
@@ -141,10 +141,10 @@ def _render_setup_page(
         _set_flash_cookie=MagicMock(),
     ):
         with patch.object(state, "get_monitor_devices", return_value=[]):
-            send_setup_page(handler, state, auth, flash_msg="")
+            html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
     store.close(save=False)
-    return handler.wfile.getvalue().decode("utf-8", errors="replace")
+    return html
 
 
 class TestSetupCustomiseRepeatControls:
@@ -483,16 +483,22 @@ class TestTopControlsCssRegressions:
        a lone item is placed at main-start, i.e. flush left.
     """
 
+    # The shared theme is served by nginx as a static file
+    # (nginx/static/theme.css) rather than inlined into the page, so these
+    # CSS rules are asserted against that file directly.
+
     def test_hidden_pill_btn_has_display_none_override(self):
-        html = _render_airplay_page(repeat_enabled=True)
-        assert ".pill-btn[hidden]" in html
-        override = html.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
+        theme_css = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
+
+        assert ".pill-btn[hidden]" in theme_css
+        override = theme_css.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
         assert "display: none" in override
 
     def test_appliance_selector_right_anchored_independently(self):
-        html = _render_airplay_page(repeat_enabled=False)
-        assert ".airplay-top-controls > .appliance-selector" in html
-        rule = html.split(
+        theme_css = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
+
+        assert ".airplay-top-controls > .appliance-selector" in theme_css
+        rule = theme_css.split(
             ".airplay-top-controls > .appliance-selector", 1
         )[1].split("}", 1)[0]
         # Must cover the display-only span fallback root as well.
@@ -591,7 +597,10 @@ class TestHomeRepeatButton:
         html = _render_airplay_page(repeat_enabled=True)
         assert "var polledOn = replaying || armed;" in html
         assert "btn.classList.toggle('active', on || stopping);" in html
-        assert ".repeat-btn.active" in html or "repeat-btn.active" in html
+        # The .active outline rule lives in the nginx-served theme now.
+        theme_css = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
+
+        assert ".repeat-btn.active" in theme_css
 
     def test_update_repeat_button_shows_progress_and_truncated_hint_in_title(self):
         """truncated_head is the DEFINED wrap semantic (keeps the last N

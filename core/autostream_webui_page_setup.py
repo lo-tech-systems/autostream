@@ -17,8 +17,9 @@ import json
 import logging
 import math
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import parse_qs
 
 from autostream_config import (
@@ -65,9 +66,175 @@ from autostream_webui_common import (
     build_page_html,
     build_top_banner_html,
     get_app_version,
+    send_html,
     settings_card_html,
 )
+from autostream_webui_api import send_json
+from autostream_webui_components import toggle_html
 from autostream_webui_state import WebUIState
+
+
+# -----------------------------------------------------------------------------
+# Setup card registry.
+#
+# ``SetupCtx`` bundles the per-request state every card's summary/detail
+# renderer needs -- the same values ``send_setup_page()`` used to compute
+# as inline locals before this split. It is built once by
+# ``_setup_build_ctx()``: ``send_setup_page()`` uses it to render every
+# card's *summary* row (cheap: no detail-panel HTML is built), and the
+# lazy per-card fetch route (``handle_setup_card_get()``) uses a freshly
+# built one to render a single card's *detail* panel HTML on demand.
+#
+# The initial /setup response does not inline all nine detail panels
+# (only their collapsed summary rows + an empty per-panel body
+# placeholder); opening a card fetches `GET /api/setup/card/<key>` the
+# first time, caching the result client-side thereafter. Every card's
+# field-level auto-save endpoints are unchanged -- only how the detail
+# markup itself reaches the browser changes.
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class SetupCtx:
+    """Shared, per-request context for the Setup page's card registry."""
+
+    handler: object
+    state: WebUIState
+    auth: object
+    parsed: object
+    monitor_devices: list
+    bt_enabled: bool
+    bt_status: Optional[dict]
+    bt_paired: bool
+    bt_services_on: bool
+    bt_onboard_on: bool
+    bt_buffer_ms: int
+    bt_card_summary: str
+    bt_paired_row_text: str
+    current_hostname: str
+    factory_reset: dict
+    dial_cards_html: str
+    dials_summary: str
+    dial_onload_js: str
+
+
+def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
+    """Build the shared per-request context every card renderer reads from.
+
+    May raise (a broken/partial config, per ``_config_snapshot()``'s own
+    contract) -- callers are responsible for the "swallow and log, degrade
+    gracefully" handling send_setup_page() has always done for this.
+    """
+    parsed = _config_snapshot(state)
+    monitor_devices = state.get_monitor_devices()
+    _bt_state = _setup_compute_bluetooth_state(state)
+    current_hostname = get_system_hostname()
+    factory_reset = _setup_factory_reset_html(auth)
+    dial_cards_html, dials_summary, dial_onload_js = _setup_dial_cards_html()
+    return SetupCtx(
+        handler=handler,
+        state=state,
+        auth=auth,
+        parsed=parsed,
+        monitor_devices=monitor_devices,
+        bt_enabled=_bt_state["bt_enabled"],
+        bt_status=_bt_state["bt_status"],
+        bt_paired=_bt_state["bt_paired"],
+        bt_services_on=_bt_state["bt_services_on"],
+        bt_onboard_on=_bt_state["bt_onboard_on"],
+        bt_buffer_ms=_bt_state["bt_buffer_ms"],
+        bt_card_summary=_bt_state["bt_card_summary"],
+        bt_paired_row_text=_bt_state["bt_paired_row_text"],
+        current_hostname=current_hostname,
+        factory_reset=factory_reset,
+        dial_cards_html=dial_cards_html,
+        dials_summary=dials_summary,
+        dial_onload_js=dial_onload_js,
+    )
+
+
+@dataclass(frozen=True)
+class Card:
+    """One row of the Setup page's card registry.
+
+    ``render_summary``/``render_detail`` both take a ``SetupCtx`` and
+    return HTML fragments: the collapsed list-row's sub-text, and the
+    detail panel's body (fetched lazily -- see module docstring above)
+    respectively. ``detail_header`` is the title passed to
+    ``_setup_detail_header()`` for the detail panel's heading; ``None``
+    means the card's own detail HTML supplies its own heading (only
+    Factory Reset does this today).
+    """
+
+    key: str
+    title: str
+    render_summary: Callable[[SetupCtx], str]
+    render_detail: Callable[[SetupCtx], str]
+    detail_header: Optional[str] = None
+
+
+CARDS: list = []
+
+
+def _register_card(
+    key: str,
+    title: str,
+    render_summary: Callable[[SetupCtx], str],
+    render_detail: Callable[[SetupCtx], str],
+    detail_header: Optional[str] = None,
+) -> None:
+    CARDS.append(
+        Card(
+            key=key,
+            title=title,
+            render_summary=render_summary,
+            render_detail=render_detail,
+            detail_header=detail_header,
+        )
+    )
+
+
+def _setup_list_row_html(card: Card, summary_html: str) -> str:
+    return f"""
+      <div class="setup-list-card" onclick="openPanel('{card.key}')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">{html.escape(card.title)}</span>
+          <span class="setup-list-card-sub" id="{card.key}-card-sub">{summary_html}</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>"""
+
+
+def _setup_panel_shell_html(card: Card) -> str:
+    header = _setup_detail_header(card.detail_header) if card.detail_header else ""
+    return f"""
+      <div class="setup-detail-panel" id="panel-{card.key}">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        {header}
+        <div class="setup-detail-panel-body" id="panel-body-{card.key}"></div>
+      </div>"""
+
+
+def handle_setup_card_get(handler, state: WebUIState, auth, key: str) -> None:
+    """`GET /api/setup/card/<key>` -- the lazy per-card detail fetch.
+
+    Same FULL auth + commissioning gating as `/setup` itself (see the
+    route table registration); this handler only has to worry about the
+    card key itself once dispatch() has already let the request through.
+    """
+    card = next((c for c in CARDS if c.key == key), None)
+    if card is None:
+        send_json(handler, 404, {"ok": False, "error": "unknown_card"})
+        return
+    try:
+        ctx = _setup_build_ctx(handler, state, auth)
+    except Exception:
+        logging.exception("handle_setup_card_get: failed to build setup context for card %r", key)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+    send_json(handler, 200, {"ok": True, "html": card.render_detail(ctx)})
 
 
 # -----------------------------------------------------------------------------
@@ -522,33 +689,9 @@ def _dial_card_html(
 # Page renderer
 # -----------------------------------------------------------------------------
 
-def send_setup_page(
-    handler,
-    state: WebUIState,
-    auth,
-    saved_ok: bool = False,
-    error: Optional[str] = None,
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
-) -> None:
-    """Render the main setup page."""
-    try:
-        parsed = _config_snapshot(state)
-    except Exception:
-        try:
-            handler.send_response(302)
-            handler.send_header("Location", "/")
-            handler.end_headers()
-        except Exception:
-            pass
-        return
 
-    h1 = "Setup"
-    # Speaker synchronisation writes per-output offsets, which need
-    # owntone-mini 1.2 or above (a standard OwnTone server silently ignores
-    # them) -- hide the entry point on backends without the capability.
-    # Fail open on a transient backend error: the align page itself
-    # refuses to start against an unsupported backend.
+def _setup_owntone_more_settings_html(parsed) -> str:
+    """"More Owntone Settings" / "Run Speaker Synchronisation" button block."""
     _align_supported = True
     try:
         from autostream_player_service import get_capabilities as _get_capabilities
@@ -576,38 +719,13 @@ def send_setup_page(
             More Owntone Settings
           </button>{_align_button_html}
         """
-    _auto_update_checked = " checked" if parsed.updates.auto_update else ""
-    _prerelease_checked = " checked" if parsed.updates.update_channel == "dev" else ""
-    update_html = f"""
-          <input type="hidden" name="updates_auto_update_present" value="1">
-          <input type="hidden" name="updates_channel_present" value="1">
-          <div>
-            <div style="display:flex;align-items:center;">
-              <button type="button" id="btnCheck" class="pill-btn small" style="margin-right:auto">Check</button>
-              <button type="button" id="btnInst" class="pill-btn small" style="margin:auto" disabled>Install</button>
-              <button type="button" class="pill-btn small" style="margin-left:auto" onclick="requestReboot()">Reboot</button>
-            </div>
-            <div id="updMsg" style="font-size:0.8rem;margin-top:0.3rem;"></div>
-          </div>
-          <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked} onchange="refreshSystemCardSub(); if(liveEnabled) settingsTransact('/api/settings/auto-update', {{value: this.checked}});">
-              <span class="switch"></span>
-            </label>
-            <span>Automatic updates</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="if(window.resetUpdateCheckState)resetUpdateCheckState(); refreshSystemCardSub(); settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
-              <span class="switch"></span>
-            </label>
-            <span>Enable pre-release updates</span>
-          </div>
-          <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">Pre-release versions may be less stable.</div>
-        """
+    return owntone_button_html
 
-    monitor_devices = state.get_monitor_devices()
 
+def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
+    """Shared Bluetooth state used by the Input cards, the Bluetooth card,
+    and the Bluetooth JS blocks. Returns a dict rather than a dataclass to
+    keep this a pure mechanical relocation of the original locals."""
     bt_enabled = _bluetooth_installed()
     bt_status = _bluetooth_status_from_state(state) if bt_enabled else None
     bt_paired = bool(bt_status and bt_status.get("paired"))
@@ -623,7 +741,34 @@ def send_setup_page(
         bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
     bt_card_summary = _bluetooth_card_summary(bt_services_on, bt_status)
     bt_paired_row_text = _bluetooth_paired_row_text(bt_status)
+    return {
+        "bt_enabled": bt_enabled,
+        "bt_status": bt_status,
+        "bt_paired": bt_paired,
+        "bt_services_on": bt_services_on,
+        "bt_onboard_on": bt_onboard_on,
+        "bt_buffer_ms": bt_buffer_ms,
+        "bt_card_summary": bt_card_summary,
+        "bt_paired_row_text": bt_paired_row_text,
+    }
 
+
+def _setup_input_card_html(
+    *,
+    input_index: int,
+    title: str,
+    parsed_input,
+    capture_name: str,
+    threshold_name: str,
+    turntable_name: str,
+    enabled: bool = True,
+    enabled_name: Optional[str] = None,
+    bt_enabled: bool = False,
+    other_capture_device: Optional[str] = None,
+    monitor_devices,
+) -> str:
+    """Input 1 / Input 2 detail-panel card (shared render function -- one
+    per instance, called twice)."""
     def _is_bt_loopback_playback_value(value: str) -> bool:
         """True when ``value`` is the ASBT loopback's PLAYBACK side.
 
@@ -769,53 +914,28 @@ def send_setup_page(
           {settings_close}
         """
         return settings_card_html(inner_html, margin_top="0")
+    return input_fieldset_html(
+        input_index=input_index,
+        title=title,
+        parsed_input=parsed_input,
+        capture_name=capture_name,
+        threshold_name=threshold_name,
+        turntable_name=turntable_name,
+        enabled=enabled,
+        enabled_name=enabled_name,
+        bt_enabled=bt_enabled,
+        other_capture_device=other_capture_device,
+    )
 
-    owntone_outputs_html = ""
-    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
-    if outputs_result.ok:
-        hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-        for out in outputs_result.outputs:
-            nm = str(out.name or "")
-            if not nm:
-                continue
-            if nm.strip().casefold() in hidden and nm != parsed.owntone.output_name:
-                continue
-            sel = " selected" if nm == parsed.owntone.output_name else ""
-            owntone_outputs_html += f"<option value='{html.escape(nm)}'{sel}>{html.escape(nm)}</option>"
 
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
-    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + CSRF_RECOVERY_SCRIPT
-    pin_modal_setup_css = """
-      #pinModal .pin-entry {
-        -webkit-text-security: disc;
-        text-security: disc;
-      }
-      #savingModal .modal-panel {
-        --modal-width: 18rem;
-      }
-      .saving-modal-body {
-        display: flex;
-        align-items: center;
-        gap: 0.85rem;
-      }
-      .saving-spinner {
-        width: 1.4rem;
-        height: 1.4rem;
-        flex: 0 0 auto;
-        border: 3px solid var(--color-border-nav);
-        border-top-color: var(--color-btn-bg);
-        border-radius: 50%;
-        animation: saving-spin 0.8s linear infinite;
-      }
-      @keyframes saving-spin {
-        to { transform: rotate(360deg); }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .saving-spinner { animation-duration: 1.6s; }
-      }
+def _setup_factory_reset_html(auth) -> dict:
+    """Factory Reset danger-zone card + its modal/JS/reboot-modal siblings.
+
+    Returns a dict since these pieces are consumed at different points in
+    the surrounding page (the zone in the Factory Reset detail panel, the
+    rest in the shared modal/CSS/JS scaffolding) -- unchanged from how the
+    original locals were used.
     """
-
     # Factory reset danger zone
     factory_reset_modal_css = ""
     factory_reset_zone = ""
@@ -955,77 +1075,29 @@ def send_setup_page(
           }}
         }}
       </script>"""
+    return {
+        "css": factory_reset_modal_css,
+        "zone": factory_reset_zone,
+        "modal": factory_reset_modal,
+        "js": factory_reset_js,
+        "reboot_modal": reboot_modal,
+    }
 
-    input1_html = input_fieldset_html(
-        input_index=1,
-        title="Input 1",
-        parsed_input=parsed.audio1,
-        capture_name="audio_capture_device",
-        threshold_name="audio_silence_threshold",
-        turntable_name="audio_turntable",
-        enabled=parsed.audio1_enabled,
-        enabled_name="audio1_enabled",
-        bt_enabled=bt_enabled,
-        other_capture_device=parsed.audio2.capture_device,
-    )
-    input2_html = input_fieldset_html(
-        input_index=2,
-        title="Input 2",
-        parsed_input=parsed.audio2,
-        capture_name="audio2_capture_device",
-        threshold_name="audio2_silence_threshold",
-        turntable_name="audio2_turntable",
-        enabled=parsed.audio2_enabled,
-        enabled_name="audio2_enabled",
-        bt_enabled=bt_enabled,
-        other_capture_device=parsed.audio1.capture_device,
-    )
 
-    # Buffer-target select: Vinyl (33) / CD (80), plus a third "Custom" option
-    # that surfaces (selected) only when the config file holds some other
-    # value -- direct config-file edits keep their freedom without exposing a
-    # way to pick a custom value from the UI itself.
-    _repeat_target = parsed.repeat.target_minutes
-    _repeat_target_options = [(33, "Vinyl (33 minutes)"), (80, "CD (80 minutes)")]
-    if _repeat_target not in (33, 80):
-        _repeat_target_options.append((_repeat_target, f"Custom ({_repeat_target} minutes)"))
-    repeat_target_options_html = "".join(
-        f'<option value="{v}"{" selected" if v == _repeat_target else ""}>{html.escape(label)}</option>'
-        for v, label in _repeat_target_options
-    )
-
-    # Guidance under the silence slider: with the minimum playback hold
-    # active, short timeouts are safe even for automatic turntables whose
-    # start button causes a transient long before music. Hidden when the
-    # hold is disabled in the config file.
-    _min_hold = parsed.general.minimum_playback_seconds
-    _silence_hold_note_html = (
-        f'<div class="helptext">Once playback starts it continues for at least '
-        f'{_min_hold}s, so short settings (5-10s) work well even for automatic '
-        f'turntables.</div>'
-    ) if _min_hold > 0 else ""
-
-    # Audio Path options: Maximum Quality is filtered out of the rendered
-    # list on non-Pi4/5-class hardware -- mandatory, not cosmetic, since the
-    # top SRC tier is unaffordable there;
-    # the server-side validator (_validate_audio_path in
-    # autostream_webui_api.py) is the enforcement backstop for a stale
-    # browser tab or a hand-crafted request.
-    _audio_path_options = []
-    if is_high_performance_pi():
-        _audio_path_options.append(("max", "Maximum Quality"))
-    _audio_path_options.append(("balanced", "Balanced"))
-    _audio_path_options.append(("fast", "Fast"))
-    audio_path_options_html = "".join(
-        f'<option value="{v}"{" selected" if v == parsed.general.audio_path else ""}>{html.escape(label)}</option>'
-        for v, label in _audio_path_options
-    )
-
-    # Fieldset fragments shared by both layout paths -- split into four
-    # untitled cards (playback defaults / silence detection / repeat
-    # playback / audio processing) rather than one combined fieldset;
-    # structural split only, every existing element id/handler below is
-    # unchanged so existing wiring (JS + tests) keeps working.
+def _setup_playback_defaults_card_html(parsed) -> str:
+    """Playback panel -- "Default Speakers" / "Default Volume" card."""
+    owntone_outputs_html = ""
+    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
+    if outputs_result.ok:
+        hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
+        for out in outputs_result.outputs:
+            nm = str(out.name or "")
+            if not nm:
+                continue
+            if nm.strip().casefold() in hidden and nm != parsed.owntone.output_name:
+                continue
+            sel = " selected" if nm == parsed.owntone.output_name else ""
+            owntone_outputs_html += f"<option value='{html.escape(nm)}'{sel}>{html.escape(nm)}</option>"
     playback_defaults_inner_html = f"""
           <label>Default Speakers:
             <select id="owntone_output_select" name="owntone_output_name" onchange="refreshPlaybackCardSub(); if(liveEnabled) settingsSaveField('owntone.output_name', this.value);">
@@ -1039,6 +1111,21 @@ def send_setup_page(
           <input type="range" min="0" max="100" value="{parsed.owntone.volume_percent}" oninput="syncVol(this.value)">
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
         """
+    return settings_card_html(playback_defaults_inner_html, margin_top="0")
+
+
+def _setup_silence_detection_card_html(parsed) -> str:
+    """Playback panel -- silence-detection slider card."""
+    # Guidance under the silence slider: with the minimum playback hold
+    # active, short timeouts are safe even for automatic turntables whose
+    # start button causes a transient long before music. Hidden when the
+    # hold is disabled in the config file.
+    _min_hold = parsed.general.minimum_playback_seconds
+    _silence_hold_note_html = (
+        f'<div class="helptext">Once playback starts it continues for at least '
+        f'{_min_hold}s, so short settings (5-10s) work well even for automatic '
+        f'turntables.</div>'
+    ) if _min_hold > 0 else ""
     _sil_pos = _silence_seconds_to_pos(parsed.general.silence_seconds)
     silence_detection_inner_html = f"""
           <label><div class="slider-header"><span>Silence detection:</span><span id="sil_val">{parsed.general.silence_seconds}s</span></div>
@@ -1046,6 +1133,23 @@ def send_setup_page(
           <input type="hidden" name="silence_seconds" id="silence_seconds" value="{parsed.general.silence_seconds}"></label>
           {_silence_hold_note_html}
         """
+    return settings_card_html(silence_detection_inner_html)
+
+
+def _setup_repeat_playback_card_html(parsed) -> str:
+    """Playback panel -- repeat-playback buffer-target card."""
+    # Buffer-target select: Vinyl (33) / CD (80), plus a third "Custom" option
+    # that surfaces (selected) only when the config file holds some other
+    # value -- direct config-file edits keep their freedom without exposing a
+    # way to pick a custom value from the UI itself.
+    _repeat_target = parsed.repeat.target_minutes
+    _repeat_target_options = [(33, "Vinyl (33 minutes)"), (80, "CD (80 minutes)")]
+    if _repeat_target not in (33, 80):
+        _repeat_target_options.append((_repeat_target, f"Custom ({_repeat_target} minutes)"))
+    repeat_target_options_html = "".join(
+        f'<option value="{v}"{" selected" if v == _repeat_target else ""}>{html.escape(label)}</option>'
+        for v, label in _repeat_target_options
+    )
     repeat_playback_inner_html = f"""
           <div class="setup-customise-row">
             <label class="output-toggle" style="margin:0;">
@@ -1064,24 +1168,39 @@ def send_setup_page(
           <div class="helptext" id="repeat-max-time-note">Buffer: —</div>
           <div class="helptext" id="repeat-unavailable-note" style="display:none;color:var(--color-status-danger);"></div>
         """
+    return settings_card_html(repeat_playback_inner_html)
+
+
+def _setup_audio_processing_card_html(parsed) -> str:
+    """Playback panel -- Audio Path card."""
+    # Input Resampling Quality options: the Best tier is filtered out of the rendered
+    # list on non-Pi4/5-class hardware -- mandatory, not cosmetic, since the
+    # top SRC tier is unaffordable there;
+    # the server-side validator (_validate_audio_path in
+    # autostream_webui_api.py) is the enforcement backstop for a stale
+    # browser tab or a hand-crafted request.
+    _audio_path_options = []
+    if is_high_performance_pi():
+        _audio_path_options.append(("max", "Best (highest CPU use and best quality)"))
+    _audio_path_options.append(("balanced", "Balanced (moderate CPU use)"))
+    _audio_path_options.append(("fast", "Fast (lowest CPU use, fine for most sources)"))
+    audio_path_options_html = "".join(
+        f'<option value="{v}"{" selected" if v == parsed.general.audio_path else ""}>{html.escape(label)}</option>'
+        for v, label in _audio_path_options
+    )
     audio_processing_inner_html = f"""
-          <label>Audio Path:
+          <label>Input Resampling Quality:
             <select id="general_audio_path" name="general_audio_path" onchange="if(liveEnabled) settingsSaveField('general.audio_path', this.value);">
               {audio_path_options_html}
             </select>
           </label>
           <div class="helptext">Applies immediately — playback stops and resumes automatically after a few seconds.</div>
         """
-    playback_fieldset_html = (
-        settings_card_html(playback_defaults_inner_html, margin_top="0")
-        + settings_card_html(silence_detection_inner_html)
-        + settings_card_html(repeat_playback_inner_html)
-        + settings_card_html(audio_processing_inner_html)
-        + owntone_button_html
-    )
-    # Network card (Section 9.x): active-adapter information + Change Wi-Fi
-    # Network action.  This is informational, not a selector; the active adapter
-    # is fetched from the authenticated network-status API on panel open.
+    return settings_card_html(audio_processing_inner_html)
+
+
+def _setup_network_card_html() -> str:
+    """System & Updates panel -- Network card (informational, JS-populated)."""
     network_card_inner_html = """
           <div id="networkCard">
             <p id="networkCardTitle" style="margin:0 0 0.5rem;font-weight:700;">Network</p>
@@ -1102,7 +1221,11 @@ def send_setup_page(
             <p id="networkSetupMsg" style="margin:0.5rem 0 0;font-size:0.8rem;color:var(--color-text-muted,#888);"></p>
           </div>
         """
-    current_hostname = get_system_hostname()
+    return settings_card_html(network_card_inner_html, margin_top="0.75rem")
+
+
+def _setup_system_card_html(parsed, current_hostname: str) -> str:
+    """System & Updates panel -- System card (hostname/PIN/mDNS grace)."""
     try:
         mdns_grace_period_minutes = max(
             SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
@@ -1145,16 +1268,60 @@ def send_setup_page(
         + system_card_inner_html,
         margin_top="0",
     )
-    network_card_html = settings_card_html(network_card_inner_html, margin_top="0.75rem")
+    return system_card_html
+
+
+def _setup_updates_card_html(parsed) -> str:
+    """System & Updates panel -- Updates card."""
+    _auto_update_checked = " checked" if parsed.updates.auto_update else ""
+    _prerelease_checked = " checked" if parsed.updates.update_channel == "dev" else ""
+    update_html = f"""
+          <input type="hidden" name="updates_auto_update_present" value="1">
+          <input type="hidden" name="updates_channel_present" value="1">
+          <div>
+            <div style="display:flex;align-items:center;">
+              <button type="button" id="btnCheck" class="pill-btn small" style="margin-right:auto">Check</button>
+              <button type="button" id="btnInst" class="pill-btn small" style="margin:auto" disabled>Install</button>
+              <button type="button" class="pill-btn small" style="margin-left:auto" onclick="requestReboot()">Reboot</button>
+            </div>
+            <div id="updMsg" style="font-size:0.8rem;margin-top:0.3rem;"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:.75rem;margin-top:.75rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="updates_auto_update" id="updates_auto_update"{_auto_update_checked} onchange="refreshSystemCardSub(); if(liveEnabled) settingsTransact('/api/settings/auto-update', {{value: this.checked}});">
+              <span class="switch"></span>
+            </label>
+            <span>Automatic updates</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
+            <label class="output-toggle" style="margin:0;">
+              <input type="checkbox" name="updates_prerelease_channel" id="updates_prerelease_channel"{_prerelease_checked} onchange="if(window.resetUpdateCheckState)resetUpdateCheckState(); refreshSystemCardSub(); settingsSaveField('updates.update_channel', this.checked ? 'dev' : 'stable')">
+              <span class="switch"></span>
+            </label>
+            <span>Enable pre-release updates</span>
+          </div>
+          <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">Pre-release versions may be less stable.</div>
+        """
     updates_card_html = settings_card_html(
         "<p style=\"margin:0 0 0.5rem;font-weight:700;\">Updates</p>"
         + update_html,
         margin_top="0.75rem",
     )
-    system_fieldset_html = system_card_html + network_card_html + updates_card_html
+    return updates_card_html
 
-    _dial_onload_js = ""
 
+def _setup_input_summary_text(
+    parsed_input,
+    *,
+    enabled: bool,
+    disabled_text: str,
+    monitor_devices,
+    bt_enabled: bool,
+    bt_status: Optional[dict],
+) -> str:
+    """Input 1 / Input 2 list-card summary text (collapsed-row subtitle)."""
+    if not enabled:
+        return disabled_text
     def _friendly(hw) -> str:
         """Return shortened card name for use in sub-labels (first segment before ', ')."""
         for d in monitor_devices:
@@ -1175,17 +1342,20 @@ def send_setup_page(
         gain = int(parsed_input.gain_db)
         gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
         return html.escape(f"{dev} \u00b7 {mode} \u00b7 {gain_str}")
+    return _input_card_summary(parsed_input)
 
-    if not parsed.audio1_enabled:
-        input1_summary = "Not configured"
-    else:
-        input1_summary = _input_card_summary(parsed.audio1)
-    if not parsed.audio2_enabled:
-        input2_summary = "Disabled"
-    else:
-        input2_summary = _input_card_summary(parsed.audio2)
 
-    # ── Bluetooth card (setup page §2) ──────────────────────────────────────
+def _setup_bluetooth_card_html(
+    *,
+    bt_enabled: bool,
+    bt_status: Optional[dict],
+    bt_paired: bool,
+    bt_services_on: bool,
+    bt_onboard_on: bool,
+    bt_buffer_ms: int,
+    bt_paired_row_text: str,
+) -> str:
+    """Bluetooth detail-panel card."""
     _bt_adapter_present = bool(bt_status and bt_status.get("adapter_present"))
     _bt_adapter_kind = str((bt_status or {}).get("adapter_kind") or "") if bt_status else ""
     if not _bt_adapter_present:
@@ -1253,22 +1423,12 @@ def send_setup_page(
           {_bt_enabled_body}
         """
     bluetooth_card_html = settings_card_html(bluetooth_card_inner_html, margin_top="0")
+    return bluetooth_card_html
 
-    speaker = str(parsed.owntone.output_name or "No speaker selected")
-    playback_summary = html.escape(f"{speaker} \u00b7 {parsed.owntone.volume_percent}%")
-    _au_state = "Auto-update: On" if parsed.updates.auto_update else "Auto-update: Off"
-    if parsed.updates.update_channel == "dev":
-        _au_state += " - Pre-release channel"
-    system_summary = html.escape(f"{current_hostname} \u00b7 v{get_app_version()} \u00b7 {_au_state}")
+
+def _setup_customise_card_html(parsed) -> str:
+    """Personalisation detail-panel card."""
     _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
-    customise_summary = html.escape(
-        ("Master volume: On" if parsed.webui.show_master_volume else "Master volume: Off")
-        + (" \u00b7 Input detail: On" if parsed.webui.show_input_detail else " \u00b7 Input detail: Off")
-        + (" \u00b7 Dark mode: On" if parsed.webui.dark_mode else " \u00b7 Dark mode: Off")
-        + (" \u00b7 Hostname: On" if parsed.webui.show_hostname_on_home else " \u00b7 Hostname: Off")
-        + (" \u00b7 Control others: On" if _ctrl_other_effective else " \u00b7 Control others: Off")
-        + (" \u00b7 Visible to peers: On" if parsed.webui.advertise_appliance else " \u00b7 Visible to peers: Off")
-    )
     _ctrl_other_disabled = ' disabled' if not parsed.webui.show_hostname_on_home else ''
     _ctrl_other_row_style = "margin-top:0.75rem;opacity:0.4;" if not parsed.webui.show_hostname_on_home else "margin-top:0.75rem;"
     customise_card_html = settings_card_html(f"""
@@ -1276,53 +1436,37 @@ def send_setup_page(
           <input type="hidden" name="webui_advertise_appliance_present" value="1">
           <input type="hidden" name="webui_control_other_appliances_present" value="1">
           <div class="setup-customise-row" style="margin-top:0.5rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_show_hostname_on_home" id="webui_show_hostname_on_home"{'  checked' if parsed.webui.show_hostname_on_home else ''} onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)">
-              <span class="switch"></span>
-            </label>
+{toggle_html(name="webui_show_hostname_on_home", id="webui_show_hostname_on_home", checked=parsed.webui.show_hostname_on_home, onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)")}
             <span>Display Hostname</span>
           </div>
           <div id="ctrl-other-row" class="setup-customise-row" style="{_ctrl_other_row_style}">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_control_other_appliances" id="webui_control_other_appliances"{'  checked' if _ctrl_other_effective else ''}{_ctrl_other_disabled} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)">
-              <span class="switch"></span>
-            </label>
+{toggle_html(name="webui_control_other_appliances", id="webui_control_other_appliances", checked=_ctrl_other_effective, disabled=not parsed.webui.show_hostname_on_home, onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)")}
             <span>Allow control of other appliances</span>
           </div>
           <div class="setup-customise-row" style="margin-top:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_advertise_appliance" id="webui_advertise_appliance"{'  checked' if parsed.webui.advertise_appliance else ''} onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {{value: this.checked}});">
-              <span class="switch"></span>
-            </label>
+{toggle_html(name="webui_advertise_appliance", id="webui_advertise_appliance", checked=parsed.webui.advertise_appliance, onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {value: this.checked});")}
             <span>Allow control of this from other appliances</span>
           </div>
           <div class="setup-customise-row" style="margin-top:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_show_master_volume" id="webui_show_master_volume"{'  checked' if parsed.webui.show_master_volume else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)">
-              <span class="switch"></span>
-            </label>
+{toggle_html(name="webui_show_master_volume", id="webui_show_master_volume", checked=parsed.webui.show_master_volume, onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)")}
             <span>Show Master Volume Control</span>
           </div>
           <div class="setup-customise-row" style="margin-top:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_show_input_detail" id="webui_show_input_detail"{'  checked' if parsed.webui.show_input_detail else ''} onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)">
-              <span class="switch"></span>
-            </label>
+{toggle_html(name="webui_show_input_detail", id="webui_show_input_detail", checked=parsed.webui.show_input_detail, onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)")}
             <span>Display Input Detail</span>
           </div>
           <div class="setup-customise-row" style="margin-top:0.75rem;">
-            <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="webui_dark_mode" id="webui_dark_mode"{'  checked' if parsed.webui.dark_mode else ''} onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)">
-              <span class="switch"></span>
-            </label>
+{toggle_html(name="webui_dark_mode", id="webui_dark_mode", checked=parsed.webui.dark_mode, onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)")}
             <span>Dark Mode</span>
           </div>
         """, margin_top="0")
+    return customise_card_html
 
-    # Track identification card
+
+def _setup_track_id_card_html(parsed) -> str:
+    """Track Identification detail-panel card."""
     _ti = parsed.track_identification
     _ti_enabled = bool(_ti.enabled)
-    track_id_summary = html.escape("On" if _ti_enabled else "Off")
     _ti_controls_style = ' style="opacity:0.4;pointer-events:none;"' if not _ti_enabled else ''
     _ti_disabled = ' disabled' if not _ti_enabled else ''
     _ti_lead_in_val = max(0, min(30, _ti.analysis_lead_in_seconds))
@@ -1382,7 +1526,12 @@ def send_setup_page(
               oninput="syncTiSilence(this.value)">
           </div>
         """, margin_top="0")
+    return track_id_card_html
 
+
+def _setup_dial_cards_html() -> tuple:
+    """Dials detail-panel content. Returns (dial_cards_html, dials_summary,
+    dial_onload_js)."""
     # Build dial cards data
     _all_sightings = _get_dial_sightings()
     _authorized_entries = parse_dial_entries()
@@ -1442,157 +1591,305 @@ def send_setup_page(
         'document.querySelectorAll(\'.dial-card[data-authorized="true"]\').forEach(function(card) { '
         "dialLoadConfig(card); dialLoadScreenSettings(card); });"
     )
+    return _dial_cards_html, _dials_summary, _dial_onload_js
+
+
+# -----------------------------------------------------------------------------
+# Card registry entries -- one summary/detail pair per card, each a thin
+# ctx-parameterised wrapper around the existing per-card render function
+# above. Registered in the same order the cards appear
+# on the page today, matching send_setup_page()'s previous hand-sequenced
+# list-row/panel order exactly.
+# -----------------------------------------------------------------------------
+
+
+def _card_summary_input1(ctx: SetupCtx) -> str:
+    return _setup_input_summary_text(
+        ctx.parsed.audio1,
+        enabled=ctx.parsed.audio1_enabled,
+        disabled_text="Not configured",
+        monitor_devices=ctx.monitor_devices,
+        bt_enabled=ctx.bt_enabled,
+        bt_status=ctx.bt_status,
+    )
+
+
+def _card_detail_input1(ctx: SetupCtx) -> str:
+    input1_html = _setup_input_card_html(
+        input_index=1,
+        title="Input 1",
+        parsed_input=ctx.parsed.audio1,
+        capture_name="audio_capture_device",
+        threshold_name="audio_silence_threshold",
+        turntable_name="audio_turntable",
+        enabled=ctx.parsed.audio1_enabled,
+        enabled_name="audio1_enabled",
+        bt_enabled=ctx.bt_enabled,
+        other_capture_device=ctx.parsed.audio2.capture_device,
+        monitor_devices=ctx.monitor_devices,
+    )
+    return input1_html + (
+        f'<div id="audio1_preamp_card" style="display:{"block" if ctx.parsed.audio1_enabled else "none"};">'
+        + _audio_controls_card_html(
+            input_index=1,
+            gain_db=ctx.parsed.audio1.gain_db,
+            eq_40hz_db=ctx.parsed.audio1.eq_40hz_db,
+            eq_100hz_db=ctx.parsed.audio1.eq_100hz_db,
+            eq_8khz_db=ctx.parsed.audio1.eq_8khz_db,
+        )
+        + "</div>"
+    )
+
+
+def _card_summary_input2(ctx: SetupCtx) -> str:
+    return _setup_input_summary_text(
+        ctx.parsed.audio2,
+        enabled=ctx.parsed.audio2_enabled,
+        disabled_text="Disabled",
+        monitor_devices=ctx.monitor_devices,
+        bt_enabled=ctx.bt_enabled,
+        bt_status=ctx.bt_status,
+    )
+
+
+def _card_detail_input2(ctx: SetupCtx) -> str:
+    input2_html = _setup_input_card_html(
+        input_index=2,
+        title="Input 2",
+        parsed_input=ctx.parsed.audio2,
+        capture_name="audio2_capture_device",
+        threshold_name="audio2_silence_threshold",
+        turntable_name="audio2_turntable",
+        enabled=ctx.parsed.audio2_enabled,
+        enabled_name="audio2_enabled",
+        bt_enabled=ctx.bt_enabled,
+        other_capture_device=ctx.parsed.audio1.capture_device,
+        monitor_devices=ctx.monitor_devices,
+    )
+    return input2_html + (
+        f'<div id="audio2_preamp_card" style="display:{"block" if ctx.parsed.audio2_enabled else "none"};">'
+        + _audio_controls_card_html(
+            input_index=2,
+            gain_db=ctx.parsed.audio2.gain_db,
+            eq_40hz_db=ctx.parsed.audio2.eq_40hz_db,
+            eq_100hz_db=ctx.parsed.audio2.eq_100hz_db,
+            eq_8khz_db=ctx.parsed.audio2.eq_8khz_db,
+        )
+        + "</div>"
+    )
+
+
+def _card_summary_bluetooth(ctx: SetupCtx) -> str:
+    return ctx.bt_card_summary
+
+
+def _card_detail_bluetooth(ctx: SetupCtx) -> str:
+    return _setup_bluetooth_card_html(
+        bt_enabled=ctx.bt_enabled,
+        bt_status=ctx.bt_status,
+        bt_paired=ctx.bt_paired,
+        bt_services_on=ctx.bt_services_on,
+        bt_onboard_on=ctx.bt_onboard_on,
+        bt_buffer_ms=ctx.bt_buffer_ms,
+        bt_paired_row_text=ctx.bt_paired_row_text,
+    )
+
+
+def _card_summary_playback(ctx: SetupCtx) -> str:
+    speaker = str(ctx.parsed.owntone.output_name or "No speaker selected")
+    return html.escape(f"{speaker} · {ctx.parsed.owntone.volume_percent}%")
+
+
+def _card_detail_playback(ctx: SetupCtx) -> str:
+    return (
+        _setup_playback_defaults_card_html(ctx.parsed)
+        + _setup_silence_detection_card_html(ctx.parsed)
+        + _setup_repeat_playback_card_html(ctx.parsed)
+        + _setup_audio_processing_card_html(ctx.parsed)
+        + _setup_owntone_more_settings_html(ctx.parsed)
+    )
+
+
+def _card_summary_track_id(ctx: SetupCtx) -> str:
+    return html.escape("On" if ctx.parsed.track_identification.enabled else "Off")
+
+
+def _card_detail_track_id(ctx: SetupCtx) -> str:
+    return _setup_track_id_card_html(ctx.parsed)
+
+
+def _card_summary_dials(ctx: SetupCtx) -> str:
+    return ctx.dials_summary
+
+
+def _card_detail_dials(ctx: SetupCtx) -> str:
+    return ctx.dial_cards_html
+
+
+def _card_summary_customise(ctx: SetupCtx) -> str:
+    _ctrl_other_effective = ctx.parsed.webui.show_hostname_on_home and ctx.parsed.webui.control_other_appliances
+    return html.escape(
+        ("Master volume: On" if ctx.parsed.webui.show_master_volume else "Master volume: Off")
+        + (" · Input detail: On" if ctx.parsed.webui.show_input_detail else " · Input detail: Off")
+        + (" · Dark mode: On" if ctx.parsed.webui.dark_mode else " · Dark mode: Off")
+        + (" · Hostname: On" if ctx.parsed.webui.show_hostname_on_home else " · Hostname: Off")
+        + (" · Control others: On" if _ctrl_other_effective else " · Control others: Off")
+        + (" · Visible to peers: On" if ctx.parsed.webui.advertise_appliance else " · Visible to peers: Off")
+    )
+
+
+def _card_detail_customise(ctx: SetupCtx) -> str:
+    return _setup_customise_card_html(ctx.parsed)
+
+
+def _card_summary_system(ctx: SetupCtx) -> str:
+    _au_state = "Auto-update: On" if ctx.parsed.updates.auto_update else "Auto-update: Off"
+    if ctx.parsed.updates.update_channel == "dev":
+        _au_state += " - Pre-release channel"
+    return html.escape(f"{ctx.current_hostname} · v{get_app_version()} · {_au_state}")
+
+
+def _card_detail_system(ctx: SetupCtx) -> str:
+    return (
+        _setup_system_card_html(ctx.parsed, ctx.current_hostname)
+        + _setup_network_card_html()
+        + _setup_updates_card_html(ctx.parsed)
+    )
+
+
+def _card_summary_factory_reset(ctx: SetupCtx) -> str:
+    return "Erase all settings and return to Wi-Fi setup"
+
+
+def _card_detail_factory_reset(ctx: SetupCtx) -> str:
+    return ctx.factory_reset["zone"]
+
+
+_register_card("input1", "Input 1", _card_summary_input1, _card_detail_input1, detail_header="Setup Input 1")
+_register_card("input2", "Input 2", _card_summary_input2, _card_detail_input2, detail_header="Setup Input 2")
+_register_card("bluetooth", "Bluetooth", _card_summary_bluetooth, _card_detail_bluetooth, detail_header="Bluetooth")
+_register_card(
+    "playback", "Playback", _card_summary_playback, _card_detail_playback,
+    detail_header="Setup Playback Defaults",
+)
+_register_card(
+    "track-id", "Track Identification", _card_summary_track_id, _card_detail_track_id,
+    detail_header="Track Identification",
+)
+_register_card("dials", "Dials", _card_summary_dials, _card_detail_dials, detail_header="Dials")
+_register_card(
+    "customise", "Personalisation", _card_summary_customise, _card_detail_customise,
+    detail_header="Personalisation",
+)
+_register_card(
+    "system", "System", _card_summary_system, _card_detail_system,
+    detail_header="System & Updates",
+)
+_register_card(
+    "factory-reset", "Factory Reset", _card_summary_factory_reset, _card_detail_factory_reset,
+    detail_header=None,
+)
+
+
+def send_setup_page(
+    handler,
+    state: WebUIState,
+    auth,
+    saved_ok: bool = False,
+    error: Optional[str] = None,
+    flash_msg: Optional[str] = None,
+    flash_type: str = "success",
+) -> None:
+    """Render the main setup page.
+
+    Composes the page from the ``CARDS`` registry -- every card's
+    *summary* row is rendered eagerly (cheap), but detail-panel bodies are
+    not inlined here. Each panel starts as an empty placeholder div
+    that the browser fills in on first open via
+    ``GET /api/setup/card/<key>`` (``handle_setup_card_get()`` above).
+    """
+    try:
+        ctx = _setup_build_ctx(handler, state, auth)
+    except Exception:
+        try:
+            handler.send_response(302)
+            handler.send_header("Location", "/")
+            handler.end_headers()
+        except Exception:
+            pass
+        return
+
+    parsed = ctx.parsed
+    monitor_devices = ctx.monitor_devices
+    bt_enabled = ctx.bt_enabled
+    bt_status = ctx.bt_status
+    bt_paired = ctx.bt_paired
+    bt_services_on = ctx.bt_services_on
+    bt_onboard_on = ctx.bt_onboard_on
+    bt_buffer_ms = ctx.bt_buffer_ms
+    bt_card_summary = ctx.bt_card_summary
+    bt_paired_row_text = ctx.bt_paired_row_text
+    current_hostname = ctx.current_hostname
+
+    h1 = "Setup"
+
+    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + CSRF_RECOVERY_SCRIPT
+    pin_modal_setup_css = """
+      #pinModal .pin-entry {
+        -webkit-text-security: disc;
+        text-security: disc;
+      }
+      #savingModal .modal-panel {
+        --modal-width: 18rem;
+      }
+      .saving-modal-body {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+      }
+      .saving-spinner {
+        width: 1.4rem;
+        height: 1.4rem;
+        flex: 0 0 auto;
+        border: 3px solid var(--color-border-nav);
+        border-top-color: var(--color-btn-bg);
+        border-radius: 50%;
+        animation: saving-spin 0.8s linear infinite;
+      }
+      @keyframes saving-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .saving-spinner { animation-duration: 1.6s; }
+      }
+    """
+    factory_reset_modal_css = ctx.factory_reset["css"]
+    factory_reset_modal = ctx.factory_reset["modal"]
+    factory_reset_js = ctx.factory_reset["js"]
+    reboot_modal = ctx.factory_reset["reboot_modal"]
+
+    _app_ver = get_app_version()
+
+    # Every card's collapsed summary row is rendered eagerly
+    # (cheap -- no detail-panel HTML is built for cards the user hasn't
+    # opened); each panel starts as an empty body placeholder filled in by
+    # the browser's lazy `GET /api/setup/card/<key>` fetch on first open.
+    list_rows_html = "".join(
+        _setup_list_row_html(card, card.render_summary(ctx)) for card in CARDS
+    )
+    panel_shells_html = "".join(_setup_panel_shell_html(card) for card in CARDS)
 
     form_content_html = f"""<div class="setup-slide-viewport">
   <div class="setup-slide-track" id="setupSlideTrack">
     <div class="setup-slide-list">
       {_setup_page_header("Setup")}
       <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
-      <div class="setup-list-card" onclick="openPanel('input1')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Input 1</span>
-          <span class="setup-list-card-sub" id="input1-card-sub">{input1_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('input2')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Input 2</span>
-          <span class="setup-list-card-sub" id="input2-card-sub">{input2_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('bluetooth')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Bluetooth</span>
-          <span class="setup-list-card-sub" id="bluetooth-card-sub">{bt_card_summary}</span>
-        </div>
-        <span class="setup-list-chevron">›</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('playback')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Playback</span>
-          <span class="setup-list-card-sub" id="playback-card-sub">{playback_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('track-id')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Track Identification</span>
-          <span class="setup-list-card-sub" id="track-id-card-sub">{track_id_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('dials')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Dials</span>
-          <span class="setup-list-card-sub" id="dials-card-sub">{_dials_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('customise')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Personalisation</span>
-          <span class="setup-list-card-sub" id="customise-card-sub">{customise_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('system')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">System</span>
-          <span class="setup-list-card-sub" id="system-card-sub">{system_summary}</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
-      <div class="setup-list-card" onclick="openPanel('factory-reset')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Factory Reset</span>
-          <span class="setup-list-card-sub">Erase all settings and return to Wi-Fi setup</span>
-        </div>
-        <span class="setup-list-chevron">\u203a</span>
-      </div>
+      {list_rows_html}
     </div>
     <div class="setup-slide-panels">
-      <div class="setup-detail-panel" id="panel-input1">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Setup Input 1")}
-        {input1_html}
-        <div id="audio1_preamp_card" style="display:{'block' if parsed.audio1_enabled else 'none'};">
-          {_audio_controls_card_html(
-            input_index=1,
-            gain_db=parsed.audio1.gain_db,
-            eq_40hz_db=parsed.audio1.eq_40hz_db,
-            eq_100hz_db=parsed.audio1.eq_100hz_db,
-            eq_8khz_db=parsed.audio1.eq_8khz_db,
-          )}
-        </div>
-      </div>
-      <div class="setup-detail-panel" id="panel-input2">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Setup Input 2")}
-        {input2_html}
-        <div id="audio2_preamp_card" style="display:{'block' if parsed.audio2_enabled else 'none'};">
-          {_audio_controls_card_html(
-            input_index=2,
-            gain_db=parsed.audio2.gain_db,
-            eq_40hz_db=parsed.audio2.eq_40hz_db,
-            eq_100hz_db=parsed.audio2.eq_100hz_db,
-            eq_8khz_db=parsed.audio2.eq_8khz_db,
-          )}
-        </div>
-      </div>
-      <div class="setup-detail-panel" id="panel-bluetooth">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Bluetooth")}
-        {bluetooth_card_html}
-      </div>
-      <div class="setup-detail-panel" id="panel-playback">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Setup Playback Defaults")}
-        {playback_fieldset_html}
-      </div>
-      <div class="setup-detail-panel" id="panel-track-id">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Track Identification")}
-        {track_id_card_html}
-      </div>
-      <div class="setup-detail-panel" id="panel-dials">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Dials")}
-        {_dial_cards_html}
-      </div>
-      <div class="setup-detail-panel" id="panel-customise">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("Personalisation")}
-        {customise_card_html}
-      </div>
-      <div class="setup-detail-panel" id="panel-system">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {_setup_detail_header("System & Updates")}
-        {system_fieldset_html}
-      </div>
-      <div class="setup-detail-panel" id="panel-factory-reset">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">\u2190 Back</button>
-        </div>
-        {factory_reset_zone}
-      </div>
+      {panel_shells_html}
     </div>
   </div>
 </div>"""
@@ -2261,8 +2558,22 @@ def send_setup_page(
         document.addEventListener('DOMContentLoaded', function() {{
           refreshExclusivityOptions();
         }});
-        _btRefreshLinkStatus();
-        setInterval(_btRefreshLinkStatus, 5000);
+        // Avoids an unconditional `setInterval` that would keep polling
+        // every 5s even with the tab backgrounded or the Bluetooth panel
+        // closed. Poller's activeOnly mode ties the poll's lifetime to the
+        // panel being open (started/stopped by openPanel()/closePanel())
+        // and its built-in visibility gating pauses it whenever the tab
+        // is hidden.
+        var _btStatusPoller = Poller({{
+          url: '/api/bluetooth/status',
+          intervalMs: 5000,
+          activeOnly: true,
+          fetchOptions: {{headers: {{'X-CSRF-Token': window.__CSRF || ''}}}},
+          onData: function(body) {{
+            if (!body || body.ok !== true) return;
+            _btApplyStatus(body);
+          }},
+        }});
       </script>
     """
 
@@ -2658,7 +2969,16 @@ def send_setup_page(
           body.querySelectorAll('input[type="range"]').forEach(function(el){{el.disabled=!checked;}});
           refreshTrackIdCardSub();
         }}
-        window.addEventListener('DOMContentLoaded', () => {{
+        // System card's button/modal wiring: the System panel's body
+        // -- including #btnChangePin/#btnChangeHostname -- is fetched
+        // lazily on first open rather than present at DOMContentLoaded, so
+        // this binding is a named
+        // function invoked once by openPanel() the first time the System
+        // panel opens (see _setupInitPanel()). The two modals themselves
+        // (#pinModal/#hostnameModal) are always in the DOM (global,
+        // rendered in _body_prefix), so binding their buttons here -- not
+        // at DOMContentLoaded -- is still correct, just later.
+        function _initSystemCard() {{
           const changePinBtn = document.getElementById('btnChangePin');
           const pinModalCancel = document.getElementById('pinModalCancel');
           const pinModalOk = document.getElementById('pinModalOk');
@@ -2675,12 +2995,15 @@ def send_setup_page(
           if (hostnameModalInput) hostnameModalInput.addEventListener('keydown', function(ev) {{
             if (ev.key === 'Enter') {{ ev.preventDefault(); handleHostnameModalOk(); }}
           }});
-          syncInputUi(1);
-          syncInputUi(2);
-          // Enforce hostname-dependent state on load
+          _initUpdatesCard();
+        }}
+        // Personalisation card: enforce hostname-dependent state once its
+        // #webui_show_hostname_on_home checkbox exists (same lazy-load
+        // pattern as _initSystemCard() above).
+        function _initCustomiseCard() {{
           const cbHost = document.getElementById('webui_show_hostname_on_home');
           if (cbHost) onHostnameToggle(cbHost.checked);
-        }});
+        }}
         async function requestReboot(){{
           if (liveEnabled) {{
             try {{
@@ -2696,7 +3019,12 @@ def send_setup_page(
           }}
           showRebootModal();
         }}
-        (async function(){{
+        // Updates card (part of the System panel, lazy-loaded): was an
+        // IIFE that ran unconditionally at page load, assuming
+        // #updMsg/#btnCheck/#btnInst already existed -- now a named
+        // function invoked once by _initSystemCard() the first time the
+        // System panel opens.
+        function _initUpdatesCard(){{
           const msg = (t) => {{ document.getElementById("updMsg").textContent = t; }};
           const bCheck = document.getElementById("btnCheck"), bInst = document.getElementById("btnInst");
           let cand = null;
@@ -2799,7 +3127,7 @@ def send_setup_page(
             }}
           }};
           checkPersistedStatus();
-        }})();
+        }}
       </script>
       <script>
         async function refreshOwntoneOutputs() {{
@@ -2883,7 +3211,7 @@ def send_setup_page(
         }}
         function refreshInputCardSubs() {{
           var s1 = document.getElementById('input1-card-sub');
-          if (s1) {{
+          if (s1 && _setupPanelIsLoaded('input1')) {{
             var en1 = document.querySelector('input[name="audio1_enabled"]');
             if (en1 && !en1.checked) {{
               s1.textContent = 'Not configured';
@@ -2892,7 +3220,7 @@ def send_setup_page(
             }}
           }}
           var s2 = document.getElementById('input2-card-sub');
-          if (s2) {{
+          if (s2 && _setupPanelIsLoaded('input2')) {{
             var en = document.querySelector('input[name="audio2_enabled"]');
             if (en && !en.checked) {{
               s2.textContent = 'Disabled';
@@ -2901,15 +3229,72 @@ def send_setup_page(
             }}
           }}
         }}
-        function openPanel(id) {{
+        // Lazy per-card detail fetch: a panel's body starts empty
+        // (an id="panel-body-<key>" placeholder -- see _setup_panel_shell_html())
+        // and is fetched from GET /api/setup/card/<key> the first time its
+        // panel opens, then cached in the DOM (never re-fetched on later
+        // opens in the same page load).
+        var _setupPanelLoaded = {{}};
+        // Every card summary below (refreshInputCardSubs, refreshPlaybackCardSub,
+        // ...) is DERIVED from that card's detail-panel controls -- which now
+        // only exist once the panel has been lazily fetched. Refreshing a card
+        // whose panel was never opened would read every control as absent and
+        // overwrite its correct server-rendered summary with the all-defaults
+        // text ('Off', 'No speaker selected . 0%', 'Not configured', ...), so
+        // each refresher gates on this. Callers are the Back button
+        // (refreshSetupCardSubs) and the Bluetooth status poll, both of which
+        // can fire while other panels are still unfetched.
+        function _setupPanelIsLoaded(id) {{
+          return !!_setupPanelLoaded[id];
+        }}
+        async function _setupFetchPanelBody(id) {{
+          var bodyEl = document.getElementById('panel-body-' + id);
+          if (!bodyEl) return;
+          try {{
+            var res = await fetch('/api/setup/card/' + encodeURIComponent(id), {{
+              cache: 'no-store',
+              headers: {{'X-CSRF-Token': window.__CSRF || ''}}
+            }});
+            var body = await res.json();
+            if (body && body.ok && typeof body.html === 'string') {{
+              bodyEl.innerHTML = body.html;
+            }} else {{
+              bodyEl.innerHTML = '<p style="color:var(--color-status-danger);">Could not load this section. Please reload the page.</p>';
+            }}
+          }} catch (e) {{
+            bodyEl.innerHTML = '<p style="color:var(--color-status-danger);">Could not load this section. Please reload the page.</p>';
+          }}
+        }}
+        // One-time, post-injection wiring for panels whose fields the
+        // page-load scripts used to bind at DOMContentLoaded -- now
+        // deferred to first open since the elements don't exist in the DOM
+        // until the lazy fetch above has injected them.
+        function _setupInitPanel(id) {{
+          if (id === 'input1') {{ syncInputUi(1); refreshExclusivityOptions(); }}
+          if (id === 'input2') {{ syncInputUi(2); refreshExclusivityOptions(); }}
+          if (id === 'system' && typeof _initSystemCard === 'function') _initSystemCard();
+          if (id === 'customise' && typeof _initCustomiseCard === 'function') _initCustomiseCard();
+          if (id === 'dials' && typeof _initDialsCard === 'function') _initDialsCard();
+        }}
+        async function openPanel(id) {{
           document.querySelectorAll('.setup-detail-panel').forEach(function(p) {{ p.classList.remove('active'); }});
           var panel = document.getElementById('panel-' + id);
           if (panel) panel.classList.add('active');
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.add('panel-open');
           window.scrollTo(0, 0);
+          if (!_setupPanelLoaded[id]) {{
+            _setupPanelLoaded[id] = true;
+            await _setupFetchPanelBody(id);
+            _setupInitPanel(id);
+          }}
           if (id === 'system') refreshNetworkAdapterInfo();
           if (id === 'playback') refreshRepeatSetupNote();
+          // The Bluetooth/System ambient status polls only run while
+          // their own panel is open (activeOnly Pollers -- see
+          // _bt_card_js/refreshNetworkAdapterInfo's Poller construction).
+          if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
+          if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }}
         function _repeatCodecLabel(codec) {{
           if (!codec) return '';
@@ -3053,7 +3438,7 @@ def send_setup_page(
         }}
         function refreshCustomiseCardSub() {{
           var sub = document.getElementById('customise-card-sub');
-          if (!sub) return;
+          if (!sub || !_setupPanelIsLoaded('customise')) return;
           var cb = document.getElementById('webui_show_master_volume');
           var cbDet = document.getElementById('webui_show_input_detail');
           var cbDark = document.getElementById('webui_dark_mode');
@@ -3070,7 +3455,7 @@ def send_setup_page(
         }}
         function refreshPlaybackCardSub() {{
           var sub = document.getElementById('playback-card-sub');
-          if (!sub) return;
+          if (!sub || !_setupPanelIsLoaded('playback')) return;
           var sel = document.getElementById('owntone_output_select');
           var speaker = sel ? (sel.value || 'No speaker selected') : 'No speaker selected';
           var volEl = document.getElementById('owntone_volume_percent');
@@ -3079,7 +3464,7 @@ def send_setup_page(
         }}
         function refreshTrackIdCardSub() {{
           var sub = document.getElementById('track-id-card-sub');
-          if (!sub) return;
+          if (!sub || !_setupPanelIsLoaded('track-id')) return;
           var cb = document.getElementById('track_identification_enabled');
           sub.textContent = (cb && cb.checked) ? 'On' : 'Off';
         }}
@@ -3088,7 +3473,7 @@ def send_setup_page(
         }}
         function refreshSystemCardSub() {{
           var sub = document.getElementById('system-card-sub');
-          if (!sub) return;
+          if (!sub || !_setupPanelIsLoaded('system')) return;
           var hn = document.getElementById('systemHostnameValue');
           var hostname = hn ? (hn.textContent.trim() || 'autostream') : 'autostream';
           var cbAu = document.getElementById('updates_auto_update');
@@ -3107,6 +3492,12 @@ def send_setup_page(
         }}
         function closePanel() {{
           refreshSetupCardSubs();
+          // Pause the activeOnly ambient-status Pollers when their
+          // panel closes (mirrors openPanel()'s .start() calls above).
+          var activePanel = document.querySelector('.setup-detail-panel.active');
+          var activeId = activePanel ? activePanel.id.replace(/^panel-/, '') : null;
+          if (activeId === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
+          if (activeId === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.stop();
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.remove('panel-open');
           window.scrollTo(0, 0);
@@ -3311,7 +3702,7 @@ def send_setup_page(
 
         function refreshDialsCardSub() {{
           var sub = document.getElementById('dials-card-sub');
-          if (!sub) return;
+          if (!sub || !_setupPanelIsLoaded('dials')) return;
           var all = document.querySelectorAll('.dial-card');
           var nAuth = 0, nOnline = 0, nNew = 0;
           all.forEach(function(c) {{
@@ -4207,6 +4598,28 @@ def send_setup_page(
           if (dialNameInput) dialNameInput.addEventListener('keydown', function(ev) {{
             if (ev.key === 'Enter') {{ ev.preventDefault(); handleDialNameModalOk(); }}
           }});
+          document.addEventListener('keydown', function(ev) {{
+            var m = document.getElementById('dialPinModal');
+            if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
+            var hm = document.getElementById('hostnameModal');
+            if (ev.key === 'Escape' && hm && hm.classList.contains('show')) closeHostnameModal();
+            var wm = document.getElementById('wifiHotspotModal');
+            if (ev.key === 'Escape' && wm && wm.classList.contains('show')) cancelChangeWifiNetwork();
+            var rm = document.getElementById('dialPinRecoveryModal');
+            if (ev.key === 'Escape' && rm && rm.classList.contains('show')) closeDialPinRecoveryModal();
+            var nm = document.getElementById('dialNameModal');
+            if (ev.key === 'Escape' && nm && nm.classList.contains('show')) closeDialNameModal();
+          }});
+        }});
+        // Dials card (lazy-loaded): the .dial-card bindings below used
+        // to live in the DOMContentLoaded listener above, but `.dial-card`
+        // elements don't exist until the Dials panel's body has been
+        // fetched -- moved into a named function invoked once by
+        // openPanel() the first time the Dials panel opens (see
+        // _setupInitPanel()). The modal-button bindings above stay in
+        // DOMContentLoaded since those modals are always in the DOM
+        // (global, rendered in _body_prefix).
+        function _initDialsCard() {{
           document.querySelectorAll('.dial-card').forEach(function(card) {{
             card.addEventListener('change', function(ev) {{
               var action = ev.target.dataset.dialAction;
@@ -4257,25 +4670,36 @@ def send_setup_page(
               }}
             }});
           }});
-          document.addEventListener('keydown', function(ev) {{
-            var m = document.getElementById('dialPinModal');
-            if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
-            var hm = document.getElementById('hostnameModal');
-            if (ev.key === 'Escape' && hm && hm.classList.contains('show')) closeHostnameModal();
-            var wm = document.getElementById('wifiHotspotModal');
-            if (ev.key === 'Escape' && wm && wm.classList.contains('show')) cancelChangeWifiNetwork();
-            var rm = document.getElementById('dialPinRecoveryModal');
-            if (ev.key === 'Escape' && rm && rm.classList.contains('show')) closeDialPinRecoveryModal();
-            var nm = document.getElementById('dialNameModal');
-            if (ev.key === 'Escape' && nm && nm.classList.contains('show')) closeDialNameModal();
-          }});
           // Load current config for each online authorized dial
-          {_dial_onload_js}
-        }});
+          {ctx.dial_onload_js}
+        }}
       </script>
       <script>
         // ── Network adapter status and Change Wi-Fi ─────────────────
-        async function refreshNetworkAdapterInfo() {{
+        function _networkStatusFailed() {{
+          var titleEl = document.getElementById('networkCardTitle');
+          var adapterEl = document.getElementById('networkAdapterInfo');
+          var addressEl = document.getElementById('networkAddressInfo');
+          var warningEl = document.getElementById('networkWarning');
+          var supportEl = document.getElementById('networkSupportDetail');
+          if (titleEl) titleEl.textContent = 'Network';
+          if (adapterEl) {{
+            adapterEl.textContent = 'Could not check network status';
+            adapterEl.style.display = '';
+          }}
+          if (addressEl) addressEl.style.display = 'none';
+          if (warningEl) warningEl.style.display = 'none';
+          if (supportEl) supportEl.style.display = 'none';
+        }}
+        // Success-path DOM apply, shared by the manual one-shot refresh
+        // (refreshNetworkAdapterInfo(), used by direct call sites) and the
+        // activeOnly Poller below (_networkAdapterInfoPoller) so
+        // there's exactly one fetch per tick either way, not two.
+        function _applyNetworkStatus(j) {{
+          if (!j || j.ok === false || j.error || j.error_status) {{
+            _networkStatusFailed();
+            return;
+          }}
           var adapterEl = document.getElementById('networkAdapterInfo');
           var addressEl = document.getElementById('networkAddressInfo');
           var warningEl = document.getElementById('networkWarning');
@@ -4283,16 +4707,55 @@ def send_setup_page(
           var titleEl = document.getElementById('networkCardTitle');
           var pendingEl = document.getElementById('networkUsbPending');
           var roamingEl = document.getElementById('networkRoamingManaged');
-          function networkStatusFailed() {{
-            if (titleEl) titleEl.textContent = 'Network';
-            if (adapterEl) {{
-              adapterEl.textContent = 'Could not check network status';
+          if (titleEl) titleEl.textContent = j.title || 'Network';
+          if (adapterEl) {{
+            if (Array.isArray(j.interface_lines) && j.interface_lines.length) {{
+              adapterEl.textContent = j.interface_lines.join('\\n');
               adapterEl.style.display = '';
+            }} else if (j.display) {{
+              adapterEl.textContent = j.display;
+              adapterEl.style.display = '';
+            }} else {{
+              adapterEl.style.display = 'none';
             }}
-            if (addressEl) addressEl.style.display = 'none';
-            if (warningEl) warningEl.style.display = 'none';
-            if (supportEl) supportEl.style.display = 'none';
           }}
+          if (addressEl) {{
+            if (Array.isArray(j.interface_lines) && j.interface_lines.length) {{
+              addressEl.style.display = 'none';
+            }} else if (j.detail) {{
+              addressEl.textContent = j.detail;
+              addressEl.style.display = '';
+            }} else {{
+              addressEl.style.display = 'none';
+            }}
+          }}
+          if (warningEl) {{
+            if (j.warning) {{
+              warningEl.textContent = j.warning;
+              warningEl.style.color = (j.warning_severity === 'danger')
+                ? 'var(--color-status-danger,#c00)'
+                : 'var(--color-warning,#b26b00)';
+              warningEl.style.display = '';
+            }} else {{
+              warningEl.style.display = 'none';
+            }}
+          }}
+          if (supportEl) {{
+            if (j.support_detail) {{
+              supportEl.textContent = j.support_detail;
+              supportEl.style.display = '';
+            }} else {{
+              supportEl.style.display = 'none';
+            }}
+          }}
+          if (pendingEl) pendingEl.style.display = j.usb_adoption_pending ? '' : 'none';
+          if (roamingEl) roamingEl.checked = !!(j.roaming && j.roaming.managed);
+          if (j.ap_ssid) {{
+            var ssidEl = document.getElementById('wifiHotspotSsid');
+            if (ssidEl) ssidEl.textContent = j.ap_ssid;
+          }}
+        }}
+        async function refreshNetworkAdapterInfo() {{
           try {{
             var r = await fetch('/api/network/status', {{
               credentials: 'same-origin',
@@ -4300,61 +4763,28 @@ def send_setup_page(
               headers: {{ 'X-CSRF-Token': (window.__CSRF || '') }}
             }});
             var j = await r.json().catch(function() {{ return null; }});
-            if (!r.ok || !j || j.ok === false || j.error || j.error_status) {{
-              networkStatusFailed();
-              return;
-            }}
-            if (titleEl) titleEl.textContent = j.title || 'Network';
-            if (adapterEl) {{
-              if (Array.isArray(j.interface_lines) && j.interface_lines.length) {{
-                adapterEl.textContent = j.interface_lines.join('\\n');
-                adapterEl.style.display = '';
-              }} else if (j.display) {{
-                adapterEl.textContent = j.display;
-                adapterEl.style.display = '';
-              }} else {{
-                adapterEl.style.display = 'none';
-              }}
-            }}
-            if (addressEl) {{
-              if (Array.isArray(j.interface_lines) && j.interface_lines.length) {{
-                addressEl.style.display = 'none';
-              }} else if (j.detail) {{
-                addressEl.textContent = j.detail;
-                addressEl.style.display = '';
-              }} else {{
-                addressEl.style.display = 'none';
-              }}
-            }}
-            if (warningEl) {{
-              if (j.warning) {{
-                warningEl.textContent = j.warning;
-                warningEl.style.color = (j.warning_severity === 'danger')
-                  ? 'var(--color-status-danger,#c00)'
-                  : 'var(--color-warning,#b26b00)';
-                warningEl.style.display = '';
-              }} else {{
-                warningEl.style.display = 'none';
-              }}
-            }}
-            if (supportEl) {{
-              if (j.support_detail) {{
-                supportEl.textContent = j.support_detail;
-                supportEl.style.display = '';
-              }} else {{
-                supportEl.style.display = 'none';
-              }}
-            }}
-            if (pendingEl) pendingEl.style.display = j.usb_adoption_pending ? '' : 'none';
-            if (roamingEl) roamingEl.checked = !!(j.roaming && j.roaming.managed);
-            if (j.ap_ssid) {{
-              var ssidEl = document.getElementById('wifiHotspotSsid');
-              if (ssidEl) ssidEl.textContent = j.ap_ssid;
-            }}
-          }} catch (e) {{ networkStatusFailed(); }}
+            if (!r.ok) {{ _networkStatusFailed(); return; }}
+            _applyNetworkStatus(j);
+          }} catch (e) {{ _networkStatusFailed(); }}
         }}
         refreshNetworkAdapterInfo();
-        setInterval(refreshNetworkAdapterInfo, 5000);
+        // Avoids an unconditional `setInterval` that would keep polling
+        // every 5s even with the tab backgrounded or the System panel
+        // closed. Poller's activeOnly mode ties the poll's lifetime to
+        // the panel being open (started/stopped by openPanel()/
+        // closePanel()) and its built-in visibility gating pauses it
+        // whenever the tab is hidden.
+        var _networkAdapterInfoPoller = Poller({{
+          url: '/api/network/status',
+          intervalMs: 5000,
+          activeOnly: true,
+          fetchOptions: {{
+            credentials: 'same-origin',
+            headers: {{ 'X-CSRF-Token': (window.__CSRF || '') }},
+          }},
+          onData: _applyNetworkStatus,
+          onError: _networkStatusFailed,
+        }});
 
         async function setRoamingManagement(managed) {{
           try {{
@@ -4422,11 +4852,12 @@ def send_setup_page(
       {factory_reset_js}
       {_bt_pairing_js}
       {_bt_card_js}"""
+    _poll_js_src = f'<script src="/static/poll.js?v={html.escape(_app_ver)}"></script>'
     html_body = build_page_html(
         "autostream",
         _body_html,
         extra_css=_extra_css,
-        head_extra=csrf_meta,
+        head_extra=csrf_meta + _poll_js_src,
         body_prefix=_body_prefix,
         body_suffix=_body_suffix,
         lic_html=lic_html,
@@ -4435,9 +4866,4 @@ def send_setup_page(
         active_tab="setup",
         dark_mode=parsed.webui.dark_mode,
     )
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, html_body)

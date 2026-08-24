@@ -84,10 +84,10 @@ class _SetupRenderer:
     """Renders the non-initial-setup page and returns the HTML."""
 
     def render(self, tmp_path: Path) -> str:
-        from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
+        from _setup_card_test_helpers import render_full_setup_with_cards
 
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -115,10 +115,10 @@ class _SetupRenderer:
             _set_flash_cookie=MagicMock(),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                send_setup_page(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
         store.close(save=False)
-        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+        return html
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +299,10 @@ class TestInput1EnableToggle:
         data.setdefault("audio1", {})["enabled"] = enabled
         cfg.write_text(json.dumps(data), encoding="utf-8")
 
-        from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
+        from _setup_card_test_helpers import render_full_setup_with_cards
 
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
@@ -327,10 +327,10 @@ class TestInput1EnableToggle:
             _set_flash_cookie=MagicMock(),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                send_setup_page(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
         store.close(save=False)
-        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+        return html
 
     def test_input1_enable_checkbox_present(self, tmp_path):
         html = self._render_with_audio1_enabled(tmp_path, True)
@@ -487,27 +487,27 @@ class TestPlaybackPanelCardSplit:
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
-        assert "Maximum Quality" in select_html
-        assert "Balanced" in select_html
-        assert "Fast" in select_html
+        assert "Best (highest CPU use and best quality)" in select_html
+        assert "Balanced (moderate CPU use)" in select_html
+        assert "Fast (lowest CPU use, fine for most sources)" in select_html
 
     def test_audio_path_dropdown_omits_maximum_quality_on_small_hardware(self, tmp_path):
         with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=False):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
-        assert "Maximum Quality" not in select_html
-        assert "Balanced" in select_html
-        assert "Fast" in select_html
+        assert "Best (highest CPU use and best quality)" not in select_html
+        assert "Balanced (moderate CPU use)" in select_html
+        assert "Fast (lowest CPU use, fine for most sources)" in select_html
 
     def test_audio_path_select_reflects_parsed_value(self, tmp_path):
         # _SetupRenderer always (re)writes a fresh minimal config, so this
         # test drives send_setup_page() directly against a config carrying
         # an explicit audio_path instead.
-        from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
+        from _setup_card_test_helpers import render_full_setup_with_cards
 
         cfg = _minimal_cfg(tmp_path)
         data = json.loads(cfg.read_text(encoding="utf-8"))
@@ -538,10 +538,9 @@ class TestPlaybackPanelCardSplit:
             is_high_performance_pi=MagicMock(return_value=True),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                send_setup_page(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
         store.close(save=False)
-        html = handler.wfile.getvalue().decode("utf-8", errors="replace")
         panel = self._playback_panel(html)
         select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
         fast_option = select_html.split('value="fast"', 1)[1].split(">", 1)[0]

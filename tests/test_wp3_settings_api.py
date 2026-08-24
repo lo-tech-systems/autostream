@@ -693,10 +693,10 @@ class TestAutosaveJs:
 
 class TestSetupPageAutosaveWiring:
     def _render_setup(self, tmp_path: Path) -> str:
-        from autostream_webui_page_setup import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
+        from _setup_card_test_helpers import render_full_setup_with_cards
 
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -724,10 +724,10 @@ class TestSetupPageAutosaveWiring:
             _set_flash_cookie=MagicMock(),
         ):
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                send_setup_page(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
         store.close(save=False)
-        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+        return html
 
     def test_autosave_status_region_present(self, tmp_path):
         html = self._render_setup(tmp_path)

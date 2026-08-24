@@ -939,7 +939,11 @@ class TestSetupPageNetworkCard:
         assert "usb_adoption_pending" in self.PAGE_SRC
 
     def test_network_auto_refresh_present(self):
-        assert "setInterval(refreshNetworkAdapterInfo" in self.PAGE_SRC
+        # Migrated onto the shared Poller (activeOnly, so it only
+        # polls while the System panel is open -- fixes the confirmed
+        # backgrounded-tab poll-forever bug) instead of a bare setInterval.
+        assert "_networkAdapterInfoPoller = Poller(" in self.PAGE_SRC
+        assert "activeOnly: true" in self.PAGE_SRC
 
     def test_change_wifi_button_present(self):
         assert "changeWifiNetwork" in self.PAGE_SRC

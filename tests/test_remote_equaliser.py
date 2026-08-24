@@ -300,34 +300,20 @@ class TestRemoteEqualiserPageContent:
 
     def test_remote_eq_band_slider_handler_survives_python_string_escaping(self):
         """The browser-facing script must contain escaped quotes in generated slider handlers."""
-        source = (REPO_ROOT / "core" / "autostream_webui_page_equaliser.py").read_text()
-        module = ast.parse(source)
-        script = None
-        for node in module.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "_REMOTE_EQUALISER_SCRIPT":
-                        script = ast.literal_eval(node.value)
-                        break
-            if script is not None:
-                break
+        # _REMOTE_EQUALISER_SCRIPT is now a concatenation of a
+        # literal string and the shared REFRESH_APPLIANCE_SELECTOR_SCRIPT
+        # constant, so it's no longer a single AST string literal -- read the
+        # actual runtime value instead of static ast.literal_eval.
+        import autostream_webui_page_equaliser as _eq_mod
+        script = _eq_mod._REMOTE_EQUALISER_SCRIPT
 
         assert script is not None
         assert "syncOutputPeq(\\''+key+'\\',this.value)" in script
         assert "syncOutputPeq(''+key+'',this.value)" not in script
 
     def test_remote_script_enables_flat_button(self):
-        source = (REPO_ROOT / "core" / "autostream_webui_page_equaliser.py").read_text()
-        module = ast.parse(source)
-        script = None
-        for node in module.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "_REMOTE_EQUALISER_SCRIPT":
-                        script = ast.literal_eval(node.value)
-                        break
-            if script is not None:
-                break
+        import autostream_webui_page_equaliser as _eq_mod
+        script = _eq_mod._REMOTE_EQUALISER_SCRIPT
 
         assert script is not None
         assert "getElementById('eq-flat-btn')" in script

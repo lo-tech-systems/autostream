@@ -34,7 +34,7 @@ from autostream_bluetooth_client import (
 )
 from autostream_core import get_monitor_runtime_info, get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
-from autostream_rpi import get_cpu_load_percent_1m, get_cpu_temperature_c
+from autostream_rpi import get_cpu_busy_percent, get_cpu_temperature_c
 from autostream_sysutils import (
     fmt_bytes,
     get_effective_memory_info,
@@ -51,6 +51,7 @@ from autostream_webui_common import (
     get_app_version,
     load_license_text,
     render_license_md,
+    send_html,
 )
 
 from autostream_webui_state import WebUIState
@@ -260,7 +261,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         "var cl=d.cpu_load||{};"
         "if(cl.available===true){"
         "var cp=_clamp(cl.percent);"
-        "_s('aboutCpuLabel','CPU Load (1 min avg): '+cp.toFixed(1)+'%');"
+        "_s('aboutCpuLabel','CPU Load: '+cp.toFixed(1)+'%');"
         "var cb=document.getElementById('aboutCpuBar');"
         "if(cb){cb.style.width=cp+'%';cb.setAttribute('data-status',_ss(cl.status));}"
         "var cs=document.getElementById('aboutCpuSection');if(cs)cs.style.display='';}"
@@ -457,12 +458,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         active_tab="about",
         dark_mode=_dark_mode,
     )
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, html_body)
 
 
 # -----------------------------------------------------------------------------
@@ -632,10 +628,12 @@ def _collect_system_info() -> dict:
     except Exception:
         pass
 
-    # 7b. CPU load, 1-minute average (on-demand /proc/loadavg read)
+    # 7b. CPU utilisation, htop-style busy% (on-demand /proc/stat read).
+    # Wire field name "cpu_load" is kept stable for JS compatibility even
+    # though the value is now busy% rather than scheduler load average.
     cpu_load: dict = {"available": False}
     try:
-        load_pct = get_cpu_load_percent_1m()
+        load_pct = get_cpu_busy_percent()
         if load_pct is not None:
             load_status = (
                 "healthy" if load_pct < 70

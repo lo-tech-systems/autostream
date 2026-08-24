@@ -41,6 +41,7 @@ from autostream_webui_common import (
     build_page_html,
     build_top_banner_html,
     send_hostname_changed_page,
+    send_html as _shared_send_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -63,12 +64,8 @@ def _first_boot_page(title: str, body_html: str, body_suffix: str = "") -> str:
 
 
 def _send_html(handler, content: str, status: int = 200) -> None:
-    body = content.encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+    """Thin, status-defaulting wrapper over the shared send_html()."""
+    _shared_send_html(handler, status, content)
 
 
 # ---------------------------------------------------------------------------

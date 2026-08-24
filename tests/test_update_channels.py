@@ -861,6 +861,7 @@ class TestSetupPageChannelToggle:
     def _render(self, tmp_path, channel="stable", auto_update=False):
         """Call the actual page renderer and return the rendered HTML."""
         import autostream_webui_page_setup as _page
+        from _setup_card_test_helpers import render_full_setup_with_cards
 
         config_path = self._make_config(tmp_path, channel, auto_update)
 
@@ -890,9 +891,9 @@ class TestSetupPageChannelToggle:
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
         ):
-            _page.send_setup_page(handler, state, auth)
+            html = render_full_setup_with_cards(handler, state, auth)
 
-        return handler.wfile.getvalue().decode("utf-8", errors="replace")
+        return html
 
     def test_stable_renders_unchecked(self, tmp_path):
         html = self._render(tmp_path, channel="stable")

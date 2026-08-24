@@ -263,7 +263,11 @@ class TestOptimisticClickState:
         # Agreed design constraint: no master-volume writes of any kind are
         # part of the stop/fade feedback path.
         opt_block = home_html.split("var __repeatOptimistic = null;", 1)[1]
-        opt_block = opt_block.split("function buildOutputCardElement", 1)[0]
+        # buildOutputCardElement moved out of the inline page HTML into
+        # nginx/static/render_fragments.js -- use the same
+        # end-of-block marker test_no_new_timers_beyond_existing_poll()
+        # above already uses instead.
+        opt_block = opt_block.split("function getOutputIdKey", 1)[0]
         assert "onMasterVolumeChange" not in opt_block
         assert "MasterVolume" not in opt_block
         assert "master_vol" not in opt_block
@@ -373,10 +377,15 @@ class TestStoppingState:
         assert "targets[i].removeAttribute('inert');" in home_html
         assert "if (kid.id === 'repeat-btn') continue;" in home_html
 
-    def test_css_quiesce_rules_exclude_repeat_btn(self, home_html):
-        assert "body.repeat-stopping .airplay-top-controls > *:not(#repeat-btn)" in home_html
-        assert "body.repeat-stopping #repeat-btn {" in home_html
-        assert "pointer-events: auto;" in home_html
+    def test_css_quiesce_rules_exclude_repeat_btn(self):
+        # The shared theme is served by nginx as a static file
+        # (nginx/static/theme.css) rather than inlined into the page, so
+        # these rules are asserted against that file directly.
+        theme_css = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
+
+        assert "body.repeat-stopping .airplay-top-controls > *:not(#repeat-btn)" in theme_css
+        assert "body.repeat-stopping #repeat-btn {" in theme_css
+        assert "pointer-events: auto;" in theme_css
 
     def test_stop_confirmation_requires_both_active_false_and_not_fading_out(self, home_html):
         assert "var stopConfirmed = optimisticStopPending && !replaying && !fadingOut;" in home_html

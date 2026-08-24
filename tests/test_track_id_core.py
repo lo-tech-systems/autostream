@@ -31,6 +31,7 @@ from track_id.models import (
     STATE_NOT_FOUND,
     STATE_ERROR,
     TrackIdentificationResult,
+    TrackIDProviderUnreachableError,
     TrackIDRateLimitedError,
     TrackIDUpstreamRejectionError,
     disabled_snapshot,
@@ -307,18 +308,21 @@ class TestDispatchScheduling:
         core._track_id_service = svc
         mon._apply_track_id_service(svc)
 
-        # Prevent actual thread from running — just check the synchronous part.
-        dispatched_threads = []
+        # Prevent the task pool from actually running the worker — just
+        # check the synchronous part (dispatch is now via _task_pool.submit()
+        # instead of a raw threading.Thread(...).start()).
+        dispatched_submissions = []
 
-        def fake_start(self_thread):
-            dispatched_threads.append(self_thread)
+        def fake_submit(key, fn, *args, **kwargs):
+            dispatched_submissions.append((key, fn, args, kwargs))
+            return True
 
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
-        with patch.object(threading.Thread, "start", fake_start):
+        with patch.object(core._task_pool, "submit", fake_submit):
             mon.maybe_trigger_track_identification(client, time.time())
 
         assert mon._ti_snapshot.state == STATE_ANALYSING
-        assert len(dispatched_threads) == 1
+        assert len(dispatched_submissions) == 1
 
         # Clean up — release gate that maybe_trigger acquired but thread never released.
         core._track_id_request_gate.release()
@@ -448,7 +452,8 @@ class TestDispatchScheduling:
         assert mon._ti_next_attempt == before_deadline
 
     def test_thread_start_failure_releases_gate(self):
-        """If Thread.start() raises, the gate is released and inflight is cleared."""
+        """If task pool submit() raises, the gate is released and inflight is
+        cleared -- same contract the old raw Thread.start() failure path had."""
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
@@ -456,7 +461,7 @@ class TestDispatchScheduling:
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
-        with patch.object(threading.Thread, "start", side_effect=RuntimeError("OS thread limit")):
+        with patch.object(core._task_pool, "submit", side_effect=RuntimeError("pool full")):
             mon.maybe_trigger_track_identification(client, time.time())
 
         # Gate must be released and inflight cleared despite the exception.
@@ -497,8 +502,8 @@ class TestDispatchScheduling:
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
-        # Suppress the actual thread so maybe_trigger completes synchronously.
-        with patch.object(threading.Thread, "start"):
+        # Suppress the actual worker so maybe_trigger completes synchronously.
+        with patch.object(core._task_pool, "submit", return_value=True):
             mon.maybe_trigger_track_identification(_make_client(), time.time())
 
         # Release the gate the dispatch acquired (no real worker to release it).
@@ -835,6 +840,116 @@ class TestUpstreamRejectionBackoff:
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS - 1
         assert mon._ti_next_attempt_reason == "upstream_rejection"
+
+
+# ---------------------------------------------------------------------------
+# Provider-unreachable back-off: network/DNS/timeout
+# failures share the rate-limit bucket, not the generic config-error one.
+# ---------------------------------------------------------------------------
+
+class TestProviderUnreachableBackoff:
+
+    def test_provider_unreachable_shares_rate_limit_backoff(self):
+        from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_error"))
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        _run_worker_sync(mon)
+        assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
+        assert mon._ti_next_attempt_reason == "provider_unreachable"
+
+    def test_provider_unreachable_sets_error_snapshot(self):
+        svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_timeout"))
+        mon = _active_monitor()
+        core._track_id_service = svc
+        _run_worker_sync(mon)
+        assert mon._ti_snapshot.state == STATE_ERROR
+
+    def test_provider_unreachable_does_not_use_generic_error_retry(self):
+        """Must not fall into the 30s config-error bucket -- the whole point
+        of this reclassification."""
+        from autostream_config import (
+            TRACK_ID_ERROR_RETRY_SECONDS,
+            TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS,
+        )
+        assert TRACK_ID_ERROR_RETRY_SECONDS < TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_error"))
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        _run_worker_sync(mon)
+        assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
+
+    def test_provider_unreachable_logs_backoff(self, caplog):
+        import logging
+        svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_error"))
+        mon = _active_monitor()
+        core._track_id_service = svc
+        with caplog.at_level(logging.WARNING):
+            _run_worker_sync(mon)
+        assert any("unreachable" in r.message for r in caplog.records)
+
+    def test_oserror_is_not_reclassified_as_provider_unreachable(self):
+        """A bare OSError (not wrapped by the provider layer) still falls
+        through to the generic config-error bucket -- only providers that
+        explicitly raise TrackIDProviderUnreachableError get the rate-limit
+        bucket; _ti_worker does not blanket-match builtin OSError."""
+        from autostream_config import TRACK_ID_ERROR_RETRY_SECONDS
+        svc = _make_service(raise_exc=OSError("boom"))
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        _run_worker_sync(mon)
+        assert mon._ti_next_attempt < before + TRACK_ID_ERROR_RETRY_SECONDS + 5
+        assert mon._ti_next_attempt_reason == "error"
+
+
+class TestRateLimitRetryAfter:
+
+    def test_retry_after_overrides_fixed_backoff(self):
+        svc = _make_service(
+            raise_exc=TrackIDRateLimitedError("rate_limited", retry_after_seconds=7.0)
+        )
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        _run_worker_sync(mon)
+        # 7s Retry-After, not the 120s fixed constant.
+        assert before + 5 <= mon._ti_next_attempt <= before + 10
+
+    def test_no_retry_after_uses_fixed_backoff(self):
+        from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        svc = _make_service(raise_exc=TrackIDRateLimitedError("rate_limited"))
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        _run_worker_sync(mon)
+        assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
+
+    def test_zero_retry_after_uses_fixed_backoff(self):
+        """A zero/negative Retry-After is not a usable delay -- fall back to
+        the fixed constant rather than retrying immediately."""
+        from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
+        svc = _make_service(
+            raise_exc=TrackIDRateLimitedError("rate_limited", retry_after_seconds=0.0)
+        )
+        mon = _active_monitor()
+        core._track_id_service = svc
+        before = time.time()
+        _run_worker_sync(mon)
+        assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
+
+    def test_retry_after_logs_provider_source(self, caplog):
+        import logging
+        svc = _make_service(
+            raise_exc=TrackIDRateLimitedError("rate_limited", retry_after_seconds=7.0)
+        )
+        mon = _active_monitor()
+        core._track_id_service = svc
+        with caplog.at_level(logging.WARNING):
+            _run_worker_sync(mon)
+        assert any("Retry-After" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -1857,8 +1972,16 @@ class TestSetupPageMarkup:
             sys.path.insert(0, core_path)
         import autostream_webui_page_setup as setup_mod
         import inspect
+        # List rows are now built from one shared template
+        # (_setup_list_row_html(), used by every registered card including
+        # factory-reset) rather than one hand-written <div> per card --
+        # check the template's onclick attribute is well-formed instead of
+        # grepping for a now-nonexistent hardcoded literal.
         source = inspect.getsource(setup_mod)
-        assert "onclick=\"openPanel('factory-reset')\">" in source, \
-            "Factory Reset card tag is missing closing '>'"
-        assert "onclick=\"openPanel('factory-reset')\"\n" not in source, \
-            "Factory Reset card tag has a bare newline where '>' should be"
+        assert "onclick=\"openPanel('{card.key}')\">" in source, \
+            "Setup list-row template's card tag is missing closing '>'"
+        assert "onclick=\"openPanel('{card.key}')\"\n" not in source, \
+            "Setup list-row template's card tag has a bare newline where '>' should be"
+        # Confirm the factory-reset card is actually registered through
+        # that shared template (not some special-cased path).
+        assert any(c.key == "factory-reset" for c in setup_mod.CARDS)

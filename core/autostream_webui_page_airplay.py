@@ -24,6 +24,7 @@ from autostream_player_service import get_setting, list_outputs
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname, reboot_system
+from autostream_webui_components import output_card_html, slider_html
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
     A2HS_SCRIPT,
@@ -45,7 +46,9 @@ from autostream_webui_common import (
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
+    get_app_version,
     no_input_configured_notice_html,
+    send_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -64,6 +67,17 @@ _NP_ART_CSS = (
     ".now-playing-icon.np-icon-art{width:72px;height:72px;border-radius:6px;overflow:hidden;}"
     ".now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}"
 )
+
+_VU_STEREO_CSS = (
+    ".vu-meter{flex-direction:row;gap:3px;width:23px;}"
+    ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
+    "width:10px;flex:0 0 10px;}"
+)
+
+# Shared extra_css for the two "Home page" renderers below (send_airplay_page,
+# send_remote_home_page) — built once at import time rather than reconstructed
+# identically inside each function on every request.
+_HOME_PAGE_EXTRA_CSS = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_VU_STEREO_CSS}\n{_NP_ART_CSS}"
 
 
 _REMOTE_HOME_SCRIPT = """<script>
@@ -192,6 +206,11 @@ def send_airplay_page(
         # if the INI is missing. Hence, take the nuclear option and inform the user that something
         # went wrong - then reboot the system. This code serves only inline code in case the file
         # system is dead (which is likely). Reboot may therefore also fail.
+        #
+        # This page deliberately does not go through build_page_html()/the shared
+        # extra_css channel: it must still render something
+        # readable if the filesystem itself is failing, so it cannot depend on the
+        # shared theme.css asset or any other autostream module state.
         body = (
             "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -210,12 +229,7 @@ def send_airplay_page(
 
         # Best-effort response; never prevent reboot.
         try:
-            handler.send_response(500)
-            handler.send_header("Content-Type", "text/html; charset=utf-8")
-            body_bytes = body.encode("utf-8")
-            handler.send_header("Content-Length", str(len(body_bytes)))
-            handler.end_headers()
-            handler.wfile.write(body_bytes)
+            send_html(handler, 500, body)
             try:
                 handler.wfile.flush()
             except Exception:
@@ -373,48 +387,29 @@ def send_airplay_page(
     except Exception:
         pass
 
+    # Output-card markup: server-rendered HTML for the local Home page.
+    #
+    # DELIBERATE DUAL-RENDER EXCEPTION (remote-shell JS mirroring): the
+    # remote/proxy Home page cannot
+    # server-render this markup (it doesn't run this Python code -- it
+    # renders client-side from polled JSON), so this block is intentionally
+    # mirrored by the JS function `renderOutputList()`/`buildOutputCardElement()`
+    # in `nginx/static/render_fragments.js` (source of truth:
+    # RENDER_FRAGMENTS_JS, core/autostream_webui_assets.py -- served
+    # statically like poll.js/theme.css, not inlined). Any change to the
+    # output-card markup/classes/data-* attributes here must be reflected
+    # there too, or the local and remote Home pages will visibly drift apart.
     outputs_html = ""
     for out in output_dicts:
-        out_id = out["id"]
-        name = out["name"]
-        selected = out["selected"]
-        volume = out["volume"]
-        remote_in_use = bool(out.get("remote_in_use"))
-        remote_owner = str(out.get("remote_owner") or "")
-        safe_name = html.escape(name)
-        default_badge = '<span class="output-card-default">Default</span>' if out["is_default"] else ""
-        if remote_in_use:
-            state_text = html.escape(f"In Use by {remote_owner}" if remote_owner else "In Use")
-            state_cls = "in-use"
-            card_state_cls = "output-card-in-use"
-            cb_disabled = " disabled"
-        else:
-            state_text = "On" if selected else "Off"
-            state_cls = "on" if selected else "off"
-            card_state_cls = "output-card-on" if selected else "output-card-off"
-            cb_disabled = ""
-        is_default = "1" if out["is_default"] else "0"
-        data_remote_in_use = "1" if remote_in_use else "0"
-        safe_remote_owner = html.escape(remote_owner)
-        outputs_html += f"""
-          <div class="output-card {card_state_cls}" id="output_card_{out_id}" data-output-id="{out_id}" data-is-default="{is_default}" data-remote-in-use="{data_remote_in_use}" data-remote-owner="{safe_remote_owner}">
-            <div class="output-card-head">
-              <div class="output-card-meta">
-                <div class="output-card-name">{safe_name}</div>
-                {default_badge}
-                <span class="output-state-chip {state_cls}" id="output_state_{out_id}">{state_text}</span>
-              </div>
-              <label class="output-toggle" onclick="event.stopPropagation();">
-                <input type="checkbox" id="output_enabled_{out_id}"{' checked' if selected else ''}{cb_disabled} onchange="onToggleOutput('{out_id}')">
-                <span class="switch" aria-hidden="true"></span>
-              </label>
-            </div>
-            <div class="output-slider-wrap" id="output_slider_wrap_{out_id}" onclick="event.stopPropagation();"{' hidden' if not selected else ''}>
-              <div class="slider-header"><span>Volume:</span><span id="vol_label_{out_id}" data-volume-label-for="{out_id}"></span></div>
-              <input type="range" id="vol_slider_{out_id}" min="0" max="100" step="1" value="{volume}" oninput="updateVolumeLabel('{out_id}', this.value)" onchange="onVolumeChange('{out_id}', this.value)">
-            </div>
-          </div>
-        """
+        outputs_html += output_card_html(
+            out_id=out["id"],
+            name=out["name"],
+            selected=out["selected"],
+            volume=out["volume"],
+            is_default=out["is_default"],
+            remote_in_use=bool(out.get("remote_in_use")),
+            remote_owner=str(out.get("remote_owner") or ""),
+        )
 
     # Master volume: average of currently-selected outputs, or preset if none on.
     _selected_volumes = [out["volume"] for out in output_dicts if out["selected"]]
@@ -457,126 +452,106 @@ def send_airplay_page(
         f"</script>"
     ) + CSRF_RECOVERY_SCRIPT
 
-    _vu_stereo_css = (
-        ".vu-meter{flex-direction:row;gap:3px;width:23px;}"
-        ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
-        "width:10px;flex:0 0 10px;}"
-    )
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_NP_ART_CSS}"
+    _extra_css = _HOME_PAGE_EXTRA_CSS
+    _poll_js_src = f'<script src="/static/poll.js?v={html.escape(get_app_version())}"></script>'
+    _render_fragments_js_src = f'<script src="/static/render_fragments.js?v={html.escape(get_app_version())}"></script>'
     _head_extra = f"""{csrf_meta}
+{_poll_js_src}
+{_render_fragments_js_src}
 """ + HOME_CARDS_SCRIPT + INFO_MODAL_SCRIPT + f"""
       <script>
-        function refreshStatus(){{
-          fetch('/api/status', {{ cache: 'no-store' }}).then(r=>r.json()).then(d=>{{
-            renderNowPlayingCard(d);
-            updateRepeatButton(d);
-            ['stylus', 'belt', 'bearing'].forEach(function(item) {{
-              var el = document.getElementById(item + '-warning-banner');
-              if (!el) return;
-              var key = item === 'stylus' ? 'playback_banner_text' : item + '_banner_text';
-              var txt = String((d && d[key]) || '').trim();
-              el.style.display = txt ? 'block' : 'none';
-              el.textContent = txt;
-            }});
-          }});
-        }}
         function getOutputIdKey(outputs) {{
           return JSON.stringify(outputs.map(function(o) {{
             return String(o.id) + '|' + String(!!o.remote_in_use) + '|' + String(o.remote_owner || '');
           }}).sort());
         }}
-        async function refreshOutputsState() {{
-          if (window.__OUTPUTS_IN_FLIGHT) return;
-          window.__OUTPUTS_IN_FLIGHT = true;
-          try {{
-            let j = null;
-            var __ctrl = new AbortController();
-            var __ctrlTimer = setTimeout(function() {{ __ctrl.abort(); }}, 5000);
-            try {{
-              const r = await fetch("/api/owntone/outputs_state", {{ cache: "no-store", signal: __ctrl.signal }});
-              j = await r.json();
-            }} catch (e) {{
-              return;
-            }} finally {{
-              clearTimeout(__ctrlTimer);
-            }}
-            var __list = document.getElementById('outputs-list');
-            var __domIds = __list ? Array.from(__list.querySelectorAll('.output-card[data-output-id]')).map(function(c) {{
-              return c.getAttribute('data-output-id') + '|' + (c.getAttribute('data-remote-in-use') === '1' ? 'true' : 'false') + '|' + (c.getAttribute('data-remote-owner') || '');
-            }}) : [];
-            var domKey = __domIds.length > 0 ? JSON.stringify(__domIds.sort()) : '';
-            if (!j || !j.ok) {{
-              if (domKey === '') {{ setOutputsPlaceholder('unreachable'); }}
-              return;
-            }}
-            if (!Array.isArray(j.outputs)) {{
-              // Outputs unknown (field missing despite an ok reply): leave the
-              // DOM untouched and freeze the empty-tolerance timer rather than
-              // treating this as a confirmed empty outputs list.
-              return;
-            }}
-            var outputs = j.outputs;
-            if (outputs.length === 0) {{
-              if (window.__OUTPUTS_EMPTY_SINCE == null) {{ window.__OUTPUTS_EMPTY_SINCE = Date.now(); }}
-              if (domKey !== '' && (Date.now() - window.__OUTPUTS_EMPTY_SINCE) < window.__OUTPUTS_EMPTY_TOLERANCE_MS) {{
-                return;
-              }}
-            }} else {{
-              window.__OUTPUTS_EMPTY_SINCE = null;
-            }}
-            var targetKey = outputs.length > 0 ? getOutputIdKey(outputs) : '';
-            if (targetKey === domKey) {{
-              if (targetKey === '') {{
-                setOutputsPlaceholder('empty');
-              }} else {{
-                setOutputsPlaceholder('hidden');
-                for (const o of outputs) {{
-                  const id = String(o.id);
-                  if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
-                  const cb = document.getElementById("output_enabled_" + id);
-                  const sl = document.getElementById("vol_slider_" + id);
-                  if (cb) cb.checked = !!o.selected;
-                  updateOutputStateVisual(id, !!o.selected);
-                  if (sl && !isActiveControl(sl)) {{
-                    const v = normalizeVolume(o.volume);
-                    const vstr = String(v);
-                    if (sl.value !== vstr) sl.value = vstr;
-                    updateVolumeLabel(id, v);
-                  }}
-                }}
-                reorderOutputCards();
-                if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
-              }}
-              return;
-            }}
-            var hasPending = window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.size > 0;
-            var masterActive = isActiveControl(document.getElementById('master_vol_slider'));
-            var pinVisible = !!(document.getElementById('pinModal') && document.getElementById('pinModal').classList.contains('show'));
-            var anySliderActive = !!(document.activeElement && document.activeElement.id && document.activeElement.id.startsWith('vol_slider_'));
-            if (!hasPending && !masterActive && !pinVisible && !anySliderActive) {{
-              renderOutputList(outputs);
-              return;
-            }}
-            if (domKey !== '') {{ setOutputsPlaceholder('hidden'); }}
-            for (const o of outputs) {{
-              const id = String(o.id);
-              if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
-              const cb = document.getElementById("output_enabled_" + id);
-              const sl = document.getElementById("vol_slider_" + id);
-              if (cb) cb.checked = !!o.selected;
-              updateOutputStateVisual(id, !!o.selected);
-              if (sl && !isActiveControl(sl)) {{
-                const v = normalizeVolume(o.volume);
-                const vstr = String(v);
-                if (sl.value !== vstr) sl.value = vstr;
-                updateVolumeLabel(id, v);
-              }}
-            }}
-            reorderOutputCards();
-            if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
-          }} finally {{
-            window.__OUTPUTS_IN_FLIGHT = false;
+        function onStatusPollData(d) {{
+          renderNowPlayingCard(d);
+          updateRepeatButton(d);
+          ['stylus', 'belt', 'bearing'].forEach(function(item) {{
+            var el = document.getElementById(item + '-warning-banner');
+            if (!el) return;
+            var key = item === 'stylus' ? 'playback_banner_text' : item + '_banner_text';
+            var txt = String((d && d[key]) || '').trim();
+            el.style.display = txt ? 'block' : 'none';
+            el.textContent = txt;
+          }});
+        }}
+        function onOutputsPollData(j) {{
+          var __list = document.getElementById('outputs-list');
+          var __domIds = __list ? Array.from(__list.querySelectorAll('.output-card[data-output-id]')).map(function(c) {{
+            return c.getAttribute('data-output-id') + '|' + (c.getAttribute('data-remote-in-use') === '1' ? 'true' : 'false') + '|' + (c.getAttribute('data-remote-owner') || '');
+          }}) : [];
+          var domKey = __domIds.length > 0 ? JSON.stringify(__domIds.sort()) : '';
+          if (!j || !j.ok) {{
+            if (domKey === '') {{ setOutputsPlaceholder('unreachable'); }}
+            return;
           }}
+          if (!Array.isArray(j.outputs)) {{
+            // Outputs unknown (field missing despite an ok reply): leave the
+            // DOM untouched and freeze the empty-tolerance timer rather than
+            // treating this as a confirmed empty outputs list.
+            return;
+          }}
+          var outputs = j.outputs;
+          if (outputs.length === 0) {{
+            if (window.__OUTPUTS_EMPTY_SINCE == null) {{ window.__OUTPUTS_EMPTY_SINCE = Date.now(); }}
+            if (domKey !== '' && (Date.now() - window.__OUTPUTS_EMPTY_SINCE) < window.__OUTPUTS_EMPTY_TOLERANCE_MS) {{
+              return;
+            }}
+          }} else {{
+            window.__OUTPUTS_EMPTY_SINCE = null;
+          }}
+          var targetKey = outputs.length > 0 ? getOutputIdKey(outputs) : '';
+          if (targetKey === domKey) {{
+            if (targetKey === '') {{
+              setOutputsPlaceholder('empty');
+            }} else {{
+              setOutputsPlaceholder('hidden');
+              for (const o of outputs) {{
+                const id = String(o.id);
+                if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
+                const cb = document.getElementById("output_enabled_" + id);
+                const sl = document.getElementById("vol_slider_" + id);
+                if (cb) cb.checked = !!o.selected;
+                updateOutputStateVisual(id, !!o.selected);
+                if (sl && !isActiveControl(sl)) {{
+                  const v = normalizeVolume(o.volume);
+                  const vstr = String(v);
+                  if (sl.value !== vstr) sl.value = vstr;
+                  updateVolumeLabel(id, v);
+                }}
+              }}
+              reorderOutputCards();
+              if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
+            }}
+            return;
+          }}
+          var hasPending = window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.size > 0;
+          var masterActive = isActiveControl(document.getElementById('master_vol_slider'));
+          var pinVisible = !!(document.getElementById('pinModal') && document.getElementById('pinModal').classList.contains('show'));
+          var anySliderActive = !!(document.activeElement && document.activeElement.id && document.activeElement.id.startsWith('vol_slider_'));
+          if (!hasPending && !masterActive && !pinVisible && !anySliderActive) {{
+            renderOutputList(outputs);
+            return;
+          }}
+          if (domKey !== '') {{ setOutputsPlaceholder('hidden'); }}
+          for (const o of outputs) {{
+            const id = String(o.id);
+            if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
+            const cb = document.getElementById("output_enabled_" + id);
+            const sl = document.getElementById("vol_slider_" + id);
+            if (cb) cb.checked = !!o.selected;
+            updateOutputStateVisual(id, !!o.selected);
+            if (sl && !isActiveControl(sl)) {{
+              const v = normalizeVolume(o.volume);
+              const vstr = String(v);
+              if (sl.value !== vstr) sl.value = vstr;
+              updateVolumeLabel(id, v);
+            }}
+          }}
+          reorderOutputCards();
+          if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
         }}
 
         window.addEventListener('DOMContentLoaded',function(){{
@@ -591,16 +566,14 @@ def send_airplay_page(
           }});
           reorderOutputCards();
           updateMasterVolumeCard();
-          window.__OUTPUTS_IN_FLIGHT = false;
           window.__OUTPUTS_EMPTY_SINCE = null;
-          setInterval(function(){{ refreshStatus(); refreshOutputsState(); }}, 1500);
           setInterval(vuRenderTick, VU_BIN_MS);
           initApplianceSelector();
           refreshApplianceSelector();
           setInterval(function(){{if(!document.hidden) refreshApplianceSelector();}},15000);
           document.addEventListener('visibilitychange',function(){{if(!document.hidden) refreshApplianceSelector();}});
-          refreshStatus();
-          refreshOutputsState();
+          Poller({{ url: '/api/status', intervalMs: 1500, onData: onStatusPollData }});
+          Poller({{ url: '/api/owntone/outputs_state', intervalMs: 1500, timeoutMs: 5000, onData: onOutputsPollData }});
         }});
       </script>""" + _NAVIGATE_SCRIPT
     _body_prefix = """
@@ -639,18 +612,22 @@ def send_airplay_page(
     )
 
     # Master volume wrapper embedded inside the Now Playing card.
-    master_disabled_attr = " disabled" if master_inactive else ""
     _np_vol_html = (
         f'<div class="np-volume-wrap{" master-volume-inactive" if master_inactive else ""}"'
         f' id="master-volume-card">'
         f'<div class="slider-header"><span>Master Volume</span></div>'
-        f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
-        f' value="{initial_master}"{master_disabled_attr}'
-        f' oninput="onMasterVolumeInput(this.value)"'
-        f' onchange="onMasterVolumeChange(this.value)"'
-        f' onmousedown="onMasterVolumeDragStart()"'
-        f' ontouchstart="onMasterVolumeDragStart()">'
-        f'</div>'
+        + slider_html(
+            id="master_vol_slider",
+            value=initial_master,
+            disabled=master_inactive,
+            extra_attrs=(
+                ' oninput="onMasterVolumeInput(this.value)"'
+                ' onchange="onMasterVolumeChange(this.value)"'
+                ' onmousedown="onMasterVolumeDragStart()"'
+                ' ontouchstart="onMasterVolumeDragStart()"'
+            ),
+        )
+        + f'</div>'
     ) if show_master_volume else ""
 
     # Now Playing card: header, input body (hidden when ready), master volume.
@@ -739,15 +716,8 @@ def send_airplay_page(
         service_warn=playback_snapshot.has_warning,
         dark_mode=parsed.webui.dark_mode,
     )
-    body_bytes = html_body.encode("utf-8")
     try:
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body_bytes)))
-        handler.end_headers()
-        handler.wfile.write(body_bytes)
-    except (BrokenPipeError, ConnectionResetError):
-        logging.info("Client disconnected before airplay page response completed.")
+        send_html(handler, 200, html_body)
     except Exception:
         logging.exception("Failed sending airplay page response.")
 
@@ -805,12 +775,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         "text-align:center;text-decoration:none;"
     )
 
-    _vu_stereo_css = (
-        ".vu-meter{flex-direction:row;gap:3px;width:23px;}"
-        ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
-        "width:10px;flex:0 0 10px;}"
-    )
-    _extra_css = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_vu_stereo_css}\n{_NP_ART_CSS}"
+    _extra_css = _HOME_PAGE_EXTRA_CSS
 
     _head_extra = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
@@ -833,6 +798,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
         + CSRF_RECOVERY_SCRIPT
+        + f'<script src="/static/render_fragments.js?v={html.escape(get_app_version())}"></script>\n'
         + HOME_CARDS_SCRIPT
         + INFO_MODAL_SCRIPT
         + _REMOTE_HOME_SCRIPT
@@ -891,13 +857,18 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'</div>'
         f'<div class="np-volume-wrap master-volume-inactive" id="master-volume-card" hidden>'
         f'<div class="slider-header"><span>Master Volume</span></div>'
-        f'<input type="range" id="master_vol_slider" min="0" max="100" step="1"'
-        f' value="{preset_volume}" disabled'
-        f' oninput="onMasterVolumeInput(this.value)"'
-        f' onchange="onMasterVolumeChange(this.value)"'
-        f' onmousedown="onMasterVolumeDragStart()"'
-        f' ontouchstart="onMasterVolumeDragStart()">'
-        f'</div>'
+        + slider_html(
+            id="master_vol_slider",
+            value=preset_volume,
+            disabled=True,
+            extra_attrs=(
+                ' oninput="onMasterVolumeInput(this.value)"'
+                ' onchange="onMasterVolumeChange(this.value)"'
+                ' onmousedown="onMasterVolumeDragStart()"'
+                ' ontouchstart="onMasterVolumeDragStart()"'
+            ),
+        )
+        + f'</div>'
         f'</div>'
     )
 
@@ -928,14 +899,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         dark_mode=dark_mode,
         remote_id=appliance_id,
     )
-    body_bytes = html_body.encode("utf-8")
     try:
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body_bytes)))
-        handler.end_headers()
-        handler.wfile.write(body_bytes)
-    except (BrokenPipeError, ConnectionResetError):
-        logging.info("Client disconnected before remote home page response completed.")
+        send_html(handler, 200, html_body)
     except Exception:
         logging.exception("Failed sending remote home page response.")

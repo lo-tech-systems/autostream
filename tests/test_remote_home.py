@@ -30,6 +30,8 @@ except ImportError:
 
 from autostream_auth import AuthManager, PIN_STATUS_MISSING
 
+THEME_CSS = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
+
 _skip = pytest.mark.skipif(
     not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
 )
@@ -261,21 +263,25 @@ class TestRemoteHomePageContent:
         shown only when the polled feed reports repeat.enabled. The hidden
         attribute only works if no author display rule defeats the UA
         stylesheet's [hidden] { display: none } -- .pill-btn sets
-        display: inline-block, so the page must carry the override."""
+        display: inline-block, so the shared theme CSS must carry the
+        override. The theme is served as a static file (nginx/static/theme.css)
+        rather than inlined into the page, so the rule is asserted against
+        that file directly instead of the rendered HTML."""
         html = self._render()
         pill_tag = html.split('id="repeat-btn"', 1)
         assert len(pill_tag) == 2
         assert "hidden" in pill_tag[1].split(">", 1)[0]
-        assert ".pill-btn[hidden]" in html
-        override = html.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
+        assert ".pill-btn[hidden]" in THEME_CSS
+        override = THEME_CSS.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
         assert "display: none" in override
 
     def test_appliance_selector_right_anchor_rule_present(self):
         """With the repeat pill hidden, the selector is the row's only flex
-        item; space-between alone would place it flush left."""
-        html = self._render()
-        assert ".airplay-top-controls > .appliance-selector" in html
-        rule = html.split(
+        item; space-between alone would place it flush left. The theme is
+        served as a static file (see test_repeat_pill_starts_hidden_and_hidden_is_effective
+        above), so the rule is asserted against theme.css directly."""
+        assert ".airplay-top-controls > .appliance-selector" in THEME_CSS
+        rule = THEME_CSS.split(
             ".airplay-top-controls > .appliance-selector", 1
         )[1].split("}", 1)[0]
         assert "margin-left: auto" in rule

@@ -1,0 +1,3144 @@
+<!DOCTYPE html><html lang="en" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><title>autostream</title><link rel="stylesheet" href="/static/theme.css?v=unknown"><style>.modal-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;--modal-primary-bg:var(--color-btn-bg);--modal-primary-text:#fff;--modal-secondary-bg:var(--color-surface-muted);--modal-secondary-text:var(--color-text);}
+  .modal-overlay.show{display:flex;}
+  [data-theme="dark"] .modal-overlay{--modal-primary-bg:var(--color-btn-bg);--modal-primary-text:#fff;--modal-secondary-bg:var(--color-surface-muted);--modal-secondary-text:var(--color-text-strong);}
+  .modal-panel{width:min(var(--modal-width,22rem),100%);background:var(--modal-bg,var(--color-surface));border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+  .modal-hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;color:var(--modal-title-color,var(--color-text-strong));}
+  .modal-bd{padding:1rem;}
+  .modal-bd p{margin:0 0 .75rem 0;}
+  .modal-bd input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
+  .modal-ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
+  .modal-btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
+  .modal-btn:disabled{opacity:0.65;cursor:not-allowed;box-shadow:none;}
+  .modal-btn-primary{background:var(--modal-primary-bg);color:var(--modal-primary-text);}
+  .modal-btn-secondary{background:var(--modal-secondary-bg);color:var(--modal-secondary-text);}
+  .modal-btn-danger{background:var(--color-status-danger);color:#fff;}
+  .modal-bd-scroll{max-height:min(60vh,30rem);overflow-y:auto;}
+
+
+  #pinModal .modal-panel{--modal-width:22rem;}
+
+
+      #pinModal .pin-entry {
+        -webkit-text-security: disc;
+        text-security: disc;
+      }
+      #savingModal .modal-panel {
+        --modal-width: 18rem;
+      }
+      .saving-modal-body {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+      }
+      .saving-spinner {
+        width: 1.4rem;
+        height: 1.4rem;
+        flex: 0 0 auto;
+        border: 3px solid var(--color-border-nav);
+        border-top-color: var(--color-btn-bg);
+        border-radius: 50%;
+        animation: saving-spin 0.8s linear infinite;
+      }
+      @keyframes saving-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .saving-spinner { animation-duration: 1.6s; }
+      }
+    
+
+      #factoryResetModal .modal-panel{--modal-width:28rem;--modal-bg:var(--color-surface-raised);}
+      #factoryResetModal .modal-hdr{--modal-title-color:var(--color-status-danger);}
+    
+
+.dial-badge{display:inline-flex;align-items:center;font-size:0.65rem;font-weight:600;
+  padding:0.1rem 0.45rem;border-radius:0.75rem;letter-spacing:0.02em;white-space:nowrap;}
+.dial-badge-new{background:var(--color-accent,#007bff);color:#fff;}
+.dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
+.dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
+.dial-badge-recovery{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-card-title{font-weight:600;font-size:0.9rem;}
+.dial-card-msg{font-size:0.8rem;}
+/* Matches the setup list cards' 0.62rem bottom margin so the Dials panel
+   spaces its cards the same way the rest of the setup page does. */
+.dial-card-wrap{margin-bottom:0.62rem;}
+/* Screen controls follow the "Has Screen Fitted" toggle: the inputs are
+   disabled from JS, and this dims the whole row — including its label text,
+   which a disabled attribute alone leaves at full contrast. */
+.dial-screen-ctl-row{transition:opacity 0.15s ease;}
+.dial-screen-ctl-row.is-disabled{opacity:0.45;}
+/* A custom switch draws its own state from a hidden checkbox, so a
+   disabled one still looks live and its label stays full contrast.
+   Dim the whole row instead, matching the screen control rows. */
+.dial-card .is-disabled{opacity:0.45;}
+.dial-card .is-disabled .output-toggle{cursor:not-allowed;}
+
+
+.dial-locked-section {
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border-card);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem 0.6rem;
+}
+.dial-locked-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dial-locked-label {
+  font-size: 0.75rem;
+  color: var(--color-text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dial-lock-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+.dial-lock-btn svg { width: 18px; height: 18px; }
+.dial-lock-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.dial-locked-controls { transition: opacity 120ms ease; }
+.dial-section-locked .dial-locked-controls {
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+}
+
+
+#panel-playback { padding-bottom: 4.5rem; }</style><meta name='csrf-token' content='{CSRF_TOKEN}'><script>window.__CSRF='{CSRF_TOKEN}';</script><script>(function(){if(window.__csrfRecoveryInstalled)return;window.__csrfRecoveryInstalled=true;var _f=window.fetch.bind(window);function hget(h,k){if(!h)return undefined;return(typeof h.get==='function')?h.get(k):h[k];}function hcopy(h,k,v){if(typeof h.get==='function'){var n=new Headers(h);n.set(k,v);return n;}var n={};for(var key in h){n[key]=h[key];}n[k]=v;return n;}window.fetch=function(input,init){return _f(input,init).then(function(resp){if(resp.status!==403||!init||!hget(init.headers,'X-CSRF-Token'))return resp;return resp.clone().json().then(function(data){if(!data||data.error!=='csrf_stale'||!data.csrf_token)return resp;window.__CSRF=data.csrf_token;var retry=Object.assign({},init);retry.headers=hcopy(init.headers,'X-CSRF-Token',data.csrf_token);return _f(input,retry);},function(){return resp;});});};})();</script><script src="/static/poll.js?v={APP_VERSION}"></script></head><body class="has-bottom-nav">
+      <div id="factoryResetModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
+        <div class="panel modal-panel">
+          <div class="hdr modal-hdr" id="factoryResetModalTitle">Factory Reset</div>
+          <div class="bd modal-bd">
+            <p id="factoryResetModalMsg">This will erase all settings, including WiFi settings, and reboot the appliance.<br><br>After reboot, connect to the WiFi network <strong>autostream_AP</strong> to reconfigure the appliance. You will need the factory-configured PIN (<strong>1234</strong>). <br><br>Do you wish to continue?</p>
+            <p id="factoryResetModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
+          </div>
+          <div class="ft modal-ft">
+            <button type="button" class="btn modal-btn modal-btn-secondary" id="factoryResetCancel"
+              onclick="hideFactoryResetModal()">Cancel</button>
+            <button type="button" class="btn modal-btn modal-btn-danger" id="factoryResetContinue"
+              onclick="doFactoryReset()">Continue</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="rebootModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="rebootModalTitle">
+        <div class="panel modal-panel">
+          <div class="hdr modal-hdr" id="rebootModalTitle">Reboot System</div>
+          <div class="bd modal-bd">
+            <p>This will reboot autostream. Please allow 90 seconds for the system to restart.</p>
+          </div>
+          <div class="ft modal-ft">
+            <button type="button" class="btn modal-btn modal-btn-secondary" id="rebootModalCancel"
+              onclick="hideRebootModal()">Cancel</button>
+            <button type="button" class="btn modal-btn modal-btn-primary" id="rebootModalOk"
+              onclick="confirmReboot()">Reboot</button>
+          </div>
+        </div>
+      </div>
+<div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="pinModalTitle">Change PIN</div>
+    <div class="bd modal-bd">
+      <p id="pinModalMessage">Enter your current PIN.</p>
+      <p id="pinModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">Apply</button>
+    </div>
+  </div>
+</div>
+<div id="hostnameModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="hostnameModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="hostnameModalTitle">Change Hostname</div>
+    <div class="bd modal-bd">
+      <p>Enter the new hostname for this appliance.</p>
+      <input type="text" id="hostnameModalInput" value="autostream-golden"
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <p id="hostnameModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="hostnameModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="hostnameModalOk">Change</button>
+    </div>
+  </div>
+</div>
+<div id="dialPinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialPinModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialPinModalTitle">Change Dial PIN</div>
+    <div class="bd modal-bd">
+      <p id="dialPinModalMsg"></p>
+      <input type="password" id="dialPinModalCurrentInput" placeholder="Current PIN"
+             autocomplete="current-password" style="margin-top:0.5rem;">
+      <input type="password" id="dialPinModalInput" placeholder="New PIN"
+             autocomplete="new-password" style="margin-top:0.5rem;">
+      <input type="password" id="dialPinModalConfirmInput" placeholder="Confirm PIN"
+             autocomplete="new-password" style="margin-top:0.5rem;">
+      <p id="dialPinModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialPinModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinModalOk">Apply</button>
+    </div>
+  </div>
+</div>
+<div id="dialPinRecoveryModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialPinRecoveryModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialPinRecoveryModalTitle">Reset Dial PIN</div>
+    <div class="bd modal-bd">
+      <div id="dialPinRecoveryConfirmPanel">
+        <p id="dialPinRecoveryConfirmMsg">This feature can be used to reset a lost PIN. Continue?</p>
+      </div>
+      <div id="dialPinRecoveryWaitPanel" style="display:none;">
+        <p id="dialPinRecoveryWaitMsg">To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.</p>
+      </div>
+      <div id="dialPinRecoverySetPanel" style="display:none;">
+        <p>Enter a new Dial PIN.</p>
+        <input type="password" id="dialPinRecoveryNewInput" placeholder="New PIN"
+               autocomplete="new-password" style="margin-top:0.5rem;">
+        <input type="password" id="dialPinRecoveryConfirmInput" placeholder="Confirm PIN"
+               autocomplete="new-password" style="margin-top:0.5rem;">
+        <p id="dialPinRecoveryError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
+      </div>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialPinRecoveryCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinRecoveryOk" disabled>Waiting for Dial…</button>
+    </div>
+  </div>
+</div>
+<div id="dialNameModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialNameModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialNameModalTitle">Change Dial Name</div>
+    <div class="bd modal-bd">
+      <p>Enter the new name for this dial.</p>
+      <input type="text" id="dialNameModalInput" placeholder="e.g. Hallway Dial"
+             autocomplete="off" autocapitalize="words" autocorrect="off" spellcheck="false">
+      <p id="dialNameModalError" style="display:none;color:var(--color-status-danger);font-weight:600;margin-top:0.4rem;"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialNameModalCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialNameModalOk">Change</button>
+    </div>
+  </div>
+</div>
+<div id="dialResultModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialResultModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialResultModalTitle">Dial</div>
+    <div class="bd modal-bd">
+      <p id="dialResultModalMsg"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialResultModalOk">OK</button>
+    </div>
+  </div>
+</div>
+<div id="wifiHotspotModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="wifiHotspotModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="wifiHotspotModalTitle">Change Wi-Fi Network</div>
+    <div class="bd modal-bd">
+      <p>This will start the Wi-Fi hotspot. Please connect to
+        <strong id="wifiHotspotSsid">autostream_XXXX</strong>
+        to continue Wi-Fi setup.</p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" onclick="cancelChangeWifiNetwork()">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" onclick="confirmChangeWifiNetwork()">Continue</button>
+    </div>
+  </div>
+</div>
+
+
+<div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="infoModalTitle">Notice</div>
+    <div class="bd modal-bd modal-bd-scroll">
+      <div id="infoModalMessage"></div>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-primary" id="infoModalOk">OK</button>
+    </div>
+  </div>
+</div><div class="container"><div class="setup-slide-viewport">
+  <div class="setup-slide-track" id="setupSlideTrack">
+    <div class="setup-slide-list">
+      <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup</h1></div></div>
+      <div id="autosave-status" aria-live="polite" style="font-size:0.85rem;color:var(--color-text-dim);min-height:1.2em;margin-bottom:0.25rem;"></div>
+      
+      <div class="setup-list-card" onclick="openPanel('input1')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Input 1</span>
+          <span class="setup-list-card-sub" id="input1-card-sub">USB Turntable · Turntable · +2 dB</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('input2')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Input 2</span>
+          <span class="setup-list-card-sub" id="input2-card-sub">USB Line In · Line In · -3 dB</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('bluetooth')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Bluetooth</span>
+          <span class="setup-list-card-sub" id="bluetooth-card-sub">Disabled</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('playback')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Playback</span>
+          <span class="setup-list-card-sub" id="playback-card-sub">Living Room Speaker · 65%</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('track-id')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Track Identification</span>
+          <span class="setup-list-card-sub" id="track-id-card-sub">On</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('dials')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Dials</span>
+          <span class="setup-list-card-sub" id="dials-card-sub">1 authorized · 1 online</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('customise')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Personalisation</span>
+          <span class="setup-list-card-sub" id="customise-card-sub">Master volume: On · Input detail: On · Dark mode: Off · Hostname: On · Control others: On · Visible to peers: On</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('system')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">System</span>
+          <span class="setup-list-card-sub" id="system-card-sub">autostream-golden · v{APP_VERSION} · Auto-update: On</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+      <div class="setup-list-card" onclick="openPanel('factory-reset')">
+        <div class="setup-list-card-body">
+          <span class="setup-list-card-title">Factory Reset</span>
+          <span class="setup-list-card-sub" id="factory-reset-card-sub">Erase all settings and return to Wi-Fi setup</span>
+        </div>
+        <span class="setup-list-chevron">›</span>
+      </div>
+    </div>
+    <div class="setup-slide-panels">
+      
+      <div class="setup-detail-panel" id="panel-input1">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Input 1</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-input1"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-input2">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Input 2</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-input2"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-bluetooth">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Bluetooth</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-bluetooth"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-playback">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Playback Defaults</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-playback"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-track-id">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Track Identification</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-track-id"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-dials">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Dials</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-dials"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-customise">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Personalisation</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-customise"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-system">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>System &amp; Updates</h1></div></div>
+        <div class="setup-detail-panel-body" id="panel-body-system"></div>
+      </div>
+      <div class="setup-detail-panel" id="panel-factory-reset">
+        <div class="setup-detail-back">
+          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+        </div>
+        
+        <div class="setup-detail-panel-body" id="panel-body-factory-reset"></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+<script>
+(function () {
+  function setupA2HS() {
+    // Detect iOS
+    var ua = window.navigator.userAgent || "";
+    var isIOS = /iphone|ipad|ipod/i.test(ua);
+
+    // Detect if already running as a Home Screen app / standalone
+    var isInStandalone =
+      (window.navigator.standalone === true) ||
+      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+
+    // Debug log
+    try {
+      console.log("A2HS check:", {
+        ua: ua,
+        isIOS: isIOS,
+        isInStandalone: isInStandalone
+      });
+    } catch (e) {}
+
+    // If not iOS, or already installed as an "app", don't show
+    if (!isIOS || isInStandalone) {
+      return;
+    }
+
+    // --- Once-per-day logic ---
+    var now = Date.now();
+    var lastShown = 0;
+    try {
+      lastShown = parseInt(localStorage.getItem("a2hs-last-shown") || "0", 10);
+    } catch (e) {}
+
+    var ONE_DAY = 24 * 60 * 60 * 1000;
+
+    if (lastShown && (now - lastShown) < ONE_DAY) {
+      return; // Already shown within 24 hours
+    }
+
+    var prompt = document.getElementById("a2hs-prompt");
+    var closeBtn = document.getElementById("a2hs-close");
+
+    if (!prompt || !closeBtn) {
+      return;
+    }
+
+    prompt.style.display = "block";
+
+    try {
+      localStorage.setItem("a2hs-last-shown", String(now));
+    } catch (e) {}
+
+    closeBtn.addEventListener("click", function () {
+      prompt.style.display = "none";
+    });
+  }
+
+  // Run after DOM is ready so #a2hs-prompt exists even if script is in <head>
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", setupA2HS);
+  } else {
+    setupA2HS();
+  }
+})();
+</script>
+
+      
+<script>
+(function() {
+  var _csrf = window.__CSRF || '';
+  var _statusEl = null;
+  var _pendingTimers = {};    // field → {timer, value}
+  var _pendingRequests = {};  // field → {ctrl, promise}
+
+  function _getStatus() {
+    if (!_statusEl) _statusEl = document.getElementById('autosave-status');
+    return _statusEl;
+  }
+
+  function _setStatus(text) {
+    var el = _getStatus();
+    if (el) el.textContent = text;
+  }
+
+  function _hasPending() {
+    return Object.keys(_pendingTimers).length > 0 || Object.keys(_pendingRequests).length > 0;
+  }
+
+  function _send(field, value) {
+    var prev = _pendingRequests[field];
+    if (prev) { try { prev.ctrl.abort(); } catch(_) {} }
+    var ctrl = new AbortController();
+    _setStatus('Saving…');
+    var p = fetch('/api/settings', {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: ctrl.signal,
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrf},
+      body: JSON.stringify({field: field, value: value})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
+        delete _pendingRequests[field];
+      }
+      if (d.ok) {
+        var statusMsg = (d.live === false) ? 'Saved (could not apply live)' : 'Saved';
+        if (!_hasPending()) _setStatus(statusMsg);
+        setTimeout(function() {
+          var el = _getStatus();
+          if (el && (el.textContent === 'Saved' || el.textContent === 'Saved (could not apply live)')) el.textContent = '';
+        }, 2000);
+      } else {
+        _setStatus('Could not save — ' + (d.error || 'error'));
+      }
+    }).catch(function(e) {
+      if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
+        delete _pendingRequests[field];
+      }
+      if (e.name !== 'AbortError') _setStatus('Could not save');
+    });
+    _pendingRequests[field] = {ctrl: ctrl, promise: p};
+    return p;
+  }
+
+  window.settingsSaveField = function(field, value) {
+    _send(field, value);
+  };
+
+  window.settingsSaveFieldDebounced = function(field, value, ms) {
+    var entry = _pendingTimers[field];
+    if (entry) clearTimeout(entry.timer);
+    _pendingTimers[field] = {
+      timer: setTimeout(function() {
+        delete _pendingTimers[field];
+        _send(field, value);
+      }, ms || 500),
+      value: value
+    };
+  };
+
+  window.flushPendingToServer = function() {
+    var promises = [];
+    Object.keys(_pendingTimers).forEach(function(field) {
+      var entry = _pendingTimers[field];
+      if (entry) {
+        clearTimeout(entry.timer);
+        var val = entry.value;
+        delete _pendingTimers[field];
+        promises.push(_send(field, val));
+      }
+    });
+    Object.keys(_pendingRequests).forEach(function(field) {
+      var entry = _pendingRequests[field];
+      if (entry && entry.promise) promises.push(entry.promise);
+    });
+    return Promise.all(promises);
+  };
+
+  window.settingsTransact = function(url, payload, opts) {
+    opts = opts || {};
+    _setStatus('Applying…');
+    fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrf},
+      body: JSON.stringify(payload)
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) {
+        _setStatus('Could not apply — ' + (d.error || 'error'));
+        if (opts.onError) opts.onError(d);
+        return;
+      }
+      _setStatus('Saved');
+      setTimeout(function() {
+        var el = _getStatus();
+        if (el && el.textContent === 'Saved') el.textContent = '';
+      }, 2000);
+      if (d.redirect_url) { window.location.href = d.redirect_url; return; }
+      if (opts.onSuccess) opts.onSuccess(d);
+    }).catch(function(e) {
+      _setStatus('Could not apply');
+      if (opts.onError) opts.onError({error: String(e)});
+    });
+  };
+
+  window.addEventListener('beforeunload', function(e) {
+    if (_hasPending()) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+})();
+</script>
+
+      
+<script>
+  function showInfoModal(title, message, isHtml){
+    return new Promise((resolve) => {
+      const m = document.getElementById('infoModal');
+      const titleEl = document.getElementById('infoModalTitle');
+      const msgEl = document.getElementById('infoModalMessage');
+      const btnOk = document.getElementById('infoModalOk');
+      if (!m || !titleEl || !msgEl || !btnOk) {
+        // Fallback to native alert if our modal is missing for any reason.
+        // HTML messages are not safe/meaningful in a plain alert, so only
+        // the title is shown in that case.
+        window.alert(isHtml ? title : (title + ': ' + message));
+        resolve();
+        return;
+      }
+      titleEl.textContent = title;
+      if (isHtml) { msgEl.innerHTML = message; } else { msgEl.textContent = message; }
+      m.classList.add('show');
+
+      const cleanup = () => {
+        m.classList.remove('show');
+        btnOk.onclick = null;
+        document.removeEventListener('keydown', onKey);
+        resolve();
+      };
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); }
+      };
+      btnOk.onclick = () => cleanup();
+      document.addEventListener('keydown', onKey);
+    });
+  }
+</script>
+
+      <script>
+        const pinChangeState = {
+          busy: false,
+        };
+        function pinModalElements() {
+          return {
+            modal: document.getElementById('pinModal'),
+            title: document.getElementById('pinModalTitle'),
+            body: document.querySelector('#pinModal .bd'),
+            message: document.getElementById('pinModalMessage'),
+            error: document.getElementById('pinModalError'),
+            newInput: document.getElementById('pinModalNew'),
+            repeatInput: document.getElementById('pinModalRepeat'),
+            cancel: document.getElementById('pinModalCancel'),
+            ok: document.getElementById('pinModalOk'),
+          };
+        }
+        function _makePinInput(id, placeholder) {
+          const input = document.createElement('input');
+          input.id = id;
+          input.name = 'v';
+          input.type = 'text';
+          input.className = 'pin-entry';
+          input.setAttribute('readonly', 'readonly');
+          input.setAttribute('inputmode', 'text');
+          input.setAttribute('autocapitalize', 'off');
+          input.setAttribute('autocomplete', 'off');
+          input.setAttribute('autocorrect', 'off');
+          input.setAttribute('spellcheck', 'false');
+          input.setAttribute('data-form-type', 'other');
+          input.setAttribute('placeholder', placeholder);
+          return input;
+        }
+        function _armPinInput(input) {
+          input.value = '';
+          input.setAttribute('readonly', 'readonly');
+          const enable = () => input.removeAttribute('readonly');
+          input.addEventListener('pointerdown', enable, { once: true });
+          input.addEventListener('focus', enable, { once: true });
+        }
+        function ensurePinModalInputs() {
+          const els = pinModalElements();
+          if (!els.body) return;
+          if (!els.newInput) {
+            const newInput = _makePinInput('pinModalNew', 'New PIN');
+            newInput.addEventListener('keydown', (ev) => {
+              if (ev.key === 'Enter') {
+                ev.preventDefault();
+                const rep = document.getElementById('pinModalRepeat');
+                if (rep) rep.focus();
+              }
+            });
+            const err = els.error;
+            if (err && err.parentNode === els.body) {
+              els.body.insertBefore(newInput, err.nextSibling);
+            } else {
+              els.body.appendChild(newInput);
+            }
+          }
+          if (!els.repeatInput) {
+            const repeatInput = _makePinInput('pinModalRepeat', 'Repeat PIN');
+            repeatInput.style.marginTop = '0.5rem';
+            repeatInput.addEventListener('keydown', (ev) => {
+              if (ev.key === 'Enter') { ev.preventDefault(); handlePinModalOk(); }
+            });
+            const newInput = document.getElementById('pinModalNew');
+            if (newInput) newInput.after(repeatInput);
+            else els.body.appendChild(repeatInput);
+          }
+        }
+        function setPinModalBusy(busy) {
+          pinChangeState.busy = !!busy;
+          const els = pinModalElements();
+          if (els.cancel) els.cancel.disabled = !!busy;
+          if (els.ok) els.ok.disabled = !!busy;
+          if (els.newInput) els.newInput.disabled = !!busy;
+          if (els.repeatInput) els.repeatInput.disabled = !!busy;
+        }
+        function showPinModalError(message) {
+          const els = pinModalElements();
+          if (!els.error) return;
+          if (message) {
+            els.error.style.display = '';
+            els.error.textContent = message;
+          } else {
+            els.error.style.display = 'none';
+            els.error.textContent = '';
+          }
+        }
+        function closePinModal() {
+          const els = pinModalElements();
+          if (!els.modal) return;
+          els.modal.classList.remove('show');
+          if (els.newInput) { els.newInput.value = ''; els.newInput.remove(); }
+          if (els.repeatInput) { els.repeatInput.value = ''; els.repeatInput.remove(); }
+          showPinModalError(null);
+          els.message.textContent = '';
+          els.ok.textContent = 'Apply';
+          els.ok.style.display = '';
+          els.cancel.textContent = 'Cancel';
+          els.cancel.style.display = '';
+          pinChangeState.busy = false;
+        }
+        function openChangePinModal() {
+          pinChangeState.busy = false;
+          const els = pinModalElements();
+          if (!els.modal) return;
+          ensurePinModalInputs();
+          const inputs = pinModalElements();
+          showPinModalError(null);
+          els.message.textContent = '';
+          els.ok.textContent = 'Apply';
+          els.ok.style.display = '';
+          els.cancel.textContent = 'Cancel';
+          els.cancel.style.display = '';
+          if (inputs.newInput) _armPinInput(inputs.newInput);
+          if (inputs.repeatInput) _armPinInput(inputs.repeatInput);
+          setPinModalBusy(false);
+          els.modal.classList.add('show');
+        }
+        // Parse a fetch Response into a discriminated result object.
+        // Does NOT catch a rejected fetch() promise — network failures propagate.
+        // Returns: {ok, transportStatus, body, error}
+        async function _parseDialResponse(response) {
+          var transportStatus = response.status;
+          var ct = response.headers.get('Content-Type') || '';
+          if (ct.toLowerCase().indexOf('application/json') === -1) {
+            try { await response.text(); } catch(e) {}
+            return {ok: false, transportStatus: transportStatus, body: null, error: 'invalid_response'};
+          }
+          var body;
+          try { body = await response.json(); } catch(e) {
+            return {ok: false, transportStatus: transportStatus, body: null, error: 'invalid_response'};
+          }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            return {ok: false, transportStatus: transportStatus, body: null, error: 'invalid_response'};
+          }
+          if (body.ok === false) {
+            return {ok: false, transportStatus: transportStatus, body: body, error: String(body.error || 'unknown_error')};
+          }
+          if (transportStatus < 200 || transportStatus > 299) {
+            return {ok: false, transportStatus: transportStatus, body: body, error: String(body.error || 'http_error')};
+          }
+          return {ok: true, transportStatus: transportStatus, body: body, error: null};
+        }
+
+        async function submitPinChange(newPin, newPinCheck) {
+          const resp = await fetch('/api/pin/change', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': window.__CSRF || ''
+            },
+            body: JSON.stringify({ new_pin: newPin, new_pin_check: newPinCheck })
+          });
+          return _parseDialResponse(resp);
+        }
+        function friendlyPinChangeError(message) {
+          const text = String(message || '').trim();
+          if (!text) return 'Unable to change PIN.';
+          if (text === 'PIN must be 4-20 characters using letters, numbers, or hyphens') return text;
+          if (text === 'Values did not match') return 'The two PIN entries did not match.';
+          if (text === 'Missing fields') return 'Enter your new PIN twice.';
+          return text;
+        }
+        async function handlePinModalOk() {
+          if (pinChangeState.busy) return;
+          const els = pinModalElements();
+          const newVal = ((els.newInput && els.newInput.value) || '').trim();
+          const repeatVal = ((els.repeatInput && els.repeatInput.value) || '').trim();
+          if (!newVal) {
+            showPinModalError('Enter a new PIN.');
+            if (els.newInput) els.newInput.focus();
+            return;
+          }
+          if (!repeatVal) {
+            showPinModalError('Repeat the new PIN.');
+            if (els.repeatInput) els.repeatInput.focus();
+            return;
+          }
+          if (newVal !== repeatVal) {
+            showPinModalError('The two PINs did not match. Please try again.');
+            if (els.newInput) { _armPinInput(els.newInput); els.newInput.focus(); }
+            if (els.repeatInput) _armPinInput(els.repeatInput);
+            return;
+          }
+          setPinModalBusy(true);
+          try {
+            const result = await submitPinChange(newVal, repeatVal);
+            if (result.ok) {
+              if (els.newInput) { els.newInput.value = ''; els.newInput.style.display = 'none'; }
+              if (els.repeatInput) { els.repeatInput.value = ''; els.repeatInput.style.display = 'none'; }
+              showPinModalError(null);
+              els.message.textContent = 'PIN changed successfully. Returning to the home screen…';
+              els.ok.style.display = 'none';
+              els.cancel.textContent = 'Continue';
+              setPinModalBusy(false);
+              window.setTimeout(() => { window.location.href = '/'; }, 900);
+              return;
+            }
+            showPinModalError(friendlyPinChangeError(result.error || 'Unable to change PIN.'));
+          } catch (e) {
+            showPinModalError('Unable to change PIN.');
+          } finally {
+            setPinModalBusy(false);
+          }
+        }
+        function handlePinModalCancel() {
+          closePinModal();
+        }
+        const hostnameChangeState = {
+          busy: false,
+        };
+        function hostnameModalElements() {
+          return {
+            modal: document.getElementById('hostnameModal'),
+            input: document.getElementById('hostnameModalInput'),
+            error: document.getElementById('hostnameModalError'),
+            cancel: document.getElementById('hostnameModalCancel'),
+            ok: document.getElementById('hostnameModalOk'),
+          };
+        }
+        function currentDisplayedHostname() {
+          const el = document.getElementById('systemHostnameValue');
+          return ((el && el.textContent) || 'autostream').trim() || 'autostream';
+        }
+        function setHostnameModalBusy(busy) {
+          hostnameChangeState.busy = !!busy;
+          const els = hostnameModalElements();
+          if (els.cancel) els.cancel.disabled = !!busy;
+          if (els.ok) els.ok.disabled = !!busy;
+          if (els.input) els.input.disabled = !!busy;
+        }
+        function showHostnameModalError(message) {
+          const els = hostnameModalElements();
+          if (!els.error) return;
+          if (message) {
+            els.error.style.display = '';
+            els.error.textContent = message;
+          } else {
+            els.error.style.display = 'none';
+            els.error.textContent = '';
+          }
+        }
+        function openChangeHostnameModal() {
+          const els = hostnameModalElements();
+          if (!els.modal) return;
+          showHostnameModalError(null);
+          if (els.input) {
+            els.input.value = currentDisplayedHostname();
+            els.input.disabled = false;
+          }
+          setHostnameModalBusy(false);
+          els.modal.classList.add('show');
+          setTimeout(function() {
+            if (els.input) {
+              els.input.focus();
+              els.input.select();
+            }
+          }, 50);
+        }
+        function closeHostnameModal() {
+          const els = hostnameModalElements();
+          if (els.modal) els.modal.classList.remove('show');
+          showHostnameModalError(null);
+          setHostnameModalBusy(false);
+        }
+        function friendlyHostnameChangeError(message) {
+          const text = String(message || '').trim();
+          if (!text) return 'Unable to change hostname.';
+          if (text === 'Invalid hostname') return 'Enter a valid hostname using letters, numbers, and hyphens.';
+          return text;
+        }
+        function handleHostnameModalOk() {
+          if (hostnameChangeState.busy) return;
+          const els = hostnameModalElements();
+          const value = ((els.input && els.input.value) || '').trim();
+          if (!value) {
+            showHostnameModalError('Enter a hostname.');
+            if (els.input) els.input.focus();
+            return;
+          }
+          setHostnameModalBusy(true);
+          settingsTransact('/api/settings/hostname', {value: value}, {
+            onSuccess: function(data) {
+              const display = document.getElementById('systemHostnameValue');
+              if (display) display.textContent = value;
+              refreshSystemCardSub();
+              closeHostnameModal();
+            },
+            onError: function(data) {
+              showHostnameModalError(friendlyHostnameChangeError(data && data.error));
+              setHostnameModalBusy(false);
+              if (els.input) els.input.focus();
+            }
+          });
+        }
+        const liveEnabled = true;
+        function onInputEnableToggle(inputIndex, checked){
+          syncInputUi(inputIndex);
+          if (liveEnabled) settingsSaveField('audio' + inputIndex + '.enabled', checked);
+        }
+        function syncVol(v){
+          document.getElementById('owntone_volume_percent').value=v;
+          document.getElementById('vol_val').textContent=v+'%';
+          refreshPlaybackCardSub();
+          if (liveEnabled) settingsSaveFieldDebounced('owntone.volume_percent', parseInt(v, 10), 300);
+        }
+        function thresholdPreset(checked){ return checked ? -45 : -60; }
+        function syncInputUi(inputIndex){
+          const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
+          const enabledName = prefix + '_enabled';
+          const turntableName = inputIndex === 1 ? 'audio_turntable' : 'audio2_turntable';
+          const enabled = !!document.querySelector('input[name="' + enabledName + '"]')?.checked;
+          const turntable = !!document.querySelector('input[name="' + turntableName + '"]')?.checked;
+          const settings = document.getElementById(prefix + '_settings');
+          const preampCard = document.getElementById(prefix + '_preamp_card');
+          const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
+          const note = document.getElementById(prefix + '_turntable_note');
+          const threshold = thresholdPreset(turntable);
+          const hidden = document.getElementById(thresholdId);
+          if (settings) settings.style.display = enabled ? 'block' : 'none';
+          if (preampCard) preampCard.style.display = enabled ? 'block' : 'none';
+          if (hidden) hidden.value = String(threshold);
+          if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
+        }
+        function eqPrefix(inputIndex){ return inputIndex===1 ? 'audio1' : 'audio2'; }
+        function syncGain(inputIndex, value){
+          const prefix = eqPrefix(inputIndex);
+          const inputEl = document.getElementById(prefix + '_gain_db');
+          const valueEl = document.getElementById(prefix + '_gain_db_val');
+          if (inputEl) inputEl.value = value;
+          if (valueEl) valueEl.textContent = value + ' dB';
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.gain_db', Number(value), 120);
+        }
+        function syncEq(inputIndex, band, value){
+          const prefix = eqPrefix(inputIndex);
+          const valueEl = document.getElementById(prefix + '_eq_' + band + '_db_val');
+          if (valueEl) valueEl.textContent = value + ' dB';
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.eq_' + band + '_db', Number(value), 120);
+        }
+        function silSecondsFromPos(pos){
+          // Mirrors _silence_pos_to_seconds() in autostream_webui_page_setup.py --
+          // exponential position->seconds curve, snapped to coarser steps as
+          // the value grows.
+          var minS = 5, maxS = 300;
+          pos = Math.max(0, Math.min(100, Number(pos)));
+          var s = minS * Math.pow(maxS / minS, pos / 100);
+          if (s < 30) s = Math.round(s);
+          else if (s < 120) s = Math.round(s / 5) * 5;
+          else s = Math.round(s / 10) * 10;
+          return Math.max(minS, Math.min(maxS, s));
+        }
+        function syncSil(v){
+          var s = silSecondsFromPos(v);
+          document.getElementById('sil_val').textContent=s+'s';
+          document.getElementById('silence_seconds').value=s;
+          if (liveEnabled) settingsSaveFieldDebounced('general.silence_seconds', s, 500);
+        }
+        let mdnsGraceTimer = null;
+        function syncMdnsGracePeriod(v){
+          clearTimeout(mdnsGraceTimer);
+          mdnsGraceTimer = setTimeout(function(){
+            settingsTransact('/api/settings/mdns-grace-period', {value: parseInt(v, 10)});
+          }, 500);
+        }
+        function syncTiLeadIn(v){
+          document.getElementById('ti_lead_in_val').textContent=v+' s';
+          document.getElementById('ti_analysis_lead_in_seconds').value=v;
+          if (liveEnabled) settingsSaveFieldDebounced('track_identification.analysis_lead_in_seconds', Number(v), 500);
+        }
+        function syncTiRefresh(v){
+          document.getElementById('ti_refresh_val').textContent=Math.round(v/60)+' min';
+          document.getElementById('ti_refresh_seconds').value=v;
+          if (liveEnabled) settingsSaveFieldDebounced('track_identification.refresh_seconds', Number(v), 500);
+        }
+        function syncTiSilence(v){
+          document.getElementById('ti_silence_val').textContent=parseFloat(v).toFixed(2)+' s';
+          document.getElementById('ti_track_change_silence_seconds').value=v;
+          if (liveEnabled) settingsSaveFieldDebounced('track_identification.track_change_silence_seconds', Number(v), 500);
+        }
+        function onTiToggle(checked){
+          var body=document.getElementById('ti-controls');
+          if(!body)return;
+          body.style.opacity=checked?'':'0.4';
+          body.style.pointerEvents=checked?'':'none';
+          body.querySelectorAll('input[type="range"]').forEach(function(el){el.disabled=!checked;});
+          refreshTrackIdCardSub();
+        }
+        // System card's button/modal wiring: the System panel's body
+        // -- including #btnChangePin/#btnChangeHostname -- is fetched
+        // lazily on first open rather than present at DOMContentLoaded, so
+        // this binding is a named
+        // function invoked once by openPanel() the first time the System
+        // panel opens (see _setupInitPanel()). The two modals themselves
+        // (#pinModal/#hostnameModal) are always in the DOM (global,
+        // rendered in _body_prefix), so binding their buttons here -- not
+        // at DOMContentLoaded -- is still correct, just later.
+        function _initSystemCard() {
+          const changePinBtn = document.getElementById('btnChangePin');
+          const pinModalCancel = document.getElementById('pinModalCancel');
+          const pinModalOk = document.getElementById('pinModalOk');
+          const changeHostnameBtn = document.getElementById('btnChangeHostname');
+          const hostnameModalCancel = document.getElementById('hostnameModalCancel');
+          const hostnameModalOk = document.getElementById('hostnameModalOk');
+          const hostnameModalInput = document.getElementById('hostnameModalInput');
+          if (changePinBtn) changePinBtn.addEventListener('click', openChangePinModal);
+          if (pinModalCancel) pinModalCancel.addEventListener('click', handlePinModalCancel);
+          if (pinModalOk) pinModalOk.addEventListener('click', handlePinModalOk);
+          if (changeHostnameBtn) changeHostnameBtn.addEventListener('click', openChangeHostnameModal);
+          if (hostnameModalCancel) hostnameModalCancel.addEventListener('click', closeHostnameModal);
+          if (hostnameModalOk) hostnameModalOk.addEventListener('click', handleHostnameModalOk);
+          if (hostnameModalInput) hostnameModalInput.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); handleHostnameModalOk(); }
+          });
+          _initUpdatesCard();
+        }
+        // Personalisation card: enforce hostname-dependent state once its
+        // #webui_show_hostname_on_home checkbox exists (same lazy-load
+        // pattern as _initSystemCard() above).
+        function _initCustomiseCard() {
+          const cbHost = document.getElementById('webui_show_hostname_on_home');
+          if (cbHost) onHostnameToggle(cbHost.checked);
+        }
+        async function requestReboot(){
+          if (liveEnabled) {
+            try {
+              const saveR = await fetch('/api/settings/save', {method:'POST', headers:{'X-CSRF-Token':window.__CSRF||''}});
+              const saveJ = await saveR.json().catch(()=>({ok:false}));
+              if (!saveJ.ok) {
+                alert('Settings could not be saved before rebooting: ' + (saveJ.error || 'unknown error'));
+                return;
+              }
+            } catch(e) {
+              // Network error — fall through; reboot will reload config from disk
+            }
+          }
+          showRebootModal();
+        }
+        // Updates card (part of the System panel, lazy-loaded): was an
+        // IIFE that ran unconditionally at page load, assuming
+        // #updMsg/#btnCheck/#btnInst already existed -- now a named
+        // function invoked once by _initSystemCard() the first time the
+        // System panel opens.
+        function _initUpdatesCard(){
+          const msg = (t) => { document.getElementById("updMsg").textContent = t; };
+          const bCheck = document.getElementById("btnCheck"), bInst = document.getElementById("btnInst");
+          let cand = null;
+          // Info mode: a check found an update, so the button now opens the
+          // release-notes modal instead of re-checking. Cleared back to the
+          // default checking behaviour whenever a check finds no update.
+          let infoMode = false;
+          let notesHtml = "";
+          let notesText = "";
+          // Shared reset: also invoked from outside this IIFE (channel
+          // toggle) since switching channels invalidates any candidate
+          // found under the previous channel.
+          function resetUpdateCheckState(){
+            infoMode = false;
+            notesHtml = ""; notesText = "";
+            cand = null;
+            bCheck.textContent = "Check";
+            bInst.disabled = true;
+            msg("");
+          }
+          window.resetUpdateCheckState = resetUpdateCheckState;
+          // On page load, check persisted update status so any recent result is visible.
+          async function checkPersistedStatus(){
+            try {
+              const r = await fetch("/api/update/status"); const j = await r.json();
+              if(j.ok && j.status === "in_progress"){
+                if(j.stale){
+                  if(j.hung){
+                    msg("An update is still running but has been unresponsive for 30+ minutes. Power-cycle the device to recover — do not retry until after rebooting.");
+                  } else {
+                    msg("A previous update appears to have stalled. Power-cycle the device to trigger automatic recovery, or use Check for Updates to retry.");
+                  }
+                } else {
+                  // An update is already running — send the user to the progress page.
+                  window.location.replace("/offline/updating");
+                }
+                return;
+              }
+              if(j.ok && j.status === "success"){ msg("Last update: installed successfully."); }
+              else if(j.ok && (j.status === "failure" || j.status === "error")){
+                msg("Last update failed: " + (j.message || "unknown error"));
+              }
+            } catch(e) { /* ignore — no persisted status yet */ }
+          }
+          bCheck.onclick = async () => {
+            if (infoMode) {
+              var infoMsg = notesHtml || notesText || "No release notes provided.";
+              showInfoModal("Release Notes", infoMsg, !!notesHtml);
+              return;
+            }
+            msg("Checking..."); bInst.disabled=true;
+            try {
+              const r = await fetch("/api/update/check"); const j = await r.json();
+              if(j.ok && j.update_available){
+                cand=j.candidate;
+                msg("Update available: " + j.candidate);
+                notesHtml = j.release_notes_html || "";
+                notesText = j.release_notes || "";
+                infoMode = true;
+                bCheck.textContent = "Info";
+                bInst.disabled=false;
+              } else {
+                resetUpdateCheckState();
+                msg(j.ok?"No updates available.":"Check failed.");
+              }
+            } catch(e) {
+              resetUpdateCheckState();
+              msg("Check failed.");
+            }
+          };
+          bInst.onclick = async () => {
+            if(!cand) return;
+            msg("Saving settings..."); bCheck.disabled=true; bInst.disabled=true;
+            try {
+              const saveR = await fetch("/api/settings/save",{method:"POST",headers:{"X-CSRF-Token":window.__CSRF||""}});
+              const saveJ = await saveR.json().catch(()=>({ok:false}));
+              if(!saveJ.ok){
+                msg("Could not save settings before update: " + (saveJ.error || "unknown error"));
+                bCheck.disabled=false; bInst.disabled=false;
+                return;
+              }
+            } catch(e) {
+              msg("Could not save settings before update");
+              bCheck.disabled=false; bInst.disabled=false;
+              return;
+            }
+            msg("Starting update...");
+            try {
+              const r = await fetch("/api/update/apply",{method:"POST",headers:{"X-CSRF-Token":window.__CSRF||""}});
+              const j = await r.json().catch(()=>({ok:false}));
+              if(j.accepted){
+                window.location.replace("/offline/updating");
+              } else {
+                msg("Failed to start update: " + (j.error || "unknown error"));
+                bCheck.disabled=false;
+              }
+            } catch(e) {
+              // Network error: service may have already started the update.
+              window.location.replace("/offline/updating");
+            }
+          };
+          checkPersistedStatus();
+        }
+      </script>
+      <script>
+        async function refreshOwntoneOutputs() {
+          const sel = document.getElementById("owntone_output_select");
+          const hint = document.getElementById("owntone_output_hint");
+          if (!sel) return;
+
+          // If the user is interacting with the dropdown, don't change it under them.
+          if (document.activeElement === sel) return;
+
+          let j = null;
+          try {
+            const r = await fetch("/api/owntone/outputs", { cache: "no-store" });
+            j = await r.json();
+          } catch (e) {
+            return;
+          }
+          if (!j || !j.ok) return;
+
+          const outputs = Array.isArray(j.outputs) ? j.outputs : [];
+          if (hint) hint.style.display = outputs.length ? "none" : "block";
+
+          // If still empty, keep whatever is currently shown (don't wipe it).
+          if (!outputs.length) return;
+
+          const current = sel.value;
+          const existing = Array.from(sel.options).map(o => o.value);
+
+          // If the list hasn't changed, do nothing.
+          const same =
+            existing.length === outputs.length &&
+            existing.every((v, i) => v === outputs[i]);
+          if (same) return;
+
+          // Rebuild options
+          sel.innerHTML = "";
+          for (const name of outputs) {
+            const opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            sel.appendChild(opt);
+          }
+
+          // Preserve user's current selection if possible
+          if (outputs.includes(current)) {
+            sel.value = current;
+          } else if (j.selected && outputs.includes(j.selected)) {
+            sel.value = j.selected;
+          } else {
+            sel.selectedIndex = 0;
+          }
+          refreshPlaybackCardSub();
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+          // Run once immediately, then every 2 seconds
+          refreshOwntoneOutputs();
+          setInterval(refreshOwntoneOutputs, 2000);
+        });
+      </script>
+      <script>
+        function _inputCardSub(captureSelName, turntableName, gainId) {
+          var sel = document.querySelector('select[name="' + captureSelName + '"]');
+          var opt = sel ? sel.options[sel.selectedIndex] : null;
+          var dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
+          var turntable = document.querySelector('input[name="' + turntableName + '"]');
+          var mode = (turntable && turntable.checked) ? 'Turntable' : 'Line In';
+          if (opt && opt.dataset.bt === '1') {
+            // Bluetooth input: show the connected device name (or connection
+            // state) instead of the ALSA card name and turntable flag. The
+            // string itself comes verbatim from the status poll's server-
+            // computed ui.bt_input_text -- never re-derived from link/paired
+            // here, so it can't drift from the card summary's own state.
+            dev = 'Bluetooth';
+            mode = window._btUiText || 'Not Connected';
+          }
+          var gainEl = document.getElementById(gainId);
+          var gain = gainEl ? parseInt(gainEl.value, 10) : 0;
+          var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
+          return dev + ' · ' + mode + ' · ' + gainStr;
+        }
+        function refreshInputCardSubs() {
+          var s1 = document.getElementById('input1-card-sub');
+          if (s1 && _setupPanelIsLoaded('input1')) {
+            var en1 = document.querySelector('input[name="audio1_enabled"]');
+            if (en1 && !en1.checked) {
+              s1.textContent = 'Not configured';
+            } else {
+              s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
+            }
+          }
+          var s2 = document.getElementById('input2-card-sub');
+          if (s2 && _setupPanelIsLoaded('input2')) {
+            var en = document.querySelector('input[name="audio2_enabled"]');
+            if (en && !en.checked) {
+              s2.textContent = 'Disabled';
+            } else {
+              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_turntable', 'audio2_gain_db');
+            }
+          }
+        }
+        // Lazy per-card detail fetch: a panel's body starts empty
+        // (an id="panel-body-<key>" placeholder -- see _setup_panel_shell_html())
+        // and is fetched from GET /api/setup/card/<key> the first time its
+        // panel opens, then cached in the DOM (never re-fetched on later
+        // opens in the same page load).
+        var _setupPanelLoaded = {};
+        // Every card summary below (refreshInputCardSubs, refreshPlaybackCardSub,
+        // ...) is DERIVED from that card's detail-panel controls -- which now
+        // only exist once the panel has been lazily fetched. Refreshing a card
+        // whose panel was never opened would read every control as absent and
+        // overwrite its correct server-rendered summary with the all-defaults
+        // text ('Off', 'No speaker selected . 0%', 'Not configured', ...), so
+        // each refresher gates on this. Callers are the Back button
+        // (refreshSetupCardSubs) and the Bluetooth status poll, both of which
+        // can fire while other panels are still unfetched.
+        function _setupPanelIsLoaded(id) {
+          return !!_setupPanelLoaded[id];
+        }
+        async function _setupFetchPanelBody(id) {
+          var bodyEl = document.getElementById('panel-body-' + id);
+          if (!bodyEl) return;
+          try {
+            var res = await fetch('/api/setup/card/' + encodeURIComponent(id), {
+              cache: 'no-store',
+              headers: {'X-CSRF-Token': window.__CSRF || ''}
+            });
+            var body = await res.json();
+            if (body && body.ok && typeof body.html === 'string') {
+              bodyEl.innerHTML = body.html;
+            } else {
+              bodyEl.innerHTML = '<p style="color:var(--color-status-danger);">Could not load this section. Please reload the page.</p>';
+            }
+          } catch (e) {
+            bodyEl.innerHTML = '<p style="color:var(--color-status-danger);">Could not load this section. Please reload the page.</p>';
+          }
+        }
+        // One-time, post-injection wiring for panels whose fields the
+        // page-load scripts used to bind at DOMContentLoaded -- now
+        // deferred to first open since the elements don't exist in the DOM
+        // until the lazy fetch above has injected them.
+        function _setupInitPanel(id) {
+          if (id === 'input1') { syncInputUi(1); refreshExclusivityOptions(); }
+          if (id === 'input2') { syncInputUi(2); refreshExclusivityOptions(); }
+          if (id === 'system' && typeof _initSystemCard === 'function') _initSystemCard();
+          if (id === 'customise' && typeof _initCustomiseCard === 'function') _initCustomiseCard();
+          if (id === 'dials' && typeof _initDialsCard === 'function') _initDialsCard();
+        }
+        async function openPanel(id) {
+          document.querySelectorAll('.setup-detail-panel').forEach(function(p) { p.classList.remove('active'); });
+          var panel = document.getElementById('panel-' + id);
+          if (panel) panel.classList.add('active');
+          var track = document.getElementById('setupSlideTrack');
+          if (track) track.classList.add('panel-open');
+          window.scrollTo(0, 0);
+          if (!_setupPanelLoaded[id]) {
+            _setupPanelLoaded[id] = true;
+            await _setupFetchPanelBody(id);
+            _setupInitPanel(id);
+          }
+          if (id === 'system') refreshNetworkAdapterInfo();
+          if (id === 'playback') refreshRepeatSetupNote();
+          // The Bluetooth/System ambient status polls only run while
+          // their own panel is open (activeOnly Pollers -- see
+          // _bt_card_js/refreshNetworkAdapterInfo's Poller construction).
+          if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
+          if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
+        }
+        function _repeatCodecLabel(codec) {
+          if (!codec) return '';
+          var m = /^mp2_(\d+)$/.exec(String(codec));
+          if (m) return m[1] + 'Kbps MP2';
+          if (codec === 'pcm' || codec === 'pcm_s16') return '16-bit PCM';
+          return String(codec);
+        }
+        async function refreshRepeatSetupNote(expectedRequestedMins) {
+          var noteEl = document.getElementById('repeat-max-time-note');
+          var unavailEl = document.getElementById('repeat-unavailable-note');
+          var populated = false;
+          try {
+            var r = await fetch('/api/status', { cache: 'no-store' });
+            var d = await r.json();
+            var repeat = (d && d.repeat) || null;
+            if (!repeat) return false;  // absent on old monitor binaries -- feature unsupported
+            // Freshness gate for the just-changed-a-setting poll: the status
+            // cache lags the change by a second or two, so the first
+            // snapshot after a target change is usually the OLD arena's
+            // figure -- accepting it would freeze the note on stale text
+            // (and once the rebuild starts, capacity reads 0 until the new
+            // arena finalizes). Only accept a snapshot whose
+            // requested_minutes matches what was just set; monitor builds
+            // too old to report requested_minutes can't signal freshness at
+            // all, so they are accepted as-is rather than rejected forever.
+            if (expectedRequestedMins !== undefined
+                && repeat.requested_minutes !== undefined
+                && Number(repeat.requested_minutes) !== expectedRequestedMins)
+              return false;
+            var maxSecs = Number(repeat.max_recording_seconds);
+            if (noteEl && Number.isFinite(maxSecs) && maxSecs > 0) {
+              // effective_codec: the tier the estimate assumes (monitor
+              // status, e.g. "mp2_256" or "pcm"); absent/empty on older
+              // monitor builds -> omit the parenthetical.
+              var codecLabel = _repeatCodecLabel(repeat.effective_codec);
+              var deliveredMins = Math.round(maxSecs / 60);
+              // requested_minutes (honesty surface): what was asked for,
+              // vs. deliveredMins, what the arena actually fit. Below the
+              // codec ladder's floor, duration degrades instead of quality
+              // -- when that has visibly happened (whole-minute
+              // comparison), say so plainly rather than reporting the
+              // smaller figure as if it were the ask, and name the ACTUAL
+              // bitrate the arena records at (the ladder picked it; the
+              // user configured a duration, not a quality). Older monitor
+              // builds omit requested_minutes entirely, so this falls back
+              // to the single-figure wording.
+              var requestedMins = Number(repeat.requested_minutes);
+              if (Number.isFinite(requestedMins) && requestedMins > 0 && deliveredMins < requestedMins) {
+                noteEl.textContent = requestedMins + ' minutes requested; ' + deliveredMins
+                                     + ' minutes' + (codecLabel ? ' at ' + codecLabel : '')
+                                     + ' fit in memory';
+              } else {
+                noteEl.textContent = 'Buffer: ' + deliveredMins + ' mins'
+                                     + (codecLabel ? ' (' + codecLabel + ')' : '');
+              }
+              populated = true;
+            }
+            var reason = repeat.recording && repeat.recording.unavailable_reason;
+            if (unavailEl) {
+              if (reason) {
+                unavailEl.textContent = 'Repeat unavailable: insufficient free memory';
+                unavailEl.style.display = '';
+              } else {
+                unavailEl.style.display = 'none';
+                unavailEl.textContent = '';
+              }
+            }
+          } catch (e) { return false; }
+          return populated;
+        }
+        var _repeatToggleToken = 0;
+        // After a target/enable change the daemon tears the arena down and
+        // rebuilds it (typically well under a second), but the status cache
+        // backing /api/status refreshes on its own ~1-2s poll -- so the note
+        // switches to "Calculating…" immediately and polls until a FRESH
+        // figure (requested_minutes matching the new target, capacity
+        // recomputed) is back, rather than either freezing on the stale
+        // pre-change text or flashing the old figure as if it were the
+        // answer. If nothing fresh arrives within the window (e.g. an old
+        // monitor build that never reports requested_minutes alongside a
+        // rejected match), a final unconditional refresh shows whatever the
+        // daemon does report instead of leaving "Calculating…" stuck.
+        function pollRepeatNote(expectedRequestedMins) {
+          var myToken = ++_repeatToggleToken;
+          var attempts = 0;
+          var maxAttempts = 12;
+          var noteEl = document.getElementById('repeat-max-time-note');
+          if (noteEl) noteEl.textContent = 'Calculating…';
+          (function poll() {
+            if (myToken !== _repeatToggleToken) return;  // superseded by a later change
+            attempts++;
+            refreshRepeatSetupNote(expectedRequestedMins).then(function(ok) {
+              if (ok || myToken !== _repeatToggleToken) return;
+              if (attempts >= maxAttempts) {
+                refreshRepeatSetupNote();  // last resort: accept any figure
+                return;
+              }
+              setTimeout(poll, 700);
+            });
+          })();
+        }
+        function onRepeatEnabledToggle(checked) {
+          settingsSaveField('repeat.enabled', checked);
+          var targetSelect = document.getElementById('repeat_target_minutes');
+          var targetRow = document.getElementById('repeat-target-row');
+          if (targetSelect) targetSelect.disabled = !checked;
+          if (targetRow) targetRow.style.opacity = checked ? '' : '0.4';
+          if (!checked) {
+            _repeatToggleToken++;  // cancel any in-flight poll
+            var noteEl = document.getElementById('repeat-max-time-note');
+            var unavailEl = document.getElementById('repeat-unavailable-note');
+            if (noteEl) noteEl.textContent = '';
+            if (unavailEl) {
+              unavailEl.textContent = '';
+              unavailEl.style.display = 'none';
+            }
+            return;
+          }
+          var targetVal = targetSelect ? parseInt(targetSelect.value, 10) : undefined;
+          pollRepeatNote(Number.isFinite(targetVal) ? targetVal : undefined);
+        }
+        function onRepeatTargetChange(value) {
+          var target = parseInt(value, 10);
+          settingsSaveField('repeat.target_minutes', target);
+          pollRepeatNote(Number.isFinite(target) ? target : undefined);
+        }
+        function onHostnameToggle(checked) {
+          var cb = document.getElementById('webui_control_other_appliances');
+          var row = document.getElementById('ctrl-other-row');
+          if (cb) {
+            if (!checked) {
+              cb.checked = false;
+              cb.disabled = true;
+            } else {
+              cb.disabled = false;
+            }
+          }
+          if (row) { row.style.opacity = checked ? '' : '0.4'; }
+          refreshCustomiseCardSub();
+        }
+        function refreshCustomiseCardSub() {
+          var sub = document.getElementById('customise-card-sub');
+          if (!sub || !_setupPanelIsLoaded('customise')) return;
+          var cb = document.getElementById('webui_show_master_volume');
+          var cbDet = document.getElementById('webui_show_input_detail');
+          var cbDark = document.getElementById('webui_dark_mode');
+          var cbHost = document.getElementById('webui_show_hostname_on_home');
+          var cbCtrl = document.getElementById('webui_control_other_appliances');
+          var cbAdv = document.getElementById('webui_advertise_appliance');
+          var mv = (cb && cb.checked) ? 'Master volume: On' : 'Master volume: Off';
+          var det = (cbDet && cbDet.checked) ? 'Input detail: On' : 'Input detail: Off';
+          var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
+          var host = (cbHost && cbHost.checked) ? 'Hostname: On' : 'Hostname: Off';
+          var ctrl = (cbCtrl && cbCtrl.checked) ? 'Control others: On' : 'Control others: Off';
+          var adv = (cbAdv && cbAdv.checked) ? 'Visible to peers: On' : 'Visible to peers: Off';
+          sub.textContent = mv + ' · ' + det + ' · ' + dark + ' · ' + host + ' · ' + ctrl + ' · ' + adv;
+        }
+        function refreshPlaybackCardSub() {
+          var sub = document.getElementById('playback-card-sub');
+          if (!sub || !_setupPanelIsLoaded('playback')) return;
+          var sel = document.getElementById('owntone_output_select');
+          var speaker = sel ? (sel.value || 'No speaker selected') : 'No speaker selected';
+          var volEl = document.getElementById('owntone_volume_percent');
+          var vol = volEl ? volEl.value : '0';
+          sub.textContent = speaker + ' · ' + vol + '%';
+        }
+        function refreshTrackIdCardSub() {
+          var sub = document.getElementById('track-id-card-sub');
+          if (!sub || !_setupPanelIsLoaded('track-id')) return;
+          var cb = document.getElementById('track_identification_enabled');
+          sub.textContent = (cb && cb.checked) ? 'On' : 'Off';
+        }
+        function applyDarkMode(enabled) {
+          document.documentElement.setAttribute('data-theme', enabled ? 'dark' : 'light');
+        }
+        function refreshSystemCardSub() {
+          var sub = document.getElementById('system-card-sub');
+          if (!sub || !_setupPanelIsLoaded('system')) return;
+          var hn = document.getElementById('systemHostnameValue');
+          var hostname = hn ? (hn.textContent.trim() || 'autostream') : 'autostream';
+          var cbAu = document.getElementById('updates_auto_update');
+          var cbPre = document.getElementById('updates_prerelease_channel');
+          var auState = (cbAu && cbAu.checked) ? 'Auto-update: On' : 'Auto-update: Off';
+          if (cbPre && cbPre.checked) auState += ' - Pre-release channel';
+          sub.textContent = hostname + ' · v{APP_VERSION} · ' + auState;
+        }
+        function refreshSetupCardSubs() {
+          refreshInputCardSubs();
+          refreshPlaybackCardSub();
+          refreshTrackIdCardSub();
+          refreshCustomiseCardSub();
+          refreshSystemCardSub();
+          refreshDialsCardSub();
+        }
+        function closePanel() {
+          refreshSetupCardSubs();
+          // Pause the activeOnly ambient-status Pollers when their
+          // panel closes (mirrors openPanel()'s .start() calls above).
+          var activePanel = document.querySelector('.setup-detail-panel.active');
+          var activeId = activePanel ? activePanel.id.replace(/^panel-/, '') : null;
+          if (activeId === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
+          if (activeId === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.stop();
+          var track = document.getElementById('setupSlideTrack');
+          if (track) track.classList.remove('panel-open');
+          window.scrollTo(0, 0);
+        }
+      </script>
+      <script>
+        // ── Dial management ────────────────────────────────────────────────
+        var _dialPinRecoveryTimer = null;
+        var _dialPinRecoverySeenActive = false;
+        var _dialPinModalCard = null;
+        var _dialPinModalMode = null; // 'change' | 'unlock'
+        var _dialPinRecoveryModalCard = null;
+        var _dialPinRecoveryStep = null; // 'confirm' | 'wait' | 'set'
+        var _dialNameModalCard = null;
+        var _dialUnlockedPins = new WeakMap(); // card → '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
+        var _ICON_PADLOCK_LOCKED = `<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
+        var _ICON_PADLOCK_UNLOCKED = `<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
+
+        function _dialSetRecoveryBadge(card, active) {
+          // Keeps the server-rendered "Recovery Active" badge honest for a
+          // card while its PIN-recovery modal is open: the modal already
+          // polls /api/dial/pin_recovery/status/<uuid> every 2s, so this
+          // reuses that response instead of opening a new polling loop.
+          var group = card.querySelector('.dial-badge');
+          if (!group || !group.parentElement) return;
+          var wrap = group.parentElement;
+          var badge = wrap.querySelector('.dial-badge-recovery');
+          if (active) {
+            if (!badge) {
+              badge = document.createElement('span');
+              badge.className = 'dial-badge dial-badge-recovery';
+              badge.textContent = 'Recovery Active';
+              wrap.appendChild(badge);
+            }
+          } else if (badge) {
+            badge.remove();
+          }
+        }
+
+        // Single source of truth for the tri-state (+ Configuring) status
+        // badge, so setDialAuthorized() and the restart-in-progress flow
+        // can't drift by hardcoding the class/text mapping twice.
+        function _dialSetStatusBadge(card, state) {
+          var badge = card.querySelector('.dial-badge');
+          if (!badge) return;
+          var map = {
+            online: ['dial-badge-online', 'Online'],
+            offline: ['dial-badge-offline', 'Offline'],
+            new: ['dial-badge-new', 'New'],
+            configuring: ['dial-badge-configuring', 'Configuring'],
+          };
+          var entry = map[state] || map.offline;
+          badge.className = 'dial-badge ' + entry[0];
+          badge.textContent = entry[1];
+        }
+
+        function setDialAuthorized(card, authorized) {
+          card.dataset.authorized = authorized ? 'true' : 'false';
+          if (authorized) { delete card.dataset.new; } else { card.dataset.new = 'true'; }
+          var allow = card.querySelector('.dial-allow');
+          if (allow) allow.checked = authorized;
+          var config = card.querySelector('.dial-config');
+          if (config) config.style.display = authorized ? '' : 'none';
+          var online = card.dataset.online === 'true';
+          _dialSetStatusBadge(card, authorized ? (online ? 'online' : 'offline') : 'new');
+          if (authorized) {
+            var titleEl = card.querySelector('.dial-card-title');
+            var nameInput = card.querySelector('.dial-name');
+            if (nameInput && nameInput.value.trim()) {
+              if (titleEl) titleEl.textContent = nameInput.value.trim();
+              var nameDisplayEl = card.querySelector('.dial-current-name');
+              if (nameDisplayEl) nameDisplayEl.textContent = nameInput.value.trim();
+            }
+          }
+        }
+        function syncDialStep(input) {
+          var card = input.closest('.dial-card');
+          if (!card) return;
+          var valEl = card.querySelector('.dial-step-val');
+          if (valEl) valEl.textContent = input.value + '% per click';
+        }
+
+        function dialSyncScreenControlsEnabled(card) {
+          var fittedEl = card.querySelector('.dial-screen-fitted');
+          var rotateEl = card.querySelector('.dial-screen-rotate');
+          var bgrEl = card.querySelector('.dial-screen-bgr');
+          var typeEl = card.querySelector('.dial-screen-type');
+          var touchEl = card.querySelector('.dial-screen-touch');
+          if (!fittedEl || !rotateEl) return;
+          var off = fittedEl.disabled || !fittedEl.checked;
+          rotateEl.disabled = off;
+          if (bgrEl) bgrEl.disabled = off;
+          if (typeEl) typeEl.disabled = off;
+          if (touchEl) touchEl.disabled = off;
+          // Dim the rows too — a disabled input still renders its label text
+          // at full contrast, which reads as available when it is not.
+          card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {
+            row.classList.toggle('is-disabled', off);
+          });
+        }
+
+        // Freezes every control on one card for an in-flight operation
+        // (the dial restarting itself to apply a new touch controller).
+        //
+        // Queried generically rather than from a hand-listed set of
+        // selectors: an enumeration silently misses whatever is added to
+        // the card later, and each miss looks like a control that stayed
+        // live over a device that is not listening.
+        //
+        // Un-busy RESTORES each control's prior disabled state rather than
+        // enabling everything. Several controls are legitimately disabled
+        // before the operation starts -- the whole settings section is
+        // disabled while it is locked, and the screen sub-controls follow
+        // "Has Screen Fitted" -- so blanket enabling would silently unlock
+        // a locked card.
+        function dialSetCardBusy(card, busy) {
+          card.querySelectorAll('input, select, button, textarea').forEach(function(el) {
+            if (busy) {
+              if (el.dataset.busyPrevDisabled === undefined) {
+                el.dataset.busyPrevDisabled = el.disabled ? '1' : '0';
+              }
+              el.disabled = true;
+            } else if (el.dataset.busyPrevDisabled !== undefined) {
+              el.disabled = (el.dataset.busyPrevDisabled === '1');
+              delete el.dataset.busyPrevDisabled;
+            }
+            // Switch-style toggles render from a hidden checkbox, so
+            // disabling the input alone leaves the switch and its label
+            // looking fully available. Dim the row that holds them, the
+            // same treatment the screen control rows already get.
+            var toggle = el.closest ? el.closest('label.output-toggle') : null;
+            var row = toggle ? toggle.parentElement : null;
+            if (row) row.classList.toggle('is-disabled', busy);
+          });
+          card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {
+            row.classList.toggle('is-disabled', busy);
+          });
+          if (!busy) {
+            dialSyncScreenControlsEnabled(card);
+          }
+        }
+
+        function _dialLockSection(card) {
+          _dialUnlockedPins.delete(card);
+          var section = card.querySelector('.dial-locked-section');
+          if (!section) return;
+          section.classList.add('dial-section-locked');
+          var btn = section.querySelector('.dial-lock-btn');
+          if (btn) { btn.innerHTML = _ICON_PADLOCK_LOCKED; btn.setAttribute('aria-label', 'Unlock settings'); }
+          section.querySelectorAll('input, select').forEach(function(el) { el.disabled = true; });
+          dialSyncScreenControlsEnabled(card);
+        }
+
+        function _dialUnlockSection(card, pin) {
+          _dialUnlockedPins.set(card, pin);
+          var section = card.querySelector('.dial-locked-section');
+          if (!section) return;
+          section.classList.remove('dial-section-locked');
+          var btn = section.querySelector('.dial-lock-btn');
+          if (btn) {
+            if (card.dataset.pinSet === 'true') {
+              btn.innerHTML = _ICON_PADLOCK_UNLOCKED;
+              btn.setAttribute('aria-label', 'Lock settings');
+              btn.style.display = '';
+            } else {
+              btn.style.display = 'none';
+            }
+          }
+          section.querySelectorAll('input, select').forEach(function(el) { el.disabled = false; });
+          dialSyncScreenControlsEnabled(card);
+        }
+
+        function _updateDialLockVisibility(card) {
+          if (card.dataset.pinSet !== 'true') {
+            _dialUnlockSection(card, '');
+          } else if (!_dialUnlockedPins.has(card)) {
+            _dialLockSection(card);
+          }
+          var hasPin = card.dataset.pinSet === 'true';
+          var canConfirm = card.dataset.canConfirm !== 'false'; // default true when unknown
+          var pinBtn = card.querySelector('[data-dial-action="change-pin"]');
+          var recoverBtn = card.querySelector('[data-dial-action="recover-pin"]');
+          var noConfirmMsg = card.querySelector('.dial-pin-no-confirm-msg');
+          if (pinBtn) pinBtn.textContent = hasPin ? 'Change Dial PIN' : 'Set Dial PIN';
+          // A dial that can never confirm presence can never complete recovery,
+          // so it must not be offered a lock it has no key for: block setting a
+          // PIN in the first place. If a PIN was already set before this became
+          // true (an already-impossible situation), don't strand the user by
+          // hiding everything — keep the reset button visible and explain.
+          if (!canConfirm && !hasPin) {
+            if (pinBtn) pinBtn.style.display = 'none';
+            if (recoverBtn) recoverBtn.style.display = 'none';
+          } else {
+            if (pinBtn) pinBtn.style.display = '';
+            if (recoverBtn) {
+              recoverBtn.style.display = '';
+              recoverBtn.disabled = !hasPin;
+            }
+          }
+          if (noConfirmMsg) noConfirmMsg.style.display = canConfirm ? 'none' : '';
+        }
+
+        function refreshDialsCardSub() {
+          var sub = document.getElementById('dials-card-sub');
+          if (!sub || !_setupPanelIsLoaded('dials')) return;
+          var all = document.querySelectorAll('.dial-card');
+          var nAuth = 0, nOnline = 0, nNew = 0;
+          all.forEach(function(c) {
+            if (c.dataset.authorized === 'true') {
+              nAuth++;
+              if (c.dataset.online === 'true') nOnline++;
+            } else { nNew++; }
+          });
+          var text;
+          if (nAuth === 0 && nNew === 0) { text = 'No dials'; }
+          else if (nAuth === 0) { text = nNew + ' new'; }
+          else if (nNew > 0) { text = nAuth + ' authorized · ' + nNew + ' new'; }
+          else { text = nAuth + ' authorized' + (nOnline ? ' · ' + nOnline + ' online' : ''); }
+          sub.textContent = text;
+        }
+
+        function dialUUID(card) {
+          return card ? (card.dataset.dialUuid || '') : '';
+        }
+
+        function dialMsg(card, msg, ok) {
+          var el = card ? card.querySelector('.dial-card-msg') : null;
+          if (!el) return;
+          el.textContent = msg;
+          el.style.color = ok ? 'var(--color-status-success)' : 'var(--color-status-danger)';
+          el.style.display = msg ? '' : 'none';
+        }
+
+        function _dialErrorMessage(error) {
+          var map = {
+            'dial_offline': 'Dial is offline',
+            'dial_unreachable': 'Dial could not be reached',
+            'dial_bad_response': 'Dial returned an invalid response',
+            'dial_unavailable': 'Dial is temporarily unavailable',
+            'dial_timeout': 'Dial did not respond in time',
+            'invalid_response': 'Appliance returned an unexpected response',
+            'wrong_pin': 'Incorrect PIN',
+            'too_many_attempts': 'Too many attempts; try again later',
+            'screen_apply_failed': 'Screen settings could not be applied',
+          };
+          return map[String(error || '')] || String(error || 'Unknown error');
+        }
+
+        async function _dialFetch(path, opts) {
+          var headers = Object.assign({'X-CSRF-Token': window.__CSRF || ''}, (opts.headers || {}));
+          var r = await fetch(path, Object.assign({}, opts, {headers: headers}));
+          return _parseDialResponse(r);
+        }
+
+        async function _dialPost(path, body) {
+          return _dialFetch(path, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+        }
+
+        async function _dialGet(path) {
+          return _dialFetch(path, {cache: 'no-store'});
+        }
+
+        // Polls checkFn at intervalMs until it resolves truthy (done) or
+        // deadlineMs elapses, then calls onTimeout. Returns a cancel()
+        // function. Guards against a checkFn() promise resolving after the
+        // poll was stopped/superseded -- the same generation-token shape as
+        // pollRepeatNote(), scoped per call so unrelated dial cards polling
+        // concurrently can't cancel each other.
+        function dialPollUntil(intervalMs, deadlineMs, checkFn, onTimeout) {
+          var token = {};
+          var active = token;
+          var deadlineAt = Date.now() + deadlineMs;
+          var timerId = setInterval(function() {
+            if (active !== token) { clearInterval(timerId); return; }
+            if (Date.now() >= deadlineAt) {
+              clearInterval(timerId);
+              active = null;
+              onTimeout();
+              return;
+            }
+            Promise.resolve(checkFn()).then(function(done) {
+              if (active !== token) return;  // cancelled/superseded while awaiting
+              if (done) { clearInterval(timerId); active = null; }
+            }).catch(function() {
+              // Keep polling to the deadline. A check that throws is the
+              // normal case while the target is restarting; swallowing it
+              // here keeps that from surfacing as an unhandled rejection
+              // and from ending the poll early.
+            });
+          }, intervalMs);
+          return function cancel() {
+            active = null;
+            clearInterval(timerId);
+          };
+        }
+
+        // ── Dial self-restart after a touch-controller change ──────────────
+        // The dial persists the new touch_type and THEN restarts, so
+        // screen.touch_type (built from persisted config) reports the new
+        // value instantly from the old, not-yet-restarted process -- polling
+        // it would report success immediately and verify nothing.
+        // runtime.touch_type is the one field that reflects what is
+        // actually running, so that -- and only that -- is what gets polled.
+        var _dialTouchPollCancel = new WeakMap(); // card → cancel() of an in-flight restart poll
+
+        function _dialCancelTouchRestartPoll(card) {
+          var cancel = _dialTouchPollCancel.get(card);
+          if (cancel) {
+            cancel();
+            _dialTouchPollCancel.delete(card);
+          }
+        }
+
+        // Single-OK result modal, reusing the dial PIN modals' markup and
+        // classes. A restart outcome arrives up to a minute after the
+        // change, by which time an inline one-liner under the buttons is
+        // easily missed -- especially the failures, which matter most.
+        function _dialShowResultModal(title, message) {
+          var modal = document.getElementById('dialResultModal');
+          if (!modal) return;
+          var titleEl = document.getElementById('dialResultModalTitle');
+          var msgEl = document.getElementById('dialResultModalMsg');
+          if (titleEl) titleEl.textContent = title;
+          if (msgEl) msgEl.textContent = message;
+          modal.classList.add('show');
+        }
+
+        function _dialCloseResultModal() {
+          var modal = document.getElementById('dialResultModal');
+          if (modal) modal.classList.remove('show');
+        }
+
+        function _dialFinishTouchRestartPoll(card, badgeState, message, ok) {
+          _dialTouchPollCancel.delete(card);
+          dialSetCardBusy(card, false);
+          _dialSetStatusBadge(card, badgeState);
+          _dialShowResultModal(_DIAL_CFG_TITLE, message);
+        }
+
+        // Outcome text for the result modal. Which message applies depends
+        // on BOTH the outcome and whether touch was being switched on or
+        // off -- "disabled" is a success, not a lesser one, and a panel
+        // that will not open is a wiring/type problem the user can act on.
+        var _DIAL_CFG_TITLE = 'Dial Configuration';
+        var _DIAL_CFG_OK_ENABLED  = 'Touch panel configured successfully.';
+        var _DIAL_CFG_OK_DISABLED = 'Touch panel disabled.';
+        var _DIAL_CFG_CANNOT_OPEN = 'Touch panel could not be opened. Please check touch panel type and wiring.';
+        var _DIAL_CFG_GENERIC_ERR = 'An error was encountered applying the configuration.';
+
+        function dialBeginTouchRestartPoll(card, requestedTouchType) {
+          // A second save on the same card must supersede, not race, a poll
+          // already in flight for that card.
+          _dialCancelTouchRestartPoll(card);
+          var uuid = dialUUID(card);
+          dialSetCardBusy(card, true);
+          _dialSetStatusBadge(card, 'configuring');
+          // A restart clears the dial's in-memory recovery window, so a
+          // stale "Recovery Active" badge left showing would be a lie.
+          _dialSetRecoveryBadge(card, false);
+          var cancel = dialPollUntil(1000, 60000, async function() {
+            var pollResult = await _dialGet('/api/dial/screen/settings/' + encodeURIComponent(uuid));
+            // The dial is unreachable for most of this window; the proxy
+            // reports that as ok:false (dial_unreachable/dial_offline).
+            // Expected -- keep polling silently, it is not an error.
+            if (!pollResult.ok) return false;
+            var runtime = pollResult.body && pollResult.body.runtime;
+            var runtimeTouchType = runtime ? runtime.touch_type : null;
+            if (runtimeTouchType === 'failed') {
+              // The dial came back and reported its touch stack failed to
+              // open -- a real outcome, not a timeout. Stop waiting now.
+              _dialFinishTouchRestartPoll(card, 'online',
+                requestedTouchType === 'none' ? _DIAL_CFG_GENERIC_ERR : _DIAL_CFG_CANNOT_OPEN,
+                false);
+              return true;
+            }
+            if (runtimeTouchType === requestedTouchType) {
+              _dialFinishTouchRestartPoll(card, 'online',
+                requestedTouchType === 'none' ? _DIAL_CFG_OK_DISABLED : _DIAL_CFG_OK_ENABLED,
+                true);
+              return true;
+            }
+            return false;
+          }, function onTimeout() {
+            _dialFinishTouchRestartPoll(card, 'offline', _DIAL_CFG_GENERIC_ERR, false);
+          });
+          _dialTouchPollCancel.set(card, cancel);
+        }
+
+        async function dialToggleAllow(card, checked) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          if (checked) {
+            var nameEl = card.querySelector('.dial-name');
+            var name = ((nameEl ? nameEl.value : '') || uuid.slice(0, 8)).trim();
+            try {
+              var result = await _dialPost('/api/dial/authorize', {uuid: uuid, name: name});
+              if (result.ok) {
+                setDialAuthorized(card, true);
+                dialLoadConfig(card);
+                dialLoadScreenSettings(card);
+                refreshDialsCardSub();
+                dialMsg(card, 'Authorized', true);
+                setTimeout(function() { dialMsg(card, '', true); }, 2000);
+              } else {
+                dialMsg(card, _dialErrorMessage(result.error), false);
+                var cb = card.querySelector('.dial-allow');
+                if (cb) cb.checked = false;
+              }
+            } catch(e) {
+              dialMsg(card, 'Network error', false);
+              var cb2 = card.querySelector('.dial-allow');
+              if (cb2) cb2.checked = false;
+            }
+          } else {
+            if (confirm('Remove authorization for this dial?')) {
+              await dialRevoke(card);
+            } else {
+              var cb3 = card.querySelector('.dial-allow');
+              if (cb3) cb3.checked = true;
+            }
+          }
+        }
+
+        async function dialRevoke(card) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          try {
+            var result = await _dialPost('/api/dial/revoke', {uuid: uuid});
+            if (result.ok) {
+              setDialAuthorized(card, false);
+              refreshDialsCardSub();
+              dialMsg(card, 'Revoked', true);
+              setTimeout(function() { dialMsg(card, '', true); }, 2000);
+            } else {
+              dialMsg(card, _dialErrorMessage(result.error), false);
+              var cb = card.querySelector('.dial-allow');
+              if (cb) cb.checked = true;
+            }
+          } catch(e) {
+            dialMsg(card, 'Network error', false);
+            var cb = card.querySelector('.dial-allow');
+            if (cb) cb.checked = true;
+          }
+        }
+
+        async function dialSaveConfig(card) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var nameEl = card.querySelector('.dial-name');
+          var stepEl = card.querySelector('.dial-step');
+          var autoEl = card.querySelector('.dial-autoupdate');
+          var chanEl = card.querySelector('.dial-channel');
+          var body = {uuid: uuid};
+          if (nameEl) body.name = nameEl.value.trim();
+          if (stepEl) {
+            var step = parseInt(stepEl.value, 10);
+            if (!Number.isInteger(step) || step < 1 || step > 10) {
+              dialMsg(card, 'Step must be between 1 and 10', false);
+              return;
+            }
+            body.step_percent = step;
+          }
+          if (autoEl) body.auto_update = autoEl.checked;
+          if (chanEl) body.update_channel = chanEl.checked ? 'dev' : 'stable';
+          if (card.dataset.pinSet === 'true') {
+            var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (!unlockedPin) { dialMsg(card, 'Unlock settings first', false); return; }
+            body.current_pin = unlockedPin;
+          }
+          try {
+            var result = await _dialPost('/api/dial/configure', body);
+            if (result.ok) { dialMsg(card, 'Saved', true); setTimeout(function(){ dialMsg(card, '', true); }, 2000); }
+            else { dialMsg(card, _dialErrorMessage(result.error), false); }
+          } catch(e) {
+            dialMsg(card, 'Network error', false);
+          }
+        }
+
+        async function dialLoadConfig(card) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          try {
+            var loadResult = await _dialGet('/api/dial/configure/' + encodeURIComponent(uuid));
+            if (!loadResult.ok) return;
+            var j = loadResult.body;
+            var stepEl = card.querySelector('.dial-step');
+            var autoEl = card.querySelector('.dial-autoupdate');
+            var chanEl = card.querySelector('.dial-channel');
+            if (stepEl && j.step_percent != null) {
+              stepEl.value = j.step_percent;
+              var stepValEl = card.querySelector('.dial-step-val');
+              if (stepValEl) stepValEl.textContent = j.step_percent + '% per click';
+            }
+            if (autoEl && j.auto_update != null) autoEl.checked = !!j.auto_update;
+            if (chanEl && j.update_channel != null) chanEl.checked = (j.update_channel === 'dev');
+            card.dataset.pinSet = j.pin_set ? 'true' : 'false';
+            card.dataset.canConfirm = j.can_confirm_presence === false ? 'false' : 'true';
+            _updateDialLockVisibility(card);
+          } catch(e) {}
+        }
+
+        async function dialLoadScreenSettings(card) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          try {
+            var loadResult = await _dialGet('/api/dial/screen/settings/' + encodeURIComponent(uuid));
+            if (!loadResult.ok) return;
+            var j = loadResult.body;
+            var fittedEl = card.querySelector('.dial-screen-fitted');
+            var rotateEl = card.querySelector('.dial-screen-rotate');
+            var bgrEl = card.querySelector('.dial-screen-bgr');
+            var typeEl = card.querySelector('.dial-screen-type');
+            var touchEl = card.querySelector('.dial-screen-touch');
+            var bgrRow = card.querySelector('.dial-screen-bgr-row');
+            var typeRow = card.querySelector('.dial-screen-type-row');
+            var touchRow = card.querySelector('.dial-screen-touch-row');
+            if (fittedEl && j.screen && j.screen.fitted != null) {
+              fittedEl.checked = !!j.screen.fitted;
+            }
+            if (rotateEl && j.screen) {
+              rotateEl.checked = !!(j.screen || {}).rotate;
+            }
+            // `supported` is the capability gate: older dials that don't
+            // publish it must never receive screen_type/bgr in the save
+            // body, so the two new controls stay hidden and disabled.
+            var supported = Array.isArray(j.supported) ? j.supported : [];
+            if (supported.length > 0) {
+              card.dataset.screenCaps = '1';
+              if (typeEl) {
+                typeEl.innerHTML = '';
+                supported.slice().sort(function(a, b) {
+                  return String(a.text).localeCompare(String(b.text));
+                }).forEach(function(opt) {
+                  var o = document.createElement('option');
+                  o.value = opt.key;
+                  o.textContent = opt.text;
+                  typeEl.appendChild(o);
+                });
+                if (j.screen && j.screen.screen_type != null) typeEl.value = j.screen.screen_type;
+              }
+              if (bgrEl && j.screen) bgrEl.checked = !!j.screen.bgr;
+              if (bgrRow) bgrRow.style.display = 'flex';
+              if (typeRow) typeRow.style.display = 'flex';
+            } else {
+              delete card.dataset.screenCaps;
+              if (bgrRow) bgrRow.style.display = 'none';
+              if (typeRow) typeRow.style.display = 'none';
+            }
+            // `supported_touch` is a SEPARATE capability array from
+            // `supported` — a dial can publish screen profiles but no touch
+            // capability at all, and must never receive touch_type in the
+            // save body or its strict whitelist rejects the whole save.
+            var supportedTouch = Array.isArray(j.supported_touch) ? j.supported_touch : [];
+            if (supportedTouch.length > 0) {
+              card.dataset.touchCaps = '1';
+              if (touchEl) {
+                touchEl.innerHTML = '';
+                supportedTouch.slice().sort(function(a, b) {
+                  return String(a.text).localeCompare(String(b.text));
+                }).forEach(function(opt) {
+                  var o = document.createElement('option');
+                  o.value = opt.key;
+                  o.textContent = opt.text;
+                  touchEl.appendChild(o);
+                });
+                if (j.screen && j.screen.touch_type != null) touchEl.value = j.screen.touch_type;
+              }
+              if (touchRow) touchRow.style.display = 'flex';
+            } else {
+              delete card.dataset.touchCaps;
+              if (touchRow) touchRow.style.display = 'none';
+            }
+            // Only now is it safe to save: the controls hold the dial's real
+            // values, so a whole-object POST cannot reset an unread field.
+            card.dataset.screenLoaded = '1';
+            dialSyncScreenControlsEnabled(card);
+          } catch(e) {}
+        }
+
+        async function dialSaveScreenSettings(card, changedEl) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var fittedEl = card.querySelector('.dial-screen-fitted');
+          var rotateEl = card.querySelector('.dial-screen-rotate');
+          var bgrEl = card.querySelector('.dial-screen-bgr');
+          var typeEl = card.querySelector('.dial-screen-type');
+          var touchEl = card.querySelector('.dial-screen-touch');
+          if (!fittedEl || !rotateEl) return;
+          // POST /screen/settings replaces the whole object, and any field
+          // left out is reset to its default. dialLoadConfig and
+          // dialLoadScreenSettings are fired independently on page load, so
+          // without this guard a toggle clicked before the screen-settings
+          // GET resolves would post {fitted, rotate} alone and silently
+          // reset a configured screen_type/BGR back to defaults.
+          if (card.dataset.screenLoaded !== '1') {
+            dialMsg(card, 'Still loading screen settings — try again', false);
+            return;
+          }
+          var screen = {fitted: fittedEl.checked, rotate: rotateEl.checked};
+          // Capability gate: only include the new fields once the dial has
+          // published `supported` — an older dial 400s the whole save on an
+          // unknown field, which would break the existing toggles too.
+          if (card.dataset.screenCaps === '1') {
+            screen.bgr = bgrEl ? bgrEl.checked : false;
+            screen.screen_type = typeEl ? typeEl.value : '';
+          }
+          // Independent capability gate: a dial can support screen profiles
+          // without supporting touch, so touch_type is only ever included
+          // once the dial has published `supported_touch` separately.
+          if (card.dataset.touchCaps === '1') {
+            screen.touch_type = touchEl ? touchEl.value : '';
+          }
+          var body = {uuid: uuid, screen: screen};
+          if (card.dataset.pinSet === 'true') {
+            var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (!unlockedPin) { dialMsg(card, 'Unlock settings first', false); return; }
+            body.current_pin = unlockedPin;
+          }
+          // Snapshot the changed control's previous value before posting —
+          // a <select> can't be reverted with a simple !checked flip like
+          // the checkboxes, so remember what to restore it to on failure.
+          var prevValue = null;
+          if (changedEl) {
+            prevValue = (changedEl.tagName === 'SELECT') ? changedEl.value : changedEl.checked;
+          }
+          try {
+            var result = await _dialPost('/api/dial/screen/settings', body);
+            if (result.ok) {
+              if (result.body && result.body.restarting === true) {
+                // The dial is restarting itself to apply the new touch
+                // controller -- hand off to the bounded poll instead of the
+                // ordinary immediate-success path.
+                dialBeginTouchRestartPoll(card, screen.touch_type);
+              } else {
+                dialMsg(card, 'Saved', true); setTimeout(function(){ dialMsg(card, '', true); }, 2000);
+                dialSyncScreenControlsEnabled(card);
+              }
+            }
+            else {
+              dialMsg(card, _dialErrorMessage(result.error), false);
+              // Revert only the control the user changed — the others
+              // still hold their pre-save values.
+              if (changedEl) {
+                if (changedEl.tagName === 'SELECT') changedEl.value = prevValue;
+                else changedEl.checked = prevValue;
+              }
+              dialSyncScreenControlsEnabled(card);
+            }
+          } catch(e) {
+            dialMsg(card, 'Network error', false);
+            if (changedEl) {
+              if (changedEl.tagName === 'SELECT') changedEl.value = prevValue;
+              else changedEl.checked = prevValue;
+            }
+            dialSyncScreenControlsEnabled(card);
+          }
+        }
+
+        async function dialUpdateFirmware(card) {
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          if (!confirm('Start firmware update? The dial will restart.')) return;
+          try {
+            var r = await fetch('/api/dial/update/' + encodeURIComponent(uuid), {
+              method: 'POST', headers: {'X-CSRF-Token': window.__CSRF || ''}
+            });
+            var updResult = await _parseDialResponse(r);
+            if (updResult.ok) dialMsg(card, 'Update started', true);
+            else dialMsg(card, _dialErrorMessage(updResult.error), false);
+          } catch(e) { dialMsg(card, 'Network error', false); }
+        }
+
+        function _openDialPinModal(card, mode, title, message) {
+          _dialPinModalCard = card;
+          _dialPinModalMode = mode;
+          var modal = document.getElementById('dialPinModal');
+          if (!modal) return;
+          document.getElementById('dialPinModalTitle').textContent = title;
+          document.getElementById('dialPinModalMsg').textContent = message;
+          var errEl = document.getElementById('dialPinModalError');
+          errEl.style.display = 'none'; errEl.textContent = '';
+          var currentInputEl = document.getElementById('dialPinModalCurrentInput');
+          currentInputEl.value = '';
+          // unlock: current PIN is the only field; change: current PIN not shown (stored from unlock)
+          currentInputEl.style.display = mode === 'unlock' ? '' : 'none';
+          var inputEl = document.getElementById('dialPinModalInput');
+          inputEl.value = '';
+          inputEl.style.display = mode === 'unlock' ? 'none' : '';
+          var confirmInputEl = document.getElementById('dialPinModalConfirmInput');
+          confirmInputEl.value = '';
+          confirmInputEl.style.display = mode === 'unlock' ? 'none' : '';
+          var okBtn = document.getElementById('dialPinModalOk');
+          okBtn.textContent = mode === 'unlock' ? 'Unlock' : (card.dataset.pinSet !== 'true' ? 'Set PIN' : 'Change PIN');
+          okBtn.disabled = false;
+          document.getElementById('dialPinModalCancel').disabled = false;
+          modal.classList.add('show');
+          setTimeout(function(){
+            (mode === 'unlock' ? currentInputEl : inputEl).focus();
+          }, 50);
+        }
+
+        function _closeDialPinModal() {
+          _dialPinModalCard = null; _dialPinModalMode = null;
+          var modal = document.getElementById('dialPinModal');
+          if (modal) modal.classList.remove('show');
+        }
+
+        function dialChangePIN(card) {
+          var hasPin = card.dataset.pinSet === 'true';
+          _openDialPinModal(card, 'change',
+            hasPin ? 'Change Dial PIN' : 'Set Dial PIN',
+            hasPin ? 'Enter a new PIN (leave blank to remove):' : 'Enter a new PIN:');
+        }
+
+        function openDialNameModal(card) {
+          _dialNameModalCard = card;
+          var modal = document.getElementById('dialNameModal');
+          if (!modal) return;
+          var nameInput = card.querySelector('.dial-name');
+          var currentName = (nameInput ? nameInput.value : '') || '';
+          var inp = document.getElementById('dialNameModalInput');
+          var errEl = document.getElementById('dialNameModalError');
+          if (inp) { inp.value = currentName; inp.disabled = false; }
+          if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+          var ok = document.getElementById('dialNameModalOk');
+          var cancel = document.getElementById('dialNameModalCancel');
+          if (ok) ok.disabled = false;
+          if (cancel) cancel.disabled = false;
+          modal.classList.add('show');
+          setTimeout(function() { if (inp) { inp.focus(); inp.select(); } }, 50);
+        }
+
+        function closeDialNameModal() {
+          _dialNameModalCard = null;
+          var modal = document.getElementById('dialNameModal');
+          if (modal) modal.classList.remove('show');
+        }
+
+        async function handleDialNameModalOk() {
+          var card = _dialNameModalCard;
+          if (!card) return;
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var inp = document.getElementById('dialNameModalInput');
+          var errEl = document.getElementById('dialNameModalError');
+          var ok = document.getElementById('dialNameModalOk');
+          var cancel = document.getElementById('dialNameModalCancel');
+          var newName = (inp ? inp.value : '').trim();
+          if (!newName) {
+            if (errEl) { errEl.textContent = 'Enter a name.'; errEl.style.display = ''; }
+            if (inp) inp.focus();
+            return;
+          }
+          var body = {uuid: uuid, name: newName};
+          if (card.dataset.pinSet === 'true') {
+            var storedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (storedPin) body.current_pin = storedPin;
+          }
+          if (ok) ok.disabled = true;
+          if (cancel) cancel.disabled = true;
+          if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+          try {
+            var result = await _dialPost('/api/dial/configure', body);
+            if (result.ok) {
+              var nameInput = card.querySelector('.dial-name');
+              if (nameInput) nameInput.value = newName;
+              var titleEl = card.querySelector('.dial-card-title');
+              if (titleEl) titleEl.textContent = newName;
+              var nameDisplayEl = card.querySelector('.dial-current-name');
+              if (nameDisplayEl) nameDisplayEl.textContent = newName;
+              dialMsg(card, 'Name changed', true);
+              setTimeout(function() { dialMsg(card, '', true); }, 2000);
+              closeDialNameModal();
+            } else {
+              if (errEl) { errEl.textContent = _dialErrorMessage(result.error); errEl.style.display = ''; }
+              if (ok) ok.disabled = false;
+              if (cancel) cancel.disabled = false;
+            }
+          } catch(e) {
+            if (errEl) { errEl.textContent = 'Network error'; errEl.style.display = ''; }
+            if (ok) ok.disabled = false;
+            if (cancel) cancel.disabled = false;
+          }
+        }
+
+        function _dialFormatRemaining(ms) {
+          var totalSec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+          var m = Math.floor(totalSec / 60);
+          var s = totalSec % 60;
+          return m + ':' + (s < 10 ? '0' : '') + s + ' remaining';
+        }
+
+        function _dialPinRecoveryExpired() {
+          if (_dialPinRecoveryTimer) { clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }
+          document.getElementById('dialPinRecoveryWaitMsg').textContent =
+            'The recovery window closed without confirmation. Power-cycle the Dial to try again.';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Window closed'; }
+        }
+
+        function _dialPinRecoveryCannotConfirm() {
+          if (_dialPinRecoveryTimer) { clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }
+          document.getElementById('dialPinRecoveryWaitMsg').textContent =
+            'This dial has no rotary control, button or touch panel, so it cannot confirm you are there. PIN recovery cannot complete.';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Cannot confirm presence'; }
+        }
+
+        function openDialPinRecoveryModal(card) {
+          _dialPinRecoveryModalCard = card;
+          var uuid = dialUUID(card);
+          var modal = document.getElementById('dialPinRecoveryModal');
+          if (!modal || !uuid) return;
+          _dialPinRecoveryStep = 'confirm';
+          document.getElementById('dialPinRecoveryModalTitle').textContent = 'Reset Dial PIN';
+          document.getElementById('dialPinRecoveryConfirmPanel').style.display = '';
+          document.getElementById('dialPinRecoveryWaitPanel').style.display = 'none';
+          document.getElementById('dialPinRecoverySetPanel').style.display = 'none';
+          var newInp = document.getElementById('dialPinRecoveryNewInput');
+          var confInp = document.getElementById('dialPinRecoveryConfirmInput');
+          var errEl = document.getElementById('dialPinRecoveryError');
+          if (newInp) newInp.value = '';
+          if (confInp) confInp.value = '';
+          if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          var cancelBtn = document.getElementById('dialPinRecoveryCancel');
+          if (okBtn) { okBtn.disabled = false; okBtn.textContent = 'Yes'; }
+          if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'No'; }
+          if (_dialPinRecoveryTimer) { clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }
+          modal.classList.add('show');
+        }
+
+        // Popup 1 ("This feature can be used to reset a lost PIN. Continue?")
+        // asked the admin, not the device. Only on Yes does the appliance
+        // proxy an arm request to the dial -- if that fails, there is
+        // nothing to wait for, so the flow must not advance to the
+        // power-cycle step or the user would wait for an arm that never
+        // happened.
+        async function handleDialPinRecoveryConfirmYes() {
+          var card = _dialPinRecoveryModalCard;
+          if (!card) return;
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          var cancelBtn = document.getElementById('dialPinRecoveryCancel');
+          if (okBtn) okBtn.disabled = true;
+          if (cancelBtn) cancelBtn.disabled = true;
+          try {
+            var result = await _dialPost('/api/dial/recovery/arm', {uuid: uuid});
+            if (result.ok) {
+              _dialPinRecoveryBeginWait(card, uuid);
+            } else {
+              dialMsg(card, _dialErrorMessage(result.error), false);
+              closeDialPinRecoveryModal();
+            }
+          } catch(e) {
+            dialMsg(card, 'Network error', false);
+            closeDialPinRecoveryModal();
+          }
+        }
+
+        // Popup 2: the existing power-cycle wording and status poll,
+        // unchanged, now started only once the arm request has succeeded.
+        function _dialPinRecoveryBeginWait(card, uuid) {
+          _dialPinRecoveryStep = 'wait';
+          document.getElementById('dialPinRecoveryConfirmPanel').style.display = 'none';
+          document.getElementById('dialPinRecoveryWaitPanel').style.display = '';
+          document.getElementById('dialPinRecoverySetPanel').style.display = 'none';
+          document.getElementById('dialPinRecoveryWaitMsg').textContent =
+            'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          var cancelBtn = document.getElementById('dialPinRecoveryCancel');
+          if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial…'; }
+          if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
+          _dialPinRecoverySeenActive = false;
+          if (_dialPinRecoveryTimer) { clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }
+          _dialPinRecoveryTimer = setInterval(async function() {
+            try {
+              var pollResult = await _dialGet('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid));
+              var body = pollResult.body || {};
+              // A boolean `active` is only ever present when the dial itself
+              // answered — on both the in-recovery 200 and the not-in-recovery
+              // 404 that the proxy tunnels through HTTP 200. Transport
+              // failures carry no `active`, so an unreachable dial leaves the
+              // badge as-is rather than falsely clearing it.
+              if (typeof body.active === 'boolean') {
+                var pollRemainingMs = body.recovery_remaining_ms;
+                _dialSetRecoveryBadge(card, body.active === true &&
+                  !(typeof pollRemainingMs === 'number' && pollRemainingMs <= 0));
+              }
+              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery — wait silently
+              if (body.can_confirm_presence === false) {
+                _dialPinRecoveryCannotConfirm();
+                return;
+              }
+              if (body.volume_confirmed === true) {
+                clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null;
+                _dialPinRecoveryTransitionToSet();
+                return;
+              }
+              var remainingMs = body.recovery_remaining_ms;
+              var stillActive = body.active === true &&
+                !(typeof remainingMs === 'number' && remainingMs <= 0);
+              if (stillActive) {
+                _dialPinRecoverySeenActive = true;
+                document.getElementById('dialPinRecoveryWaitMsg').textContent =
+                  "Touch the dial's screen, twist its rotary control, or press its button to confirm you are there. (" +
+                  _dialFormatRemaining(remainingMs) + ')';
+                // The dial is back and listening; what the flow is waiting
+                // on is no longer the device but the person standing at it.
+                // Leaving the button on "Waiting for Dial" reads as though
+                // nothing has happened yet, when in fact the only remaining
+                // step is theirs.
+                if (okBtn) okBtn.textContent = 'Waiting for user…';
+              } else if (_dialPinRecoverySeenActive) {
+                // Window was active and is no longer — it expired rather than
+                // never having started, so tell the user instead of leaving
+                // them on "Waiting for Dial…" forever.
+                _dialPinRecoveryExpired();
+              }
+            } catch(e) {}
+          }, 2000);
+        }
+
+        function _dialPinRecoveryTransitionToSet() {
+          _dialPinRecoveryStep = 'set';
+          document.getElementById('dialPinRecoveryModalTitle').textContent = 'Set New Dial PIN';
+          document.getElementById('dialPinRecoveryWaitPanel').style.display = 'none';
+          document.getElementById('dialPinRecoverySetPanel').style.display = '';
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          if (okBtn) { okBtn.disabled = false; okBtn.textContent = 'Set PIN'; }
+          setTimeout(function() {
+            var newInp = document.getElementById('dialPinRecoveryNewInput');
+            if (newInp) newInp.focus();
+          }, 50);
+        }
+
+        function closeDialPinRecoveryModal() {
+          var card = _dialPinRecoveryModalCard;
+          var uuid = dialUUID(card);
+          _dialPinRecoveryModalCard = null;
+          _dialPinRecoveryStep = null;
+          if (_dialPinRecoveryTimer) { clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }
+          var modal = document.getElementById('dialPinRecoveryModal');
+          if (modal) modal.classList.remove('show');
+          // Best-effort: bounds a forgotten request without relying on the
+          // device clock. A closed browser mid-flow leaves nothing armed.
+          if (uuid) {
+            _dialPost('/api/dial/recovery/disarm', {uuid: uuid}).catch(function() {});
+          }
+        }
+
+        async function handleDialPinRecoveryOk() {
+          var card = _dialPinRecoveryModalCard;
+          if (!card) return;
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var newInp = document.getElementById('dialPinRecoveryNewInput');
+          var confInp = document.getElementById('dialPinRecoveryConfirmInput');
+          var errEl = document.getElementById('dialPinRecoveryError');
+          var okBtn = document.getElementById('dialPinRecoveryOk');
+          var cancelBtn = document.getElementById('dialPinRecoveryCancel');
+          var newPin = (newInp ? newInp.value : '').trim();
+          var confPin = (confInp ? confInp.value : '').trim();
+          if (!/^\d{4,8}$/.test(newPin)) {
+            if (errEl) { errEl.textContent = 'Enter 4–8 digits.'; errEl.style.display = ''; }
+            if (newInp) newInp.focus();
+            return;
+          }
+          if (newPin !== confPin) {
+            if (errEl) { errEl.textContent = 'The two PIN entries did not match.'; errEl.style.display = ''; }
+            if (confInp) confInp.focus();
+            return;
+          }
+          if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+          if (okBtn) okBtn.disabled = true;
+          if (cancelBtn) cancelBtn.disabled = true;
+          try {
+            var result = await _dialPost('/api/dial/pin_recovery/complete', {uuid: uuid, new_pin: newPin, pin_recovery: true});
+            if (result.ok) {
+              card.dataset.pinSet = 'true';
+              _updateDialLockVisibility(card);
+              _dialSetRecoveryBadge(card, false);
+              dialMsg(card, 'PIN reset', true);
+              closeDialPinRecoveryModal();
+            } else {
+              if (errEl) { errEl.textContent = _dialErrorMessage(result.error); errEl.style.display = ''; }
+              if (okBtn) okBtn.disabled = false;
+              if (cancelBtn) cancelBtn.disabled = false;
+            }
+          } catch(e) {
+            if (errEl) { errEl.textContent = 'Network error'; errEl.style.display = ''; }
+            if (okBtn) okBtn.disabled = false;
+            if (cancelBtn) cancelBtn.disabled = false;
+          }
+        }
+
+        async function _handleDialPinModalOk() {
+          var card = _dialPinModalCard;
+          var uuid = dialUUID(card);
+          var mode = _dialPinModalMode;
+          if (!uuid) return;
+          var currentInputEl = document.getElementById('dialPinModalCurrentInput');
+          var inputEl = document.getElementById('dialPinModalInput');
+          var errEl = document.getElementById('dialPinModalError');
+          var okBtn = document.getElementById('dialPinModalOk');
+          var currentPin = (currentInputEl ? currentInputEl.value : '').trim();
+          var pin = (inputEl ? inputEl.value : '').trim();
+          okBtn.disabled = true; errEl.style.display = 'none';
+          try {
+            var pinResult;
+            if (mode === 'unlock') {
+              // Verify PIN by saving the current config values — same payload as dialSaveConfig.
+              // The dial validates the PIN against a real request; values are unchanged.
+              var verifyBody = {uuid: uuid, current_pin: currentPin};
+              var nameEl2 = card.querySelector('.dial-name');
+              var stepEl2 = card.querySelector('.dial-step');
+              var autoEl2 = card.querySelector('.dial-autoupdate');
+              var chanEl2 = card.querySelector('.dial-channel');
+              if (nameEl2) verifyBody.name = nameEl2.value.trim();
+              if (stepEl2) {
+                var step2 = parseInt(stepEl2.value, 10);
+                if (Number.isInteger(step2)) verifyBody.step_percent = step2;
+              }
+              if (autoEl2) verifyBody.auto_update = autoEl2.checked;
+              if (chanEl2) verifyBody.update_channel = chanEl2.checked ? 'dev' : 'stable';
+              pinResult = await _dialPost('/api/dial/configure', verifyBody);
+              if (pinResult.ok) {
+                _dialUnlockSection(card, currentPin);
+                dialLoadScreenSettings(card);
+                _closeDialPinModal();
+              } else {
+                errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
+                okBtn.disabled = false;
+              }
+            } else {
+              var confirmInputEl = document.getElementById('dialPinModalConfirmInput');
+              var confirmPin = (confirmInputEl ? confirmInputEl.value : '').trim();
+              if (pin !== confirmPin) {
+                errEl.textContent = 'The two PIN entries did not match.'; errEl.style.display = '';
+                okBtn.disabled = false;
+                if (confirmInputEl) confirmInputEl.focus();
+                return;
+              }
+              var body = {uuid: uuid, new_pin: pin};
+              if (card.dataset.pinSet === 'true') {
+                var storedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+                if (storedPin) body.current_pin = storedPin;
+              }
+              pinResult = await _dialPost('/api/dial/configure', body);
+              if (pinResult.ok) {
+                card.dataset.pinSet = pin ? 'true' : 'false';
+                dialMsg(card, pin ? 'PIN changed' : 'PIN removed', true);
+                _closeDialPinModal();
+                _updateDialLockVisibility(card);
+              } else {
+                errEl.textContent = _dialErrorMessage(pinResult.error); errEl.style.display = '';
+                okBtn.disabled = false;
+              }
+            }
+          } catch(e) {
+            errEl.textContent = 'Network error'; errEl.style.display = '';
+            okBtn.disabled = false;
+          }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+          var ok = document.getElementById('dialPinModalOk');
+          var cancel = document.getElementById('dialPinModalCancel');
+          var pinConfirmInp = document.getElementById('dialPinModalConfirmInput');
+          if (ok) ok.addEventListener('click', _handleDialPinModalOk);
+          if (cancel) cancel.addEventListener('click', _closeDialPinModal);
+          if (pinConfirmInp) pinConfirmInp.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); _handleDialPinModalOk(); }
+          });
+          var recoveryOk = document.getElementById('dialPinRecoveryOk');
+          var recoveryCancel = document.getElementById('dialPinRecoveryCancel');
+          var recoveryConfirmInp = document.getElementById('dialPinRecoveryConfirmInput');
+          if (recoveryOk) recoveryOk.addEventListener('click', function() {
+            if (_dialPinRecoveryStep === 'confirm') { handleDialPinRecoveryConfirmYes(); return; }
+            if (_dialPinRecoveryStep === 'set') { handleDialPinRecoveryOk(); return; }
+          });
+          if (recoveryCancel) recoveryCancel.addEventListener('click', closeDialPinRecoveryModal);
+          if (recoveryConfirmInp) recoveryConfirmInp.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); handleDialPinRecoveryOk(); }
+          });
+          var resultOk = document.getElementById('dialResultModalOk');
+          if (resultOk) resultOk.addEventListener('click', _dialCloseResultModal);
+          var dialNameOk = document.getElementById('dialNameModalOk');
+          var dialNameCancel = document.getElementById('dialNameModalCancel');
+          var dialNameInput = document.getElementById('dialNameModalInput');
+          if (dialNameOk) dialNameOk.addEventListener('click', handleDialNameModalOk);
+          if (dialNameCancel) dialNameCancel.addEventListener('click', closeDialNameModal);
+          if (dialNameInput) dialNameInput.addEventListener('keydown', function(ev) {
+            if (ev.key === 'Enter') { ev.preventDefault(); handleDialNameModalOk(); }
+          });
+          document.addEventListener('keydown', function(ev) {
+            var m = document.getElementById('dialPinModal');
+            if (ev.key === 'Escape' && m && m.classList.contains('show')) _closeDialPinModal();
+            var hm = document.getElementById('hostnameModal');
+            if (ev.key === 'Escape' && hm && hm.classList.contains('show')) closeHostnameModal();
+            var wm = document.getElementById('wifiHotspotModal');
+            if (ev.key === 'Escape' && wm && wm.classList.contains('show')) cancelChangeWifiNetwork();
+            var rm = document.getElementById('dialPinRecoveryModal');
+            if (ev.key === 'Escape' && rm && rm.classList.contains('show')) closeDialPinRecoveryModal();
+            var nm = document.getElementById('dialNameModal');
+            if (ev.key === 'Escape' && nm && nm.classList.contains('show')) closeDialNameModal();
+          });
+        });
+        // Dials card (lazy-loaded): the .dial-card bindings below used
+        // to live in the DOMContentLoaded listener above, but `.dial-card`
+        // elements don't exist until the Dials panel's body has been
+        // fetched -- moved into a named function invoked once by
+        // openPanel() the first time the Dials panel opens (see
+        // _setupInitPanel()). The modal-button bindings above stay in
+        // DOMContentLoaded since those modals are always in the DOM
+        // (global, rendered in _body_prefix).
+        function _initDialsCard() {
+          document.querySelectorAll('.dial-card').forEach(function(card) {
+            card.addEventListener('change', function(ev) {
+              var action = ev.target.dataset.dialAction;
+              if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
+              if (action === 'save-config' && (
+                ev.target.classList.contains('dial-autoupdate') ||
+                ev.target.classList.contains('dial-channel') ||
+                ev.target.classList.contains('dial-step')
+              )) dialSaveConfig(card);
+              if (action === 'save-screen') {
+                if (ev.target.classList.contains('dial-screen-fitted')) dialSyncScreenControlsEnabled(card);
+                dialSaveScreenSettings(card, ev.target);
+              }
+            });
+            card.addEventListener('focusout', function(ev) {
+              if (ev.target.dataset.dialAction === 'save-config'
+                  && !ev.target.classList.contains('dial-autoupdate')
+                  && !ev.target.classList.contains('dial-channel')
+                  && !ev.target.classList.contains('dial-step')) {
+                dialSaveConfig(card);
+              }
+            });
+            var lockedSection = card.querySelector('.dial-locked-section');
+            if (lockedSection) {
+              lockedSection.addEventListener('focusout', function(ev) {
+                setTimeout(function() {
+                  if (!lockedSection.contains(document.activeElement)) {
+                    if (card.dataset.pinSet === 'true') _dialLockSection(card);
+                  }
+                }, 0);
+              });
+            }
+            card.addEventListener('click', function(ev) {
+              var target = ev.target.closest('[data-dial-action]');
+              if (!target || target.tagName === 'INPUT') return;
+              var action = target.dataset.dialAction;
+              if (action === 'revoke') dialRevoke(card);
+              if (action === 'update') dialUpdateFirmware(card);
+              if (action === 'change-pin') dialChangePIN(card);
+              if (action === 'recover-pin') openDialPinRecoveryModal(card);
+              if (action === 'change-name') openDialNameModal(card);
+              if (action === 'toggle-lock') {
+                if (_dialUnlockedPins.has(card) && card.dataset.pinSet === 'true') {
+                  _dialLockSection(card);
+                } else if (!_dialUnlockedPins.has(card)) {
+                  _openDialPinModal(card, 'unlock', 'Unlock Settings', 'Enter your Dial PIN:');
+                }
+              }
+            });
+          });
+          // Load current config for each online authorized dial
+          document.querySelectorAll('.dial-card[data-authorized="true"]').forEach(function(card) { dialLoadConfig(card); dialLoadScreenSettings(card); });
+        }
+      </script>
+      <script>
+        // ── Network adapter status and Change Wi-Fi ─────────────────
+        function _networkStatusFailed() {
+          var titleEl = document.getElementById('networkCardTitle');
+          var adapterEl = document.getElementById('networkAdapterInfo');
+          var addressEl = document.getElementById('networkAddressInfo');
+          var warningEl = document.getElementById('networkWarning');
+          var supportEl = document.getElementById('networkSupportDetail');
+          if (titleEl) titleEl.textContent = 'Network';
+          if (adapterEl) {
+            adapterEl.textContent = 'Could not check network status';
+            adapterEl.style.display = '';
+          }
+          if (addressEl) addressEl.style.display = 'none';
+          if (warningEl) warningEl.style.display = 'none';
+          if (supportEl) supportEl.style.display = 'none';
+        }
+        // Success-path DOM apply, shared by the manual one-shot refresh
+        // (refreshNetworkAdapterInfo(), used by direct call sites) and the
+        // activeOnly Poller below (_networkAdapterInfoPoller) so
+        // there's exactly one fetch per tick either way, not two.
+        function _applyNetworkStatus(j) {
+          if (!j || j.ok === false || j.error || j.error_status) {
+            _networkStatusFailed();
+            return;
+          }
+          var adapterEl = document.getElementById('networkAdapterInfo');
+          var addressEl = document.getElementById('networkAddressInfo');
+          var warningEl = document.getElementById('networkWarning');
+          var supportEl = document.getElementById('networkSupportDetail');
+          var titleEl = document.getElementById('networkCardTitle');
+          var pendingEl = document.getElementById('networkUsbPending');
+          var roamingEl = document.getElementById('networkRoamingManaged');
+          if (titleEl) titleEl.textContent = j.title || 'Network';
+          if (adapterEl) {
+            if (Array.isArray(j.interface_lines) && j.interface_lines.length) {
+              adapterEl.textContent = j.interface_lines.join('\n');
+              adapterEl.style.display = '';
+            } else if (j.display) {
+              adapterEl.textContent = j.display;
+              adapterEl.style.display = '';
+            } else {
+              adapterEl.style.display = 'none';
+            }
+          }
+          if (addressEl) {
+            if (Array.isArray(j.interface_lines) && j.interface_lines.length) {
+              addressEl.style.display = 'none';
+            } else if (j.detail) {
+              addressEl.textContent = j.detail;
+              addressEl.style.display = '';
+            } else {
+              addressEl.style.display = 'none';
+            }
+          }
+          if (warningEl) {
+            if (j.warning) {
+              warningEl.textContent = j.warning;
+              warningEl.style.color = (j.warning_severity === 'danger')
+                ? 'var(--color-status-danger,#c00)'
+                : 'var(--color-warning,#b26b00)';
+              warningEl.style.display = '';
+            } else {
+              warningEl.style.display = 'none';
+            }
+          }
+          if (supportEl) {
+            if (j.support_detail) {
+              supportEl.textContent = j.support_detail;
+              supportEl.style.display = '';
+            } else {
+              supportEl.style.display = 'none';
+            }
+          }
+          if (pendingEl) pendingEl.style.display = j.usb_adoption_pending ? '' : 'none';
+          if (roamingEl) roamingEl.checked = !!(j.roaming && j.roaming.managed);
+          if (j.ap_ssid) {
+            var ssidEl = document.getElementById('wifiHotspotSsid');
+            if (ssidEl) ssidEl.textContent = j.ap_ssid;
+          }
+        }
+        async function refreshNetworkAdapterInfo() {
+          try {
+            var r = await fetch('/api/network/status', {
+              credentials: 'same-origin',
+              cache: 'no-store',
+              headers: { 'X-CSRF-Token': (window.__CSRF || '') }
+            });
+            var j = await r.json().catch(function() { return null; });
+            if (!r.ok) { _networkStatusFailed(); return; }
+            _applyNetworkStatus(j);
+          } catch (e) { _networkStatusFailed(); }
+        }
+        refreshNetworkAdapterInfo();
+        // Avoids an unconditional `setInterval` that would keep polling
+        // every 5s even with the tab backgrounded or the System panel
+        // closed. Poller's activeOnly mode ties the poll's lifetime to
+        // the panel being open (started/stopped by openPanel()/
+        // closePanel()) and its built-in visibility gating pauses it
+        // whenever the tab is hidden.
+        var _networkAdapterInfoPoller = Poller({
+          url: '/api/network/status',
+          intervalMs: 5000,
+          activeOnly: true,
+          fetchOptions: {
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': (window.__CSRF || '') },
+          },
+          onData: _applyNetworkStatus,
+          onError: _networkStatusFailed,
+        });
+
+        async function setRoamingManagement(managed) {
+          try {
+            var r = await fetch('/api/network/roaming', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': (window.__CSRF || '')
+              },
+              body: JSON.stringify({ managed: managed, csrf_token: (window.__CSRF || '') })
+            });
+            var j = await r.json().catch(function() { return {}; });
+            if (!r.ok || !j || j.ok !== true) {
+              refreshNetworkAdapterInfo();
+            }
+          } catch (e) {
+            refreshNetworkAdapterInfo();
+          }
+        }
+
+        function changeWifiNetwork() {
+          var modal = document.getElementById('wifiHotspotModal');
+          if (modal) modal.classList.add('show');
+        }
+
+        function cancelChangeWifiNetwork() {
+          var modal = document.getElementById('wifiHotspotModal');
+          if (modal) modal.classList.remove('show');
+        }
+
+        async function confirmChangeWifiNetwork() {
+          var modal = document.getElementById('wifiHotspotModal');
+          if (modal) modal.classList.remove('show');
+          var btn = document.querySelector('#networkCard .pill-btn');
+          var msg = document.getElementById('networkSetupMsg');
+          if (btn) btn.disabled = true;
+          if (msg) { msg.textContent = 'Starting setup hotspot…'; msg.style.color = ''; }
+          try {
+            var r = await fetch('/api/network/setup', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': (window.__CSRF || '')
+              },
+              body: JSON.stringify({ action: 'start_setup', csrf_token: (window.__CSRF || '') })
+            });
+            var j = await r.json().catch(function() { return {}; });
+            if (r.ok && j && j.ok) {
+              if (msg) { msg.textContent = 'Hotspot starting. Connect to the “autostream-setup” network to complete setup.'; msg.style.color = ''; }
+            } else if (r.status === 409) {
+              if (msg) { msg.textContent = 'A network change is already in progress.'; msg.style.color = 'var(--color-error,#c00)'; }
+              if (btn) btn.disabled = false;
+            } else {
+              if (msg) { msg.textContent = 'Could not start setup. Please try again.'; msg.style.color = 'var(--color-error,#c00)'; }
+              if (btn) btn.disabled = false;
+            }
+          } catch (e) {
+            if (msg) { msg.textContent = 'Network error. Please try again.'; msg.style.color = 'var(--color-error,#c00)'; }
+            if (btn) btn.disabled = false;
+          }
+        }
+      </script>
+      
+      <script>
+        function showFactoryResetModal() {
+          const m = document.getElementById('factoryResetModal');
+          if (m) m.classList.add('show');
+        }
+        function hideFactoryResetModal() {
+          const m = document.getElementById('factoryResetModal');
+          if (m) m.classList.remove('show');
+        }
+        function showRebootModal() {
+          const m = document.getElementById('rebootModal');
+          if (m) m.classList.add('show');
+        }
+        function hideRebootModal() {
+          const m = document.getElementById('rebootModal');
+          if (m) m.classList.remove('show');
+        }
+        async function confirmReboot() {
+          hideRebootModal();
+          try {
+            fetch("/api/reboot", {
+              method: "POST",
+              headers: {"X-CSRF-Token": window.__CSRF || ""},
+              cache: "no-store",
+              keepalive: true
+            });
+          } catch (e) {}
+          window.location.replace("/offline/rebooting");
+        }
+        async function doFactoryReset() {
+          const cont = document.getElementById('factoryResetContinue');
+          const canc = document.getElementById('factoryResetCancel');
+          const errEl = document.getElementById('factoryResetModalError');
+          if (cont) cont.disabled = true;
+          if (canc) canc.disabled = true;
+          try {
+            const r = await fetch('/api/factory-reset', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRF-Token': window.__CSRF || ''
+              },
+              body: 'csrf_token=' + encodeURIComponent(window.__CSRF || ''),
+              keepalive: true
+            });
+            let ok = false;
+            try { const j = await r.json(); ok = !!(j && j.ok); } catch (e) {}
+            if (ok) {
+              window.location.replace('/offline/resetting');
+            } else {
+              if (errEl) { errEl.textContent = 'Reset could not be scheduled. Please try again.'; errEl.style.display = ''; }
+              if (cont) cont.disabled = false;
+              if (canc) canc.disabled = false;
+            }
+          } catch (e) {
+            // Network error: the service may have already started resetting.
+            window.location.replace('/offline/resetting');
+          }
+        }
+      </script>
+      
+      
+      <script>
+        var btServicesEnabled = false;
+        var btOnboardEnabled = false;
+        if (typeof btPaired === 'undefined') var btPaired = false;
+        if (typeof _btLinkState === 'undefined') var _btLinkState = 'disconnected';
+        window._btLastStatus = null;
+        window._btUiText = "Not Connected";
+
+        function refreshExclusivityOptions() {
+          var sel1 = document.getElementById('audio_capture_device_select');
+          var sel2 = document.getElementById('audio2_capture_device_select');
+          if (!sel1 || !sel2) return;
+          [[sel1, sel2], [sel2, sel1]].forEach(function(pair) {
+            var self = pair[0], other = pair[1];
+            var otherVal = other.value;
+            Array.prototype.forEach.call(self.options, function(opt) {
+              var conflict = otherVal && opt.value === otherVal && opt.value !== self.value;
+              opt.disabled = !!conflict;
+              opt.hidden = !!conflict;
+            });
+          });
+        }
+
+        function syncInputExclusivity(changedIndex, value) {
+          refreshExclusivityOptions();
+        }
+
+        function _btSetBusy(btn, busyLabel) {
+          if (!btn) return null;
+          var prevLabel = btn.textContent;
+          var prevDisabled = btn.disabled;
+          btn.disabled = true;
+          btn.textContent = busyLabel;
+          return function _btRestore() {
+            btn.disabled = prevDisabled;
+            btn.textContent = prevLabel;
+          };
+        }
+
+        function btEnableServices() {
+          var btn = document.getElementById('btnBtEnableServices');
+          var restore = _btSetBusy(btn, 'Enabling…');
+          settingsTransact('/api/bluetooth/services', {action: 'enable'}, {
+            onSuccess: function() { window.location.reload(); },
+            onError: function() { if (restore) restore(); }
+          });
+        }
+
+        function btDisableServices() {
+          if (!window.confirm('Disable Bluetooth services? Any active Bluetooth stream will stop immediately.')) return;
+          var btn = document.getElementById('btnBtDisableServices');
+          var restore = _btSetBusy(btn, 'Disabling…');
+          settingsTransact('/api/bluetooth/services', {action: 'disable'}, {
+            onSuccess: function() { window.location.reload(); },
+            onError: function() { if (restore) restore(); }
+          });
+        }
+
+        function btOnboardToggleChanged(checked) {
+          if (!window.confirm('Changing this restarts the appliance. Continue?')) {
+            var t = document.getElementById('btOnboardToggle');
+            if (t) t.checked = !checked;
+            return;
+          }
+          settingsTransact('/api/bluetooth/onboard', {enabled: checked}, {
+            onSuccess: function(d) {
+              if (d && d.reboot_required) { window.location.href = '/rebooting'; }
+            },
+            onError: function() {
+              var t = document.getElementById('btOnboardToggle');
+              if (t) t.checked = !checked;
+            }
+          });
+        }
+
+        var _btBufferTimer = null;
+        function btBufferInput(value) {
+          var lbl = document.getElementById('btBufferVal');
+          if (lbl) lbl.textContent = value + ' ms';
+          if (_btBufferTimer) clearTimeout(_btBufferTimer);
+          _btBufferTimer = setTimeout(function() {
+            settingsTransact('/api/bluetooth/buffer', {buffer_ms: parseInt(value, 10)});
+          }, 500);
+        }
+
+        function _btApplyStatus(body) {
+          if (!body) return;
+          btServicesEnabled = !!body.services_enabled;
+          btOnboardEnabled = !!body.onboard_enabled;
+          var daemon = body.daemon || null;
+          window._btLastStatus = daemon;
+          var ui = body.ui || null;
+          window._btUiText = (ui && ui.bt_input_text) || 'Not Connected';
+          btPaired = !!(daemon && daemon.paired);
+          _btLinkState = (daemon && daemon.link) || 'disconnected';
+          var adapterPresent = !!(daemon && daemon.adapter_present);
+
+          var dis = document.getElementById('btDisabledBody');
+          var en = document.getElementById('btEnabledBody');
+          if (dis) dis.style.display = btServicesEnabled ? 'none' : 'block';
+          if (en) en.style.display = btServicesEnabled ? 'block' : 'none';
+
+          var adapterRow = document.getElementById('btAdapterRow');
+          if (adapterRow) {
+            var kind = daemon && daemon.adapter_kind;
+            var text = !adapterPresent
+              ? 'No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below.'
+              : (kind === 'usb' ? 'USB adapter' : (kind === 'onboard' ? 'Onboard' : 'Detected'));
+            adapterRow.textContent = 'Adapter: ' + text;
+          }
+          var onboardToggle = document.getElementById('btOnboardToggle');
+          if (onboardToggle) {
+            onboardToggle.checked = btOnboardEnabled;
+            onboardToggle.disabled = !btServicesEnabled;
+          }
+          var gatedRow = document.getElementById('btAdapterGatedRow');
+          if (gatedRow) {
+            gatedRow.style.opacity = adapterPresent ? '' : '0.4';
+            gatedRow.style.pointerEvents = adapterPresent ? '' : 'none';
+          }
+          var pairedRow = document.getElementById('btPairedRow');
+          if (pairedRow) pairedRow.textContent = (ui && ui.paired_text) || 'No device paired';
+          var forgetBtn = document.getElementById('btnBtForget');
+          if (forgetBtn) forgetBtn.style.display = btPaired ? '' : 'none';
+
+          var sub = document.getElementById('bluetooth-card-sub');
+          if (sub) sub.textContent = (ui && ui.card_summary) || 'Disabled';
+          if (ui && ui.capture_label) {
+            // Relabel the loopback entry in both capture dropdowns so a
+            // pair/forget is reflected without a page reload (the option
+            // text is otherwise fixed at server render time).
+            document.querySelectorAll(
+              'select[name="audio_capture_device"] option, select[name="audio2_capture_device"] option'
+            ).forEach(function(opt) {
+              if (opt.value === BT_LOOPBACK_HW) opt.textContent = ui.capture_label;
+            });
+          }
+          if (typeof refreshInputCardSubs === 'function') refreshInputCardSubs();
+        }
+
+        async function _btRefreshLinkStatus() {
+          var res, body = null;
+          try {
+            res = await fetch('/api/bluetooth/status', {
+              cache: 'no-store',
+              headers: {'X-CSRF-Token': window.__CSRF || ''}
+            });
+            body = await res.json();
+          } catch (e) {
+            return;
+          }
+          if (!body || body.ok !== true) return;
+          _btApplyStatus(body);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+          refreshExclusivityOptions();
+        });
+        // Avoids an unconditional `setInterval` that would keep polling
+        // every 5s even with the tab backgrounded or the Bluetooth panel
+        // closed. Poller's activeOnly mode ties the poll's lifetime to the
+        // panel being open (started/stopped by openPanel()/closePanel())
+        // and its built-in visibility gating pauses it whenever the tab
+        // is hidden.
+        var _btStatusPoller = Poller({
+          url: '/api/bluetooth/status',
+          intervalMs: 5000,
+          activeOnly: true,
+          fetchOptions: {headers: {'X-CSRF-Token': window.__CSRF || ''}},
+          onData: function(body) {
+            if (!body || body.ok !== true) return;
+            _btApplyStatus(body);
+          },
+        });
+      </script>
+    <nav class="bottom-nav"><a href="/" class="nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg><span>Home</span></a><a href="/equaliser" class="nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span>Equaliser</span></a><a href="/service" class="nav-tab" id="service-nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>Service</span></a><a href="/setup" class="nav-tab nav-tab-active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg><span>Setup</span></a><a href="/about" class="nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span>Info</span></a></nav></body></html>

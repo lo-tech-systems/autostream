@@ -37,6 +37,7 @@ from autostream_webui_common import (
     _config_snapshot,
     build_page_html,
     build_top_banner_html,
+    send_html,
 )
 from autostream_webui_state import WebUIState
 
@@ -147,12 +148,7 @@ def send_align_page(handler, state: WebUIState) -> None:
         active_tab="setup",
         dark_mode=dark_mode,
     )
-    body_bytes = html_body.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body_bytes)))
-    handler.end_headers()
-    handler.wfile.write(body_bytes)
+    send_html(handler, 200, html_body)
 
 
 def _render_outputs_section(state: WebUIState) -> str:
@@ -284,8 +280,8 @@ def _render_review_section(state: WebUIState) -> str:
 
 # Scoped styling for elements unique to this page (the review/result table
 # and its noisy-spread warning cell). Everything else on the page reuses
-# sitewide idioms already defined in STYLE_CSS (build_page_html's shared
-# stylesheet) -- .output-card / .output-toggle / .switch for the output
+# sitewide idioms already defined in nginx/static/theme.css (build_page_html's
+# shared stylesheet) -- .output-card / .output-toggle / .switch for the output
 # list, .slider-header / input[type=range] for the calibration-volume
 # slider, .pill-btn for buttons, .helptext for secondary copy -- so no
 # fonts or colours are declared here outside the CSS custom properties the
