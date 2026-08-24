@@ -16,25 +16,27 @@ absent, daemon down, timeout, malformed reply) is swallowed and surfaced as
 ``None`` so callers (the relabel hook, the web routes, the background scan
 loop) can degrade gracefully without daemon-specific error handling.
 
-Also hosts the small set of constants and helpers that are shared between
-the coordinator (relabel hook) and the web UI (routes, settings guard,
-About page) so there is a single source of truth for the pinned wire/ALSA
-constants:
+Also hosts the pinned wire/ALSA constants shared between the coordinator
+(relabel hook) and the web UI, and ``classify_loopback_hw()``/
+``is_loopback_playback()``, the small amount of loopback-hw-string
+classification logic built directly on those constants:
 
   - ``BLUETOOTH_CAPTURE_DEVICE`` / ``BLUETOOTH_PLAYBACK_DEVICE`` -- the two
     sides of the ``snd-aloop`` pseudo-device.
-  - ``bluetooth_installed()`` / ``bluetooth_services_enabled()`` /
-    ``bluetooth_onboard_enabled()`` -- the three independent gates
-    controlling the optional Bluetooth-input subsystem: whether the unit is
-    installed at all, whether it is enabled/running, and whether the
-    onboard radio (as opposed to a USB adapter) is in use.
-  - ``classify_loopback_hw()`` / ``bluetooth_capture_label()`` -- the small
+  - ``classify_loopback_hw()`` / ``is_loopback_playback()`` -- the small
     amount of logic the device-list relabel hook needs.
-  - ``bluetooth_card_summary()`` / ``bluetooth_paired_row_text()`` /
-    ``bluetooth_input_fragment_text()`` -- the single source of truth for
-    the Bluetooth card's and input card's presentation strings, shared
-    between the Setup page's server render, the status JSON API's ``ui``
-    payload, and the JS poll that refreshes the card in place.
+
+The three unprivileged fact-checks (``bluetooth_installed()`` /
+``bluetooth_services_enabled()`` / ``bluetooth_onboard_enabled()``) and the
+four presentation-string builders (``bluetooth_card_summary()`` /
+``bluetooth_paired_row_text()`` / ``bluetooth_input_fragment_text()`` /
+``bluetooth_capture_label()``) that used to live in this module have moved
+to ``autostream_bluetooth_facts.py`` and
+``autostream_bluetooth_presentation.py`` respectively -- unprivileged reads
+and pure string formatting are not socket-adapter I/O. They are
+re-imported and re-exported here so existing
+``from autostream_bluetooth_client import ...`` call sites keep working
+unchanged.
 """
 
 from __future__ import annotations
@@ -43,8 +45,19 @@ import json
 import logging
 import os
 import socket
-import subprocess
 from typing import Optional
+
+from autostream_bluetooth_facts import (  # noqa: F401 -- re-exported for existing importers
+    bluetooth_installed,
+    bluetooth_onboard_enabled,
+    bluetooth_services_enabled,
+)
+from autostream_bluetooth_presentation import (  # noqa: F401 -- re-exported for existing importers
+    bluetooth_capture_label,
+    bluetooth_card_summary,
+    bluetooth_input_fragment_text,
+    bluetooth_paired_row_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +87,6 @@ BLUETOOTH_CARD_ID = "ASBT"
 BLUETOOTH_PLAYBACK_DEVICE = f"hw:CARD={BLUETOOTH_CARD_ID},DEV=0"
 BLUETOOTH_CAPTURE_DEVICE = f"hw:CARD={BLUETOOTH_CARD_ID},DEV=1"
 
-_DEFAULT_UNIT_PATH = "/etc/systemd/system/autostream_bluetooth.service"
-_DEFAULT_BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
-_DISABLE_BT_OVERLAY = "dtoverlay=disable-bt"
-
-_LABEL_UNPAIRED = "Bluetooth (not paired)"
-_LABEL_UNAVAILABLE = "Bluetooth (service unavailable)"
-
 
 def get_bluetooth_socket_path() -> str:
     """Return the configured autostream_bluetooth socket path.
@@ -93,75 +99,6 @@ def get_bluetooth_socket_path() -> str:
         os.environ.get("AUTOSTREAM_BLUETOOTH_SOCKET", "").strip()
         or DEFAULT_SOCKET_PATH
     )
-
-
-def bluetooth_installed(unit_path: Optional[str] = None) -> bool:
-    """Return True when the Bluetooth-input systemd unit is installed.
-
-    The installer always writes the unit file (disabled) once the
-    Bluetooth-input subsystem is present on this build; this is a plain
-    filesystem check, not a systemd query, so it works even while the
-    service itself is stopped/disabled. Path is overridable via
-    ``AUTOSTREAM_BT_UNIT_PATH`` (or the ``unit_path`` argument, for tests).
-    """
-    path = (
-        unit_path
-        or os.environ.get("AUTOSTREAM_BT_UNIT_PATH", "").strip()
-        or _DEFAULT_UNIT_PATH
-    )
-    try:
-        return os.path.isfile(path)
-    except OSError:
-        return False
-
-
-def bluetooth_services_enabled(unit_name: str = "autostream_bluetooth") -> bool:
-    """Return True when the Bluetooth-input systemd unit is enabled.
-
-    Runs a bounded, non-raising ``systemctl is-enabled --quiet`` check
-    (``check=False``): any failure -- systemctl absent, unit absent, timeout,
-    unexpected exit code -- resolves to False rather than raising, so
-    callers (page renders, status routes, gating helpers) never need
-    daemon-specific error handling here.
-    """
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-enabled", "--quiet", unit_name],
-            check=False,
-            timeout=3,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
-
-def bluetooth_onboard_enabled(config_path: Optional[str] = None) -> bool:
-    """Return True when the onboard Bluetooth radio is in use.
-
-    The onboard radio is disabled by default on every appliance via a
-    ``dtoverlay=disable-bt`` line in ``/boot/firmware/config.txt`` (written
-    universally at install time); the "Use onboard bluetooth device" toggle
-    removes that line to re-enable it. The file is world-readable, so this
-    is a plain text scan -- a missing file (unexpected, but tolerated)
-    resolves to False, matching the appliance-wide default. Path is
-    overridable via ``AUTOSTREAM_BOOT_CONFIG_PATH`` (or ``config_path``, for
-    tests).
-    """
-    path = (
-        config_path
-        or os.environ.get("AUTOSTREAM_BOOT_CONFIG_PATH", "").strip()
-        or _DEFAULT_BOOT_CONFIG_PATH
-    )
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if line.strip() == _DISABLE_BT_OVERLAY:
-                    return False
-        return True
-    except OSError:
-        return False
 
 
 def classify_loopback_hw(hw: str) -> Optional[str]:
@@ -192,114 +129,6 @@ def is_loopback_playback(hw: str) -> bool:
     neither needs the full playback/capture/None tri-state.
     """
     return classify_loopback_hw(hw) == "playback"
-
-
-def bluetooth_capture_label(status: Optional[dict]) -> str:
-    """Return the Setup-page label for the loopback capture device.
-
-    ``status`` is the cached/live daemon ``status`` reply (or None when the
-    service is absent/unreachable).  Exactly the three label strings pinned
-    as: "Bluetooth: <name>", "Bluetooth (not paired)",
-    "Bluetooth (service unavailable)".
-    """
-    if not isinstance(status, dict) or status.get("ok") is not True:
-        return _LABEL_UNAVAILABLE
-    paired = status.get("paired")
-    if isinstance(paired, dict):
-        name = str(paired.get("name") or "").strip()
-        if name:
-            return f"Bluetooth: {name}"
-    return _LABEL_UNPAIRED
-
-
-def _format_sample_rate_khz(sample_rate) -> Optional[str]:
-    """Render a Hz integer as '44.1 kHz' / '48 kHz' (one decimal only when
-    the kHz value is non-integer), or None when *sample_rate* isn't a
-    positive number."""
-    if not isinstance(sample_rate, (int, float)) or isinstance(sample_rate, bool) or sample_rate <= 0:
-        return None
-    khz = sample_rate / 1000.0
-    if khz == int(khz):
-        return f"{int(khz)} kHz"
-    return f"{khz:.1f} kHz"
-
-
-def _codec_rate_suffix(status: Optional[dict]) -> str:
-    """' <CODEC> <rate>' (leading space) when *status* carries codec/rate
-    fields, else ''. Setup-card-only formatting helper -- never call this
-    for home-page-facing text (see module docstring)."""
-    if not isinstance(status, dict):
-        return ""
-    codec = str(status.get("codec") or "").strip()
-    rate_text = _format_sample_rate_khz(status.get("sample_rate"))
-    parts = [p for p in (codec, rate_text) if p]
-    return f" {' '.join(parts)}" if parts else ""
-
-
-def bluetooth_card_summary(services_enabled: bool, status: Optional[dict]) -> str:
-    """Bluetooth card summary line, per the five pinned states.
-
-    ``status`` is the cached/live daemon ``status`` reply (or None when the
-    service is absent/unreachable). This is the single source of truth for
-    the string -- shared between the Setup page's server render, the status
-    JSON API's ``ui`` payload, and (via that payload) the JS poll that
-    refreshes the card without a full page reload, so the "paired but link
-    down" case can't be computed one way in one place and another way
-    elsewhere.
-
-    When streaming and the daemon reports ``codec``/``sample_rate``, the
-    connected state appends the negotiated format, e.g.
-    "Enabled · Turntable connected - SBC 44.1 kHz". Purely additive: absent
-    fields leave the text unchanged from before this existed.
-    """
-    if not services_enabled:
-        return "Disabled"
-    if not isinstance(status, dict) or not status.get("adapter_present"):
-        return "Enabled · No adapter found"
-    paired = status.get("paired")
-    if not isinstance(paired, dict) or not str(paired.get("name") or "").strip():
-        return "Enabled · Not paired"
-    name = str(paired.get("name")).strip()
-    if str(status.get("link") or "disconnected") == "connected":
-        suffix = _codec_rate_suffix(status)
-        format_note = f" -{suffix}" if suffix else ""
-        return f"Enabled · {name} connected{format_note}"
-    return f"Enabled · {name} (not connected)"
-
-
-def bluetooth_paired_row_text(status: Optional[dict]) -> str:
-    """Card 'Paired' row text: '<name> · Connected/Not Connected', or 'No device paired'.
-
-    When connected and *status* carries ``codec``/``sample_rate``, appends
-    the negotiated format, e.g. 'Turntable · Connected - SBC 44.1 kHz'.
-    Purely additive: absent fields leave the text unchanged from before this
-    existed.
-    """
-    paired = status.get("paired") if isinstance(status, dict) else None
-    if not isinstance(paired, dict) or not str(paired.get("name") or "").strip():
-        return "No device paired"
-    name = str(paired.get("name")).strip()
-    link = str(status.get("link") or "disconnected") if isinstance(status, dict) else "disconnected"
-    if link == "connected":
-        suffix = _codec_rate_suffix(status)
-        format_note = f" -{suffix}" if suffix else ""
-        return f"{name} · Connected{format_note}"
-    return f"{name} · Not Connected"
-
-
-def bluetooth_input_fragment_text(status: Optional[dict]) -> str:
-    """Input-card Bluetooth fragment: the paired device's name when linked, else 'Not Connected'.
-
-    Used as the middle segment of an input card's 'Bluetooth · <X> · <gain>'
-    summary, in place of the ALSA card name and turntable flag a non-Bluetooth
-    input would show there.
-    """
-    link = str(status.get("link") or "disconnected") if isinstance(status, dict) else "disconnected"
-    if link != "connected":
-        return "Not Connected"
-    paired = status.get("paired") if isinstance(status, dict) else None
-    name = str(paired.get("name") or "").strip() if isinstance(paired, dict) else ""
-    return name or "Connected"
 
 
 class BluetoothClient:

@@ -17,21 +17,24 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_rpi as rpi
+import autostream_system_stats as rpi
+import autostream_licensing as lic
 
 
 @pytest.fixture(autouse=True)
 def _reset_rpi_state():
     """Reset module-level PSU/throttle cache and license cache between tests."""
     orig_seen = rpi._seen_historic_undervolt
-    orig_license = rpi._CPU_LICENSE_CACHE.ok
+    orig_license = lic._CPU_LICENSE_CACHE.ok
     orig_cache_val = rpi._GET_THROTTLED_CACHE_VALUE
     orig_cache_time = rpi._GET_THROTTLED_CACHE_TIME
+    orig_busy_sample = rpi._CPU_BUSY_PREV_SAMPLE
     yield
     rpi._seen_historic_undervolt = orig_seen
-    rpi._CPU_LICENSE_CACHE.ok = orig_license
+    lic._CPU_LICENSE_CACHE.ok = orig_license
     rpi._GET_THROTTLED_CACHE_VALUE = orig_cache_val
     rpi._GET_THROTTLED_CACHE_TIME = orig_cache_time
+    rpi._CPU_BUSY_PREV_SAMPLE = orig_busy_sample
 
 
 # ---------------------------------------------------------------------------
@@ -254,40 +257,40 @@ class TestGetCPUSerial:
 
 class TestCPULicenseCache:
     def test_positive_result_is_cached(self):
-        rpi._CPU_LICENSE_CACHE.ok = False
+        lic._CPU_LICENSE_CACHE.ok = False
         call_count = [0]
 
         def counting_matcher():
             call_count[0] += 1
             return True
 
-        result1 = rpi.cpu_is_licensed(cpu_matcher=counting_matcher)
-        result2 = rpi.cpu_is_licensed(cpu_matcher=counting_matcher)
+        result1 = lic.cpu_is_licensed(cpu_matcher=counting_matcher)
+        result2 = lic.cpu_is_licensed(cpu_matcher=counting_matcher)
 
         assert result1 is True
         assert result2 is True
         assert call_count[0] == 1  # second call was served from cache
 
     def test_negative_result_not_cached(self):
-        rpi._CPU_LICENSE_CACHE.ok = False
+        lic._CPU_LICENSE_CACHE.ok = False
         call_count = [0]
 
         def counting_matcher():
             call_count[0] += 1
             return False
 
-        rpi.cpu_is_licensed(cpu_matcher=counting_matcher)
-        rpi.cpu_is_licensed(cpu_matcher=counting_matcher)
+        lic.cpu_is_licensed(cpu_matcher=counting_matcher)
+        lic.cpu_is_licensed(cpu_matcher=counting_matcher)
 
         assert call_count[0] == 2  # neither result cached
 
     def test_matcher_exception_treated_as_false(self):
-        rpi._CPU_LICENSE_CACHE.ok = False
+        lic._CPU_LICENSE_CACHE.ok = False
 
         def raising_matcher():
             raise RuntimeError("hardware failure")
 
-        result = rpi.cpu_is_licensed(cpu_matcher=raising_matcher)
+        result = lic.cpu_is_licensed(cpu_matcher=raising_matcher)
         assert result is False
 
 
@@ -340,3 +343,137 @@ class TestIsHighPerformancePi:
     def test_false_on_zero_2w(self):
         with patch.object(rpi, "get_raspberry_pi_model", return_value="Raspberry Pi Zero 2 W Rev 1.0"):
             assert rpi.is_high_performance_pi() is False
+
+
+# ---------------------------------------------------------------------------
+# _read_proc_stat_cpu_totals: /proc/stat line parsing
+# ---------------------------------------------------------------------------
+
+class TestReadProcStatCpuTotals:
+    def test_parses_totals_and_idle_includes_iowait(self, tmp_path):
+        stat_file = tmp_path / "stat"
+        # user nice system idle iowait irq softirq steal guest guest_nice
+        stat_file.write_text(
+            "cpu  100 10 50 700 40 5 5 0 0 0\ncpu0 ...\n", encoding="utf-8"
+        )
+        with patch("builtins.open", return_value=stat_file.open("r", encoding="utf-8")):
+            result = rpi._read_proc_stat_cpu_totals()
+        assert result is not None
+        total, idle = result
+        assert total == 910.0
+        assert idle == 740.0  # idle(700) + iowait(40)
+
+    def test_missing_file_returns_none(self):
+        with patch("builtins.open", side_effect=OSError("no such file")):
+            assert rpi._read_proc_stat_cpu_totals() is None
+
+    def test_malformed_line_returns_none(self, tmp_path):
+        stat_file = tmp_path / "stat"
+        stat_file.write_text("not the cpu line\n", encoding="utf-8")
+        with patch("builtins.open", return_value=stat_file.open("r", encoding="utf-8")):
+            assert rpi._read_proc_stat_cpu_totals() is None
+
+
+# ---------------------------------------------------------------------------
+# get_cpu_busy_percent: htop-style busy% delta math
+# ---------------------------------------------------------------------------
+
+class TestGetCpuBusyPercent:
+    def test_unavailable_when_proc_stat_unreadable(self):
+        rpi._CPU_BUSY_PREV_SAMPLE = None
+        with patch.object(rpi, "_read_proc_stat_cpu_totals", return_value=None):
+            assert rpi.get_cpu_busy_percent() is None
+
+    def test_uses_cached_previous_sample_without_sleeping(self):
+        # Previous sample 1s ago: total=1000, idle=800.
+        rpi._CPU_BUSY_PREV_SAMPLE = (1000.0, 800.0, 99.0)
+        # New sample: total=2000, idle=1200 -> total_delta=1000, idle_delta=400
+        # -> busy_delta=600 -> 60% busy.
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.sleep") as m_sleep, \
+             patch.object(rpi, "_read_proc_stat_cpu_totals", return_value=(2000.0, 1200.0)):
+            pct = rpi.get_cpu_busy_percent()
+        m_sleep.assert_not_called()
+        assert pct == 60.0
+        assert rpi._CPU_BUSY_PREV_SAMPLE == (2000.0, 1200.0, 100.0)
+
+    def test_first_call_with_no_cache_falls_back_to_two_samples(self):
+        rpi._CPU_BUSY_PREV_SAMPLE = None
+        # First read: total=1000, idle=800. Second (after sleep): total=1100, idle=850.
+        # total_delta=100, idle_delta=50 -> busy_delta=50 -> 50% busy.
+        with patch("time.monotonic", side_effect=[100.0, 100.25]), \
+             patch("time.sleep") as m_sleep, \
+             patch.object(
+                 rpi, "_read_proc_stat_cpu_totals",
+                 side_effect=[(1000.0, 800.0), (1100.0, 850.0)],
+             ):
+            pct = rpi.get_cpu_busy_percent()
+        m_sleep.assert_called_once()
+        assert pct == 50.0
+        assert rpi._CPU_BUSY_PREV_SAMPLE == (1100.0, 850.0, 100.25)
+
+    def test_stale_cache_falls_back_to_two_samples(self):
+        # Previous sample is 10 minutes old (> 5 minute staleness window).
+        rpi._CPU_BUSY_PREV_SAMPLE = (1000.0, 800.0, 0.0)
+        with patch("time.monotonic", side_effect=[600.0, 600.25]), \
+             patch("time.sleep") as m_sleep, \
+             patch.object(
+                 rpi, "_read_proc_stat_cpu_totals",
+                 side_effect=[(5000.0, 4000.0), (5010.0, 4005.0)],
+             ):
+            pct = rpi.get_cpu_busy_percent()
+        m_sleep.assert_called_once()
+        assert pct == 50.0
+
+    def test_too_recent_cache_falls_back_to_two_samples(self):
+        # Previous sample only 0.05s old (< 0.2s minimum meaningful age).
+        rpi._CPU_BUSY_PREV_SAMPLE = (1000.0, 800.0, 99.95)
+        with patch("time.monotonic", side_effect=[100.0, 100.25]), \
+             patch("time.sleep") as m_sleep, \
+             patch.object(
+                 rpi, "_read_proc_stat_cpu_totals",
+                 side_effect=[(1000.0, 800.0), (1100.0, 850.0)],
+             ):
+            pct = rpi.get_cpu_busy_percent()
+        m_sleep.assert_called_once()
+        assert pct == 50.0
+
+    def test_counter_reset_falls_back_to_two_samples(self):
+        # Cached previous sample has higher counters than the fresh read,
+        # e.g. after a counter wrap -- must not produce a negative delta.
+        rpi._CPU_BUSY_PREV_SAMPLE = (9000.0, 8000.0, 99.0)
+        with patch("time.monotonic", side_effect=[100.0, 100.25]), \
+             patch("time.sleep") as m_sleep, \
+             patch.object(
+                 rpi, "_read_proc_stat_cpu_totals",
+                 side_effect=[(100.0, 80.0), (200.0, 130.0)],
+             ):
+            pct = rpi.get_cpu_busy_percent()
+        m_sleep.assert_called_once()
+        assert pct == 50.0
+
+    def test_zero_total_delta_returns_none(self):
+        rpi._CPU_BUSY_PREV_SAMPLE = (1000.0, 800.0, 99.0)
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.sleep"), \
+             patch.object(rpi, "_read_proc_stat_cpu_totals", return_value=(1000.0, 800.0)):
+            pct = rpi.get_cpu_busy_percent()
+        assert pct is None
+
+    def test_result_clamped_to_0_100(self):
+        # Pathological input where idle delta exceeds total delta must clamp to 0.
+        rpi._CPU_BUSY_PREV_SAMPLE = (1000.0, 800.0, 99.0)
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.sleep"), \
+             patch.object(rpi, "_read_proc_stat_cpu_totals", return_value=(1010.0, 900.0)):
+            pct = rpi.get_cpu_busy_percent()
+        assert pct == 0.0
+
+    def test_rounded_to_one_decimal(self):
+        rpi._CPU_BUSY_PREV_SAMPLE = (0.0, 0.0, 99.0)
+        # total_delta=3, idle_delta=1 -> busy=2/3 = 66.666...% -> 66.7
+        with patch("time.monotonic", return_value=100.0), \
+             patch("time.sleep"), \
+             patch.object(rpi, "_read_proc_stat_cpu_totals", return_value=(3.0, 1.0)):
+            pct = rpi.get_cpu_busy_percent()
+        assert pct == 66.7

@@ -82,6 +82,18 @@ fi
 
 # ---- Deploy Python files ----------------------------------------------------
 install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream_rpi.py
+# autostream_rpi.py is now a re-export shim over the four modules its concerns
+# were split into; it imports all four at import time, so a dial-only install
+# must deploy them alongside it or dial_main's setup_rotary_encoder/setup_button
+# import (and wifi_watcher's check_cpu import) fails at startup.
+install -m 0644 "$DEPLOY/core/autostream_system_stats.py" \
+    /opt/autostream/autostream_system_stats.py
+install -m 0644 "$DEPLOY/core/autostream_appliance_identity.py" \
+    /opt/autostream/autostream_appliance_identity.py
+install -m 0644 "$DEPLOY/core/autostream_licensing.py" \
+    /opt/autostream/autostream_licensing.py
+install -m 0644 "$DEPLOY/core/autostream_dial_gpio.py" \
+    /opt/autostream/autostream_dial_gpio.py
 install -m 0644 "$DEPLOY/core/autostream_sysutils.py" /opt/autostream/autostream_sysutils.py
 install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream_mdns.py
 # dial_display imports the shared artwork fetch from here; without it the dial

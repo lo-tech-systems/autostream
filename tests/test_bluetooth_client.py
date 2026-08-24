@@ -302,7 +302,7 @@ class TestBluetoothInstalled:
 
 class TestBluetoothServicesEnabled:
     def test_enabled_when_systemctl_returns_zero(self):
-        with patch("autostream_bluetooth_client.subprocess.run",
+        with patch("autostream_bluetooth_facts.subprocess.run",
                    return_value=MagicMock(returncode=0)) as m_run:
             assert bluetooth_services_enabled() is True
         args = m_run.call_args[0][0]
@@ -310,22 +310,22 @@ class TestBluetoothServicesEnabled:
         assert "autostream_bluetooth" in args
 
     def test_disabled_when_systemctl_returns_nonzero(self):
-        with patch("autostream_bluetooth_client.subprocess.run",
+        with patch("autostream_bluetooth_facts.subprocess.run",
                    return_value=MagicMock(returncode=1)):
             assert bluetooth_services_enabled() is False
 
     def test_disabled_when_systemctl_absent(self):
-        with patch("autostream_bluetooth_client.subprocess.run", side_effect=OSError("no such file")):
+        with patch("autostream_bluetooth_facts.subprocess.run", side_effect=OSError("no such file")):
             assert bluetooth_services_enabled() is False
 
     def test_disabled_on_timeout(self):
         import subprocess as _sp
-        with patch("autostream_bluetooth_client.subprocess.run",
+        with patch("autostream_bluetooth_facts.subprocess.run",
                    side_effect=_sp.TimeoutExpired(cmd="systemctl", timeout=3)):
             assert bluetooth_services_enabled() is False
 
     def test_custom_unit_name_used(self):
-        with patch("autostream_bluetooth_client.subprocess.run",
+        with patch("autostream_bluetooth_facts.subprocess.run",
                    return_value=MagicMock(returncode=0)) as m_run:
             bluetooth_services_enabled("custom_unit")
         assert "custom_unit" in m_run.call_args[0][0]

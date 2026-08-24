@@ -115,7 +115,7 @@ class TestVibraMiniInstallContract:
         installer = (
             REPO_ROOT / "installer" / "lib" / "vibra.sh"
         ).read_text(encoding="utf-8")
-        assert 'VIBRA_VERSION="v1.0.0"' in installer
+        assert 'VIBRA_VERSION="v1.0.1"' in installer
         assert '--branch "${VIBRA_VERSION}"' in installer
         assert "--depth 1" in installer
         assert 'VIBRA_BRANCH=' not in installer
@@ -202,7 +202,7 @@ update_vibra_from_source
     @bash_capable
     def test_matching_version_skips_build(self, tmp_path):
         sock_path = str(tmp_path / "vibra-mini.sock")
-        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "1.0.0"}')
+        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "1.0.1"}')
         result = self._run_update(tmp_path, sock_path)
         assert result.returncode == 0, result.stderr
         assert "already installed; skipping" in result.stdout
@@ -215,10 +215,10 @@ update_vibra_from_source
         # (version stamp) fast path even if the daemon is stopped first.
         sock_path = str(tmp_path / "vibra-mini.sock")
         stamp_path = str(tmp_path / "vibra-mini-version")
-        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "1.0.0"}')
+        self._serve_once(sock_path, '{"ok": true, "type": "pong", "version": "1.0.1"}')
         result = self._run_update(tmp_path, sock_path, stamp_path=stamp_path)
         assert result.returncode == 0, result.stderr
-        assert Path(stamp_path).read_text(encoding="utf-8") == "v1.0.0"
+        assert Path(stamp_path).read_text(encoding="utf-8") == "v1.0.1"
 
     @bash_capable
     def test_mismatched_version_runs_full_build(self, tmp_path):
@@ -256,7 +256,7 @@ update_vibra_from_source
         # a prior successful build's stamp plus its binary are still there.
         sock_path = str(tmp_path / "vibra-mini.sock")
         result = self._run_update(
-            tmp_path, sock_path, stamp_content="v1.0.0", binary_present=True,
+            tmp_path, sock_path, stamp_content="v1.0.1", binary_present=True,
         )
         assert result.returncode == 0, result.stderr
         assert "already installed; skipping" in result.stdout
@@ -312,7 +312,7 @@ build_and_install_vibra_from_source
             ["bash", "-c", script], capture_output=True, text=True, timeout=15,
         )
         assert result.returncode == 0, result.stderr
-        assert stamp_path.read_text(encoding="utf-8") == "v1.0.0"
+        assert stamp_path.read_text(encoding="utf-8") == "v1.0.1"
 
 
 class TestOwntoneMiniPinnedRelease:
