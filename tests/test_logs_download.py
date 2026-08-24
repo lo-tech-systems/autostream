@@ -194,13 +194,20 @@ class TestLogsDownloadHandler:
 
 class TestLogsDownloadRouting:
     def test_route_exists_in_python_webui(self) -> None:
-        """/logs/download must be handled by the Python web UI router."""
-        webui_src = (REPO_ROOT / "core" / "autostream_webui.py").read_text(
-            encoding="utf-8"
-        )
-        assert '"/logs/download"' in webui_src or "'/logs/download'" in webui_src, (
-            "/logs/download route not found in autostream_webui.py"
-        )
+        """/logs/download must be handled by the Python web UI router.
+
+        Migrated into the route table (autostream_webui_routes.ROUTES) --
+        it's no longer a literal string in autostream_webui.py's
+        do_GET, so check the table itself rather than grepping source.
+        """
+        import sys
+        _core = str(REPO_ROOT / "core")
+        if _core not in sys.path:
+            sys.path.insert(0, _core)
+        import autostream_webui_routes as routes_mod
+
+        r = routes_mod._resolve("/logs/download", "GET")
+        assert r is not None, "/logs/download route not found in ROUTES"
 
     def test_route_is_not_in_auth_allowlist(self) -> None:
         """/logs/download must NOT be in ALLOWLIST_PATHS so it requires auth.

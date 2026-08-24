@@ -120,7 +120,7 @@ def _collect_with_mocks(
          patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
          patch("autostream_webui_page_about.get_playback_snapshot", return_value=playback_snap), \
          patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=cpu_temp), \
-         patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=cpu_load_percent), \
+         patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=cpu_load_percent), \
          patch("autostream_webui_page_about.get_effective_memory_info", return_value=memory_info), \
          patch("autostream_webui_page_about.get_root_disk_usage", return_value=disk_usage), \
          patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=sd_health), \
@@ -481,7 +481,7 @@ class TestMissingDiskAndSd:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -515,7 +515,7 @@ class TestMissingDiskAndSd:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", side_effect=Exception("boom")), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", side_effect=Exception("boom")), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -532,7 +532,7 @@ class TestMissingDiskAndSd:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", side_effect=Exception("boom")), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -787,7 +787,7 @@ class TestSystemctlCommandSecurity:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -826,7 +826,7 @@ class TestSystemctlCommandSecurity:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -849,7 +849,7 @@ class TestPartialFailureDegradation:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -897,7 +897,7 @@ class TestCollectorNoIO:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -919,7 +919,7 @@ class TestCollectorNoIO:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -945,7 +945,7 @@ class TestSnapshotReadsAreMemoryOnly:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -1094,16 +1094,26 @@ class TestRouteDispatch:
     def test_get_api_about_system_dispatches(self):
         try:
             import autostream_webui as _webui
+            import autostream_webui_routes as _routes
         except ImportError:
             pytest.skip("autostream_webui import chain unavailable")
 
-        import inspect
-        src = inspect.getsource(_webui.ConfigWebHandler.do_GET)
-        assert "/api/about/system" in src, (
-            "/api/about/system route not found in do_GET"
+        # Dispatched through the route table: /api/about/system no
+        # longer appears in do_GET's elif chain -- it's dispatched via
+        # ROUTES, through the _route_get_about_system adapter, which calls
+        # send_about_system_json.
+        route = next(
+            (r for r in _routes.ROUTES if r.path == "/api/about/system" and "GET" in r.methods),
+            None,
         )
-        assert "send_about_system_json" in src, (
-            "send_about_system_json not called in do_GET"
+        assert route is not None, "/api/about/system GET route not registered in ROUTES"
+        fn = _routes._resolve_handler(route)
+        assert fn is _webui._route_get_about_system
+
+        import inspect
+        adapter_src = inspect.getsource(_webui._route_get_about_system)
+        assert "send_about_system_json" in adapter_src, (
+            "send_about_system_json not called by the /api/about/system adapter"
         )
 
 
@@ -1145,7 +1155,7 @@ class TestSendJsonHeaders:
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
@@ -1399,7 +1409,7 @@ class TestAboutPageNoLiveData:
              patch("autostream_webui_page_about.get_owntone_runtime_info") as m_owntone, \
              patch("autostream_webui_page_about.get_root_disk_usage") as m_disk, \
              patch("autostream_webui_page_about.get_sdcard_health_percent") as m_sd, \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m") as m_load, \
+             patch("autostream_webui_page_about.get_cpu_busy_percent") as m_load, \
              patch("autostream_webui_page_about.get_effective_memory_info") as m_mem:
             _about.send_about_page(handler, state)
 
@@ -1492,7 +1502,7 @@ class TestSnapshotExceptionIsolation:
                 ctx[target] = patch(target, return_value=val)
 
         with patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_load_percent_1m", return_value=None), \
+             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
              patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \

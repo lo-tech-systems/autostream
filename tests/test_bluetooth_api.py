@@ -1088,100 +1088,112 @@ class TestBluetoothForgetPost:
 # ---------------------------------------------------------------------------
 
 class TestRouteRegistration:
+    """Bluetooth GET and POST routes are dispatched through the route table
+    (see autostream_webui_routes.py) -- do_GET/do_POST no
+    longer contain inline elif arms for any of these paths, so this class
+    asserts against ROUTES (registration + auth level + allow_unconfigured)
+    rather than grepping handler source, and exercises dispatch() directly
+    for the one behavioural claim (pair_status's STATE-passing) that source
+    inspection used to stand in for.
+    """
+
     def _webui(self):
         try:
             import autostream_webui as _webui
+            import autostream_webui_routes as _routes
         except ImportError:
             pytest.skip("autostream_webui import chain unavailable")
-        return _webui
+        return _webui, _routes
 
-    def test_get_routes_dispatch(self):
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_GET)
-        assert "/api/bluetooth/status" in src
-        assert "send_bluetooth_status_json" in src
-        assert "/api/bluetooth/scan_results" in src
-        assert "send_bluetooth_scan_results_json" in src
-        assert "/api/bluetooth/pair_status" in src
-        assert "send_bluetooth_pair_status_json" in src
+    def _route(self, routes_mod, path, method):
+        for r in routes_mod.ROUTES:
+            if r.path == path and method in r.methods:
+                return r
+        return None
+
+    def test_get_routes_registered(self):
+        _webui, routes_mod = self._webui()
+        expected = {
+            "/api/bluetooth/status": "send_bluetooth_status_json",
+            "/api/bluetooth/scan_results": "_route_get_bluetooth_scan_results",
+            "/api/bluetooth/pair_status": "send_bluetooth_pair_status_json",
+        }
+        for path, handler_name in expected.items():
+            r = self._route(routes_mod, path, "GET")
+            assert r is not None, f"{path} is not registered as a GET route"
+            assert r.handler == handler_name, (
+                f"{path}: expected handler={handler_name!r}, got {r.handler!r}"
+            )
 
     def test_pair_status_dispatch_passes_module_state(self):
         """The pair_status handler needs the module-global WebUIState to
         run the post-pair auto-configure step (see
-        _bt_pairing_resolve_state's script-vs-module identity trap) -- the
-        dispatch call site must pass it explicitly rather than relying on
-        the handler's own fallback resolution."""
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_GET)
-        idx = src.find('"/api/bluetooth/pair_status"')
-        assert idx != -1
-        window = src[idx: idx + 300]
-        assert "send_bluetooth_pair_status_json(self, state=STATE)" in window
+        _bt_pairing_resolve_state's script-vs-module identity trap) --
+        dispatch() must pass it explicitly rather than relying on the
+        handler's own fallback resolution."""
+        _webui, routes_mod = self._webui()
+        h = MagicMock()
+        h._commissioning_required.return_value = False
+        state = MagicMock()
+        with patch.object(_webui, "STATE", state), \
+             patch.object(_webui, "AUTH") as mock_auth, \
+             patch.object(_webui, "send_bluetooth_pair_status_json") as stub:
+            mock_auth.require_authenticated_if_pin_enabled.return_value = True
+            assert routes_mod.dispatch(h, "GET", "/api/bluetooth/pair_status") is True
+        stub.assert_called_once_with(h, state)
 
-    def test_post_routes_dispatch(self):
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_POST)
-        assert "/api/bluetooth/scan" in src
-        assert "send_bluetooth_scan_post_json" in src
-        assert "/api/bluetooth/pair" in src
-        assert "send_bluetooth_pair_post_json" in src
-        assert "/api/bluetooth/forget" in src
-        assert "send_bluetooth_forget_post_json" in src
-        assert "/api/bluetooth/services" in src
-        assert "send_bluetooth_services_post_json" in src
-        assert "/api/bluetooth/onboard" in src
-        assert "send_bluetooth_onboard_post_json" in src
-        assert "/api/bluetooth/buffer" in src
-        assert "send_bluetooth_buffer_post_json" in src
+    def test_post_routes_registered(self):
+        _webui, routes_mod = self._webui()
+        expected = {
+            "/api/bluetooth/scan": "_route_post_bluetooth_scan",
+            "/api/bluetooth/pair": "_route_post_bluetooth_pair",
+            "/api/bluetooth/forget": "_route_post_bluetooth_forget",
+            "/api/bluetooth/services": "_route_post_bluetooth_services",
+            "/api/bluetooth/onboard": "_route_post_bluetooth_onboard",
+            "/api/bluetooth/buffer": "_route_post_bluetooth_buffer",
+        }
+        for path, handler_name in expected.items():
+            r = self._route(routes_mod, path, "POST")
+            assert r is not None, f"{path} is not registered as a POST route"
+            assert r.handler == handler_name, (
+                f"{path}: expected handler={handler_name!r}, got {r.handler!r}"
+            )
 
-    def test_get_routes_each_have_explicit_auth_gate(self):
-        """Per-route convention: each new GET route calls
-        require_authenticated_if_pin_enabled directly above its handler call."""
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_GET)
-        for marker in (
-            '"/api/bluetooth/status"', '"/api/bluetooth/scan_results"', '"/api/bluetooth/pair_status"',
+    def test_get_routes_each_have_full_auth_gate(self):
+        """Per-route convention: each of these GET routes requires PIN auth
+        when a PIN is configured."""
+        _webui, routes_mod = self._webui()
+        for path in ("/api/bluetooth/status", "/api/bluetooth/scan_results", "/api/bluetooth/pair_status"):
+            r = self._route(routes_mod, path, "GET")
+            assert r is not None, f"{path} is not registered as a GET route"
+            assert r.auth is routes_mod.AuthRequirement.FULL, f"{path}: expected FULL auth"
+
+    def test_post_routes_each_have_full_auth_gate(self):
+        _webui, routes_mod = self._webui()
+        for path in (
+            "/api/bluetooth/scan", "/api/bluetooth/pair", "/api/bluetooth/forget",
+            "/api/bluetooth/services", "/api/bluetooth/onboard", "/api/bluetooth/buffer",
         ):
-            idx = src.find(marker)
-            assert idx != -1
-            window = src[idx: idx + 200]
-            assert "require_authenticated_if_pin_enabled" in window
-
-    def test_post_routes_each_have_explicit_auth_gate(self):
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_POST)
-        for marker in (
-            '"/api/bluetooth/scan"', '"/api/bluetooth/pair"', '"/api/bluetooth/forget"',
-            '"/api/bluetooth/services"', '"/api/bluetooth/onboard"', '"/api/bluetooth/buffer"',
-        ):
-            idx = src.find(marker)
-            assert idx != -1
-            window = src[idx: idx + 200]
-            assert "require_authenticated_if_pin_enabled" in window
+            r = self._route(routes_mod, path, "POST")
+            assert r is not None, f"{path} is not registered as a POST route"
+            assert r.auth is routes_mod.AuthRequirement.FULL, f"{path}: expected FULL auth"
 
     def test_not_in_get_commissioning_allowlist(self):
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_GET)
-        # Isolate the commissioning-allowed block (between "allowed = (" and its close).
-        start = src.find("allowed = (")
-        end = src.find("if not allowed:", start)
-        block = src[start:end]
-        assert "/api/bluetooth" not in block
+        _webui, routes_mod = self._webui()
+        for path in ("/api/bluetooth/status", "/api/bluetooth/scan_results", "/api/bluetooth/pair_status"):
+            r = self._route(routes_mod, path, "GET")
+            assert r is not None, f"{path} is not registered as a GET route"
+            assert r.allow_unconfigured is False, f"{path}: expected allow_unconfigured=False"
 
     def test_not_in_post_commissioning_allowlist(self):
-        import inspect
-        webui = self._webui()
-        src = inspect.getsource(webui.ConfigWebHandler.do_POST)
-        start = src.find("_post_commissioning_allowed = (")
-        end = src.find("if not _post_commissioning_allowed:", start)
-        block = src[start:end]
-        assert "/api/bluetooth" not in block
+        _webui, routes_mod = self._webui()
+        for path in (
+            "/api/bluetooth/scan", "/api/bluetooth/pair", "/api/bluetooth/forget",
+            "/api/bluetooth/services", "/api/bluetooth/onboard", "/api/bluetooth/buffer",
+        ):
+            r = self._route(routes_mod, path, "POST")
+            assert r is not None, f"{path} is not registered as a POST route"
+            assert r.allow_unconfigured is False, f"{path}: expected allow_unconfigured=False"
 
 
 # ---------------------------------------------------------------------------
