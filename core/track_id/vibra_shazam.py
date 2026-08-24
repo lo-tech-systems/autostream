@@ -6,6 +6,7 @@ from typing import Optional
 
 from track_id.models import (
     TrackArtwork,
+    TrackIDProviderUnreachableError,
     TrackIDRateLimitedError,
     TrackIDUpstreamRejectionError,
     TrackIdentificationResult,
@@ -54,6 +55,22 @@ class VibraUpstreamRejectionError(TrackIDUpstreamRejectionError):
     """Raised when the Vibra daemon reports HTTP 403 or 406 from Shazam."""
 
 
+class VibraProviderUnreachableError(TrackIDProviderUnreachableError):
+    """Raised when the vibra-mini daemon itself could not be reached (a
+    socket-level OSError from VibraClient.recognize()) or when it reports it
+    could not reach Shazam's upstream (error:'network_error' or
+    error:'network_timeout') -- both fall under a "provider unreachable"
+    classification, grouped with rate-limit backoff rather than the
+    generic config-error one."""
+
+
+# error codes the vibra-mini daemon reports when its own Shazam HTTP call
+# fails to connect/times out (daemon/shazam_client.cpp's ShazamLookupError
+# codes), as distinct from an HTTP response it did receive (rate_limited,
+# http_error).
+_NETWORK_ERROR_CODES = frozenset({"network_error", "network_timeout"})
+
+
 class VibraShazamProvider:
     """Track identification provider backed by the vibra-mini Shazam daemon."""
 
@@ -86,18 +103,36 @@ class VibraShazamProvider:
 
         Raises:
             VibraRateLimitedError: Daemon returned error:'rate_limited'.
+            VibraProviderUnreachableError: The vibra-mini socket itself
+                could not be reached (wraps the client's OSError), or the
+                daemon reports it could not reach Shazam's own upstream
+                (error:'network_error'/'network_timeout').
             VibraRecognitionError: Daemon returned any other ok:false error.
-            OSError: Socket failure after the client's reconnect retry.
         """
-        resp = self._client.recognize(pcm16_mono, sample_rate)
+        try:
+            resp = self._client.recognize(pcm16_mono, sample_rate)
+        except OSError as exc:
+            # Local socket to the vibra-mini daemon itself failed (daemon
+            # down, connect refused, etc.) -- a "provider unreachable"
+            # classification, distinct from a response the daemon returned
+            # and we understood.
+            raise VibraProviderUnreachableError(str(exc)) from exc
 
         if not resp.get("ok"):
             error_code = resp.get("error", "unknown")
             http_status = resp.get("http_status", 0)
             if error_code == "rate_limited":
-                raise VibraRateLimitedError(error_code)
+                # retry_after_seconds: not emitted by the vibra-mini daemon
+                # today (grepped daemon/shazam_client.cpp -- no Retry-After
+                # capture), so this is always None in practice; read
+                # opportunistically so a future daemon version that adds it
+                # is honored without another Python-side change.
+                retry_after = resp.get("retry_after_seconds")
+                raise VibraRateLimitedError(error_code, retry_after_seconds=retry_after)
             if http_status in (403, 406):
                 raise VibraUpstreamRejectionError(http_status)
+            if error_code in _NETWORK_ERROR_CODES:
+                raise VibraProviderUnreachableError(error_code)
             raise VibraRecognitionError(error_code)
 
         if not resp.get("matched"):

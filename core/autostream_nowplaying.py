@@ -338,11 +338,9 @@ class OwntoneMetadataPipePublisher:
         see _resolve_start_artwork() -- so the queued bundle is already
         fully materialised: nothing downstream ever re-derives, re-reads,
         or holds a path to something another owner might replace out from
-        under it."""
-        if not self._enabled:
-            return
-        resolved = self._resolve_start_artwork(meta.artwork)
-        self._queue.put(("start", replace(meta, artwork=resolved)))
+        under it. Thin wrapper over _publish(); see there for the shared
+        enqueue logic."""
+        self._publish("start", meta)
 
     def publish_refresh(self, meta: NowPlayingMetadata) -> None:
         """Publish updated metadata mid-session (e.g. a track-ID match
@@ -358,16 +356,34 @@ class OwntoneMetadataPipePublisher:
         re-send whatever is currently held, if anything). A track decided to
         have no artwork of its own is expressed by the caller passing the
         placeholder ArtworkImage explicitly, not by a sentinel here -- the
-        old empty-string tri-state is gone."""
-        if not self._enabled:
-            return
-        resolved = self._resolve_refresh_artwork(meta.artwork)
-        self._queue.put(("refresh", replace(meta, artwork=resolved)))
+        old empty-string tri-state is gone. Thin wrapper over _publish();
+        see there for the shared enqueue logic."""
+        self._publish("refresh", meta)
 
     def publish_end(self) -> None:
+        """End the current play session: emits pend (see _emit_end_bundle(),
+        invoked from _run()). Thin wrapper over _publish(); see there for
+        the shared enqueue logic."""
+        self._publish("end", None)
+
+    def _publish(self, kind: str, meta: Optional[NowPlayingMetadata]) -> None:
+        """Single dispatcher behind publish_start()/publish_refresh()/
+        publish_end(): resolves the kind-appropriate artwork state (if any)
+        and enqueues one item for _run() to consume, which then calls the
+        already-shared _emit_start_bundle()/_emit_metadata_refresh_bundle()/
+        _emit_end_bundle() helpers. Preserves each public method's exact
+        prior enqueue behaviour byte-for-byte; only the three call sites'
+        bodies moved here."""
         if not self._enabled:
             return
-        self._queue.put(("end", None))
+        if kind == "start":
+            resolved = self._resolve_start_artwork(meta.artwork)
+            self._queue.put(("start", replace(meta, artwork=resolved)))
+        elif kind == "refresh":
+            resolved = self._resolve_refresh_artwork(meta.artwork)
+            self._queue.put(("refresh", replace(meta, artwork=resolved)))
+        elif kind == "end":
+            self._queue.put(("end", None))
 
     def _cleanup_stale_fifo(self) -> None:
         p = Path(self.metadata_fifo_path)

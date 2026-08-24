@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlparse
 
 # Public state strings.
 STATE_DISABLED = "disabled"
@@ -33,42 +32,6 @@ def state_status_text(state: str) -> str:
     return _STATE_TEXT.get(state, "")
 
 
-def _validate_artwork_url(url: str) -> str:
-    """Validate and sanitize artwork URL; return empty string if invalid.
-
-    Accepts only http:// and https:// schemes, rejects control characters
-    and whitespace, and validates basic URL structure. Returns the URL if
-    valid, or empty string otherwise.
-    """
-    if not url:
-        return ""
-
-    # Strip leading/trailing whitespace
-    url = url.strip()
-    if not url:
-        return ""
-
-    # Reject if contains control characters or newlines
-    if any(ord(c) < 32 or ord(c) == 127 for c in url):
-        return ""
-
-    try:
-        parsed = urlparse(url)
-        scheme = parsed.scheme.lower()
-
-        # Only allow http and https
-        if scheme not in ("http", "https"):
-            return ""
-
-        # Must have a netloc (hostname/domain)
-        if not parsed.netloc:
-            return ""
-
-        return url
-    except Exception:
-        return ""
-
-
 @dataclass(frozen=True)
 class TrackArtwork:
     url: str = ""
@@ -76,12 +39,16 @@ class TrackArtwork:
     width: Optional[int] = None
     height: Optional[int] = None
 
-    def __post_init__(self):
-        # Validate URL at construction time for defense-in-depth.
-        # This ensures artwork_url in public API responses and logs is safe.
-        validated = _validate_artwork_url(self.url)
-        if validated != self.url:
-            object.__setattr__(self, "url", validated)
+    # No URL validation here: this dataclass's url is never fetched
+    # directly -- autostream_artwork.fetch_artwork()'s
+    # own artwork_url_eligible() is the single authority that gates the
+    # actual network fetch, and re-validates every redirect hop too. A
+    # second, weaker check here (formerly _validate_artwork_url(), which
+    # admitted plain http:// and IP literals artwork_url_eligible() would
+    # reject) only affected what URL string appeared in this object and in
+    # public API fields before any fetch happened -- never the fetch path
+    # itself -- so removing it is a no-op for anything that was ever
+    # actually retrieved.
 
 
 @dataclass(frozen=True)
@@ -167,7 +134,33 @@ def waiting_snapshot(*, input_index: Optional[int] = None) -> TrackIdentificatio
 
 
 class TrackIDRateLimitedError(Exception):
-    """Raised by any provider that receives a rate-limit response from its upstream."""
+    """Raised by any provider that receives a rate-limit response from its upstream.
+
+    *retry_after_seconds* is threaded through from the provider layer when
+    it can extract a Retry-After-equivalent value from the upstream
+    response -- None when the provider has no such value, which is the
+    common case today (neither vibra_client.py
+    nor vibra_shazam.py's upstream currently returns one). _ti_worker uses
+    it in place of the fixed TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS constant
+    when present and positive.
+    """
+
+    def __init__(self, message: str = "", retry_after_seconds: Optional[float] = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class TrackIDProviderUnreachableError(Exception):
+    """Raised when the provider (or its upstream) could not be reached at
+    all -- network/DNS/timeout failures -- as distinct from a config error
+    or an upstream response the provider understood and rejected.
+
+    This shares the rate-limit backoff bucket
+    (TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS) rather than the generic
+    config-error one, since a flaky network should not be retried more
+    aggressively than an explicit rate limit -- both call for backing off
+    from the same upstream, not immediately hammering it again.
+    """
 
 
 class TrackIDUpstreamRejectionError(Exception):

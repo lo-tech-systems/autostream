@@ -202,7 +202,7 @@ class TestFederationSession:
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
-        assert sent and sent[0][0] == 409
+        assert sent and sent[0][0] == 404
         assert sent[0][1]["error"] == "appliance_unconfigured"
 
     def test_unavailable_when_identity_missing(self, tmp_path):
@@ -214,7 +214,7 @@ class TestFederationSession:
              patch("autostream_webui.get_appliance_id", return_value=""), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
-        assert sent and sent[0][0] == 409
+        assert sent and sent[0][0] == 404
 
     def test_rate_limit_returns_429(self, tmp_path):
         state = _fake_state(tmp_path)

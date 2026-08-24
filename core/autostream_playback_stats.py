@@ -626,6 +626,140 @@ def build_bearing_banner_text(
     )
 
 
+class StatsStore:
+    """Storage-facing half of playback-stats persistence.
+
+    Owns the on-disk JSON file for one PlaybackTracker: loading state on
+    construction and saving it back out, either on demand or when a caller-
+    supplied dirty flag and flush interval indicate a periodic flush is due.
+    Callers must hold their own lock around every method call here (this
+    class does no locking of its own -- it shares PlaybackTracker's RLock by
+    composition, matching the design's StatsStore storage contract without
+    introducing any new contention).
+    """
+
+    def __init__(
+        self,
+        stats_path: Path,
+        *,
+        flush_interval_seconds: float,
+        time_fn: Callable[[], float],
+    ) -> None:
+        self.stats_path = stats_path
+        self.flush_interval_seconds = flush_interval_seconds
+        self._time_fn = time_fn
+        self._last_save_error_log_at = 0.0
+
+    def _load_locked(self) -> tuple[dict[int, "PlaybackInputState"], bool, float]:
+        """Load persisted state from disk.
+
+        Returns (states, dirty, last_persist_at) for the caller to install.
+        """
+        raw = _read_json_object(self.stats_path)
+        inputs_raw = raw.get("inputs")
+        if not isinstance(inputs_raw, dict):
+            return {}, False, self._time_fn()
+
+        loaded: dict[int, PlaybackInputState] = {}
+        for raw_key, raw_value in inputs_raw.items():
+            try:
+                idx = PlaybackTracker._normalize_input_index(raw_key)
+            except ValueError:
+                continue
+            loaded[idx] = PlaybackInputState.from_json_obj(raw_value)
+
+        return loaded, False, self._time_fn()
+
+    def _save_locked(
+        self,
+        states: dict[int, "PlaybackInputState"],
+        *,
+        dirty: bool,
+        force: bool,
+    ) -> tuple[bool, float]:
+        """Persist states to disk if forced or dirty.
+
+        Returns (dirty, last_persist_at) for the caller to install. Raises
+        on I/O failure -- callers wanting best-effort behaviour should catch
+        around this call, exactly as before extraction.
+        """
+        if not force and not dirty:
+            return dirty, self._time_fn()
+
+        payload = {
+            "schema_version": PLAYBACK_SCHEMA_VERSION,
+            "updated_at": _utc_now_iso(self._time_fn()),
+            "inputs": {
+                str(idx): state.to_json_obj()
+                for idx, state in sorted(states.items())
+            },
+        }
+
+        _atomic_write_json(self.stats_path, payload)
+        self._last_save_error_log_at = 0.0
+        return False, self._time_fn()
+
+    def maybe_flush(
+        self,
+        states: dict[int, "PlaybackInputState"],
+        *,
+        dirty: bool,
+        last_persist_at: float,
+        log_context: str,
+    ) -> tuple[bool, float]:
+        """Persist dirty counters if the flush interval has elapsed.
+
+        Returns (dirty, last_persist_at) for the caller to install.
+        """
+        now = self._time_fn()
+        if dirty and (now - last_persist_at) >= self.flush_interval_seconds:
+            return self._save_best_effort_locked(
+                states, dirty=dirty, force=True, context=log_context
+            )
+        return dirty, last_persist_at
+
+    def save(
+        self,
+        states: dict[int, "PlaybackInputState"],
+        *,
+        dirty: bool,
+        context: str = "save",
+    ) -> tuple[bool, float]:
+        """Force an immediate checkpoint to disk (best-effort).
+
+        Returns (dirty, last_persist_at) for the caller to install.
+        """
+        return self._save_best_effort_locked(states, dirty=dirty, force=True, context=context)
+
+    def _save_best_effort_locked(
+        self,
+        states: dict[int, "PlaybackInputState"],
+        *,
+        dirty: bool,
+        force: bool,
+        context: str,
+    ) -> tuple[bool, float]:
+        try:
+            return self._save_locked(states, dirty=dirty, force=force)
+        except Exception as exc:
+            self._log_save_failure_locked(context, exc)
+            return dirty, self._time_fn()
+
+    def _log_save_failure_locked(self, context: str, exc: Exception) -> None:
+        now = self._time_fn()
+        if (
+            self._last_save_error_log_at <= 0.0
+            or (now - self._last_save_error_log_at) >= SAVE_ERROR_LOG_INTERVAL_SECONDS
+        ):
+            LOGGER.warning(
+                "Failed to persist playback stats during %s to %s: %s",
+                context,
+                self.stats_path,
+                exc,
+            )
+            self._last_save_error_log_at = now
+
+
 class PlaybackTracker:
     """Thread-safe playback-hours tracker with periodic JSON persistence."""
 
@@ -640,6 +774,11 @@ class PlaybackTracker:
         self.flush_interval_seconds = max(1.0, float(flush_interval_seconds))
         self._time_fn = time_fn or time.time
         self._lock = threading.RLock()
+        self._store = StatsStore(
+            self.stats_path,
+            flush_interval_seconds=self.flush_interval_seconds,
+            time_fn=self._time_fn,
+        )
         self._configs: dict[int, PlaybackInputConfig] = {}
         self._states: dict[int, PlaybackInputState] = {}
         # Two independent per-input activity clocks: _active_since drives
@@ -652,7 +791,6 @@ class PlaybackTracker:
         self._wear_active_since: dict[int, float] = {}
         self._dirty = False
         self._last_persist_at = self._time_fn()
-        self._last_save_error_log_at = 0.0
         self._load_locked()
 
     def replace_input_configs(
@@ -735,7 +873,9 @@ class PlaybackTracker:
             self._accrue_input_locked(idx, self._time_fn())
             self._active_since.pop(idx, None)
             if self._dirty:
-                self._save_best_effort_locked(force=True, context="playback stop")
+                self._dirty, self._last_persist_at = self._store.save(
+                    self._states, dirty=self._dirty, context="playback stop"
+                )
 
     def on_wear_started(self, input_index: int) -> None:
         """Mark an input as actively wearing (real input capture only).
@@ -759,7 +899,9 @@ class PlaybackTracker:
             self._accrue_input_locked(idx, self._time_fn())
             self._wear_active_since.pop(idx, None)
             if self._dirty:
-                self._save_best_effort_locked(force=True, context="wear stop")
+                self._dirty, self._last_persist_at = self._store.save(
+                    self._states, dirty=self._dirty, context="wear stop"
+                )
 
     def _reset_item_locked(
         self,
@@ -780,10 +922,10 @@ class PlaybackTracker:
         if idx in self._wear_active_since:
             self._wear_active_since[idx] = now
         self._dirty = True
-        try:
-            self._save_locked(force=True)
-        except Exception as exc:
-            self._log_save_failure_locked(f"{item_name} reset", exc)
+        self._dirty, self._last_persist_at = self._store.save(
+            self._states, dirty=self._dirty, context=f"{item_name} reset"
+        )
+        if self._dirty:
             return MaintenanceResetResult(applied=True, persisted=False, last_service_at=now_iso)
         return MaintenanceResetResult(applied=True, persisted=True, last_service_at=now_iso)
 
@@ -816,14 +958,20 @@ class PlaybackTracker:
         with self._lock:
             now = self._time_fn()
             self._accrue_all_active_locked(now)
-            if self._dirty and (now - self._last_persist_at) >= self.flush_interval_seconds:
-                self._save_best_effort_locked(force=True, context="periodic flush")
+            self._dirty, self._last_persist_at = self._store.maybe_flush(
+                self._states,
+                dirty=self._dirty,
+                last_persist_at=self._last_persist_at,
+                log_context="periodic flush",
+            )
 
     def save(self) -> None:
         """Force an immediate checkpoint to disk."""
         with self._lock:
             self._accrue_all_active_locked(self._time_fn())
-            self._save_best_effort_locked(force=True, context="save")
+            self._dirty, self._last_persist_at = self._store.save(
+                self._states, dirty=self._dirty, context="save"
+            )
 
     def close(self) -> None:
         """Flush current counters before shutdown/reload."""
@@ -1036,63 +1184,7 @@ class PlaybackTracker:
         return self.snapshot().to_public_dict()
 
     def _load_locked(self) -> None:
-        raw = _read_json_object(self.stats_path)
-        inputs_raw = raw.get("inputs")
-        if not isinstance(inputs_raw, dict):
-            self._states = {}
-            self._dirty = False
-            self._last_persist_at = self._time_fn()
-            return
-
-        loaded: dict[int, PlaybackInputState] = {}
-        for raw_key, raw_value in inputs_raw.items():
-            try:
-                idx = self._normalize_input_index(raw_key)
-            except ValueError:
-                continue
-            loaded[idx] = PlaybackInputState.from_json_obj(raw_value)
-
-        self._states = loaded
-        self._dirty = False
-        self._last_persist_at = self._time_fn()
-
-    def _save_locked(self, *, force: bool) -> None:
-        if not force and not self._dirty:
-            return
-
-        payload = {
-            "schema_version": PLAYBACK_SCHEMA_VERSION,
-            "updated_at": _utc_now_iso(self._time_fn()),
-            "inputs": {
-                str(idx): state.to_json_obj()
-                for idx, state in sorted(self._states.items())
-            },
-        }
-
-        _atomic_write_json(self.stats_path, payload)
-        self._dirty = False
-        self._last_persist_at = self._time_fn()
-        self._last_save_error_log_at = 0.0
-
-    def _save_best_effort_locked(self, *, force: bool, context: str) -> None:
-        try:
-            self._save_locked(force=force)
-        except Exception as exc:
-            self._log_save_failure_locked(context, exc)
-
-    def _log_save_failure_locked(self, context: str, exc: Exception) -> None:
-        now = self._time_fn()
-        if (
-            self._last_save_error_log_at <= 0.0
-            or (now - self._last_save_error_log_at) >= SAVE_ERROR_LOG_INTERVAL_SECONDS
-        ):
-            LOGGER.warning(
-                "Failed to persist playback stats during %s to %s: %s",
-                context,
-                self.stats_path,
-                exc,
-            )
-            self._last_save_error_log_at = now
+        self._states, self._dirty, self._last_persist_at = self._store._load_locked()
 
     def _ensure_input_state_locked(self, input_index: int) -> PlaybackInputState:
         idx = self._normalize_input_index(input_index)

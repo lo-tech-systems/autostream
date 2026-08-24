@@ -19,6 +19,7 @@ if _CORE not in sys.path:
 from track_id.vibra_client import VibraClient, VibraRuntimeInfo
 from track_id.vibra_shazam import (
     PROVIDER_ID,
+    VibraProviderUnreachableError,
     VibraRateLimitedError,
     VibraRecognitionError,
     VibraUpstreamRejectionError,
@@ -27,6 +28,7 @@ from track_id.vibra_shazam import (
     refresh_vibra_runtime_info,
 )
 from track_id.models import (
+    TrackIDProviderUnreachableError,
     TrackIDRateLimitedError,
     TrackIDUpstreamRejectionError,
     TrackIdentificationResult,
@@ -348,12 +350,48 @@ class TestVibraShazamProviderErrors:
         with pytest.raises(VibraRecognitionError):
             provider.identify(_PCM, 16000)
 
-    def test_client_oserror_propagates(self):
+    def test_client_oserror_is_reclassified_as_provider_unreachable(self):
+        """A raw socket-level OSError from VibraClient.recognize() (the
+        vibra-mini daemon itself unreachable) is reclassified as
+        VibraProviderUnreachableError rather than propagating as a bare
+        OSError -- this groups with the rate-limit backoff bucket in
+        _ti_worker, not the generic config-error one."""
         client = MagicMock(spec=VibraClient)
         client.recognize.side_effect = OSError("connection failed")
         provider = VibraShazamProvider({}, client=client)
-        with pytest.raises(OSError):
+        with pytest.raises(VibraProviderUnreachableError) as exc_info:
             provider.identify(_PCM, 16000)
+        assert "connection failed" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, OSError)
+
+    def test_vibra_provider_unreachable_error_is_subclass_of_track_id_provider_unreachable_error(self):
+        assert issubclass(VibraProviderUnreachableError, TrackIDProviderUnreachableError)
+
+    def test_network_error_code_raises_provider_unreachable(self):
+        resp = {"ok": False, "error": "network_error"}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraProviderUnreachableError):
+            provider.identify(_PCM, 16000)
+
+    def test_network_timeout_code_raises_provider_unreachable(self):
+        resp = {"ok": False, "error": "network_timeout"}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraProviderUnreachableError):
+            provider.identify(_PCM, 16000)
+
+    def test_rate_limited_without_retry_after_leaves_it_none(self):
+        resp = {"ok": False, "error": "rate_limited"}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraRateLimitedError) as exc_info:
+            provider.identify(_PCM, 16000)
+        assert exc_info.value.retry_after_seconds is None
+
+    def test_rate_limited_with_retry_after_threads_it_through(self):
+        resp = {"ok": False, "error": "rate_limited", "retry_after_seconds": 42}
+        provider = VibraShazamProvider({}, client=_fake_client(resp))
+        with pytest.raises(VibraRateLimitedError) as exc_info:
+            provider.identify(_PCM, 16000)
+        assert exc_info.value.retry_after_seconds == 42
 
 
 # ---------------------------------------------------------------------------

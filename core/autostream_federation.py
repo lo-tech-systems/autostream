@@ -33,6 +33,18 @@ def create_session(source_ip: str) -> tuple[Optional[str], int]:
     Returns (token, expires_in) on success, or (None, retry_after_seconds) when
     the per-source rate limit is exceeded.  On success, *token* is never empty.
     A rejected request does not consume an issuance slot.
+
+    Note on *source_ip*: the caller (autostream_webui.py's federation
+    dispatch) resolves this via the same header-trusting helper used for
+    ordinary browser traffic (checks X-Forwarded-For / X-Real-IP before the
+    raw socket peer). That is safe here specifically because the webui
+    process only ever binds 127.0.0.1 -- nginx is the sole path in from the
+    LAN and always sets X-Forwarded-For to the real peer address for
+    anything it proxies, federation traffic included, and nothing else can
+    reach the loopback-only listener to spoof those headers. If the webui
+    bind address is ever made configurable to something other than
+    loopback, this binding would become spoofable and source_ip should
+    switch to the raw socket peer address for federation routes specifically.
     """
     now = time.monotonic()
     with _lock:
