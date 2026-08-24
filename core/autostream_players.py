@@ -52,6 +52,9 @@ SETTING_LOG_LEVEL = "log_level"
 SETTING_PIPE_AUTOSTART = "pipe_autostart"
 SETTING_PIPE_PATH = "pipe_path"
 SETTING_START_BUFFER_MS = "start_buffer_ms"
+# AirPlay User-Agent header override, restart-required. Empty string means
+# "use the backend-derived default" rather than a literal empty header.
+SETTING_USER_AGENT = "user_agent"
 SETTING_UNCOMPRESSED_ALAC = "uncompressed_alac"
 SETTING_BUFFERED_AUDIO_ENABLED = "buffered_audio_enabled"
 SETTING_IPV6 = "ipv6"
@@ -76,6 +79,9 @@ SETTING_START_BUFFER_MS_MIN = 300
 SETTING_START_BUFFER_MS_MAX = 3500
 SETTING_START_BUFFER_MS_STEP = 50
 SETTING_START_BUFFER_MS_DEFAULT = 2250
+
+# Max byte length for SETTING_USER_AGENT, matching owntone-mini's API validation.
+SETTING_USER_AGENT_MAX_LEN = 255
 
 # Allowed value sets for the pipe-format settings, mirroring the validation
 # owntone-mini enforces at owntone_config.c ~730-738 (which itself mirrors

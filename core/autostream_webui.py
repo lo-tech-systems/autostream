@@ -101,6 +101,7 @@ from autostream_webui_api import (
     send_owntone_uncompressed_json,
     send_owntone_buffered_audio_json,
     send_owntone_start_buffer_json,
+    send_owntone_user_agent_json,
     send_owntone_grace_period_json,
     send_log_level_get_json,
     send_log_level_put_json,

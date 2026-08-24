@@ -2754,6 +2754,34 @@ def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> Non
     _send_owntone_native_setting_json(handler, state, SETTING_START_BUFFER_MS, value)
 
 
+def send_owntone_user_agent_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/user-agent — set the AirPlay User-Agent header override.
+
+    Body: {"value": <string>}. An empty string (after trimming) resets the
+    backend to its derived default.
+    """
+    from autostream_players import SETTING_USER_AGENT, SETTING_USER_AGENT_MAX_LEN
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+    raw = payload.get("value")
+    if not isinstance(raw, str):
+        send_json(handler, 400, {"ok": False, "error": "value must be a string"})
+        return
+    value = raw.strip()
+    if len(value.encode("utf-8")) > SETTING_USER_AGENT_MAX_LEN:
+        send_json(handler, 400, {"ok": False, "error": "value too long"})
+        return
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        send_json(handler, 400, {"ok": False, "error": "value contains control characters"})
+        return
+    _send_owntone_native_setting_json(
+        handler, state, SETTING_USER_AGENT, value, reject_unsupported=True,
+    )
+
+
 def send_settings_mdns_grace_period_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/settings/mdns-grace-period: set mDNS grace period in minutes.
 

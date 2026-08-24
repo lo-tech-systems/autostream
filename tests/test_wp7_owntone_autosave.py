@@ -652,6 +652,184 @@ class TestNativeOwntoneSettings:
         assert sent["body"]["ok"] is True
 
 
+# ── User-agent setting ────────────────────────────────────────────────────────
+
+class TestUserAgentSetting:
+    def _make_save_result(self, ok=True, restart_required=False, unsupported=False, error=""):
+        from autostream_players import SaveSettingResult
+        return SaveSettingResult(
+            ok=ok,
+            restart_required=restart_required,
+            unsupported=unsupported,
+            error=error or ("" if ok else "owntone_error"),
+        )
+
+    def test_valid_value_saved(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        from autostream_players import SETTING_USER_AGENT
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "AirPlay/950.7.1"})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result()
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_called_once()
+        assert m_save.call_args[0][1] == SETTING_USER_AGENT
+        assert m_save.call_args[0][2] == "AirPlay/950.7.1"
+        assert sent["body"]["ok"] is True
+
+    def test_whitespace_stripped_before_save(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "  AirPlay/950.7.1  \n"})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result()
+            send_owntone_user_agent_json(handler, state, body)
+        assert m_save.call_args[0][2] == "AirPlay/950.7.1"
+
+    def test_embedded_crlf_rejected(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "Air\r\nPlay/1"})
+        with patch("autostream_webui_api.save_setting") as m_save:
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_not_called()
+        assert sent["code"] == 400
+
+    def test_del_byte_rejected(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "AirPlay\x7f/1"})
+        with patch("autostream_webui_api.save_setting") as m_save:
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_not_called()
+        assert sent["code"] == 400
+
+    def test_over_length_rejected(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "A" * 300})
+        with patch("autostream_webui_api.save_setting") as m_save:
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_not_called()
+        assert sent["code"] == 400
+
+    def test_max_length_accepted(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "A" * 255})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result()
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_called_once()
+        assert sent["body"]["ok"] is True
+
+    def test_empty_string_passed_through_as_reset(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "   "})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result()
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_called_once()
+        assert m_save.call_args[0][2] == ""
+        assert sent["body"]["ok"] is True
+
+    def test_non_string_value_returns_400(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": 123})
+        with patch("autostream_webui_api.save_setting") as m_save:
+            send_owntone_user_agent_json(handler, state, body)
+        m_save.assert_not_called()
+        assert sent["code"] == 400
+
+    def test_backend_failure_surfaced(self, tmp_path):
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "AirPlay/1"})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=False, error="owntone_error")
+            send_owntone_user_agent_json(handler, state, body)
+        assert sent["body"]["ok"] is False
+        assert sent["body"]["error"]
+
+    def test_unsupported_backend_surfaced_as_failure(self, tmp_path):
+        """reject_unsupported=True: a backend that lacks the key must fail, not
+        report the fake success that non-gated native settings tolerate."""
+        from autostream_webui_api import send_owntone_user_agent_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        body = json.dumps({"value": "AirPlay/1"})
+        with patch("autostream_webui_api.save_setting") as m_save, \
+             patch("autostream_webui_api._config_snapshot") as m_snap, \
+             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+            m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
+            m_save.return_value = self._make_save_result(ok=False, unsupported=True)
+            send_owntone_user_agent_json(handler, state, body)
+        m_restart.assert_not_called()
+        assert sent["body"]["ok"] is False
+
+    def test_setting_spec_shape(self):
+        from autostream_owntone_mini import _SETTING_SPECS, OwnToneMiniBackend
+        from autostream_players import SETTING_USER_AGENT
+        spec = _SETTING_SPECS[SETTING_USER_AGENT]
+        assert spec.category == "misc"
+        assert spec.option == "user_agent"
+        assert spec.value_type == "string"
+        assert spec.requires_restart_on_change is True
+        backend = OwnToneMiniBackend(base_url="http://localhost:3689")
+        assert backend._setting_path(spec) == "/api/settings/misc/user_agent"
+
+
 # ── Buffered-audio toggle: resetting stored buffered/surround modes ─────────
 
 class TestBufferedAudioResetOutputs:

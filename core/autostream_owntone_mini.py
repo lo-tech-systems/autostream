@@ -46,6 +46,7 @@ from autostream_players import (
     SETTING_RESAMPLE_QUALITY,
     SETTING_START_BUFFER_MS,
     SETTING_UNCOMPRESSED_ALAC,
+    SETTING_USER_AGENT,
 )
 
 
@@ -151,6 +152,15 @@ _SETTING_SPECS: dict[str, _MiniSettingSpec] = {
         category="misc",
         option="ipv6",
         value_type="bool",
+        requires_restart_on_change=True,
+    ),
+    # AirPlay User-Agent header override. The daemon derives its default from
+    # its own build version; an empty string resets to that derived default
+    # rather than sending a literal empty header.
+    SETTING_USER_AGENT: _MiniSettingSpec(
+        category="misc",
+        option="user_agent",
+        value_type="string",
         requires_restart_on_change=True,
     ),
     SETTING_START_BUFFER_MS: _MiniSettingSpec(
@@ -785,6 +795,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             SETTING_PIPE_SAMPLE_RATE: "Pipe Sample Rate",
             SETTING_PIPE_BITS_PER_SAMPLE: "Pipe Bit Depth",
             SETTING_RESAMPLE_QUALITY: "Output Resample Quality",
+            SETTING_USER_AGENT: "AirPlay User Agent",
         }
         return labels.get(key, key)
 

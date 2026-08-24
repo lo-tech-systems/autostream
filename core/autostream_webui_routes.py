@@ -1143,6 +1143,17 @@ register(
 
 register(
     Route(
+        path="/api/owntone/user-agent",
+        methods=("POST",),
+        handler="send_owntone_user_agent_json",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=True,
+    )
+)
+
+register(
+    Route(
         path="/api/align/start",
         methods=("POST",),
         handler="send_align_start_json",
