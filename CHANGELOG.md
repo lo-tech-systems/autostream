@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- new: the AirPlay User-Agent string is now settable from the OwnTone setup
+  page — useful when diagnosing a receiver that treats the appliance
+  differently from an Apple sender. Clearing the field restores the default,
+  and applying a change restarts OwnTone (requires owntone-mini 1.2.1 or
+  above; hidden on other backends)
+- improvement: settings that restart OwnTone now show an "Applying
+  setting…" notice until the restart completes, instead of restarting
+  silently in the background
+- change: the Start Buffer control is now a drop-down (250 ms steps) rather
+  than a slider, and the OwnTone page's card is titled "AirPlay Settings";
+  saves on that page now report their status ("Saved" / "Could not apply")
 - new: Speaker Synchronisation — automatic output alignment. The appliance
   plays a short tone through each selected output in turn while a companion
   page opened on your phone listens, measures the timing differences, and
