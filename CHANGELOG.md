@@ -23,6 +23,20 @@
   so it can also be aligned by ear. On buffered receivers the adjustment
   re-times the receiver without interrupting the audio stream (requires
   owntone-mini 1.2 or above)
+- new: lossless AirPlay — with "uncompressed audio" enabled, receivers that
+  support it are sent bit-exact lossless audio on the buffered transport
+  instead of AAC, which is also far lighter to encode on the appliance;
+  new installs have this enabled by default (requires owntone-mini 1.2.1
+  or above)
+- improvement: the repeat buffer now reserves its memory up front when the
+  feature is enabled, at the best quality that fits the chosen duration.
+  What you actually get is stated plainly (for example "80 minutes
+  requested; 67 minutes at 256Kbps MP2 fit in memory"), the figure
+  recalculates live when the target duration is changed, and a session
+  longer than the buffer keeps the most recent audio rather than stopping
+- fix: the repeat buffer's reported capacity and quality no longer drift
+  between checks — the figure shown is the reserved buffer's actual size
+  and bitrate, including for a held recording awaiting replay
 
 ## Version 0.5.0
 
