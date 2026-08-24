@@ -24,7 +24,7 @@ from __future__ import annotations
 import copy
 import logging
 import threading
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 from autostream_config import (
     AutostreamConfig,
@@ -32,9 +32,38 @@ from autostream_config import (
     parse_config,
     save_config,
 )
+from autostream_settings_schema import LiveClass, get_field_spec, template_leaf
 
 # Default interval for the background dirty-save cycle.
 SETTINGS_SAVE_INTERVAL_SECONDS = 5.0
+
+
+class SetOutcome(NamedTuple):
+    """Return shape of ``SettingsStore.set()``.
+
+    persisted:        True once the write is durably queued -- either
+                       written synchronously or marked dirty for the next
+                       debounced flush (``set()`` never leaves a successful
+                       mutation un-queued, so this is unconditionally True
+                       for any call that returns rather than raises).
+    live:              True iff the row's ``live_fn`` adapter push actually
+                       ran (row has one, and a ``state`` was supplied to push
+                       against) and returned truthy.
+    live_error:        Set iff a ``live_fn`` ran against a supplied ``state``
+                       and did not succeed; None otherwise -- including the
+                       "row has no live_fn" / "no state to push to" cases,
+                       which are not errors. Deliberately keyed off
+                       ``live_fn`` rather than ``live_class``; see
+                       ``_set_normalized``'s dispatch comment for why
+                       re-gating on ``live_class`` would be a behaviour
+                       change.
+    reload_scheduled:  True iff the field's live_class is RELOAD.
+    """
+
+    persisted: bool
+    live: bool
+    live_error: Optional[str]
+    reload_scheduled: bool
 
 
 class SettingsStore:
@@ -167,6 +196,93 @@ class SettingsStore:
             self._generation += 1
             self._dirty = True
         return self.snapshot()
+
+    def set(self, path: str, value: object, *, state: object = None) -> "SetOutcome":
+        """Look up *path* in ``SETTINGS_SCHEMA``, validate/coerce *value*,
+        commit it via :meth:`update`, and dispatch on the row's
+        ``live_class``.
+
+        ``state`` is the Web UI's ``WebUIState``-shaped object each existing
+        ``live_fn`` closure already expects (see
+        ``autostream_settings_schema.py``'s module docstring for why those
+        closures live in ``autostream_webui_api``, not here) -- pass it
+        whenever a LIVE-class field's adapter push should actually run.
+        Omitting it (the default) still validates, commits, and reports
+        ``reload_scheduled`` correctly; only the live push is skipped, with
+        ``live=False`` and no error (there was nothing to push to).
+
+        Raises whatever the row's ``validate``/``cross_validate`` callable
+        raises (typically ``ValueError`` or
+        ``autostream_settings_schema.CrossFieldValidationError``) — callers
+        translate that into their own response shape, exactly as they did
+        before this method existed.
+        """
+        spec = get_field_spec(path)
+        if spec is None or spec.section is None or spec.key is None:
+            raise KeyError(f"Unknown settings field: {path}")
+        normalized = spec.validate(value) if spec.validate is not None else value
+        return self._set_normalized(spec, normalized, state=state, path=path)
+
+    def _set_normalized(
+        self, spec, normalized: object, *, state: object = None, path: Optional[str] = None,
+    ) -> "SetOutcome":
+        """Commit an *already-validated* value for schema row *spec*.
+
+        Internal escape hatch for the handful of call sites (currently
+        ``send_settings_post_json``'s audio1.capture_device-may-be-cleared-
+        while-disabled special case, and ``apply_output_offset``'s dynamic
+        negative-offset tightening) whose value normalisation is more than a
+        straight ``spec.validate(value)`` call away -- lets a caller commit
+        an "already normalised" value directly, bypassing ``set()``'s own
+        validation step.
+
+        ``path`` is required for a template row (e.g.
+        ``"owntone.offsets.*"``) so the default write knows which concrete
+        key inside the row's ``section``/``key`` container to set -- see
+        ``autostream_settings_schema.template_leaf()``. Non-template callers
+        may omit it.
+        """
+        section, key = spec.section, spec.key
+        leaf = template_leaf(spec.path, path) if path is not None else None
+
+        def _mutator(raw: dict) -> None:
+            if spec.mutate is not None:
+                spec.mutate(raw, section, key, normalized)
+            elif leaf is not None:
+                raw.setdefault(section, {}).setdefault(key, {})[leaf] = normalized
+            else:
+                raw.setdefault(section, {})[key] = normalized
+            if spec.cross_validate is not None:
+                spec.cross_validate(raw, section, key, normalized)
+
+        self.update(_mutator)
+
+        # Live-push dispatch fires whenever the row carries a live_fn, exactly
+        # as every existing call site already did -- deliberately NOT gated
+        # on live_class here, since several existing rows (e.g. the
+        # track-identification fields) carry a live_fn but were never
+        # classified LiveClass.LIVE at registration time, and re-gating on
+        # live_class would silently stop calling their live_fn, a real
+        # behaviour change. live_class only drives reload_scheduled below,
+        # which is a new, additive piece of information.
+        live = False
+        live_error: Optional[str] = None
+        if spec.live_fn is not None and state is not None:
+            try:
+                live = bool(spec.live_fn(state, normalized))
+            except Exception:
+                logging.exception(
+                    "Settings: live effect failed for %s", spec.path
+                )
+                live = False
+            if not live:
+                live_error = "Live effect could not be applied"
+        reload_scheduled = spec.live_class == LiveClass.RELOAD
+
+        return SetOutcome(
+            persisted=True, live=live, live_error=live_error,
+            reload_scheduled=reload_scheduled,
+        )
 
     def save_now(self, timeout: float = 10.0) -> bool:
         """Synchronously write the current configuration to disk.
