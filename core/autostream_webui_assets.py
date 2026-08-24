@@ -5,1251 +5,358 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Web assets (e.g. CSS) to support the autostream web front-end.
 """
 
-
-STYLE_CSS = """
-/* ── Colour palette ─────────────────────────────────────────────────────────
-   All theme-sensitive colours are defined here as CSS custom properties.
-   The [data-theme="dark"] block overrides them for dark mode; every rule
-   below uses var(--color-*) so no hardcoded colours appear in components.
-   Status colours (danger, success, warning) are overridden in dark mode via
-   --color-status-danger/success/warning.
-   ── */
-:root {
-  /* Background layers */
-  --color-bg:                #f5f5f5;
-  --color-surface:           #ffffff;
-  --color-surface-raised:    #f8fafb;
-  --color-surface-selected:  #f1f6fc;
-  --color-surface-code:      #f3f4f6;
-  --color-surface-pane:      #f4f5f6;
-  --color-surface-muted:     #e9ecef;
-  --color-surface-pressed:   #edf2f7;
-  /* Text */
-  --color-text:              #333333;
-  --color-text-secondary:    #555555;
-  --color-text-strong:       #121212;
-  --color-text-pane:         #1a1a1a;
-  --color-text-dim:          #6c757d;
-  --color-text-muted:        #495057;
-  /* Borders */
-  --color-border:            #dddddd;
-  --color-border-card:       #d9dee3;
-  --color-border-code:       #d1d5db;
-  --color-border-nav:        #e0e0e0;
-  /* Status chips */
-  --color-chip-on-bg:        #d1e7dd;
-  --color-chip-on-text:      #0f5132;
-  --color-chip-off-bg:       #e2e3e5;
-  --color-chip-off-text:     #41464b;
-  --color-chip-neutral-bg:   #eceff2;
-  --color-chip-neutral-text: #495057;
-  /* Controls and interactive */
-  --color-control-off:       #adb5bd;
-  --color-toggle-on:         #198754;
-  --color-nav-inactive:      #8a8a8e;
-  --color-accent:            #2b80d1;
-  --color-btn-bg:            #6c757d;
-  /* Status (theme-invariant) */
-  --color-success:           #28a745;
-  --color-danger:            #c00000;
-  /* Status highlights: bars, banners, danger zones (overridden in dark mode) */
-  --color-status-danger:     #dc3545;
-  --color-status-success:    #28a745;
-  --color-status-warning:    #f0ad4e;
-  /* Equaliser curve display */
-  --color-eq-bg:             #e4e8ec;
-  --color-eq-grid:           rgba(0,0,0,0.12);
-  --color-eq-grid-zero:      rgba(0,0,0,0.30);
-  --color-eq-zero-line:      rgba(0,0,0,0.20);
-  --color-eq-axis:           rgba(0,0,0,0.30);
-  color-scheme: light;
-}
-
-[data-theme="dark"] {
-  /* --color-surface matches --color-bg so the container blends seamlessly
-     with the page body; the logo background (#0e2841) therefore matches too.
-     Cards use --color-surface-raised to remain visually distinct. */
-  --color-bg:                #0e2841;
-  --color-surface:           #0e2841;
-  --color-surface-raised:    #1a3a58;
-  --color-surface-selected:  #1e4470;
-  --color-surface-code:      #132f4c;
-  --color-surface-pane:      #0c2035;
-  --color-surface-muted:     #1a3250;
-  --color-surface-pressed:   #204870;
-  --color-text:              #dce8f2;
-  --color-text-secondary:    #8eacc4;
-  --color-text-strong:       #edf2f8;
-  --color-text-pane:         #c8daea;
-  --color-text-dim:          #7a9ab8;
-  --color-text-muted:        #7a9ab8;
-  --color-border:            #243e58;
-  --color-border-card:       #243e58;
-  --color-border-code:       #2e5072;
-  --color-border-nav:        #1a3250;
-  --color-chip-on-bg:        #1a4a30;
-  --color-chip-on-text:      #5dce84;
-  --color-chip-off-bg:       #283848;
-  --color-chip-off-text:     #7a9ab8;
-  --color-chip-neutral-bg:   #1e3c58;
-  --color-chip-neutral-text: #7a9ab8;
-  --color-control-off:       #3c5a72;
-  --color-toggle-on:         #28a060;
-  --color-nav-inactive:      #6a8aa0;
-  --color-accent:            #5298d8;
-  --color-btn-bg:            #3c5a72;
-  /* Status highlights: deep rose/teal/amber replacements for dark mode */
-  --color-status-danger:     #B23A48;
-  --color-status-success:    #2F9E7E;
-  --color-status-warning:    #E0A458;
-  /* Equaliser curve display */
-  --color-eq-bg:             #0d1c2b;
-  --color-eq-grid:           rgba(100,150,200,0.22);
-  --color-eq-grid-zero:      rgba(100,150,200,0.55);
-  --color-eq-zero-line:      rgba(100,150,200,0.45);
-  --color-eq-axis:           rgba(100,150,200,0.55);
-  color-scheme: dark;
-}
-
-/* Logo: show light logo by default; swap to dark logo in dark theme.
-   Three-part selectors (specificity 0,3,0) beat any two-part rule such as
-   .airplay-brand .banner-logo (0,2,0), preventing it from overriding display:none. */
-.banner-logo-wrap .banner-logo.banner-logo-dark { display: none; }
-[data-theme="dark"] .banner-logo-wrap .banner-logo.banner-logo-light { display: none; }
-[data-theme="dark"] .banner-logo-wrap .banner-logo.banner-logo-dark { display: block; }
-
-.container {
-  max-width: 1000px;
-  margin: 1rem auto;
-  background: var(--color-surface);
-  padding: 1.25rem 1.5rem 1.5rem;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
-  border-radius: 8px;
-}
-
-.status-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-  font-size: 0.95rem;
-}
-
-.status-label {
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-
-.status-pill {
-  padding: 0.15rem 0.7rem;
-  border-radius: 999px;
-  font-weight: 600;
-  font-size: 0.85rem;
-}
-
-.status-pill.status-playing {
-  background: var(--color-chip-on-bg);
-  color: var(--color-chip-on-text);
-}
-
-.status-pill.status-waiting {
-  background: var(--color-chip-off-bg);
-  color: var(--color-chip-off-text);
-}
-
-.hostname-pill {
-  background: var(--color-chip-neutral-bg);
-  color: var(--color-chip-neutral-text);
-}
-
-h1 {
-  font-size: 1.6rem;
-  margin: 0 0 0.75rem 0;
-}
-
-p {
-  margin: 0.35rem 0 0.85rem 0;
-}
-
-label {
-  display: block;
-  margin-top: 0.75rem;
-  font-size: 1rem;
-}
-
-input[type=text],
-input[type=password],
-input[type=number],
-input[type=url],
-select {
-  width: 100%;
-  max-width: 100%;
-  padding: 0.65rem 0.7rem;      /* bigger tap target */
-  margin-top: 0.25rem;
-  box-sizing: border-box;
-  font-size: 1rem;
-  background: var(--color-surface-code);
-  color: var(--color-text);
-  border: 1px solid var(--color-border-code);
-  border-radius: 4px;
-}
-
-fieldset {
-  margin-bottom: 1.5rem;
-  padding: 1rem 0.9rem 1.2rem;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-}
-
-legend {
-  font-weight: 600;
-  padding: 0 0.25rem;
-  font-size: 1.05rem;
-}
-
-.key-reveal-wrap {
-  margin-top: 0.5rem;
-}
-
-.key-reveal {
-  margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 10px;
-  background: var(--color-surface-code);
-  border: 1px solid var(--color-border-code);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-               "Liberation Mono", "Courier New", monospace; /* courier-ish */
-  font-size: 0.95rem;
-  line-height: 1.25rem;
-  white-space: pre-wrap;
-  word-break: break-all;
-  min-height: 1.25rem; /* so it doesn't collapse when empty */
-}
-
-.helptext {
-  display: block;
-  text-align:center;
-  font-size: 0.9rem;
-  color: var(--color-text-secondary);
-  margin-top: 0.25rem;
-}
-
-.slider-value {
-  display: inline-block;
-  min-width: 3.5rem;
-  margin-left: 0.75rem;
-  font-size: 0.95rem;
-  text-align: right;
-}
-
-/* Make sliders much bigger */
-input[type=range] {
-  width: 100%;
-  margin-top: 0.5rem;
-  height: 30px;                 /* overall element height */
-}
-
-/* WebKit (Safari/Chrome) slider styling */
-input[type=range]::-webkit-slider-runnable-track {
-  height: 10px;
-  border-radius: 999px;
-}
-
-input[type=range]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  margin-top: -8px;             /* centers thumb on track */
-}
-
-/* Firefox slider styling */
-input[type=range]::-moz-range-track {
-  height: 10px;
-  border-radius: 999px;
-}
-
-input[type=range]::-moz-range-thumb {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-}
-
-button[type=submit] {
-  padding: 0.8rem 1.6rem;       /* bigger button */
-  font-size: 1.05rem;
-  font-weight: 600;
-  background: var(--color-btn-bg);
-  color: #fff;
-  border-radius: 999px;
-  border: none;
-  cursor: pointer;
-  width: 100%;
-}
-
-/* Header row above the slider */
-.slider-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.35rem;   /* space between label row and slider */
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-/* Right-aligned value */
-.slider-value {
-  min-width: 3rem;
-  text-align: right;
-  font-size: 1rem;
-  color: var(--color-text);
-}
-
-.output-card {
-  margin-bottom: 0.62rem;
-  padding: 0.52rem 0.72rem 0.5rem;
-  border-radius: 12px;
-  border: 1px solid var(--color-border-card);
-  background: var(--color-surface-raised);
-  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
-}
-
-.output-card-on {
-  border-color: var(--color-accent);
-  background: var(--color-surface-selected);
-}
-
-.output-card-off {
-  border-color: var(--color-border-card);
-  background: var(--color-surface-raised);
-}
-
-.output-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.52rem;
-}
-
-.output-card-meta {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
-  align-items: center;
-  gap: 0.22rem 0.4rem;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.output-card-name {
-  grid-column: 1 / -1;
-  font-size: 0.99rem;
-  font-weight: 700;
-  color: var(--color-text-strong);
-  line-height: 1.12;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.output-card-default {
-  display: inline-block;
-  padding: 0.06rem 0.4rem;
-  border-radius: 999px;
-  background: var(--color-chip-neutral-bg);
-  color: var(--color-chip-neutral-text);
-  font-size: 0.68rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.output-state-chip {
-  display: inline-block;
-  padding: 0.06rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.output-state-chip.on {
-  background: var(--color-chip-on-bg);
-  color: var(--color-chip-on-text);
-}
-
-.output-state-chip.off {
-  background: var(--color-chip-off-bg);
-  color: var(--color-chip-off-text);
-}
-
-.output-state-chip.in-use {
-  background: var(--color-chip-off-bg);
-  color: var(--color-chip-off-text);
-  font-style: italic;
-  border: 2px solid var(--color-status-success);
-}
-
-.output-card-in-use {
-  border-color: var(--color-border-card);
-  background: var(--color-surface-raised);
-  opacity: 0.7;
-  cursor: pointer;
-  transition: opacity 140ms ease;
-  pointer-events: auto;
-}
-
-.output-card-in-use:hover {
-  opacity: 0.85;
-}
-
-.output-toggle {
-  margin: 0;
-  display: inline-flex;
-  align-items: center;
-}
-
-.output-toggle input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.output-toggle .switch {
-  position: relative;
-  width: 48px;
-  height: 27px;
-  border-radius: 999px;
-  background: var(--color-control-off);
-  transition: background 140ms ease;
-}
-
-.output-toggle .switch::after {
-  content: "";
-  position: absolute;
-  top: 2.5px;
-  left: 2.5px;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-  transition: transform 140ms ease;
-}
-
-.output-toggle input:checked + .switch {
-  background: var(--color-accent);
-}
-
-.output-toggle input:checked + .switch::after {
-  transform: translateX(21px);
-}
-
-.output-slider-wrap {
-  margin-top: 0.18rem;
-}
-
-.output-slider-wrap .slider-header {
-  margin-bottom: 0.08rem;
-  font-size: 0.9rem;
-}
-
-.output-slider-wrap input[type=range] {
-  margin-top: 0.1rem;
-  height: 20px;
-}
-
-/* Slider stands alone on its own row */
-input[type=range] {
-  display: block;
-  width: 100%;
-}
-
-button[type=submit]:active {
-  transform: translateY(1px);
-}
-
-/* Reusable pill button (matches existing UI buttons) */
-.pill-btn {
-  display: inline-block;
-  padding: 0.6rem 1.2rem;
-  font-size: 1rem;
-  line-height: 1;
-  font-weight: 600;
-  background: var(--color-btn-bg);
-  color: #fff;
-  border-radius: 999px;
-  border: none;
-  cursor: pointer;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
-  text-decoration: none;
-}
-
-.pill-btn-disabled {
-  display: inline-block;
-  padding: 0.6rem 1.2rem;
-  font-size: 1rem;
-  font-weight: 600;
-  background: var(--color-btn-bg);
-  cursor: not-allowed;
-  color: #fff;
-  border-radius: 999px;
-  border: none;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
-  text-decoration: none;
-}
-.pill-btn.small {
-  padding: 0.5rem 1.0rem;   /* slightly smaller */
-  font-size: 0.95rem;
-  font-weight: 600;
-}
-
-.pill-btn:active {
-  transform: translateY(1px);
-}
-
-.pill-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
-/* .pill-btn's author-origin display rule beats the UA stylesheet's
-   [hidden] { display: none } regardless of specificity, so without this
-   override a hidden pill (e.g. the remote repeat pill, which is shown and
-   hidden purely via the hidden attribute) stays visible. Same trap as the
-   .banner-logo display note above. */
-.pill-btn[hidden] {
-  display: none;
-}
-
-.pill-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5em;
-  margin-bottom: 0.75em;
-}
-
-.banner-logo-wrap {
-  width: 100%;
-  text-align: center;
-  margin-bottom: 1rem;
-}
-
-.banner-logo-link {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-}
-
-.banner-logo {
-  width: 100%;
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 0;
-}
-
-.airplay-masthead {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 0.9rem;
-  margin-bottom: 1rem;
-}
-
-.airplay-brand {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.airplay-brand .banner-logo-wrap {
-  margin-bottom: 0;
-  text-align: left;
-}
-
-.airplay-brand .banner-logo {
-  width: 100%;
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 0;
-}
-
-.airplay-top-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  margin-bottom: 0.75rem;
-}
-
-.airplay-top-controls .status-pill {
-  flex: 0 0 auto;
-}
-
-/* The appliance selector must stay right-anchored even when it is the row's
-   only in-flow flex item (repeat pill omitted server-side, or hidden at
-   runtime): justify-content: space-between places a lone item at main-start.
-   Covers both selector roots -- the interactive div.appliance-selector and
-   the display-only span.appliance-selector-btn fallback. */
-.airplay-top-controls > .appliance-selector,
-.airplay-top-controls > .appliance-selector-btn {
-  margin-left: auto;
-}
-
-/* ── Now Playing card ────────────────────────────────────────────────────── */
-.now-playing-card {
-  margin-bottom: 0.75rem;
-  padding: 0.65rem 0.75rem 0.6rem;
-  border-radius: 12px;
-  border: 2px solid var(--color-accent);
-  background: var(--color-surface-selected);
-}
-.now-playing-hdr {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--color-text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 0.45rem;
-}
-.now-playing-body {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  margin-bottom: 0.45rem;
-}
-.now-playing-icon {
-  flex: 0 0 auto;
-  width: 38px;
-  height: 38px;
-  color: var(--color-text);
-}
-.now-playing-icon svg { width: 100%; height: 100%; }
-.now-playing-meta {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.now-playing-name {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--color-text-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.now-playing-signal {
-  font-size: 0.78rem;
-  color: var(--color-text-dim);
-  margin-top: 0.1rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.now-playing-playing-to {
-  font-size: 0.8rem;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.vu-meter {
-  display: flex;
-  flex-direction: column-reverse;
-  gap: 2px;
-  width: 10px;
-  height: 48px;
-  flex-shrink: 0;
-}
-.vu-bar {
-  width: 100%;
-  flex: 1;
-  border-radius: 1px;
-  background: var(--color-surface-muted);
-  transition: background-color 0.12s ease-out;
-}
-.now-playing-card.np-ready {
-  border-color: var(--color-border-card);
-  border-width: 1px;
-  background: var(--color-surface-raised);
-  opacity: 0.45;
-}
-.now-playing-card.np-ready .now-playing-body {
-  display: none;
-}
-.np-volume-wrap {
-  margin-top: 0.5rem;
-  padding-top: 0.45rem;
-  border-top: 1px solid var(--color-border);
-}
-.np-volume-wrap .slider-header {
-  font-size: 0.9rem;
-  margin-bottom: 0.08rem;
-}
-.np-volume-wrap input[type=range] {
-  margin-top: 0.1rem;
-  height: 20px;
-}
-.np-volume-wrap.master-volume-inactive {
-  opacity: 0.5;
-}
-
-/* Repeat button (home page top controls row) -- small pill-btn styled like
-   the appliance-selector button; blue accent outline when armed/replaying,
-   reusing the same active-card treatment as .output-card-on/.now-playing-card.
-   Border is always reserved (transparent) so the active outline doesn't shift
-   layout when toggled. */
-.repeat-btn {
-  border: 2px solid transparent;
-}
-.repeat-btn.active {
-  border-color: var(--color-accent);
-  background: var(--color-surface-selected);
-  color: var(--color-text);
-}
-.repeat-btn:disabled {
-  cursor: default;
-}
-
-/* Page quiesce while a repeat stop is in flight (click through
-   confirmed server teardown): everything except the repeat button
-   itself -- the feedback element -- goes dim and non-interactive. The
-   button also gets `inert` toggled on its siblings by the same JS
-   choke point (updateRepeatButton/_setRepeatStopping in
-   HOME_CARDS_SCRIPT) so keyboard/AT users are blocked too, not just
-   pointer users. Polling keeps running underneath; only interaction is
-   gated. */
-body.repeat-stopping .airplay-top-controls > *:not(#repeat-btn),
-body.repeat-stopping #now-playing-card,
-body.repeat-stopping #outputs-list {
-  pointer-events: none;
-  opacity: 0.5;
-}
-body.repeat-stopping #repeat-btn {
-  pointer-events: auto;
-  opacity: 1;
-}
-
-/* iOS-style storage bar */
-.storage-bar {
-  width: 100%;
-  height: 14px;
-  background: var(--color-surface-muted);
-  border-radius: 999px;
-  overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,0.08);
-  margin: 0 0 0 0;
-}
-
-.storage-bar .used {
-  height: 100%;
-  width: 0%;
-  background: var(--color-success);
-  border-radius: 999px;
-  transition: width 0.3s ease;
-}
-
-/* Status-driven bar colours — set via data-status="healthy|warning|critical" */
-.storage-bar .used[data-status="healthy"]  { background: var(--color-status-success); }
-.storage-bar .used[data-status="warning"]  { background: var(--color-status-warning); }
-.storage-bar .used[data-status="critical"] { background: var(--color-status-danger);  }
-
-.storage-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  font-size: 0.95rem;
-}
-
-.bar-label {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  font-size: 0.95rem;
-  margin-top: 0.25rem;
-}
-
-.licence-pane {
-  background: var(--color-surface-pane);
-  color: var(--color-text-pane);
-  padding: 0.75rem;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  line-height: 1.4;
-  max-height: 45vh;
-  overflow: auto;
-}
-
-
-/* Update buttons row: left/right within the pane */
-.update-row {
-  margin-top: 0.5rem;
-  display: flex;
-  justify-content: space-between; /* left + right */
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;                /* wraps neatly on small screens */
-}
-
-.update-row .pill-btn {
-  flex: 1 1 12rem;                /* good tap targets, equal-ish width */
-}
-
-code {
-  background: #0f0f0f;
-  padding: 0 0.25rem;
-  border-radius: 3px;
-}
-
-/* ── Equaliser page ─────────────────────────────────────────────────────── */
-.eq-page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-}
-
-.eq-page-header h1 {
-  margin: 0;
-}
-
-.eq-back-btn {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: var(--color-text);
-  text-decoration: none;
-  line-height: 1;
-  padding: 0.1rem 0.2rem;
-}
-
-.eq-section {
-  margin-bottom: 1.25rem;
-  padding: 1rem 0.9rem 1.1rem;
-  border-radius: 8px;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-raised);
-}
-
-.eq-section-title {
-  font-weight: 700;
-  font-size: 1.05rem;
-  margin-bottom: 0.85rem;
-}
-
-.eq-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 1.9rem;
-  margin-bottom: 0.65rem;
-}
-
-.eq-bands-wrap {
-  display: flex;
-  align-items: stretch;
-  gap: 0.4rem;
-}
-
-.eq-bands-row {
-  position: relative;
-  isolation: isolate;
-  display: flex;
-  flex: 1;
-  justify-content: space-around;
-  gap: 0.15rem;
-}
-
-/* Dotted 0 dB reference line across all band sliders.
-   top = freq-label line-height (0.75rem × 1.2) + its margin-bottom (0.3rem)
-       + half the slider height (75px). */
-.eq-bands-row::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(0.9rem + 0.3rem + 75px);
-  border-top: 1px dashed var(--color-eq-zero-line);
-  pointer-events: none;
-  z-index: -1;
-}
-
-.eq-band {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  flex: 1;
-}
-
-/* Vertical range slider for EQ bands */
-.eq-band-slider {
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 30px !important;
-  height: 150px !important;
-  margin: 0 !important;
-  padding: 0;
-  cursor: pointer;
-  display: block;
-}
-
-/* Re-centre WebKit thumb on vertical track */
-.eq-band-slider::-webkit-slider-thumb {
-  margin-top: -8px;
-}
-
-.eq-band-freq {
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
-  text-align: center;
-  margin-bottom: 0.3rem;
-  white-space: nowrap;
-}
-
-.eq-band-val {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--color-text);
-  text-align: center;
-  min-width: 2.8rem;
-  margin-top: 0.1rem;
-}
-
-.eq-auto-trim-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-.eq-auto-trim-labels {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.eq-auto-trim-title {
-  font-weight: 600;
-  font-size: 1rem;
-}
-
-.eq-auto-trim-subtitle {
-  font-size: 0.88rem;
-  color: var(--color-text-secondary);
-  margin-top: 0.15rem;
-}
-
-.eq-gain-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 1rem;
-  margin-bottom: 0.35rem;
-}
-
-.eq-gain-label {
-  font-weight: 600;
-  font-size: 1rem;
-}
-
-.eq-gain-value {
-  font-weight: 600;
-  font-size: 1rem;
-}
-
-.eq-gain-ticks {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.78rem;
-  color: var(--color-text-secondary);
-  margin-top: 0.2rem;
-}
-
-/* Equaliser frequency-response SVG curve */
-.eq-curve-wrap {
-  margin-bottom: 0.75rem;
-  border-radius: 6px;
-  overflow: hidden;
-  line-height: 0;   /* removes inline-block gap beneath SVG */
-}
-
-.eq-curve-svg {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
-/* SVG element classes — used by inline SVG inside the EQ card */
-.eq-curve-bg        { fill: var(--color-eq-bg); }
-.eq-axis            { stroke: var(--color-eq-axis); fill: none; }
-.eq-axis-x          { stroke-width: 0.8; }
-.eq-axis-y          { stroke-width: 0.8; }
-.eq-curve-fill      { fill: url(#eq-glow-grad); stroke: none; }
-.eq-glow-stop-top   { stop-color: var(--color-accent); stop-opacity: 0.28; }
-.eq-glow-stop-bottom{ stop-color: var(--color-accent); stop-opacity: 0; }
-.eq-curve-path      { stroke: var(--color-accent);  stroke-width: 1.8; fill: none; }
-.eq-handle          { fill: var(--color-accent);
-                      stroke: rgba(255,255,255,0.75); stroke-width: 0.8; }
-
-@media (min-width: 600px) {
-  .container { margin: 2rem auto; }  /* keep the roomy desktop spacing */
-  button[type=submit] { width: auto; }
-}
-
-@media (max-width: 520px) {
-  .airplay-masthead {
-    align-items: center;
+# Shared client-side polling helper.
+# Served by nginx as a static file (nginx/static/poll.js) rather than
+# inlined -- this Python constant is the drift-guard source of truth,
+# checked byte-identical against the static file by
+# tests/test_poll_js_sync.py. Unlike the shared theme CSS (nginx/static/theme.css,
+# which has no Python copy at all), poll.js still keeps this Python constant
+# as its source of truth for the moment.
+POLL_JS = """// Poller -- shared polling helper.
+//
+// One implementation of "visibility-aware interval + in-flight suppression +
+// caller-supplied active-control suppression + remote-variant backoff +
+// panel-scoped/bounded polling" for every setInterval-based poll loop, so
+// each page does not need its own hand-rolled copy of the same pieces of
+// logic.
+//
+// Usage:
+//   var p = Poller({
+//     url: '/api/status',       // string, or a function returning a string
+//     intervalMs: 1500,
+//     onData: function(json) { ... },
+//     isSuppressed: function() { return false; },   // optional
+//     fetchOptions: {},                              // optional, merged into fetch()
+//     timeoutMs: 0,                                  // optional AbortController timeout
+//     onError: function(res, body) { ... },           // optional: any fetch/non-ok response
+//     variant: 'local',                               // 'local' (default) | 'remote'
+//     activeOnly: false,                              // true: don't auto-start: caller calls p.start()/p.stop()
+//     maxAttempts: 0,                                 // >0: stop permanently after N fired attempts
+//     onMaxAttempts: function() { ... },              // optional, called once when maxAttempts is reached
+//     classifyError: function(res, body) { ... },     // remote only: return 'definitive' or 'transient'
+//     onDefinitiveError: function(res, body) { ... }, // remote only: called once, polling then stops
+//   });
+//
+// Behaviour:
+//   - One shared document-level visibilitychange listener pauses every live,
+//     currently-running Poller's timer while the tab is hidden, and fires one
+//     immediate poll plus resumes the timer on becoming visible again.
+//   - Each Poller tracks its own in-flight flag; a tick that fires while the
+//     previous request is still outstanding is a no-op (skipped, not queued).
+//   - isSuppressed(), when supplied, is checked after the response parses:
+//     the request still fires (so server state doesn't drift out of sync
+//     with what will be re-rendered once suppression ends) but onData is not
+//     called while it returns true.
+//   - activeOnly: true means the Poller does NOT start on construction --
+//     the caller drives its lifetime explicitly with p.start()/p.stop(),
+//     matching a detail panel's own open/close lifecycle (e.g. a Setup
+//     card). A stopped activeOnly poller is fully inert: no timer, not
+//     resumed by visibilitychange.
+//   - maxAttempts: > 0 stops the poller permanently (ignoring visibility)
+//     once that many fetches have been fired, optionally invoking
+//     onMaxAttempts() once. Matches "poll N times then give up" (bounded
+//     probes -- Bluetooth pairing status, dial busy-state, lost-PIN
+//     countdown, Repeat Playback's capacity probe).
+//   - variant: 'remote' runs a short fixed initial-retry schedule on start
+//     (0.5s, 1s, 2s, 4s) before settling into steady-state polling at
+//     intervalMs, then tracks a rolling consecutive-failure count: at 3
+//     consecutive failures it enters degraded mode (10s cadence) until one
+//     poll succeeds, resetting failure count and cadence together in the
+//     same tick. classifyError(), when supplied, distinguishes a
+//     'definitive' failure (calls onDefinitiveError() once and stops
+//     polling outright) from a 'transient' one (feeds the consecutive-
+//     failure counter); with no classifyError, every failure is transient.
+(function () {
+  var __pollers = [];
+  var REMOTE_INITIAL_RETRY_SCHEDULE_MS = [500, 1000, 2000, 4000];
+  var REMOTE_DEGRADED_INTERVAL_MS = 10000;
+  var REMOTE_DEGRADED_THRESHOLD = 3;
+
+  function __currentIntervalMs(p) {
+    if (p.variant === 'remote') {
+      if (p.retryStep < REMOTE_INITIAL_RETRY_SCHEDULE_MS.length) {
+        return REMOTE_INITIAL_RETRY_SCHEDULE_MS[p.retryStep];
+      }
+      if (p.degraded) return REMOTE_DEGRADED_INTERVAL_MS;
+    }
+    return p.intervalMs;
+  }
+
+  function __scheduleNext(p) {
+    if (p.stopped) return;
+    if (p.maxAttempts && p.attempts >= p.maxAttempts) {
+      p.stopped = true;
+      if (p.onMaxAttempts) p.onMaxAttempts();
+      return;
+    }
+    if (p.timer) clearTimeout(p.timer);
+    if (p.activeOnly ? !p.running : document.hidden) return;
+    p.timer = setTimeout(function () { __fire(p); }, __currentIntervalMs(p));
+  }
+
+  function __onSuccess(p, json) {
+    if (p.variant === 'remote') {
+      if (p.retryStep < REMOTE_INITIAL_RETRY_SCHEDULE_MS.length) p.retryStep = REMOTE_INITIAL_RETRY_SCHEDULE_MS.length;
+      p.failCount = 0;
+      p.degraded = false;
+    }
+    if (!(p.isSuppressed && p.isSuppressed())) p.onData(json);
+  }
+
+  function __onFailure(p, res, body) {
+    if (p.onError) p.onError(res, body);
+    if (p.variant !== 'remote') return;
+    var kind = p.classifyError ? p.classifyError(res, body) : 'transient';
+    if (kind === 'definitive') {
+      p.stopped = true;
+      if (p.onDefinitiveError) p.onDefinitiveError(res, body);
+      return;
+    }
+    p.failCount += 1;
+    if (p.failCount >= REMOTE_DEGRADED_THRESHOLD) p.degraded = true;
+  }
+
+  function __fire(p) {
+    p.timer = null;
+    if (p.inFlight) { __scheduleNext(p); return; }
+    p.inFlight = true;
+    p.attempts += 1;
+    var url = (typeof p.url === 'function') ? p.url() : p.url;
+    var opts = Object.assign({ cache: 'no-store' }, p.fetchOptions || {});
+    var ctrl = null;
+    var timeoutTimer = null;
+    if (p.timeoutMs) {
+      ctrl = new AbortController();
+      opts.signal = ctrl.signal;
+      timeoutTimer = setTimeout(function () { ctrl.abort(); }, p.timeoutMs);
+    }
+    var res = null;
+    fetch(url, opts)
+      .then(function (r) { res = r; return r.json(); })
+      .then(function (j) {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (res && !res.ok) { __onFailure(p, res, j); return; }
+        __onSuccess(p, j);
+      })
+      .catch(function () {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        __onFailure(p, res, null);
+      })
+      .finally(function () {
+        p.inFlight = false;
+        __scheduleNext(p);
+      });
+  }
+
+  function __resume(p) {
+    if (p.activeOnly && !p.running) return;
+    if (p.timer) return;
+    __fire(p);
+  }
+
+  function __pause(p) {
+    if (p.timer) {
+      clearTimeout(p.timer);
+      p.timer = null;
+    }
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    __pollers.forEach(function (p) {
+      if (p.stopped) return;
+      if (p.activeOnly && !p.running) return;
+      if (document.hidden) {
+        __pause(p);
+      } else {
+        __resume(p);
+      }
+    });
+  });
+
+  window.Poller = function (opts) {
+    var p = {
+      url: opts.url,
+      fetchOptions: opts.fetchOptions || null,
+      timeoutMs: opts.timeoutMs || 0,
+      intervalMs: opts.intervalMs,
+      onData: opts.onData,
+      isSuppressed: opts.isSuppressed || null,
+      variant: opts.variant || 'local',
+      activeOnly: !!opts.activeOnly,
+      maxAttempts: opts.maxAttempts || 0,
+      onMaxAttempts: opts.onMaxAttempts || null,
+      classifyError: opts.classifyError || null,
+      onDefinitiveError: opts.onDefinitiveError || null,
+      inFlight: false,
+      timer: null,
+      running: false,
+      stopped: false,
+      attempts: 0,
+      retryStep: 0,
+      failCount: 0,
+      degraded: false,
+    };
+    __pollers.push(p);
+    // Fire once immediately on construction (matches the initial-call-plus-
+    // periodic-timer shape every poll loop needs), then only keep the timer
+    // running while the tab is visible -- unless activeOnly, which waits for
+    // an explicit p.start() (e.g. a Setup card's detail-panel open).
+    if (!p.activeOnly) {
+      p.running = true;
+      if (!document.hidden) __fire(p);
+    }
+    p.start = function () {
+      if (p.stopped || p.running) return;
+      p.running = true;
+      if (!document.hidden) __fire(p);
+    };
+    p.stop = function () {
+      p.running = false;
+      __pause(p);
+    };
+    return p;
+  };
+})();
+"""
+
+# Client-side output-card fragment renderer. Served by nginx as a static
+# file (nginx/static/render_fragments.js) rather than inlined -- this Python
+# constant is the drift-guard source of truth, checked byte-identical
+# against the static file by tests/test_render_fragments_js_sync.py,
+# mirroring the poll.js/theme.css convention above.
+#
+# DELIBERATE DUAL-RENDER EXCEPTION: buildOutputCardElement()/
+# renderOutputList() are the client-side mirror of the server-rendered
+# output-card markup built by output_card_html()
+# (core/autostream_webui_components.py) and assembled into the `outputs_html`
+# loop in core/autostream_webui_page_airplay.py's send_airplay_page(). The
+# remote/proxy Home page has no server-rendered HTML to reuse -- it
+# reconstructs the same markup here from polled JSON instead. Any change to
+# the output-card markup/classes/data-* attributes on the Python side must be
+# mirrored here too (and vice versa), or the local and remote Home pages will
+# visibly drift apart. setOutputsPlaceholder() travels with them since
+# renderOutputList() is its only caller.
+#
+# Depends on several small helpers (normalizeVolume, updateVolumeLabel,
+# updateOutputStateVisual, reorderOutputCards, updateMasterVolumeCard,
+# onToggleOutput, onVolumeChange) that remain defined in HOME_CARDS_SCRIPT --
+# safe because these are plain function *declarations*, resolved against the
+# shared global scope only when actually called (well after every page
+# <script> tag has run), not at parse time, so the relative order of the two
+# <script> tags on the page doesn't matter.
+RENDER_FRAGMENTS_JS = """function buildOutputCardElement(o) {
+  var id = String(o.id || '');
+  var name = String(o.name || ('Output ' + id));
+  var selected = !!o.selected;
+  var volume = normalizeVolume(o.volume);
+  var isDefault = !!o.is_default;
+  var remoteInUse = !!o.remote_in_use;
+  var remoteOwner = String(o.remote_owner || '');
+
+  var card = document.createElement('div');
+  card.className = 'output-card ' + (remoteInUse ? 'output-card-in-use' : (selected ? 'output-card-on' : 'output-card-off'));
+  card.id = 'output_card_' + id;
+  card.setAttribute('data-output-id', id);
+  card.setAttribute('data-is-default', isDefault ? '1' : '0');
+  card.setAttribute('data-remote-in-use', remoteInUse ? '1' : '0');
+  card.setAttribute('data-remote-owner', remoteOwner);
+
+  var head = document.createElement('div');
+  head.className = 'output-card-head';
+
+  var meta = document.createElement('div');
+  meta.className = 'output-card-meta';
+  var nameDiv = document.createElement('div');
+  nameDiv.className = 'output-card-name';
+  nameDiv.textContent = name;
+  meta.appendChild(nameDiv);
+  if (isDefault) {
+    var badge = document.createElement('span');
+    badge.className = 'output-card-default';
+    badge.textContent = 'Default';
+    meta.appendChild(badge);
+  }
+  var chip = document.createElement('span');
+  chip.className = 'output-state-chip ' + (remoteInUse ? 'in-use' : (selected ? 'on' : 'off'));
+  chip.id = 'output_state_' + id;
+  chip.textContent = remoteInUse ? ('In Use by ' + (remoteOwner || 'another appliance')) : (selected ? 'On' : 'Off');
+  meta.appendChild(chip);
+  head.appendChild(meta);
+
+  var toggle = document.createElement('label');
+  toggle.className = 'output-toggle';
+  toggle.addEventListener('click', function(e) { e.stopPropagation(); });
+  var cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.id = 'output_enabled_' + id;
+  cb.checked = selected;
+  if (remoteInUse) cb.disabled = true;
+  cb.addEventListener('change', function() { onToggleOutput(id); });
+  toggle.appendChild(cb);
+  var sw = document.createElement('span');
+  sw.className = 'switch';
+  sw.setAttribute('aria-hidden', 'true');
+  toggle.appendChild(sw);
+  head.appendChild(toggle);
+  card.appendChild(head);
+
+  var wrap = document.createElement('div');
+  wrap.className = 'output-slider-wrap';
+  wrap.id = 'output_slider_wrap_' + id;
+  wrap.addEventListener('click', function(e) { e.stopPropagation(); });
+  if (!selected) wrap.hidden = true;
+  var sliderHdr = document.createElement('div');
+  sliderHdr.className = 'slider-header';
+  var volText = document.createElement('span');
+  volText.textContent = 'Volume:';
+  sliderHdr.appendChild(volText);
+  var volLbl = document.createElement('span');
+  volLbl.id = 'vol_label_' + id;
+  volLbl.setAttribute('data-volume-label-for', id);
+  sliderHdr.appendChild(volLbl);
+  wrap.appendChild(sliderHdr);
+  var sl = document.createElement('input');
+  sl.type = 'range';
+  sl.id = 'vol_slider_' + id;
+  sl.min = 0; sl.max = 100; sl.step = 1; sl.value = volume;
+  sl.addEventListener('input', function() { updateVolumeLabel(id, this.value); });
+  sl.addEventListener('change', function() { onVolumeChange(id, this.value); });
+  wrap.appendChild(sl);
+  card.appendChild(wrap);
+
+  return card;
+}
+
+function setOutputsPlaceholder(state) {
+  var el = document.getElementById('outputs-placeholder');
+  if (!el) return;
+  if (state === 'hidden') {
+    el.hidden = true;
+    el.textContent = '';
+  } else if (state === 'unreachable') {
+    el.hidden = false;
+    el.textContent = 'Waiting for owntone';
+  } else {
+    el.hidden = false;
+    el.textContent = 'Waiting for device discovery';
   }
 }
 
-#a2hs-prompt {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.55);
-  padding: 0.5rem;
-}
-
-#a2hs-inner {
-  max-width: 480px;
-  margin: 0 auto;
-  background: var(--color-surface);
-  border-radius: 1rem;
-  padding: 0.9rem 1rem;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-  font-size: 0.95rem;
-}
-
-#a2hs-inner strong {
-  display: block;
-  margin-bottom: 0.25rem;
-}
-
-body {
-  margin: 0 !important;
-  padding: 0 !important;   /* critical for iOS fixed banner */
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--color-bg);
-  font-size: 18px;
-}
-
-#red-banner {
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  background: var(--color-status-danger);
-  color: #ffffff;
-  text-align: center;
-  font-weight: 700;
-  padding: 0.6rem 1rem !important;
-  padding-top: calc(0.6rem + constant(safe-area-inset-top)) !important;
-  padding-top: calc(0.6rem + env(safe-area-inset-top)) !important;
-  z-index: 10000;
-}
-#red-banner-spacer {
-  height: calc(3rem + constant(safe-area-inset-top));
-  height: calc(3rem + env(safe-area-inset-top));
-}
-#green-banner {
-  position: fixed !important;
-  will-change: transform;
-  transform: translateY(0);
-  transition: transform 320ms ease;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  background: var(--color-status-success);
-  color: #ffffff;
-  text-align: center;
-  font-weight: 700;
-  padding: 0.6rem 1rem !important;
-  padding-top: calc(0.6rem + constant(safe-area-inset-top)) !important;
-  padding-top: calc(0.6rem + env(safe-area-inset-top)) !important;
-  z-index: 10000;
-}
-#green-banner-spacer {
-  height: calc(3rem + constant(safe-area-inset-top));
-  height: calc(3rem + env(safe-area-inset-top));
-  transition: height 320ms ease;
-  overflow: hidden;
-}
-/* Fade-out support for flash (green) banner */
-.flash-hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-.flash-spacer-hidden {
-  height: 0 !important;
-}
-.flash-rollup {
-  /* JS sets --flash-rollup-y to the banner height (px) */
-  transform: translateY(calc(-1 * var(--flash-rollup-y, 0px)));
-}
-
-/* ── Setup page: slide-panel navigation (post-config only) ── */
-.setup-slide-viewport {
-  overflow: hidden;
-  width: 100%;
-}
-.setup-slide-track {
-  display: flex;
-  width: 300%;
-  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.setup-slide-track.panel-open {
-  transform: translateX(-33.333%);
-}
-.setup-slide-track.preamp-open {
-  transform: translateX(-66.667%);
-}
-.setup-slide-list,
-.setup-slide-panels,
-.setup-slide-preamp {
-  width: 33.333%;
-  flex-shrink: 0;
-  min-width: 0;
-}
-.setup-list-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.85rem 0.9rem;
-  margin-bottom: 0.62rem;
-  border-radius: 12px;
-  border: 1px solid var(--color-border-card);
-  background: var(--color-surface-raised);
-  cursor: pointer;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 120ms ease;
-  gap: 0.5rem;
-}
-.setup-list-card:active {
-  background: var(--color-surface-pressed);
-}
-.setup-list-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.setup-list-card-title {
-  font-weight: 700;
-  font-size: 1rem;
-  color: var(--color-text-strong);
-  line-height: 1.2;
-}
-.setup-list-card-sub {
-  font-size: 0.82rem;
-  color: var(--color-text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.setup-list-chevron {
-  font-size: 1.4rem;
-  color: var(--color-control-off);
-  flex-shrink: 0;
-  line-height: 1;
-}
-.setup-detail-panel {
-  display: none;
-}
-.setup-detail-panel.active {
-  display: block;
-}
-.setup-preamp-panel {
-  display: none;
-}
-.setup-preamp-panel.active {
-  display: block;
-}
-.setup-detail-back {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
-/* ── Nav bar bottom clearance (only when nav bar is present) ── */
-.setup-customise-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.setup-customise-row > span:last-child {
-  font-size: 0.94rem;
-  line-height: 1.25;
-}
-
-body.has-bottom-nav {
-  padding-bottom: calc(5.12rem + constant(safe-area-inset-bottom));
-  padding-bottom: calc(5.12rem + env(safe-area-inset-bottom));
-  box-sizing: border-box;
-}
-
-body.has-bottom-nav .container {
-  padding-bottom: 5.12rem;
-}
-
-/* ── Bottom navigation bar ── */
-.bottom-nav {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: var(--color-surface);
-  border-top: 1px solid var(--color-border-nav);
-  display: flex;
-  z-index: 1000;
-  padding-bottom: constant(safe-area-inset-bottom);
-  padding-bottom: env(safe-area-inset-bottom);
-}
-.nav-tab {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 0.6rem 0 0;
-  color: var(--color-nav-inactive);
-  text-decoration: none;
-  font-size: 0.7rem;
-  font-weight: 500;
-  gap: 0.18rem;
-  -webkit-tap-highlight-color: transparent;
-}
-.nav-tab svg {
-  width: 24px;
-  height: 24px;
-}
-.nav-tab-active {
-  color: var(--color-accent);
-  box-shadow: inset 0 3px 0 var(--color-accent);
-}
-.nav-tab-warn {
-  color: var(--color-danger);
-}
-
-/* ── Mobile: match body background to --color-surface so no gap shows
-   above or below the content container.  Dark mode already has
-   --color-bg == --color-surface; this brings light mode into line.
-   Placed last so it overrides the base body { background } rule above. ── */
-@media (max-width: 599px) {
-  body {
-    background: var(--color-surface);
-  }
-  .container {
-    margin: 0;
-    border-radius: 0;
-    box-shadow: none;
-  }
+function renderOutputList(outputs) {
+  var list = document.getElementById('outputs-list');
+  if (!list) return;
+  while (list.firstChild) list.removeChild(list.firstChild);
+  for (var i = 0; i < outputs.length; i++) { list.appendChild(buildOutputCardElement(outputs[i])); }
+  list.querySelectorAll('[data-volume-label-for]').forEach(function(s) {
+    var id = s.getAttribute('data-volume-label-for');
+    var sl = document.getElementById('vol_slider_' + id);
+    if (sl) updateVolumeLabel(id, sl.value);
+    var cb = document.getElementById('output_enabled_' + id);
+    if (cb) updateOutputStateVisual(String(id), !!cb.checked);
+  });
+  reorderOutputCards();
+  updateMasterVolumeCard();
+  setOutputsPlaceholder(outputs.length > 0 ? 'hidden' : 'empty');
 }
 """
 
@@ -1412,9 +519,37 @@ APPLIANCE_SELECTOR_CSS = """
 #                                     the appliance-selector widget
 #
 # updateRepeatButton(d) must be called by each page's own poll cycle
-# (local: refreshStatus(); remote: renderHomeState()) with the polled
+# (local: onStatusPollData(); remote: renderHomeState()) with the polled
 # status/home dict so the repeat pill (#repeat-btn, rendered by the page
 # itself -- hidden by default on the remote shell) stays in sync.
+
+# Shared appliance-selector refresh. Previously defined identically three
+# times (here, and twice more in autostream_webui_page_equaliser.py for the
+# local/remote Equaliser pages) -- now the one definition, spliced into each
+# page's existing <script> block.
+# Each page sets a different "current appliance" fallback global today
+# (Home: window.__SELECTOR_CURRENT_ID; local Equaliser: window.__LOCAL_ID;
+# remote Equaliser: window.__REMOTE_AID) -- all three are consulted here so
+# this single definition preserves every page's prior fallback behaviour.
+# window.__SELECTOR_CURRENT_PAGE (defaulting to 'home') likewise covers
+# Equaliser's prior 'equaliser' default. updateSelectorFromAppliances(),
+# which this calls, is still defined per-page (identically) alongside it.
+REFRESH_APPLIANCE_SELECTOR_SCRIPT = """  function refreshApplianceSelector(){
+    fetch('/api/appliances',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(data){
+        if(!data||!data.ok||!Array.isArray(data.appliances)) return;
+        var el=document.getElementById('appliance-selector');
+        var fallbackId=window.__SELECTOR_CURRENT_ID||window.__LOCAL_ID||window.__REMOTE_AID||'';
+        var fallbackPage=window.__SELECTOR_CURRENT_PAGE||'home';
+        var currentId=el?(el.getAttribute('data-current-id')||fallbackId):fallbackId;
+        var currentPage=el?(el.getAttribute('data-current-page')||fallbackPage):fallbackPage;
+        updateSelectorFromAppliances(data.appliances,currentId,currentPage);
+      })
+      .catch(function(){});
+  }
+"""
+
 HOME_CARDS_SCRIPT = """
 <script>
   function normalizeVolume(v){
@@ -2186,120 +1321,6 @@ HOME_CARDS_SCRIPT = """
     });
   }
 
-  function buildOutputCardElement(o) {
-    var id = String(o.id || '');
-    var name = String(o.name || ('Output ' + id));
-    var selected = !!o.selected;
-    var volume = normalizeVolume(o.volume);
-    var isDefault = !!o.is_default;
-    var remoteInUse = !!o.remote_in_use;
-    var remoteOwner = String(o.remote_owner || '');
-
-    var card = document.createElement('div');
-    card.className = 'output-card ' + (remoteInUse ? 'output-card-in-use' : (selected ? 'output-card-on' : 'output-card-off'));
-    card.id = 'output_card_' + id;
-    card.setAttribute('data-output-id', id);
-    card.setAttribute('data-is-default', isDefault ? '1' : '0');
-    card.setAttribute('data-remote-in-use', remoteInUse ? '1' : '0');
-    card.setAttribute('data-remote-owner', remoteOwner);
-
-    var head = document.createElement('div');
-    head.className = 'output-card-head';
-
-    var meta = document.createElement('div');
-    meta.className = 'output-card-meta';
-    var nameDiv = document.createElement('div');
-    nameDiv.className = 'output-card-name';
-    nameDiv.textContent = name;
-    meta.appendChild(nameDiv);
-    if (isDefault) {
-      var badge = document.createElement('span');
-      badge.className = 'output-card-default';
-      badge.textContent = 'Default';
-      meta.appendChild(badge);
-    }
-    var chip = document.createElement('span');
-    chip.className = 'output-state-chip ' + (remoteInUse ? 'in-use' : (selected ? 'on' : 'off'));
-    chip.id = 'output_state_' + id;
-    chip.textContent = remoteInUse ? ('In Use by ' + (remoteOwner || 'another appliance')) : (selected ? 'On' : 'Off');
-    meta.appendChild(chip);
-    head.appendChild(meta);
-
-    var toggle = document.createElement('label');
-    toggle.className = 'output-toggle';
-    toggle.addEventListener('click', function(e) { e.stopPropagation(); });
-    var cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.id = 'output_enabled_' + id;
-    cb.checked = selected;
-    if (remoteInUse) cb.disabled = true;
-    cb.addEventListener('change', function() { onToggleOutput(id); });
-    toggle.appendChild(cb);
-    var sw = document.createElement('span');
-    sw.className = 'switch';
-    sw.setAttribute('aria-hidden', 'true');
-    toggle.appendChild(sw);
-    head.appendChild(toggle);
-    card.appendChild(head);
-
-    var wrap = document.createElement('div');
-    wrap.className = 'output-slider-wrap';
-    wrap.id = 'output_slider_wrap_' + id;
-    wrap.addEventListener('click', function(e) { e.stopPropagation(); });
-    if (!selected) wrap.hidden = true;
-    var sliderHdr = document.createElement('div');
-    sliderHdr.className = 'slider-header';
-    var volText = document.createElement('span');
-    volText.textContent = 'Volume:';
-    sliderHdr.appendChild(volText);
-    var volLbl = document.createElement('span');
-    volLbl.id = 'vol_label_' + id;
-    volLbl.setAttribute('data-volume-label-for', id);
-    sliderHdr.appendChild(volLbl);
-    wrap.appendChild(sliderHdr);
-    var sl = document.createElement('input');
-    sl.type = 'range';
-    sl.id = 'vol_slider_' + id;
-    sl.min = 0; sl.max = 100; sl.step = 1; sl.value = volume;
-    sl.addEventListener('input', function() { updateVolumeLabel(id, this.value); });
-    sl.addEventListener('change', function() { onVolumeChange(id, this.value); });
-    wrap.appendChild(sl);
-    card.appendChild(wrap);
-
-    return card;
-  }
-
-  function setOutputsPlaceholder(state) {
-    var el = document.getElementById('outputs-placeholder');
-    if (!el) return;
-    if (state === 'hidden') {
-      el.hidden = true;
-      el.textContent = '';
-    } else if (state === 'unreachable') {
-      el.hidden = false;
-      el.textContent = 'Waiting for owntone';
-    } else {
-      el.hidden = false;
-      el.textContent = 'Waiting for device discovery';
-    }
-  }
-  function renderOutputList(outputs) {
-    var list = document.getElementById('outputs-list');
-    if (!list) return;
-    while (list.firstChild) list.removeChild(list.firstChild);
-    for (var i = 0; i < outputs.length; i++) { list.appendChild(buildOutputCardElement(outputs[i])); }
-    list.querySelectorAll('[data-volume-label-for]').forEach(function(s) {
-      var id = s.getAttribute('data-volume-label-for');
-      var sl = document.getElementById('vol_slider_' + id);
-      if (sl) updateVolumeLabel(id, sl.value);
-      var cb = document.getElementById('output_enabled_' + id);
-      if (cb) updateOutputStateVisual(String(id), !!cb.checked);
-    });
-    reorderOutputCards();
-    updateMasterVolumeCard();
-    setOutputsPlaceholder(outputs.length > 0 ? 'hidden' : 'empty');
-  }
-
   function initApplianceSelector(){
     var btn=document.getElementById('appliance-selector-btn');
     var dd=document.getElementById('appliance-selector-dropdown');
@@ -2353,19 +1374,7 @@ HOME_CARDS_SCRIPT = """
     var cur=appliances.find(function(a){return a.id===currentId;});
     if(nameEl&&cur) nameEl.textContent=String(cur.hostname||'autostream');
   }
-  function refreshApplianceSelector(){
-    fetch('/api/appliances',{cache:'no-store'})
-      .then(function(r){return r.json();})
-      .then(function(data){
-        if(!data||!data.ok||!Array.isArray(data.appliances)) return;
-        var el=document.getElementById('appliance-selector');
-        var currentId=el?(el.getAttribute('data-current-id')||window.__SELECTOR_CURRENT_ID||''):(window.__SELECTOR_CURRENT_ID||'');
-        var currentPage=el?(el.getAttribute('data-current-page')||'home'):'home';
-        updateSelectorFromAppliances(data.appliances,currentId,currentPage);
-      })
-      .catch(function(){});
-  }
-</script>
+""" + REFRESH_APPLIANCE_SELECTOR_SCRIPT + """</script>
 """
 
 

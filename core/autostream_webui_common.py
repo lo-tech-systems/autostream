@@ -30,9 +30,9 @@ from autostream_webui_assets import (
     NAV_ICON_HOME,
     NAV_ICON_SERVICE,
     NAV_ICON_SETUP,
-    STYLE_CSS,
     VIEWPORT_META,
 )
+from autostream_webui_components import banner_html
 
 import json as _json
 
@@ -75,6 +75,36 @@ def _set_flash_cookie(handler, message: str, *, max_age: int = 30, flash_type: s
         handler._pending_set_cookies = [cookie]
     else:
         pending.append(cookie)
+
+
+# -----------------------------------------------------------------------------
+# Shared HTML response helper -- matches send_json()'s shape. Lives here
+# so page modules and autostream_auth.py can use it without importing
+# autostream_webui.py, which already imports this module (a straight import
+# the other way would be circular). autostream_webui.py re-exports this name
+# for any existing callers that still reach it as autostream_webui.send_html.
+# -----------------------------------------------------------------------------
+
+def send_html(handler, code: int, html_str: str, *, extra_headers: Optional[dict] = None) -> None:
+    """Write an HTML response, mirroring send_json()'s shape.
+
+    Encodes, sends status/headers, writes the body, and guards the write
+    against a client that has already disconnected -- a guard several
+    hand-rolled HTML call sites across the codebase previously lacked.
+    """
+    body = html_str.encode("utf-8")
+    try:
+        handler.send_response(code)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        if extra_headers:
+            for name, value in extra_headers.items():
+                handler.send_header(name, value)
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client navigated away / refreshed / closed the tab mid-response.
+        return
 
 
 def build_hostname_redirect_url(handler, hostname: str, path: str = "/") -> str:
@@ -122,12 +152,7 @@ def send_hostname_changed_page(
         active_tab=active_tab,
         show_nav=show_nav,
     )
-    body = page.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+    send_html(handler, 200, page)
     try:
         handler.wfile.flush()
     except Exception:
@@ -143,25 +168,17 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
 
     # Priority 1: User-triggered flash messages (e.g. "Settings saved" / errors)
     if flash_msg:
-        banner_id = "green-banner"
-        banner_spacer = "green-banner-spacer"
-        if flash_type == "error":
-            banner_id = "red-banner"
-            banner_spacer = "red-banner-spacer"
-
-        return (f"<div id='{banner_id}'>{html.escape(flash_msg)}</div>",
-                f"<div id='{banner_spacer}'></div>")
+        banner_id = "red-banner" if flash_type == "error" else "green-banner"
+        return banner_html(banner_id, html.escape(flash_msg))
 
     # Priority 2: System-level PSU warning
     warn = get_psu_warning_text()
     if warn:
-        return (f"<div id='red-banner'>{html.escape(warn)}</div>",
-                "<div id='red-banner-spacer'></div>")
+        return banner_html("red-banner", html.escape(warn))
 
     # Priority 3: Licensing
     if LICENSE_CHECK and (not cpu_is_licensed()):
-        return ("<div id='red-banner'>This system is unlicensed</div>",
-                "<div id='red-banner-spacer'></div>")
+        return banner_html("red-banner", "This system is unlicensed")
 
     return ("", "")
 
@@ -498,7 +515,8 @@ def build_page_html(
     body_html   : content placed inside <div class="container"> after the
                   opening tag; callers are responsible for including BANNER_HTML
                   where needed
-    extra_css   : CSS appended to STYLE_CSS inside the <style> block
+    extra_css   : CSS appended after the shared theme.css <link> inside a small
+                  inline <style> block, for genuinely page-specific rules
     head_extra  : raw HTML injected after </style> and before </head>
                   (e.g. csrf_meta, page-specific <script> blocks)
     body_prefix : raw HTML injected after <body> and before <div class="container">
@@ -514,7 +532,12 @@ def build_page_html(
     remote_id    : when set, the nav bar renders in remote mode (pass the remote
                    appliance ID)
     """
-    style = STYLE_CSS + ("\n" + extra_css.strip() if extra_css.strip() else "")
+    # The shared theme lives only in nginx/static/theme.css, served by nginx as a
+    # static file rather than inlined here — see that file and the
+    # `location /static/` block in system/nginx/autostream-nginx.conf. The version
+    # query string cache-busts on every release without needing a shorter max-age.
+    style_link = f'<link rel="stylesheet" href="/static/theme.css?v={html.escape(get_app_version())}">'
+    extra_style = f'<style>{extra_css.strip()}</style>' if extra_css.strip() else ""
     nav = build_nav_bar_html(active_tab, service_warn=service_warn, remote_id=remote_id) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
     theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
@@ -522,7 +545,8 @@ def build_page_html(
         f'<!DOCTYPE html><html lang="en"{theme_attr}>'
         f'<head><meta charset="utf-8">{VIEWPORT_META}'
         f'<title>{html.escape(title)}</title>'
-        f'<style>{style}</style>'
+        f'{style_link}'
+        f'{extra_style}'
         f'{head_extra}'
         f'</head>'
         f'<body{body_cls}>{lic_html}{lic_spacer}'
