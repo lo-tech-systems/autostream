@@ -147,6 +147,25 @@ class TestResolveBackendCache:
 
         assert probe_called["n"] > 0
 
+    def test_ensure_builtin_backends_registered_repopulates_cleared_registry(self):
+        """ensure_builtin_backends_registered() must re-register builtins even
+        when the modules were already imported earlier and the registry was
+        cleared afterward (e.g. by a test fixture snapshot/restore) — a bare
+        re-import is a no-op in that case since Python caches modules."""
+        import autostream_owntone  # noqa: F401
+        import autostream_owntone_mini  # noqa: F401
+
+        saved = dict(ap.REGISTRY._backend_classes)
+        try:
+            ap.REGISTRY._backend_classes.clear()
+            ap.ensure_builtin_backends_registered()
+            ids = set(ap.REGISTRY.backend_ids())
+            assert ap.BACKEND_OWNTONE in ids
+            assert ap.BACKEND_OWNTONE_MINI in ids
+        finally:
+            ap.REGISTRY._backend_classes.clear()
+            ap.REGISTRY._backend_classes.update(saved)
+
 
 # ---------------------------------------------------------------------------
 # ensure_audio_fifo

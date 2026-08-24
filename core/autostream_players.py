@@ -454,10 +454,24 @@ def ensure_builtin_backends_registered() -> None:
 
     # Imported lazily to avoid circular imports during module initialization.
     try:
-        import autostream_owntone  # noqa: F401
-        import autostream_owntone_mini  # noqa: F401
+        import autostream_owntone
+        import autostream_owntone_mini
     except ImportError:
         logging.exception("Failed to import built-in backend modules")
+        return
+
+    # These modules register themselves as a side effect of being imported
+    # (REGISTRY.register(...) at module bottom), which only runs the first
+    # time the module is imported. If something later clears REGISTRY (e.g.
+    # a test fixture that snapshots/restores it), re-importing here is a
+    # no-op because the module is already in sys.modules, leaving the
+    # registry permanently empty. Re-register explicitly so this function
+    # actually "ensures" registration rather than assuming import ran once.
+    registered = set(REGISTRY.backend_ids())
+    if BACKEND_OWNTONE not in registered:
+        REGISTRY.register(autostream_owntone.OwnToneBackend)
+    if BACKEND_OWNTONE_MINI not in registered:
+        REGISTRY.register(autostream_owntone_mini.OwnToneMiniBackend)
 
 
 def create_backend(backend_id: str, *args, **kwargs) -> PlayerBackend:
