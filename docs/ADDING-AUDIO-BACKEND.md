@@ -251,6 +251,9 @@ mode controls for outputs served by this backend.
 
 Normalized settings currently defined in `autostream_players.py`:
 
+- `SETTING_BUFFERED_AUDIO_ENABLED`
+- `SETTING_DEVICE_REMOVAL_GRACE_PERIOD`
+- `SETTING_IPV6`
 - `SETTING_LOG_LEVEL`
 - `SETTING_PIPE_AUTOSTART`
 - `SETTING_PIPE_PATH`
@@ -259,7 +262,7 @@ Normalized settings currently defined in `autostream_players.py`:
 - `SETTING_RESAMPLE_QUALITY`
 - `SETTING_START_BUFFER_MS`
 - `SETTING_UNCOMPRESSED_ALAC`
-- `SETTING_IPV6`
+- `SETTING_USER_AGENT`
 
 If your backend supports any of these, implement:
 
