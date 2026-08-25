@@ -698,7 +698,7 @@ def parse_config(
             general_d.get("minimum_playback_seconds", DEFAULT_MINIMUM_PLAYBACK_SECONDS)
         ),
         # Fixed appliance path: any value carried in the config is ignored, and
-        # autostream_migrate.py rewrites it. See FIFO_PATH.
+        # the installer's settings directives rewrite it. See FIFO_PATH.
         fifo_path=FIFO_PATH,
         mdns_grace_period_seconds=normalize_mdns_grace_period_seconds(
             general_d.get("mdns_grace_period_seconds", DEFAULT_MDNS_GRACE_PERIOD_SECONDS)

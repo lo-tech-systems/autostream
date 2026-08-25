@@ -25,8 +25,6 @@ import os
 import pwd
 import shutil
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -51,8 +49,6 @@ _DATA_FILES = [
 _AUTOSTREAM_SENTINEL = Path("/opt/autostream/autostream_webui.py")
 
 _DEFAULT_MDNS_GRACE_PERIOD_SECONDS = 120
-_MIN_MDNS_GRACE_PERIOD_SECONDS = 60
-_MAX_MDNS_GRACE_PERIOD_SECONDS = 900
 
 # Keep in step with FIFO_PATH in autostream_config.py. The FIFO moved off /tmp,
 # where it was subject to age-based cleanup, so any path an existing config
@@ -134,48 +130,6 @@ def _replace_json(path: Path, data: dict, dry_run: bool) -> None:
         except OSError:
             pass
         raise
-
-
-def _normalize_grace_seconds(value: object) -> int:
-    try:
-        seconds = int(value)  # type: ignore[arg-type]
-    except Exception:
-        return _DEFAULT_MDNS_GRACE_PERIOD_SECONDS
-    return max(_MIN_MDNS_GRACE_PERIOD_SECONDS, min(_MAX_MDNS_GRACE_PERIOD_SECONDS, seconds))
-
-
-def _read_backend_grace_period_seconds(config_data: dict) -> int:
-    base_url = str((config_data.get("owntone") or {}).get("base_url") or "http://localhost:3689").rstrip("/")
-    url = f"{base_url}/api/settings/player/device_removal_grace_period"
-    try:
-        with urllib.request.urlopen(url, timeout=2.0) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError, TimeoutError):
-        return _DEFAULT_MDNS_GRACE_PERIOD_SECONDS
-    if not isinstance(payload, dict):
-        return _DEFAULT_MDNS_GRACE_PERIOD_SECONDS
-    return _normalize_grace_seconds(payload.get("value"))
-
-
-def _ensure_mdns_grace_period(config_data: dict) -> bool:
-    general = config_data.setdefault("general", {})
-    if "mdns_grace_period_seconds" in general:
-        before = general.get("mdns_grace_period_seconds")
-        general["mdns_grace_period_seconds"] = _normalize_grace_seconds(
-            before
-        )
-        return general["mdns_grace_period_seconds"] != before
-    general["mdns_grace_period_seconds"] = _read_backend_grace_period_seconds(config_data)
-    return True
-
-
-def _ensure_fifo_path(config_data: dict) -> bool:
-    """Force general.fifo_path to the canonical path. Returns True if changed."""
-    general = config_data.setdefault("general", {})
-    if general.get("fifo_path") == _FIFO_PATH:
-        return False
-    general["fifo_path"] = _FIFO_PATH
-    return True
 
 
 def _set_ownership_mode(path: Path, uid: int, gid: int, mode: int, dry_run: bool) -> None:
@@ -422,19 +376,6 @@ def _migrate_autostream(dry_run: bool) -> None:
         return
 
     if new_exists and not old_exists:
-        try:
-            with open(_NEW_CFG, encoding="utf-8") as f:
-                config_data = json.load(f)
-            if not isinstance(config_data, dict):
-                config_data = {}
-            changed = _ensure_mdns_grace_period(config_data)
-            if _ensure_fifo_path(config_data):
-                LOG.info("Set general.fifo_path to %s in %s", _FIFO_PATH, _NEW_CFG)
-                changed = True
-            if changed:
-                _replace_json(_NEW_CFG, config_data, dry_run)
-        except Exception as exc:
-            LOG.warning("Could not seed general settings in %s: %s", _NEW_CFG, exc)
         LOG.info("Already migrated (new JSON config exists, old INI absent) — no layout change needed.")
         return
 
@@ -465,14 +406,6 @@ def _migrate_autostream(dry_run: bool) -> None:
             if not dry_run and _NEW_STATE.exists():
                 _set_ownership_mode(_NEW_STATE, uid, gid, 0o600, dry_run=False)
 
-        try:
-            with open(_NEW_CFG, encoding="utf-8") as f:
-                config_data = json.load(f)
-            if isinstance(config_data, dict) and _ensure_mdns_grace_period(config_data):
-                _replace_json(_NEW_CFG, config_data, dry_run)
-        except Exception as exc:
-            LOG.warning("Could not seed mDNS grace period in %s: %s", _NEW_CFG, exc)
-
         # Data-file moves are individually idempotent (skip if dst already exists).
         for _label, src, dst in _DATA_FILES:
             _move_file(src, dst, uid, gid, 0o600, dry_run)
@@ -498,7 +431,6 @@ def _migrate_autostream(dry_run: bool) -> None:
         sys.exit(1)
 
     config_data = _ini_to_config_json(cfg)
-    _ensure_mdns_grace_period(config_data)
     state_data  = _ini_to_state_json(cfg)
 
     # Create directories

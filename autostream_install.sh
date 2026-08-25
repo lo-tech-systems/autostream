@@ -898,7 +898,6 @@ deploy_phase() {
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"              "${LIBEXEC_DIR}/autostream_admin"              0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"       "${LIBEXEC_DIR}/autostream_update_retry"       0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_storage_guard"      "${LIBEXEC_DIR}/autostream_storage_guard"      0755 root root
-  install_text_linux "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"              "${LIBEXEC_DIR}/autostream_migrate.py"         0755 root root
 
   update_progress "Updating Python packages..." 57
   info "Creating/updating Python virtual environment"
@@ -930,7 +929,11 @@ configure_phase() {
   validate_sudoers
 
   info "Running config layout migration (idempotent)"
-  python3 "${LIBEXEC_DIR}/autostream_migrate.py"
+  python3 "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"
+
+  update_progress "Applying settings directives..." 70
+  info "Applying settings directives"
+  python3 "${AUTOSTREAM_DIR}/tools/autostream_settings_apply.py" --manifest "${AUTOSTREAM_DIR}/installer/settings-directives.json"
 
   remove_legacy_default_nowplaying_hints
 

@@ -24,6 +24,9 @@ REPO_ROOT = Path(__file__).parent.parent
 _tools = str(REPO_ROOT / "tools")
 if _tools not in sys.path:
     sys.path.insert(0, _tools)
+_core = str(REPO_ROOT / "core")
+if _core not in sys.path:
+    sys.path.insert(0, _core)
 
 # pwd is Unix-only; stub it before importing the module under test so tests
 # run on any platform. The module binds the name at import time, so the
@@ -689,3 +692,29 @@ class TestCLIDefaults:
     def test_main_returns_nonzero_on_engine_error(self, tmp_path):
         rc = m.main(["--manifest", str(tmp_path / "nope.json")])
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# The manifest actually shipped with releases
+# ---------------------------------------------------------------------------
+
+class TestShippedManifest:
+
+    _MANIFEST_PATH = REPO_ROOT / "installer" / "settings-directives.json"
+
+    def test_shipped_manifest_validates(self, tmp_path):
+        assert _run(tmp_path, [self._MANIFEST_PATH], check_only=True) == 0
+
+    def test_fifo_directive_matches_config_constant(self):
+        import autostream_config
+
+        directives = json.loads(self._MANIFEST_PATH.read_text())["directives"]
+        directive = next(d for d in directives if d["key"] == "general.fifo_path")
+        assert directive["value"] == autostream_config.FIFO_PATH
+
+    def test_mdns_directive_matches_config_constant(self):
+        import autostream_config
+
+        directives = json.loads(self._MANIFEST_PATH.read_text())["directives"]
+        directive = next(d for d in directives if d["key"] == "general.mdns_grace_period_seconds")
+        assert directive["value"] == autostream_config.DEFAULT_MDNS_GRACE_PERIOD_SECONDS

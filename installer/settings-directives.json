@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "directives": [
+    {
+      "target": "autostream",
+      "key": "general.fifo_path",
+      "mode": "overwrite",
+      "value": "/run/autostream-pipes/autostream.fifo",
+      "reason": "old path is subject to tmp cleanup"
+    },
+    {
+      "target": "autostream",
+      "key": "general.mdns_grace_period_seconds",
+      "mode": "ensure",
+      "value": 120
+    }
+  ]
+}
