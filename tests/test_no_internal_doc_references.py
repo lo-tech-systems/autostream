@@ -1,27 +1,27 @@
-"""Repo-wide guard: shipped/tracked files must not leak internal planning
-references.
+"""Repo-wide guard: shipped/tracked files must not reference files or
+labels that mean nothing outside this repository.
 
 Scans every tracked file under the directories that ship or are exercised
 in CI (core/, nginx/, system/, installer/, supervisor/, scripts/, tools/,
-platform/, dial/, tests/) for three categories of internal-planning leak:
+platform/, dial/, tests/) for three categories of stray reference:
 
-  1. Paths into the gitignored docs/working/ tree (a local, unpublished
-     planning area -- anything under it is invisible to anyone who doesn't
+  1. Paths into the gitignored docs/working/ tree (a local scratch area --
+     anything under it is invisible to anyone who doesn't
      already have the same working tree, so a comment citing a path there
      is a broken/misleading reference for everyone else).
-  2. Internal design-doc filenames of the shape "<number>-<slug>.md" (or a
-     bare "design doc <number>" / "gap doc <number>" citation), which name
-     documents that live in that same gitignored tree.
-  3. Work-package/tier/batch identifiers (``WP<n>[a-c]``, ``T<n>.<n>``,
-     ``Batch <n>``) used as citations to an internal planning item rather
-     than as product-facing terminology.
+  2. Filenames of the shape "<number>-<slug>.md" (or a bare
+     "design doc <number>" / "gap doc <number>" citation), which name
+     documents that live in that same untracked tree.
+  3. Tracking labels (``WP<n>[a-c]``, ``T<n>.<n>``, ``Batch <n>``) used
+     as citations to something outside the repository rather than as
+     product-facing terminology.
 
 The list of the ~29 pre-existing ``test_wp*.py`` / ``test_p*.py`` files is
 grandfathered out of the *filename* check and the identifier-content check
-(they predate this guard and are named/labelled after an older, unrelated
-work-item numbering), but their contents are still scanned for docs/working
-paths and design-doc-filename citations, since neither of those is ever
-legitimate in a shipped file regardless of age.
+(they predate this guard and are named after an older, unrelated
+numbering), but their contents are still scanned for docs/working paths
+and numbered-doc citations, since neither of those is ever legitimate in a
+shipped file regardless of age.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ _WP_FILENAME_RE = re.compile(r"^test_(wp|p)\d", re.IGNORECASE)
 _DOCS_WORKING_RE = re.compile(r"docs/working/\S")
 _DESIGN_DOC_FILENAME_RE = re.compile(r"\b\d{1,3}-[a-zA-Z][\w\-]*\.md\b")
 # Matches numbered AND unnumbered citations ("design doc 13", "the design
-# doc's section 6", "gap doc", "gap 35"): a planning document is being
+# doc's section 6", "gap doc", "gap 35"): a non-repository document is being
 # cited either way, and the unnumbered form slipped past an earlier,
 # digit-requiring version of this pattern.
 _DESIGN_DOC_CITATION_RE = re.compile(
@@ -63,9 +63,9 @@ _BATCH_ID_RE = re.compile(r"\bBatch\s+\d+\b")
 # (pattern, category, always_checked_even_for_grandfathered_files)
 _CHECKS = (
     (_DOCS_WORKING_RE, "docs/working/ path", True),
-    (_DESIGN_DOC_FILENAME_RE, "internal design-doc filename", True),
-    (_DESIGN_DOC_CITATION_RE, "internal design-doc citation", True),
-    (_WP_ID_RE, "work-package identifier", False),
+    (_DESIGN_DOC_FILENAME_RE, "numbered-doc filename", True),
+    (_DESIGN_DOC_CITATION_RE, "numbered-doc citation", True),
+    (_WP_ID_RE, "tracking label", False),
     (_T_NUMBER_RE, "tier/task identifier", False),
     (_BATCH_ID_RE, "batch identifier", False),
 )
@@ -113,7 +113,7 @@ def _is_grandfathered(rel_path: str) -> bool:
 
 
 class TestNoInternalDocReferences:
-    def test_no_gitignored_or_planning_references_in_shipped_files(self):
+    def test_no_gitignored_or_stray_references_in_shipped_files(self):
         tracked = _tracked_files()
         assert tracked, "git ls-files returned nothing -- scan globs are wrong"
 
@@ -144,10 +144,10 @@ class TestNoInternalDocReferences:
                         )
 
         assert not violations, (
-            "Internal planning references found in tracked/shipped files "
-            "(docs/working/ paths, design-doc filenames or citations, and "
+            "Stray local-only references found in tracked/shipped files "
+            "(docs/working/ paths, numbered-doc filenames or citations, and "
             "WP/tier/batch identifiers must not appear outside the "
-            "gitignored planning tree):\n" + "\n".join(sorted(violations))
+            "gitignored local tree):\n" + "\n".join(sorted(violations))
         )
 
     def test_grandfathered_filename_set_is_still_test_only(self):
