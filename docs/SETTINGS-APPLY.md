@@ -49,7 +49,8 @@ Each directive names a `target` (`autostream` or `owntone-mini`), a `key`
 
 `from_before` (optional) gates a directive to fire only when the
 previously installed release is older than the given tag; it compares
-against the tag recorded by the prior install/update. It is skipped
+against the tag recorded by the prior install/update, and a pre-release tag
+(e.g. `0.6.0-beta.1`) orders below its own final release. It is skipped
 (never fires) on fresh installs and on installs where the prior release
 tag can't be trusted (untagged/source builds).
 

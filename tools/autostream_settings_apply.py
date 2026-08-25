@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import pwd
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -77,23 +78,43 @@ _ALLOWED_DIRECTIVE_FIELDS = {"target", "key", "mode", "value", "to", "reason", "
 _ALLOWED_TARGETS = {_TARGET_AUTOSTREAM, _TARGET_OWNTONE_MINI, _TARGET_VIBRA_MINI}
 _ALLOWED_MODES = {"ensure", "overwrite", "delete", "rename"}
 
+# A device installed from a pre-release build records that build's own tag
+# (e.g. "0.6.0-beta.1") in install-state.env, so from_before gating has to
+# order those tags too, not just final releases. This mirrors the precedence
+# supervisor/autostream_update_support.py's _semver_re/_version_key use to
+# rank releases for the updater: MAJOR.MINOR.PATCH, optionally followed by
+# -(alpha|beta|rc)[.N]; phases rank alpha < beta < rc < final, and within a
+# phase the optional .N number breaks ties (absent N sorts as 0).
+_DOTTED_TAG_RE = re.compile(
+    r"^(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)(?:\.(\d+))?)?$"
+)
+_PHASE_RANK = {"alpha": 1, "beta": 2, "rc": 3}
+
 
 def _parse_dotted_tag(tag: Optional[str]) -> Optional[Tuple[int, ...]]:
-    """Parse a dotted-numeric version tag into a comparable tuple.
+    """Parse a dotted version tag into a tuple ordering it against others.
+
+    Accepts "MAJOR.MINOR.PATCH" and "MAJOR.MINOR.PATCH-PHASE[.N]" (PHASE one
+    of alpha/beta/rc). Returns a 6-element tuple
+    (major, minor, patch, final_rank, phase_rank, phase_n) where
+    final_rank=1 for a plain numeric tag (so it sorts above any pre-release
+    of the same major.minor.patch) and 0 for a pre-release, ordered
+    alpha < beta < rc within that lower band.
 
     Returns None for anything that cannot ground a trustworthy comparison:
     absent, empty, the literal sentinels a fresh/source install records, or
-    a component that is not purely numeric.
+    a tag that doesn't match the expected grammar.
     """
     if not tag or tag in ("test", "unknown"):
         return None
-    parts = tag.split(".")
-    out: List[int] = []
-    for part in parts:
-        if not part.isdigit():
-            return None
-        out.append(int(part))
-    return tuple(out) if out else None
+    m = _DOTTED_TAG_RE.match(tag)
+    if not m:
+        return None
+    major, minor, patch = (int(m.group(i)) for i in (1, 2, 3))
+    phase = m.group(4)
+    if phase is None:
+        return (major, minor, patch, 1, 0, 0)
+    return (major, minor, patch, 0, _PHASE_RANK[phase], int(m.group(5) or 0))
 
 
 def _validate_key_grammar(target: str, key: str, where: str) -> None:
@@ -174,7 +195,8 @@ def _validate_directive(raw: Any, manifest_path: Path, index: int) -> Dict[str, 
     if from_before is not None:
         if not isinstance(from_before, str) or _parse_dotted_tag(from_before) is None:
             raise EngineError(
-                f"{where}: 'from_before' must be a dotted-numeric version string"
+                f"{where}: 'from_before' must be a MAJOR.MINOR.PATCH version "
+                "string, optionally with an -alpha/-beta/-rc[.N] suffix"
             )
 
     return dict(raw)

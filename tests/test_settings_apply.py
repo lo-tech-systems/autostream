@@ -214,6 +214,11 @@ class TestSchemaValidation:
         with pytest.raises(m.EngineError, match="from_before"):
             _run(tmp_path, [path])
 
+    def test_from_before_prerelease_accepted(self, tmp_path):
+        d = _directive(from_before="0.6.0-beta.1")
+        path = _manifest_path(tmp_path, "m.json", [d])
+        assert _run(tmp_path, [path]) == 0
+
     def test_malformed_manifest_json_rejected(self, tmp_path):
         path = tmp_path / "m.json"
         path.write_text("{not json", encoding="utf-8")
@@ -377,6 +382,57 @@ class TestFromBeforeGating:
         path = _manifest_path(tmp_path, "m.json", [d])
         _run(tmp_path, [path], owntone=owntone, state=tmp_path / "absent.env")
         assert json.loads(owntone.read_text())["server_name"] == "hifi"
+
+    def test_gate_fires_when_old_tag_is_beta_of_gate_version(self, tmp_path):
+        # A device installed from a pre-release build records that build's
+        # own tag; it must not be treated as untrustworthy just because it
+        # carries a -beta.N suffix.
+        state = self._state(tmp_path, "0.6.0-beta.1")
+        owntone = tmp_path / "owntone-settings.json"
+        d = _directive(mode="ensure", key="server_name", value="hifi", from_before="0.6.0")
+        path = _manifest_path(tmp_path, "m.json", [d])
+        _run(tmp_path, [path], owntone=owntone, state=state)
+        assert json.loads(owntone.read_text())["server_name"] == "hifi"
+
+    def test_gate_skips_when_old_tag_is_final_release_of_gate_version(self, tmp_path):
+        # The final 0.6.0 release is not older than its own beta -- confirms
+        # a pre-release orders strictly below its final release.
+        state = self._state(tmp_path, "0.6.0")
+        owntone = tmp_path / "owntone-settings.json"
+        d = _directive(mode="ensure", key="server_name", value="hifi", from_before="0.6.0-beta.1")
+        path = _manifest_path(tmp_path, "m.json", [d])
+        _run(tmp_path, [path], owntone=owntone, state=state)
+        assert not owntone.exists()
+
+    def test_gate_fires_across_beta_to_beta(self, tmp_path):
+        state = self._state(tmp_path, "0.6.0-beta.1")
+        owntone = tmp_path / "owntone-settings.json"
+        d = _directive(mode="ensure", key="server_name", value="hifi", from_before="0.6.0-beta.2")
+        path = _manifest_path(tmp_path, "m.json", [d])
+        _run(tmp_path, [path], owntone=owntone, state=state)
+        assert json.loads(owntone.read_text())["server_name"] == "hifi"
+
+    def test_gate_orders_alpha_before_beta_before_rc_before_final(self, tmp_path):
+        for older, newer in (
+            ("0.6.0-alpha.1", "0.6.0-beta.1"),
+            ("0.6.0-beta.1", "0.6.0-rc.1"),
+            ("0.6.0-rc.1", "0.6.0"),
+        ):
+            state = self._state(tmp_path, older)
+            owntone = tmp_path / "owntone-settings.json"
+            d = _directive(mode="ensure", key="server_name", value="hifi", from_before=newer)
+            path = _manifest_path(tmp_path, "m.json", [d])
+            _run(tmp_path, [path], owntone=owntone, state=state)
+            assert json.loads(owntone.read_text())["server_name"] == "hifi", (older, newer)
+            owntone.unlink()
+
+    def test_gate_skips_for_garbage_prerelease_tag(self, tmp_path):
+        state = self._state(tmp_path, "0.6.0-nightly.1")
+        owntone = tmp_path / "owntone-settings.json"
+        d = _directive(mode="ensure", key="server_name", value="hifi", from_before="0.6.0")
+        path = _manifest_path(tmp_path, "m.json", [d])
+        _run(tmp_path, [path], owntone=owntone, state=state)
+        assert not owntone.exists()
 
 
 # ---------------------------------------------------------------------------
