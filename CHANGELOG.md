@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.6.0-beta.1
 
 - new: release-shipped settings changes are now applied automatically on
   every install and update — new defaults and one-shot fixes take effect
