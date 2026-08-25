@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "directives": [
+    {
+      "target": "owntone-mini",
+      "key": "start_buffer_ms",
+      "mode": "ensure",
+      "value": 1000,
+      "reason": "example: fills a fresh install's default without disturbing a value the user already set"
+    },
+    {
+      "target": "autostream",
+      "key": "general.mdns_grace_period_seconds",
+      "mode": "overwrite",
+      "value": 120,
+      "reason": "example: forces every device onto the new default regardless of prior value"
+    },
+    {
+      "target": "owntone-mini",
+      "key": "device_removal_grace_period",
+      "mode": "delete",
+      "reason": "example: removes the override so owntone-mini's own default-healing re-materialises it"
+    },
+    {
+      "target": "autostream",
+      "key": "general.legacy_fifo_path",
+      "to": "general.fifo_path_v2",
+      "mode": "rename",
+      "reason": "example: moves a key that was renamed in code; no-op once already migrated, hard error if fifo_path_v2 already exists"
+    },
+    {
+      "target": "autostream",
+      "key": "general.startup_banner_enabled",
+      "mode": "overwrite",
+      "value": false,
+      "reason": "example: from_before gate limits a one-shot change to devices upgrading from before it existed",
+      "from_before": "0.6.0"
+    }
+  ]
+}

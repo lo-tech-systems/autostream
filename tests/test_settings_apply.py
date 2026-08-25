@@ -718,3 +718,24 @@ class TestShippedManifest:
         directives = json.loads(self._MANIFEST_PATH.read_text())["directives"]
         directive = next(d for d in directives if d["key"] == "general.mdns_grace_period_seconds")
         assert directive["value"] == autostream_config.DEFAULT_MDNS_GRACE_PERIOD_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# The documentation example manifest
+# ---------------------------------------------------------------------------
+
+class TestExampleManifest:
+
+    _MANIFEST_PATH = REPO_ROOT / "installer" / "settings-directives.example.json"
+
+    def test_example_manifest_validates(self, tmp_path):
+        assert (
+            _run(
+                tmp_path,
+                [self._MANIFEST_PATH],
+                check_only=True,
+                autostream=tmp_path / "autostream.json",
+                owntone=tmp_path / "owntone-settings.json",
+            )
+            == 0
+        )

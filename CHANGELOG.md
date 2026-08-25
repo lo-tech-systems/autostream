@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- new: release-shipped settings changes are now applied automatically on
+  every install and update — new defaults and one-shot fixes take effect
+  without any manual step, while values you've already changed yourself
+  are left alone unless a change is explicitly forced
 - new: the AirPlay User-Agent string is now settable from the OwnTone setup
   page — useful when diagnosing a receiver that treats the appliance
   differently from an Apple sender. Clearing the field restores the default,
