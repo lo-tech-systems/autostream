@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- fix: HomePods on OS 27 refused playback (403) because they now reject
+  senders without an AirPlay-style User-Agent — updates set the OwnTone
+  user-agent to a compatible value automatically. To use a different value,
+  set it on the OwnTone setup page after updating
+
 ## Version 0.6.0-beta.1
 
 - new: release-shipped settings changes are now applied automatically on

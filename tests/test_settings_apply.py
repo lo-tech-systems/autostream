@@ -775,6 +775,22 @@ class TestShippedManifest:
         directive = next(d for d in directives if d["key"] == "general.mdns_grace_period_seconds")
         assert directive["value"] == autostream_config.DEFAULT_MDNS_GRACE_PERIOD_SECONDS
 
+    def test_user_agent_directive_forces_airplay_value(self):
+        directives = json.loads(self._MANIFEST_PATH.read_text())["directives"]
+        directive = next(d for d in directives if d["key"] == "user_agent")
+        assert directive["target"] == "owntone-mini"
+        assert directive["mode"] == "overwrite"
+        assert directive["value"] == "AirPlay/420"
+
+    def test_user_agent_directive_validates_check_only(self, tmp_path):
+        directive_manifest = tmp_path / "user-agent-only.json"
+        directives = json.loads(self._MANIFEST_PATH.read_text())["directives"]
+        directive = next(d for d in directives if d["key"] == "user_agent")
+        directive_manifest.write_text(
+            json.dumps({"version": 1, "directives": [directive]}), encoding="utf-8"
+        )
+        assert _run(tmp_path, [directive_manifest], check_only=True) == 0
+
 
 # ---------------------------------------------------------------------------
 # The documentation example manifest

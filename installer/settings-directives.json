@@ -13,6 +13,13 @@
       "key": "general.mdns_grace_period_seconds",
       "mode": "ensure",
       "value": 120
+    },
+    {
+      "target": "owntone-mini",
+      "key": "user_agent",
+      "mode": "overwrite",
+      "value": "AirPlay/420",
+      "reason": "HomePod OS 27 rejects senders without an AirPlay/* User-Agent (403 on GET /info)"
     }
   ]
 }
