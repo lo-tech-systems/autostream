@@ -1035,7 +1035,7 @@ bool AudioMonitor::stop_input_with_teardown(int i)
     // active input's session -- exactly the bug the fix is designed to prevent.
     const bool was_active = ch->allow_capture_enabled();
 
-    // D12: stop_input on the repeat feature's current origin
+    // stop_input on the repeat feature's current origin
     // input discards the buffer and cancels any active replay, belt and
     // braces alongside Python's own reload-path disarm+discard. No-op if
     // this input is not the origin (RepeatController checks internally).

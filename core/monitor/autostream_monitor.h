@@ -1321,7 +1321,7 @@ struct RepeatStatus
     std::string codec                = "auto";   // configured policy: auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm
     int         target_minutes       = kDefaultRepeatTargetMinutes;   // target-duration goal
     long        max_recording_seconds = 0;
-    // The requested-vs-delivered honesty surface (design D5): what was
+    // The requested-vs-delivered honesty surface: what was
     // ASKED for, in whole minutes, at the moment the arena was (re)planned --
     // i.e. _target_minutes_cfg. Companion to max_recording_seconds above,
     // which is what the arena actually DELIVERS: below the codec ladder's
@@ -1695,7 +1695,7 @@ struct RepeatDecision
 // │            │   next CaptureStopped)        │                                │
 // │ Hold       │ Apply: BeginReplay            │ NoOp                          │
 // │ Replaying  │ NoOp (already armed)          │ Apply: state->FadingOut,      │
-// │            │                                │   RequestFadeOut (D5)         │
+// │            │                                │   RequestFadeOut              │
 // │ FadingOut  │ NoOp                           │ NoOp (fade in flight          │
 // │            │                                │   continues untouched)        │
 // │ Pending    │ NoOp                           │ NoOp                          │
@@ -2275,7 +2275,7 @@ public:
     // {"type":"set_repeat_armed",...} handler. Setting armed=true
     // while HOLD (finished recording, idle) starts replay immediately.
     // Setting armed=false while REPLAYING triggers the kFadeSeconds disarm fade
-    // (D5); the buffer is retained (HOLD) afterwards and remains re-armable.
+    // the buffer is retained (HOLD) afterwards and remains re-armable.
     // Returns "" always (no rejectable inputs beyond the bool itself).
     std::string set_armed(bool armed);
 
@@ -2354,7 +2354,7 @@ public:
 
     // Called by InputChannel on stop_input() of the current origin input
     // (reload/teardown path): discards the buffer and cancels any
-    // active replay unconditionally, no fade (D12).
+    // active replay unconditionally, no fade.
     void notify_input_stopped(int input_index);
 
     // Called by RepeatRecorder's worker thread for each drained block.
@@ -2475,7 +2475,7 @@ private:
     // used to occupy) whenever enabled() but no arena exists yet (plan.codec
     // == Unavailable && !_buffer.fixed_capacity()). See the .cpp definition
     // for the settle-window/meminfo-read/per-chunk-floor-check/early-stop/
-    // arena-ready-kick design (D3).
+    // arena-ready-kick design.
     void maybe_build_arena();
 
     // Session-start-without-teardown: _buffer.reset_cursors() + the same
@@ -2714,7 +2714,7 @@ private:
     // planned capacity (see arena_ready_locked()'s own comment). Only ever
     // written by maybe_build_arena() (the build loop) and
     // teardown_arena_locked() (resets to Unavailable); read by
-    // perform_pending_start() (session start), get_status() (D5), and
+    // perform_pending_start() (session start), get_status(), and
     // maybe_build_arena() itself (to know whether a build is even needed).
     ArenaPlan    _arena_plan{CodecChoice::Unavailable, 0, 0};
 
