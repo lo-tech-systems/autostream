@@ -10,7 +10,7 @@
 //   - CodecChoice / pick_codec_for_target() / byte_rate_for() — the codec
 //     ladder that picks recording quality to guarantee a target duration in
 //     free RAM.
-//   - ArenaPlan / plan_arena() — the fixed-arena sizing formula (D1).
+//   - ArenaPlan / plan_arena() — the fixed-arena sizing formula.
 //   - parse_meminfo_text() — a pure parser for /proc/meminfo TEXT; the file
 //     I/O wrapper that reads the real file lives in the impure .cpp.
 //   - SilenceTrimAccountant — byte-accounting helper for the end-of-recording
@@ -821,7 +821,7 @@ struct ArenaPlan
     CodecChoice codec;             // Unavailable => the feature cannot run at all
     size_t      arena_bytes;       // whole chunks; 0 when codec == Unavailable
     long        capacity_seconds;  // arena_bytes / byte_rate_for(codec, ...) -- the
-                                    // REPORTED, truthfully-delivered duration (D5)
+                                    // REPORTED, truthfully-delivered duration
 };
 
 // Sizes a fixed arena for the "repeat" feature.
@@ -869,7 +869,7 @@ struct ArenaPlan
 //     integer division, so this is the EXACT number of whole seconds the
 //     committed arena_bytes guarantees, never rounded up past what actually
 //     fits. This, alongside the caller's original target_minutes
-//     (reported separately as requested_minutes -- D5), is the
+//     (reported separately as requested_minutes), is the
 //     requested-vs-delivered honesty surface the whole redesign exists for.
 inline ArenaPlan plan_arena(long effective_available_mib, int target_minutes,
                              long sample_rate_hz, CodecChoice pinned_codec,

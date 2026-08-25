@@ -1733,7 +1733,7 @@ void RepeatController::notify_input_stopped(int input_index)
         // re-validation (`_state != Recording || !_encoder`) would silently
         // drop that trailing audio the instant _encoder is reset here. A
         // stop_input on the origin input mid-recording (exactly the
-        // D12/reload-teardown case this function exists for) gets the same
+        // reload-teardown case this function exists for) gets the same
         // treatment: the recording is still discarded either way, but only
         // after giving the worker a last bounded chance to finish encoding
         // blocks that already passed recording_wanted()'s gate before they
@@ -1959,7 +1959,7 @@ RepeatStatus RepeatController::get_status() const
     s.codec   = _codec_cfg;
     s.target_minutes = _target_minutes_cfg;
     // requested_minutes: the honesty-surface companion to
-    // max_recording_seconds below (design D5) -- what was asked for, not
+    // max_recording_seconds below -- what was asked for, not
     // what the arena delivers. Only meaningful while the feature is
     // enabled; 0 disabled, matching max_recording_seconds's own
     // enabled-only convention.
@@ -2014,8 +2014,9 @@ RepeatStatus RepeatController::get_status() const
         ? static_cast<double>(s.recording.bytes) / static_cast<double>(rate) : 0.0;
 
     // Replay block reflects reality (ReplayEngine's own snapshot) rather than
-    // being derived purely from _state, so that D9's atomicity property holds
-    // even in the single-poll window right after begin_replay_locked() sets
+    // being derived purely from _state, so that a single poll of get_status()
+    // never observes a torn, half-transitioned snapshot -- even in the
+    // single-poll window right after begin_replay_locked() sets
     // _state = Replaying but before the replay thread has actually opened its
     // fd: get_status() reports replay.active=true from the moment the state
     // transition happens (this function itself holds _repeat_mutex, so it can
@@ -2281,7 +2282,7 @@ ReplayEngine::open_fifo_for_session(ReplaySessionCtx& ctx, const std::string& pa
         // out -- end the session immediately rather than spinning forever
         // ignoring the request: checking Abort alone here would leave a
         // disarm sent while no reader is attached to the FIFO unable to
-        // unblock replay (D5/D6 verification).
+        // unblock replay.
         Cmd cmd = _pending_cmd.load();
         if (cmd == Cmd::Abort || cmd == Cmd::FadeOut || _stop_requested.load(std::memory_order_relaxed))
         {
