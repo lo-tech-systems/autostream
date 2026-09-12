@@ -328,12 +328,12 @@ static void test_u6_pick_codec_for_target()
               "U6: usable fits 256k but not 320k -> Mp2_256 (highest that fits)");
     }
 
-    // ── Worked example: 214 MiB available, 80 min target, 48k. usable =
-    //    214-64 = 150 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.1 MiB
+    // ── Worked example: 246 MiB available, 80 min target, 48k. usable =
+    //    246-96 = 150 MiB; 384k needs ~220.5 MiB (no), 320k needs ~183.1 MiB
     //    (no), 256k needs ~146.5 MiB (yes) -> Mp2_256. ──
     {
-        CHECK(pick_codec_for_target(214, kTarget80, 48000) == CodecChoice::Mp2_256,
-              "U6: worked example -- 214 MiB available, 80 min target, 48k -> Mp2_256");
+        CHECK(pick_codec_for_target(246, kTarget80, 48000) == CodecChoice::Mp2_256,
+              "U6: worked example -- 246 MiB available, 80 min target, 48k -> Mp2_256");
     }
 
     // ── 160 kbps hard floor: usable RAM too small even for 160k's target
@@ -562,6 +562,78 @@ static void test_plan_arena()
               "plan_arena: negative available_mib -> Unavailable, not a crash or UB");
         CHECK(plan_negative.arena_bytes == 0 && plan_negative.capacity_seconds == 0,
               "plan_arena: negative available_mib -> arena_bytes and capacity_seconds both 0");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// U20 — a 462 MiB board at the 96 MiB free-RAM floor never refuses
+//
+// MemAvailable readings spanning the range a 462 MiB board can actually
+// report at boot, using the production chunk size (RepeatBuffer::
+// kDefaultChunkBytes, 16 MiB) and the default 80 min target -- unlike
+// test_plan_arena()'s hand-tractable test chunk sizes above, this exercises
+// the real arena granularity plan_arena() ships with.
+// ---------------------------------------------------------------------------
+
+static void test_u20_pi_462mib_at_96mib_floor()
+{
+    const int target_minutes = 80;
+    const long sample_rate_hz = 48000;
+
+    // available_mib=224: usable = 224-96 = 128 MiB (134,217,728 B). Mp2_224's
+    // 80 min footprint (134,400,000 B) just misses; Mp2_192's (115,200,000 B)
+    // fits -> Mp2_192, rounded UP to 7 whole 16 MiB chunks (117,440,512 B,
+    // since the 7th chunk still fits usable), capacity_seconds =
+    // 117,440,512 / 24,000 = 4893 (81.55 min, at/past the 80 min ask).
+    {
+        ArenaPlan plan = plan_arena(224, target_minutes, sample_rate_hz,
+                                     CodecChoice::Unavailable /*auto*/);
+        CHECK(plan.codec == CodecChoice::Mp2_192,
+              "U20: 224 MiB available -> Mp2_192");
+        CHECK(plan.arena_bytes == 7u * RepeatBuffer::kDefaultChunkBytes,
+              "U20: 224 MiB available -> 7 whole 16 MiB chunks");
+        CHECK(plan.capacity_seconds == 4893,
+              "U20: 224 MiB available -> 4893 s capacity");
+    }
+
+    // available_mib=240: usable = 240-96 = 144 MiB (150,994,944 B). Mp2_256's
+    // footprint (153,600,000 B) misses; Mp2_224's (134,400,000 B) fits ->
+    // Mp2_224, rounded UP to 9 whole chunks (150,994,944 B -- exactly all of
+    // usable), capacity_seconds = 150,994,944 / 28,000 = 5392 (89.87 min).
+    {
+        ArenaPlan plan = plan_arena(240, target_minutes, sample_rate_hz,
+                                     CodecChoice::Unavailable);
+        CHECK(plan.codec == CodecChoice::Mp2_224,
+              "U20: 240 MiB available -> Mp2_224");
+        CHECK(plan.arena_bytes == 9u * RepeatBuffer::kDefaultChunkBytes,
+              "U20: 240 MiB available -> 9 whole 16 MiB chunks");
+        CHECK(plan.capacity_seconds == 5392,
+              "U20: 240 MiB available -> 5392 s capacity");
+    }
+
+    // available_mib=246: usable = 246-96 = 150 MiB (157,286,400 B). Mp2_256's
+    // footprint (153,600,000 B) fits -> Mp2_256, 9 whole chunks (a 10th would
+    // overshoot usable, so no round-up here), capacity_seconds =
+    // 150,994,944 / 32,000 = 4718 (78.63 min).
+    {
+        ArenaPlan plan = plan_arena(246, target_minutes, sample_rate_hz,
+                                     CodecChoice::Unavailable);
+        CHECK(plan.codec == CodecChoice::Mp2_256,
+              "U20: 246 MiB available -> Mp2_256");
+        CHECK(plan.arena_bytes == 9u * RepeatBuffer::kDefaultChunkBytes,
+              "U20: 246 MiB available -> 9 whole 16 MiB chunks");
+        CHECK(plan.capacity_seconds == 4718,
+              "U20: 246 MiB available -> 4718 s capacity");
+    }
+
+    // None of these realistic 462 MiB readings ever refuses to record.
+    for (long avail : { 224L, 240L, 246L })
+    {
+        ArenaPlan plan = plan_arena(avail, target_minutes, sample_rate_hz,
+                                     CodecChoice::Unavailable);
+        CHECK(plan.codec != CodecChoice::Unavailable && plan.arena_bytes > 0
+                  && plan.capacity_seconds > 0,
+              "U20: a 462 MiB board's realistic MemAvailable range never refuses");
     }
 }
 
@@ -2230,6 +2302,7 @@ int main()
     test_u6_pick_codec_for_target();
     test_u14_byte_rate_for_new_tiers();
     test_plan_arena();
+    test_u20_pi_462mib_at_96mib_floor();
     test_u8_meminfo_parse();
     test_u9_silence_trim_accounting();
     test_tail_trim_end_to_end();

@@ -602,6 +602,7 @@ private:
     std::string _path;
     double      _stall_last_log_time = 0.0;   // for throttling EAGAIN warnings
     std::atomic<double> _stall_since{0.0};    // monotonic start of the current failure streak; 0 = healthy/idle
+    bool        _pipe_resize_warned  = false; // F_SETPIPE_SZ failure logged once, not on every reopen
 };
 
 
@@ -1264,6 +1265,11 @@ private:
     // ever written by the replay thread; read from the control thread by
     // stalled_seconds().
     std::atomic<double> _stall_since{0.0};
+
+    // Mirrors FifoWriter::_pipe_resize_warned: an F_SETPIPE_SZ failure in
+    // open_fifo_for_session() is logged once, not on every session's fd
+    // open. Only ever touched by the replay thread.
+    bool _pipe_resize_warned = false;
 };
 
 

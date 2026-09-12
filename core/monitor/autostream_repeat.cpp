@@ -2292,6 +2292,19 @@ ReplayEngine::open_fifo_for_session(ReplaySessionCtx& ctx, const std::string& pa
         int fd = ::open(path.c_str(), O_WRONLY | O_NONBLOCK);
         if (fd >= 0)
         {
+            // Same pipe, same resize -- the live-path FifoWriter and this
+            // replay fd are independent opens of the same named pipe, and
+            // the kernel does not remember a size across a close. See
+            // kFifoPipeBytes's doc comment.
+            if (resize_fifo_pipe(fd) < 0)
+            {
+                if (!_pipe_resize_warned)
+                {
+                    LOG_WARN("[repeat] F_SETPIPE_SZ to %d failed on '%s': %s; using default pipe size",
+                             kFifoPipeBytes, path.c_str(), strerror(errno));
+                    _pipe_resize_warned = true;
+                }
+            }
             ctx.fd = fd;
             return std::nullopt;
         }

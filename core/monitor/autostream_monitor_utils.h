@@ -254,6 +254,31 @@ extern SrcQualityState g_src_quality;
 
 
 // =============================================================================
+// FIFO pipe sizing
+//
+// Shared by every fd this daemon opens on the audio FIFO: the live-capture
+// writer (FifoWriter::try_open(), autostream_monitor_io.cpp) and the replay
+// writer (ReplayEngine::open_fifo_for_session(), autostream_repeat.cpp).
+// =============================================================================
+
+// Requested pipe capacity, via F_SETPIPE_SZ. At the native 48000 Hz/32-bit/
+// 2ch output format (384,000 B/s) this gives the writer about 683 ms of
+// headroom to ride out a reader stall before it has to drop a block, instead
+// of the kernel's much smaller default. The kernel frees a pipe's buffer the
+// moment both ends are closed, so the size is never sticky across a close --
+// it has to be (and is) requested again on every open/reopen.
+inline constexpr int kFifoPipeBytes = 256 * 1024;
+
+// Best-effort F_SETPIPE_SZ(fd, kFifoPipeBytes), then F_GETPIPE_SZ to read
+// back what the kernel actually granted (it may round up to a page multiple,
+// or grant less than requested if fs.pipe-max-size is lower). Returns the
+// granted size in bytes, or -1 if either fcntl() call failed -- fd is left
+// at whatever capacity it already had, and errno is left as that failing
+// call set it, for the caller to log.
+int resize_fifo_pipe(int fd);
+
+
+// =============================================================================
 // Timing
 // =============================================================================
 

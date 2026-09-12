@@ -220,6 +220,20 @@ class TestMallocArenaCap:
         )
 
 
+class TestMonitorMemoryLock:
+    """autostream_monitor calls mlockall() to keep its capture path off the
+    page-fault path under memory pressure; that call fails without
+    LimitMEMLOCK=infinity, since the daemon runs as a non-root user with no
+    CAP_IPC_LOCK."""
+
+    def test_monitor_limit_memlock_infinity(self):
+        unit = SYSTEMD_DIR / "autostream_monitor.service"
+        limit = _unit_field(unit, "Service", "LimitMEMLOCK")
+        assert limit == "infinity", (
+            f"{unit.name}: expected LimitMEMLOCK=infinity, found {limit!r}"
+        )
+
+
 class TestWifiWatcherProcessRecovery:
     """With profile autoconnect disabled, the watcher is the sole reconnection
     agent, so its unit must survive crash *and* clean exit and never give up."""

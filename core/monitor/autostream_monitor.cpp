@@ -29,6 +29,7 @@
 #include <iomanip>
 
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -2153,6 +2154,30 @@ int main(int argc, char* argv[])
     // call) exists, then read-only for the rest of the process.
     g_src_quality.tier   = src_tier;
     g_src_quality.source = src_source;
+
+    // Lock this process's memory before AudioMonitor (and therefore any
+    // capture/process/control/repeat thread, and the repeat arena those
+    // threads fill) is constructed below, so nothing the daemon touches
+    // from this point on can be paged out from under it. MCL_ONFAULT locks
+    // a page only once something actually touches it, so the cost tracks
+    // the working set actually in use rather than every mapped page (e.g.
+    // the unused parts of shared libraries stay unlocked); MCL_FUTURE
+    // extends that to allocations made after this call, which is what
+    // covers the arena as it is built. This is the only way to keep the
+    // real-time capture path off the page-fault path under memory
+    // pressure -- memory cgroup limits are not relied on here.
+#ifdef MCL_ONFAULT
+    if (mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT) == 0)
+    {
+        LOG_INFO("[monitor] Process memory locked (mlockall MCL_CURRENT|MCL_FUTURE|MCL_ONFAULT)");
+    }
+    else
+    {
+        LOG_WARN("[monitor] mlockall failed: %s; continuing unlocked", strerror(errno));
+    }
+#else
+    LOG_WARN("[monitor] MCL_ONFAULT not available on this platform; continuing unlocked");
+#endif
 
     AudioMonitor monitor(socket_path, test_hooks_enabled);
     monitor.run();

@@ -31,6 +31,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
@@ -921,6 +922,47 @@ static void test_logger_shutdown_flushes_and_stops()
 }
 
 // ---------------------------------------------------------------------------
+// resize_fifo_pipe
+// ---------------------------------------------------------------------------
+
+static void test_resize_fifo_pipe_grows_a_real_fifo()
+{
+    char dir_template[] = "/tmp/test_monitor_utils_fifo_XXXXXX";
+    char* dir = ::mkdtemp(dir_template);
+    CHECK(dir != nullptr, "mkdtemp for FIFO test dir succeeded");
+    if (dir == nullptr)
+        return;
+
+    std::string fifo_path = std::string(dir) + "/pipe";
+    CHECK(::mkfifo(fifo_path.c_str(), 0600) == 0, "mkfifo succeeded");
+
+    // Open the reader end first (O_NONBLOCK) so the writer's open() below
+    // does not block waiting for a reader -- same ordering FifoWriter relies
+    // on OwnTone to provide in production.
+    int reader_fd = ::open(fifo_path.c_str(), O_RDONLY | O_NONBLOCK);
+    CHECK(reader_fd >= 0, "reader open succeeded");
+
+    int writer_fd = ::open(fifo_path.c_str(), O_WRONLY | O_NONBLOCK);
+    CHECK(writer_fd >= 0, "writer open succeeded");
+
+    if (writer_fd >= 0)
+    {
+        int granted = resize_fifo_pipe(writer_fd);
+        CHECK(granted >= 262144, "resize_fifo_pipe grants at least 256 KiB");
+
+        int read_back = ::fcntl(writer_fd, F_GETPIPE_SZ);
+        CHECK(read_back == granted, "F_GETPIPE_SZ matches resize_fifo_pipe's return value");
+
+        ::close(writer_fd);
+    }
+
+    if (reader_fd >= 0)
+        ::close(reader_fd);
+    ::unlink(fifo_path.c_str());
+    ::rmdir(dir);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -979,6 +1021,8 @@ int main()
 
     // --help text / docs sync
     test_help_text_mentions_every_flag();
+
+    test_resize_fifo_pipe_grows_a_real_fifo();
 
     test_logger_ordering_and_format();
     test_logger_drop_counting();

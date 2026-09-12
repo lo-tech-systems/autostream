@@ -378,6 +378,11 @@ Success response:
 {"type":"ack","command":"set_fifo","ok":true}
 ```
 
+The daemon requests a 256 KiB pipe buffer on this path every time it opens
+it (including every reopen), so a short reader stall can be absorbed
+without dropping a block; a refusal falls back to the default pipe size
+with a one-time warning rather than failing `set_fifo` itself.
+
 Typical errors:
 
 - `path is empty`
@@ -744,7 +749,7 @@ Request fields:
 - `target_minutes` (optional, integer, 10..600)
   - the recording duration the arena is planned to hold. The plan is
     derived once, at enable time, from currently-usable RAM (MemAvailable,
-    minus a 64 MiB free-RAM floor). Selection: PCM s16 if PCM's footprint
+    minus a 96 MiB free-RAM floor). Selection: PCM s16 if PCM's footprint
     for `target_minutes` fits usable RAM; else the highest legal MP2
     stereo bitrate (160/192/224/256/320/384 kbps) whose footprint fits, never below
     160 kbps; below the 160 kbps floor the arena is capped at usable RAM
@@ -1118,7 +1123,7 @@ Top-level fields:
     selected quality fit in memory")
   - `max_recording_seconds`: the arena's capacity in seconds -- the fixed
     reservation made at enable time (usable RAM at that moment: MemAvailable
-    minus a 64 MiB free-RAM floor, capped at the target's footprint)
+    minus a 96 MiB free-RAM floor, capped at the target's footprint)
     divided by the resolved codec tier's byte rate.
     Stable between polls: it changes only when the arena is re-planned
     (enable, or a target/codec change), never with moment-to-moment free
@@ -1150,7 +1155,7 @@ Top-level fields:
     finished building (the boot-settle window or mid-build -- the session
     is started automatically the moment the build completes if the input is
     still capturing); `"insufficient_memory"` when the arena build itself
-    was refused because not even one 16 MiB chunk fit above the 64 MiB
+    was refused because not even one 16 MiB chunk fit above the 96 MiB
     free-RAM floor (retried on a bounded cadence);
     `"encoder_init_failed"` on the (defensive, should not occur) case where
     codec encoder construction itself fails

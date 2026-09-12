@@ -65,7 +65,7 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     The recording lives in a FIXED ARENA reserved once, when the feature is
     enabled: the codec/bitrate tier is chosen to fit a target recording
     duration (`target_minutes`, default 33) in whatever RAM is usable
-    (MemAvailable, minus a 64 MiB free-RAM floor) -- PCM if it fits, else
+    (MemAvailable, minus a 96 MiB free-RAM floor) -- PCM if it fits, else
     the highest legal MP2 bitrate (160/192/224/256/320/384 kbps) that fits,
     never below the 160 kbps floor. Below that floor, DURATION degrades instead of quality: the
     arena is capped at what usable RAM holds and the achieved capacity is
@@ -73,7 +73,10 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     incrementally on the worker thread (one page-touched chunk at a time,
     re-checking the floor between chunks, after a boot-settle delay) and
     persists across sessions -- session start only resets cursors inside
-    it. Once full, the arena wraps: the oldest chunk is recycled in place,
+    it. Because the daemon locks its memory at startup (see Notes And
+    Caveats below), every chunk stays resident as it is touched, so the
+    finished arena ends up fully resident and locked, not just reserved.
+    Once full, the arena wraps: the oldest chunk is recycled in place,
     so a longer-than-capacity session always holds the most recent audio.
     Disabling the feature (or changing `target_minutes`/the pinned codec)
     frees the arena and re-plans it
@@ -207,6 +210,17 @@ This ordering matters:
   `close()` — on Linux, `close()` alone does not wake a thread blocked in
   `accept()`. Without this, a SIGTERM stop hangs until systemd escalates to
   SIGKILL after its stop timeout.
+- The FIFO write end requests a 256 KiB pipe buffer (`F_SETPIPE_SZ`) every
+  time it is opened (including every reopen), so a short reader stall can be
+  absorbed without dropping a block instead of just the kernel's default
+  buffer size. The granted size is logged; if the kernel refuses the
+  resize, the daemon logs a warning once and continues at the default pipe
+  size rather than retrying on every open.
+- At startup the daemon calls `mlockall(MCL_CURRENT | MCL_FUTURE |
+  MCL_ONFAULT)` so its memory is pinned as it is touched, rather than paged
+  out under memory pressure. This requires `LimitMEMLOCK=infinity` in the
+  systemd unit, since the daemon runs unprivileged. If locking fails, it
+  logs a warning and continues unlocked.
 
 ### `--test-pin-src-ratio` (test-only)
 

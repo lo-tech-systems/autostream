@@ -42,5 +42,11 @@ TimeoutStopSec=10
 # Prefer killing this daemon over other processes in a worst-case OOM (auto-restarts in 5s)
 OOMScoreAdjust=200
 
+# This daemon locks its own memory (mlockall) to keep its capture path off
+# the page-fault path under memory pressure. The default memlock rlimit is
+# tiny and this user has no CAP_IPC_LOCK, so without this the mlockall call
+# would fail.
+LimitMEMLOCK=infinity
+
 [Install]
 WantedBy=multi-user.target

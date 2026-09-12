@@ -27,6 +27,20 @@
 #include <vector>
 #include <time.h>
 
+#include <fcntl.h>
+
+
+// =============================================================================
+// FIFO pipe sizing
+// =============================================================================
+
+int resize_fifo_pipe(int fd)
+{
+    if (fcntl(fd, F_SETPIPE_SZ, kFifoPipeBytes) < 0)
+        return -1;
+    return fcntl(fd, F_GETPIPE_SZ);
+}
+
 
 // =============================================================================
 // Audio format math

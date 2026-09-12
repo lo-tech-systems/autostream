@@ -420,7 +420,26 @@ bool FifoWriter::try_open()
     }
 
     _fd = fd;
-    LOG_INFO("[fifo] Opened '%s' for writing", _path.c_str());
+
+    // Grow the pipe buffer on every open/reopen -- the kernel does not keep
+    // a closed pipe's size, so a resize done once at startup would not
+    // survive the "Partial write ... closing to re-sync" / "Broken pipe"
+    // reopen paths above. See kFifoPipeBytes's doc comment.
+    int pipe_bytes = resize_fifo_pipe(_fd);
+    if (pipe_bytes >= 0)
+    {
+        LOG_INFO("[fifo] Opened '%s' for writing (pipe size %d bytes)", _path.c_str(), pipe_bytes);
+    }
+    else
+    {
+        if (!_pipe_resize_warned)
+        {
+            LOG_WARN("[fifo] F_SETPIPE_SZ to %d failed on '%s': %s; using default pipe size",
+                     kFifoPipeBytes, _path.c_str(), strerror(errno));
+            _pipe_resize_warned = true;
+        }
+        LOG_INFO("[fifo] Opened '%s' for writing", _path.c_str());
+    }
     return true;
 }
 

@@ -6,6 +6,12 @@
   senders without an AirPlay-style User-Agent — updates set the OwnTone
   user-agent to a compatible value automatically. To use a different value,
   set it on the OwnTone setup page after updating
+- fix: the audio pipe to the playback backend is now 256 KiB (up from the
+  kernel default), so a brief playback stall no longer drops audio
+- change: the repeat buffer now keeps 96 MiB of RAM free (up from 64 MiB),
+  which may select a lower recording bitrate on 512 MB boards
+- change: the capture daemon now locks its working memory so it can't be
+  paged out under memory pressure
 
 ## Version 0.6.0-beta.1
 

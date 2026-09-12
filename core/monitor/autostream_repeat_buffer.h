@@ -729,11 +729,14 @@ inline long byte_rate_for(CodecChoice codec, long sample_rate_hz)
 // so the two can never disagree about how much RAM is actually claimable.
 // Once the arena is built it is a fixed reservation, not a moving window: the
 // floor governs how big a stationary arena is allowed to be, not an ongoing
-// grow/shrink budget. 64 MiB is the smallest reserve that still leaves the
-// appliance headroom for its other processes while the arena is built; on
-// small-memory appliances it also buys roughly half an hour of extra
-// recording time at the MP2 tier versus a larger floor.
-constexpr long kFreeRamFloorMib = 64;
+// grow/shrink budget. 96 MiB is reserved for the rest of the system -- page
+// cache, the Python coordinator, the web UI, other processes -- while the
+// arena is built; both pick_codec_for_target() and plan_arena() subtract it
+// from available RAM before doing any tier/size arithmetic, so raising the
+// floor simply makes both functions settle on a lower MP2 bitrate (or a
+// smaller arena at a pinned bitrate) while still aiming to deliver the
+// requested target_minutes.
+constexpr long kFreeRamFloorMib = 96;
 
 // Target-duration codec selection.
 //
