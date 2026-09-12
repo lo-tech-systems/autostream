@@ -7,20 +7,20 @@ This guide covers the steps for publishing stable and dev (pre-release) releases
 ## Supported tag formats
 
 ```
-vMAJOR.MINOR.PATCH
-vMAJOR.MINOR.PATCH-alpha.N
-vMAJOR.MINOR.PATCH-beta.N
-vMAJOR.MINOR.PATCH-rc.N
+MAJOR.MINOR.PATCH
+MAJOR.MINOR.PATCH-alpha.N
+MAJOR.MINOR.PATCH-beta.N
+MAJOR.MINOR.PATCH-rc.N
 ```
 
-Ordering: `alpha.N < beta.N < rc.N < final` within any given `vMAJOR.MINOR.PATCH`. Numeric ordering applies within each label: `beta.2 < beta.10`.
+Ordering: `alpha.N < beta.N < rc.N < final` within any given `MAJOR.MINOR.PATCH`. Numeric ordering applies within each label: `beta.2 < beta.10`.
 
 ---
 
 ## Stable release
 
-1. Tag the commit: `git tag vMAJOR.MINOR.PATCH`
-2. Push the tag: `git push origin vMAJOR.MINOR.PATCH`
+1. Tag the commit: `git tag MAJOR.MINOR.PATCH`
+2. Push the tag: `git push origin MAJOR.MINOR.PATCH`
 3. On GitHub, create a new **Release** from the tag.
 4. Leave **Set as a pre-release** unchecked.
 5. Publish.
@@ -31,8 +31,8 @@ Both stable-channel and dev-channel appliances may receive the new release — i
 
 ## Dev (pre-release) release
 
-1. Tag the commit: `git tag vMAJOR.MINOR.PATCH-beta.N` (or `-alpha.N` / `-rc.N`)
-2. Push the tag: `git push origin vMAJOR.MINOR.PATCH-beta.N`
+1. Tag the commit: `git tag MAJOR.MINOR.PATCH-beta.N` (or `-alpha.N` / `-rc.N`)
+2. Push the tag: `git push origin MAJOR.MINOR.PATCH-beta.N`
 3. On GitHub, create a new **Release** from the tag.
 4. Check **Set as a pre-release**.
 5. Publish.
@@ -43,7 +43,7 @@ Only dev-channel appliances see this release. Stable-channel appliances query `/
 
 ## Promoting a pre-release to stable
 
-Publish a new GitHub Release for the final `vMAJOR.MINOR.PATCH` tag (without the pre-release suffix), leaving **Set as a pre-release** unchecked. Do not edit the existing pre-release — create a new Release.
+Publish a new GitHub Release for the final `MAJOR.MINOR.PATCH` tag (without the pre-release suffix), leaving **Set as a pre-release** unchecked. Do not edit the existing pre-release — create a new Release.
 
 ---
 
