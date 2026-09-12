@@ -2,6 +2,11 @@
 
 ## Version 0.6.0-beta.2
 
+- change: the bundled owntone-mini moves to 1.3.0, so installs and updates
+  rebuild it once to pick it up. Its AirPlay 2 encoder now drains its backlog
+  instead of dropping audio after a stall, its pipe input buffer holds a few
+  seconds of audio whatever the stream format, and it locks its own memory at
+  startup like the capture daemon below
 - fix: HomePods on OS 27 refused playback (403) because they now reject
   senders without an AirPlay-style User-Agent — updates set the OwnTone
   user-agent to a compatible value automatically. To use a different value,

@@ -862,9 +862,19 @@ Persistent 403 or 406 responses indicate Shazam has rejected the request. autost
 
 ---
 
+### HomePod refuses to play (403)
+
+HomePod OS 27 rejects senders that don't present an AirPlay-style User-Agent,
+refusing playback with an HTTP 403. autostream sets a compatible User-Agent
+automatically on install and update. If you need a different value, for example
+while diagnosing a different receiver, set it on the OwnTone setup page —
+clearing the field restores the default.
+
+---
+
 ### Repeat
 
-* **"Repeat unavailable"**: free RAM was below the 110 MiB minimum when the last capture session started. Close other apps/services on the Pi, or wait for RAM to free up, then start a new source to retry.
+* **"Repeat unavailable"**: free RAM was below the 112 MiB minimum (a 96 MiB free-RAM floor plus the smallest 16 MiB chunk) when the last capture session started. Close other apps/services on the Pi, or wait for RAM to free up, then start a new source to retry.
 * **Replay plays a "tail only" marker**: memory pressure trimmed the oldest audio from the sliding-window buffer; only the retained tail is played back. This is expected under sustained low-RAM conditions, not a bug.
 * **Replay won't start**: check, in order — repeat is enabled globally (Setup → Repeat), the repeat button on the Home screen is armed, and a repeat buffer actually exists (a capture session has run to completion since the last enable/reboot).
 * **EQ changes during replay**: output EQ and per-input gain/EQ apply live during replay, the same as during normal playback, since replay shares the live signal chain.
@@ -1017,7 +1027,7 @@ If a pre-release update causes issues:
 3. If a newer stable release is available it will be offered immediately. Install it.
 
 **Why is an older stable release not offered as an automatic downgrade?**
-autostream's version comparison only offers updates — versions strictly newer than the currently installed build. If you are running `v1.3.0-beta.2` and the latest stable is `v1.3.0`, that stable release is numerically newer so it will be offered. If the latest stable is `v1.2.9` (older than your pre-release), no update will be offered because that would be a downgrade.
+autostream's version comparison only offers updates — versions strictly newer than the currently installed build. If you are running `0.7.0-beta.2` and the latest stable is `0.7.0`, that stable release is numerically newer so it will be offered. If the latest stable is `0.6.9` (older than your pre-release), no update will be offered because that would be a downgrade.
 
 **Returning immediately to a known stable build (console):**
 

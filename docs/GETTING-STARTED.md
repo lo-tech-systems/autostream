@@ -244,7 +244,7 @@ Manual checks and automatic updates both use the selected channel. The toggle is
 
 Toggle **Enable pre-release updates** off and save. autostream will no longer check for or install pre-releases.
 
-**Switching to stable does not automatically downgrade an installed pre-release.** If you are already running `v1.3.0-beta.2` and switch to stable, the next offered update will be a numerically newer stable release (e.g. `v1.3.0` or later). If you need to return to a known stable build immediately, use the console reinstall route described in the Troubleshooting guide.
+**Switching to stable does not automatically downgrade an installed pre-release.** If you are already running `0.7.0-beta.2` and switch to stable, the next offered update will be a numerically newer stable release (e.g. `0.7.0` or later). If you need to return to a known stable build immediately, use the console reinstall route described in the Troubleshooting guide.
 
 ---
 
