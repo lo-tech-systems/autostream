@@ -51,23 +51,17 @@ After installation, **autostream** only requires a short, one-time setup using a
 
 ### What the PIN does
 
-The PIN gates the Setup pages and this two-page setup wizard. The Home page, Equaliser, Service, Info and Logs pages stay open to view without a PIN; the PIN only protects configuration.
+The PIN prevents other people on your network from changing the appliance's settings. Viewing the Home page and the other screens never needs it; only Setup does. You set it during installation and can change it later from [Setup > System](SETUP-SYSTEM.md).
 
-During installation you are asked to set a PIN (4-20 characters: letters, numbers and hyphens). Pressing Enter without typing one skips it, and Setup is then open to anyone on your network with no login at all. You can change it later from [Setup > System](SETUP-SYSTEM.md) using the **Change PIN** button.
-
-If you forget the PIN, see [Forgotten PIN](TROUBLESHOOTING.md#forgotten-pin) in Troubleshooting for how to recover it.
+For more detail, including how to recover a forgotten PIN, see [Forgotten PIN](TROUBLESHOOTING.md#forgotten-pin) and [Authentication and PIN security](TROUBLESHOOTING.md#authentication-and-pin-security) in Troubleshooting.
 
 ---
 
 ### Setup Page 1 - Speaker Selection
 
-On the first setup page, choose the **Default Output**, the AirPlay / AirPlay 2 speaker that autostream should stream to.
+Pick the **Default Output**, the AirPlay speaker autostream streams to by default, and tap **Continue**. You must select a speaker to continue, so at least one has to be detected on your network. If yours does not appear, make sure it is powered on and tap **Refresh**.
 
-* Pick a speaker from the dropdown list.
-* If your speaker does not appear, make sure it is powered on and tap **Refresh** to rescan the network.
-* Tap **Continue** when finished. If nothing is selected you are asked to choose a speaker before continuing.
-
-You are not choosing every speaker that will ever be usable here, just the one autostream defaults to. Other speakers can be made available and selected later from the [Home page](HOME-PAGE.md).
+You can add and switch to other speakers later from the [Home page](HOME-PAGE.md).
 
 ---
 
@@ -76,14 +70,13 @@ You are not choosing every speaker that will ever be usable here, just the one a
 On the second setup page:
 
 1. Choose your connected **input device** for **Input 1** from the list.
-2. Tick **Turntable** if that input is a record player (a phono pre-amp is required).
+2. Tick **Turntable** if that input is a record player.
 3. Choose a **default volume level**.
 4. Confirm or change the appliance's **hostname**.
 
 Input 1 is optional. If you have no input connected yet, tap **Skip - configure
 later** to finish setup without one. You can set Input 1 up from the Setup page at
-any time, or pair a Bluetooth source, which assigns itself to a free input
-automatically (see [Setup - Inputs](SETUP-INPUTS.md)).
+any time, or pair a Bluetooth source (see [Setup - Inputs](SETUP-INPUTS.md)).
 
 While no input is enabled, the Home screen shows a **"No input device configured"**
 notice above the Now Playing card. It disappears as soon as you enable an input.
