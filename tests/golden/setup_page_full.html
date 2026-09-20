@@ -3136,7 +3136,7 @@
           if (msg) {
             msg.textContent = (sdHealthState && sdHealthState.check === 'hung')
               ? 'This function has previously resulted in a system hang and the card may not be supported. Do you wish to continue?'
-              : "Querying the card's health uses a manufacturer command that unsupported cards may not survive. If the card stops responding the system will restart. Continue?";
+              : "Querying the card's health uses a manufacturer command that may cause unsupported cards to become unresponsive. If the card stops responding, the system will restart automatically. Continue?";
           }
           var m = document.getElementById('sdHealthModal');
           if (m) m.classList.add('show');

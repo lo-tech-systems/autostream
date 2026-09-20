@@ -88,6 +88,7 @@ autostream product — deleted (fixed allowlist, no wildcards):
   /var/lib/autostream/playback_stats.json
   /etc/autostream/nowplaying_hints.json
   /var/lib/autostream/sdcardhealth.json
+  /var/lib/autostream/sdcardhealth-status.json
   /var/cache/owntone/songs3.db
   /etc/owntone-settings.json
 
@@ -167,6 +168,7 @@ FACTORY_RESET_DELETE_FILES = (
     Path("/var/lib/autostream/playback_stats.json"),
     Path("/etc/autostream/nowplaying_hints.json"),
     Path("/var/lib/autostream/sdcardhealth.json"),
+    Path("/var/lib/autostream/sdcardhealth-status.json"),
     Path("/var/cache/owntone/songs3.db"),
     Path("/etc/owntone-settings.json"),
 )

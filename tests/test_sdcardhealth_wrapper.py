@@ -427,6 +427,7 @@ class TestEnableDisable:
             'SDMON_CHECK_SERIAL="abc"\n',
             encoding="utf-8",
         )
+        m.HEALTH_JSON_FILE.write_text('{"success": true, "percent": 91}', encoding="utf-8")
         calls = []
         with patch.object(m, "_systemctl", side_effect=lambda *a: calls.append(a) or 0):
             rc = m.cmd_disable()
@@ -435,6 +436,14 @@ class TestEnableDisable:
         assert m.read_state_value("SDMON_CHECK") == "passed"
         assert m.read_state_value("SDMON_CHECK_SERIAL") == "abc"
         assert ("disable", "--now", m.TIMER_UNIT) in calls
+        assert not m.HEALTH_JSON_FILE.exists()  # stale reading must not survive
+
+    def test_disable_with_no_health_json_still_succeeds(self):
+        assert not m.HEALTH_JSON_FILE.exists()
+        with patch.object(m, "_systemctl", side_effect=lambda *a: 0):
+            rc = m.cmd_disable()
+        assert rc == 0
+        assert not m.HEALTH_JSON_FILE.exists()
 
 
 # ---------------------------------------------------------------------------

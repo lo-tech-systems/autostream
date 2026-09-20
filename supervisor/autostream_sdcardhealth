@@ -31,7 +31,9 @@ MODES
   enable       Requires --method. Saves the method, enables and starts the
                timer, and starts the service once so cached state exists
                immediately.
-  disable      Disables and stops the timer and clears the saved method.
+  disable      Disables and stops the timer, clears the saved method, and
+               removes the last recorded reading so a stale figure can
+               never be shown while monitoring is off.
 
 Every mode ends by writing the status file.
 
@@ -254,6 +256,13 @@ def write_health_json(payload: dict) -> None:
     tmp.replace(HEALTH_JSON_FILE)
 
 
+def remove_health_json() -> None:
+    try:
+        HEALTH_JSON_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _systemctl(*args: str) -> int:
     try:
         result = subprocess.run(
@@ -402,6 +411,7 @@ def cmd_enable(method: Optional[str]) -> int:
 def cmd_disable() -> int:
     _systemctl("disable", "--now", TIMER_UNIT)
     update_state_file({"SDMON_METHOD": ""})
+    remove_health_json()
     write_status_file()
     return 0
 

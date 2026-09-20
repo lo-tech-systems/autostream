@@ -39,8 +39,8 @@ from autostream_sysutils import (
     fmt_bytes,
     get_effective_memory_info,
     get_root_disk_usage,
-    get_sdcard_health_percent,
     get_static_system_facts,
+    sdcard_health_display,
 )
 from track_id.vibra_shazam import get_vibra_runtime_info
 
@@ -672,10 +672,10 @@ def _collect_system_info() -> dict:
     except Exception:
         pass
 
-    # 8. SD card health (on-demand file read)
+    # 8. SD card health (on-demand file read, only while monitoring is enabled)
     sd_card: dict = {"available": False}
     try:
-        sd_health = get_sdcard_health_percent()
+        sd_health = sdcard_health_display()
         if sd_health is not None:
             sd_status = (
                 "critical" if sd_health <= 10

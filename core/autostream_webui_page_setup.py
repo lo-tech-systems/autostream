@@ -1372,6 +1372,8 @@ def _setup_input_summary_text(
 def _sdcard_health_status_line(sd_health: dict) -> str:
     if not sd_health.get("tool_present"):
         return "Tool not installed"
+    if not sd_health.get("timer_enabled"):
+        return "Not monitored"
     percent = sd_health.get("health_percent")
     if sd_health.get("check") == "passed" and percent is not None:
         when = sd_health.get("last_sampled_at") or sd_health.get("at") or "unknown"
@@ -2589,7 +2591,7 @@ def send_setup_page(
           if (msg) {{
             msg.textContent = (sdHealthState && sdHealthState.check === 'hung')
               ? 'This function has previously resulted in a system hang and the card may not be supported. Do you wish to continue?'
-              : "Querying the card's health uses a manufacturer command that unsupported cards may not survive. If the card stops responding the system will restart. Continue?";
+              : "Querying the card's health uses a manufacturer command that may cause unsupported cards to become unresponsive. If the card stops responding, the system will restart automatically. Continue?";
           }}
           var m = document.getElementById('sdHealthModal');
           if (m) m.classList.add('show');

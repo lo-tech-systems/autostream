@@ -251,6 +251,7 @@ main() {
   info "Removing other autostream-managed files we can identify confidently"
   remove_path /usr/local/libexec/autostream/autostream_sdcardhealth
   remove_path /var/lib/autostream/sdcardhealth-status.json
+  remove_path /var/lib/autostream/sdcardhealth.json
   remove_path /var/lib/autostream/sdcardhealth.inflight
   remove_path /usr/local/sbin/sdmon
   remove_path /usr/lib/tmpfiles.d/autostream.conf

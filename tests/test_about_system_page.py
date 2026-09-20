@@ -123,7 +123,7 @@ def _collect_with_mocks(
          patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=cpu_load_percent), \
          patch("autostream_webui_page_about.get_effective_memory_info", return_value=memory_info), \
          patch("autostream_webui_page_about.get_root_disk_usage", return_value=disk_usage), \
-         patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=sd_health), \
+         patch("autostream_webui_page_about.sdcard_health_display", return_value=sd_health), \
          patch("autostream_webui_page_about.get_static_system_facts", return_value=static_facts), \
          patch("autostream_webui_page_about.subprocess.run", side_effect=fake_systemctl):
         return _about._collect_system_info()
@@ -467,6 +467,16 @@ class TestMissingDiskAndSd:
         )
         assert result["sd_card"] == {"available": False}
 
+    def test_sd_display_none_returns_unavailable(self):
+        # sdcard_health_display() returns None both when monitoring is off
+        # and when no reading exists yet -- either way sd_card must be
+        # exactly the unavailable shape, never a stale reading.
+        result = _collect_with_mocks(
+            sd_health=None,
+            systemctl_stdout=_ACTIVE_SYSTEMCTL,
+        )
+        assert result["sd_card"] == {"available": False}
+
     def test_missing_cpu_temperature_returns_unavailable(self):
         result = _collect_with_mocks(
             cpu_temp=None,
@@ -484,7 +494,7 @@ class TestMissingDiskAndSd:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             result = _about._collect_system_info()
@@ -518,7 +528,7 @@ class TestMissingDiskAndSd:
              patch("autostream_webui_page_about.get_cpu_busy_percent", side_effect=Exception("boom")), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             result = _about._collect_system_info()
@@ -535,7 +545,7 @@ class TestMissingDiskAndSd:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", side_effect=Exception("boom")), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             result = _about._collect_system_info()
@@ -790,7 +800,7 @@ class TestSystemctlCommandSecurity:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
             _about._collect_system_info()
 
@@ -829,7 +839,7 @@ class TestSystemctlCommandSecurity:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
             _about._collect_system_info()
 
@@ -852,7 +862,7 @@ class TestPartialFailureDegradation:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             result = _about._collect_system_info()
@@ -867,7 +877,7 @@ class TestPartialFailureDegradation:
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
              patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", side_effect=Exception("fail")), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             result = _about._collect_system_info()
@@ -900,7 +910,7 @@ class TestCollectorNoIO:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             _about._collect_system_info()
@@ -922,7 +932,7 @@ class TestCollectorNoIO:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             _about._collect_system_info()
@@ -948,7 +958,7 @@ class TestSnapshotReadsAreMemoryOnly:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             _about._collect_system_info()
@@ -1158,7 +1168,7 @@ class TestSendJsonHeaders:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             _about.send_about_system_json(handler)
@@ -1408,7 +1418,7 @@ class TestAboutPageNoLiveData:
              patch("autostream_webui_page_about.get_cpu_temperature_c") as m_cpu, \
              patch("autostream_webui_page_about.get_owntone_runtime_info") as m_owntone, \
              patch("autostream_webui_page_about.get_root_disk_usage") as m_disk, \
-             patch("autostream_webui_page_about.get_sdcard_health_percent") as m_sd, \
+             patch("autostream_webui_page_about.sdcard_health_display") as m_sd, \
              patch("autostream_webui_page_about.get_cpu_busy_percent") as m_load, \
              patch("autostream_webui_page_about.get_effective_memory_info") as m_mem:
             _about.send_about_page(handler, state)
@@ -1505,7 +1515,7 @@ class TestSnapshotExceptionIsolation:
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
              patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
              patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.get_sdcard_health_percent", return_value=None), \
+             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             with ctx["autostream_webui_page_about.get_app_version"], \

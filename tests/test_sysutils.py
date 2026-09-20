@@ -801,6 +801,50 @@ class TestSdcardHealthState:
         assert state["check"] == "none"
         assert state["tool_present"] is False
 
+    def test_timer_disabled_masks_reading_even_with_file_present(self, tmp_path):
+        # A reading left over from before monitoring was switched off must
+        # never be reported as current -- disabling deletes the file too,
+        # but the mask here is the last line of defence.
+        sysfs = self._sysfs(tmp_path, serial="abc123")
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({
+            "tool_present": True, "timer_enabled": False, "method": "sandisk",
+            "check": "passed", "serial": "abc123", "at": "2020-01-01T00:00:00+00:00",
+            "reason": "",
+        }), encoding="utf-8")
+        health_file = tmp_path / "health.json"
+        health_file.write_text(json.dumps({
+            "success": True, "enduranceRemainLifePercent": 42, "date": "2020-01-01T00:00:00+00:00",
+        }), encoding="utf-8")
+        with patch.object(su, "SDCARD_SYSFS_DEVICE", sysfs), \
+             patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file), \
+             patch.object(su, "SDCARD_HEALTH_JSON_FILE", health_file):
+            state = su.sdcard_health_state()
+        assert state["timer_enabled"] is False
+        assert state["health_percent"] is None
+        assert state["last_sampled_at"] is None
+
+
+class TestSdcardHealthDisplay:
+    def test_enabled_returns_percent(self, tmp_path):
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"timer_enabled": True}), encoding="utf-8")
+        with patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file), \
+             patch.object(su, "get_sdcard_health_percent", return_value=77):
+            assert su.sdcard_health_display() == 77
+
+    def test_disabled_returns_none(self, tmp_path):
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"timer_enabled": False}), encoding="utf-8")
+        with patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file), \
+             patch.object(su, "get_sdcard_health_percent", return_value=77):
+            assert su.sdcard_health_display() is None
+
+    def test_no_status_file_returns_none(self, tmp_path):
+        with patch.object(su, "SDCARD_HEALTH_STATUS_FILE", tmp_path / "missing.json"), \
+             patch.object(su, "get_sdcard_health_percent", return_value=77):
+            assert su.sdcard_health_display() is None
+
 
 class TestSdcardHealthAdminVerbs:
     def test_check_calls_verb_with_method_and_timeout(self):

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: disabling SD card health monitoring removes the last reading and the
+  About and Setup pages stop showing SD health until it is enabled again,
+  so a stale figure can never claim better health than reality.
 - feat: SD card health monitoring can be switched on from the Setup page.
   The card is probed once first and monitoring is enabled only if the probe
   succeeds; the page warns that an unsupported card may stop responding and
