@@ -332,14 +332,13 @@ inline bool compute_should_capture_with_hold(bool is_above_threshold,
     return (is_above_threshold || hold_active) && allow_capture;
 }
 
-// Minimum playback hold: replay-takeover re-notify (the delivery side of
-// suppression point (b)). RepeatController::notify_capture_started()
+// Replay-takeover re-notify. RepeatController::notify_capture_started()
 // is an EDGE notification -- InputChannel calls it exactly once, on the
-// should_capture false->true transition. If that single call lands while an
-// active replay's minimum-playback hold is still in effect, decide_repeat_
-// transition() Ignores it (see RepeatEventCtx::replay_hold_active) with no
-// pending state latched, by design -- but that means nothing re-raises
-// CaptureStarted once the hold expires, or if the replay ends by some other
+// should_capture false->true transition. If that single call lands while a
+// live-interrupt fade, a discard, or an already-armed probation is in
+// flight, decide_repeat_transition() Ignores it with no pending state
+// latched, by design -- but that means nothing re-raises CaptureStarted
+// once the blocking condition clears, or if the replay ends by some other
 // route (disable/re-enable, discard) while this input is still capturing:
 // the swallowed session would otherwise never start.
 //

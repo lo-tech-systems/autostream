@@ -1224,6 +1224,16 @@ public:
 
     void reset() { _above_seconds = 0.0; }
 
+    // Same reset, but also (re)selects the sustain window -- for a caller
+    // whose window depends on which kind of interrupt is being armed (see
+    // kImmediateInterruptSustainSeconds/kInterruptSustainSeconds above)
+    // rather than being fixed for the tracker's whole life.
+    void reset(double window_seconds)
+    {
+        _sustain_seconds = window_seconds;
+        _above_seconds   = 0.0;
+    }
+
     // Called once per block, in the order the blocks occurred.
     // above_threshold is the block's own peak test against the origin
     // input's snapshotted silence threshold; block_seconds is the block's
@@ -1490,20 +1500,32 @@ inline constexpr double kPreRollSeconds = 5.0;
 // original transient is too far in the past to still be a reasonable "this
 // just happened" signal.
 //
-// Note what this arithmetic does NOT claim: probation and the fade that
-// follows confirmation both run while the NEW session's own RepeatBuffer/
-// OnsetGate/PreRollRing are still idle (still owned by the OLD held
-// recording -- see the admit-before-free comment in RepeatController's
-// perform_pending_start()), so the audio spanning the probation window
-// itself is not captured into the eventual new recording, exactly as the
-// pre-1.0 s fade window never was either. What the headroom below buys is
-// operational slack: kInterruptSustainSeconds (to confirm) +
-// kTakeoverCrossfadeSeconds (the crossfade that follows confirmation) =
-// 1.25 + 1.5 = 2.75 s, well inside the 5 s bound above -- so a legitimate interrupt has
-// comfortable room to confirm before timing out even under scheduling
-// jitter, without the probation window itself needing to grow anywhere
-// near kPreRollSeconds.
+// Note what this arithmetic buys: probation and the fade that follows
+// confirmation run with the CANDIDATE session's own OnsetGate/PreRollRing
+// already live -- recording_wanted() admits the pending/interrupting input
+// while Replaying/FadingOut, and process_recorder_samples() feeds those
+// blocks into exactly this onset gate and ring (encoder untouched) -- while
+// the eventual new recording's RepeatBuffer itself stays idle, still owned
+// by the OLD held recording (see the admit-before-free comment in
+// RepeatController's perform_pending_start()). So the audio spanning
+// probation and the fade IS what becomes the new recording's own lead-in
+// once admission succeeds. The headroom below is operational slack:
+// kInterruptSustainSeconds (to confirm, or kImmediateInterruptSustainSeconds
+// for a line-level input) + kTakeoverCrossfadeSeconds (the crossfade that
+// follows confirmation) = 1.25 + 1.5 = 2.75 s worst case, well inside the
+// 5 s bound above -- so a legitimate interrupt has comfortable room to
+// confirm before timing out even under scheduling jitter, without the
+// probation window itself needing to grow anywhere near kPreRollSeconds.
 inline constexpr double kInterruptSustainSeconds = 1.25;
+
+// Live-interrupt probation window for a LINE-LEVEL input (silence threshold
+// at or below kImmediateInterruptThresholdDbfs, autostream_monitor.h): a
+// line source (CD player, digital deck) is already at full level from its
+// very first sample, unlike a turntable's mechanical start, so a much
+// shorter sustain is enough to trust it -- 0.25 s still rejects a
+// single-block transient (blocks are 20 ms) while confirming a genuine
+// session almost at once.
+inline constexpr double kImmediateInterruptSustainSeconds = 0.25;
 
 // Length of the crossfade the output mixer runs between the replay source
 // and the interrupting live source once a live interrupt is confirmed (or a

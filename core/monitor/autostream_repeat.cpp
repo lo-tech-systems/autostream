@@ -576,6 +576,14 @@ RepeatController::RepeatController(int sample_rate_hz, OutputMixer& mixer)
     // measuring from here rather than assuming that is exact by
     // construction, not by convention).
     _construct_time = get_monotonic_time();
+
+    // Pre-roll ring capacity: set once, for the controller's whole life --
+    // see perform_pending_start()'s comment for why this does not happen
+    // per-session any more. The ring is otherwise only ever cleared, at the
+    // points handle_event_locked()/discard_recording_locked()/notify_
+    // capture_stopped() document.
+    _preroll_ring.set_capacity_frames(
+        static_cast<size_t>(kPreRollSeconds * static_cast<double>(_sample_rate_hz)));
 }
 
 RepeatController::~RepeatController()
@@ -743,18 +751,26 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
         _pending_interrupt_revert_origin = origin_before;
 
     if (d.set_pending_interrupt_input)
+    {
         _pending_interrupt_input = d.pending_interrupt_input;
+        // Single store site for recording_wanted()'s fast mirror too (grep
+        // "_pending_interrupt_input_fast\." in this file to confirm) -- same
+        // discipline as _state_fast/_origin_input_fast's choke points above.
+        _pending_interrupt_input_fast.store(d.pending_interrupt_input, std::memory_order_relaxed);
+    }
     if (d.set_pending_action)
     {
         _pending_action = d.pending_action;
-        // Single mutation choke point for the probation fast mirrors too
-        // (recording_wanted()'s fast-mirror pattern): every
+        // Single mutation choke point for the probation fast mirrors and
+        // recording_wanted()'s _pending_action_fast mirror alike: every
         // write to _pending_action funnels through this one spot, so this
-        // is the only place the mirrors can ever go stale relative to it.
-        // Ordered AFTER the set_pending_interrupt_input block above so that
-        // when a single decision sets both (CaptureStarted's probation-arm
-        // cell always does), _pending_interrupt_input already holds this
-        // call's value, not the previous probation/interrupt's.
+        // is the only place any of the mirrors can ever go stale relative to
+        // it. Ordered AFTER the set_pending_interrupt_input block above so
+        // that when a single decision sets both (CaptureStarted's
+        // probation-arm cell always does), _pending_interrupt_input(_fast)
+        // already holds this call's value, not the previous probation/
+        // interrupt's.
+        _pending_action_fast.store(static_cast<int>(d.pending_action), std::memory_order_relaxed);
         bool armed_now = (d.pending_action == PendingAction::InterruptProbation);
         // Publish the input BEFORE the armed flag so a concurrent
         // notify_probation_block() that observes armed_now==true can never
@@ -766,14 +782,34 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
         {
             // Fresh arm: any accumulation left over from a previous,
             // already-resolved probation attempt must not leak into this
-            // one -- see _interrupt_probation's declaration comment.
-            _interrupt_probation.reset();
+            // one -- see _interrupt_probation's declaration comment. The
+            // window itself depends on which kind of input is interrupting:
+            // a line-level input confirms almost at once
+            // (kImmediateInterruptSustainSeconds), a turntable-level input
+            // needs the longer kInterruptSustainSeconds window.
+            _interrupt_probation.reset(_pending_interrupt_immediate
+                ? kImmediateInterruptSustainSeconds : kInterruptSustainSeconds);
             _probation_armed_time      = get_monotonic_time();
             _probation_last_block_time = 0.0;
         }
     }
     if (d.set_pending_restorable)
         _pending_interrupt_restorable = d.pending_restorable;
+
+    if (event == RepeatEvent::CaptureStarted && d.kind == RepeatDecision::Kind::Apply)
+    {
+        // A new candidate session is being chosen: probation just armed on
+        // this input (Replaying), an already-running disarm fade is being
+        // upgraded to a live interrupt (FadingOut), or a plain admission is
+        // moving Idle/Hold to Pending. Reset the onset gate and the lead-in
+        // ring here, at candidate-choice time, rather than at perform_
+        // pending_start()'s later admission -- see that function's own
+        // comment -- so probation/fade audio for THIS candidate starts
+        // accumulating from a clean ring instead of carrying over whatever a
+        // previous, unrelated candidate or session left behind.
+        _onset.reset();
+        _preroll_ring.clear();
+    }
 
     if (d.do_free_recording)
         discard_recording_locked();
@@ -829,33 +865,26 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
             break;
         case RepeatLogTag::CaptureStartIgnoredProbationInProgress:
             // Same duplicate-suppression rationale as the two Ignored cells
-            // above: an interrupt probation window is at most a few
-            // seconds, so this cannot spam the way the hold-active case
-            // could, but the same convention keeps all "Ignoring capture-
-            // start" lines behaving consistently either way.
+            // above: relies on logger_log()'s built-in duplicate-suppression
+            // (autostream_monitor_utils.cpp, DUPLICATE_LOG_LIMIT) to collapse
+            // the ~once/second re-notify stream (see compute_should_
+            // renotify_capture_started(), autostream_monitor_utils.h) into a
+            // handful of lines plus a "(suppressed N duplicate entries)"
+            // summary, rather than one line per second for the length of the
+            // probation window.
             LOG_DEBUG("[repeat] Ignoring capture-start on input %d; a live-interrupt "
                       "probation is already in progress (input %d)",
                       ctx.input_index, pending_interrupt_input_before);
             break;
-        case RepeatLogTag::CaptureStartIgnoredReplayHoldActive:
-            // DEBUG + identical message text on every repeat (same
-            // ctx.input_index each time): relies on logger_log()'s built-in
-            // duplicate-suppression (autostream_monitor_utils.cpp,
-            // DUPLICATE_LOG_LIMIT) to collapse the ~once/second re-notify
-            // stream (see compute_should_renotify_capture_started(),
-            // autostream_monitor_utils.h) into a handful of lines plus a
-            // "(suppressed N duplicate entries)" summary, rather than one
-            // line per second for up to a ~30 s hold. Identical convention
-            // to the two Ignored cells immediately above, which already
-            // rely on the same mechanism for the same reason (repeated
-            // CaptureStarted events on a still-open fade/discard).
-            LOG_DEBUG("[repeat] Ignoring capture-start on input %d; minimum playback "
-                      "hold active on the current replay", ctx.input_index);
-            break;
         case RepeatLogTag::CaptureStartArmsProbation:
+            // _interrupt_probation.sustain_seconds() reflects the window
+            // this same call just armed it with (see the set_pending_action
+            // block above), so this always prints the window actually in
+            // effect -- kImmediateInterruptSustainSeconds for a line-level
+            // input, kInterruptSustainSeconds for a turntable-level one.
             LOG_INFO("[repeat] Capture start on input %d during replay (input %d): "
                      "arming live-interrupt probation (%.2f s to confirm)",
-                     ctx.input_index, origin_before, kInterruptSustainSeconds);
+                     ctx.input_index, origin_before, _interrupt_probation.sustain_seconds());
             break;
         case RepeatLogTag::LiveInterruptFadingOutReplay:
             LOG_INFO("[repeat] Live interrupt on input %d: fading out replay (input %d)",
@@ -1032,14 +1061,31 @@ bool RepeatController::recording_wanted(int input_index) const
     // Recording, so nothing is encoded before the encoder exists -- it is
     // only buffered a little earlier than before.
     int state = _state_fast.load(std::memory_order_relaxed);
-    if (state != static_cast<int>(RepeatState::Recording) &&
-        state != static_cast<int>(RepeatState::Pending))
-        return false;
+    if (state == static_cast<int>(RepeatState::Recording) ||
+        state == static_cast<int>(RepeatState::Pending))
+        return _origin_input_fast.load(std::memory_order_relaxed) == input_index;
 
-    return _origin_input_fast.load(std::memory_order_relaxed) == input_index;
+    // Pre-roll during probation/the takeover crossfade: a should_capture
+    // edge on this input has armed the interrupt-probation gate, or already
+    // confirmed one, while a replay (or its fade-out) is still in flight.
+    // Admit its blocks too, so process_recorder_samples() can feed them into
+    // the onset gate/pre-roll ring for the session probation may yet
+    // promote -- see that function's own comment for why nothing is
+    // committed to the arena on this path.
+    if (state == static_cast<int>(RepeatState::Replaying) ||
+        state == static_cast<int>(RepeatState::FadingOut))
+    {
+        int pending = _pending_action_fast.load(std::memory_order_relaxed);
+        if (pending != static_cast<int>(PendingAction::InterruptProbation) &&
+            pending != static_cast<int>(PendingAction::LiveInterrupt))
+            return false;
+        return _pending_interrupt_input_fast.load(std::memory_order_relaxed) == input_index;
+    }
+
+    return false;
 }
 
-void RepeatController::notify_capture_started(int input_index)
+void RepeatController::notify_capture_started(int input_index, bool immediate_interrupt)
 {
     // This runs on the audio process thread (InputChannel::
     // process_thread_func, autostream_monitor_io.cpp), so everything below
@@ -1053,13 +1099,14 @@ void RepeatController::notify_capture_started(int input_index)
     // audio (first above-threshold block)"), but while state == Replaying
     // (an ACTIVE replay) it is no longer trusted immediately on its own:
     // this call only ARMS the interrupt-probation gate (decide_repeat_
-    // transition()'s CaptureStarted cell), which requires
-    // kInterruptSustainSeconds of continued above-threshold audio (fed
-    // separately, by notify_probation_block() below, every block regardless
-    // of this edge call's cadence) before the fade/free/new-session sequence
-    // this comment used to describe actually happens. FadingOut's own edge
-    // still applies immediately, unprobated -- see decide_repeat_
-    // transition()'s CaptureStarted cell for why.
+    // transition()'s CaptureStarted cell), which requires continued
+    // above-threshold audio -- kImmediateInterruptSustainSeconds for a
+    // line-level input, kInterruptSustainSeconds for a turntable-level one
+    // (immediate_interrupt below picks which) -- fed separately, by
+    // notify_probation_block() below, every block regardless of this edge
+    // call's cadence, before the fade/free/new-session sequence actually
+    // happens. FadingOut's own edge still applies immediately, unprobated --
+    // see decide_repeat_transition()'s CaptureStarted cell for why.
     //
     // "New capture session with existing finished recording: old buffer
     // freed, new recording starts"; "should not happen (single origin
@@ -1081,19 +1128,15 @@ void RepeatController::notify_capture_started(int input_index)
     _capture_active       = true;
     _capture_active_input = input_index;
 
+    // Snapshot for the probation-arm cell below (decide_repeat_transition()'s
+    // CaptureStarted x Replaying cell, applied in handle_event_locked()):
+    // which sustain window a confirmed interrupt on THIS input should use.
+    // Stored unconditionally, like ctx.input_index, even though it is only
+    // consulted the instant this same call actually arms a fresh probation.
+    _pending_interrupt_immediate = immediate_interrupt;
+
     RepeatEventCtx ctx;
     ctx.input_index = input_index;
-    // Minimum playback hold: only meaningful while a replay (or its
-    // fade-out) is actually in flight, and only while _origin_minimum_
-    // playback_seconds (snapshotted from the origin input's config at
-    // recording start) is non-zero. 0 must reproduce today's behaviour
-    // exactly, so this stays false whenever the hold is disabled.
-    if ((_state == RepeatState::Replaying || _state == RepeatState::FadingOut) &&
-        _origin_minimum_playback_seconds > 0 && _replay_start_time > 0.0)
-    {
-        double elapsed = get_monotonic_time() - _replay_start_time;
-        ctx.replay_hold_active = elapsed < static_cast<double>(_origin_minimum_playback_seconds);
-    }
 
     // Mute the interrupting input through probation, BEFORE the decision
     // below: this input activated its own OutputSource a moment earlier on
@@ -1254,7 +1297,6 @@ void RepeatController::perform_pending_start()
     {
         _origin_silence_threshold_sample     = params.silence_threshold_sample;
         _origin_track_change_silence_seconds = params.track_change_silence_seconds;
-        _origin_minimum_playback_seconds     = params.minimum_playback_seconds;
     }
 
     _unavailable_reason.clear();
@@ -1268,11 +1310,13 @@ void RepeatController::perform_pending_start()
     // by returning every chunk to the spare pool, never freeing anything.
     _buffer.reset_cursors();
     _trim.reset();
-    // Onset gate: fresh per session. The ring is sized from this
-    // session's own recording-path sample format -- always stereo float at
-    // _sample_rate_hz on this (pre-DSP) tap, regardless of which codec was
-    // just chosen above for the eventual encoded output.
-    _onset.reset();
+    // Onset gate and lead-in ring: deliberately NOT reset here. Both were
+    // already primed for THIS candidate at the moment it was chosen --
+    // handle_event_locked()'s CaptureStarted-Apply reset, at probation-arm
+    // or Idle/Hold->Pending time -- and have been accumulating through
+    // probation/the takeover fade ever since (recording_wanted()/process_
+    // recorder_samples() admit exactly those blocks into this onset gate and
+    // ring). Resetting them here would discard the very lead-in this admits.
     // Tail marker pad: the quiet left in place between the last music and
     // the loop point. The byte-rate figure only sizes the pad's TARGET --
     // the recorded cut itself always lands on a committed block boundary
@@ -1285,8 +1329,6 @@ void RepeatController::perform_pending_start()
             : 0;
         _tail_marker.reset(tail_pad_bytes);
     }
-    _preroll_ring.set_capacity_frames(
-        static_cast<size_t>(kPreRollSeconds * static_cast<double>(_sample_rate_hz)));
     _encoder = std::move(encoder);
     _dropped_frames_baseline = _recorder.dropped_frames();
 
@@ -1923,9 +1965,11 @@ void RepeatController::notify_capture_stopped(int input_index)
     // spliced in) and any thump/spin-up audio still sitting in the ring is
     // discarded here rather than lingering in memory into HOLD; if onset did
     // confirm, the ring was already fully drained during the recording (see
-    // process_recorder_samples()) and is empty already. Either way, the next
-    // session's perform_pending_start() would re-initialise all three anyway
-    // -- this is purely prompt cleanup, not a correctness requirement.
+    // process_recorder_samples()) and is empty already. The next CANDIDATE
+    // session gets a fresh onset gate and ring of its own when it is
+    // actually chosen (handle_event_locked()'s CaptureStarted-Apply reset) --
+    // clearing them here promptly, rather than leaving this session's
+    // leftovers to sit in HOLD, is what matters.
     _onset.reset();
     _tail_marker.reset();
     _preroll_ring.clear();
@@ -1960,8 +2004,6 @@ void RepeatController::begin_replay_locked()
 
     transition_locked(RepeatState::Replaying);
 
-    // Minimum playback hold: replay owns playback from this instant. See
-    // notify_capture_started()'s replay_hold_active computation.
     _replay_start_time = get_monotonic_time();
 
     // Activated at full gain, no ramp: a replay only ever starts from
@@ -2148,6 +2190,26 @@ void RepeatController::process_recorder_samples(const float* interleaved, int fr
     // lock_guard (not unique_lock): encode_and_append_locked() never unlocks
     // any more -- see its own comment.
     std::lock_guard<std::mutex> lock(_repeat_mutex);
+
+    // Pre-roll during probation, the takeover crossfade, or a still-pending
+    // admission: recording_wanted() already admits these blocks for the
+    // CANDIDATE origin/interrupting input (see its own comment) so nothing
+    // is lost while the session's fate is still undecided, but nothing is
+    // committed to the arena either -- only the onset gate and the lead-in
+    // ring see it, exactly like Recording's own pre-onset branch below.
+    // Pending additionally covers the brief window before the recorder
+    // worker's own deferred perform_pending_start() has flipped this to
+    // Recording: any blocks the audio thread buffered into the SPSC ring
+    // while still Pending are drained through here too, so they feed the
+    // lead-in ring rather than being silently dropped.
+    if (_state == RepeatState::Replaying || _state == RepeatState::FadingOut ||
+        _state == RepeatState::Pending)
+    {
+        _preroll_ring.push(interleaved, frames, above_threshold);
+        _onset.on_block(above_threshold,
+                         static_cast<double>(frames) / static_cast<double>(_sample_rate_hz));
+        return;
+    }
 
     if (_state != RepeatState::Recording || !_encoder)
         return;

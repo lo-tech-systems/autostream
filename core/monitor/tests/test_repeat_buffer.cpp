@@ -2261,11 +2261,14 @@ static void test_u18_convert_to_pipe_format()
 // ---------------------------------------------------------------------------
 // U19 — SustainTracker with a custom threshold (RepeatController's
 // interrupt-probation gate reuses the accumulator, constructed with
-// kInterruptSustainSeconds instead of the default kSustainSeconds -- see
-// that constant's declaration comment above for the full rationale/
-// coupling verdict, and RepeatController::notify_probation_block()
-// (autostream_repeat.cpp) for how it is actually driven in production,
-// which is not exercised here since it needs a real RepeatController).
+// kInterruptSustainSeconds or -- for a line-level interrupting input --
+// kImmediateInterruptSustainSeconds instead of the default kSustainSeconds --
+// see those constants' declaration comments above for the full rationale/
+// coupling verdict, and RepeatController::notify_probation_block()/
+// handle_event_locked() (autostream_repeat.cpp) for how the window is
+// actually picked and driven in production, which is not exercised here
+// since it needs a real RepeatController). Also covers reset(window_seconds),
+// the overload that lets the same tracker instance switch windows.
 // ---------------------------------------------------------------------------
 
 static void test_u19_sustain_tracker_custom_threshold()
@@ -2323,6 +2326,34 @@ static void test_u19_sustain_tracker_custom_threshold()
     static_assert(kInterruptSustainSeconds == 1.25, "expected probation window == 1.25 s");
     static_assert(kInterruptSustainSeconds < kPreRollSeconds,
                   "probation window must fit inside its own timeout bound");
+
+    // Immediate-interrupt window (line-level input): the boundary itself --
+    // a 0.24 s run does not confirm, 0.25 s does.
+    {
+        SustainTracker probation(kImmediateInterruptSustainSeconds);
+        CHECK(probation.sustain_seconds() == kImmediateInterruptSustainSeconds,
+              "U19: immediate-interrupt window stored");
+        CHECK(!probation.on_block(true, 0.24), "U19: 0.24 s of 0.25 s -> not yet");
+        CHECK(probation.on_block(true, 0.01), "U19: block reaching exactly 0.25 s confirms");
+        CHECK(probation.is_sustained(), "U19: is_sustained() true immediately after");
+    }
+
+    // reset(window_seconds) switches the window in place, independent of
+    // whatever window the tracker was constructed with, and zeroes the
+    // accumulator the same way the no-arg reset() does.
+    {
+        SustainTracker t(kInterruptSustainSeconds);
+        CHECK(!t.on_block(true, 1.0), "U19: 1.0 of 1.25 s (turntable window)");
+        t.reset(kImmediateInterruptSustainSeconds);
+        CHECK(t.sustain_seconds() == kImmediateInterruptSustainSeconds,
+              "U19: reset(window) switches the window");
+        CHECK(t.above_seconds() == 0.0, "U19: reset(window) also zeroes the accumulator");
+        CHECK(!t.on_block(true, 0.24), "U19: fresh 0.24 s against the new 0.25 s window");
+        CHECK(t.on_block(true, 0.01), "U19: fresh run reaches the new 0.25 s window");
+    }
+
+    static_assert(kImmediateInterruptSustainSeconds < kInterruptSustainSeconds,
+                  "immediate-interrupt window must be shorter than the turntable window");
 }
 
 // ---------------------------------------------------------------------------

@@ -880,7 +880,6 @@ AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabl
         {
             p.silence_threshold_sample     = ch->silence_threshold_sample();
             p.track_change_silence_seconds = ch->track_change_silence_seconds();
-            p.minimum_playback_seconds     = ch->minimum_playback_seconds();
         }
         return p;
     });

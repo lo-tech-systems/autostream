@@ -1466,7 +1466,7 @@ void InputChannel::handle_session_edges(bool   should_capture,
         // Minimum playback hold: this session now owns playback from this
         // instant (see compute_should_capture_with_hold()).
         _capture_start_time = now;
-        _repeat_controller.notify_capture_started(_index);
+        _repeat_controller.notify_capture_started(_index, immediate_interrupt());
         _last_notify_capture_started_time = now;
         LOG_INFO("[input%d] Capture session started (peak=%.4f, threshold=%.4f)",
                  _index, peak_sample, silence_threshold_sample);
@@ -1505,7 +1505,7 @@ void InputChannel::handle_session_edges(bool   should_capture,
                 _last_notify_capture_started_time,
                 MINIMUM_PLAYBACK_RENOTIFY_INTERVAL_SECONDS))
         {
-            _repeat_controller.notify_capture_started(_index);
+            _repeat_controller.notify_capture_started(_index, immediate_interrupt());
             _last_notify_capture_started_time = now;
         }
     }
