@@ -27,10 +27,11 @@ A single slider controls how long an input must stay quiet before autostream tre
 as stopped. It runs from 5 to 300 seconds on a logarithmic scale, so short settings are easier
 to dial in precisely than long ones.
 
-If **minimum playback hold** is configured above zero (a config-file-only setting, not exposed
-on this card), a note appears explaining that once playback starts it keeps running for at
-least that many seconds. That's why the card says short settings (5-10s) are safe even for
-automatic turntables whose start button causes a brief transient before the music begins.
+Once playback starts, a **minimum playback hold** keeps the session running for at least a set
+time (30 seconds by default) even through a brief quiet passage, so a stylus drop or a gap
+between tracks does not cut it short. The hold is a config-file setting rather than a control on
+this card, and it is what makes short silence-detection settings (5-10 seconds) safe, including
+for automatic turntables whose start button causes a transient before the music begins.
 
 This is separate from each input's own silence *threshold* (the level below which audio counts
 as silence in the first place), which is set per input under
