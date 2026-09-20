@@ -2494,6 +2494,21 @@ private:
     // arena-ready-kick design.
     void maybe_build_arena();
 
+    // Scheduled arena re-plan, called once per worker-thread tick right after
+    // maybe_build_arena(). At each offset in kArenaReplanOffsetsSeconds after
+    // construction it asks what memory that was not there at build time can
+    // buy: an arena short of the configured target is extended in place at
+    // its own codec (chunks added under the same per-chunk floor check the
+    // build loop applies, so a recording in memory is untouched); an arena
+    // at target with nothing recorded or held is rebuilt at a higher
+    // bitrate when one now fits the full target. Never a lower bitrate,
+    // never a smaller arena. See the .cpp definition.
+    void maybe_replan_arena();
+    // The two halves of maybe_replan_arena(): the scheduled decision pass
+    // and the per-tick extension commit step. Worker thread only.
+    void replan_arena_pass();
+    void extend_arena_step();
+
     // Session-start-without-teardown: _buffer.reset_cursors() + the same
     // encoder/trim/onset/tail-marker/preroll/state resets free_recording_
     // locked() used to do, MINUS the arena teardown -- the arena's committed
@@ -2740,8 +2755,9 @@ private:
     // achieved chunk count -- until then the plan's figure is an intention,
     // not a fact). Callers: maybe_build_arena()'s need-build gate (an
     // in-progress build must keep running -- it is never "ready"),
-    // perform_pending_start()'s admission, and get_status()'s reporting.
-    // Caller holds _repeat_mutex.
+    // perform_pending_start()'s admission, get_status()'s reporting, and
+    // maybe_replan_arena()'s pass and extension step (which only ever act
+    // on a ready arena). Caller holds _repeat_mutex.
     bool arena_ready_locked() const
     {
         return _arena_plan.codec != CodecChoice::Unavailable
@@ -2770,6 +2786,31 @@ private:
     // teardown after a SUCCESSFUL build implies memory was sufficient, so
     // the follow-up build a config-change re-plan wants runs unthrottled.
     double       _next_build_attempt_time = 0.0;
+
+    // Arena re-plan schedule: process-uptime offsets at which
+    // maybe_replan_arena() runs a pass (the boot-time build often sizes the
+    // arena against a transient reading while sibling services are still
+    // starting -- see kArenaSettleSeconds -- and these later passes recover
+    // the difference once the system has settled). _replan_next_index is
+    // the next offset to fire; a pass consumes every offset already elapsed
+    // so a late-enabled feature does not run three passes back to back.
+    static constexpr double kArenaReplanOffsetsSeconds[] = {300.0, 600.0, 900.0};
+    static constexpr size_t kArenaReplanCount =
+        sizeof(kArenaReplanOffsetsSeconds) / sizeof(kArenaReplanOffsetsSeconds[0]);
+    size_t       _replan_next_index = 0;
+    // In-flight arena extension (maybe_replan_arena()): the chunk count the
+    // extension is committing toward, 0 when none is in flight, and the
+    // committed count when it started (for the completion log line). Unlike
+    // _arena_build_in_progress this does not affect arena_ready_locked() --
+    // the arena stays usable, and recordable into, throughout.
+    size_t       _arena_extend_goal_chunks  = 0;
+    size_t       _arena_extend_start_chunks = 0;
+    // Capacity the re-plan projected for the rebuild it just started (a
+    // higher bitrate can legitimately hold fewer seconds than the arena it
+    // replaces, as long as it still meets the target), so the build that
+    // follows can warn if it comes out smaller than projected -- memory
+    // moved in between. 0 when the next build is not a re-plan rebuild.
+    long         _rebuild_planned_capacity_seconds = 0;
 
     // Arena-ready kick: tracks
     // whether a PERMITTED input is currently capturing, updated

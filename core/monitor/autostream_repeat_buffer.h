@@ -856,9 +856,11 @@ inline CodecChoice pick_codec_for_target(long available_mib, int target_minutes,
 // =============================================================================
 // ArenaPlan / plan_arena() — fixed-arena sizing
 //
-// The controller calls this exactly once, at enable time (and again on any
-// re-plan, which is always a disable+enable by design -- there is
-// no in-place resize). Its output is what preallocate_one_more_chunk()'s
+// The controller calls this at enable time (and again on a config-change
+// re-plan, which is a disable+enable, or on a scheduled re-plan that finds
+// a higher bitrate now fits -- see RepeatController::maybe_replan_arena(),
+// which can also grow an existing arena in place toward its target
+// without calling this at all). Its output is what preallocate_one_more_chunk()'s
 // incremental commit loop then aims for, chunk by chunk. This function does
 // no allocation itself and touches no RepeatBuffer instance -- pure sizing
 // arithmetic over the same inputs pick_codec_for_target() already uses, so
@@ -977,6 +979,34 @@ inline ArenaPlan plan_arena(long effective_available_mib, int target_minutes,
     plan.arena_bytes      = static_cast<size_t>(chunk_count * static_cast<long long>(chunk_bytes));
     plan.capacity_seconds = static_cast<long>(static_cast<long long>(plan.arena_bytes) / rate);
     return plan;
+}
+
+// Whole chunks needed to hold target_minutes at codec's byte rate, rounded
+// UP (a partial chunk is claimed whole, matching plan_arena()'s round-up
+// rule). This is the goal a later arena extension aims for once the arena
+// exists: the codec is fixed by then, so only the chunk count can move.
+// target_minutes is clamped to [kMinRepeatTargetMinutes,
+// kMaxRepeatTargetMinutes] exactly as plan_arena() clamps it. 0 when the
+// codec has no byte rate (Unavailable) or chunk_bytes is 0.
+inline size_t arena_chunks_for_target(CodecChoice codec, int target_minutes,
+                                      long sample_rate_hz,
+                                      size_t chunk_bytes = RepeatBuffer::kDefaultChunkBytes)
+{
+    long rate = byte_rate_for(codec, sample_rate_hz);
+    if (rate <= 0 || chunk_bytes == 0)
+        return 0;
+
+    int clamped_target_minutes = target_minutes;
+    if (clamped_target_minutes < kMinRepeatTargetMinutes)
+        clamped_target_minutes = kMinRepeatTargetMinutes;
+    if (clamped_target_minutes > kMaxRepeatTargetMinutes)
+        clamped_target_minutes = kMaxRepeatTargetMinutes;
+    long long target_seconds = static_cast<long long>(clamped_target_minutes) * 60;
+
+    long long footprint_bytes = static_cast<long long>(rate) * target_seconds;
+    long long chunks = (footprint_bytes + static_cast<long long>(chunk_bytes) - 1)
+                       / static_cast<long long>(chunk_bytes);
+    return static_cast<size_t>(chunks);
 }
 
 

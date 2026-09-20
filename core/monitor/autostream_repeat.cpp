@@ -514,6 +514,10 @@ void RepeatRecorder::worker_thread_func()
         // boot-settle rule (kArenaSettleSeconds) before a build ever starts
         // -- see maybe_build_arena()'s own comment.
         _owner.maybe_build_arena();
+        // Scheduled arena re-plan and in-flight extension step: same thread,
+        // strictly after the build step; a no-op unless a pass is due or an
+        // extension is committing chunks. See maybe_replan_arena().
+        _owner.maybe_replan_arena();
 
         // Handle a deferred session start BEFORE draining the ring
         // below -- any blocks the audio thread buffered while _state was
@@ -658,6 +662,8 @@ std::deque<RepeatBuffer::Chunk> RepeatController::teardown_arena_locked(
     std::deque<RepeatBuffer::Chunk> stolen = _buffer.steal_chunks(&out_spare);
     _arena_plan               = ArenaPlan{CodecChoice::Unavailable, 0, 0};
     _arena_build_in_progress  = false;
+    _arena_extend_goal_chunks = 0;   // an extension of a torn-down arena has nothing left to extend
+    _rebuild_planned_capacity_seconds = 0;
     _active_codec              = CodecChoice::Unavailable;
     _unavailable_reason.clear();
     return stolen;
@@ -1430,6 +1436,12 @@ void RepeatController::maybe_build_arena()
             _unavailable_reason  = "insufficient_memory";
             _active_codec        = CodecChoice::Unavailable;
             _next_build_attempt_time = get_monotonic_time() + kArenaSettleSeconds;
+            if (_rebuild_planned_capacity_seconds > 0)
+                LOG_WARN("[repeat] arena rebuild after a re-plan achieved nothing "
+                         "(%lds planned): memory moved between the re-plan and the build; "
+                         "the build will retry",
+                         _rebuild_planned_capacity_seconds);
+            _rebuild_planned_capacity_seconds = 0;
         }
         else
         {
@@ -1447,6 +1459,12 @@ void RepeatController::maybe_build_arena()
                      "(requested %d min)",
                      codec_choice_to_string(_arena_plan.codec), achieved_bytes / (1024 * 1024),
                      _arena_plan.capacity_seconds, _target_minutes_cfg);
+            if (_rebuild_planned_capacity_seconds > 0
+                && _arena_plan.capacity_seconds < _rebuild_planned_capacity_seconds)
+                LOG_WARN("[repeat] arena rebuilt smaller than the re-plan projected "
+                         "(%lds planned, %lds built): memory moved between the re-plan and the build",
+                         _rebuild_planned_capacity_seconds, _arena_plan.capacity_seconds);
+            _rebuild_planned_capacity_seconds = 0;
         }
         _arena_build_in_progress = false;
 
@@ -1473,6 +1491,268 @@ void RepeatController::maybe_build_arena()
         }
     }
 }
+
+void RepeatController::maybe_replan_arena()
+{
+    // Called once per RepeatRecorder worker-thread tick, right after
+    // maybe_build_arena() (same thread, so the build loop and this never run
+    // concurrently). Two halves, both cheap when idle:
+    //
+    //   1. The scheduled pass: at each kArenaReplanOffsetsSeconds of process
+    //      uptime, ask what memory that was not there at build time buys:
+    //      an in-place extension toward the configured target at the
+    //      arena's own codec if it is short, or -- with nothing recorded or
+    //      held -- a rebuild at a higher bitrate that still holds the full
+    //      target. Never a lower bitrate, never a smaller arena.
+    //   2. The extension step: while an extension is in flight, commit up to
+    //      two chunks per tick toward its goal, stopping at the goal or at
+    //      the free-RAM floor -- the same per-chunk discipline as the build
+    //      loop, and the same "never allocate or read a file under the lock"
+    //      rule.
+    //
+    // A rebuild is just a teardown here; maybe_build_arena() sees no arena
+    // on its next tick and builds afresh from a real /proc/meminfo read. An
+    // extension never touches arena_ready_locked(): the arena stays usable,
+    // and a session already recording into it simply gains headroom before
+    // the wrap-around would have started recycling its oldest chunk.
+    if (!_enabled_fast.load(std::memory_order_relaxed))
+        return;
+
+    bool run_pass = false;
+    {
+        std::lock_guard<std::mutex> lock(_repeat_mutex);
+        double uptime = get_monotonic_time() - _construct_time;
+        if (_replan_next_index < kArenaReplanCount
+            && uptime >= kArenaReplanOffsetsSeconds[_replan_next_index]
+            && arena_ready_locked()
+            && _arena_extend_goal_chunks == 0)
+        {
+            run_pass = true;
+            while (_replan_next_index < kArenaReplanCount
+                   && uptime >= kArenaReplanOffsetsSeconds[_replan_next_index])
+                ++_replan_next_index;
+        }
+    }
+    if (run_pass)
+        replan_arena_pass();
+
+    extend_arena_step();
+}
+
+void RepeatController::replan_arena_pass()
+{
+    // One scheduled decision. The only question is whether memory that was
+    // not there when the arena was built is there now, and what it buys:
+    //
+    //   1. If the arena is short of the configured target at its own codec,
+    //      extend it in place toward the target (any state -- an extension
+    //      keeps the codec, so a recording in memory is unaffected).
+    //   2. Otherwise, with nothing recorded or held, if a fresh plan against
+    //      today's memory (the arena's own pages credited back, since a
+    //      rebuild releases them first) would pick a HIGHER bitrate that
+    //      still holds the full target, tear the arena down so the build
+    //      loop rebuilds it at that tier.
+    //
+    // A re-plan never lowers the bitrate and never shrinks the arena: a
+    // fresh plan that comes out smaller or lower is simply ignored.
+
+    // ── Snapshot under the lock ──────────────────────────────────────────
+    CodecChoice cur_codec;
+    size_t      cur_bytes;
+    long        cur_capacity;
+    int         target_minutes;
+    std::string codec_cfg;
+    size_t      chunk_bytes;
+    bool        recording_held;
+    {
+        std::lock_guard<std::mutex> lock(_repeat_mutex);
+        if (!_enabled_cfg || !arena_ready_locked())
+            return;
+        cur_codec      = _arena_plan.codec;
+        cur_bytes      = _arena_plan.arena_bytes;
+        cur_capacity   = _arena_plan.capacity_seconds;
+        target_minutes = _target_minutes_cfg;
+        codec_cfg      = _codec_cfg;
+        chunk_bytes    = _buffer.chunk_bytes();
+        // Anything but an empty, idle arena counts as a recording in memory:
+        // Recording/Hold/Replaying/FadingOut hold data, and Pending is a
+        // session about to start into this arena's codec.
+        recording_held = (_state != RepeatState::Idle) || _buffer.total_bytes() > 0;
+    }
+
+    size_t goal_chunks = arena_chunks_for_target(cur_codec, target_minutes,
+                                                 _sample_rate_hz, chunk_bytes);
+    size_t cur_chunks  = (chunk_bytes > 0) ? (cur_bytes / chunk_bytes) : 0;
+    bool   short_of_target = goal_chunks > 0 && cur_chunks < goal_chunks;
+
+    CodecChoice pinned = pinned_codec_from_config(codec_cfg);
+    bool upgrade_possible = !recording_held && pinned == CodecChoice::Unavailable;
+    if (!short_of_target && !upgrade_possible)
+    {
+        LOG_INFO("[repeat] arena re-plan: capacity %lds meets the %d min target, nothing to do",
+                  cur_capacity, target_minutes);
+        return;
+    }
+
+    // ── Outside the lock: what would a fresh plan look like now? ─────────
+    MemInfo mem = read_meminfo();
+    if (!mem.ok())
+    {
+        LOG_WARN("[repeat] arena re-plan: /proc/meminfo unreadable, skipping this pass");
+        return;
+    }
+    long credited_mib = mem.effective_available_mib()
+                        + static_cast<long>(cur_bytes / (1024 * 1024));
+
+    bool upgrade = false;
+    ArenaPlan fresh{CodecChoice::Unavailable, 0, 0};
+    if (upgrade_possible)
+    {
+        int clamped_target_minutes = target_minutes;
+        if (clamped_target_minutes < kMinRepeatTargetMinutes)
+            clamped_target_minutes = kMinRepeatTargetMinutes;
+        if (clamped_target_minutes > kMaxRepeatTargetMinutes)
+            clamped_target_minutes = kMaxRepeatTargetMinutes;
+        long target_seconds = static_cast<long>(clamped_target_minutes) * 60;
+
+        fresh = plan_arena(credited_mib, target_minutes, _sample_rate_hz, pinned, chunk_bytes);
+        // The rebuild re-reads memory after the teardown, so the projection
+        // must hold with a whole chunk of slack above the floor; without it a
+        // small drift in the meantime could rebuild smaller than what was
+        // just released, which a re-plan must never do.
+        long fresh_arena_mib = static_cast<long>(fresh.arena_bytes / (1024 * 1024));
+        long chunk_mib       = static_cast<long>(chunk_bytes / (1024 * 1024));
+        upgrade = fresh.codec != CodecChoice::Unavailable
+            && byte_rate_for(fresh.codec, _sample_rate_hz) > byte_rate_for(cur_codec, _sample_rate_hz)
+            && fresh.capacity_seconds >= target_seconds
+            && (credited_mib - fresh_arena_mib - kFreeRamFloorMib) >= chunk_mib;
+    }
+
+    // ── Re-acquire and commit the decision ───────────────────────────────
+    // Declared before the lock_guard so the storage a rebuild frees is
+    // destroyed after the lock is released -- see teardown_arena_locked().
+    std::deque<RepeatBuffer::ChunkStorage> freed_spare;
+    std::deque<RepeatBuffer::Chunk> freed_chunks;
+    std::lock_guard<std::mutex> lock(_repeat_mutex);
+    if (!_enabled_cfg || !arena_ready_locked()
+        || _arena_plan.codec != cur_codec || _arena_plan.arena_bytes != cur_bytes)
+        return;   // torn down or re-planned while the meminfo read was in flight
+
+    if (upgrade)
+    {
+        if (_state != RepeatState::Idle || _buffer.total_bytes() > 0)
+            return;   // a session started meanwhile: keep the arena it is using
+        LOG_INFO("[repeat] arena re-plan: rebuilding at a higher bitrate, %s -> %s, "
+                 "capacity %lds -> %lds planned (requested %d min, available %ld MiB "
+                 "with the arena released)",
+                 codec_choice_to_string(cur_codec), codec_choice_to_string(fresh.codec),
+                 cur_capacity, fresh.capacity_seconds, target_minutes, credited_mib);
+        freed_chunks = teardown_arena_locked(freed_spare);
+        _rebuild_planned_capacity_seconds = fresh.capacity_seconds;
+        _next_build_attempt_time = 0.0;
+        return;
+    }
+
+    if (short_of_target)
+    {
+        _arena_extend_goal_chunks  = goal_chunks;
+        _arena_extend_start_chunks = cur_chunks;
+        LOG_INFO("[repeat] arena re-plan: extending %zu -> %zu chunks at %s "
+                 "(capacity %lds, requested %d min, available %ld MiB)",
+                 cur_chunks, goal_chunks, codec_choice_to_string(cur_codec),
+                 cur_capacity, target_minutes, mem.effective_available_mib());
+        return;
+    }
+
+    LOG_INFO("[repeat] arena re-plan: no change, capacity %lds meets the %d min target and "
+             "no higher bitrate fits (available %ld MiB with the arena released)",
+              cur_capacity, target_minutes, credited_mib);
+}
+
+void RepeatController::extend_arena_step()
+{
+    size_t goal;
+    size_t chunk_bytes;
+    {
+        std::lock_guard<std::mutex> lock(_repeat_mutex);
+        goal = _arena_extend_goal_chunks;
+        if (goal == 0)
+            return;
+        if (!_enabled_cfg || !arena_ready_locked())
+        {
+            _arena_extend_goal_chunks = 0;   // torn down under us; nothing to extend
+            return;
+        }
+        chunk_bytes = _buffer.chunk_bytes();
+    }
+    long chunk_mib = static_cast<long>(chunk_bytes / (1024 * 1024));
+
+    bool finished = false;
+    long last_available_mib = -1;
+    for (int committed_this_tick = 0; committed_this_tick < 2; ++committed_this_tick)
+    {
+        size_t committed;
+        {
+            std::lock_guard<std::mutex> lock(_repeat_mutex);
+            committed = _buffer.chunk_count() + _buffer.spare_chunk_count();
+        }
+        if (committed >= goal)
+        {
+            finished = true;
+            break;
+        }
+
+        // Outside the lock: the same per-chunk floor check as the build loop.
+        MemInfo mem = read_meminfo();
+        last_available_mib = mem.ok() ? mem.effective_available_mib() : -1;
+        if (!mem.ok() || (last_available_mib - chunk_mib) < kFreeRamFloorMib)
+        {
+            finished = true;   // no headroom now; a later pass may try again
+            break;
+        }
+
+        std::lock_guard<std::mutex> lock(_repeat_mutex);
+        if (!_enabled_cfg || !arena_ready_locked() || _arena_extend_goal_chunks == 0)
+        {
+            _arena_extend_goal_chunks = 0;
+            return;
+        }
+        if (!_buffer.preallocate_one_more_chunk())
+        {
+            finished = true;
+            break;
+        }
+        // Publish the new capacity at once: get_status() reads these, and a
+        // session already recording reports its frozen limit from
+        // _max_recording_seconds, which must grow with the arena it is in.
+        long rate = byte_rate_for(_arena_plan.codec, _sample_rate_hz);
+        _arena_plan.arena_bytes = _buffer.arena_bytes();
+        if (rate > 0)
+            _arena_plan.capacity_seconds =
+                static_cast<long>(_arena_plan.arena_bytes / static_cast<size_t>(rate));
+        if (_state == RepeatState::Recording)
+            _max_recording_seconds = _arena_plan.capacity_seconds;
+    }
+    if (!finished)
+        return;   // more chunks next tick
+
+    std::lock_guard<std::mutex> lock(_repeat_mutex);
+    if (_arena_extend_goal_chunks == 0)
+        return;
+    size_t now_chunks = _buffer.chunk_count() + _buffer.spare_chunk_count();
+    if (now_chunks > _arena_extend_start_chunks)
+        LOG_INFO("[repeat] arena extended: +%zu chunks, arena=%zu MiB, capacity=%lds (requested %d min)",
+                 now_chunks - _arena_extend_start_chunks,
+                 _arena_plan.arena_bytes / (1024 * 1024),
+                 _arena_plan.capacity_seconds, _target_minutes_cfg);
+    else
+        LOG_INFO("[repeat] arena re-plan: no headroom to extend (available=%ld MiB, arena=%zu MiB, "
+                 "capacity=%lds, requested %d min)",
+                 last_available_mib, _arena_plan.arena_bytes / (1024 * 1024),
+                 _arena_plan.capacity_seconds, _target_minutes_cfg);
+    _arena_extend_goal_chunks = 0;
+}
+
 
 void RepeatController::notify_capture_stopped(int input_index)
 {
@@ -1956,6 +2236,8 @@ void RepeatController::arena_stats(size_t& chunks, size_t& spare, size_t& target
     spare       = _buffer.spare_chunk_count();
     chunk_bytes = _buffer.chunk_bytes();
     target      = (chunk_bytes > 0) ? (_arena_plan.arena_bytes / chunk_bytes) : 0;
+    if (_arena_extend_goal_chunks > target)
+        target = _arena_extend_goal_chunks;   // an in-flight extension is still committing toward this
 }
 
 RepeatStatus RepeatController::get_status() const

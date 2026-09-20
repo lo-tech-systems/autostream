@@ -641,6 +641,44 @@ static void test_u20_pi_462mib_at_96mib_floor()
 // U8 — meminfo parse
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// U21 -- arena_chunks_for_target(): the extension goal once an arena exists
+//
+// The codec is fixed by then, so only the whole-chunk count that holds the
+// target duration matters; partial chunks round UP, exact fits do not.
+// ---------------------------------------------------------------------------
+
+static void test_u21_arena_chunks_for_target()
+{
+    // Mp2_160 at 80 min: 20,000 B/s * 4800 s = 96,000,000 B = 5.72 chunks
+    // of 16 MiB -> 6 (the sixth is claimed whole).
+    CHECK(arena_chunks_for_target(CodecChoice::Mp2_160, 80, 48000) == 6,
+          "U21: Mp2_160 80 min -> 6 production chunks");
+
+    // PCM at 48 kHz for 80 min: 192,000 B/s * 4800 s = 921,600,000 B =
+    // 54.93 chunks -> 55.
+    CHECK(arena_chunks_for_target(CodecChoice::PcmS16, 80, 48000) == 55,
+          "U21: PCM 80 min -> 55 production chunks");
+
+    // Exact fit with a hand-sized chunk: Mp2_160 at 10 min is 12,000,000 B,
+    // which is exactly 12 chunks of 1,000,000 B -- no round-up.
+    CHECK(arena_chunks_for_target(CodecChoice::Mp2_160, 10, 48000, 1000000) == 12,
+          "U21: exact multiple does not round up");
+
+    // Target minutes are clamped the same way plan_arena() clamps them: a
+    // below-minimum ask sizes for kMinRepeatTargetMinutes.
+    CHECK(arena_chunks_for_target(CodecChoice::Mp2_160, 1, 48000, 1000000)
+              == arena_chunks_for_target(CodecChoice::Mp2_160, kMinRepeatTargetMinutes, 48000, 1000000),
+          "U21: below-minimum target clamps up");
+
+    // Degenerate inputs: no byte rate, or no chunk size, mean no goal.
+    CHECK(arena_chunks_for_target(CodecChoice::Unavailable, 80, 48000) == 0,
+          "U21: Unavailable codec -> 0");
+    CHECK(arena_chunks_for_target(CodecChoice::Mp2_160, 80, 48000, 0) == 0,
+          "U21: zero chunk size -> 0");
+}
+
+
 static void test_u8_meminfo_parse()
 {
     // Canned realistic /proc/meminfo excerpt.
@@ -2303,6 +2341,7 @@ int main()
     test_u14_byte_rate_for_new_tiers();
     test_plan_arena();
     test_u20_pi_462mib_at_96mib_floor();
+    test_u21_arena_chunks_for_target();
     test_u8_meminfo_parse();
     test_u9_silence_trim_accounting();
     test_tail_trim_end_to_end();
