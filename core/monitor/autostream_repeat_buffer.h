@@ -16,11 +16,14 @@
 //   - SilenceTrimAccountant — byte-accounting helper for the end-of-recording
 //     silence trim.
 //
-// This file has NO ALSA / libsamplerate / twolame / mpg123 / system includes
-// beyond the C++ standard library, exactly like autostream_track_gap_detector.h,
-// so it can be unit tested (core/monitor/tests/test_repeat_buffer.cpp) without
-// any link dependencies and included directly by the daemon proper
-// (autostream_monitor.h / autostream_repeat.cpp).
+// This file has NO ALSA / libsamplerate / twolame / mpg123 includes and no
+// LINK dependencies beyond the C++ standard library and libc, exactly like
+// autostream_track_gap_detector.h, so it can be unit tested
+// (core/monitor/tests/test_repeat_buffer.cpp) without pulling in any of
+// those libraries and included directly by the daemon proper
+// (autostream_monitor.h / autostream_repeat.cpp). It does use <sys/mman.h>
+// (mmap/munmap/mlock) for chunk storage -- plain libc, needing no extra
+// -l flag, so this doesn't add a link dependency.
 // =============================================================================
 
 #pragma once
@@ -34,6 +37,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <sys/mman.h>
 
 // =============================================================================
 // RepeatBuffer — chunked heap store for the in-RAM recording
@@ -61,9 +66,40 @@ public:
     // Production chunk size. Tests pass a smaller value.
     static constexpr size_t kDefaultChunkBytes = 16u * 1024 * 1024;
 
+    // Chunk storage is a raw memory mapping, not a heap block. The process
+    // locks all of its memory for the lifetime of the daemon (mlockall), and
+    // a locked process never actually gives freed heap pages back to the
+    // kernel -- glibc keeps them mapped (and, once touched, still resident)
+    // in its own free lists for future reuse by THAT allocator instance.
+    // An arena teardown (RepeatBuffer::clear()/steal_chunks()) must make the
+    // memory available to whatever the arena builds NEXT -- typically a
+    // fresh arena at a different size -- so the storage has to come back to
+    // the kernel, not just to glibc. munmap() actually does that; delete[]
+    // on a locked process's heap does not.
+    struct ChunkStorageDeleter
+    {
+        size_t bytes;
+
+        // Constructors spelled out (rather than a default member initializer
+        // on `bytes`) because a nested class's default member initializer,
+        // checked for default-constructibility from inside the still-
+        // incomplete enclosing class (Chunk::data's declaration, right
+        // below), trips a compiler limitation on the standard-library
+        // unique_ptr's deleter-constructibility check.
+        ChunkStorageDeleter() noexcept : bytes(0) {}
+        explicit ChunkStorageDeleter(size_t chunk_bytes) noexcept : bytes(chunk_bytes) {}
+
+        void operator()(uint8_t* p) const noexcept
+        {
+            if (p)
+                munmap(p, bytes);
+        }
+    };
+    using ChunkStorage = std::unique_ptr<uint8_t[], ChunkStorageDeleter>;
+
     struct Chunk
     {
-        std::unique_ptr<uint8_t[]> data;
+        ChunkStorage data;
         size_t used     = 0;   // bytes written so far
         size_t capacity = 0;   // == chunk_bytes at construction time
     };
@@ -117,18 +153,33 @@ public:
     // calls this OUTSIDE whatever lock guards the buffer (_repeat_mutex),
     // then hands the result to append_with_preallocated() once it re-holds
     // the lock, so the potentially-slow allocation itself never happens
-    // while the lock is held. Returns nullptr on allocation failure (same
-    // OOM contract as append()'s internal allocate_chunk()).
-    static std::unique_ptr<uint8_t[]> allocate_chunk_storage(size_t chunk_bytes)
+    // while the lock is held. Returns an empty ChunkStorage on allocation
+    // failure (same OOM contract as append()'s internal allocate_chunk()).
+    //
+    // Backed by an anonymous mapping rather than new[] -- see ChunkStorage's
+    // own comment for why -- so this is what makes a torn-down arena's
+    // memory genuinely available to whatever gets built next. mmap() rounds
+    // chunk_bytes up to a whole number of pages internally; callers that
+    // pass a sub-page chunk_bytes (small test buffers) still get back
+    // exactly chunk_bytes worth of usable storage.
+    static ChunkStorage allocate_chunk_storage(size_t chunk_bytes)
     {
-        try
-        {
-            return std::unique_ptr<uint8_t[]>(new uint8_t[chunk_bytes]);
-        }
-        catch (const std::bad_alloc&)
-        {
-            return nullptr;
-        }
+        if (chunk_bytes == 0)
+            return ChunkStorage();
+
+        void* p = mmap(nullptr, chunk_bytes, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+        if (p == MAP_FAILED)
+            return ChunkStorage();
+
+        // Best-effort: the process-wide mlockall() already covers this
+        // mapping once it exists, so this is only a hedge against the
+        // window before that (or an unprivileged caller -- e.g. a test
+        // binary -- with no CAP_IPC_LOCK/rlimit that would make it fail).
+        // The result is deliberately ignored either way.
+        mlock(p, chunk_bytes);
+
+        return ChunkStorage(static_cast<uint8_t*>(p), ChunkStorageDeleter{chunk_bytes});
     }
 
     // Frees the oldest (front) chunk — the sliding-window mechanism.  Never
@@ -323,7 +374,7 @@ public:
     // existing legacy caller (which never had a spare pool to worry about)
     // keeps compiling unchanged. Also clears the fixed-capacity flag, same
     // as clear() -- like clear(), this is a feature-disable call.
-    std::deque<Chunk> steal_chunks(std::deque<std::unique_ptr<uint8_t[]>>* out_spare_storage = nullptr)
+    std::deque<Chunk> steal_chunks(std::deque<ChunkStorage>* out_spare_storage = nullptr)
     {
         std::deque<Chunk> stolen = std::move(_chunks);
         _chunks.clear();
@@ -497,14 +548,14 @@ private:
     //      storage, or storage handed back by reset_cursors()/
     //      truncate_tail() in fixed-capacity mode) -- adopted with
     //      used = 0. This is the common case once an arena has been built:
-    //      append() never actually touches new/delete during normal
+    //      append() never actually maps/unmaps storage during normal
     //      recording, only at arena-build time.
     //   2. If the spare pool is empty AND fixed_capacity() is true (the
     //      arena is fully committed and every one of its chunks is already
     //      live in _chunks, all full): RECYCLE. evict_front() donates the
     //      current front chunk's storage, which becomes the new back chunk
     //      with used = 0 -- this is the wrap-around/keeps-last-N-minutes
-    //      mechanism. Deliberately never calls new here:
+    //      mechanism. Deliberately never allocates fresh storage here:
     //      a fixed arena's whole point is that its footprint stops growing
     //      once built, however long recording continues. If evict_front()
     //      itself refuses (only one chunk exists -- see its own comment),
@@ -512,8 +563,8 @@ private:
     //      has nothing to recycle simply cannot accept more data, which is
     //      the correct, if degenerate, outcome for an arena that small.
     //   3. Neither of the above (fixed_capacity() is false -- the legacy,
-    //      pre-arena buffer): fall back to a normal heap allocation, exactly
-    //      as this function always has.
+    //      pre-arena buffer): fall back to a fresh allocate_chunk_storage()
+    //      call, exactly as this function always has.
     bool allocate_chunk()
     {
         if (!_spare_storage.empty())
@@ -539,14 +590,9 @@ private:
 
         Chunk c;
         c.capacity = _chunk_bytes;
-        try
-        {
-            c.data.reset(new uint8_t[_chunk_bytes]);
-        }
-        catch (const std::bad_alloc&)
-        {
-            return false;
-        }
+        c.data = allocate_chunk_storage(_chunk_bytes);
+        if (!c.data)
+            return false;   // same OOM contract as the old new[] path
         c.used = 0;
         _chunks.push_back(std::move(c));
         return true;
@@ -573,7 +619,7 @@ private:
     // behavioural meaning (unlike _chunks, where order IS the recording's
     // chronology), push_back/pop_front here is just "a FIFO queue of
     // interchangeable free blocks".
-    std::deque<std::unique_ptr<uint8_t[]>> _spare_storage;
+    std::deque<ChunkStorage> _spare_storage;
 
     // Latched true by preallocate_one_more_chunk(), cleared by clear()/
     // steal_chunks(). Selects allocate_chunk()'s policy: false is the

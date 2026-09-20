@@ -2519,7 +2519,7 @@ private:
     // pool is returned via out_spare) -- same return-plus-outparam shape as
     // RepeatBuffer::steal_chunks() itself, one layer up.
     std::deque<RepeatBuffer::Chunk> teardown_arena_locked(
-        std::deque<std::unique_ptr<uint8_t[]>>& out_spare);
+        std::deque<RepeatBuffer::ChunkStorage>& out_spare);
 
 private:
     // Boot settle: when the daemon starts with repeat already enabled (a

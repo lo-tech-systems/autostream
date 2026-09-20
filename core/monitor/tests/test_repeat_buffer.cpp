@@ -1201,7 +1201,7 @@ static void test_steal_and_clear_release_spare_pool()
         CHECK(buf.chunk_count() == 2, "steal: sanity -- 2 chunks in use");
         CHECK(buf.spare_chunk_count() == 1, "steal: sanity -- 1 spare chunk remains");
 
-        std::deque<std::unique_ptr<uint8_t[]>> spare_out;
+        std::deque<RepeatBuffer::ChunkStorage> spare_out;
         auto stolen = buf.steal_chunks(&spare_out);
         CHECK(stolen.size() == 2, "steal: returns the in-use chunks");
         CHECK(spare_out.size() == 1, "steal: out-param carries the spare pool too");

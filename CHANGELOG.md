@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: the audio monitor's repeat buffer is now built from memory mappings
+  that are returned to the system when the buffer is torn down. Previously,
+  because the monitor locks its memory, a disable and re-enable or a
+  configuration change could leave a whole buffer's worth of pinned pages
+  behind and rebuild a smaller buffer on top; the monitor's allocator is
+  also limited to two heaps
 - change: the audio monitor logs a memory line at info level every 5 minutes
   while an input is capturing and hourly when idle, and once when a capture
   session ends: resident, peak and locked size, heap in use and held by the

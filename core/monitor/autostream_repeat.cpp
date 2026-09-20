@@ -606,7 +606,7 @@ void RepeatController::stop()
     // actual chunk storage, live and spare) AFTER the lock_guard unlocks --
     // see RepeatBuffer::steal_chunks()'s comment for the declaration-order
     // pattern every teardown_arena_locked() call site uses.
-    std::deque<std::unique_ptr<uint8_t[]>> freed_spare;
+    std::deque<RepeatBuffer::ChunkStorage> freed_spare;
     std::deque<RepeatBuffer::Chunk> freed_chunks;
     {
         std::lock_guard<std::mutex> lock(_repeat_mutex);
@@ -645,7 +645,7 @@ void RepeatController::discard_recording_locked()
 }
 
 std::deque<RepeatBuffer::Chunk> RepeatController::teardown_arena_locked(
-    std::deque<std::unique_ptr<uint8_t[]>>& out_spare)
+    std::deque<RepeatBuffer::ChunkStorage>& out_spare)
 {
     // Feature-disable teardown: unlike discard_
     // recording_locked(), this actually frees the arena's committed
@@ -927,7 +927,7 @@ std::string RepeatController::set_enabled(bool enabled, const std::string& codec
     // Declared BEFORE the lock_guard below so they destruct (freeing any
     // actual chunk storage, live and spare) AFTER the lock unlocks -- see
     // teardown_arena_locked()'s own comment.
-    std::deque<std::unique_ptr<uint8_t[]>> freed_spare;
+    std::deque<RepeatBuffer::ChunkStorage> freed_spare;
     std::deque<RepeatBuffer::Chunk> freed_chunks;
     std::lock_guard<std::mutex> lock(_repeat_mutex);
 
