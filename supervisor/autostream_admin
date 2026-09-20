@@ -45,6 +45,9 @@ Exactly one of:
   bt-services-disable
   bt-onboard-on
   bt-onboard-off
+  sdcard-health-check [method]
+  sdcard-health-enable METHOD
+  sdcard-health-disable
 
 Notes:
   - [reason] is optional for reboot.
@@ -1933,6 +1936,55 @@ def _bt_onboard_on(_args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# SD card health monitoring: exec the guarded wrapper, pass its result through
+# ---------------------------------------------------------------------------
+
+SDCARDHEALTH_WRAPPER = "/usr/local/libexec/autostream/autostream_sdcardhealth"
+
+SDCARDHEALTH_METHODS = {
+    "auto", "sandisk", "adata", "transcend", "micron",
+    "swissbit", "2step", "innodisk",
+}
+
+
+def _run_sdcardhealth_wrapper(mode: str, method: Optional[str] = None) -> int:
+    """Exec the autostream_sdcardhealth wrapper, passing stdout/stderr through.
+
+    All safety logic (marker, timeout, timer enable/disable) lives in the
+    wrapper; this just forwards the mode and lets the wrapper's exit code
+    become ours.
+    """
+    cmd = [SDCARDHEALTH_WRAPPER, mode]
+    if method is not None:
+        cmd += ["--method", method]
+    try:
+        p = subprocess.run(cmd)
+    except FileNotFoundError:
+        log("ERROR", f"sdcard-health-{mode}: {SDCARDHEALTH_WRAPPER} not found")
+        return 2
+    return p.returncode
+
+
+def _sdcard_health_check(args) -> int:
+    method = getattr(args, "method", None)
+    if method is not None and method not in SDCARDHEALTH_METHODS:
+        log("ERROR", f"sdcard-health-check: invalid method '{method}'")
+        return 1
+    return _run_sdcardhealth_wrapper("check", method)
+
+
+def _sdcard_health_enable(args) -> int:
+    if args.method not in SDCARDHEALTH_METHODS:
+        log("ERROR", f"sdcard-health-enable: invalid method '{args.method}'")
+        return 1
+    return _run_sdcardhealth_wrapper("enable", args.method)
+
+
+def _sdcard_health_disable(_args) -> int:
+    return _run_sdcardhealth_wrapper("disable")
+
+
 def _bt_onboard_off(_args) -> int:
     ok, changed = bt_onboard_set_config(FIRMWARE_CONFIG_PATH, enable_onboard=False)
     if not ok:
@@ -2119,6 +2171,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
              "Prints 'reboot-required' or 'no-change'; does not reboot.",
     )
 
+    p_sdch = subparsers.add_parser(
+        "sdcard-health-check",
+        help="Run the guarded SD card health probe. Never enables anything.",
+    )
+    p_sdch.add_argument(
+        "method", nargs="?", default=None,
+        help="Query method; defaults to the saved method, else 'auto'.",
+    )
+
+    p_sden = subparsers.add_parser(
+        "sdcard-health-enable",
+        help="Save the query method and enable the SD card health timer.",
+    )
+    p_sden.add_argument("method", help="Query method to save and use.")
+
+    subparsers.add_parser(
+        "sdcard-health-disable",
+        help="Disable the SD card health timer and clear the saved method.",
+    )
+
     args = parser.parse_args(argv)
     return args
 
@@ -2208,6 +2280,15 @@ def main(argv: list[str]) -> int:
 
         if args.command == "bt-onboard-off":
             return _bt_onboard_off(args)
+
+        if args.command == "sdcard-health-check":
+            return _sdcard_health_check(args)
+
+        if args.command == "sdcard-health-enable":
+            return _sdcard_health_enable(args)
+
+        if args.command == "sdcard-health-disable":
+            return _sdcard_health_disable(args)
 
         log("ERROR", "no action specified")
         return 2

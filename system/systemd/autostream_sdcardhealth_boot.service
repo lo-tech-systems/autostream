@@ -1,0 +1,17 @@
+# /etc/systemd/system/autostream_sdcardhealth_boot.service
+#
+# This file is part of autostream.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+[Unit]
+Description=Detect a SD Card Health Probe That Did Not Complete Before This Boot
+After=local-fs.target
+Before=timers.target autostream.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/libexec/autostream/autostream_sdcardhealth boot-check
+
+[Install]
+WantedBy=multi-user.target

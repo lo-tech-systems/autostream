@@ -194,6 +194,7 @@ main() {
   stop_and_disable_service autostream_log_policy.service
   stop_and_disable_service autostream_sdcardhealth.timer
   stop_and_disable_service autostream_sdcardhealth.service
+  stop_and_disable_service autostream_sdcardhealth_boot.service
   stop_and_disable_service autostream_dnsmasq.service
   stop_and_disable_service autostream_bluetooth.service
   stop_and_disable_service owntone.service
@@ -236,6 +237,7 @@ main() {
   remove_path /etc/systemd/system/autostream_dnsmasq.service
   remove_path /etc/systemd/system/autostream_sdcardhealth.service
   remove_path /etc/systemd/system/autostream_sdcardhealth.timer
+  remove_path /etc/systemd/system/autostream_sdcardhealth_boot.service
   remove_path /etc/systemd/system/autostream_storage_guard.service
   remove_path /etc/systemd/system/autostream_storage_guard.timer
   remove_path /etc/systemd/system/autostream_log_policy.service
@@ -247,6 +249,10 @@ main() {
   remove_path /etc/sudoers.d/autostream_admin
 
   info "Removing other autostream-managed files we can identify confidently"
+  remove_path /usr/local/libexec/autostream/autostream_sdcardhealth
+  remove_path /var/lib/autostream/sdcardhealth-status.json
+  remove_path /var/lib/autostream/sdcardhealth.inflight
+  remove_path /usr/local/sbin/sdmon
   remove_path /usr/lib/tmpfiles.d/autostream.conf
   remove_path /run/autostream-pipes
   remove_path /etc/avahi/services/autostream.service

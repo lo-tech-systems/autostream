@@ -53,6 +53,13 @@ Cmnd_Alias AUTOSTREAM_ADMIN_BT_SVC_DISABLE = /usr/local/libexec/autostream/autos
 Cmnd_Alias AUTOSTREAM_ADMIN_BT_ONBOARD_ON  = /usr/local/libexec/autostream/autostream_admin bt-onboard-on
 Cmnd_Alias AUTOSTREAM_ADMIN_BT_ONBOARD_OFF = /usr/local/libexec/autostream/autostream_admin bt-onboard-off
 
+# allow the SD card health probe/enable/disable verbs (method is validated
+# within autostream_admin; the wildcard only covers its presence/absence)
+Cmnd_Alias AUTOSTREAM_ADMIN_SDCARD_CHECK   = /usr/local/libexec/autostream/autostream_admin sdcard-health-check
+Cmnd_Alias AUTOSTREAM_ADMIN_SDCARD_CHECK_M = /usr/local/libexec/autostream/autostream_admin sdcard-health-check *
+Cmnd_Alias AUTOSTREAM_ADMIN_SDCARD_ENABLE  = /usr/local/libexec/autostream/autostream_admin sdcard-health-enable *
+Cmnd_Alias AUTOSTREAM_ADMIN_SDCARD_DISABLE = /usr/local/libexec/autostream/autostream_admin sdcard-health-disable
+
 # Full list of allowed actions for autostream user:
 Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_REBOOT_URN,        \
@@ -75,7 +82,11 @@ Cmnd_Alias AUTOSTREAM_ADMIN = AUTOSTREAM_ADMIN_REBOOT_AU,         \
                               AUTOSTREAM_ADMIN_BT_SVC_ENABLE,     \
                               AUTOSTREAM_ADMIN_BT_SVC_DISABLE,    \
                               AUTOSTREAM_ADMIN_BT_ONBOARD_ON,     \
-                              AUTOSTREAM_ADMIN_BT_ONBOARD_OFF
+                              AUTOSTREAM_ADMIN_BT_ONBOARD_OFF,    \
+                              AUTOSTREAM_ADMIN_SDCARD_CHECK,      \
+                              AUTOSTREAM_ADMIN_SDCARD_CHECK_M,    \
+                              AUTOSTREAM_ADMIN_SDCARD_ENABLE,     \
+                              AUTOSTREAM_ADMIN_SDCARD_DISABLE
 
 Defaults!AUTOSTREAM_ADMIN env_reset
 Defaults!AUTOSTREAM_ADMIN secure_path="/usr/sbin:/usr/bin:/sbin:/bin"

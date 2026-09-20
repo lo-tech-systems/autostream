@@ -1286,6 +1286,39 @@ register(
 
 register(
     Route(
+        path="/api/sdcard-health",
+        methods=("GET",),
+        handler="_route_get_sdcard_health",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+    )
+)
+
+register(
+    Route(
+        path="/api/sdcard-health/enable",
+        methods=("POST",),
+        handler="_route_post_sdcard_health_enable",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+    )
+)
+
+register(
+    Route(
+        path="/api/sdcard-health/disable",
+        methods=("POST",),
+        handler="_route_post_sdcard_health_disable",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+    )
+)
+
+register(
+    Route(
         path="/api/update/apply",
         methods=("POST",),
         handler="_route_post_update_apply",

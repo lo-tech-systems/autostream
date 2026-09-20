@@ -7,6 +7,7 @@ and get_sdcard_health_percent/_parse_sdcard_health_percent.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -668,3 +669,189 @@ class TestGetEffectiveMemoryInfo:
         # asserting on the live system's actual memory figures.
         result = su.get_effective_memory_info()
         assert result is None or (isinstance(result, tuple) and len(result) == 2)
+
+
+# ---------------------------------------------------------------------------
+# SD card health monitoring
+# ---------------------------------------------------------------------------
+
+def _write_sdcard_sysfs(tmp_path, **fields) -> Path:
+    d = tmp_path / "device"
+    d.mkdir(exist_ok=True)
+    for name, value in fields.items():
+        (d / name).write_text(value, encoding="utf-8")
+    return d
+
+
+class TestSdcardCardIdentity:
+    def test_parses_hex_fields_and_name(self, tmp_path):
+        d = _write_sdcard_sysfs(tmp_path, manfid="0x000003", oemid="0x5344", name="SD64G", serial="0xdeadbeef")
+        identity = su.sdcard_card_identity(d)
+        assert identity["manfid"] == 0x03
+        assert identity["oemid"] == 0x5344
+        assert identity["name"] == "SD64G"
+        assert identity["serial"] == "0xdeadbeef"
+
+    def test_likely_supported_true_for_known_manfid(self, tmp_path):
+        d = _write_sdcard_sysfs(tmp_path, manfid="0x74", name="X", serial="1")
+        assert su.sdcard_card_identity(d)["likely_supported"] is True
+
+    def test_likely_supported_false_for_unknown_manfid(self, tmp_path):
+        d = _write_sdcard_sysfs(tmp_path, manfid="0x99", name="X", serial="1")
+        assert su.sdcard_card_identity(d)["likely_supported"] is False
+
+    def test_missing_sysfs_dir_never_raises(self, tmp_path):
+        identity = su.sdcard_card_identity(tmp_path / "missing")
+        assert identity == {
+            "manfid": None, "oemid": None, "name": "", "serial": "", "likely_supported": False,
+        }
+
+    def test_missing_manfid_file_only(self, tmp_path):
+        d = _write_sdcard_sysfs(tmp_path, name="X", serial="1")
+        identity = su.sdcard_card_identity(d)
+        assert identity["manfid"] is None
+        assert identity["likely_supported"] is False
+
+    def test_non_hex_manfid_returns_none(self, tmp_path):
+        d = _write_sdcard_sysfs(tmp_path, manfid="not-hex", name="X", serial="1")
+        assert su.sdcard_card_identity(d)["manfid"] is None
+
+
+class TestSdcardHealthState:
+    def _sysfs(self, tmp_path, serial="cardserial"):
+        return _write_sdcard_sysfs(tmp_path, manfid="0x03", name="TestCard", serial=serial)
+
+    def test_missing_status_file_tool_absent(self, tmp_path):
+        sysfs = self._sysfs(tmp_path)
+        with patch.object(su, "SDCARD_SYSFS_DEVICE", sysfs), \
+             patch.object(su, "SDCARD_HEALTH_STATUS_FILE", tmp_path / "status.json"), \
+             patch.object(su, "SDMON_BIN", tmp_path / "no-sdmon"), \
+             patch.object(su, "SDCARD_HEALTH_JSON_FILE", tmp_path / "health.json"):
+            state = su.sdcard_health_state()
+        assert state["tool_present"] is False
+        assert state["timer_enabled"] is False
+        assert state["method"] == "auto"
+        assert state["check"] == "none"
+        assert state["serial"] == ""
+        assert state["card"]["name"] == "TestCard"
+        assert state["health_percent"] is None
+        assert state["last_sampled_at"] is None
+
+    def test_missing_status_file_tool_present(self, tmp_path):
+        sysfs = self._sysfs(tmp_path)
+        sdmon = tmp_path / "sdmon"
+        sdmon.write_text("x", encoding="utf-8")
+        with patch.object(su, "SDCARD_SYSFS_DEVICE", sysfs), \
+             patch.object(su, "SDCARD_HEALTH_STATUS_FILE", tmp_path / "status.json"), \
+             patch.object(su, "SDMON_BIN", sdmon), \
+             patch.object(su, "SDCARD_HEALTH_JSON_FILE", tmp_path / "health.json"):
+            state = su.sdcard_health_state()
+        assert state["tool_present"] is True
+        assert state["check"] == "none"
+
+    def test_status_file_matching_serial(self, tmp_path):
+        sysfs = self._sysfs(tmp_path, serial="abc123")
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({
+            "tool_present": True, "timer_enabled": True, "method": "sandisk",
+            "check": "passed", "serial": "abc123", "at": "2020-01-01T00:00:00+00:00",
+            "reason": "",
+        }), encoding="utf-8")
+        health_file = tmp_path / "health.json"
+        health_file.write_text(json.dumps({
+            "success": True, "enduranceRemainLifePercent": 42, "date": "2020-01-01T00:00:00+00:00",
+        }), encoding="utf-8")
+        with patch.object(su, "SDCARD_SYSFS_DEVICE", sysfs), \
+             patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file), \
+             patch.object(su, "SDCARD_HEALTH_JSON_FILE", health_file):
+            state = su.sdcard_health_state()
+        assert state["check"] == "passed"
+        assert state["method"] == "sandisk"
+        assert state["timer_enabled"] is True
+        assert state["health_percent"] == 42
+        assert state["last_sampled_at"] == "2020-01-01T00:00:00+00:00"
+
+    def test_status_file_serial_mismatch_reports_none(self, tmp_path):
+        sysfs = self._sysfs(tmp_path, serial="current-card")
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({
+            "tool_present": True, "timer_enabled": True, "method": "sandisk",
+            "check": "failed", "serial": "old-card", "at": "t", "reason": "bad read",
+        }), encoding="utf-8")
+        with patch.object(su, "SDCARD_SYSFS_DEVICE", sysfs), \
+             patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file), \
+             patch.object(su, "SDCARD_HEALTH_JSON_FILE", tmp_path / "health.json"):
+            state = su.sdcard_health_state()
+        assert state["check"] == "none"
+        assert state["reason"] == ""
+        # Other recorded fields (tool/timer/method) are reported as-is --
+        # only the check outcome and reason are disowned from the wrong card.
+        assert state["tool_present"] is True
+        assert state["timer_enabled"] is True
+
+    def test_malformed_status_file_treated_as_missing(self, tmp_path):
+        sysfs = self._sysfs(tmp_path)
+        status_file = tmp_path / "status.json"
+        status_file.write_text("not json", encoding="utf-8")
+        with patch.object(su, "SDCARD_SYSFS_DEVICE", sysfs), \
+             patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file), \
+             patch.object(su, "SDMON_BIN", tmp_path / "no-sdmon"), \
+             patch.object(su, "SDCARD_HEALTH_JSON_FILE", tmp_path / "health.json"):
+            state = su.sdcard_health_state()
+        assert state["check"] == "none"
+        assert state["tool_present"] is False
+
+
+class TestSdcardHealthAdminVerbs:
+    def test_check_calls_verb_with_method_and_timeout(self):
+        ok = MagicMock(returncode=0, stdout=json.dumps({"success": True}))
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            ok_result, code, payload = su.sdcard_health_check("sandisk")
+        m_admin.assert_called_once_with(["sdcard-health-check", "sandisk"], timeout=120.0)
+        assert ok_result is True
+        assert code == 0
+        assert payload == {"success": True}
+
+    def test_check_invalid_method_raises(self):
+        with pytest.raises(ValueError):
+            su.sdcard_health_check("bogus")
+
+    def test_check_normalises_case(self):
+        ok = MagicMock(returncode=0, stdout="")
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            su.sdcard_health_check("SanDisk")
+        m_admin.assert_called_once_with(["sdcard-health-check", "sandisk"], timeout=120.0)
+
+    def test_enable_calls_verb_with_timeout_30(self):
+        ok = MagicMock(returncode=0, stdout="enabled")
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            ok_result, code, payload = su.sdcard_health_enable("auto")
+        m_admin.assert_called_once_with(["sdcard-health-enable", "auto"], timeout=30.0)
+        assert ok_result is True
+        assert payload == {"output": "enabled"}
+
+    def test_enable_invalid_method_raises(self):
+        with pytest.raises(ValueError):
+            su.sdcard_health_enable("not-a-method")
+
+    def test_disable_calls_verb(self):
+        ok = MagicMock(returncode=0, stdout="disabled")
+        with patch.object(su, "run_admin_cmd", return_value=ok) as m_admin:
+            ok_result, code, payload = su.sdcard_health_disable()
+        m_admin.assert_called_once_with(["sdcard-health-disable"], timeout=30.0)
+        assert ok_result is True
+
+    def test_failure_returncode_reported(self):
+        fail = MagicMock(returncode=3, stdout=json.dumps({"success": False, "reason": "not supported"}))
+        with patch.object(su, "run_admin_cmd", return_value=fail):
+            ok_result, code, payload = su.sdcard_health_check("auto")
+        assert ok_result is False
+        assert code == 3
+        assert payload["reason"] == "not supported"
+
+    def test_non_json_stdout_wrapped_as_output(self):
+        weird = MagicMock(returncode=1, stdout="boom")
+        with patch.object(su, "run_admin_cmd", return_value=weird):
+            ok_result, code, payload = su.sdcard_health_disable()
+        assert ok_result is False
+        assert payload == {"output": "boom"}

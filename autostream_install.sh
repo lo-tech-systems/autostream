@@ -26,7 +26,9 @@
 # --sdmon=[auto|sandisk|adata|transcend|micron|swissbit|2step|innodisk]
 #   Enable the daily SD card health check with the specified query method.
 #   The sdmon tool and its systemd units are always installed; this flag
-#   only enables the timer. The choice is saved and preserved by --update.
+#   probes the card as the very last step of the install, and the timer is
+#   enabled only if that probe succeeds. The choice is saved and preserved
+#   by --update.
 #   IMPORTANT: Enable only for supported cards, generally industrial-grade
 #              cards from the listed manufacturers. Querying a consumer-grade
 #              card can take it offline until the next power cycle.
@@ -109,6 +111,18 @@ INSTALL_MODE="install"           # install | update
 UNATTENDED=0
 PIN_VALUE=""
 SDMON_METHOD=""
+# SDMON_CHECK and its three companions are owned by the autostream_sdcardhealth
+# wrapper, not by this installer; these globals only carry forward whatever the
+# wrapper last recorded (see load_state/save_state below) so an install/update
+# never clobbers them. SDMON_CHECK defaults to "none" (no probe has ever run).
+SDMON_CHECK="none"
+SDMON_CHECK_SERIAL=""
+SDMON_CHECK_AT=""
+SDMON_CHECK_REASON=""
+# Set for the remainder of this run when --sdmon was passed on the command
+# line, so save_state knows to mark the check pending for the probe that
+# run_install/run_update perform as their last step.
+SDMON_FLAG_THIS_RUN=0
 # Upstream sdmon commit the installer builds; the built version is recorded
 # in ${STAMP_DIR}/sdmon-version so an update rebuilds only when this changes.
 SDMON_GIT_REF="8a70aed673f4b319972b3a2cfac043e3b171653a"
@@ -222,6 +236,7 @@ parse_args() {
       --sdmon)
         _non_update_arg_seen=1
         SDMON_METHOD="auto"
+        SDMON_FLAG_THIS_RUN=1
         shift
         ;;
       --sdmon=*)
@@ -231,6 +246,7 @@ parse_args() {
           error "Invalid --sdmon method: ${SDMON_METHOD}"
           usage; exit 2
         fi
+        SDMON_FLAG_THIS_RUN=1
         shift
         ;;
       --owntone=*)
@@ -292,6 +308,24 @@ save_state() {
   local release_tag
   release_tag="$(detect_install_version)"
   mkdir -p "${STAMP_DIR}"
+
+  # SDMON_CHECK/_SERIAL/_AT/_REASON are owned by the autostream_sdcardhealth
+  # wrapper: it rewrites them in place whenever it runs, outside the
+  # installer's control. This heredoc replaces the whole file, so the values
+  # written here must be whatever load_state most recently captured from the
+  # file on disk (SDMON_CHECK etc. above), not values this installer derived
+  # itself -- that is what keeps a save_state call from ever reverting the
+  # wrapper's last recorded outcome. A fresh install has no prior file, so
+  # the globals stay at their "none"/empty defaults declared above.
+  #
+  # The one deliberate exception: when --sdmon was passed on this run, the
+  # check is forced to "pending" so the probe that install/update run as
+  # their last step is not skipped by an update's "already passed" check.
+  local sdmon_check="${SDMON_CHECK}"
+  if [[ "${SDMON_FLAG_THIS_RUN}" -eq 1 ]]; then
+    sdmon_check="pending"
+  fi
+
   cat > "${STATE_FILE}" <<EOF
 # autostream install state — written by ${SCRIPT_NAME}
 # Do not edit manually.
@@ -302,6 +336,10 @@ INSTALL_DIR="${INSTALL_DIR}"
 AUTOSTREAM_DIR="${AUTOSTREAM_DIR}"
 OWNTONE_MODE="${OWNTONE_MODE}"
 SDMON_METHOD="${SDMON_METHOD}"
+SDMON_CHECK="${sdmon_check}"
+SDMON_CHECK_SERIAL="${SDMON_CHECK_SERIAL}"
+SDMON_CHECK_AT="${SDMON_CHECK_AT}"
+SDMON_CHECK_REASON="${SDMON_CHECK_REASON}"
 FETCH_AUTOSTREAM="${FETCH_AUTOSTREAM}"
 EOF
   chmod 0644 "${STATE_FILE}"
@@ -349,10 +387,14 @@ load_state() {
     fi
 
     case "${_key}" in
-      OWNTONE_MODE)     OWNTONE_MODE="${_val}"     ;;
-      SDMON_METHOD)     SDMON_METHOD="${_val}"      ;;
-      FETCH_AUTOSTREAM) FETCH_AUTOSTREAM="${_val}"  ;;
-      INSTALL_DIR)      INSTALL_DIR="${_val}"       ;;
+      OWNTONE_MODE)        OWNTONE_MODE="${_val}"        ;;
+      SDMON_METHOD)        SDMON_METHOD="${_val}"         ;;
+      SDMON_CHECK)         SDMON_CHECK="${_val}"          ;;
+      SDMON_CHECK_SERIAL)  SDMON_CHECK_SERIAL="${_val}"   ;;
+      SDMON_CHECK_AT)      SDMON_CHECK_AT="${_val}"       ;;
+      SDMON_CHECK_REASON)  SDMON_CHECK_REASON="${_val}"   ;;
+      FETCH_AUTOSTREAM)    FETCH_AUTOSTREAM="${_val}"     ;;
+      INSTALL_DIR)         INSTALL_DIR="${_val}"          ;;
     esac
   done < "${STATE_FILE}"
 
@@ -803,7 +845,8 @@ fetch_phase() {
 
 # sdmon_phase: build and install the sdmon binary (install and update).
 # The binary is always present so the health check can be switched on later
-# without a build; only the timer depends on SDMON_METHOD (services_phase).
+# without a build; SDMON_METHOD only decides whether services_phase and
+# sdmon_probe_and_enable go on to probe the card and enable the timer.
 sdmon_phase() {
   CURRENT_PHASE="sdmon"
   info "=== Phase: sdmon ==="
@@ -914,6 +957,7 @@ deploy_phase() {
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_admin"              "${LIBEXEC_DIR}/autostream_admin"              0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_update_retry"       "${LIBEXEC_DIR}/autostream_update_retry"       0755 root root
   install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_storage_guard"      "${LIBEXEC_DIR}/autostream_storage_guard"      0755 root root
+  install_text_linux "${AUTOSTREAM_DIR}/supervisor/autostream_sdcardhealth"       "${LIBEXEC_DIR}/autostream_sdcardhealth"       0755 root root
 
   update_progress "Updating Python packages..." 57
   info "Creating/updating Python virtual environment"
@@ -1301,8 +1345,9 @@ services_phase() {
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service"       /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/vibra-mini.service"              /etc/systemd/system/
 
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer"   /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service"      /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer"        /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth_boot.service" /etc/systemd/system/
 
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service"              /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
@@ -1315,15 +1360,26 @@ services_phase() {
 
   systemctl daemon-reload
 
-  # The SD health units are always present; the saved method decides whether
-  # the timer runs. A fresh install without a method leaves it disabled. An
-  # update without a saved method leaves the timer as it is, so a check that
-  # was switched on outside the installer is not switched off by an update.
-  if [[ -n "${SDMON_METHOD}" ]]; then
-    patch_sdmon_service_method "${SDMON_METHOD}"
-    systemctl daemon-reload
+  # The boot-check unit is always installed and enabled: it only ever acts
+  # when a marker names the card present (a probe that never completed
+  # before this boot), so it is harmless with the timer disabled.
+  systemctl enable autostream_sdcardhealth_boot.service
+
+  # The SD health units are always present; the saved method and its last
+  # recorded outcome decide whether the timer runs. A method whose last
+  # check already passed keeps the timer enabled across --update (it may
+  # already be enabled; this just re-asserts it). A method that has not yet
+  # been confirmed (SDMON_CHECK is "none", "pending", "failed" or "hung")
+  # is left alone here -- sdmon_probe_and_enable(), run as the very last
+  # step of install/update, is what enables the timer, and only once its
+  # guarded probe has actually succeeded. A fresh install without a method
+  # leaves it disabled; an update without a saved method leaves the timer
+  # as it is, so a check switched on outside the installer is not switched
+  # off by an update.
+  if [[ -n "${SDMON_METHOD}" && "${SDMON_CHECK}" == "passed" ]]; then
     systemctl enable autostream_sdcardhealth.timer
-  elif [[ "${INSTALL_MODE}" != "update" || ! -x "/usr/local/sbin/sdmon" ]]; then
+  elif [[ -z "${SDMON_METHOD}" ]] && \
+       [[ "${INSTALL_MODE}" != "update" || ! -x "/usr/local/sbin/sdmon" ]]; then
     systemctl disable autostream_sdcardhealth.timer 2>/dev/null || true
     info "SD card health check installed but not enabled (use --sdmon=<method> to enable)"
   fi
@@ -1343,6 +1399,42 @@ services_phase() {
     systemctl restart autostream.service         || true
     systemctl restart autostream_wifi_watcher.service || true
     systemctl reload  nginx                      || true
+  fi
+}
+
+# sdmon_probe_and_enable: the guarded end-of-run probe (install and update).
+#
+# Must run after save_state and services_phase: a watchdog reboot triggered
+# by the probe itself then lands on a fully installed, fully saved system,
+# and the boot-check unit (already enabled by services_phase) is what
+# reacts to that on the next boot. Only autostream_sdcardhealth's own
+# enable/disable modes touch the timer; this function never calls
+# systemctl directly.
+#
+# Skipped entirely when no method is configured. Skipped on --update when
+# the last recorded check for the saved method already passed, so a plain
+# --update does not re-probe a card that is already known good.
+sdmon_probe_and_enable() {
+  CURRENT_PHASE="sdmon probe"
+  [[ -n "${SDMON_METHOD}" ]] || return 0
+  if [[ "${INSTALL_MODE}" == "update" && "${SDMON_CHECK}" == "passed" ]]; then
+    info "sdmon: saved method already passed its last check; not re-probing"
+    return 0
+  fi
+
+  local wrapper="${LIBEXEC_DIR}/autostream_sdcardhealth"
+  if [[ ! -x "${wrapper}" ]]; then
+    warn "sdmon: ${wrapper} is not installed; SD card health monitoring stays disabled"
+    return 0
+  fi
+
+  info "=== Phase: sdmon probe ==="
+  update_progress "Checking SD card health..." 95
+  if "${wrapper}" check --method "${SDMON_METHOD}"; then
+    "${wrapper}" enable --method "${SDMON_METHOD}"
+  else
+    local rc=$?
+    warn "sdmon: probe for method '${SDMON_METHOD}' exited ${rc}; SD card health monitoring stays disabled"
   fi
 }
 
@@ -1599,6 +1691,7 @@ run_install() {
   network_state_phase
   services_phase
   save_state
+  sdmon_probe_and_enable
 
   info "Installation complete."
 }
@@ -1638,6 +1731,9 @@ run_update() {
 
   CURRENT_PHASE="state save"
   save_state
+
+  sdmon_probe_and_enable
+
   CURRENT_PHASE="complete"
   write_update_result "success" "Update complete" 100
 

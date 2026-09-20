@@ -2,7 +2,7 @@
 #
 # installer/lib/hardware.sh
 #
-# Raspberry Pi hardware/platform helpers: firmware config and sdmon patching.
+# Raspberry Pi hardware/platform helpers: firmware config.
 # Sourced by autostream_install.sh; not executed directly.
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -84,32 +84,4 @@ update_pi_firmware_config() {
           -g "$(stat -c %g "${cfg}")" \
           "${tmp}" "${cfg}"
   rm -f "${tmp}"
-}
-
-#############################################
-# sdmon helper
-#############################################
-patch_sdmon_service_method() {
-  local method="$1"
-  local svc="/etc/systemd/system/autostream_sdcardhealth.service"
-
-  [[ -f "${svc}" ]] || { warn "sdmon service not found at ${svc}; cannot patch method"; return 0; }
-
-  local method_args="-m ${method}"
-  if [[ "${method}" == "2step" ]]; then
-    method_args="${method_args} -a"
-  fi
-
-  if grep -qE "^ExecStart=.*\\bsdmon\\b" "${svc}"; then
-    info "Patching ${svc} to set sdmon method: ${method}"
-    sed -i -E \
-      "/^ExecStart=.*\\bsdmon\\b/ {
-        s/[[:space:]]-m[[:space:]]+[A-Za-z0-9_-]+//g
-        s/[[:space:]]-a//g
-        s#(\\bsdmon\\b[^\n]*)([[:space:]]+/dev/)#\\1 ${method_args}\\2#
-      }" \
-      "${svc}"
-  else
-    warn "No ExecStart line referencing sdmon found in ${svc}; cannot patch method"
-  fi
 }

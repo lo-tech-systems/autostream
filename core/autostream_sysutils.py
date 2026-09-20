@@ -82,6 +82,22 @@ def atomic_write_file(
         raise
 
 SDCARD_HEALTH_JSON_FILE = Path("/var/lib/autostream/sdcardhealth.json")
+SDCARD_HEALTH_STATUS_FILE = Path("/var/lib/autostream/sdcardhealth-status.json")
+SDCARD_SYSFS_DEVICE = Path("/sys/block/mmcblk0/device")
+SDMON_BIN = Path("/usr/local/sbin/sdmon")
+
+# Manufacturer-id families that appear in the health tool's own support
+# table. Advisory only: a consumer card from the same manufacturer shares
+# the id, so this says "worth trying", not "known to work" -- only an
+# actual probe (sdcard_health_check()) proves support.
+SDCARD_LIKELY_SUPPORTED_MANFIDS = {0x03, 0x27, 0x74, 0xfe}
+
+# Methods accepted by the sdcard-health-* autostream_admin verbs, matching
+# the health tool's own vendor-query dialects.
+SDCARD_HEALTH_METHODS = frozenset({
+    "auto", "sandisk", "adata", "transcend", "micron", "swissbit", "2step", "innodisk",
+})
+
 OS_RELEASE_FILE = Path("/etc/os-release")
 
 # Privileged helper (installed outside /opt/autostream)
@@ -517,6 +533,157 @@ def get_sdcard_health_percent() -> int | None:
         return _parse_sdcard_health_percent(data)
     except Exception:
         return None
+
+
+def _read_json_dict(path: "str | Path") -> dict | None:
+    """Read and parse a JSON file, returning None on any error or non-dict."""
+    try:
+        raw = Path(path).read_text(encoding="utf-8").strip()
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _read_sdcard_sysfs_field(sysfs_dir: Path, name: str) -> str:
+    try:
+        return (sysfs_dir / name).read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _parse_sdcard_hex_field(raw: str) -> int | None:
+    """Parse a sysfs hex attribute (e.g. "0x000003" or "03") to an int."""
+    if not raw:
+        return None
+    try:
+        return int(raw, 16)
+    except ValueError:
+        return None
+
+
+def sdcard_card_identity(sysfs_dir: Path = SDCARD_SYSFS_DEVICE) -> dict:
+    """Read the card's manufacturer id, OEM id, name and serial from sysfs.
+
+    These attributes were read by the kernel at boot and cost nothing to
+    read again here; nothing about this touches the card itself, unlike
+    the vendor health query. Never raises: a missing sysfs directory (no
+    card, or a non-MMC boot device) yields empty/None fields and
+    likely_supported=False.
+    """
+    sysfs_dir = Path(sysfs_dir)
+    manfid = _parse_sdcard_hex_field(_read_sdcard_sysfs_field(sysfs_dir, "manfid"))
+    oemid = _parse_sdcard_hex_field(_read_sdcard_sysfs_field(sysfs_dir, "oemid"))
+    name = _read_sdcard_sysfs_field(sysfs_dir, "name")
+    serial = _read_sdcard_sysfs_field(sysfs_dir, "serial")
+    return {
+        "manfid": manfid,
+        "oemid": oemid,
+        "name": name,
+        "serial": serial,
+        "likely_supported": manfid in SDCARD_LIKELY_SUPPORTED_MANFIDS if manfid is not None else False,
+    }
+
+
+def sdcard_health_state() -> dict:
+    """Assemble the SD card health monitoring state for the Setup/About pages.
+
+    Merges the wrapper's status file (SDCARD_HEALTH_STATUS_FILE), the
+    card's sysfs identity, and the parsed health percentage
+    (get_sdcard_health_percent()). A status record whose serial does not
+    match the card currently in the slot describes a different card -- an
+    SD image was cloned onto another card, or the card was swapped -- so
+    it is reported as check "none" with no reason rather than claiming a
+    result that was never measured on the card actually present. Never
+    raises.
+    """
+    identity = sdcard_card_identity(SDCARD_SYSFS_DEVICE)
+    card_serial = identity.get("serial") or ""
+
+    status = _read_json_dict(SDCARD_HEALTH_STATUS_FILE)
+    if status is None:
+        try:
+            tool_present = SDMON_BIN.exists()
+        except Exception:
+            tool_present = False
+        state = {
+            "tool_present": tool_present,
+            "timer_enabled": False,
+            "method": "auto",
+            "check": "none",
+            "serial": "",
+            "at": "",
+            "reason": "",
+        }
+    else:
+        state = {
+            "tool_present": bool(status.get("tool_present")),
+            "timer_enabled": bool(status.get("timer_enabled")),
+            "method": str(status.get("method") or "auto"),
+            "check": str(status.get("check") or "none"),
+            "serial": str(status.get("serial") or ""),
+            "at": str(status.get("at") or ""),
+            "reason": str(status.get("reason") or ""),
+        }
+        if state["serial"] and state["serial"] != card_serial:
+            state["check"] = "none"
+            state["reason"] = ""
+
+    state["card"] = identity
+    state["health_percent"] = get_sdcard_health_percent()
+    health_json = _read_json_dict(SDCARD_HEALTH_JSON_FILE)
+    state["last_sampled_at"] = health_json.get("date") if health_json else None
+    return state
+
+
+def _sdcard_health_validate_method(method: str) -> str:
+    m = str(method or "").strip().lower()
+    if m not in SDCARD_HEALTH_METHODS:
+        raise ValueError(f"Invalid SD card health method: {method!r}")
+    return m
+
+
+def _sdcard_health_admin_call(args: list[str], timeout: float) -> tuple[bool, int, dict]:
+    """Run one sdcard-health-* autostream_admin verb and parse its output.
+
+    Returns (ok, exit_code, payload): ok is True only on exit 0. payload is
+    the verb's stdout parsed as a JSON object when possible, else
+    {"output": <raw text>}. run_admin_cmd() (via run_cmd()) never raises --
+    a missing admin binary or a sudo failure that never runs the verb comes
+    back as a CompletedProcess with returncode 1, which this maps the same
+    way as any other non-zero exit.
+    """
+    p = run_admin_cmd(args, timeout=timeout)
+    out = (p.stdout or "").strip()
+    payload = _read_json_dict_from_text(out) if out else {}
+    return p.returncode == 0, p.returncode, payload
+
+
+def _read_json_dict_from_text(text: str) -> dict:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {"output": text}
+    return data if isinstance(data, dict) else {"output": text}
+
+
+def sdcard_health_check(method: str) -> tuple[bool, int, dict]:
+    """Run the guarded SD card health probe for *method* (never enables anything)."""
+    m = _sdcard_health_validate_method(method)
+    return _sdcard_health_admin_call(["sdcard-health-check", m], timeout=120.0)
+
+
+def sdcard_health_enable(method: str) -> tuple[bool, int, dict]:
+    """Enable scheduled SD card health monitoring using *method*."""
+    m = _sdcard_health_validate_method(method)
+    return _sdcard_health_admin_call(["sdcard-health-enable", m], timeout=30.0)
+
+
+def sdcard_health_disable() -> tuple[bool, int, dict]:
+    """Disable scheduled SD card health monitoring."""
+    return _sdcard_health_admin_call(["sdcard-health-disable"], timeout=30.0)
 
 # ---------------------------------------------------------------------------
 # System Hostname Related functions.

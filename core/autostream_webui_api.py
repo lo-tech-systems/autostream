@@ -125,6 +125,11 @@ from autostream_sysutils import (
     bt_services_enable,
     get_system_hostname,
     run_admin_cmd,
+    SDCARD_HEALTH_METHODS,
+    sdcard_health_check,
+    sdcard_health_disable,
+    sdcard_health_enable,
+    sdcard_health_state,
     set_system_hostname,
 )
 from urllib.parse import urlparse as _urlparse
@@ -3886,6 +3891,71 @@ def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
         send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     send_json(handler, 200, {"ok": True, "buffer_ms": buffer_ms})
+
+
+# -----------------------------------------------------------------------------
+# SD card health monitoring
+# -----------------------------------------------------------------------------
+
+def send_sdcard_health_get_json(handler) -> None:
+    """GET /api/sdcard-health — read-only, no CSRF; current monitoring state."""
+    send_json(handler, 200, sdcard_health_state())
+
+
+def send_sdcard_health_enable_post_json(handler, json_obj) -> None:
+    """POST /api/sdcard-health/enable {"method": str, "csrf_token": str}.
+
+    Runs the guarded probe for *method* first (the wrapper's `check` verb,
+    which never enables anything) and only enables scheduled monitoring on
+    a passing result -- an unsupported or hung card is refused with 409
+    and the timer is left untouched. Wrapper exit codes: 0 passed, 3 failed,
+    4 hung marker found, 2 tool missing.
+    """
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    method = json_obj.get("method")
+    extra = set(json_obj.keys()) - {"method", "csrf_token"}
+    if not isinstance(method, str) or method not in SDCARD_HEALTH_METHODS or extra:
+        send_browser_api_error(handler, 400, "Invalid method")
+        return
+
+    ok, code, payload = sdcard_health_check(method)
+    if not ok:
+        if code == 3:
+            send_browser_api_error(handler, 409, "unsupported", extra={"reason": payload.get("reason", "")})
+            return
+        if code == 4:
+            send_browser_api_error(handler, 409, "hung")
+            return
+        if code == 2:
+            send_browser_api_error(handler, 503, "tool_missing")
+            return
+        send_browser_api_error(handler, 500, "check_failed", extra={"output": payload.get("output", "")})
+        return
+
+    ok, code, payload = sdcard_health_enable(method)
+    if not ok:
+        send_browser_api_error(handler, 500, "enable_failed", extra={"output": payload.get("output", "")})
+        return
+    send_json(handler, 200, {"ok": True, "state": sdcard_health_state()})
+
+
+def send_sdcard_health_disable_post_json(handler, json_obj) -> None:
+    """POST /api/sdcard-health/disable {"csrf_token": str}."""
+    if not isinstance(json_obj, dict):
+        send_browser_api_error(handler, 400, "JSON object required")
+        return
+    extra = set(json_obj.keys()) - {"csrf_token"}
+    if extra:
+        send_browser_api_error(handler, 400, "Invalid request")
+        return
+
+    ok, code, payload = sdcard_health_disable()
+    if not ok:
+        send_browser_api_error(handler, 500, "disable_failed", extra={"output": payload.get("output", "")})
+        return
+    send_json(handler, 200, {"ok": True, "state": sdcard_health_state()})
 
 
 def send_playing_status_json(handler) -> None:

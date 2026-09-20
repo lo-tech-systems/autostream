@@ -1647,6 +1647,105 @@ class TestBtSudoersEntries:
 
 
 # ---------------------------------------------------------------------------
+# SD card health: verb dispatch, wrapper exec, method validation
+# ---------------------------------------------------------------------------
+
+class TestSdcardHealthVerbs:
+    @pytest.mark.parametrize("verb,argv", [
+        ("sdcard-health-check", ["sdcard-health-check"]),
+        ("sdcard-health-check", ["sdcard-health-check", "sandisk"]),
+        ("sdcard-health-enable", ["sdcard-health-enable", "sandisk"]),
+        ("sdcard-health-disable", ["sdcard-health-disable"]),
+    ])
+    def test_verb_parses(self, verb, argv):
+        args = m.parse_args(argv)
+        assert args.command == verb
+
+    def test_sdcard_health_check_dispatches_no_method(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_run_sdcardhealth_wrapper", return_value=0) as mock_fn:
+            rc = m.main(["sdcard-health-check"])
+        mock_fn.assert_called_once_with("check", None)
+        assert rc == 0
+
+    def test_sdcard_health_check_dispatches_with_method(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_run_sdcardhealth_wrapper", return_value=3) as mock_fn:
+            rc = m.main(["sdcard-health-check", "sandisk"])
+        mock_fn.assert_called_once_with("check", "sandisk")
+        assert rc == 3
+
+    def test_sdcard_health_check_rejects_invalid_method(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_run_sdcardhealth_wrapper") as mock_fn:
+            rc = m.main(["sdcard-health-check", "bogus"])
+        mock_fn.assert_not_called()
+        assert rc == 1
+
+    def test_sdcard_health_enable_dispatches(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_run_sdcardhealth_wrapper", return_value=0) as mock_fn:
+            rc = m.main(["sdcard-health-enable", "innodisk"])
+        mock_fn.assert_called_once_with("enable", "innodisk")
+        assert rc == 0
+
+    def test_sdcard_health_enable_rejects_invalid_method(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_run_sdcardhealth_wrapper") as mock_fn:
+            rc = m.main(["sdcard-health-enable", "bogus"])
+        mock_fn.assert_not_called()
+        assert rc == 1
+
+    def test_sdcard_health_disable_dispatches(self):
+        with patch("os.geteuid", return_value=0, create=True), \
+             patch.object(m, "_run_sdcardhealth_wrapper", return_value=0) as mock_fn:
+            rc = m.main(["sdcard-health-disable"])
+        mock_fn.assert_called_once_with("disable")
+        assert rc == 0
+
+    def test_wrapper_exec_builds_command_without_method(self):
+        with patch.object(m.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run:
+            rc = m._run_sdcardhealth_wrapper("check", None)
+        mock_run.assert_called_once_with([m.SDCARDHEALTH_WRAPPER, "check"])
+        assert rc == 0
+
+    def test_wrapper_exec_builds_command_with_method(self):
+        with patch.object(m.subprocess, "run", return_value=MagicMock(returncode=3)) as mock_run:
+            rc = m._run_sdcardhealth_wrapper("enable", "sandisk")
+        mock_run.assert_called_once_with(
+            [m.SDCARDHEALTH_WRAPPER, "enable", "--method", "sandisk"]
+        )
+        assert rc == 3
+
+    def test_wrapper_missing_returns_2(self):
+        with patch.object(m.subprocess, "run", side_effect=FileNotFoundError()):
+            rc = m._run_sdcardhealth_wrapper("check", None)
+        assert rc == 2
+
+
+class TestSdcardHealthSudoersEntries:
+    SUDOERS_PATH = Path(__file__).parent.parent / "system" / "sudoers" / "autostream_admin"
+
+    def test_contains_sdcard_health_check_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin sdcard-health-check" in text
+
+    def test_contains_sdcard_health_enable_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin sdcard-health-enable *" in text
+
+    def test_contains_sdcard_health_disable_alias(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "autostream_admin sdcard-health-disable" in text
+
+    def test_new_aliases_included_in_full_admin_list(self):
+        text = self.SUDOERS_PATH.read_text(encoding="utf-8")
+        assert "AUTOSTREAM_ADMIN_SDCARD_CHECK" in text
+        assert "AUTOSTREAM_ADMIN_SDCARD_ENABLE" in text
+        assert "AUTOSTREAM_ADMIN_SDCARD_DISABLE" in text
+
+
+# ---------------------------------------------------------------------------
 # restart-owntone: bounded graceful stop + abort-for-core escalation
 # ---------------------------------------------------------------------------
 

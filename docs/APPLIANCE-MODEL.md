@@ -42,7 +42,7 @@ manages switching between on-board and USB WiFi adapters.
 
 ## Services
 
-Up to 15 systemd units are installed, depending on options chosen at install
+Up to 16 systemd units are installed, depending on options chosen at install
 time. (The dial's own units come from the separate `autostream_dial_install.sh`
 on the dial device and are not counted here.) Core always-running units:
 
@@ -54,7 +54,8 @@ on the dial device and are not counted here.) Core always-running units:
 | `vibra-mini.service` | Optional Shazam fingerprinting daemon (if track ID enabled). |
 | `autostream_dial.service` | Optional GPIO rotary encoder/button daemon (if dial hardware installed). |
 | `autostream_updater.timer` | Optional weekly auto-update (Monday 03:00 UTC + jitter); disabled by default. Temporarily stops the watchdog daemon during package installation. |
-| `autostream_sdcardhealth.service` | Daily one-shot, always installed, timer enabled by `--sdmon=<method>` (saved and preserved by `--update`): runs `sdmon` against `/dev/mmcblk0`, writes remaining endurance % to `/var/lib/autostream/sdcardhealth.json`. Enable only for cards the tool supports. |
+| `autostream_sdcardhealth.service` | Daily one-shot, always installed, timer enabled only once a guarded probe of the card succeeds (`--sdmon=<method>` at install time, or the Setup page later; the method is saved and preserved by `--update`). `ExecStart` runs the `autostream_sdcardhealth` wrapper's `run` mode, which probes with `sdmon` against `/dev/mmcblk0` under a marker file and a 90 s timeout, and writes remaining endurance % to `/var/lib/autostream/sdcardhealth.json`. Enable only for cards the tool supports. |
+| `autostream_sdcardhealth_boot.service` | Oneshot, always installed and enabled, runs before `timers.target` on every boot. Detects a probe that never completed before a reboot (a marker file naming the card present): records the outcome as hung and disables the health-check timer, so a card that hangs the box can do so at most once. |
 | `autostream_storage_guard.service` | Daily one-shot (04:00 UTC + jitter; `Nice=10`, `IOSchedulingClass=idle`). Classifies free space into four tiers (normal ≥1 GiB/15%; warning ≥512 MiB/8%; critical ≥128 MiB/3%; emergency <128 MiB/3%) and runs escalating cleanup: logrotate → `apt autoclean` → journal vacuum → archive deletion → coredump deletion. Also enforces a **log-level ceiling** on the application via `PUT /api/log-level`: lowers to `info` at warning, `warning` at critical/emergency, and lowers to `warning` when SD card endurance < 20%. Restores the original level when conditions clear. Diagnostic levels (`debug`, `spam`) expire to `info` after 48 h; `info` expires to `warning` after 168 h regardless of disk state. Skips if playing or an update lock is held. State: `/var/lib/autostream/storage-guard.json`. |
 
 ---

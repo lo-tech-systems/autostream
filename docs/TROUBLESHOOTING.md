@@ -977,7 +977,9 @@ sudo systemctl restart autostream_dnsmasq.service
 
 Other repo-provided units you may see enabled (depending on install):
 
-* `autostream_sdcardhealth.service` + `.timer`
+* `autostream_sdcardhealth.service` + `.timer` (enabled once a probe of the
+  card succeeds), and `autostream_sdcardhealth_boot.service` (always
+  enabled; detects a probe that never completed before a reboot)
 * `autostream_storage_guard.service` + `.timer`
 * (see `system/systemd/`)
 

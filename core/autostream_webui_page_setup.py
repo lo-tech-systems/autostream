@@ -47,7 +47,12 @@ from autostream_playback_stats import (
     suggested_silence_threshold_dbfs,
 )
 from autostream_rpi import is_high_performance_pi
-from autostream_sysutils import get_ap_ssid, get_system_hostname
+from autostream_sysutils import (
+    SDCARD_HEALTH_METHODS,
+    get_ap_ssid,
+    get_system_hostname,
+    sdcard_health_state,
+)
 from autostream_webui_assets import (
     A2HS_SCRIPT,
     AUTOSAVE_JS,
@@ -111,6 +116,7 @@ class SetupCtx:
     bt_buffer_ms: int
     bt_card_summary: str
     bt_paired_row_text: str
+    sd_health: dict
     current_hostname: str
     factory_reset: dict
     dial_cards_html: str
@@ -128,6 +134,22 @@ def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
     parsed = _config_snapshot(state)
     monitor_devices = state.get_monitor_devices()
     _bt_state = _setup_compute_bluetooth_state(state)
+    try:
+        sd_health = sdcard_health_state()
+    except Exception:
+        logging.exception("_setup_build_ctx: sdcard_health_state failed")
+        sd_health = {
+            "tool_present": False,
+            "timer_enabled": False,
+            "method": "auto",
+            "check": "none",
+            "serial": "",
+            "at": "",
+            "reason": "",
+            "card": {"manfid": None, "oemid": None, "name": "", "serial": "", "likely_supported": False},
+            "health_percent": None,
+            "last_sampled_at": None,
+        }
     current_hostname = get_system_hostname()
     factory_reset = _setup_factory_reset_html(auth)
     dial_cards_html, dials_summary, dial_onload_js = _setup_dial_cards_html()
@@ -145,6 +167,7 @@ def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
         bt_buffer_ms=_bt_state["bt_buffer_ms"],
         bt_card_summary=_bt_state["bt_card_summary"],
         bt_paired_row_text=_bt_state["bt_paired_row_text"],
+        sd_health=sd_health,
         current_hostname=current_hostname,
         factory_reset=factory_reset,
         dial_cards_html=dial_cards_html,
@@ -1224,8 +1247,8 @@ def _setup_network_card_html() -> str:
     return settings_card_html(network_card_inner_html, margin_top="0.75rem")
 
 
-def _setup_system_card_html(parsed, current_hostname: str) -> str:
-    """System & Updates panel -- System card (hostname/PIN/mDNS grace)."""
+def _setup_system_card_html(parsed, current_hostname: str, sd_health: dict) -> str:
+    """System & Updates panel -- System card (hostname/PIN/mDNS grace/SD card health)."""
     try:
         mdns_grace_period_minutes = max(
             SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
@@ -1261,6 +1284,7 @@ def _setup_system_card_html(parsed, current_hostname: str) -> str:
                 oninput="{html.escape(_mdns_grace_oninput)}">
               <div class="storage-meta">Minutes to keep stale appliance discovery records before removal.</div>
             </label>
+            {_setup_sdcard_health_row_html(sd_health)}
           </div>
         """
     system_card_html = settings_card_html(
@@ -1343,6 +1367,62 @@ def _setup_input_summary_text(
         gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
         return html.escape(f"{dev} \u00b7 {mode} \u00b7 {gain_str}")
     return _input_card_summary(parsed_input)
+
+
+def _sdcard_health_status_line(sd_health: dict) -> str:
+    if not sd_health.get("tool_present"):
+        return "Tool not installed"
+    percent = sd_health.get("health_percent")
+    if sd_health.get("check") == "passed" and percent is not None:
+        when = sd_health.get("last_sampled_at") or sd_health.get("at") or "unknown"
+        return f"Monitored, {percent} % endurance remaining, last checked {when}"
+    return "Not monitored"
+
+
+def _sdcard_health_card_line(sd_health: dict) -> str:
+    card = sd_health.get("card") or {}
+    name = str(card.get("name") or "").strip()
+    manfid = card.get("manfid")
+    if not name or manfid is None:
+        return "support unknown"
+    line = f"{name}, manufacturer 0x{manfid:02x}"
+    if card.get("likely_supported"):
+        line += ", likely supported"
+    return line
+
+
+def _setup_sdcard_health_row_html(sd_health: dict) -> str:
+    """SD card health monitoring row in the System card."""
+    tool_present = bool(sd_health.get("tool_present"))
+    timer_enabled = bool(sd_health.get("timer_enabled"))
+    method = str(sd_health.get("method") or "auto")
+    if method not in SDCARD_HEALTH_METHODS:
+        method = "auto"
+
+    status_line = html.escape(_sdcard_health_status_line(sd_health))
+    card_line = html.escape(_sdcard_health_card_line(sd_health))
+
+    method_options = "".join(
+        f'<option value="{m}"{" selected" if m == method else ""}>{m}</option>'
+        for m in sorted(SDCARD_HEALTH_METHODS)
+    )
+    controls_disabled = "" if tool_present else " disabled"
+    button_label = "Disable" if timer_enabled else "Enable"
+    button_onclick = "sdHealthDisable()" if timer_enabled else "showSdHealthModal()"
+
+    return f"""
+      <div id="sdHealthRow" style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--color-border-nav);">
+        <p style="margin:0 0 0.35rem;font-weight:600;">SD card health monitoring</p>
+        <p id="sdHealthStatusLine" style="margin:0 0 0.35rem;">{status_line}</p>
+        <p id="sdHealthCardLine" style="margin:0 0 0.5rem;font-size:0.8rem;color:#888;">{card_line}</p>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <select id="sdHealthMethod"{" disabled" if timer_enabled or not tool_present else ""}>
+            {method_options}
+          </select>
+          <button type="button" id="sdHealthActionBtn" class="pill-btn small" style="flex:0 0 auto;"{controls_disabled}
+            onclick="{button_onclick}">{button_label}</button>
+        </div>
+      </div>"""
 
 
 def _setup_bluetooth_card_html(
@@ -1751,7 +1831,7 @@ def _card_summary_system(ctx: SetupCtx) -> str:
 
 def _card_detail_system(ctx: SetupCtx) -> str:
     return (
-        _setup_system_card_html(ctx.parsed, ctx.current_hostname)
+        _setup_system_card_html(ctx.parsed, ctx.current_hostname, ctx.sd_health)
         + _setup_network_card_html()
         + _setup_updates_card_html(ctx.parsed)
     )
@@ -1829,6 +1909,7 @@ def send_setup_page(
     bt_buffer_ms = ctx.bt_buffer_ms
     bt_card_summary = ctx.bt_card_summary
     bt_paired_row_text = ctx.bt_paired_row_text
+    sd_health = ctx.sd_health
     current_hostname = ctx.current_hostname
 
     h1 = "Setup"
@@ -1947,6 +2028,21 @@ def send_setup_page(
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>
       <button type="button" class="btn modal-btn modal-btn-primary" id="pinModalOk">Apply</button>
+    </div>
+  </div>
+</div>"""
+    _sd_health_modal_div = """\
+<div id="sdHealthModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="sdHealthModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="sdHealthModalTitle">SD Card Health Check</div>
+    <div class="bd modal-bd">
+      <p id="sdHealthModalMsg"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="sdHealthModalCancel"
+        onclick="hideSdHealthModal()">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="sdHealthModalOk"
+        onclick="confirmSdHealthEnable()">Continue</button>
     </div>
   </div>
 </div>"""
@@ -2088,7 +2184,7 @@ def send_setup_page(
   </div>
 </div>"""
     _body_prefix = (
-        f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_hostname_modal_div}\n"
+        f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_sd_health_modal_div}\n{_hostname_modal_div}\n"
         f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_dial_result_modal_div}\n{_wifi_hotspot_modal_div}\n"
         f"{_bt_pairing_modal_div}\n"
         f"{INFO_MODAL_HTML}"
@@ -2483,6 +2579,56 @@ def send_setup_page(
           _btBufferTimer = setTimeout(function() {{
             settingsTransact('/api/bluetooth/buffer', {{buffer_ms: parseInt(value, 10)}});
           }}, 500);
+        }}
+
+        // ── SD card health monitoring row (shares this card) ──────────────
+        var sdHealthState = {json.dumps(sd_health)};
+
+        function showSdHealthModal() {{
+          var msg = document.getElementById('sdHealthModalMsg');
+          if (msg) {{
+            msg.textContent = (sdHealthState && sdHealthState.check === 'hung')
+              ? 'This function has previously resulted in a system hang and the card may not be supported. Do you wish to continue?'
+              : "Querying the card's health uses a manufacturer command that unsupported cards may not survive. If the card stops responding the system will restart. Continue?";
+          }}
+          var m = document.getElementById('sdHealthModal');
+          if (m) m.classList.add('show');
+        }}
+
+        function hideSdHealthModal() {{
+          var m = document.getElementById('sdHealthModal');
+          if (m) m.classList.remove('show');
+        }}
+
+        function confirmSdHealthEnable() {{
+          hideSdHealthModal();
+          var sel = document.getElementById('sdHealthMethod');
+          var method = sel ? sel.value : 'auto';
+          var btn = document.getElementById('sdHealthActionBtn');
+          var prevLabel = btn ? btn.textContent : '';
+          if (btn) {{ btn.disabled = true; btn.textContent = 'Checking card…'; }}
+          settingsTransact('/api/sdcard-health/enable', {{method: method}}, {{
+            onSuccess: function() {{ window.location.reload(); }},
+            onError: function(d) {{
+              if (btn) {{ btn.disabled = false; btn.textContent = prevLabel; }}
+              var msg = (d && d.reason) ? d.reason
+                : (d && d.error === 'hung') ? 'A query of this card did not complete and locked the system up; the card may not be supported.'
+                : (d && d.error === 'tool_missing') ? 'The SD card health tool is not installed.'
+                : 'The card health check failed.';
+              showInfoModal('SD Card Health', msg);
+            }}
+          }});
+        }}
+
+        function sdHealthDisable() {{
+          if (!window.confirm('Stop monitoring this card\\'s health?')) return;
+          var btn = document.getElementById('sdHealthActionBtn');
+          var prevLabel = btn ? btn.textContent : '';
+          if (btn) {{ btn.disabled = true; btn.textContent = 'Disabling…'; }}
+          settingsTransact('/api/sdcard-health/disable', {{}}, {{
+            onSuccess: function() {{ window.location.reload(); }},
+            onError: function() {{ if (btn) {{ btn.disabled = false; btn.textContent = prevLabel; }} }}
+          }});
         }}
 
         function _btApplyStatus(body) {{

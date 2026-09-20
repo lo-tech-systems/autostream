@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat: SD card health monitoring can be switched on from the Setup page.
+  The card is probed once first and monitoring is enabled only if the probe
+  succeeds; the page warns that an unsupported card may stop responding and
+  restart the system, and warns more strongly if that has already happened
+  on this card. A wrapper around the health tool records a marker before
+  every query, so a query that locks the system up is detected at the next
+  boot, monitoring is switched off, and the query is never repeated on its
+  own. The installer's sdmon flag now probes the card as its last step.
 - feat: the installer always builds the SD card health tool at a pinned
   upstream version and installs its units; `--sdmon=<method>` only enables
   the daily timer, the choice is preserved across updates, and an update

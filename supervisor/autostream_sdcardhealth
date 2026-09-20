@@ -1,0 +1,443 @@
+#!/usr/bin/python3
+"""autostream_sdcardhealth -- guarded SD card health probe
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+
+Shared by the daily/boot-time timer unit and the admin verbs behind the
+Setup page's "Enable SD card health monitoring" control. The probe issues a
+vendor-specific query that unsupported cards may not survive: an
+unsupported card can go offline until the next power cycle, which on a
+root-on-SD appliance means the hardware watchdog reboots the box. This
+script is the single place that runs the query, so the hang-detection
+protocol below only has to be got right once.
+
+Installed to /usr/local/libexec/autostream/autostream_sdcardhealth, mode
+0755, owned by root, and always run as root.
+
+MODES
+-----
+  run          Scheduled entry point (timer unit): marker check, probe,
+               record the outcome, write the status file. Disables its own
+               timer if a marker names the card present (previous run
+               never completed).
+  check        Same probe and recording as run, but never touches the
+               timer -- used by the "check" admin verb so a field probe can
+               report a hang without silently switching anything off.
+  boot-check   Boot-time entry point: if a marker names the card present,
+               record a hang, disable and stop the timer, and remove the
+               marker; a marker for a different card is stale and is
+               removed without recording anything. Never queries the card.
+               Always exits 0.
+  enable       Requires --method. Saves the method, enables and starts the
+               timer, and starts the service once so cached state exists
+               immediately.
+  disable      Disables and stops the timer and clears the saved method.
+
+Every mode ends by writing the status file.
+
+EXIT CODES
+----------
+run / check:  0 passed, 2 tool missing, 3 failed, 4 hung marker found.
+boot-check:   always 0.
+enable:       0, or 1 on an invalid or missing method.
+disable:      always 0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# Paths and constants (module-level so tests can override them directly).
+# ---------------------------------------------------------------------------
+
+STATE_DIR = Path("/var/lib/autostream")
+STATE_FILE = STATE_DIR / "install-state.env"
+MARKER_FILE = STATE_DIR / "sdcardhealth.inflight"
+STATUS_FILE = STATE_DIR / "sdcardhealth-status.json"
+HEALTH_JSON_FILE = STATE_DIR / "sdcardhealth.json"
+SERIAL_FILE = Path("/sys/block/mmcblk0/device/serial")
+
+SDMON_BIN = "/usr/local/sbin/sdmon"
+DEVICE = "/dev/mmcblk0"
+SYSTEMCTL_BIN = "systemctl"
+TIMER_UNIT = "autostream_sdcardhealth.timer"
+SERVICE_UNIT = "autostream_sdcardhealth.service"
+
+PROBE_TIMEOUT_SECONDS = 90
+REASON_MAX_LEN = 200
+
+VALID_METHODS = {
+    "auto", "sandisk", "adata", "transcend", "micron",
+    "swissbit", "2step", "innodisk",
+}
+
+
+def _log(level: str, msg: str) -> None:
+    stream = sys.stderr if level in ("ERROR", "WARN") else sys.stdout
+    print(f"autostream_sdcardhealth: {level}: {msg}", file=stream, flush=True)
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Card identity
+# ---------------------------------------------------------------------------
+
+def read_card_serial() -> str:
+    """Return the current card's serial from sysfs, or "" if unavailable."""
+    try:
+        return SERIAL_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Marker file (guards against re-probing a card that hung mid-query)
+# ---------------------------------------------------------------------------
+
+def write_marker(serial: str, method: str) -> None:
+    MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"serial": serial, "at": _now_iso(), "method": method}
+    MARKER_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def read_marker() -> Optional[dict]:
+    """Return the marker's parsed contents, {} if unparsable, or None if absent."""
+    try:
+        raw = MARKER_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def remove_marker() -> None:
+    try:
+        MARKER_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# install-state.env: in-place key rewriting
+# ---------------------------------------------------------------------------
+
+def _sanitize_env_value(value: str) -> str:
+    """Make *value* safe inside a KEY="value" line.
+
+    install-state.env is read by simple parsers (autostream_admin's
+    read_env_file, the installer's load_state) that only strip one matching
+    pair of outer quotes; they do not understand escaping. Newlines and
+    embedded double quotes are replaced so a value can never terminate the
+    line early or introduce a stray quote.
+    """
+    return value.replace("\n", " ").replace("\r", " ").replace('"', "'")
+
+
+def update_state_file(updates: dict) -> None:
+    """Rewrite the given keys of STATE_FILE in place.
+
+    Every other line, and the order of all lines, is preserved. Keys not
+    already present are appended at the end.
+    """
+    try:
+        lines = STATE_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    except FileNotFoundError:
+        lines = []
+
+    remaining = dict(updates)
+    out_lines = []
+    for line in lines:
+        stripped = line.rstrip("\r\n")
+        newline = line[len(stripped):] or "\n"
+        key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        if key and not stripped.lstrip().startswith("#") and key in remaining:
+            out_lines.append(f'{key}="{_sanitize_env_value(remaining.pop(key))}"{newline}')
+        else:
+            out_lines.append(line)
+
+    for key, value in remaining.items():
+        if out_lines and not out_lines[-1].endswith("\n"):
+            out_lines[-1] += "\n"
+        out_lines.append(f'{key}="{_sanitize_env_value(value)}"\n')
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+    tmp.write_text("".join(out_lines), encoding="utf-8")
+    os.chmod(tmp, 0o644)
+    tmp.replace(STATE_FILE)
+
+
+def read_state_value(key: str, default: str = "") -> str:
+    try:
+        text = STATE_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return default
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        found_key, value = stripped.split("=", 1)
+        if found_key.strip() != key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        return value
+    return default
+
+
+def record_outcome(serial: str, check: str, reason: str = "") -> None:
+    update_state_file({
+        "SDMON_CHECK": check,
+        "SDMON_CHECK_SERIAL": serial,
+        "SDMON_CHECK_AT": _now_iso(),
+        "SDMON_CHECK_REASON": reason,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Status file: read by the coordinator, rewritten by every mode
+# ---------------------------------------------------------------------------
+
+def _tool_present() -> bool:
+    return os.path.exists(SDMON_BIN) and os.access(SDMON_BIN, os.X_OK)
+
+
+def _timer_is_enabled() -> bool:
+    try:
+        result = subprocess.run(
+            [SYSTEMCTL_BIN, "is-enabled", TIMER_UNIT],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "enabled"
+
+
+def write_status_file() -> None:
+    payload = {
+        "tool_present": _tool_present(),
+        "timer_enabled": _timer_is_enabled(),
+        "method": read_state_value("SDMON_METHOD", ""),
+        "check": read_state_value("SDMON_CHECK", "none"),
+        "serial": read_state_value("SDMON_CHECK_SERIAL", ""),
+        "at": read_state_value("SDMON_CHECK_AT", ""),
+        "reason": read_state_value("SDMON_CHECK_REASON", ""),
+    }
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS_FILE.with_suffix(STATUS_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(tmp, 0o644)
+    tmp.replace(STATUS_FILE)
+
+
+def write_health_json(payload: dict) -> None:
+    """Move the tool's successful JSON reply into the About page's file."""
+    HEALTH_JSON_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = HEALTH_JSON_FILE.with_suffix(HEALTH_JSON_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(tmp, 0o644)
+    tmp.replace(HEALTH_JSON_FILE)
+
+
+def _systemctl(*args: str) -> int:
+    try:
+        result = subprocess.run(
+            [SYSTEMCTL_BIN, *args], capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _log("ERROR", f"systemctl {' '.join(args)} failed: {exc!r}")
+        return 1
+    if result.returncode != 0:
+        _log("WARN", f"systemctl {' '.join(args)} exited {result.returncode}: "
+                      f"{(result.stderr or '').strip()}")
+    return result.returncode
+
+
+# ---------------------------------------------------------------------------
+# The probe itself
+# ---------------------------------------------------------------------------
+
+def _parse_tool_json(text: str) -> Optional[dict]:
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _extract_reason(payload: Optional[dict], stdout: str, stderr: str, returncode: int) -> str:
+    if isinstance(payload, dict):
+        reason = payload.get("reason") or payload.get("error") or payload.get("message")
+        if reason:
+            return str(reason)[:REASON_MAX_LEN]
+    text = stderr or stdout or f"sdmon exited {returncode}"
+    return text[:REASON_MAX_LEN]
+
+
+def do_probe(method: str, serial: str) -> Tuple[bool, str, Optional[dict]]:
+    """Run the guarded sdmon probe. Returns (success, reason, tool_json)."""
+    cmd = [SDMON_BIN, "-q", "-m", method]
+    if method == "2step":
+        cmd.append("-a")
+    cmd.append(DEVICE)
+
+    write_marker(serial, method)
+    try:
+        # subprocess.run() kills the child itself before re-raising on
+        # timeout, so a card that never answers leaves nothing running.
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        remove_marker()
+        return False, "no response within 90 s", None
+
+    remove_marker()
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    payload = _parse_tool_json(stdout) or _parse_tool_json(stderr)
+    if isinstance(payload, dict) and payload.get("success") is True:
+        return True, "", payload
+
+    return False, _extract_reason(payload, stdout, stderr, proc.returncode), payload
+
+
+def _probe_and_record(method: str, serial: str, disable_timer_on_hung: bool) -> int:
+    marker = read_marker()
+    if marker is not None:
+        if marker.get("serial", "") == serial:
+            reason = "hung: previous probe for this card did not complete"
+            record_outcome(serial, "hung", reason)
+            if disable_timer_on_hung:
+                _log("ERROR", f"marker found for the current card (serial={serial!r}); "
+                               f"the previous probe never completed -- disabling the timer")
+                _systemctl("disable", "--now", TIMER_UNIT)
+            remove_marker()
+            write_status_file()
+            return 4
+        _log("INFO", f"stale marker for a different card (serial={marker.get('serial', '')!r}) removed")
+        remove_marker()
+
+    if not _tool_present():
+        _log("ERROR", f"{SDMON_BIN} not found or not executable")
+        write_status_file()
+        return 2
+
+    success, reason, payload = do_probe(method, serial)
+    if success:
+        record_outcome(serial, "passed", "")
+        write_health_json(payload)
+    else:
+        record_outcome(serial, "failed", reason)
+    write_status_file()
+    return 0 if success else 3
+
+
+def _current_method(explicit: Optional[str]) -> str:
+    return explicit or read_state_value("SDMON_METHOD", "") or "auto"
+
+
+# ---------------------------------------------------------------------------
+# Modes
+# ---------------------------------------------------------------------------
+
+def cmd_run(explicit_method: Optional[str]) -> int:
+    serial = read_card_serial()
+    return _probe_and_record(_current_method(explicit_method), serial, disable_timer_on_hung=True)
+
+
+def cmd_check(explicit_method: Optional[str]) -> int:
+    serial = read_card_serial()
+    return _probe_and_record(_current_method(explicit_method), serial, disable_timer_on_hung=False)
+
+
+def cmd_boot_check() -> int:
+    serial = read_card_serial()
+    marker = read_marker()
+    if marker is not None:
+        if marker.get("serial", "") == serial:
+            _log("WARN", f"boot-check: marker found for the card present (serial={serial!r}); "
+                          f"recording hung and disabling the timer")
+            record_outcome(serial, "hung", "hung: previous probe for this card did not complete")
+            _systemctl("disable", "--now", TIMER_UNIT)
+        else:
+            _log("INFO", f"boot-check: stale marker for a different card "
+                          f"(serial={marker.get('serial', '')!r}) removed")
+        remove_marker()
+    write_status_file()
+    return 0
+
+
+def cmd_enable(method: Optional[str]) -> int:
+    if not method or method not in VALID_METHODS:
+        _log("ERROR", f"invalid or missing method: {method!r}")
+        write_status_file()
+        return 1
+    update_state_file({"SDMON_METHOD": method})
+    rc = _systemctl("enable", "--now", TIMER_UNIT)
+    _systemctl("start", "--no-block", SERVICE_UNIT)
+    write_status_file()
+    return 0 if rc == 0 else 1
+
+
+def cmd_disable() -> int:
+    _systemctl("disable", "--now", TIMER_UNIT)
+    update_state_file({"SDMON_METHOD": ""})
+    write_status_file()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+def parse_args(argv: list) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="autostream_sdcardhealth",
+        description="Guarded SD card health probe (run as root).",
+    )
+    parser.add_argument(
+        "mode", choices=["run", "check", "boot-check", "enable", "disable"],
+    )
+    parser.add_argument(
+        "--method", default=None,
+        help="Query method; defaults to the saved SDMON_METHOD, else 'auto'.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list) -> int:
+    args = parse_args(argv)
+
+    if args.mode == "run":
+        return cmd_run(args.method)
+    if args.mode == "check":
+        return cmd_check(args.method)
+    if args.mode == "boot-check":
+        return cmd_boot_check()
+    if args.mode == "enable":
+        return cmd_enable(args.method)
+    return cmd_disable()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

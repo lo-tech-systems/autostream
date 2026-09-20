@@ -157,6 +157,20 @@
     </div>
   </div>
 </div>
+<div id="sdHealthModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="sdHealthModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="sdHealthModalTitle">SD Card Health Check</div>
+    <div class="bd modal-bd">
+      <p id="sdHealthModalMsg"></p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="sdHealthModalCancel"
+        onclick="hideSdHealthModal()">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="sdHealthModalOk"
+        onclick="confirmSdHealthEnable()">Continue</button>
+    </div>
+  </div>
+</div>
 <div id="hostnameModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="hostnameModalTitle">
   <div class="panel modal-panel">
     <div class="hdr modal-hdr" id="hostnameModalTitle">Change Hostname</div>
@@ -3112,6 +3126,56 @@
           _btBufferTimer = setTimeout(function() {
             settingsTransact('/api/bluetooth/buffer', {buffer_ms: parseInt(value, 10)});
           }, 500);
+        }
+
+        // ── SD card health monitoring row (shares this card) ──────────────
+        var sdHealthState = {"tool_present": false, "timer_enabled": false, "method": "auto", "check": "none", "serial": "", "at": "", "reason": "", "card": {"manfid": null, "oemid": null, "name": "", "serial": "", "likely_supported": false}, "health_percent": null, "last_sampled_at": null};
+
+        function showSdHealthModal() {
+          var msg = document.getElementById('sdHealthModalMsg');
+          if (msg) {
+            msg.textContent = (sdHealthState && sdHealthState.check === 'hung')
+              ? 'This function has previously resulted in a system hang and the card may not be supported. Do you wish to continue?'
+              : "Querying the card's health uses a manufacturer command that unsupported cards may not survive. If the card stops responding the system will restart. Continue?";
+          }
+          var m = document.getElementById('sdHealthModal');
+          if (m) m.classList.add('show');
+        }
+
+        function hideSdHealthModal() {
+          var m = document.getElementById('sdHealthModal');
+          if (m) m.classList.remove('show');
+        }
+
+        function confirmSdHealthEnable() {
+          hideSdHealthModal();
+          var sel = document.getElementById('sdHealthMethod');
+          var method = sel ? sel.value : 'auto';
+          var btn = document.getElementById('sdHealthActionBtn');
+          var prevLabel = btn ? btn.textContent : '';
+          if (btn) { btn.disabled = true; btn.textContent = 'Checking card…'; }
+          settingsTransact('/api/sdcard-health/enable', {method: method}, {
+            onSuccess: function() { window.location.reload(); },
+            onError: function(d) {
+              if (btn) { btn.disabled = false; btn.textContent = prevLabel; }
+              var msg = (d && d.reason) ? d.reason
+                : (d && d.error === 'hung') ? 'A query of this card did not complete and locked the system up; the card may not be supported.'
+                : (d && d.error === 'tool_missing') ? 'The SD card health tool is not installed.'
+                : 'The card health check failed.';
+              showInfoModal('SD Card Health', msg);
+            }
+          });
+        }
+
+        function sdHealthDisable() {
+          if (!window.confirm('Stop monitoring this card\'s health?')) return;
+          var btn = document.getElementById('sdHealthActionBtn');
+          var prevLabel = btn ? btn.textContent : '';
+          if (btn) { btn.disabled = true; btn.textContent = 'Disabling…'; }
+          settingsTransact('/api/sdcard-health/disable', {}, {
+            onSuccess: function() { window.location.reload(); },
+            onError: function() { if (btn) { btn.disabled = false; btn.textContent = prevLabel; } }
+          });
         }
 
         function _btApplyStatus(body) {

@@ -119,6 +119,9 @@ from autostream_webui_api import (
     send_bluetooth_services_post_json,
     send_bluetooth_onboard_post_json,
     send_bluetooth_buffer_post_json,
+    send_sdcard_health_get_json,
+    send_sdcard_health_enable_post_json,
+    send_sdcard_health_disable_post_json,
 )
 import autostream_federation
 from autostream_webui_dials import (
@@ -444,6 +447,18 @@ def _route_post_bluetooth_onboard(handler, state, body_str):
 
 def _route_post_bluetooth_buffer(handler, state, body_str):
     send_bluetooth_buffer_post_json(handler, _route_post_json_obj(handler))
+
+
+def _route_get_sdcard_health(handler, state):
+    send_sdcard_health_get_json(handler)
+
+
+def _route_post_sdcard_health_enable(handler, state, body_str):
+    send_sdcard_health_enable_post_json(handler, _route_post_json_obj(handler))
+
+
+def _route_post_sdcard_health_disable(handler, state, body_str):
+    send_sdcard_health_disable_post_json(handler, _route_post_json_obj(handler))
 
 
 def _route_post_update_apply(handler, state, body_str):
