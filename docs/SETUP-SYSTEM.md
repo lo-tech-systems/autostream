@@ -11,7 +11,7 @@ Open **Setup** and expand the **System** card, which opens the **System & Update
 
 The card shows the current hostname and a **Change Hostname** button. Tapping it opens a
 dialog pre-filled with the current value; entering a new one and confirming applies it
-immediately (letters, numbers and hyphens only — anything else is rejected with an inline
+immediately (letters, numbers and hyphens only - anything else is rejected with an inline
 error). There's no reboot involved, but if you reach this appliance at
 `<hostname>.local`, you'll need to browse to the new address afterwards.
 
@@ -28,22 +28,22 @@ and how long OwnTone waits before removing an AirPlay speaker that has stopped r
 
 Underneath, a status line reports one of:
 
-- **Tool not installed** — the health-check tool isn't present on this appliance.
-- **Not monitored** — the tool is installed but monitoring hasn't been turned on (or a
+- **Tool not installed** - the health-check tool isn't present on this appliance.
+- **Not monitored** - the tool is installed but monitoring hasn't been turned on (or a
   scheduled check hasn't completed yet).
-- **Monitored, NN % endurance remaining, last checked <when>** — monitoring is on and a
+- **Monitored, NN % endurance remaining, last checked <when>** - monitoring is on and a
   reading has been recorded.
 
 A second line shows what's known about the card itself (name and manufacturer, and whether
 it's a manufacturer likely to be supported), and readings are only ever shown while
-monitoring is switched on — the moment you turn it off, the percentage and last-checked
+monitoring is switched on - the moment you turn it off, the percentage and last-checked
 detail disappear, they aren't just left stale on screen.
 
 ### Turning it on
 
-Pick a method from the drop-down — **auto**, or a specific card vendor (**sandisk**,
+Pick a method from the drop-down - **auto**, or a specific card vendor (**sandisk**,
 **adata**, **transcend**, **micron**, **swissbit**, **2step**, **innodisk**) if you know
-your card's make — then press **Enable**. This runs a one-off probe first, using a
+your card's make - then press **Enable**. This runs a one-off probe first, using a
 manufacturer-specific command to read the card's wear level, before a confirmation dialog
 that warns:
 
@@ -61,7 +61,7 @@ asks for a plain confirmation before turning scheduled monitoring off again.
 
 The same panel also has an **Updates** card (Check / Install / Reboot, automatic updates,
 and a pre-release channel toggle). It's covered in depth in
-[System Maintenance](SYSTEM-MAINTENANCE.md) — this page only notes that it lives here.
+[System Maintenance](SYSTEM-MAINTENANCE.md) - this page only notes that it lives here.
 
 ## Gaps
 

@@ -10,8 +10,8 @@ every 1.5 s) so it stays live without a manual refresh.
 
 The card at the top of the page shows either:
 
-- **Ready** — no audio is currently detected on the active input.
-- **Now Playing** — an input is above the silence threshold.
+- **Ready** - no audio is currently detected on the active input.
+- **Now Playing** - an input is above the silence threshold.
 
 Under the heading, an icon and label identify the source: **Turntable**, **Bluetooth**, or
 **Line Level**, alongside the input's own label (for example "Input 1"). If a Bluetooth
@@ -48,11 +48,11 @@ showing:
   in [Setup-OwnTone](SETUP-OWNTONE.md).
 - A state chip reading **On** or **Off**.
 - An on/off toggle.
-- When the output is on, a **Volume:** slider (0–100%) underneath.
+- When the output is on, a **Volume:** slider (0-100%) underneath.
 
 Turning an output on sends its current volume to the appliance immediately; toggling it off
 does the same. If the output requires a device PIN (for example a fresh Apple TV pairing), a
-PIN entry dialog appears automatically — enter the code shown on the device to complete the
+PIN entry dialog appears automatically - enter the code shown on the device to complete the
 enable. If the appliance's CPU cannot encode another stream at the current audio quality, a
 "CPU limit reached" message explains that the output could not be enabled and to disable
 another output or choose a lighter audio mode.
@@ -89,16 +89,16 @@ handled.
 
 ## Other notices
 
-- If no audio input is configured at all, a banner reads "No input device configured — set one
+- If no audio input is configured at all, a banner reads "No input device configured - set one
   up in Setup, or enable Bluetooth."
 - Service reminder banners (stylus, belt, bearing wear) can appear above the outputs list; they
   link through to the Service page.
 
 ## See also
 
-- [Setup-Playback](SETUP-PLAYBACK.md) — repeat/replay settings and defaults.
-- [Setup-OwnTone](SETUP-OWNTONE.md) — configuring the default output and OwnTone connection.
-- [Multi-Appliance](MULTI-APPLIANCE.md) — the appliance selector, jump-to-appliance behaviour,
+- [Setup-Playback](SETUP-PLAYBACK.md) - repeat/replay settings and defaults.
+- [Setup-OwnTone](SETUP-OWNTONE.md) - configuring the default output and OwnTone connection.
+- [Multi-Appliance](MULTI-APPLIANCE.md) - the appliance selector, jump-to-appliance behaviour,
   and cross-appliance output occupancy.
-- [Equaliser](EQUALISER.md) — adjusting sound once playback is running.
-- [Setup-Personalisation](SETUP-PERSONALISATION.md) — the toggles that show or hide the master volume, input detail, hostname pill, and appliance control.
+- [Equaliser](EQUALISER.md) - adjusting sound once playback is running.
+- [Setup-Personalisation](SETUP-PERSONALISATION.md) - the toggles that show or hide the master volume, input detail, hostname pill, and appliance control.

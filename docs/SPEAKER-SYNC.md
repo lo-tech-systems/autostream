@@ -22,7 +22,7 @@ is unavailable rather than offering controls that couldn't do anything.
 ## When to use it
 
 Use it whenever two or more of your AirPlay speakers are noticeably out of time with
-each other — for example, sound from a TV-connected Apple TV arriving audibly ahead of
+each other - for example, sound from a TV-connected Apple TV arriving audibly ahead of
 or behind other speakers playing the same source in another room, or any group of
 speakers where one consistently lags the rest. Running the tool measures the actual gap
 and sets numbers you'd otherwise have to guess by ear.
@@ -36,7 +36,7 @@ reference and at least one other to be measured against it.
    Synchronisation**. This opens `/align`.
 2. Under **Select the outputs to calibrate**, switch on every speaker you want
    included. The first one you switch on becomes the reference (marked with a
-   **Reference** chip) — the others are adjusted to match it, not the other way round.
+   **Reference** chip) - the others are adjusted to match it, not the other way round.
 3. Set the **Calibration volume** the test tones will play at.
 4. Tap **Start**. autostream opens a link to a measurement page hosted at
    lo-tech.co.uk (a secure page is needed for microphone access, which your phone's
@@ -56,14 +56,14 @@ and can't see.
 
 The review table lists, for each speaker: the measured delta, the measurement spread,
 its current offset, and the proposed new offset. A spread over 40 ms is flagged as a
-noisy measurement — if you see that, it's worth re-running rather than trusting the
+noisy measurement - if you see that, it's worth re-running rather than trusting the
 number as-is.
 
 From here you can:
 
-- **Apply** — writes the proposed offsets to the outputs immediately. They take effect
+- **Apply** - writes the proposed offsets to the outputs immediately. They take effect
   right away; there's nothing further to save.
-- **Re-run** — discards this result without changing anything, so you can measure again
+- **Re-run** - discards this result without changing anything, so you can measure again
   (for example after moving the phone somewhere with less background noise).
 
 Proposed offsets are clamped to a maximum of ±2000 ms either way.
@@ -75,5 +75,5 @@ to nudge a value afterwards rather than re-running the whole measurement.
 
 ## See also
 
-- [Setup-OwnTone](SETUP-OWNTONE.md) — the per-output offset sliders that Speaker
+- [Setup-OwnTone](SETUP-OWNTONE.md) - the per-output offset sliders that Speaker
   Synchronisation reads from and writes to, and how to adjust them by hand.

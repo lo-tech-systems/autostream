@@ -1,6 +1,6 @@
 # Equaliser
 
-The Equaliser page is served at `/equaliser`. It controls the **shared output stage** — the
+The Equaliser page is served at `/equaliser`. It controls the **shared output stage** - the
 tone and level applied to whatever is currently playing, after all sources have been mixed.
 There is no PIN gate on this page, so it stays reachable for quick adjustments while music is
 playing.
@@ -23,12 +23,12 @@ Six fixed parametric bands shape the final tone:
 
 | Band  | Centre / corner frequency | Character |
 |-------|---------------------------|-----------|
-| 1     | 40 Hz                     | Low shelf — overall bass weight |
-| 2     | 100 Hz                    | Peak — upper bass / low-mid |
-| 3     | 300 Hz                    | Peak — low-mid body |
-| 4     | 1 kHz                     | Peak — midrange |
-| 5     | 4 kHz                     | Peak — presence |
-| 6     | 10 kHz                    | High shelf — overall treble/air |
+| 1     | 40 Hz                     | Low shelf - overall bass weight |
+| 2     | 100 Hz                    | Peak - upper bass / low-mid |
+| 3     | 300 Hz                    | Peak - low-mid body |
+| 4     | 1 kHz                     | Peak - midrange |
+| 5     | 4 kHz                     | Peak - presence |
+| 6     | 10 kHz                    | High shelf - overall treble/air |
 
 Each band is a slider running **-12 dB to +12 dB** in 1 dB steps, labelled with its frequency
 (40Hz, 100Hz, 300Hz, 1kHz, 4kHz, 10kHz) and its current value. Above the sliders, a live
@@ -52,8 +52,8 @@ source material itself is already close to full level (see "Why clipping happens
 
 ## Automatically trim gain (auto-trim)
 
-A toggle labelled **Automatically trim gain** — "Prevent clipping by adjusting output level
-automatically" — watches the final signal after EQ and gain have been applied. If it detects a
+A toggle labelled **Automatically trim gain** - "Prevent clipping by adjusting output level
+automatically" - watches the final signal after EQ and gain have been applied. If it detects a
 sample that would clip (exceed full scale), it immediately cuts the output level by enough to
 stop that overshoot happening again, then holds that cut for the rest of the session.
 
@@ -66,7 +66,7 @@ stop that overshoot happening again, then holds that cut for the rest of the ses
 - Turning auto-trim back on resets the accumulated cut to 0 dB and starts fresh.
 
 Auto-trim is a safety net for occasional loud peaks, not a substitute for setting a sensible
-baseline level yourself — see the recommended workflow below.
+baseline level yourself - see the recommended workflow below.
 
 ## Why clipping happens
 
@@ -76,7 +76,7 @@ push a louder record or CD above full scale, which sounds hard, brittle, or obvi
 Many CDs, especially heavily compressed releases, are mastered very hot and leave little headroom
 in the original signal. Even a small EQ boost can be enough to clip them.
 
-The fix usually is not "less EQ" on its own — it's giving the tone controls some headroom to work
+The fix usually is not "less EQ" on its own - it's giving the tone controls some headroom to work
 in, by setting output gain to a negative value first. Treat EQ and output gain as one setting,
 not two independent ones.
 
@@ -84,14 +84,14 @@ not two independent ones.
 
 1. Start with the EQ bands at or near flat.
 2. Turn on **Automatically trim gain**.
-3. Play a loud or "hot" track — ideally one with strong bass or bright peaks — and let it run
+3. Play a loud or "hot" track - ideally one with strong bass or bright peaks - and let it run
    past its loudest section.
 4. Check the auto-trim status line for how much cut was needed.
 5. Set **Output gain** manually to roughly that same negative value.
 6. Turn auto-trim off and back on to reset the accumulated cut back to 0 dB now that the manual
    gain covers the everyday case.
 7. Leave auto-trim enabled so occasional louder peaks are still caught. For a turntable, consider
-   turning it off instead once you've set the baseline gain — a stylus dust click or pop can spike
+   turning it off instead once you've set the baseline gain - a stylus dust click or pop can spike
    far louder than the music itself and trigger a cut you don't actually want.
 
 Example: if auto-trim settles at about -6 dB, set Output gain to about -6 dB, then reset auto-trim
@@ -104,7 +104,7 @@ Example: if auto-trim settles at about -6 dB, set Output gain to about -6 dB, th
 - If one input is consistently louder or has a different tonal balance than the other, fix that
   at the input's own gain/EQ controls (see [Setup-Inputs](SETUP-INPUTS.md)) rather than
   compensating here every time you switch sources.
-- Auto-trim reacts to peaks; it doesn't fix a persistently too-hot recording on its own — a
+- Auto-trim reacts to peaks; it doesn't fix a persistently too-hot recording on its own - a
   negative output gain baseline does that.
 
 ## Multiple appliances
@@ -117,6 +117,6 @@ appliance goes offline mid-edit.
 
 ## See also
 
-- [Setup-Inputs](SETUP-INPUTS.md) — per-input gain and 3-band tone control.
-- [Home Page](HOME-PAGE.md) — the appliance selector and day-to-day playback controls.
-- [Troubleshooting](TROUBLESHOOTING.md) — general recovery steps.
+- [Setup-Inputs](SETUP-INPUTS.md) - per-input gain and 3-band tone control.
+- [Home Page](HOME-PAGE.md) - the appliance selector and day-to-day playback controls.
+- [Troubleshooting](TROUBLESHOOTING.md) - general recovery steps.

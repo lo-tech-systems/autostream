@@ -1,4 +1,4 @@
-# autostream dial — Build Guide
+# autostream dial - Build Guide
 
 ## Bill of Materials
 
@@ -11,7 +11,7 @@
 | 1 | Micro-USB power supply (5 V, 1 A min) | Slim profile preferred for in-wall fit |
 | 1 | Micro-USB extension cable or adapter | To bring power out of the back-box |
 | 4 | Dupont female-female jumper wires | For encoder→GPIO connection |
-| — | Short M2.5 standoffs + screws | To mount Pi Zero inside back-box |
+| - | Short M2.5 standoffs + screws | To mount Pi Zero inside back-box |
 
 Optional:
 | Qty | Component | Notes |
@@ -38,7 +38,7 @@ Use BCM (Broadcom) pin numbering throughout.
 | Anode (+) via 330 Ω | GPIO 24 *(opt)* | Pin 18 |
 | Cathode (−) | GND | Pin 20 |
 
-Internal pull-ups are enabled by `gpiozero`/`lgpio` — no external resistors
+Internal pull-ups are enabled by `gpiozero`/`lgpio` - no external resistors
 needed on the encoder signal lines.
 
 The SW (button) line enables **mute/unmute**: pressing the encoder toggles the
@@ -61,11 +61,11 @@ The dial software also supports four other panel/controller combinations in
 software: ST7735S at 128x128, ST7789 at 240x240 and 320x240, and ILI9341 at
 320x240. These are selectable from the **Screen Type** control on the main
 autostream Setup → Dials page (see `GETTING-STARTED.md`), but they have **not
-yet been validated on real hardware** — treat their offsets, colour order, and
+yet been validated on real hardware** - treat their offsets, colour order, and
 timings as nominal until confirmed on a physical panel.
 
 Wiring is the same fixed SPI0 profile regardless of which screen type is
-selected in software — there is no per-panel wiring variant:
+selected in software - there is no per-panel wiring variant:
 
 | Display pin | Pi Zero GPIO (BCM) | Physical pin |
 |-------------|--------------------|--------------|
@@ -80,7 +80,7 @@ selected in software — there is no per-panel wiring variant:
 
 **GPIO 24 conflict with the optional status LED:** the display's RESET line
 and the optional activity LED (see above) both use GPIO 24. Do not wire both
-at once — if a screen is fitted, set `"led_gpio": null` in
+at once - if a screen is fitted, set `"led_gpio": null` in
 `/etc/autostream/autostream-dial.json` (the default), or move the LED to one of
 the pins left free by a full build: GPIO 5, 6 or 13 (pins 29, 31, 33).
 
@@ -90,7 +90,7 @@ accessible. Enabling the screen is a software setting, separate from wiring:
 after connecting the panel, use the **Has Screen Fitted** toggle on the main
 autostream Setup → Dials page (see `GETTING-STARTED.md`) to turn it on. If
 the panel's red and blue channels appear swapped, use the **Swap Red/Blue
-(BGR)** toggle on the same page — this is a common quirk on cheap panel
+(BGR)** toggle on the same page - this is a common quirk on cheap panel
 breakouts and does not indicate a wiring fault. Changing the screen type or
 the BGR setting applies immediately, with no restart or re-flash required.
 
@@ -130,18 +130,18 @@ After wiring, select the controller from the **Touch Panel** control on the
 main autostream Setup → Dials page. Changing the touch type restarts the dial
 service, which takes around ten seconds.
 
-Capacitive panels (FT6206/FT6236) use I2C instead — the installer enables I2C
-unconditionally so pins 3 and 5 are reserved for them — but that path has not
+Capacitive panels (FT6206/FT6236) use I2C instead - the installer enables I2C
+unconditionally so pins 3 and 5 are reserved for them - but that path has not
 yet been validated on hardware.
 
 ---
 
 ## Optional: Touch Panel
 
-A touch panel is entirely optional and independent of the rotary encoder — a
+A touch panel is entirely optional and independent of the rotary encoder - a
 dial can have an encoder, a touch panel, both, or neither (the encoder and
 button GPIOs are nullable in `/etc/autostream/autostream-dial.json`; see
-*GPIO Wiring* above). Touch **requires a screen to be fitted** — there is no
+*GPIO Wiring* above). Touch **requires a screen to be fitted** - there is no
 touch-only mode.
 
 Two kinds of controller are supported in software:
@@ -154,23 +154,23 @@ separate chip select and interrupt line:
 |-----------|--------------------|--------------|-------|
 | T_CLK / T_DIN / T_DO | SPI0 SCLK/MOSI/MISO | (shared with display) | Same SPI0 bus as the display |
 | T_CS      | GPIO 7 (SPI0 CE1)   | Pin 26       | Touch controller's own chip select, distinct from the display's CE0 |
-| T_IRQ     | GPIO 26             | Pin 37       | Active-low interrupt; **mandatory** — see below |
+| T_IRQ     | GPIO 26             | Pin 37       | Active-low interrupt; **mandatory** - see below |
 | VCC       | 3.3 V               | Pin 1        | |
 | GND       | GND                 | Pin 6        | |
 
 **T_IRQ (GPIO 26) is mandatory, not optional.** The touch driver waits on
 this line and only takes the shared SPI0 bus while a finger is actually down
-— without it there is no way to know when a touch conversion is worth
+- without it there is no way to know when a touch conversion is worth
 reading, and the driver has no fallback polling mode. Terminate/pull T_IRQ
 per the panel/controller datasheet (resistive touch controllers typically
 need an external pull-up on T_IRQ if the panel breakout doesn't already
-provide one) — this build guide does not prescribe a value beyond what the
+provide one) - this build guide does not prescribe a value beyond what the
 datasheet calls for.
 
 The ILI9341+HR2046 combination is the first resistive-touch build target
 supported in software, using the `xpt2046` driver tag (HR2046 is
 XPT2046-command-compatible). **This combination has not yet been validated
-on physical hardware** — the calibration constants in the touch controller
+on physical hardware** - the calibration constants in the touch controller
 table are nominal, datasheet-typical values, not measurements from a real
 panel.
 
@@ -178,14 +178,14 @@ panel.
 Pi's I2C1 bus (GPIO 2/3, physical pins 3/5) plus power/ground; consult the
 specific panel breakout's pinout for its I2C address and any additional
 interrupt/reset lines. The installer enables I2C unconditionally (whether or
-not a capacitive panel is fitted — enabling the bus with nothing attached
+not a capacitive panel is fitted - enabling the bus with nothing attached
 costs nothing at boot). **No capacitive touch hardware has been tested with
-this software at all** — the FT6206/FT6236 driver exists in code but is
+this software at all** - the FT6206/FT6236 driver exists in code but is
 unvalidated end to end; treat it as unproven until confirmed on a physical
 panel.
 
 Do not attempt to wire both a resistive and a capacitive controller to the
-same dial — only one `touch_type` can be active at a time (see
+same dial - only one `touch_type` can be active at a time (see
 `GETTING-STARTED.md`).
 
 ---
@@ -200,7 +200,7 @@ same dial — only one `touch_type` can be active at a time (see
 6. Attach the faceplate; fit the encoder knob.
 
 Ensure the box is not live (no mains cabling routed through it).
-The Pi is powered only by low-voltage USB — no mains safety clearance required
+The Pi is powered only by low-voltage USB - no mains safety clearance required
 for the Pi itself, but follow local electrical codes for in-wall installations.
 
 ---
@@ -208,7 +208,7 @@ for the Pi itself, but follow local electrical codes for in-wall installations.
 ## OS Preparation
 
 The dial's own Wi-Fi management (including the setup hotspot) is installed by the dial
-software in the next section — a stock Raspberry Pi OS Lite image has none of it yet. Get
+software in the next section - a stock Raspberry Pi OS Lite image has none of it yet. Get
 the Pi reachable over SSH first so the installer can be run; the simplest way is to
 pre-configure your home Wi-Fi in the Imager.
 
@@ -229,7 +229,7 @@ pre-configure your home Wi-Fi in the Imager.
 
 The software is installed by the autostream dial installer. On a freshly
 flashed Pi Zero W (after OS prep above), SSH in and run the one-line
-bootstrap — it downloads the latest release and starts the installer:
+bootstrap - it downloads the latest release and starts the installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/dial_bootstrap.sh | sudo bash
@@ -252,7 +252,7 @@ Installation will take 5-10 minutes.
 ## Wi-Fi Setup and Hotspot Fallback
 
 Once the dial software is installed and running, it manages its own Wi-Fi connection and
-falls back to a setup hotspot whenever it cannot join a known network — for example if you
+falls back to a setup hotspot whenever it cannot join a known network - for example if you
 skipped Wi-Fi configuration in the Imager, or later move the dial to a new location.
 
 1. Connect your phone or laptop to the `autostream-dial_XXXX` hotspot, where `XXXX` is the
@@ -301,6 +301,6 @@ avahi-browse -t _autostream-dial._tcp
 curl http://localhost/configure
 ```
 
-The dial itself has no browser-facing setup page — it serves only the JSON endpoints above
+The dial itself has no browser-facing setup page - it serves only the JSON endpoints above
 on port 7842 (anything else 404s). Configure the dial from the main autostream appliance's
 web UI instead: Setup page → Dials panel. See `GETTING-STARTED.md` for details.

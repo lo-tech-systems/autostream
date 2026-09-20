@@ -32,16 +32,16 @@ track / Direct Drive" (a direct-drive turntable has no belt to track).
 
 ## Life values and presets
 
-Each dimension is a fixed dropdown of presets — there is no free-text entry
+Each dimension is a fixed dropdown of presets - there is no free-text entry
 in the Service page:
 
 | Dropdown | Options |
 |----------|---------|
 | Stylus Life | Don't track usage, 100, 250, 500, 750, 1000 hours |
-| Belt — Hours Life | Don't track / Direct Drive, 1000, 2000, 3000 hours |
-| Belt — Time Life | Don't track / Direct Drive, 1–5 years |
-| Bearing — Hours Life | Don't track, 200, 500, 1000, 2000 hours |
-| Bearing — Time Life | Don't track, 1–5 years |
+| Belt - Hours Life | Don't track / Direct Drive, 1000, 2000, 3000 hours |
+| Belt - Time Life | Don't track / Direct Drive, 1-5 years |
+| Bearing - Hours Life | Don't track, 200, 500, 1000, 2000 hours |
+| Bearing - Time Life | Don't track, 1-5 years |
 
 Changing a dropdown saves immediately (no Save button) and the panel's live
 figures update right away.
@@ -54,7 +54,7 @@ so it is left out here even though the underlying normaliser tolerates it]
 
 While a turntable input is playing, its playback time accumulates against
 every dimension that is switched on for that input, so the Service page
-reflects the current session as it happens — you don't need to stop playback
+reflects the current session as it happens - you don't need to stop playback
 to see updated figures.
 
 Two clocks run independently:
@@ -75,7 +75,7 @@ Each active dimension shows:
   last service), plus **Remaining**.
 - For time tracking, a **Due** date (last service date plus the selected
   number of years).
-- **Last changed** (stylus) or **Last service** (belt/bearing) — the date the
+- **Last changed** (stylus) or **Last service** (belt/bearing) - the date the
   counter was last reset, or "Never".
 
 ## Warning banners and indicators
@@ -93,8 +93,8 @@ the limit is reached, they turn red ("due now"/"Overdue").
 
 When any tracked item on any input is in warning or overdue:
 
-- A banner appears near the top of the Home page (one line per item —
-  stylus, belt, bearing — naming the input when there's more than one
+- A banner appears near the top of the Home page (one line per item -
+  stylus, belt, bearing - naming the input when there's more than one
   affected). Tapping a banner opens the Service page.
 - The **Service** tab in the bottom navigation is highlighted red.
 

@@ -22,7 +22,7 @@ The **Input device** dropdown lists the capture devices autostream can currently
 
 A few behaviours worth knowing:
 
-* Until you choose a device, the dropdown shows a placeholder (**— select input device —**) rather than silently defaulting to the first device in the list.
+* Until you choose a device, the dropdown shows a placeholder (**- select input device -**) rather than silently defaulting to the first device in the list.
 * The same physical device can't be assigned to both inputs at once: whatever is already selected on the other input is left out of this dropdown.
 * If a previously saved device is no longer detected (unplugged, or the Pi rebooted without it), it still shows in the list, marked **(not currently detected)**, so the setting isn't silently lost.
 * Choosing **Bluetooth** from this list opens the Bluetooth pairing window if nothing is paired yet. See [Bluetooth](#bluetooth) below.
