@@ -31,8 +31,9 @@ for higher-level orchestration, UI, settings, and playback-backend control.
 
 - `AudioMonitor`
   - top-level coordinator
-  - owns the two `InputChannel` instances, the shared `FifoWriter`, the shared
-    `OutputProcessor`, the `OutputDumpWriter`, and the `ControlServer`
+  - owns the two `InputChannel` instances, the `OutputMixer` and
+    `OutputStage`, the shared `FifoWriter`, the shared `OutputProcessor`,
+    the `OutputDumpWriter`, and the `ControlServer`
 - `ControlServer`
   - listens on a Unix domain socket
   - accepts newline-delimited JSON commands
@@ -41,6 +42,24 @@ for higher-level orchestration, UI, settings, and playback-backend control.
   - represents one input source
   - owns capture/process threads, ALSA state, resampler state, input gain, and
     per-input EQ
+  - pushes its finished, resampled and per-input-processed blocks into its
+    own ring in the `OutputMixer`
+- `OutputMixer` / `OutputStage`
+  - the single point where every source reaches the FIFO: each live input
+    and the replay push their finished, gain- and EQ-adjusted blocks into
+    their own ring; one thread mixes whichever rings are active, applies a
+    per-source gain ramp, and writes fixed 20 ms blocks
+  - clocked by whichever live input is active; falls back to the monotonic
+    clock when none is, so the pipe absorbs jitter either way
+  - an inactive source is neither read nor summed, and costs nothing
+  - every transition is a gain ramp in the same continuous stream: a live
+    input taking over from a replay is a 1.5 s crossfade heard the moment it
+    is made; a disarm fade is the same 1.5 s ramp on the replay alone; a
+    live session starting from idle fades in over 1 s; an input-to-input
+    switch happens only once the old input has gone silent and is a ramp
+    with no overlap
+  - the replay never runs ahead of the output, so latency is the same
+    whichever way a session began
 - `OutputProcessor`
   - applies the shared output-side EQ after per-input processing
   - applies manual output gain and automatic output trim after the EQ
@@ -52,14 +71,15 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     the audio thread never blocks on disk I/O
 - `RepeatController` / `RepeatRecorder` / `ReplayEngine`
   - "repeat" feature: records the streamed audio into an in-RAM buffer while
-    a capture session is active, and loops it back into the same FIFO once
-    armed, until disarmed or new live audio interrupts it (crossfades out on
-    interrupt)
+    a capture session is active, and loops it back into the shared output
+    stream once armed, until disarmed or new live audio interrupts it
+    (crossfades out on interrupt)
   - a live interrupt of an actively-playing replay is probation-gated: the
-    new audio must sustain above threshold for 1.25 s (bounded by a 5 s wall
-    clock) before the crossfade begins, so a brief transient cannot tear down
-    a replay. A probation that does not sustain expires silently, leaving the
-    replay untouched
+    new audio must sustain above threshold -- 0.25 s for a line-level input,
+    1.25 s for a turntable -- bounded by a 5 s wall clock, before the
+    crossfade begins, so a brief transient cannot tear down a replay. A
+    probation that does not sustain expires silently, leaving the replay
+    untouched
   - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
     pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
     The recording lives in a FIXED ARENA reserved once, when the feature is
@@ -92,15 +112,21 @@ for higher-level orchestration, UI, settings, and playback-backend control.
 ## Runtime Model
 
 - Up to two inputs can be configured and monitored at once.
-- Only one input may actively write to the shared FIFO at a time.
+- Only one input may capture to the FIFO at a time: `set_allow_capture`
+  enabling one input disables the other.
 - Each input has:
   - its own ALSA capture device
   - silence detection state
   - per-input gain
   - per-input EQ
-- The final mixed output path is not a mixer. Instead, one active input is
-  allowed to feed the FIFO at a time via `set_allow_capture`.
-- Output EQ is shared across all inputs and is applied after per-input gain/EQ.
+- One output stage owns the FIFO. Each live input and the replay push their
+  finished, gain- and EQ-adjusted blocks into their own ring; one thread
+  mixes whichever rings are active, with a per-source gain ramp, and writes
+  the result. At most two sources are ever active together, during a
+  crossfade between a replay and the live input taking over from it; an
+  inactive source is neither read nor summed.
+- Output EQ is shared across all sources and is applied once per mixed
+  block, after per-input gain and EQ.
 
 ## Socket API
 
@@ -133,11 +159,11 @@ autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks] [--compati
     owntone-mini -- both have a named-pipe input fixed at 44.1kHz/16-bit and
     no way to accept a different format. Default (this flag absent) is
     native 48kHz/32-bit.
-  - The daemon narrows the wire itself (not just the reported format) at
-    both producer edges -- the live path's `deliver_output()` and the
-    repeat/replay path's pipe-format conversion -- so `--compatible` is a
-    complete, byte-correct 44.1kHz/16-bit wire, safe to run against stock
-    OwnTone or a pre-48k owntone-mini.
+  - The daemon narrows the wire itself (not just the reported format): the
+    output stage converts the mixed block to 16-bit right before the FIFO
+    write, whichever source -- a live input or the replay -- produced it, so
+    `--compatible` is a complete, byte-correct 44.1kHz/16-bit wire, safe to
+    run against stock OwnTone or a pre-48k owntone-mini.
 - `--src LEVEL`
   - sample-rate-converter quality for the main FIFO output path.
     `LEVEL` is one of `fast`, `medium`, `best`, mapping to libsamplerate's
@@ -168,23 +194,28 @@ autostream_monitor [--socket PATH] [--log-level LEVEL] [--test-hooks] [--compati
 
 ## Processing Order
 
-For an input that is actively feeding the FIFO, the signal path is:
+For a source contributing to the output -- a live input capturing to the
+FIFO, or the replay -- the signal path is:
 
-1. ALSA capture
-2. sample-rate conversion to `48000 Hz` stereo
+1. ALSA capture (replay: decode from the recording)
+2. sample-rate conversion to `48000 Hz` stereo (replay is decoded at the
+   same rate)
 3. identification snapshot tap
-4. per-input gain
-5. per-input EQ
-6. output EQ
-7. output gain (`output_gain_db + output_auto_trim_db`)
-8. clip scan and auto-trim update
-9. float-to-`int16` conversion
-10. FIFO write
+4. per-input gain (replay: the origin input's gain)
+5. per-input EQ (replay: the origin input's EQ)
+6. mixed into the shared output stage together with any other currently
+   active source, each at its own gain
+7. output EQ
+8. output gain (`output_gain_db + output_auto_trim_db`)
+9. clip scan and auto-trim update
+10. float-to-`int16` conversion
+11. FIFO write
 
 This ordering matters:
 
 - identification snapshots are intentionally pre-gain and pre-EQ
-- `effective_peak_dbfs` reflects per-input processing but not output EQ or output gain
+- `effective_peak_dbfs` reflects per-input processing but not mixing, output
+  EQ, or output gain
 - `output_clip_dbfs` reflects the final level after all processing, matching what
   is written to the FIFO
 - auto-trim sees the real final level, so it reacts to headroom consumed by any
@@ -210,12 +241,21 @@ This ordering matters:
   `close()` — on Linux, `close()` alone does not wake a thread blocked in
   `accept()`. Without this, a SIGTERM stop hangs until systemd escalates to
   SIGKILL after its stop timeout.
-- The FIFO write end requests a 256 KiB pipe buffer (`F_SETPIPE_SZ`) every
+- The FIFO write end requests a 1 MiB pipe buffer (`F_SETPIPE_SZ`) every
   time it is opened (including every reopen), so a short reader stall can be
   absorbed without dropping a block instead of just the kernel's default
   buffer size. The granted size is logged; if the kernel refuses the
   resize, the daemon logs a warning once and continues at the default pipe
   size rather than retrying on every open.
+- Beyond the pipe itself, the writer keeps any bytes a stalled reader will
+  not yet accept in a backlog (capped at 1 s of audio at the output rate)
+  and delivers them ahead of the next block once the reader resumes, so only
+  a stall longer than that combined headroom loses audio.
+- A stream that has gone more than 1 s without a successful write is treated
+  as a cold start: the output stage buffers the next 0.5 s and writes it as
+  one block before resuming block-by-block writes. A transition between
+  sources -- a crossfade, an input switch -- never triggers this, because
+  the stream is already flowing.
 - At startup the daemon calls `mlockall(MCL_CURRENT | MCL_FUTURE |
   MCL_ONFAULT)` so its memory is pinned as it is touched, rather than paged
   out under memory pressure. This requires `LimitMEMLOCK=infinity` in the

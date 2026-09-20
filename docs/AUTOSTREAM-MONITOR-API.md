@@ -168,9 +168,8 @@ Request fields:
   - a runtime configuration change to this value clears any in-progress gap
     candidate but does not reset the `track_change_seq` counter
 - `minimum_playback_seconds`
-  - minimum playback hold: once this input starts a capture session, or once
-    a repeat-feature replay sourced from this input starts, that session/
-    replay owns playback for this many seconds
+  - minimum playback hold: once this input starts a capture session, that
+    session owns playback for this many seconds
   - valid range: `[0, 300]`
   - default if omitted: `30`
   - `0` disables the hold entirely
@@ -203,17 +202,14 @@ Typical errors:
 
 #### Minimum playback hold
 
-Once a source (live input or repeat-feature replay) starts playback, it owns
-playback for `minimum_playback_seconds` (default 30 s, 0 disables). This
-exists so a short `silence_seconds` timeout (tuned for e.g. an automatic
-turntable's music-to-music gaps) does not also trip on a source's own
-start-up transient: a turntable's start-button thump followed by 15-20 s of
+Once a live input's capture session starts, it owns playback for
+`minimum_playback_seconds` (default 30 s, 0 disables). This exists so a
+short `silence_seconds` timeout (tuned for e.g. an automatic turntable's
+music-to-music gaps) does not also trip on the session's own start-up
+transient: a turntable's start-button thump followed by 15-20 s of
 sub-threshold spin-up rumble before the groove is reached would otherwise end
 the session (and, with repeat armed, immediately replay a two-second
 recording of the thump) well before real music arrives.
-
-Two independent suppression points, both gated on elapsed time since the
-session/replay started:
 
 - **Live input session-end.** While a capture session is within its hold
   window, an elapsed-silence session-end is suppressed even though the
@@ -222,31 +218,20 @@ session/replay started:
   quiet spell. The hold never overrides an explicit stop (`set_allow_capture`
   going false, `stop_input`, a config/device change) -- only the
   silence-timeout reason is held back.
-- **Replay takeover.** While an active repeat-feature replay (or its
-  fade-out) is within its hold window, a live-input transient that would
-  otherwise interrupt it (crossfade to the live source) is ignored outright:
-  no state change, no pending interrupt is latched. Nothing about the
-  transient is stored to be replayed later; instead, for as long as that
-  input keeps capturing without yet being the one actually recorded, the
-  daemon re-checks roughly once a second (a bounded re-notify alongside the
-  original start edge) whether it can now be admitted. Once the hold
-  expires -- or the replay ends by some other route (e.g. disable/re-enable)
-  while the input is still capturing -- the very next one of those checks is
-  what actually starts the takeover or the recording. Clearing the hold does
-  not by itself interrupt the replay, though -- an admitted edge then has to
-  clear the probation gate below. Worst case, a legitimate takeover during
-  the hold is deferred until the hold expires and the new source is still
-  live.
-- **Interrupt probation.** An admitted live edge does not interrupt an
-  actively-playing replay on its own. It arms a probation gate that requires
-  1.25 s of sustained above-threshold audio on the interrupting input before
-  the interrupt is trusted; only then does the 1.0 s fade-out and takeover
-  begin. Probation is bounded by a 5 s wall clock: if the audio does not
+- **Interrupt probation.** A live edge arriving while a replay is actively
+  playing does not interrupt it on its own. It arms a probation gate whose
+  sustain window comes from the interrupting input's own silence-threshold
+  preset: 0.25 s for a line-level input (silence threshold at or below
+  -55 dBFS, i.e. the line preset), or 1.25 s for a turntable (the -45 dBFS
+  preset), either way bounded by a 5 s wall clock. If the audio does not
   sustain within that window, the probation expires silently -- replay never
   stopped, nothing was freed, no status field changed -- and the only
   operator-visible trace is a WARN-level log line. It re-arms on the next
   capture-start edge. The gate exists so that a brief transient (a needle
-  bump, a stray click) cannot tear down an active replay.
+  bump, a stray click) cannot tear down an active replay. Once probation
+  confirms, the crossfade begins: the replay ramps down and the
+  interrupting input ramps up together over 1.5 s in the same output
+  stream, heard the moment it starts.
 
   One exception: if the replay is *already* fading out for some other reason
   (a disarm, say), a live edge upgrades that fade in place and takes over
@@ -262,8 +247,7 @@ What the hold does **not** affect:
 - Track-change detection (`track_change_silence_seconds`) runs its own,
   independent, much shorter silence window on both the live and replay
   paths and is never suppressed by the hold.
-- `minimum_playback_seconds=0` reproduces pre-hold behaviour exactly on both
-  suppression points.
+- `minimum_playback_seconds=0` reproduces pre-hold behaviour exactly.
 
 ### Silence-timeout tail trim
 
@@ -321,6 +305,15 @@ actually commits to the RAM buffer, at both ends of the recording:
   A session that ends before onset ever confirms (a thump with no following
   music) commits nothing at all: the buffer stays empty and there is nothing
   to replay.
+- **Pre-roll during an interrupt.** The pre-roll ring is fed from the moment
+  a live edge is admitted as a candidate -- probation arming while a replay
+  is playing, or a session start from idle -- and keeps being fed straight
+  through probation and the crossfade that follows. A session that
+  interrupts a replay is heard late (the listener misses probation and the
+  crossfade), but its recording is not: once onset confirms, the ring's
+  contents -- which include that missed lead-in -- are spliced in ahead of
+  live audio exactly as for any other session, so the recording begins at
+  the real start of the audio.
 - **Tail offset gate (tail).** The onset gate protects the head only; left
   alone, the silence-timeout tail trim keeps everything up to and including
   any lead-out transient (run-out crackle, a tonearm clunk) since each one
@@ -378,10 +371,13 @@ Success response:
 {"type":"ack","command":"set_fifo","ok":true}
 ```
 
-The daemon requests a 256 KiB pipe buffer on this path every time it opens
-it (including every reopen), so a short reader stall can be absorbed
-without dropping a block; a refusal falls back to the default pipe size
-with a one-time warning rather than failing `set_fifo` itself.
+The daemon requests a 1 MiB pipe buffer on this path every time it opens
+it (including every reopen); a refusal falls back to the default pipe size
+with a one-time warning rather than failing `set_fifo` itself. Beyond the
+pipe itself, the writer keeps any bytes a stalled reader will not yet accept
+in a backlog (capped at 1 s of audio at the output rate) and delivers them
+ahead of the next block once the reader resumes, so only a stall longer than
+that combined headroom loses audio.
 
 Typical errors:
 
@@ -679,10 +675,10 @@ Request fields:
 Behavior:
 
 - the WAV file is opened immediately and a 44-byte placeholder header is written
-- audio frames are tapped after all processing (SRC, per-input gain/EQ, output
-  EQ, output gain, auto-trim) and after float-to-`int32` conversion — the same
-  32-bit internal representation `deliver_output()` also feeds to the FIFO in
-  native mode
+- audio frames are tapped after all processing (SRC, per-input gain/EQ,
+  mixing, output EQ, output gain, auto-trim) and after float-to-`int32`
+  conversion — the same 32-bit internal representation the output stage also
+  feeds to the FIFO in native mode
 - **the dump always records this 32-bit representation, in BOTH `--compatible`
   and native mode** — it documents the internal DSP output, not the wire. In
   `--compatible` mode the FIFO itself is narrowed to 16-bit, but the dump tap
@@ -691,10 +687,13 @@ Behavior:
   32-bit in native mode, `44100` Hz / 2ch / 32-bit in `--compatible` mode (the
   internal DSP chain, including the resampler and EQ, runs at that same
   descriptor rate in both modes)
-- the tap is gated by `allow_capture`: only the input that is currently allowed
-  to feed the FIFO contributes frames; monitoring-only inputs are not recorded
-- pre-fill frames (the initial 0.5 s buffer accumulated before the first FIFO
-  write) are captured; the WAV starts from audio time zero
+- the tap sits on the single mixed output stream the output stage writes to
+  the FIFO, so it captures whichever source is actually contributing -- a
+  live input, the replay, or both together during a crossfade; an input
+  that is not currently feeding the output contributes nothing
+- pre-fill frames (the 0.5 s buffer the output stage accumulates whenever the
+  stream starts writing from idle) are captured; the WAV starts from audio
+  time zero
 - recording continues across silence gaps and FIFO stalls — it stops only when
   `stop_output_dump` is called or the daemon shuts down
 - a bounded in-memory ring (≈ 2.97 s) decouples the audio thread from disk I/O;
@@ -822,7 +821,7 @@ Behavior:
   update that reports the session as stopped (no snapshot ever shows
   `is_capturing:false` with `repeat.armed:true` and non-zero recorded bytes
   but `repeat.replay.active:false`)
-- `armed:false` while replay is active starts a 1.0 s fade-out; once complete,
+- `armed:false` while replay is active starts a 1.5 s fade-out; once complete,
   replay stops and the recording is retained (re-armable) rather than freed
 - `armed:false` at any other time is just a flag clear (nothing to interrupt)
 
@@ -1044,15 +1043,14 @@ Top-level fields:
     daemon startup (`--compatible`, see Command-Line Options in
     [AUTOSTREAM-MONITOR.md](AUTOSTREAM-MONITOR.md)) and
     reported here at runtime rather than assumed by the Python layer
-  - same format for both FIFO writers (the live `FifoWriter` path and the
-    `ReplayEngine` replay path) -- they share one runtime descriptor
-    (`g_output_format`, set once in `main()` before any thread starts)
+  - the same format for every source, since the output stage mixes them all
+    to one runtime descriptor (`g_output_format`, set once in `main()`
+    before any thread starts) before the single FIFO write
   - default (native, `--compatible` absent): `48000` / `32` / `2`; samples
     are a 32-bit left-justified container -- an s16 source occupies the top
     16 bits
-  - with `--compatible`: `44100` / `16` / `2` -- both FIFO writers (live and
-    replay) actually narrow the wire to match these numbers, not just
-    report them
+  - with `--compatible`: `44100` / `16` / `2` -- the output stage actually
+    narrows the wire to match these numbers, not just reports them
 - `output_format`
   - `"native"` or `"compatible"` -- a readable label for the same choice the
     three numeric fields above encode
@@ -1092,13 +1090,14 @@ Top-level fields:
     completed recording)
   - `dropped_frames`: stereo frames dropped because the ring buffer was full
 - `fifo`
-  - `stalled_seconds`: seconds the CURRENT active FIFO writer (the live
-    capturing input, or ReplayEngine while it owns the pipe) has been
-    continuously failing/dropping writes -- no reader attached (`ENXIO`),
-    reader not draining (`EAGAIN`/poll timeout), or a broken pipe
-    (`EPIPE`/`EBADF`)
+  - `stalled_seconds`: seconds the single FIFO writer, shared by every
+    source through the output stage, has been continuously failing to
+    deliver a block once its backlog is exhausted -- no reader attached
+    (`ENXIO`), reader not draining (`EAGAIN`/poll timeout), or a broken pipe
+    (`EPIPE`/`EBADF`). The same figure applies whichever source -- a live
+    input, the replay, or both mid-crossfade -- is currently active
   - `0.0` whenever the last write succeeded, or whenever nothing is currently
-    trying to write (no input capturing and no active replay) -- this is a
+    active (no input capturing and no active replay) -- this is a
     "is the downstream reader (e.g. OwnTone) actually keeping up" signal, not
     a general daemon-health signal
   - intended as an owntone-hang watchdog input for the Python side: a large,
@@ -1167,7 +1166,10 @@ Top-level fields:
   - `replay.active`: `true` while the recording is looping back into the FIFO
     (including the disarm fade-out window -- see `set_repeat_armed`)
   - `replay.position_seconds` / `replay.duration_seconds`: playback position
-    within the current loop and the recording's total duration
+    within the current loop and the recording's total duration --
+    `position_seconds` is the replay's own decode position, which runs up to
+    0.5 s ahead of what is actually heard, since decoded audio sits briefly
+    in its ring before the output stage mixes and writes it
   - `replay.loop_count`: number of times playback has looped back to the
     start since replay began (`0` during the first pass)
   - while `replay.active` is `true`, the origin input's `track_change_seq` in

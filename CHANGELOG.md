@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- feat: the audio monitor now produces one continuous output stream. Live
+  inputs and the repeat replay feed a single output stage that mixes them
+  with gain ramps and writes the FIFO from one place, instead of two
+  writers handing the pipe over. A live input taking over from a replay is
+  a 1.5 s crossfade heard the moment it is made, the replay no longer runs
+  ahead of the output, and a session that starts by interrupting a replay
+  has the same latency as one started from idle. The half-second pipe
+  prefill now happens only when the stream starts from idle.
+- feat: a live input that interrupts a repeat replay is admitted after
+  0.25 s above its silence threshold when it is a line-level input, and
+  after the existing 1.25 s continuous-audio check when it is a turntable;
+  the monitor tells the two apart by the threshold preset the coordinator
+  sends. The replay-takeover hold that ignored a live input for the first
+  thirty seconds of a replay is removed, since probation covers that case.
+  The recorder keeps the audio played during probation and the crossfade,
+  so the recording made by such a session starts at the real onset even
+  though the listener missed it.
+- fix: the audio monitor keeps unwritten audio when the FIFO is full and
+  sends it ahead of the next block, instead of discarding the rest of the
+  block and reopening the pipe. Audio is lost only if the reader stays
+  stalled for more than a second. The pipe is now requested at 1 MiB.
+- feat: the audio monitor re-plans its repeat buffer 5, 10 and 15 minutes
+  after start-up. The buffer is sized when it is first built, which on a
+  fresh boot happens while other services are still claiming memory, so it
+  could come out shorter than the configured length even though memory
+  frees up shortly afterwards. Each pass now grows a short buffer to the
+  configured length when memory allows, keeping its codec so a recording
+  in memory is never lost, and, when nothing is recorded and the buffer
+  already meets the target, rebuilds it at a higher bitrate if one now fits
+  the full length. A buffer is never shrunk and its bitrate never lowered.
 - fix: the audio monitor's repeat buffer is now built from memory mappings
   that are returned to the system when the buffer is torn down. Previously,
   because the monitor locks its memory, a disable and re-enable or a
