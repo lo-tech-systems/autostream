@@ -205,6 +205,8 @@ def test_monitor_memory(tmp_path):
 @SKIP_NO_GPP
 def test_fifo_writer(tmp_path):
     """FifoWriter keeps a byte-exact backlog when the pipe is full."""
+    if not _have_samplerate():
+        pytest.skip("libsamplerate0-dev not installed (apt-get install libsamplerate0-dev)")
     exe = tmp_path / "test_fifo_writer"
     build = subprocess.run(
         [
