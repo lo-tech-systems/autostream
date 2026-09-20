@@ -8,7 +8,7 @@
 
 * `http://<hostname>.local/` (example: `http://autostream.local/`)
 
-**Use HTTP, not HTTPS.** Autostream does not support HTTPS — publicly trusted certificates are not available for `.local` hostnames. If your browser redirects `http://` to `https://` automatically, disable that redirect for this address or use a different browser.
+**Use HTTP, not HTTPS.** Autostream does not support HTTPS - publicly trusted certificates are not available for `.local` hostnames. If your browser redirects `http://` to `https://` automatically, disable that redirect for this address or use a different browser.
 
 If `.local` names don’t work on your network/device, try the device IP address instead (see **Advanced → Finding the IP**).
 
@@ -73,13 +73,13 @@ Once you are back in Setup, either:
 
 ### Authentication and PIN security
 
-The PIN protects setup settings: speaker selection, input configuration, hostname, Wi-Fi, EQ, factory reset, and PIN change. **Volume control is not PIN-protected** — the dial and the Web UI volume slider always work without a PIN.
+The PIN protects setup settings: speaker selection, input configuration, hostname, Wi-Fi, EQ, factory reset, and PIN change. **Volume control is not PIN-protected** - the dial and the Web UI volume slider always work without a PIN.
 
 **How the nonce mechanism works:**
 
 Each time a browser opens the setup page, autostream issues a short-lived challenge (nonce). The browser hashes the PIN with the nonce and sends only the hash, not the PIN. This means a passive observer cannot directly read the PIN from a captured request.
 
-**Limitations — what the nonce mechanism does not prevent:**
+**Limitations - what the nonce mechanism does not prevent:**
 
 - **Offline PIN guessing.** A captured nonce/hash pair can be replayed locally to guess the PIN by brute force. Short or simple PINs are more vulnerable; use a longer, less predictable PIN on untrusted networks.
 - **Session cookie capture.** After authentication, autostream issues an HTTP session cookie. A passive observer who captures that cookie can replay it to access settings without knowing the PIN.
@@ -118,13 +118,13 @@ In-app updates can take a long time. A full update may take up to **15 minutes**
 * run an APT system update
 * rebuild `autostream_monitor`
 * recreate the Python virtual environment
-* rebuild `owntone-mini` and `vibra-mini` — but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost.
+* rebuild `owntone-mini` and `vibra-mini` - but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost.
 
 Micro-SD card speed has a big impact, so slower cards can make updates feel stalled even when they are still working.
 
 **Audio stops while an update runs.** Before overwriting anything, the updater stops `autostream_monitor`, `autostream_bluetooth`, `owntone`, `vibra-mini` and the `autostream` coordinator, so playback and outputs go away for the duration. The Wi-Fi watcher, nginx, NetworkManager and ssh are deliberately left running, so the appliance stays on the network and reachable throughout.
 
-**The updating page is confirmed before anything is stopped.** The updater switches the Web UI over to the nginx-served "updating" holding page and verifies it is actually being served before it touches a single service. If that check fails, the update aborts immediately with nothing stopped and nothing changed — the appliance is left exactly as it was.
+**The updating page is confirmed before anything is stopped.** The updater switches the Web UI over to the nginx-served "updating" holding page and verifies it is actually being served before it touches a single service. If that check fails, the update aborts immediately with nothing stopped and nothing changed - the appliance is left exactly as it was.
 
 **A failed update restores services by itself.** If an update fails after services were stopped, the updater restarts exactly what it took down, in reverse order. You should not need to start anything by hand.
 
@@ -259,7 +259,7 @@ For discovery to work, **all autostream appliances and your phone must be on the
 
 Also check:
 
-* Every appliance must have a **unique hostname** — duplicate hostnames cause unpredictable mDNS discovery.
+* Every appliance must have a **unique hostname** - duplicate hostnames cause unpredictable mDNS discovery.
 * The **"Allow control of this from other appliances"** setting (Setup -> Personalisation) must be enabled on any appliance you want to appear in peers' selectors. Appliances that have opted out do not appear.
 * To *drive* other appliances from this one, the controlling appliance needs **"Allow control of other appliances"** enabled (Setup -> Personalisation). That toggle is greyed out unless **Display Hostname** is also on.
 * An appliance with no stable identity (no CPU serial and no persistent fallback ID, such as a broken install) cannot participate in multi-appliance control.
@@ -296,9 +296,9 @@ check for Avahi or multicast problems on the LAN.
 
 Autostream uses `avahi-browse` subprocesses to discover services on the local network. Two classes of message appear in the log:
 
-* **`Files changed, reloading`** — this is normal. It means Avahi has reloaded its service-file configuration, typically because Autostream updated an advertisement. No action needed.
+* **`Files changed, reloading`** - this is normal. It means Avahi has reloaded its service-file configuration, typically because Autostream updated an advertisement. No action needed.
 
-* **`avahi-browse exited rc=X; restarting`** — an isolated occurrence means the `avahi-browse` process exited unexpectedly. Autostream will retry with an increasing backoff (5 s, 10 s, 20 s, 30 s …). This is recoverable; discovery resumes automatically once the retry succeeds.
+* **`avahi-browse exited rc=X; restarting`** - an isolated occurrence means the `avahi-browse` process exited unexpectedly. Autostream will retry with an increasing backoff (5 s, 10 s, 20 s, 30 s …). This is recoverable; discovery resumes automatically once the retry succeeds.
 
 * **`avahi-browse exited; restarting`** messages emitted *during a normal shutdown* should no longer appear. If you see them during shutdown, check that you are running a recent version of Autostream.
 
@@ -315,17 +315,17 @@ Note: the D-Bus unit name may differ on some distributions (e.g. `dbus` rather t
 
 #### Duplicate appliance identity
 
-Each autostream derives a stable identity from its Raspberry Pi CPU serial (with a persistent random fallback when the serial is unavailable). The same identity on the same hostname may legitimately appear on multiple IP addresses during adapter failover or multi-homing. If the same identity appears with different hostnames — not expected under normal operation — the peer is suppressed from selectors and a warning is logged. Check the autostream log:
+Each autostream derives a stable identity from its Raspberry Pi CPU serial (with a persistent random fallback when the serial is unavailable). The same identity on the same hostname may legitimately appear on multiple IP addresses during adapter failover or multi-homing. If the same identity appears with different hostnames - not expected under normal operation - the peer is suppressed from selectors and a warning is logged. Check the autostream log:
 
 ```bash
 journalctl -u autostream.service --no-pager | grep "conflict"
 ```
 
-#### Remote Equaliser — temporarily unreachable
+#### Remote Equaliser - temporarily unreachable
 
 On the **Equaliser page**, if the remote appliance becomes unreachable (network interruption, brief reboot, transient timeout), the page enters **degraded polling mode**: it continues polling every 10 seconds and shows the last-known equaliser state rather than redirecting. When the appliance comes back online, normal 3-second polling resumes automatically.
 
-The Equaliser page only redirects for a **definitive** error — one that indicates the selection is fundamentally invalid (appliance not found, identity conflict, or appliance not configured for federation). Common reasons for a redirect:
+The Equaliser page only redirects for a **definitive** error - one that indicates the selection is fundamentally invalid (appliance not found, identity conflict, or appliance not configured for federation). Common reasons for a redirect:
 
 * The remote appliance was permanently removed from the network.
 * The remote appliance's identity changed (hardware or config replacement).
@@ -333,16 +333,16 @@ The Equaliser page only redirects for a **definitive** error — one that indica
 
 If the Equaliser page redirects unexpectedly after a reboot, wait for the remote appliance to finish booting, then tap the appliance selector to re-select it.
 
-#### Remote Home — temporarily unreachable
+#### Remote Home - temporarily unreachable
 
 On the **Home page**, three consecutive transport failures (timeout or bad response) return to the bound appliance and show a status message. This is more sensitive to brief interruptions than the Equaliser page. If the remote appliance was only rebooting, wait for it to come back and re-select it from the appliance selector.
 
-#### Remote appliance unavailable — returned to bound appliance
+#### Remote appliance unavailable - returned to bound appliance
 
 If the UI does redirect automatically, common causes include:
 
 * The remote appliance's `autostream.service` stopped; check `systemctl status autostream.service` on that appliance.
-* The remote appliance has a hostname or identity conflict — check for duplicate hostnames on your network.
+* The remote appliance has a hostname or identity conflict - check for duplicate hostnames on your network.
 
 If the remote appliance has come back online, tap the appliance selector to re-select it.
 
@@ -370,9 +370,9 @@ If your Wi-Fi name or password changes, the device may no longer be able to conn
 
 * Starts if Wi-Fi is **unconfigured** or still **offline after ~60 seconds** after boot
 * Stays active **indefinitely** for unconfigured devices; runs for **up to 30 minutes** for previously-configured devices
-* Is **suppressed if wired Ethernet is usable** (carrier plus a valid non-link-local IPv4 address). Carrier-only Ethernet is reported as a fact but does not suppress setup mode. A hotspot you started yourself (Change Wi-Fi, or an explicit request) is **not** closed by Ethernet appearing — it exists to connect a new network.
-* The **recovery hotspot is always available when the device is offline** — there is no longer a once-per-boot limit. The 30-minute session lifetime is the only rate limit, and a failed Wi-Fi attempt simply re-opens setup. A device that was offline at boot keeps scanning for its saved network and **leaves the hotspot as soon as the network returns** (e.g. after the router finishes booting) rather than waiting out the 30 minutes.
-* A **hotspot you started yourself** (Change Wi-Fi, or an explicit request) behaves differently: because you opened it to *change* networks — and the old network is usually still in range — it does **not** scan for or rejoin the saved network for the first **15 minutes**, giving you time to connect and select a new one without being pulled back onto the old network. After 15 minutes it resumes scanning for the saved network (in case setup was abandoned), and at 30 minutes a Change-Wi-Fi session reconnects to the previous network automatically.
+* Is **suppressed if wired Ethernet is usable** (carrier plus a valid non-link-local IPv4 address). Carrier-only Ethernet is reported as a fact but does not suppress setup mode. A hotspot you started yourself (Change Wi-Fi, or an explicit request) is **not** closed by Ethernet appearing - it exists to connect a new network.
+* The **recovery hotspot is always available when the device is offline** - there is no longer a once-per-boot limit. The 30-minute session lifetime is the only rate limit, and a failed Wi-Fi attempt simply re-opens setup. A device that was offline at boot keeps scanning for its saved network and **leaves the hotspot as soon as the network returns** (e.g. after the router finishes booting) rather than waiting out the 30 minutes.
+* A **hotspot you started yourself** (Change Wi-Fi, or an explicit request) behaves differently: because you opened it to *change* networks - and the old network is usually still in range - it does **not** scan for or rejoin the saved network for the first **15 minutes**, giving you time to connect and select a new one without being pulled back onto the old network. After 15 minutes it resumes scanning for the saved network (in case setup was abandoned), and at 30 minutes a Change-Wi-Fi session reconnects to the previous network automatically.
 * Uses an SSID derived from the Wi-Fi MAC address:
   * `autostream_XXXX` (last 4 hex digits), or fallback `autostream_SETUP`
 * Uses a local AP IP of:
@@ -433,9 +433,9 @@ not be found"* and a `nmcli device disconnect`/`connect` "bounce" does nothing.
 **autostream** detects this automatically and recovers it with a USB-level reset:
 
 1. Reconnect attempts first (handles genuine transients).
-2. **Method A** — driver unbind/bind (write the USB interface id to
+2. **Method A** - driver unbind/bind (write the USB interface id to
    `/sys/bus/usb/drivers/<driver>/unbind` then `/bind`).
-3. **Method B** — port re-authorization (write `0` then `1` to
+3. **Method B** - port re-authorization (write `0` then `1` to
    `/sys/bus/usb/devices/<usb-device>/authorized`) if Method A does not revive it.
 4. If resets keep failing **and the device is offline**, a guarded reboot.
 
@@ -447,7 +447,7 @@ does not deadlock.
 
 **Recovery priority ladder (onboard before hotspot).** When a device has both a
 built-in radio and a USB dongle and the USB fails, autostream runs a single
-priority ladder — **Ethernet > preferred USB > onboard client > setup hotspot** —
+priority ladder - **Ethernet > preferred USB > onboard client > setup hotspot** -
 so the setup hotspot is a genuine *last* resort. A wedged/failed USB never traps
 the device in a 30-minute hotspot on the only working radio: the built-in radio is
 tried as a **client** before it is committed to hosting a recovery AP, and if a
@@ -455,7 +455,7 @@ recovery hotspot is already up on the built-in it is dropped to rejoin the saved
 network as soon as that network is visible (the "exit edge"). A dead USB dongle is
 no longer treated as a usable second radio, and an activation that reports *"The
 Wi-Fi network could not be found"* fails fast instead of waiting out the local-IP
-timeout — both so the ladder climbs to the working radio in seconds rather than
+timeout - both so the ladder climbs to the working radio in seconds rather than
 minutes.
 
 **Reset budgets and reboot loop prevention.** A USB adapter is reset at most
@@ -484,7 +484,7 @@ The watcher runs on an ARMv6 single-core Pi Zero, where the dominant cost is
 **Facts** snapshot at the top of the loop, so the costly fact helpers
 (`discover_adapters`, `is_wired_connected`, `any_wired_path_healthy`,
 `resolve_active_client`, `list_interface_addresses`) run **exactly once per pass**
-— a ceiling of **1 call each**, asserted in the test suite as a regression guard
+- a ceiling of **1 call each**, asserted in the test suite as a regression guard
 that later changes may not silently raise. Recovery-hotspot scanning is separately
 rate-limited (`RECOVERY_SCAN_INTERVAL`, 30 s) so a recovery session does not churn
 the radio every 15-second tick.
@@ -514,11 +514,11 @@ wedged dongle immediately):
 ls -l /sys/class/net/wlan0/device           # -> .../1-1.5:1.0
 basename "$(readlink -f /sys/class/net/wlan0/device/driver)"   # -> rtl8xxxu
 
-# Method A — driver unbind/bind:
+# Method A - driver unbind/bind:
 echo 1-1.5:1.0 | sudo tee /sys/bus/usb/drivers/rtl8xxxu/unbind
 echo 1-1.5:1.0 | sudo tee /sys/bus/usb/drivers/rtl8xxxu/bind
 
-# Method B — port re-authorization (full re-enumeration):
+# Method B - port re-authorization (full re-enumeration):
 echo 0 | sudo tee /sys/bus/usb/devices/1-1.5/authorized
 echo 1 | sudo tee /sys/bus/usb/devices/1-1.5/authorized
 ```
@@ -602,7 +602,7 @@ Content-Type: application/json
 
 * Allowed levels: `warning`, `info`, `debug`.
 * `debug` **requires** `ttl_seconds`; `ttl_seconds` is validated and clamped to
-  **60–3600** seconds. `warning`/`info` may use a TTL, or omit it to set the
+  **60-3600** seconds. `warning`/`info` may use a TTL, or omit it to set the
   runtime level until the service restarts.
 * Temporary levels revert automatically when their TTL expires.
 * Requests are rejected (and logged at `WARNING`) for a non-loopback source, a bad
@@ -627,9 +627,9 @@ autostream runs a **storage guard** service once a day (04:00, ± 30 min jitter)
 
 #### What it cleans up
 
-The guard uses a conservative, allowlist-based cleanup sequence. Of the files it deletes *itself*, it only ever removes **rotated archive files** — numbered (`logfile.1`, `logfile.2.gz`) or dated (`logfile-20260601.gz`) copies of known base log files. It never touches current log files, application data, configuration, or databases.
+The guard uses a conservative, allowlist-based cleanup sequence. Of the files it deletes *itself*, it only ever removes **rotated archive files** - numbered (`logfile.1`, `logfile.2.gz`) or dated (`logfile-20260601.gz`) copies of known base log files. It never touches current log files, application data, configuration, or databases.
 
-Some steps below delegate to system tools that have a reach of their own: `tmpfiles.d` cleanup applies the distribution's age rules to `/tmp` and `/var/tmp`, so it can delete idle files there that Autostream did not create. Nothing runs while storage is in the `normal` state — cleanup only starts at `warning`.
+Some steps below delegate to system tools that have a reach of their own: `tmpfiles.d` cleanup applies the distribution's age rules to `/tmp` and `/var/tmp`, so it can delete idle files there that Autostream did not create. Nothing runs while storage is in the `normal` state - cleanup only starts at `warning`.
 
 Cleanup steps (escalating with state severity):
 
@@ -725,7 +725,7 @@ The installer applies a fixed journald configuration at `/etc/systemd/journald.c
 | MaxRetentionSec | 14 days |
 | Compress | yes |
 
-These limits do not restrict log severity. `MaxLevelStore` and `MaxLevelSystem` are deliberately not set — all log severities remain available for diagnosis.
+These limits do not restrict log severity. `MaxLevelStore` and `MaxLevelSystem` are deliberately not set - all log severities remain available for diagnosis.
 
 ---
 
@@ -756,11 +756,11 @@ Run through this in order:
 
 ### Track identification
 
-Track identification uses Shazam recognition via the `vibra-mini` daemon. It is **off by default**. No API key is required — autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [GETTING-STARTED.md](GETTING-STARTED.md#track-identification)). Vibra/Shazam is currently the only supported provider; the Setup page does not offer a provider selector.
+Track identification uses Shazam recognition via the `vibra-mini` daemon. It is **off by default**. No API key is required - autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [SETUP-TRACK-ID.md](SETUP-TRACK-ID.md)). Vibra/Shazam is currently the only supported provider; the Setup page does not offer a provider selector.
 
 #### Track identification stays "waiting" or never shows a result
 
-The Home screen shows **Waiting** when the feature is enabled but no audio is currently playing. This is normal — identification only runs while a source is active.
+The Home screen shows **Waiting** when the feature is enabled but no audio is currently playing. This is normal - identification only runs while a source is active.
 
 After playback starts, the first analysis is scheduled roughly 25 seconds in. If the state stays "waiting" for longer than a minute:
 
@@ -794,11 +794,11 @@ Cover art is returned by Shazam and is only available for releases that Shazam h
 
 #### Track changes not detected (gapless albums, live recordings, noisy vinyl)
 
-Track boundaries are detected from short silent gaps. Gapless albums and live recordings with no silence between tracks will not trigger a boundary event. In these cases, autostream falls back to a jittered periodic refresh roughly every 5 minutes. This is expected and by design — no attempt is made to fingerprint mid-track transitions.
+Track boundaries are detected from short silent gaps. Gapless albums and live recordings with no silence between tracks will not trigger a boundary event. In these cases, autostream falls back to a jittered periodic refresh roughly every 5 minutes. This is expected and by design - no attempt is made to fingerprint mid-track transitions.
 
 If the periodic refresh is identifying the wrong (previous) track, the most likely cause is that the refresh deadline happened to fall early in the new track. The refresh will self-correct at the next cycle.
 
-On a detected boundary, the receiver switches immediately to the input label (e.g. "Vinyl") and the autostream logo while re-identification runs, then updates to the new track's title and cover once identification completes — including a false boundary, where it shows the input label briefly before the same track's details reappear.
+On a detected boundary, the receiver switches immediately to the input label (e.g. "Vinyl") and the autostream logo while re-identification runs, then updates to the new track's title and cover once identification completes - including a false boundary, where it shows the input label briefly before the same track's details reappear.
 
 #### False track changes on quiet passages
 
@@ -808,7 +808,7 @@ Passages that dip below the configured silence threshold for more than 1.25 seco
 sudo nano /etc/autostream/autostream.json
 ```
 
-Find `track_change_silence_seconds` under `track_identification` and increase it (range 0.5–5.0 seconds). Save and restart:
+Find `track_change_silence_seconds` under `track_identification` and increase it (range 0.5-5.0 seconds). Save and restart:
 
 ```bash
 sudo systemctl restart autostream.service
@@ -820,11 +820,11 @@ The following fields under `track_identification` in `/etc/autostream/autostream
 
 | Field | Default | Range | Effect |
 |---|---|---|---|
-| `analysis_lead_in_seconds` | 10 | 0–30 | Seconds of playback to skip before the first analysis window |
-| `snapshot_seconds` | 15 | 5–20 | Duration of audio sent to Shazam |
-| `retry_seconds` | 5 | 5–60 | Delay between no-match retries |
-| `refresh_seconds` | 300 | 60–900 | Base interval for periodic refresh after a match |
-| `track_change_silence_seconds` | 1.25 | 0.5–5.0 | Minimum gap to trigger a track-change event |
+| `analysis_lead_in_seconds` | 10 | 0-30 | Seconds of playback to skip before the first analysis window |
+| `snapshot_seconds` | 15 | 5-20 | Duration of audio sent to Shazam |
+| `retry_seconds` | 5 | 5-60 | Delay between no-match retries |
+| `refresh_seconds` | 300 | 60-900 | Base interval for periodic refresh after a match |
+| `track_change_silence_seconds` | 1.25 | 0.5-5.0 | Minimum gap to trigger a track-change event |
 
 Changes require an `autostream.service` restart to take effect.
 
@@ -868,7 +868,7 @@ Persistent 403 or 406 responses indicate Shazam has rejected the request. autost
 HomePod OS 27 rejects senders that don't present an AirPlay-style User-Agent,
 refusing playback with an HTTP 403. autostream sets a compatible User-Agent
 automatically on install and update. If you need a different value, for example
-while diagnosing a different receiver, set it on the OwnTone setup page —
+while diagnosing a different receiver, set it on the OwnTone setup page -
 clearing the field restores the default.
 
 ---
@@ -877,50 +877,113 @@ clearing the field restores the default.
 
 * **"Repeat unavailable"**: free RAM was below the 112 MiB minimum (a 96 MiB free-RAM floor plus the smallest 16 MiB chunk) when the last capture session started. Close other apps/services on the Pi, or wait for RAM to free up, then start a new source to retry.
 * **Replay plays a "tail only" marker**: memory pressure trimmed the oldest audio from the sliding-window buffer; only the retained tail is played back. This is expected under sustained low-RAM conditions, not a bug.
-* **Replay won't start**: check, in order — repeat is enabled globally (Setup → Repeat), the repeat button on the Home screen is armed, and a repeat buffer actually exists (a capture session has run to completion since the last enable/reboot).
+* **Replay won't start**: check, in order - repeat is enabled globally (Setup → Repeat), the repeat button on the Home screen is armed, and a repeat buffer actually exists (a capture session has run to completion since the last enable/reboot).
 * **EQ changes during replay**: output EQ and per-input gain/EQ apply live during replay, the same as during normal playback, since replay shares the live signal chain.
 
 ---
 
 ## Advanced
 
-### Downloading logs
+### Getting logs
 
-There are two ways to access the autostream logs:
+There are three ways to get autostream's logs. Which one works depends on
+whether the Web UI is reachable.
 
-1. **Offline “problem” page → Download Logs (ZIP)**
+1. **Logs page - quick look, no download**
 
-   * If **autostream**’s main UI is down, the nginx “offline” page includes a **Download Logs** button that hits:
+   Open the **Logs** page (from **About**) to see the last 100 lines of the
+   main log and the current log level (`core/autostream_webui_page_logs.py`,
+   `send_logs_page()`). This is a snapshot, not a live tail: use the
+   **↻ Refresh** link at the top of the page to reload it with whatever has
+   been logged since you opened it.
 
-     * `/offline/download-logs`
-   * This runs `nginx/cgi/download-logs.cgi` (via nginx + `fcgiwrap`) and returns a ZIP created from:
+2. **Logs page → Download Log Bundle - needs the PIN**
 
-     * `/var/log/autostream/*.log`
+   The same page has a **Download Log Bundle** button that requests
+   `GET /logs/download` (route registered in `core/autostream_webui_routes.py`,
+   built by `handle_logs_download()` in `core/autostream_webui_page_logs.py`).
+   It requires the appliance PIN if one is set, and returns a ZIP containing
+   every file under `/var/log/autostream/` plus `/var/log/owntone.log`.
 
-   **autostream-dial** has the same offline recovery page at the same URL paths
-   (`/offline/`, `/offline/download-logs`, etc.). The dial’s Download Logs ZIP
-   contains only dial and Wi-Fi setup logs (`dial-*.log`, `autostream_wifi_watcher.log`) —
-   OwnTone does not run on a dial device. The factory-reset page on the dial
-   references the `autostream-dial_XXXX` hotspot name (not `autostream_XXXX`).
+   **This button is hidden when autostream is opened from an iPhone Home
+   Screen shortcut (standalone/PWA mode).** The page detects iPhone +
+   standalone display mode at load and removes the button, so the download
+   only works from an ordinary browser tab. To get a log bundle on an
+   iPhone, open `http://<hostname>.local/` in Safari as a normal tab - not
+   the Home Screen icon - or download it from a laptop/desktop browser
+   instead.
 
-2. **Logs page → Download Log Bundle (authenticated ZIP)**
+3. **Offline recovery page → Download Logs - no PIN, works when the Web UI is
+   down**
 
-   * The main UI Logs page has a **Download Log Bundle** button that requests:
+   When nginx can't reach the active backend, it serves the offline recovery
+   page instead of the app (see **Recovery screens** below). Its
+   **Download Logs** button posts to `/offline/download-logs`, handled by
+   `nginx/cgi/download-logs.cgi` via `fcgiwrap`. No PIN is required - a
+   same-origin POST check is the only gate, because this page is reachable
+   only in AP/setup mode or from the local LAN - and it returns a ZIP of the
+   same files: everything under `/var/log/autostream/` plus
+   `/var/log/owntone.log`.
 
-     * `GET /logs/download`
-   * This is served by the Python web UI and requires authentication (PIN). It returns a ZIP
-     containing all files from `/var/log/autostream/` and `/var/log/owntone.log`.
-
-Browser note (important):
-
-* The “Download Log Bundle” is accessible from Safari or a PC - it will not show in “standalone/PWA” mode.
-* If downloads don’t work in your current browser, try a different one. **Safari on macOS** or a **Windows browser** is a known workaround.
+   **autostream-dial** serves this same page at the same paths
+   (`/offline/`, `/offline/download-logs`). Its ZIP only contains dial and
+   Wi-Fi-watcher logs (`dial-*.log`, `autostream_wifi_watcher.log`), since
+   OwnTone doesn't run on a dial device. The dial's factory-reset holding
+   page also references the `autostream-dial_XXXX` hotspot name, not
+   `autostream_XXXX`.
 
 Where logs live on disk:
 
 * `/var/log/autostream/autostream.log` (common main log file path in this repo)
 * `/var/log/autostream/autostream_wifi_watcher.log` (Wi-Fi/AP mode state machine)
 * `/var/log/autostream/update.log` (updater)
+* `/var/log/owntone.log` (OwnTone; included in both ZIP bundles above, not shown on the Logs page)
+
+---
+
+### Recovery screens (nginx offline pages)
+
+autostream's nginx config (`system/nginx/autostream-nginx.conf`) watches for a
+failed proxy to the active backend (HTTP 404/502/503/504) and redirects to a
+set of static pages under `nginx/offline/`. These can appear whenever nginx
+can't reach whichever backend is currently active - the main Web UI in normal
+operation, or the Wi-Fi setup wizard while the appliance is in setup/hotspot
+(AP) mode - so you'll most often meet them during setup, but a crashed main
+UI shows the same page. This is a different thing from the setup wizard
+itself; see **Changed Wi-Fi SSID or password** above for the hotspot/setup
+flow.
+
+* **`/offline/` - the recovery page** (`nginx/offline/index.html`). Offers:
+  * **Retry** - reloads the page.
+  * **Download Logs** - see **Getting logs** above.
+  * **Reboot** - posts to `/offline/reboot` (`nginx/cgi/reboot.cgi`), which
+    calls the privileged `autostream_admin reboot` helper and then redirects
+    to the rebooting holding page.
+  * **Factory Reset** - sits behind a confirmation step; posts to
+    `/offline/factory-reset` (`nginx/cgi/factory-reset.cgi`), which calls
+    `autostream_admin factory-reset` and then redirects to the resetting
+    holding page. The confirmation text warns that this erases all settings,
+    including Wi-Fi, and tells you to reconnect to the `autostream_XXXX`
+    hotspot with the factory PIN afterwards.
+
+  None of these actions is PIN-protected - same-origin POST is the only
+  check - because this page is reachable only in AP mode or on the local LAN.
+
+* **`/offline/retrying`** - shown instead of the recovery page specifically
+  when the failed request's referer was `/setup`. It auto-refreshes back to
+  the original URL after about 2 seconds instead of presenting buttons.
+* **`/offline/rebooting`** - holding page shown after Reboot; waits at least
+  90 seconds before checking whether the app has come back.
+* **`/offline/resetting`** - holding page shown after Factory Reset; tells
+  you to reconnect to the `autostream_XXXX` hotspot.
+* **`/offline/updating`** - shown for the whole appliance while a boot-time
+  update retry is in progress (a `/tmp/autostream-updating` marker file),
+  not just on backend failure.
+
+**autostream-dial** serves the same pages at the same paths, with
+dial-specific text substituted at serve time via nginx `sub_filter` (badge
+image, page title, the `autostream-dial_XXXX` hotspot name, and the
+`autostream-dial-logs.zip` download filename).
 
 ---
 
@@ -1021,6 +1084,17 @@ cat /opt/autostream/ssid
 
 ---
 
+### Running full, stock OwnTone
+
+Most users don't need this and should stay on the bundled `owntone-mini`.
+If you deliberately installed with full/stock OwnTone instead
+(`--owntone=full` at install time), troubleshooting its configuration is a
+separate, advanced path - see [FULL-OWNTONE.md](FULL-OWNTONE.md) for what the
+installer sets up automatically, what you're expected to maintain yourself,
+and what doesn't work in that configuration.
+
+---
+
 ## Recovering from a problem pre-release
 
 If a pre-release update causes issues:
@@ -1030,7 +1104,7 @@ If a pre-release update causes issues:
 3. If a newer stable release is available it will be offered immediately. Install it.
 
 **Why is an older stable release not offered as an automatic downgrade?**
-autostream's version comparison only offers updates — versions strictly newer than the currently installed build. If you are running `0.7.0-beta.2` and the latest stable is `0.7.0`, that stable release is numerically newer so it will be offered. If the latest stable is `0.6.9` (older than your pre-release), no update will be offered because that would be a downgrade.
+autostream's version comparison only offers updates - versions strictly newer than the currently installed build. If you are running `0.7.0-beta.2` and the latest stable is `0.7.0`, that stable release is numerically newer so it will be offered. If the latest stable is `0.6.9` (older than your pre-release), no update will be offered because that would be a downgrade.
 
 **Returning immediately to a known stable build (console):**
 
@@ -1213,7 +1287,7 @@ Key log messages:
 ### USB adapter not detected or not working
 
 - The adapter must be supported by Raspberry Pi OS, NetworkManager, and its driver.
-- Check NetworkManager: `nmcli device status` — the adapter must appear as `wifi` and `managed`.
+- Check NetworkManager: `nmcli device status` - the adapter must appear as `wifi` and `managed`.
 - If it appears as `unmanaged`, check `/etc/NetworkManager/NetworkManager.conf`.
 - Unsupported or unmanaged adapters are not candidates for USB-first selection.
 - Some adapters require additional firmware packages (`apt list --installed | grep firmware`).
@@ -1245,7 +1319,7 @@ autostream automatically adopts a newly inserted USB adapter while built-in Wi-F
 - The same adapter has been present for two consecutive 15-second monitor passes.
 - On the main appliance: playback is confirmed idle. If playback status is unavailable, adoption is deferred (never assumed idle).
 
-Adoption is never delayed by playback for failure fallback — only for the optional upgrade from healthy built-in to USB.
+Adoption is never delayed by playback for failure fallback - only for the optional upgrade from healthy built-in to USB.
 
 ### Change Wi-Fi Network flow
 
@@ -1280,7 +1354,7 @@ A transient disappearance of `_autostream._tcp` during network transition is exp
 
 autostream configures every saved Wi-Fi **client** profile with NetworkManager
 autoconnect **disabled** (`connection.autoconnect no`). This is deliberate: the
-Wi-Fi watcher — not NetworkManager — is the single agent that decides which radio
+Wi-Fi watcher - not NetworkManager - is the single agent that decides which radio
 carries the client and brings it up (built-in vs. USB, failover, hotspot
 recovery). With autoconnect off, NetworkManager can no longer race the watcher and
 reactivate a profile on a stale or wrong adapter behind its back.
@@ -1325,7 +1399,7 @@ own. Two independent safety nets cover this:
   domains (gateway-down, dead-PHY, and the 12-hour no-usable-path catch-all)
   reboot the device when it has been offline too long, bounded by a persistent
   cross-boot cap so it cannot loop. A systemd `WatchdogSec` for faster wedged-
-  process recovery is intentionally **not** enabled yet — the monitor loop can
+  process recovery is intentionally **not** enabled yet - the monitor loop can
   block for up to ~45 s during an activation, which would trip a watchdog
   spuriously; it will be added once activation moves off the loop thread.
 
