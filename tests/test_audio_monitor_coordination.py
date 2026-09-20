@@ -858,6 +858,7 @@ def _make_output(name="Test Speaker", out_id="1", selected=False, needs_auth_key
     out.id = out_id
     out.selected = selected
     out.needs_auth_key = needs_auth_key
+    out.pin_pending = False
     return out
 
 

@@ -187,7 +187,7 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
 
     Applies hidden-output filtering, puts the configured default first, then
     alphabetical order.  Returns dicts with keys: id, name, selected, volume,
-    is_default, needs_auth_key, requires_auth.
+    is_default, needs_auth_key, requires_auth, pin_pending.
     """
     default_output_name = parsed.owntone.output_name
     hidden = {
@@ -214,6 +214,7 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
             "is_default": (name == default_output_name),
             "needs_auth_key": bool(out.needs_auth_key),
             "requires_auth": bool(out.requires_auth),
+            "pin_pending": bool(out.pin_pending),
         })
 
     if default_output_name:

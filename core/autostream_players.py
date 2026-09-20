@@ -215,6 +215,7 @@ class OutputInfo:
     has_password: bool = False
     requires_auth: bool = False
     needs_auth_key: bool = False
+    pin_pending: bool = False
     available: bool = True
     current_mode: str = OUTPUT_MODE_AUTO
     supported_modes: tuple[str, ...] = ()
@@ -596,6 +597,7 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
             has_password=bool(output.get("has_password")),
             requires_auth=bool(output.get("requires_auth")),
             needs_auth_key=bool(output.get("needs_auth_key")),
+            pin_pending=bool(output.get("pin_pending", False)),
             available=True,
             current_mode=OUTPUT_MODE_AUTO,
             supported_modes=(OUTPUT_MODE_AUTO,),

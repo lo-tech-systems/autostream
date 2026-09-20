@@ -194,6 +194,11 @@ class TestOutputNormalization:
         assert out.has_password is True
         assert out.requires_auth is True
 
+    def test_pin_pending_flag(self):
+        b = self._backend()
+        out = b._normalize_output_info({"id": "x", "pin_pending": True})
+        assert out.pin_pending is True
+
     def test_base_url_trailing_slash_stripped(self):
         b = OwnToneBackend(base_url="http://localhost:3689/")
         assert b._base_url == "http://localhost:3689"

@@ -833,18 +833,18 @@ HOME_CARDS_SCRIPT = """
     }
   }
 
-  // Poll-driven counterpart to the PIN prompt in sendUpdate(): OwnTone can
-  // flag an output as needing a PIN (needs_auth_key) at any time, not just
-  // right after the user toggles it on, so the outputs poll offers the
-  // prompt itself. __PIN_DISMISSED tracks ids the user cancelled the
+  // Poll-driven counterpart to the PIN prompt in sendUpdate(): the backend
+  // flags an output with pin_pending while it is asking for a PIN, not
+  // just right after the user toggles it on, so the outputs poll offers
+  // the prompt itself. __PIN_DISMISSED tracks ids the user cancelled the
   // prompt for, so the poll does not immediately re-open it every cycle;
-  // it is cleared per-id once that output stops needing a PIN, so a later
-  // re-request (e.g. the device forgot pairing again) prompts again.
+  // it is cleared per-id once that output stops asking for a PIN, so a
+  // later re-request (e.g. the device forgot pairing again) prompts again.
   async function maybePromptForPin(outputs) {
     if (!window.__PIN_DISMISSED) window.__PIN_DISMISSED = new Set();
     if (!window.__PENDING_OUTPUTS) window.__PENDING_OUTPUTS = new Set();
     for (const o of outputs) {
-      if (!o.needs_auth_key) window.__PIN_DISMISSED.delete(String(o.id));
+      if (!o.pin_pending) window.__PIN_DISMISSED.delete(String(o.id));
     }
     if (window.__PIN_PROMPT_ACTIVE) return;
     const pinModal = document.getElementById('pinModal');
@@ -852,7 +852,7 @@ HOME_CARDS_SCRIPT = """
 
     const target = outputs.find(function(o) {
       const id = String(o.id);
-      return !!o.needs_auth_key && !window.__PIN_DISMISSED.has(id) &&
+      return !!o.pin_pending && !window.__PIN_DISMISSED.has(id) &&
         !window.__PENDING_OUTPUTS.has(id);
     });
     if (!target) return;
