@@ -118,10 +118,10 @@ This is a direct-local request and bypasses PIN auth. It is intended for interna
 
 `set_log_level` applies the level to four targets in sequence. Failures in later targets do not roll back earlier ones.
 
-1. **Python logger** — always succeeds (in-process)
-2. **Monitor daemon** — HTTP request to the monitor control port; may fail if the monitor is restarting
-3. **OwnTone** — HTTP request to the OwnTone API; may fail if OwnTone is unavailable or not configured
-4. **NGINX access log** — privileged helper (`autostream_admin set-nginx-access-log`); may fail if the helper is unavailable
+1. **Python logger** - always succeeds (in-process)
+2. **Monitor daemon** - HTTP request to the monitor control port; may fail if the monitor is restarting
+3. **OwnTone** - HTTP request to the OwnTone API; may fail if OwnTone is unavailable or not configured
+4. **NGINX access log** - privileged helper (`autostream_admin set-nginx-access-log`); may fail if the helper is unavailable
 
 When `applied.monitor` or `applied.owntone` is `false`, the level has still been persisted and the Python logger has been updated. The monitor and OwnTone will pick up the persisted level on their next restart.
 
@@ -149,7 +149,7 @@ Returns whether the appliance is currently capturing audio.
 or API key. Browser and proxied requests require normal session authentication.
 A plain GET without a `Content-Type` header is accepted on the direct-local path.
 
-**Response — known state (200)**
+**Response - known state (200)**
 
 ```json
 { "ok": true, "playing": false }
@@ -157,7 +157,7 @@ A plain GET without a `Content-Type` header is accepted on the direct-local path
 
 `playing` is always a JSON boolean when `ok` is `true`.
 
-**Response — uncertain state (200)**
+**Response - uncertain state (200)**
 
 When the appliance cannot determine playback state (e.g. the audio monitor has
 not started, or an internal query fails):
@@ -168,8 +168,8 @@ not started, or an internal query fails):
 
 **Consumers must treat uncertain responses conservatively.** Accept playback
 state only when `ok` is exactly `true` and `playing` is a JSON boolean. Any
-other shape — including `ok: false`, missing fields, or a non-boolean `playing`
-— must be treated as unknown (not as stopped). The wifi watcher defers optional
+other shape - including `ok: false`, missing fields, or a non-boolean `playing`
+- must be treated as unknown (not as stopped). The wifi watcher defers optional
 USB adapter handover on uncertain responses; the storage guard does not raise
 the log-level ceiling.
 

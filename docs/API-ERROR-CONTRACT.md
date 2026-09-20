@@ -160,8 +160,8 @@ error identifiers:
 | Target returned a redirect (`3xx`) | `dial_bad_response` | `502` | `true` |
 | Target `503` | `dial_unavailable` | `503` | `true` |
 | Target `504` | `dial_timeout` | `504` | `true` |
-| Management dispatcher unknown path | `not_found` | `404` | — |
-| Target `404` resource not found | `not_found` (or target-provided `error`) | `404` | — |
+| Management dispatcher unknown path | `not_found` | `404` | - |
+| Target `404` resource not found | `not_found` (or target-provided `error`) | `404` | - |
 
 `dial_offline` is distinct from `not_found`: `dial_offline` means the host could not
 locate the dial in the mDNS registry; `not_found` means the dial was reachable but the
@@ -259,7 +259,7 @@ Rules for browser clients:
 1. Inspect `Content-Type` before calling `.json()`. A redirected HTML page has
    `text/html`, not `application/json`. Attempting to parse HTML as JSON produces a
    misleading error.
-2. Catch JSON parse failures — return a controlled `invalid_response` result, not an
+2. Catch JSON parse failures - return a controlled `invalid_response` result, not an
    uncaught exception.
 3. Require a JSON object root. Arrays, strings, numbers, booleans, and `null` are not
    valid API responses.

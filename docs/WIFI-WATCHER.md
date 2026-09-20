@@ -51,7 +51,7 @@ resolves and persists a UUID when a legacy name-only profile is used.
 ## Connectivity preference and the health model
 
 Preference order: **wired ethernet > preferred USB Wi-Fi > onboard Wi-Fi**.
-Usable ethernet wins regardless of subnet — the idle Wi-Fi client is disconnected
+Usable ethernet wins regardless of subnet - the idle Wi-Fi client is disconnected
 so there is one deterministic path and mDNS address (deferred only while playback
 is active or uncertain).
 
@@ -125,7 +125,7 @@ the worker result is applied.
 ## Hotspot purpose table
 
 The hotspot is a single parameterised state `HOTSPOT(purpose)`. There is no
-once-per-boot AP budget — the 30-minute session lifetime is the only rate limit.
+once-per-boot AP budget - the 30-minute session lifetime is the only rate limit.
 Automatic purposes are suppressed when a usable wired path is present; a
 carrier-only cable does not count as usable.
 
@@ -139,13 +139,13 @@ carrier-only cable does not count as usable.
 
 A recovery hotspot probes cheaply for the saved SSID (a scan works in AP mode
 without dropping the AP). When the only client radio is the AP-hosting radio,
-rejoining tears the AP down — the single-radio exit edge.
+rejoining tears the AP down - the single-radio exit edge.
 
 **Rejoin prompt (client-count aware).** Before a drop-AP rejoin, the watcher
 counts stations associated to the setup AP (`iw dev <ifname> station dump`,
 surfaced as `hotspot.clients`). With **zero** stations (nobody on the portal) the
-automatic rejoin proceeds as before. With a station associated — or when the
-count is unknown (`iw` missing) — the watcher does **not** yank the AP; it sets
+automatic rejoin proceeds as before. With a station associated - or when the
+count is unknown (`iw` missing) - the watcher does **not** yank the AP; it sets
 `saved_ssid_visible` on `/status`, and the setup page shows a modal offering
 "Rejoin" (POST `/reconnect_saved`) or "Continue setup" (POST `/dismiss_rejoin`,
 which suppresses the probe/modal for the rest of the session). The 15-minute
@@ -165,11 +165,11 @@ link-down until the watcher activates it) gets a normal activation, never a
 reset. When that USB is instead the *active* client and reads link-down but has
 not yet accrued a debounced wedged verdict, the ladder holds
 (`usb_link_down_debouncing`) rather than resetting or failing over: transient
-drops are left to the reconnect machinery, and only a sustained failure —
-the same debounced dead-PHY verdict the status snapshot reports as `dead_phy` —
+drops are left to the reconnect machinery, and only a sustained failure -
+the same debounced dead-PHY verdict the status snapshot reports as `dead_phy` -
 condemns it. When the preferred USB is condemned by that wedged verdict (not
-merely no-IP) — resettable, within its reset budget, not hosting the hotspot,
-and not already spent this offline episode — the ladder resets and reactivates
+merely no-IP) - resettable, within its reset budget, not hosting the hotspot,
+and not already spent this offline episode - the ladder resets and reactivates
 it before onboard is tried: salvage (NM re-activation) still runs first, and on
 reset success the client resumes on the same MAC/lease/IP, so failover's
 client-visible churn (and the mDNS TTL wait) is avoided. The attempt counts in
@@ -178,16 +178,16 @@ non-resettable, budget-exhausted, quarantined, hotspot-hosting, or
 already-spent wedge falls straight to onboard, and quarantine still applies per
 the existing thresholds once the reset option is exhausted. The
 associated-but-no-IP class is ambiguous evidence (could be router/DHCP) and
-keeps its own path — the in-job implicated-failure retry and the no-IP ledger
-promotion — unaffected by this rung. The invariant: a broken USB dongle must
-never trap the device in a hotspot on the only working radio — the onboard is
+keeps its own path - the in-job implicated-failure retry and the no-IP ledger
+promotion - unaffected by this rung. The invariant: a broken USB dongle must
+never trap the device in a hotspot on the only working radio - the onboard is
 tried as a client before hosting a recovery AP, and climbed back to from within
 one.
 
 **Dead-PHY reset ladder** (a wedged-but-present adapter, NO-CARRIER / DOWN, after a
 2-pass debounce): USB reset (method A rebind, then B re-enumerate, alternating),
 for a resettable target with reset budget available, → built-in fallback →
-quarantine/back-off → guarded reboot (offline only) — the same reset-before-
+quarantine/back-off → guarded reboot (offline only) - the same reset-before-
 fallback order as the primary recovery ladder above. A non-resettable,
 budget-exhausted, or disabled target falls straight through to built-in
 fallback instead of holding the device offline; between reset attempt windows
@@ -206,14 +206,14 @@ gated by playback and by a saved-SSID scan.
 command failure from a scan that succeeds with zero rows from one that succeeds
 but simply doesn't see the committed SSID. Zero rows on a present candidate means
 the radio itself is wedged (a working scan always sees *some* network, even when
-the saved AP is away) — a streak of **2** consecutive empty scans (about 10
+the saved AP is away) - a streak of **2** consecutive empty scans (about 10
 minutes at the adoption scan cadence) routes the candidate through the same
 `remediate_unusable_usb` primitive every other unusable-USB detector uses: a
 budgeted reset while budget remains, clearing the scan rate-gate so the next
 pass re-scans immediately and a recovered radio fails back through the ordinary
 adoption path unmodified; quarantine once the budget is exhausted. A quarantined
-adapter is excluded from adoption's candidate gate entirely — no scan, no
-reset attempt — until the shared 24 h quarantine self-expires and it is
+adapter is excluded from adoption's candidate gate entirely - no scan, no
+reset attempt - until the shared 24 h quarantine self-expires and it is
 re-probed on the next stable pass, the same lifecycle every other
 unusable-USB path converges on.
 
@@ -232,18 +232,18 @@ policy. The 15-minute roam/activation holdoff still applies. Failure/success
 accounting on a pin is scoped to the pinned interface's own table, so a
 failure on one USB adapter can never quarantine entries observed by another.
 At `debug` log level every scan (USB self-scan, onboard survey, activation pin
-scan) logs one compact line — ifname, rescan flag, purpose, and the strongest
+scan) logs one compact line - ifname, rescan flag, purpose, and the strongest
 BSSID/signal rows for the committed SSID; `info` and above stay quiet about
 scans.
 
 **Roaming management preference**: whether the watcher pins BSSIDs, runs the
 survey/roam machinery, and tracks per-BSSID quarantine described above is
-gated by a global, user-facing opt-in preference (default off — unmanaged,
+gated by a global, user-facing opt-in preference (default off - unmanaged,
 NM/firmware roaming). Enabling it turns on BSSID pinning, the survey/roam
 loop, and per-BSSID quarantine; disabling it clears any existing pin and
-resets the in-memory roam state. The adapter fault ladder — dead-PHY/wedge
+resets the in-memory roam state. The adapter fault ladder - dead-PHY/wedge
 detection, empty-scan remediation, no-IP backoff, budgeted resets, and the
-24 h quarantine — runs identically in both modes, since it keys off link
+24 h quarantine - runs identically in both modes, since it keys off link
 state and scan results, not pins. The one behaviour scoped to the managed
 case is the pin-implicated retry heuristic, which only fires when an
 activation failure can be attributed to a stale BSSID pin.
@@ -251,7 +251,7 @@ activation failure can be attributed to a stale BSSID pin.
 **Persistent fault state**: the per-adapter no-IP and reset/quarantine ledgers are
 persisted to `/var/lib/autostream/adapter-fault-state.json` (wall-clock
 timestamps, translated back to the monotonic clock and pruned by the rolling
-windows on load), so a restart — including the 12-hour catch-all reboot — does not
+windows on load), so a restart - including the 12-hour catch-all reboot - does not
 hand a chronically bad dongle a fresh budget.
 
 **No-IP hold-back reset**: an idle USB spare that repeatedly associates but never
@@ -259,24 +259,24 @@ gets an IP is normally held back by the no-IP ledger. Because the dead-PHY reset
 ladder only targets the *active* client, such a spare would never be reset; so
 when it reaches the final hold-back the watcher spends **one** budgeted USB reset
 (accounted against the normal reset budget) and clears its suppression for a fresh
-adoption attempt. If that still fails, the hold-back proceeds — one reset per
+adoption attempt. If that still fails, the hold-back proceeds - one reset per
 hold-back episode.
 
 **ClientFailed overlay HOLD handling / post-handover settling**: the recovery
 ladder now tries a plain re-activation (scan-informed via the activation pin
 step, which scans before bringing the connection up) before either a
-hardware reset or an onboard demotion — cheaply distinguishing a vanished/
+hardware reset or an onboard demotion - cheaply distinguishing a vanished/
 unrecoverable pinned AP, which recovers for free, from a genuinely wedged
 radio, which fails the reactivation and falls through to the budgeted reset
 on the next pass. The condemned fact that gates this (`usb_active_reactivate`
 for an active preferred USB, and the wedged reactivate-first rung ahead of
-`RESET_USB`) comes from the debounced connectivity verdict — a condemned
-connectivity episode open on the client — not a raw connectivity flag, so a
+`RESET_USB`) comes from the debounced connectivity verdict - a condemned
+connectivity episode open on the client - not a raw connectivity flag, so a
 freshly-activated, still-DHCP-settling client is never mistaken for
 condemned; the accepted trade-off is that a genuinely wedged radio now
 recovers one activation attempt slower (bounded by the activation timeout)
 before its budgeted reset fires. The ClientFailed overlay is a pure executor
-of the ladder's verdict — it submits whatever ACTIVATE_USB / RESET_USB /
+of the ladder's verdict - it submits whatever ACTIVATE_USB / RESET_USB /
 ACTIVATE_ONBOARD action the ladder returns and never rewrites it. When the
 ladder holds an active, carrier-up, unhealthy preferred USB that is not yet
 condemned (`usb_active_no_ip`), the overlay takes no action and logs the held
@@ -289,16 +289,16 @@ identity last changed (boot detection, adoption handover, or a recovery
 activation), a HARD connectivity verdict (active-client link-down, or no
 active client and no recorded USB left to reconnect to) is softened to the
 normal `CONNECTIVITY_DOWN_DEBOUNCE`-pass debounce instead of condemning on a
-single sample — shielding a just-completed handover from one-sample races
+single sample - shielding a just-completed handover from one-sample races
 (NM state settling, ARP `INCOMPLETE`, a coincident avahi restart) while a
 genuinely dead handover still condemns within the usual debounce window.
 
 **Manual adapter control** (loopback+token, via `/network_control`):
 `disable_adapter` (a disabled adapter is never offered as a client, adopted, or
-reset until re-enabled — persisted across restarts), `enable_adapter`, and
+reset until re-enabled - persisted across restarts), `enable_adapter`, and
 `clear_adapter` (clear an adapter's fault ledgers after replacement).
 
-**Guarded reboot domains** — every request passes one shared guard (a persistent
+**Guarded reboot domains** - every request passes one shared guard (a persistent
 cross-boot cap of **3 reboots per 24 h** plus an in-process throttle):
 - **Gateway-down**: connected client but gateway unreachable for **30 min**.
 - **Dead-PHY**: only client path dead and offline for **30 min**.
@@ -341,7 +341,7 @@ plus the OS captive-portal probe endpoints (`/generate_204`, `/ncsi.txt`,
 
 **Log levels:** `fatal`, `log`, `warning`, `info` (default), `debug`, `spam`.
 Only `warning` / `info` / `debug` are settable at runtime via `set_log_level`;
-`debug` must carry a TTL of 60–3600 s and reverts automatically.
+`debug` must carry a TTL of 60-3600 s and reverts automatically.
 
 The watcher's runtime level follows the autostream web UI's log-level control
 over this loopback API: the web UI forwards every successful level change

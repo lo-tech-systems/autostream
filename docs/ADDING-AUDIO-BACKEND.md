@@ -299,12 +299,12 @@ def required_monitor_format(self) -> Optional[str]:
 
 defined on `PlayerBackend` in `core/autostream_players.py`, returning one of:
 
-- `"native"` — the backend can consume 48000 Hz / 32-bit / 2ch.
-- `"compatible"` — the backend needs (or is safest assuming) 44100 Hz /
+- `"native"` - the backend can consume 48000 Hz / 32-bit / 2ch.
+- `"compatible"` - the backend needs (or is safest assuming) 44100 Hz /
   16-bit / 2ch.
-- `None` — unknown right now, e.g. the backend is unreachable. Callers
+- `None` - unknown right now, e.g. the backend is unreachable. Callers
   (`reconcile_monitor_format()` in `autostream_player_service.py`) treat
-  `None` as "take no enforcement action this pass" — never as either
+  `None` as "take no enforcement action this pass" - never as either
   concrete format.
 
 **The default, and why.** `PlayerBackend.required_monitor_format()` is a
@@ -312,7 +312,7 @@ concrete (non-abstract) method with a default implementation of
 `"compatible"`, not `"native"`. A new adapter that does not override it
 inherits this default automatically. `"compatible"`'s 44.1kHz/16-bit wire
 format is what a fixed, un-configurable pipe input already expects (it is
-exactly the official OwnTone adapter's situation — see
+exactly the official OwnTone adapter's situation - see
 `core/autostream_owntone.py`), so it is universally consumable by an unknown
 backend. Defaulting to `"native"` instead would silently start feeding a
 48kHz/32-bit stream to a backend that never declared it could accept one.
@@ -320,7 +320,7 @@ Only override the default if your backend actually supports (or requires)
 `"native"`.
 
 **A static answer is usually enough.** If your backend has one fixed pipe
-format, a one-line override is all you need — see
+format, a one-line override is all you need - see
 `OwnToneBackend.required_monitor_format()`, which unconditionally returns
 `"compatible"` because upstream OwnTone's named-pipe input is fixed and has
 no settings surface to change it.
@@ -329,14 +329,14 @@ no settings surface to change it.
 format depends on the deployed backend version/build, probe for it instead
 of hard-coding an answer. `OwnToneMiniBackend.required_monitor_format()` in
 `core/autostream_owntone_mini.py` is the reference implementation: it reads
-`SETTING_PIPE_SAMPLE_RATE` via `get_setting()` — a successful read means the
+`SETTING_PIPE_SAMPLE_RATE` via `get_setting()` - a successful read means the
 key is API-settable, so it returns `"native"`; an `unsupported` (404) result
 means an older mini build predating pipe-format settings, so it returns
 `"compatible"` (that build's self-healed config defaults are already
 44100/16, so nothing needs pushing and nothing could be pushed anyway); a
 transport failure returns `None`. It caches the definitive answers
 (`"native"`/`"compatible"`, never `None`) module-level, keyed by `base_url`
-rather than by instance — `resolve_backend()` in
+rather than by instance - `resolve_backend()` in
 `core/autostream_player_service.py` constructs a fresh adapter instance on
 every call, so an instance attribute would never actually be reused across
 calls. See the module-level comment above `_monitor_format_probe_cache` in
@@ -358,12 +358,12 @@ result (whatever `get_setting()`/`save_setting()` return for a key your
 adapter does not recognise) as a debug-logged no-op, never a failure. A
 backend that simply omits `SETTING_RESAMPLE_QUALITY` from its setting specs
 (or, like `OwnToneBackend`, has no normalized-settings surface at all) is
-automatically covered — **stock/full OwnTone keeps its stock resampling
+automatically covered - **stock/full OwnTone keeps its stock resampling
 behaviour regardless of the selected Audio Path tier**, and no adapter code
 is needed to make that true.
 
 If your backend does implement this key, a value save can also fail because
-the deployed build predates the key (e.g. an older owntone-mini) — treat
+the deployed build predates the key (e.g. an older owntone-mini) - treat
 that the same as any other unrecognised-key rejection: log it and let the
 caller retry on the next reconcile pass rather than treating it as fatal
 (the `set_repeat_enabled` old-binary rule).
@@ -384,7 +384,7 @@ The result types are part of the contract. Try to follow the existing patterns:
 - `SaveSettingResult`
   - use for writes
 
-All five expose a shared `.message` property — `error or error_code`, and
+All five expose a shared `.message` property - `error or error_code`, and
 `error or detail or error_code` for `ActionResult`. This is what the rest of the
 app reads when it surfaces a failure to the logs or the UI (for example
 `autostream_webui_api.py` and `autostream_player_service.py`), so populate

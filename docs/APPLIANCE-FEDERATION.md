@@ -264,7 +264,7 @@ The protocol is designed for a trusted home LAN. It is not appropriate for use o
 untrusted networks, the Internet, or networks where other tenants may be present.
 
 The same limitations already apply to the local session cookie and PIN nonce
-mechanism — see the **Authentication and PIN security** section in
+mechanism - see the **Authentication and PIN security** section in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the full threat-model description.
 
 ---
@@ -350,7 +350,7 @@ stale occupied state is shown; a longer interval reduces LAN traffic.
 When *Allow Control of Other Appliances* is enabled (Setup → Personalisation), an
 output card that shows "In Use by &lt;hostname&gt;" becomes tappable. Tapping anywhere
 on the card (except the toggle switch or volume slider) navigates directly to that
-appliance's Home page in proxy mode — equivalent to selecting it from the appliance
+appliance's Home page in proxy mode - equivalent to selecting it from the appliance
 selector dropdown. The card remains visually greyed-out; only the status pill gains
 a green outline to indicate the remote ownership.
 

@@ -1,4 +1,4 @@
-# autostream dial — Protocol Specification
+# autostream dial - Protocol Specification
 
 This document is the authoritative spec for the wire protocol between autostream dial devices
 and autostream appliances. Breaking changes require a version bump and a new capability indicator
@@ -8,7 +8,7 @@ in the mDNS TXT record.
 
 ## 1. mDNS Service Types
 
-### `_autostream-playing._tcp` — autostream appliance, runtime
+### `_autostream-playing._tcp` - autostream appliance, runtime
 
 Announced by an autostream appliance when at least one audio capture is active.
 Deleted when the last capture stops.
@@ -28,7 +28,7 @@ instance (pre-dial support) and skips it.
 
 Port: **80** (appliance HTTP server).
 
-### `_autostream-dial._tcp` — dial device, always-on
+### `_autostream-dial._tcp` - dial device, always-on
 
 Announced continuously by a dial device.
 
@@ -41,7 +41,7 @@ Announced continuously by a dial device.
 
 Port: **7842** (dial HTTP server).
 
-**Name constraints:** dial names are restricted to printable ASCII (0x20–0x7e) excluding `;`
+**Name constraints:** dial names are restricted to printable ASCII (0x20-0x7e) excluding `;`
 (avahi field separator) and `|` (config delimiter). Names containing these characters are
 rejected by `autostream_admin update-dial-service`.
 
@@ -52,7 +52,7 @@ rejected by `autostream_admin update-dial-service`.
 ### `GET /api/audio/status`
 
 Unauthenticated. Returns a fresh snapshot of currently selected OwnTone outputs and playing
-state. Added to `ALLOWLIST_PATHS` — no session or CSRF token required.
+state. Added to `ALLOWLIST_PATHS` - no session or CSRF token required.
 
 **Response schema:**
 ```json
@@ -69,10 +69,10 @@ state. Added to `ALLOWLIST_PATHS` — no session or CSRF token required.
 | `error` | string | Present only on failure: `"backend_unavailable"` |
 
 **Semantics:**
-- `playing: false, outputs: []` — normal; no conflict with this appliance.
-- `playing: true, outputs: []` — startup-pending/unknown (capture is starting, OwnTone selection
-  not yet established). Treat the same as `outputs: null` — retry after 1–2 s.
-- `outputs: null` — OwnTone unreachable or returned an error; state unknown. Do not treat as
+- `playing: false, outputs: []` - normal; no conflict with this appliance.
+- `playing: true, outputs: []` - startup-pending/unknown (capture is starting, OwnTone selection
+  not yet established). Treat the same as `outputs: null` - retry after 1-2 s.
+- `outputs: null` - OwnTone unreachable or returned an error; state unknown. Do not treat as
   "no outputs in use".
 
 Output IDs are not included. OwnTone assigns IDs locally per host (ALSA outputs get `"0"` on
@@ -82,7 +82,7 @@ every device), making them unsuitable for cross-host comparison. Names are the s
 
 ### `POST /api/dial/volume`
 
-UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
+UUID-in-body auth. Must be routed **before** `validate_csrf()` - no session or CSRF token
 required.
 
 **Request body:**
@@ -100,7 +100,7 @@ required.
 {"ok": true, "volume": 59}
 ```
 
-`volume` is the new master volume level (0–100) after applying the delta.
+`volume` is the new master volume level (0-100) after applying the delta.
 
 **Partial success (200):**
 ```json
@@ -125,11 +125,11 @@ not present in `dials.json`.
 
 ### `POST /api/dial/mute`
 
-UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
+UUID-in-body auth. Must be routed **before** `validate_csrf()` - no session or CSRF token
 required. Same authorization check as `POST /api/dial/volume`.
 
 Applies an **explicit** mute or restore action across all currently selected OwnTone
-outputs. The appliance never infers the action from its own volumes — the dial owns the
+outputs. The appliance never infers the action from its own volumes - the dial owns the
 single fleet-wide toggle decision and states it, so every appliance in a fleet performs the
 same action regardless of the level it happens to be sitting at. A snapshot of pre-mute
 volumes is kept so the restore action can return each output to its original level.
@@ -148,12 +148,12 @@ on the next press rather than leaving that appliance inverted.
 | `dial_id` | string | Dial identity (20 lowercase hex chars); must be present in `dials.json` |
 | `action` | string | Exactly `"mute"` or `"restore"`. Required; case-sensitive |
 
-**Success response (200) — muted:**
+**Success response (200) - muted:**
 ```json
 {"ok": true, "muted": true}
 ```
 
-**Success response (200) — restored:**
+**Success response (200) - restored:**
 ```json
 {"ok": true, "muted": false}
 ```
@@ -164,7 +164,7 @@ on the next press rather than leaving that appliance inverted.
 ```
 
 Some outputs updated successfully; others failed. Not all outputs failed. (`muted` reflects
-the requested action — `true` for `"mute"`, `false` for `"restore"`.)
+the requested action - `true` for `"mute"`, `false` for `"restore"`.)
 
 **Failure responses (200 body, not HTTP error):**
 
@@ -185,14 +185,14 @@ not present in `dials.json`. Matches `POST /api/dial/volume` behavior.
 
 Returned when `action` is absent, not a string, or not exactly `"mute"` or `"restore"`.
 Authorization is checked **before** the action, so an unauthorized caller receives 403
-rather than 400 even when its action is well-formed — a rejection never reveals whether the
+rather than 400 even when its action is well-formed - a rejection never reveals whether the
 dial is authorized.
 
 ---
 
 ### `POST /api/dial/status`
 
-UUID-in-body auth. Must be routed **before** `validate_csrf()` — no session or CSRF token
+UUID-in-body auth. Must be routed **before** `validate_csrf()` - no session or CSRF token
 required. Read-only; no output mutation.
 
 Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
@@ -202,7 +202,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 {"dial_id": "<id>"}
 ```
 
-**Success response (200) — outputs selected:**
+**Success response (200) - outputs selected:**
 ```json
 {
   "ok": true,
@@ -222,7 +222,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 }
 ```
 
-**Success response (200) — no outputs selected:**
+**Success response (200) - no outputs selected:**
 ```json
 {"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0}
 ```
@@ -237,7 +237,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
 and `POST /api/dial/volume`.
 
-This `track_id` extension is part of the pre-public dial v1 contract — it is added to the
+This `track_id` extension is part of the pre-public dial v1 contract - it is added to the
 existing `dial_status=v1` response without a new mDNS capability indicator, during the
 pre-release dial development phase.
 
@@ -309,7 +309,7 @@ outcomes, it **tunnels** the error through browser HTTP `200` using the canonica
 shape described in `docs/API-ERROR-CONTRACT.md`.
 
 Clients consuming proxy responses must therefore inspect `ok`, `error`, and
-`error_status` — not only the transport HTTP status — to determine the outcome:
+`error_status` - not only the transport HTTP status - to determine the outcome:
 
 ```json
 {
@@ -332,7 +332,7 @@ Clients consuming proxy responses must therefore inspect `ok`, `error`, and
 | `dial_timeout` | Dial returned `504` Gateway Timeout |
 
 `dial_offline` is a **host discovery failure**. `not_found` is a **target-resource
-absence** — the dial was reached, but the requested resource is not active (for example,
+absence** - the dial was reached, but the requested resource is not active (for example,
 `GET /recovery_status` returns `{"active": false}` with HTTP `404` when no PIN recovery
 window is open).
 
@@ -355,7 +355,7 @@ contract above.
 `POST /api/dial/recovery/arm` and `POST /api/dial/recovery/disarm` proxy to the dial's
 `POST /recovery/arm` and `POST /recovery/disarm` respectively (see section 4). Unlike the
 direct volume endpoint above, these are browser dial-management routes: the main appliance
-requires its own authenticated session before proxying the request — the same
+requires its own authenticated session before proxying the request - the same
 `require_authenticated_if_pin_enabled` gate applied to `/api/dial/configure` and the other
 dial-management routes. The dial itself does not check a PIN on either endpoint; session
 authentication on the appliance side is what stands in for it. See **`POST /recovery/arm`**
@@ -384,7 +384,7 @@ Returns current dial settings.
 | Field | Type | Notes |
 |---|---|---|
 | `update_channel` | string | `"stable"` or `"dev"`. `stable` considers only full GitHub releases; `dev` considers the most recent release including pre-releases. PIN-gated when set via `POST /configure` (same protection as `name`, `step_percent`, `auto_update`). |
-| `can_confirm_presence` | bool | Runtime truth, not config: `true` only if this dial actually constructed at least one input capable of confirming presence for PIN recovery — a working rotary encoder, a working button, or a running touch stack. `false` covers every other case, including a configured touch panel whose driver failed to construct at startup. Set once at startup after input construction finishes; a dial polled before that finishes reports `false`. |
+| `can_confirm_presence` | bool | Runtime truth, not config: `true` only if this dial actually constructed at least one input capable of confirming presence for PIN recovery - a working rotary encoder, a working button, or a running touch stack. `false` covers every other case, including a configured touch panel whose driver failed to construct at startup. Set once at startup after input construction finishes; a dial polled before that finishes reports `false`. |
 
 ### `GET /recovery_status`
 
@@ -402,14 +402,14 @@ While a window is active, `200` is returned with the full state:
 
 | Field | Type | Notes |
 |---|---|---|
-| `volume_confirmed` | bool | Historical field name — it means "presence confirmed", not specifically a volume change. Set `true` by any deliberate physical input on the dial: a touch anywhere on the panel, a physical button press, or the rotary encoder turned in either direction (previously only a clockwise turn, or a nudge sent over the local control socket, counted — that left touch-only, button-only, and screen-only dials unable to ever confirm presence). Once set, stays `true` for the rest of the window. |
+| `volume_confirmed` | bool | Historical field name - it means "presence confirmed", not specifically a volume change. Set `true` by any deliberate physical input on the dial: a touch anywhere on the panel, a physical button press, or the rotary encoder turned in either direction (previously only a clockwise turn, or a nudge sent over the local control socket, counted - that left touch-only, button-only, and screen-only dials unable to ever confirm presence). Once set, stays `true` for the rest of the window. |
 | `recovery_remaining_ms` | int | Milliseconds left in the 10-minute recovery window, clamped at 0. `0` whenever no window is active. Lets a client show a countdown and detect expiry without polling `active` alone. |
 | `can_confirm_presence` | bool | Same runtime-truth field documented under `GET /configure` above. |
 
 ### `POST /recovery/arm`
 
 Writes a PIN-recovery request marker to persistent storage. Writing the marker does not by
-itself open a recovery window — it only records that recovery has been requested. See
+itself open a recovery window - it only records that recovery has been requested. See
 **Recovery arming** below for how a request is turned into an active window.
 
 **No PIN required.** The PIN is what the caller has lost, so requiring it to reach the
@@ -427,7 +427,7 @@ recovery still requires physical presence at the dial afterwards (see **Recovery
 
 Always `200 {"ok": true}`, including when the marker could not be written (for example,
 read-only storage). That failure is logged on the dial, not surfaced to the caller as an
-error — arming is best-effort and idempotently re-triable.
+error - arming is best-effort and idempotently re-triable.
 
 ### `POST /recovery/disarm`
 
@@ -437,7 +437,7 @@ a request that has not yet been consumed. Called by the main appliance's proxy a
 /recovery/arm`. **No PIN required**, for the same reason as `POST /recovery/arm`.
 
 If a recovery window is already active (the request was already consumed at a prior
-startup), disarming does not close that window — the window runs its own independent
+startup), disarming does not close that window - the window runs its own independent
 10-minute course once opened; see **Recovery arming** below.
 
 **Request body:** none required; any body is ignored.
@@ -456,19 +456,19 @@ A PIN-recovery request written by `POST /recovery/arm` does not open a recovery 
 itself. The window opens only the next time the dial process starts, and only when **both**
 of the following are true at that startup:
 
-1. **An explicit request is pending** — the request marker written by `POST /recovery/arm`
+1. **An explicit request is pending** - the request marker written by `POST /recovery/arm`
    is present and has not since been disarmed.
 2. **The device was genuinely power-cycled**, not merely restarted. The dial writes a
    marker file when it starts and deletes it as part of a clean shutdown; the marker
    surviving to the next startup means the previous stop did not go through the clean-
-   shutdown path — most likely a power loss, or the process being killed outright. An
+   shutdown path - most likely a power loss, or the process being killed outright. An
    ordinary `systemctl restart`, a `reboot` command, or the self-restart the dial fires
    after a firmware update or a `touch_type` change (see `POST /screen/settings`) all go
    through clean shutdown, so **none of these arm recovery** even with a request pending.
 
 Neither condition alone is enough: a survived marker with no pending request is just an
 ordinary power cycle nobody asked for, and a pending request with a clean-shutdown marker
-means a restart happened before the device was ever power-cycled — the request must stay
+means a restart happened before the device was ever power-cycled - the request must stay
 armed for a real power cycle later, not fire on that restart. The request marker is
 consumed (deleted) only in the startup where both conditions were checked together; an
 unrelated clean restart between arming and power-cycling leaves the request intact for the
@@ -477,7 +477,7 @@ power cycle that eventually follows.
 **Request expiry.** A pending request older than 30 minutes (measured from when `POST
 /recovery/arm` wrote the marker) is not honoured. This hardware has no RTC, so the age
 comparison only runs once the system clock reports itself synchronised; if synchronisation
-never completes, the request is honoured anyway and the skipped age check is logged — a
+never completes, the request is honoured anyway and the skipped age check is logged - a
 dial with broken time sync and a lost PIN would otherwise be permanently unrecoverable.
 
 This 30-minute request-expiry window is separate from, and precedes, the 10-minute
@@ -487,7 +487,7 @@ device; the 10-minute window starts only once the device has restarted with reco
 and bounds the time available to confirm presence and set a new PIN.
 
 A request found on a dial with no PIN configured is still consumed (deleted) at startup,
-but never arms anything — there is nothing to recover.
+but never arms anything - there is nothing to recover.
 
 ### `POST /update`
 
@@ -593,14 +593,14 @@ values from this endpoint.
 | `screen.rotate` | bool | Persisted screen-rotation setting; `true` rotates the display 180 degrees. Optional, defaults to `false` |
 | `screen.screen_type` | string | Persisted display profile key. Optional, defaults to the dial's default profile |
 | `screen.bgr` | bool | Persisted colour-order swap setting. Optional, defaults to `false` |
-| `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright — see **Validation** under `POST /screen/settings` below |
-| `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text"}, ...]` — see **Supported profiles** below |
-| `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** — see **Touch capability gate** below |
+| `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright - see **Validation** under `POST /screen/settings` below |
+| `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text"}, ...]` - see **Supported profiles** below |
+| `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
-| `runtime.screen_type` | string | The **active** display profile key — see **Configured vs. active** below |
-| `runtime.bgr` | bool | The **active** colour-order swap setting — see **Configured vs. active** below |
-| `runtime.touch_type` | string | What the touch stack **actually did at startup**, set once after touch construction finishes. One of: the constructed controller key (e.g. `"xpt2046"`) when touch was built and started; `"none"` when touch was deliberately not built (disabled by config, or no screen fitted); `"failed"` when construction was attempted and raised. Polled before startup construction finishes, it reads `""` — the same early-poll caveat as `can_confirm_presence` under `GET /configure`. This is distinct from `screen.touch_type` (the persisted configuration), which changes the instant a `POST /screen/settings` saves it even though the running process has not restarted to pick it up yet |
+| `runtime.screen_type` | string | The **active** display profile key - see **Configured vs. active** below |
+| `runtime.bgr` | bool | The **active** colour-order swap setting - see **Configured vs. active** below |
+| `runtime.touch_type` | string | What the touch stack **actually did at startup**, set once after touch construction finishes. One of: the constructed controller key (e.g. `"xpt2046"`) when touch was built and started; `"none"` when touch was deliberately not built (disabled by config, or no screen fitted); `"failed"` when construction was attempted and raised. Polled before startup construction finishes, it reads `""` - the same early-poll caveat as `can_confirm_presence` under `GET /configure`. This is distinct from `screen.touch_type` (the persisted configuration), which changes the instant a `POST /screen/settings` saves it even though the running process has not restarted to pick it up yet |
 | `runtime.active` | bool | `true` when a non-no-op display path is open |
 | `runtime.backend` | string | Name of the currently active driver (e.g. `noop`, `adafruit_st7735s`) |
 | `runtime.backend_loaded` | bool | `true` once backend imports and hardware open succeeded |
@@ -615,7 +615,7 @@ Never returns secrets or provider artwork URLs.
 **Supported profiles.** `supported` is the catalogue of display profiles this dial
 firmware knows how to drive. `key` is the opaque value a client sends back in
 `screen.screen_type` to select that profile; `text` is a display label for presenting the
-choice to a user. **Both `key` and `text` are opaque to clients** — clients must not parse
+choice to a user. **Both `key` and `text` are opaque to clients** - clients must not parse
 either string for meaning (e.g. extracting dimensions from the label), and must render
 only what the dial itself published in `supported`. Sorting the list by `text` for
 presentation is fine; inferring structure from its contents is not.
@@ -623,7 +623,7 @@ presentation is fine; inferring structure from its contents is not.
 **Configured vs. active.** `screen.screen_type`/`screen.bgr` are the persisted
 configuration; `runtime.screen_type`/`runtime.bgr` are what the display manager currently
 has open. These normally match. They can diverge when a live profile swap fails to open
-the new panel — see **Apply-then-persist** under `POST /screen/settings` below — in which
+the new panel - see **Apply-then-persist** under `POST /screen/settings` below - in which
 case `runtime` keeps reporting the last-known-working (degraded or previous) state while
 `screen` reflects what is actually persisted on disk. Clients can compare
 `screen.screen_type` with `runtime.screen_type` to detect this drift. `runtime.backend`
@@ -632,23 +632,23 @@ names the driver currently active for `runtime.screen_type` (e.g. `adafruit_st77
 
 **Capability gate.** `screen_type` and `bgr` are a single joint capability, advertised by
 the presence of a non-empty `supported` array in this response. See **Capability gate /
-compatibility** under `POST /screen/settings` below — this is the cross-firmware-version
+compatibility** under `POST /screen/settings` below - this is the cross-firmware-version
 contract clients must follow before ever sending `screen.screen_type` or `screen.bgr`.
 
 **Touch capability gate.** `supported_touch` is a **separate capability from `supported`**.
 A dial can advertise display profiles in `supported` while knowing nothing at all about
-touch — its firmware may predate touch support entirely. A client must not send
+touch - its firmware may predate touch support entirely. A client must not send
 `screen.touch_type` to a dial that did not advertise a non-empty `supported_touch` array,
-and must not infer touch support from the presence (or non-emptiness) of `supported` — the
+and must not infer touch support from the presence (or non-emptiness) of `supported` - the
 two capabilities are independent and must be checked independently. Sending `touch_type` to
 firmware that never advertised `supported_touch` hits the same strict field whitelist
 described under **Capability gate / compatibility** below, and rejects the **entire**
-request with `invalid_screen_settings` — including any otherwise-valid `fitted`/`rotate`
+request with `invalid_screen_settings` - including any otherwise-valid `fitted`/`rotate`
 changes bundled in the same request.
 
 ### `POST /screen/settings`
 
-Accepts the **complete** normalized screen settings object — this endpoint does not apply
+Accepts the **complete** normalized screen settings object - this endpoint does not apply
 partial patches. PIN behavior follows existing `POST /configure` semantics: if a dial PIN
 is set, the request must include the current PIN in `current_pin`.
 
@@ -665,7 +665,7 @@ is set, the request must include the current PIN in `current_pin`.
 }
 ```
 
-Successful response — request changed `touch_type` from `"none"` to `"xpt2046"`, and a
+Successful response - request changed `touch_type` from `"none"` to `"xpt2046"`, and a
 restart was actually fired for it:
 
 ```json
@@ -698,42 +698,42 @@ restart was actually fired for it:
 }
 ```
 
-(`runtime.touch_type` in this example still reads `"none"` — the previously-running
-state — because the touch controller change does not apply live; see **`restart_required`**
+(`runtime.touch_type` in this example still reads `"none"` - the previously-running
+state - because the touch controller change does not apply live; see **`restart_required`**
 below. The `restarting: true` field means the dial has already begun restarting its own
 service by the time this response arrives; poll `GET /screen/settings` afterwards to see
 `runtime.touch_type` reflect `"xpt2046"`.)
 
 `restart_required` reports whether **this specific POST** requires a dial service restart
-before it is fully applied. `fitted`, `rotate`, `screen_type`, and `bgr` all apply live —
+before it is fully applied. `fitted`, `rotate`, `screen_type`, and `bgr` all apply live -
 the dial starts, stops, or swaps the current display provider internally, with no restart
 needed for any of them. `touch_type` is the one exception: the touch stack (driver, filter,
 state machine) is built once at dial process startup from the persisted controller choice,
 so a `touch_type` change is saved immediately but has no live effect until the dial process
 restarts. `restart_required` is `true` exactly when the request changed `touch_type` from
 its previously-persisted value, and `false` otherwise. Its meaning is unchanged by the
-self-restart behaviour described next — it still reports what this POST requires, not
+self-restart behaviour described next - it still reports what this POST requires, not
 whether a restart has been triggered.
 
 **Self-restart on `touch_type` change.** The dial does not wait for an operator to restart
 it: whenever `restart_required` is `true`, it fires its own service restart immediately
 after this response has been sent, so the new `touch_type` takes effect without further
-action. Measured restart time on real hardware is 8–11 seconds; the dial's HTTP API and
+action. Measured restart time on real hardware is 8-11 seconds; the dial's HTTP API and
 volume path are unavailable for that window.
 
 To let a client show this without polling blind, a second field, `restarting`, is present
 **only when a restart is actually being fired for this request**:
 
-- `restarting: true` — present when `restart_required` is `true` and the restart was
+- `restarting: true` - present when `restart_required` is `true` and the restart was
   triggered.
 - `restarting` is **absent** (not sent as `false`) whenever no restart fires for this
-  request — either because `touch_type` did not change (`restart_required: false`), or
+  request - either because `touch_type` did not change (`restart_required: false`), or
   because it did change but a self-restart already fired within the last 60 seconds and
   this one was refused. The dial allows at most one self-triggered restart per 60 seconds
   and logs a refusal at `WARNING`; the floor exists because `POST /screen/settings` is
   unauthenticated whenever no PIN is configured, and an unauthenticated, unthrottled restart
   trigger would otherwise be a denial-of-service vector. A refused restart still returns
-  `restart_required: true` and `ok: true` — the setting is saved either way — but without
+  `restart_required: true` and `ok: true` - the setting is saved either way - but without
   `restarting`, so a client should not assume the dial is about to become unreachable.
 
 `restarting` never appears when `restart_required` is `false` or absent (the
@@ -746,31 +746,31 @@ This is the cross-version contract between clients and dial firmware:
 - A client **must not** send `screen.screen_type` or `screen.bgr` to a dial that did not
   advertise a non-empty `supported` array. Older firmware validates `screen` against a
   strict field whitelist and rejects the **entire** request with HTTP `400`
-  `invalid_screen_settings` if either field is present — including otherwise-valid
+  `invalid_screen_settings` if either field is present - including otherwise-valid
   `fitted`/`rotate` changes bundled in the same request.
 - Conversely, newer firmware accepts a request that omits both `screen_type` and `bgr`
   (they are optional and default), so an older client that only ever sends
   `fitted`/`rotate` keeps working unchanged against newer dials.
 
-`touch_type` follows the identical rule as its **own, separate** capability — see **Touch
+`touch_type` follows the identical rule as its **own, separate** capability - see **Touch
 capability gate** above: gate on `supported_touch`, not on `supported`.
 
 **Validation:**
 
-- `fitted` must be a strict JSON boolean — `0`, `1`, `"true"`, and `"false"` are rejected.
+- `fitted` must be a strict JSON boolean - `0`, `1`, `"true"`, and `"false"` are rejected.
 - `rotate` is optional and defaults to `false` when omitted; when present it must also be a
   strict JSON boolean.
 - `bgr` is optional and defaults to `false` when omitted; when present it must also be a
   strict JSON boolean.
 - `screen_type` is optional and defaults to the dial's default profile when omitted; when
   present it must be a string naming a profile key present in `supported`. An unknown
-  value is rejected outright — it is never silently coerced to the default.
+  value is rejected outright - it is never silently coerced to the default.
 - `touch_type` is optional and defaults to `"none"` when omitted; when present it must be a
   string naming a controller key present in `supported_touch`. An unknown value is rejected
   outright, the same as `screen_type`.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
-  support them — see the capability gates above) returns HTTP `400`:
+  support them - see the capability gates above) returns HTTP `400`:
   ```json
   {"ok": false, "error": "invalid_screen_settings"}
   ```
@@ -786,7 +786,7 @@ capability gate** above: gate on `supported_touch`, not on `supported`.
 written to disk, and is persisted only if the apply succeeded:
 
 - `fitted`, `rotate`, and `bgr` can never fail to apply, so they are always persisted
-  regardless of runtime outcome — this part of the ordering is unchanged from before.
+  regardless of runtime outcome - this part of the ordering is unchanged from before.
 - If a `screen_type` change is requested while `fitted` is true and the new panel driver
   fails to open, the response is:
   ```json
@@ -803,10 +803,10 @@ written to disk, and is persisted only if the apply succeeded:
   a broken panel every time.
 - `restart_required` is omitted from the `screen_apply_failed` response body (it is only
   present on the `ok: true` path). `screen_type` changes themselves are always applied
-  live, without a process restart, whether they succeed or fail — apply-then-persist
+  live, without a process restart, whether they succeed or fail - apply-then-persist
   gating is specific to `screen_type` and does not apply to `touch_type` (a `touch_type`
   change can never fail to "apply" in this sense, since it does nothing live at all; it is
-  always persisted, and its effect is deferred to the next restart — see `restart_required`
+  always persisted, and its effect is deferred to the next restart - see `restart_required`
   above).
 
 ---

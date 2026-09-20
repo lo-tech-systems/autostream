@@ -238,7 +238,7 @@ This ordering matters:
   that polling clients can display the current effective gain without needing to
   track whether auto-trim is on or off.
 - Shutdown: the control server must `shutdown()` its listening socket before
-  `close()` — on Linux, `close()` alone does not wake a thread blocked in
+  `close()` - on Linux, `close()` alone does not wake a thread blocked in
   `accept()`. Without this, a SIGTERM stop hangs until systemd escalates to
   SIGKILL after its stop timeout.
 - The FIFO write end requests a 1 MiB pipe buffer (`F_SETPIPE_SZ`) every
@@ -268,7 +268,7 @@ Requires `--test-hooks`; rejected at startup otherwise. Pins the SRC ratio to
 the nominal value published at capture start (exactly 1.0 on a loopback whose
 capture rate equals the 48000 Hz output rate), disabling rate-drift
 correction entirely. This makes the whole audio pipeline a pure function of
-the input samples, which golden-reference byte-compare testing depends on —
+the input samples, which golden-reference byte-compare testing depends on -
 without it, the `RateEstimator`'s timing-adaptive ratio makes output
 non-deterministic run-to-run (first divergence roughly 0.5 s into otherwise
 identical runs). Never set in production: drift correction is a core product
@@ -290,7 +290,7 @@ The daemon uses `std::atomic<double>` in hot paths: the `RateEstimator`'s
 published ratio/rate (updated at most every 10 s) and the `_stall_since`
 stall trackers written once per audio block on the process thread. On
 32-bit ARMv6 these 8-byte atomics could fall back to a libatomic lock
-table — a hidden lock on the audio thread. This is closed as a non-issue
+table - a hidden lock on the audio thread. This is closed as a non-issue
 by product policy: **the monitor only ships on 64-bit OS** (32-bit is
 supported solely for autostream-dial, which does not include
 `autostream_monitor`). Verified on aarch64 (Debian 13, g++ 14):

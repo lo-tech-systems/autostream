@@ -677,10 +677,10 @@ Behavior:
 - the WAV file is opened immediately and a 44-byte placeholder header is written
 - audio frames are tapped after all processing (SRC, per-input gain/EQ,
   mixing, output EQ, output gain, auto-trim) and after float-to-`int32`
-  conversion — the same 32-bit internal representation the output stage also
+  conversion - the same 32-bit internal representation the output stage also
   feeds to the FIFO in native mode
 - **the dump always records this 32-bit representation, in BOTH `--compatible`
-  and native mode** — it documents the internal DSP output, not the wire. In
+  and native mode** - it documents the internal DSP output, not the wire. In
   `--compatible` mode the FIFO itself is narrowed to 16-bit, but the dump tap
   sits upstream of that narrowing, so the WAV file stays a 32-bit container
   and the sample RATE follows the active output descriptor: `48000` Hz / 2ch /
@@ -694,7 +694,7 @@ Behavior:
 - pre-fill frames (the 0.5 s buffer the output stage accumulates whenever the
   stream starts writing from idle) are captured; the WAV starts from audio
   time zero
-- recording continues across silence gaps and FIFO stalls — it stops only when
+- recording continues across silence gaps and FIFO stalls - it stops only when
   `stop_output_dump` is called or the daemon shuts down
 - a bounded in-memory ring (≈ 2.97 s) decouples the audio thread from disk I/O;
   if the ring fills (e.g. a sustained disk stall), frames are dropped and counted
@@ -981,6 +981,11 @@ Success response:
   "fifo":{
     "stalled_seconds":0.0
   },
+  "underruns":{
+    "live1":0,
+    "live2":0,
+    "replay":0
+  },
   "repeat":{
     "enabled":true,
     "armed":true,
@@ -1017,6 +1022,8 @@ Success response:
       "effective_peak_dbfs":-9.1,
       "started":true,
       "running":true,
+      "capture_overruns":0,
+      "capture_ring_drops":0,
       "vu_history":{
         "bin_ms":100,
         "latest_seq":42,
@@ -1104,6 +1111,17 @@ Top-level fields:
     growing value with an active capture/replay session means bytes are not
     reaching the reader even though the monitor itself is alive and
     responding to `get_status`
+- `underruns`
+  - cumulative count, since daemon start, of output frames that had to be
+    padded with silence because a mixer source came up short at mix time, one
+    field per source: `live1`, `live2`, `replay`
+  - a source underruns when its ring is empty when the output stage assembles
+    the next block, so the missing frames are filled with silence rather than
+    real audio; the value is frame counts, not events
+  - use it to tell playback-time starvation (a rising `replay` or `liveN`
+    here) apart from audio lost earlier at capture (the per-input
+    `capture_overruns`/`capture_ring_drops` below); a clean session leaves all
+    three flat
 - `repeat`
   - snapshot of the "repeat" feature's state (record + replay + the
     live-interrupt crossfade trigger)
@@ -1216,6 +1234,19 @@ Per-input fields:
     the configured playback stop timeout (typically 30 s); `track_change_seq`
     fires on much shorter gaps while playback remains active
   - field is absent on older monitor builds; Python defaults a missing field to `0`
+- `capture_overruns`
+  - cumulative count, since daemon start, of capture periods lost to a
+    recovered ALSA overrun on this input: the capture thread was not scheduled
+    in time to read a period, so the device overran and those input samples are
+    gone. Unrecoverable, upstream of everything else
+- `capture_ring_drops`
+  - cumulative count, since daemon start, of capture periods this input dropped
+    because its process thread fell behind and the capture-to-process ring was
+    full; the period is discarded rather than allowed to force an ALSA overrun
+  - together these two are the capture-side loss counters: non-zero here means
+    audio was lost as it was recorded, which (unlike the output-side
+    `underruns`) no downstream buffer can recover
+  - fields are absent on older monitor builds; Python defaults a missing field to `0`
 - `vu_history`
   - rolling stereo peak history for driving a delayed VU meter display
   - `bin_ms`: bin duration in milliseconds (always `100`)

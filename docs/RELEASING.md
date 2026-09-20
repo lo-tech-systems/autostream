@@ -25,7 +25,7 @@ Ordering: `alpha.N < beta.N < rc.N < final` within any given `MAJOR.MINOR.PATCH`
 4. Leave **Set as a pre-release** unchecked.
 5. Publish.
 
-Both stable-channel and dev-channel appliances may receive the new release — it is the newest at `/releases/latest` and the newest non-draft at `/releases?per_page=1`.
+Both stable-channel and dev-channel appliances may receive the new release - it is the newest at `/releases/latest` and the newest non-draft at `/releases?per_page=1`.
 
 ---
 
@@ -43,7 +43,7 @@ Only dev-channel appliances see this release. Stable-channel appliances query `/
 
 ## Promoting a pre-release to stable
 
-Publish a new GitHub Release for the final `MAJOR.MINOR.PATCH` tag (without the pre-release suffix), leaving **Set as a pre-release** unchecked. Do not edit the existing pre-release — create a new Release.
+Publish a new GitHub Release for the final `MAJOR.MINOR.PATCH` tag (without the pre-release suffix), leaving **Set as a pre-release** unchecked. Do not edit the existing pre-release - create a new Release.
 
 ---
 
@@ -56,7 +56,7 @@ Draft releases are not returned by the GitHub releases API to unauthenticated ca
 ## Pi appliance verification
 
 The checks below are for maintainers publishing a release. They need a running
-test appliance and are not part of building or contributing to autostream — if
+test appliance and are not part of building or contributing to autostream - if
 you are not publishing, you can stop here.
 
 Before tagging a release, verify on a test appliance:

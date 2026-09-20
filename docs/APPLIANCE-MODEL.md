@@ -64,16 +64,16 @@ on the dial device and are not counted here.) Core always-running units:
 
 | Path | Change |
 |---|---|
-| `/etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf` | `HandlePowerKey=ignore` — suppresses USB-enumeration spurious power-key events that would otherwise shut down an unattended Pi. Disables physical power-button shutdown system-wide. |
+| `/etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf` | `HandlePowerKey=ignore` - suppresses USB-enumeration spurious power-key events that would otherwise shut down an unattended Pi. Disables physical power-button shutdown system-wide. |
 | `/etc/systemd/journald.conf.d/99-autostream-storage.conf` | Caps journal at 128 MB / 14-day retention. |
 | `/etc/sudoers.d/autostream_updater`, `autostream_admin` | Passwordless root for targeted update, reboot, and network-reconfiguration commands. |
 | `/etc/logrotate.d/autostream` | Rotates `/var/log/autostream/`. |
 | `/etc/cloud/cloud.cfg.d/` | Disables cloud-init management of `/etc/hosts` (if cloud-init present) to prevent it overwriting the `autostream.local` hostname entry on each boot. |
-| `/etc/cloud/cloud-init.disabled` | Disables cloud-init's per-boot stage entirely (if cloud-init present). Its provisioning job is complete by the time the installer runs, and the per-boot stage costs a large fraction of every boot — including the automatic post-update reboot. Created as an empty root-owned flag file, the supported alternative to purging the package. Not reversed on uninstall. |
-| `/etc/sysctl.d/90-autostream-swappiness.conf` | `vm.swappiness=20` — biases the small-RAM appliance towards zram absorbing pressure spikes rather than hosting working set. Not reversed on uninstall. |
+| `/etc/cloud/cloud-init.disabled` | Disables cloud-init's per-boot stage entirely (if cloud-init present). Its provisioning job is complete by the time the installer runs, and the per-boot stage costs a large fraction of every boot - including the automatic post-update reboot. Created as an empty root-owned flag file, the supported alternative to purging the package. Not reversed on uninstall. |
+| `/etc/sysctl.d/90-autostream-swappiness.conf` | `vm.swappiness=20` - biases the small-RAM appliance towards zram absorbing pressure spikes rather than hosting working set. Not reversed on uninstall. |
 | `rpi-zram-writeback.timer` (masked) | Masked with `systemctl mask --now`: the timer writes compressed zram pages out to microSD, which is pure card wear for this workload. Masking persists even if a later package installs the timer. Not reversed on uninstall. |
 | `MALLOC_ARENA_MAX=2` | Set in the `autostream.service` and `autostream_bluetooth.service` units, capping glibc's per-thread malloc arenas on the two Python daemons. |
-| Removed packages | `modemmanager` and `udisks2` are removed when present — no modem hardware and no removable-storage workflow on the appliance. Presence-guarded and best-effort; not reinstalled on uninstall. |
+| Removed packages | `modemmanager` and `udisks2` are removed when present - no modem hardware and no removable-storage workflow on the appliance. Presence-guarded and best-effort; not reinstalled on uninstall. |
 
 ---
 
