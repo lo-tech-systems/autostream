@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- change: the audio monitor logs a memory line at info level every 5 minutes
+  while an input is capturing and hourly when idle, and once when a capture
+  session ends: resident, peak and locked size, heap in use and held by the
+  allocator, malloc arenas, the repeat arena's chunks, capturing inputs,
+  system available memory and swap in use. The monitor runs at warning level
+  by default, so raise it to info (`set_log_level` over the control socket,
+  or `--log-level info`) to see the line
 - change: the web UI now prompts for an AirPlay PIN whenever the playback
   backend reports that an output is asking for a PIN, not only when the user
   has just switched it on. This matters for HomePods grouped behind an Apple

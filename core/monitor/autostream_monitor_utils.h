@@ -473,6 +473,57 @@ bool logger_test_wait_drained(int timeout_ms = 1000);
 
 
 // =============================================================================
+// Memory usage snapshot
+//
+// A self-contained facility (no dependency on the repeat feature's own
+// /proc/meminfo reader in autostream_repeat.cpp) for the periodic
+// memory-usage log line: process RSS/peak/locked from /proc/self/status,
+// system-wide available/swap from /proc/meminfo, and glibc heap/arena
+// figures from mallinfo2()/malloc_info(). Kept here, rather than in
+// autostream_repeat.cpp, so it is reachable from AudioMonitor (which has no
+// repeat-specific dependency) and from a test binary that links only this
+// translation unit.
+// =============================================================================
+
+struct MemorySnapshot
+{
+    unsigned long rss_kib            = 0;  // /proc/self/status VmRSS
+    unsigned long hwm_kib            = 0;  // /proc/self/status VmHWM (peak RSS)
+    unsigned long lck_kib            = 0;  // /proc/self/status VmLck (mlockall'd)
+    unsigned long mem_available_kib  = 0;  // /proc/meminfo MemAvailable
+    unsigned long swap_used_kib      = 0;  // /proc/meminfo SwapTotal - SwapFree
+    unsigned long heap_inuse_bytes   = 0;  // mallinfo2(): uordblks + hblkhd
+    unsigned long heap_held_bytes    = 0;  // mallinfo2(): arena + hblkhd
+    int           malloc_arenas      = -1; // malloc_info() "<heap nr=" count; -1 if unavailable
+};
+
+// Populates a MemorySnapshot from /proc/self/status, /proc/meminfo, and
+// glibc's mallinfo2()/malloc_info(). Returns false only if /proc/self/status
+// could not be opened (a non-Linux host, or a sandboxed process without
+// /proc) -- every other source is best-effort, and a missing/unparseable
+// field is simply left at its zero-initialised default rather than failing
+// the whole call. Safe to call from any thread: it touches no shared
+// process state beyond the read-only kernel interfaces and glibc's own
+// internal locking inside mallinfo2()/malloc_info().
+bool read_memory_snapshot(MemorySnapshot& out);
+
+// Pure formatter for the periodic memory-usage log line -- factored out of
+// AudioMonitor::log_memory_line() so the exact wording is unit-testable
+// without a running daemon. arena_chunks/arena_spare/arena_target/
+// chunk_bytes are RepeatController::arena_stats()'s outputs; capturing_inputs
+// is the count of InputChannel objects currently capturing. reason, when
+// non-null and non-empty, is appended as " - <reason>" (used for the
+// end-of-capture-session line; the periodic cadence line passes nullptr).
+std::string format_memory_line(const MemorySnapshot& m,
+                                size_t                arena_chunks,
+                                size_t                arena_spare,
+                                size_t                arena_target,
+                                size_t                chunk_bytes,
+                                int                   capturing_inputs,
+                                const char*           reason);
+
+
+// =============================================================================
 // CLI --help text
 // =============================================================================
 

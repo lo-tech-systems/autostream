@@ -156,6 +156,48 @@ def test_monitor_utils(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# test_monitor_memory — memory-usage snapshot facility (format_memory_line(),
+# read_memory_snapshot()). Same link line as test_monitor_utils: needs only
+# libsamplerate (autostream_monitor_utils.h) and libpthread.
+# ---------------------------------------------------------------------------
+
+@SKIP_PLATFORM
+@SKIP_NO_GPP
+def test_monitor_memory(tmp_path):
+    """format_memory_line() exact wording and read_memory_snapshot() basics."""
+    if not _have_samplerate():
+        pytest.skip("libsamplerate0-dev not installed (apt-get install libsamplerate0-dev)")
+
+    exe = tmp_path / "test_monitor_memory"
+    build = subprocess.run(
+        [
+            "g++", "-std=c++17", "-O2",
+            "-I", str(MONITOR_DIR),
+            str(TEST_DIR / "test_monitor_memory.cpp"),
+            str(MONITOR_DIR / "autostream_monitor_utils.cpp"),
+            "-lpthread",
+            "-o", str(exe),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert build.returncode == 0, (
+        f"test_monitor_memory build failed:\n{build.stderr}"
+    )
+
+    run = subprocess.run(
+        [str(exe)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert run.returncode == 0, (
+        f"test_monitor_memory failed:\n{run.stdout}\n{run.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # test_monitor_dsp — requires libasound2-dev, libsamplerate0-dev
 # ---------------------------------------------------------------------------
 

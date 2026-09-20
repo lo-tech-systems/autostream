@@ -852,7 +852,21 @@ AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabl
             _dump_writer,
             _repeat_controller
         );
+        // See InputChannel::set_session_end_hook()'s comment: this is the
+        // one place an InputChannel reaches back into AudioMonitor, via a
+        // callback rather than a stored reference, so InputChannel itself
+        // stays independent of AudioMonitor's existence (e.g. constructible
+        // directly by a test).
+        _inputs[i]->set_session_end_hook([this]() { log_memory_line("capture session ended"); });
     }
+
+    // Memory-usage log line cadence (see log_memory_line()/run()): start
+    // "already due" so the first line is emitted within the first minute of
+    // startup rather than waiting out a full 300 s/3600 s interval.
+    int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+    _memory_last_logged.store(now_s - MEMORY_LOG_INTERVAL_IDLE_SECONDS - 1,
+                               std::memory_order_relaxed);
 
     // Repeat feature: the values ReplayEngine needs to seed its own
     // TrackGapDetector, snapshotted once at each recording's
@@ -900,6 +914,29 @@ AudioMonitor::~AudioMonitor()
     stop();
 }
 
+void AudioMonitor::log_memory_line(const char* reason)
+{
+    MemorySnapshot snap;
+    read_memory_snapshot(snap);   // best-effort; a false return leaves snap zeroed
+
+    size_t arena_chunks = 0, arena_spare = 0, arena_target = 0, arena_chunk_bytes = 0;
+    _repeat_controller.arena_stats(arena_chunks, arena_spare, arena_target, arena_chunk_bytes);
+
+    int capturing_inputs = 0;
+    for (int i = 0; i < NUM_INPUTS; ++i)
+    {
+        if (_inputs[i] && _inputs[i]->is_capturing())
+            ++capturing_inputs;
+    }
+
+    LOG_INFO("%s", format_memory_line(snap, arena_chunks, arena_spare, arena_target,
+                                       arena_chunk_bytes, capturing_inputs, reason).c_str());
+
+    int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+    _memory_last_logged.store(now_s, std::memory_order_relaxed);
+}
+
 void AudioMonitor::run()
 {
     _running.store(true);
@@ -912,6 +949,12 @@ void AudioMonitor::run()
 
     LOG_INFO("[monitor] Ready on socket '%s'", _socket_path.c_str());
 
+    // Throttles the memory-line due-check below to once every
+    // MEMORY_LOG_CHECK_INTERVAL_SECONDS: the check itself is cheap (two
+    // timestamp reads and an is_capturing() scan), but there is no reason to
+    // run it on every 100 ms wake.
+    double next_memory_check_time = 0.0;
+
     // Main loop: poll for shutdown and auto-restart crashed inputs.
     while (_running.load() && !g_shutdown_requested)
     {
@@ -920,6 +963,34 @@ void AudioMonitor::run()
             std::unique_lock<std::mutex> lk(_run_cv_mutex);
             _run_cv.wait_for(lk, std::chrono::milliseconds(100),
                 [this]() { return !_running.load() || g_shutdown_requested != 0; });
+        }
+
+        // Periodic memory-usage log line: 300 s cadence while any input is
+        // capturing, 3600 s otherwise. See log_memory_line()/
+        // _memory_last_logged's own comments for the thread-safety argument
+        // (this call can interleave with a concurrent end-of-session call
+        // from an InputChannel's own process thread).
+        double loop_now = get_monotonic_time();
+        if (loop_now >= next_memory_check_time)
+        {
+            next_memory_check_time = loop_now + MEMORY_LOG_CHECK_INTERVAL_SECONDS;
+
+            bool any_capturing = false;
+            for (int i = 0; i < NUM_INPUTS; ++i)
+            {
+                if (_inputs[i] && _inputs[i]->is_capturing())
+                {
+                    any_capturing = true;
+                    break;
+                }
+            }
+            int interval = any_capturing ? MEMORY_LOG_INTERVAL_CAPTURING_SECONDS
+                                          : MEMORY_LOG_INTERVAL_IDLE_SECONDS;
+
+            int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (now_s - _memory_last_logged.load(std::memory_order_relaxed) >= interval)
+                log_memory_line(nullptr);
         }
 
         // Auto-recover any input whose capture thread self-stopped after an

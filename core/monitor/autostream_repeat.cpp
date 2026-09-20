@@ -1949,6 +1949,15 @@ std::string RepeatController::debug_dump_buffer(const std::string& path) const
 }
 #endif
 
+void RepeatController::arena_stats(size_t& chunks, size_t& spare, size_t& target, size_t& chunk_bytes) const
+{
+    std::lock_guard<std::mutex> lock(_repeat_mutex);
+    chunks      = _buffer.chunk_count();
+    spare       = _buffer.spare_chunk_count();
+    chunk_bytes = _buffer.chunk_bytes();
+    target      = (chunk_bytes > 0) ? (_arena_plan.arena_bytes / chunk_bytes) : 0;
+}
+
 RepeatStatus RepeatController::get_status() const
 {
     std::lock_guard<std::mutex> lock(_repeat_mutex);

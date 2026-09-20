@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -28,6 +29,7 @@
 #include <time.h>
 
 #include <fcntl.h>
+#include <malloc.h>
 
 
 // =============================================================================
@@ -714,6 +716,165 @@ bool logger_test_wait_drained(int timeout_ms)
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 }
+
+// =============================================================================
+// Memory usage snapshot
+// =============================================================================
+
+namespace
+{
+    // Parses one "<key><whitespace><digits>..." line, same shape as
+    // /proc/self/status and /proc/meminfo lines ("VmRSS:\t  1234 kB",
+    // "MemAvailable:    123456 kB"). Returns true iff `line` begins with
+    // `key`, regardless of whether the digits themselves went on to parse --
+    // so the caller can tell "this was the field" from "keep scanning". A
+    // malformed match (key present, no digits) leaves out_kib untouched.
+    // Deliberately independent of autostream_repeat_buffer.h's
+    // try_parse_kib_field() (same shape, kept local so this facility has no
+    // dependency on the repeat feature).
+    bool try_parse_kib_line(const std::string& line, const char* key, unsigned long& out_kib)
+    {
+        size_t key_len = std::strlen(key);
+        if (line.compare(0, key_len, key) != 0)
+            return false;
+
+        size_t pos = key_len;
+        while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos])))
+            ++pos;
+
+        size_t digits_start = pos;
+        while (pos < line.size() && std::isdigit(static_cast<unsigned char>(line[pos])))
+            ++pos;
+
+        if (pos == digits_start)
+            return true;  // key matched but no digits; malformed, leave out_kib as-is
+
+        out_kib = std::strtoul(line.substr(digits_start, pos - digits_start).c_str(), nullptr, 10);
+        return true;
+    }
+}
+
+bool read_memory_snapshot(MemorySnapshot& out)
+{
+    out = MemorySnapshot{};
+
+    // /proc/self/status: VmRSS/VmHWM/VmLck. This is the only source whose
+    // absence fails the whole call -- every other source below is
+    // best-effort and simply leaves its fields at 0/-1.
+    {
+        std::ifstream in("/proc/self/status");
+        if (!in.is_open())
+            return false;
+
+        std::string line;
+        bool have_rss = false, have_hwm = false, have_lck = false;
+        while (std::getline(in, line) && !(have_rss && have_hwm && have_lck))
+        {
+            if (!have_rss && try_parse_kib_line(line, "VmRSS:", out.rss_kib))
+                have_rss = true;
+            else if (!have_hwm && try_parse_kib_line(line, "VmHWM:", out.hwm_kib))
+                have_hwm = true;
+            else if (!have_lck && try_parse_kib_line(line, "VmLck:", out.lck_kib))
+                have_lck = true;
+        }
+    }
+
+    // /proc/meminfo: MemAvailable, SwapTotal, SwapFree. Best-effort -- an
+    // unreadable file leaves these fields at their zero defaults rather than
+    // failing the call.
+    {
+        std::ifstream in("/proc/meminfo");
+        if (in.is_open())
+        {
+            unsigned long swap_total_kib = 0, swap_free_kib = 0;
+            bool have_avail = false, have_total = false, have_free = false;
+            std::string line;
+            while (std::getline(in, line) && !(have_avail && have_total && have_free))
+            {
+                if (!have_avail && try_parse_kib_line(line, "MemAvailable:", out.mem_available_kib))
+                    have_avail = true;
+                else if (!have_total && try_parse_kib_line(line, "SwapTotal:", swap_total_kib))
+                    have_total = true;
+                else if (!have_free && try_parse_kib_line(line, "SwapFree:", swap_free_kib))
+                    have_free = true;
+            }
+            out.swap_used_kib = (swap_total_kib > swap_free_kib) ? (swap_total_kib - swap_free_kib) : 0;
+        }
+    }
+
+    // glibc heap accounting. mallinfo2() is the modern (non-overflowing,
+    // size_t-based) replacement for the deprecated mallinfo(); "in-use" is
+    // the sum of small-bin/allocated space (uordblks) and mmap'd large
+    // allocations (hblkhd), "held" adds the brk-arena space glibc has
+    // reserved but not yet returned to the OS (arena) to the same mmap'd
+    // total.
+    {
+        struct mallinfo2 mi = mallinfo2();
+        out.heap_inuse_bytes = static_cast<unsigned long>(mi.uordblks) + static_cast<unsigned long>(mi.hblkhd);
+        out.heap_held_bytes  = static_cast<unsigned long>(mi.arena)    + static_cast<unsigned long>(mi.hblkhd);
+    }
+
+    // malloc_info() writes an XML report (one "<heap nr=".. element per
+    // arena) to a FILE*; open_memstream() gives it an in-memory sink so no
+    // temp file is needed. Freed on every path, including if
+    // open_memstream() itself failed (free(nullptr) is a no-op).
+    {
+        char*  memstream_buf  = nullptr;
+        size_t memstream_size = 0;
+        FILE*  memstream = ::open_memstream(&memstream_buf, &memstream_size);
+        if (memstream)
+        {
+            if (::malloc_info(0, memstream) == 0)
+            {
+                std::fflush(memstream);  // updates memstream_buf/memstream_size
+                std::string content(memstream_buf, memstream_size);
+                int count = 0;
+                size_t pos = 0;
+                while ((pos = content.find("<heap nr=", pos)) != std::string::npos)
+                {
+                    ++count;
+                    pos += 9;
+                }
+                out.malloc_arenas = count;
+            }
+            std::fclose(memstream);
+        }
+        std::free(memstream_buf);
+    }
+
+    return true;
+}
+
+std::string format_memory_line(const MemorySnapshot& m,
+                                size_t                arena_chunks,
+                                size_t                arena_spare,
+                                size_t                arena_target,
+                                size_t                chunk_bytes,
+                                int                   capturing_inputs,
+                                const char*           reason)
+{
+    const unsigned long rss_mib         = m.rss_kib / 1024;
+    const unsigned long peak_mib        = m.hwm_kib / 1024;
+    const unsigned long locked_mib      = m.lck_kib / 1024;
+    const unsigned long heap_inuse_mib  = m.heap_inuse_bytes / (1024UL * 1024UL);
+    const unsigned long heap_held_mib   = m.heap_held_bytes / (1024UL * 1024UL);
+    const unsigned long arena_mib       = static_cast<unsigned long>(arena_chunks + arena_spare)
+                                         * static_cast<unsigned long>(chunk_bytes) / (1024UL * 1024UL);
+    const unsigned long available_mib   = m.mem_available_kib / 1024;
+    const unsigned long swap_mib        = m.swap_used_kib / 1024;
+
+    std::ostringstream oss;
+    oss << "[monitor] memory: rss " << rss_mib << " MiB (peak " << peak_mib
+        << ", locked " << locked_mib << "), heap in-use " << heap_inuse_mib
+        << " MiB held " << heap_held_mib << " MiB arenas " << m.malloc_arenas
+        << ", repeat arena " << arena_chunks << "+" << arena_spare << "/" << arena_target
+        << " chunks (" << arena_mib << " MiB), capturing " << capturing_inputs
+        << ", system available " << available_mib << " MiB, swap used " << swap_mib << " MiB";
+    if (reason != nullptr && reason[0] != '\0')
+        oss << " - " << reason;
+    return oss.str();
+}
+
 
 // =============================================================================
 // CLI --help text

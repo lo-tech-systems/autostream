@@ -1660,6 +1660,8 @@ void InputChannel::handle_session_edges(bool   should_capture,
         _last_notify_capture_started_time = 0.0;
         LOG_INFO("[input%d] Capture session stopped (silence=%.1f s)",
                  _index, now - _last_above_threshold_time);
+        if (_session_end_hook)
+            _session_end_hook();
     }
     else if (should_capture && _capturing.load())
     {

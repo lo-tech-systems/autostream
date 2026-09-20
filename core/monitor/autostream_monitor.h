@@ -2384,6 +2384,16 @@ public:
 
     RepeatStatus get_status() const;
 
+    // Snapshot of the repeat arena's chunk accounting, for the periodic
+    // memory-usage log line (see AudioMonitor::log_memory_line()). Locks
+    // _repeat_mutex briefly and only reads _buffer/_arena_plan -- it does
+    // not call anything else that takes _repeat_mutex, so it is safe to call
+    // from any thread, including the audio-adjacent thread that calls
+    // notify_capture_stopped() (never nested under that same lock). target
+    // is the same (_arena_plan.arena_bytes / _buffer.chunk_bytes()) figure
+    // maybe_build_arena() computes internally; 0 if chunk_bytes() is 0.
+    void arena_stats(size_t& chunks, size_t& spare, size_t& target, size_t& chunk_bytes) const;
+
     // ── Callbacks from ReplayEngine (its own thread); each takes _repeat_mutex ──
     // Fade completed (disarm) or the write path hit a hard error: both
     // land the controller back in HOLD with the buffer retained, flip
@@ -2863,6 +2873,12 @@ public:
 
     bool is_running() const { return _running.load(); }
 
+    // Lock-free, safe from any thread -- used by AudioMonitor::
+    // log_memory_line() (which may run on either input's own process thread,
+    // via the end-of-session hook, or on the main thread's periodic check)
+    // to count currently-capturing inputs without touching _status_mutex.
+    bool is_capturing() const { return _capturing.load(std::memory_order_relaxed); }
+
     // Returns true if this channel is currently allowed to write to the shared
     // FIFO (i.e. set_allow_capture(true) has been called and set_allow_capture(false)
     // has not yet been called).  Used by AudioMonitor to decide whether stopping
@@ -2955,6 +2971,15 @@ public:
     // this setter itself has no gate of its own, by design -- one gate,
     // checked once, is simpler to audit than two.
     void debug_inject_capture_failure() { _debug_fail_injected.store(true, std::memory_order_relaxed); }
+
+    // Installed by AudioMonitor at construction time so handle_session_edges()
+    // can trigger the memory-usage log line's end-of-session variant without
+    // InputChannel needing a back-reference to AudioMonitor (this is its only
+    // reference to anything outside its own constructor arguments). Called on
+    // this input's own process thread, on the _capturing true->false edge --
+    // the hook itself (AudioMonitor::log_memory_line()) must be safe to call
+    // from any thread; see that method's own comment.
+    void set_session_end_hook(std::function<void()> hook) { _session_end_hook = std::move(hook); }
 
     // Copy the most recent min(max_frames, ID_BUF_FRAMES) mono s16le 16000 Hz
     // frames into out[0..return_value-1], ordered oldest-first.  Returns the
@@ -3094,6 +3119,12 @@ private:
     OutputProcessor&  _output_processor;
     OutputDumpWriter& _dump_writer;
     RepeatController& _repeat_controller;
+
+    // Optional hook, set via set_session_end_hook() -- see that setter's
+    // comment. Empty by default so a test-constructed InputChannel with no
+    // AudioMonitor around it behaves exactly as before (checked-and-skipped
+    // on the capturing true->false edge in handle_session_edges()).
+    std::function<void()> _session_end_hook;
 
     // ── Per-input EQ (owned by this channel) ─────────────────────────────────
     // set_eq() publishes new bands via EqChain::set_bands().  The process thread
@@ -3587,6 +3618,29 @@ public:
     // Returns an error ack if test hooks are not enabled or input is invalid.
     std::string api_debug_fail_input(int input_index);
 
+    // Emits one periodic memory-usage LOG_INFO line: a MemorySnapshot (RSS/
+    // heap/system-available/swap), the repeat controller's arena_stats(),
+    // and a count of currently-capturing inputs, formatted by
+    // format_memory_line() (autostream_monitor_utils.h). reason is passed
+    // straight through to format_memory_line() -- nullptr for the periodic
+    // cadence line run() emits, a short string (e.g. "capture session
+    // ended") for the end-of-session line InputChannel triggers via its
+    // session-end hook.
+    //
+    // Thread-safety: called from run() (the main thread) AND, via the
+    // per-input session-end hook installed in the constructor, from
+    // whichever InputChannel's own process thread just ended a capture
+    // session -- so this method itself must never touch AudioMonitor state
+    // without synchronisation beyond what its callees already provide. It
+    // touches only: read_memory_snapshot() (no shared state), each
+    // InputChannel's is_capturing() (a relaxed atomic), and
+    // _repeat_controller.arena_stats() (briefly locks _repeat_mutex,
+    // release()d before this method calls anything else) -- so two
+    // concurrent calls (one from run(), one from a session-end hook) can
+    // safely interleave freely. _memory_last_logged is a
+    // std::atomic<int64_t> for the same reason: both call sites write it.
+    void log_memory_line(const char* reason);
+
 #ifdef AUTOSTREAM_REPEAT_TEST_HOOKS
     // Test-only socket command ({"type":"debug_dump_repeat_buffer","path":...});
     // see RepeatController::debug_dump_buffer(). Never compiled into the
@@ -3658,4 +3712,17 @@ private:
     // that shutdown latency is not bounded by the 100 ms watchdog interval.
     std::mutex              _run_cv_mutex;
     std::condition_variable _run_cv;
+
+    // ── Periodic memory-usage log line ───────────────────────────────────────
+    // Cadence: 300 s while any input is capturing, 3600 s otherwise (checked
+    // once every 60 s in run(), cheap timestamp comparisons only). Seconds
+    // since epoch (steady_clock's own epoch, consistent within one process
+    // run -- never compared across a restart), std::atomic because both
+    // run() (main thread) and InputChannel's session-end hook (a process
+    // thread) write it. Initialised to "already due" (see the constructor)
+    // so the very first line is emitted within the first minute of startup.
+    std::atomic<int64_t> _memory_last_logged{0};
+    static constexpr int MEMORY_LOG_INTERVAL_CAPTURING_SECONDS    = 300;
+    static constexpr int MEMORY_LOG_INTERVAL_IDLE_SECONDS         = 3600;
+    static constexpr int MEMORY_LOG_CHECK_INTERVAL_SECONDS        = 60;
 };
