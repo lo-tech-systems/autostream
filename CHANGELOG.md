@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: the installer always builds the SD card health tool at a pinned
+  upstream version and installs its units; `--sdmon=<method>` only enables
+  the daily timer, the choice is preserved across updates, and an update
+  rebuilds the tool when the pinned version changes. A check switched on
+  outside the installer is no longer switched off by an update.
 - feat: the audio monitor now produces one continuous output stream. Live
   inputs and the repeat replay feed a single output stage that mixes them
   with gain ramps and writes the FIFO from one place, instead of two

@@ -54,7 +54,7 @@ on the dial device and are not counted here.) Core always-running units:
 | `vibra-mini.service` | Optional Shazam fingerprinting daemon (if track ID enabled). |
 | `autostream_dial.service` | Optional GPIO rotary encoder/button daemon (if dial hardware installed). |
 | `autostream_updater.timer` | Optional weekly auto-update (Monday 03:00 UTC + jitter); disabled by default. Temporarily stops the watchdog daemon during package installation. |
-| `autostream_sdcardhealth.service` | Daily one-shot (if `--sdmon` enabled): runs `sdmon` against `/dev/mmcblk0`, writes remaining endurance % to `/var/lib/autostream/sdcardhealth.json`. |
+| `autostream_sdcardhealth.service` | Daily one-shot, always installed, timer enabled by `--sdmon=<method>` (saved and preserved by `--update`): runs `sdmon` against `/dev/mmcblk0`, writes remaining endurance % to `/var/lib/autostream/sdcardhealth.json`. Enable only for cards the tool supports. |
 | `autostream_storage_guard.service` | Daily one-shot (04:00 UTC + jitter; `Nice=10`, `IOSchedulingClass=idle`). Classifies free space into four tiers (normal ≥1 GiB/15%; warning ≥512 MiB/8%; critical ≥128 MiB/3%; emergency <128 MiB/3%) and runs escalating cleanup: logrotate → `apt autoclean` → journal vacuum → archive deletion → coredump deletion. Also enforces a **log-level ceiling** on the application via `PUT /api/log-level`: lowers to `info` at warning, `warning` at critical/emergency, and lowers to `warning` when SD card endurance < 20%. Restores the original level when conditions clear. Diagnostic levels (`debug`, `spam`) expire to `info` after 48 h; `info` expires to `warning` after 168 h regardless of disk state. Skips if playing or an update lock is held. State: `/var/lib/autostream/storage-guard.json`. |
 
 ---

@@ -23,12 +23,13 @@
 #   Skips Continue Y/N prompt and sets the PIN to the value specified.
 #   Falls back to attended mode if PIN is not specified.
 #
-# --sdmon=[auto|sandisk|adata|transcend|micron|swissbit|2step]
-#   Enable sdmon (SD Card Monitoring) with the specified method.
-#   IMPORTANT: This should only be used with supported cards, generally
-#              industrial-grade cards from those manufacturers, for example
-#              the Sandisk SDSDQAF3-008G-I. sdmon may cause consumer-grade
-#              cards to go offline.
+# --sdmon=[auto|sandisk|adata|transcend|micron|swissbit|2step|innodisk]
+#   Enable the daily SD card health check with the specified query method.
+#   The sdmon tool and its systemd units are always installed; this flag
+#   only enables the timer. The choice is saved and preserved by --update.
+#   IMPORTANT: Enable only for supported cards, generally industrial-grade
+#              cards from the listed manufacturers. Querying a consumer-grade
+#              card can take it offline until the next power cycle.
 #
 # --fetch-autostream
 #   Clone or update the Autostream repository from GitHub.
@@ -108,6 +109,9 @@ INSTALL_MODE="install"           # install | update
 UNATTENDED=0
 PIN_VALUE=""
 SDMON_METHOD=""
+# Upstream sdmon commit the installer builds; the built version is recorded
+# in ${STAMP_DIR}/sdmon-version so an update rebuilds only when this changes.
+SDMON_GIT_REF="8a70aed673f4b319972b3a2cfac043e3b171653a"
 FETCH_AUTOSTREAM=0
 OWNTONE_MODE="mini"
 PROMPT_REBOOT_ON_EXIT=0
@@ -158,7 +162,7 @@ EOF
 #############################################
 is_valid_sdmon_method() {
   case "$1" in
-    auto|sandisk|adata|transcend|micron|swissbit|2step) return 0 ;;
+    auto|sandisk|adata|transcend|micron|swissbit|2step|innodisk) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -797,28 +801,38 @@ fetch_phase() {
   fi
 }
 
-# sdmon_phase: build and install sdmon binary (install and update).
+# sdmon_phase: build and install the sdmon binary (install and update).
+# The binary is always present so the health check can be switched on later
+# without a build; only the timer depends on SDMON_METHOD (services_phase).
 sdmon_phase() {
   CURRENT_PHASE="sdmon"
   info "=== Phase: sdmon ==="
 
-  if [[ -z "${SDMON_METHOD}" ]]; then
-    info "sdmon not enabled (use --sdmon=<method> to enable)"
+  local marker="${STAMP_DIR}/sdmon-version"
+  if [[ -x "/usr/local/sbin/sdmon" && -f "${marker}" && "$(cat "${marker}")" == "${SDMON_GIT_REF}" ]]; then
+    info "sdmon binary already at ${SDMON_GIT_REF}"
     return 0
   fi
 
   update_progress "Installing sdmon..." 38
-  info "Installing sdmon (method: ${SDMON_METHOD})"
-  if [[ ! -x "/usr/local/sbin/sdmon" ]]; then
-    local tmpdir
-    tmpdir="$(mktemp -d)"
-    git clone https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon"
-    make -C "${tmpdir}/sdmon/src"
+  info "Building sdmon at ${SDMON_GIT_REF}"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  if git -c advice.detachedHead=false clone -q https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon" \
+     && git -C "${tmpdir}/sdmon" checkout -q "${SDMON_GIT_REF}" \
+     && make -s -C "${tmpdir}/sdmon/src"; then
     install -m 0755 "${tmpdir}/sdmon/src/sdmon" "/usr/local/sbin/sdmon"
-    rm -rf "${tmpdir}"
+    mkdir -p "${STAMP_DIR}"
+    printf '%s\n' "${SDMON_GIT_REF}" > "${marker}"
   else
-    info "sdmon binary already present at /usr/local/sbin/sdmon"
+    if [[ -x "/usr/local/sbin/sdmon" ]]; then
+      warn "sdmon build failed; keeping the existing binary"
+    else
+      warn "sdmon build failed and no binary is installed; the health check timer will not be enabled"
+      SDMON_METHOD=""
+    fi
   fi
+  rm -rf "${tmpdir}"
 }
 
 # deploy_phase: copy app files, build monitor binary, set up venv (install and update).
@@ -1287,12 +1301,8 @@ services_phase() {
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_monitor.service"       /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/vibra-mini.service"              /etc/systemd/system/
 
-  if [[ -n "${SDMON_METHOD}" ]]; then
-    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
-    install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer"   /etc/systemd/system/
-  else
-    info "Skipping sdmon systemd units (use --sdmon=<method> to enable)"
-  fi
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.service" /etc/systemd/system/
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_sdcardhealth.timer"   /etc/systemd/system/
 
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream.service"              /etc/systemd/system/
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/systemd/autostream_wifi_watcher.service" /etc/systemd/system/
@@ -1305,10 +1315,17 @@ services_phase() {
 
   systemctl daemon-reload
 
+  # The SD health units are always present; the saved method decides whether
+  # the timer runs. A fresh install without a method leaves it disabled. An
+  # update without a saved method leaves the timer as it is, so a check that
+  # was switched on outside the installer is not switched off by an update.
   if [[ -n "${SDMON_METHOD}" ]]; then
     patch_sdmon_service_method "${SDMON_METHOD}"
     systemctl daemon-reload
     systemctl enable autostream_sdcardhealth.timer
+  elif [[ "${INSTALL_MODE}" != "update" || ! -x "/usr/local/sbin/sdmon" ]]; then
+    systemctl disable autostream_sdcardhealth.timer 2>/dev/null || true
+    info "SD card health check installed but not enabled (use --sdmon=<method> to enable)"
   fi
 
   systemctl enable autostream_update_retry.service
