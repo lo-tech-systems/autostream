@@ -1069,6 +1069,7 @@ void InputChannel::capture_thread_func()
         if (frames_read == 0)
         {
             // Recovered from xrun; skip this period to let the hardware re-sync.
+            _capture_overruns.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 
@@ -1096,6 +1097,7 @@ void InputChannel::capture_thread_func()
                     _ring_overflow_last_log_time = now;
                 }
             }
+            _capture_ring_drops.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
 

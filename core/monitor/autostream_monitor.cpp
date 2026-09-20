@@ -1202,6 +1202,19 @@ std::string AudioMonitor::api_get_status()
     }
 
     {
+        // Cumulative output-side underrun frame counts, one per mixer
+        // source: a source's ring came up short in mix_block() and was
+        // padded with silence. Distinguishes playback-time starvation from
+        // loss recorded at capture (see InputChannel's capture_overruns/
+        // capture_ring_drops below).
+        OutputMixer::Counters oc = _mixer.counters();
+        oss << ",\"underruns\":{"
+            << "\"live1\":"  << oc.underrun_frames[0] << ","
+            << "\"live2\":"  << oc.underrun_frames[1] << ","
+            << "\"replay\":" << oc.underrun_frames[2] << "}";
+    }
+
+    {
         RepeatStatus rs = _repeat_controller.get_status();
         oss << ",\"repeat\":{"
             << "\"enabled\":"              << (rs.enabled ? "true" : "false") << ","
@@ -1266,6 +1279,8 @@ std::string AudioMonitor::api_get_status()
             << "\"started\":"             << (s.is_started   ? "true" : "false") << ","
             << "\"running\":"             << (s.is_running   ? "true" : "false") << ","
             << "\"track_change_seq\":"    << effective_track_change_seq << ","
+            << "\"capture_overruns\":"    << _inputs[i]->capture_overruns()   << ","
+            << "\"capture_ring_drops\":"  << _inputs[i]->capture_ring_drops() << ","
             << "\"vu_history\":{\"bin_ms\":100,\"latest_seq\":" << latest_seq << ",\"bins\":[";
 
         for (size_t j = 0; j < vu.size(); ++j)

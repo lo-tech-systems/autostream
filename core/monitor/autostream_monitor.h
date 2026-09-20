@@ -2905,6 +2905,12 @@ public:
     // Returns a snapshot of the channel's current state (thread-safe).
     InputChannelStatus get_status() const;
 
+    // Cumulative capture-side loss counts, for get_status(): recovered ALSA
+    // xruns and periods dropped because the process thread fell behind.
+    // Lock-free, safe from any thread.
+    uint64_t capture_overruns() const { return _capture_overruns.load(std::memory_order_relaxed); }
+    uint64_t capture_ring_drops() const { return _capture_ring_drops.load(std::memory_order_relaxed); }
+
     bool is_running() const { return _running.load(); }
 
     // Lock-free, safe from any thread -- used by AudioMonitor::
@@ -3246,6 +3252,12 @@ private:
 
     // ── Capture thread private state ─────────────────────────────────────────
     double _ring_overflow_last_log_time = 0.0;  // throttle for ring-full warning
+
+    // Cumulative capture-side loss counters, one period per event. Read by
+    // get_status() (relaxed load, same as the other polled counters in this
+    // class); written only from the capture thread.
+    std::atomic<uint64_t> _capture_overruns{0};    // recovered ALSA xruns (frames_read == 0)
+    std::atomic<uint64_t> _capture_ring_drops{0};  // periods dropped, ring full
 
     // ── Silence tracking (process thread only) ────────────────────────────────
     double _last_above_threshold_time = 0.0;   // monotonic seconds; 0 = never

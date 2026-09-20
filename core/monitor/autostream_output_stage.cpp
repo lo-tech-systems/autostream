@@ -29,6 +29,13 @@ namespace
 
     // Throttle for the "live-clocked wait timed out" warning.
     constexpr double kLiveWaitWarnPeriodSeconds = 5.0;
+
+    // Threshold and throttle for the timer-paced "scheduling gap" warning:
+    // how late the output thread's sleep_until() woke relative to its
+    // intended deadline. Independent of kLiveWaitWarnPeriodSeconds above,
+    // which throttles a different warning on the live-clocked branch.
+    constexpr double kSchedGapWarnSeconds       = 0.5;
+    constexpr double kSchedGapWarnPeriodSeconds = 5.0;
 }
 
 OutputStage::OutputStage(OutputMixer& mixer, FifoWriter& writer, std::mutex& processor_mutex,
@@ -99,6 +106,7 @@ void OutputStage::thread_func()
     // an idle gap does. 0 = nothing handed over yet this stage lifetime.
     double last_write_time = 0.0;
     double warn_last_log   = 0.0;
+    double sched_warn_last_log = 0.0;
     auto   deadline        = std::chrono::steady_clock::now();
 
     while (!_stop_requested.load(std::memory_order_relaxed))
@@ -165,6 +173,21 @@ void OutputStage::thread_func()
         else
         {
             std::this_thread::sleep_until(deadline);
+
+            // Timer-paced only: the live-clocked branch above re-bases
+            // deadline to "now" every block, so a gap measured there would
+            // be meaningless.
+            double late = std::chrono::duration<double>(std::chrono::steady_clock::now() - deadline).count();
+            if (late > kSchedGapWarnSeconds)
+            {
+                double now = get_monotonic_time();
+                if (now - sched_warn_last_log >= kSchedGapWarnPeriodSeconds)
+                {
+                    LOG_WARN("[output] scheduling gap: woke %.0f ms late", late * 1000.0);
+                    sched_warn_last_log = now;
+                }
+            }
+
             deadline += std::chrono::duration_cast<std::chrono::steady_clock::duration>(block_period);
         }
 
