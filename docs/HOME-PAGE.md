@@ -16,8 +16,9 @@ Under the heading, an icon and label identify the source: **Turntable**, **Bluet
 **Line Level**, alongside the input's own label (for example "Input 1"). If a Bluetooth
 turntable is connected it is still shown as a turntable.
 
-If track identification is turned on for the input, the card instead shows the identified
-track's title, artist and artwork once a match is found. While identification is in progress
+If [track identification](SETUP-TRACK-ID.md) is turned on, the card instead shows the identified
+track's title, artist and artwork once a match is found. Track identification is a global
+setting, not per input. While identification is in progress
 it shows "Identifying Track…"; if nothing is found it shows "Unknown track"; if the
 identification service itself is unavailable it shows "Track ID function not available".
 
@@ -52,17 +53,11 @@ showing:
 Turning an output on sends its current volume to the appliance immediately; toggling it off
 does the same. If the output requires a device PIN (for example a fresh Apple TV pairing), a
 PIN entry dialog appears automatically - enter the code shown on the device to complete the
-enable. If the appliance's CPU cannot encode another stream at the current audio quality, a
-"CPU limit reached" message explains that the output could not be enabled and to disable
-another output or choose a lighter audio mode.
-
-Cards are sorted with the default output first, then alphabetically. While OwnTone is still
-starting up the list shows "Waiting for owntone"; if no outputs have been discovered yet it
-shows "Waiting for device discovery".
+enable.
 
 ### "In Use by \<name\>"
 
-If another appliance on the network is actively streaming to an output you have not selected
+If another autostream appliance on the network is actively streaming to an output you have not selected
 yourself, its card shows **In Use by \<name\>** (or **In Use** if the owning appliance's name
 isn't known) instead of the On/Off toggle, and the toggle is disabled. This appliance cannot
 also enable that output until the other one releases it. See [Multi-Appliance](MULTI-APPLIANCE.md)
@@ -73,9 +68,8 @@ that's using it.
 
 autostream can repeat the last disc or record it played. When repeat is enabled in
 [Setup - Playback](SETUP-PLAYBACK.md#repeat-playback), a **Repeat Play** button appears at the
-top of the Home page. Tap it to replay the current record when it ends. The button reads
-**Replay Last** when nothing is playing but a recording is available, and **Stopping…** briefly
-while a replay is ending.
+top of the Home page. Tap it to enable replay mode (which also starts a replay if a recording
+is available), and tap it again to stop repeat playback.
 
 ## Appliance selector
 

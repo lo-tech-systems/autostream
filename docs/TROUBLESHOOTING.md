@@ -882,6 +882,14 @@ clearing the field restores the default.
 
 ---
 
+### "CPU limit reached" when enabling an output
+
+If the appliance's CPU cannot encode another stream at the current audio quality, enabling an
+output fails with a **"CPU limit reached"** message. It means the output could not be enabled;
+turn off another output, or choose a lighter audio mode, and try again.
+
+---
+
 ### Repeat
 
 * **"Repeat unavailable"**: free RAM was below the 112 MiB minimum (a 96 MiB free-RAM floor plus the smallest 16 MiB chunk) when the last capture session started. Close other apps/services on the Pi, or wait for RAM to free up, then start a new source to retry.
