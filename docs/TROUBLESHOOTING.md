@@ -179,6 +179,17 @@ For the full workflow, see [Equaliser](EQUALISER.md).
 
 ---
 
+### Turntable connects but the signal is too quiet
+
+A turntable's cartridge produces a very low-level phono signal that needs a **phono pre-amp**
+before it reaches a line input, either one built into the turntable itself or an outboard box
+(for example a Behringer U-PHONO UFO202 USB phono adapter). Feeding a phono-level signal straight
+into a line input without pre-amplification will be far too quiet to use.
+
+USB and Bluetooth turntables usually include the pre-amp already, so they need nothing extra.
+
+---
+
 ### Reinstalling from the console
 
 If Factory Reset is not enough, or if an update has left the appliance in a bad state, recover from the console instead.

@@ -31,13 +31,13 @@ A few behaviours worth knowing:
 
 The **Turntable** toggle tells autostream the source is a record player rather than a line-level device like a CD player or tape deck.
 
-A turntable's cartridge produces a very low-level phono signal that needs a **phono pre-amp** before it reaches this input, either one built into the turntable itself or an outboard box (for example a Behringer U-PHONO UFO202 USB phono adapter). Feeding a phono-level signal straight into a line input without pre-amplification will be far too quiet to use.
+Analogue turntables will need a preamp - see [Turntable connects but the signal is too quiet](TROUBLESHOOTING.md#turntable-connects-but-the-signal-is-too-quiet).
 
 Turning Turntable on or off changes the input's silence-detection threshold preset shown just below the toggle, for example:
 
 > Detection threshold preset: -45 dB
 
-Turntables run quieter and noisier between tracks than a line source, so the turntable preset (-45 dBFS) is more forgiving than the line-level preset (-60 dBFS). This preset is set automatically by the toggle; it isn't something you tune by hand here. The **Silence detection** timeout itself (how long that quiet has to last before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
+Turntables pick up background noise, and this setting raises the detection level to avoid false starts. It also enables the [service tracking functions](SERVICE.md). This preset is set automatically by the toggle; it isn't something you tune by hand here. The **Silence detection** timeout itself (how long that quiet has to last before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
 
 If a Bluetooth source lands on this input (see below), turn Turntable on yourself if it's a record player. autostream doesn't detect this automatically for a Bluetooth-paired device.
 
@@ -70,10 +70,7 @@ Some turntables (and other sources) have a built-in Bluetooth transmitter. If yo
 
 Bluetooth input is a **convenience option**, not an upgrade over a wired connection. Normally autostream receives audio through a USB adapter (such as the Behringer U-PHONE UFO202) wired to your turntable or CD player. With Bluetooth input, a source with its own wireless transmitter can send audio straight to the Pi instead, one less cable, no USB box to find a home for.
 
-Two trade-offs to know about before switching:
-
-* **Sound quality.** Wireless audio is compressed to fit over the Bluetooth connection, and the compression happens inside the transmitting device, autostream has no control over it. A wired USB connection remains the best-quality option. For most listening, especially through compact or portable speakers, the difference is minor.
-* **Delay.** Bluetooth audio takes a little longer to arrive than a wired connection. This isn't noticeable for music; it only matters for something like syncing sound to a picture, which isn't what this feature is for.
+Audio quality may be better using a dedicated USB input, since Bluetooth compresses the audio inside the transmitting device before it reaches autostream. For most listening the difference is minor.
 
 ### Supported hardware
 
