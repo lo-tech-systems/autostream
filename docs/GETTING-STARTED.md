@@ -22,13 +22,15 @@ curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/boo
 
 The default `owntone-mini` build supports AirPlay and Chromecast. Use `--owntone=full` if you need support for other protocols.
 
+During installation you are also asked to set a PIN for the appliance. See [What the PIN does](#what-the-pin-does) below.
+
 ---
 
 ## Wi-Fi and USB Adapters
 
 ### Connecting to Wi-Fi
 
-During first install, autostream opens a setup hotspot named **autostream\_XXXX** (where XXXX is part of the built-in adapter's MAC address). Connect to it from your phone or laptop, then open `http://autostream.local/` and follow the on-screen steps to select your Wi-Fi network and enter the password.
+During first install, autostream opens a setup hotspot named **autostream_XXXX** (where XXXX is the last four hex digits of the built-in adapter's MAC address). Connect to it from your phone or laptop, then open `http://autostream.local/` and follow the on-screen steps to select your Wi-Fi network and enter the password.
 
 The setup hotspot uses the **built-in** Wi-Fi radio and is always available as a recovery path, even if a USB adapter is in use.
 
@@ -42,22 +44,22 @@ autostream automatically uses a USB Wi-Fi adapter when one is detected:
 - While a healthy built-in connection is active and playback is idle, autostream will automatically move to a newly inserted USB adapter after two stable detection passes.
 - The built-in adapter always remains the recovery hotspot. A USB adapter is never used for hotspot mode.
 
-**Adapter shown in the System pane:** Go to **Setup → System** to see which Wi-Fi adapter is currently active and to change the Wi-Fi network.
+**Adapter shown in the System pane:** go to [Setup -> System](SETUP-SYSTEM.md) to see which Wi-Fi adapter is currently active and to change the Wi-Fi network.
 
 ### Changing the Wi-Fi network
 
-1. Go to **Setup → System → Network → Change Wi-Fi Network**.
+1. Go to **Setup -> System -> Network -> Change Wi-Fi Network**.
 2. The setup hotspot opens for up to 30 minutes.
-3. Connect to the hotspot SSID and select the new network. For the first **15 minutes** autostream leaves the hotspot up and will not rejoin your old network, so you have time to connect and choose the new one — even if the old network is still in range.
+3. Connect to the hotspot SSID and select the new network. For the first **15 minutes** autostream leaves the hotspot up and will not rejoin your old network, so you have time to connect and choose the new one, even if the old network is still in range.
 4. If setup is not completed within 30 minutes, autostream reconnects to the previous network automatically.
 
 ---
 
 ## Network Access
 
-Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames; private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.
+Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames, and private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.
 
-The installer and updater download releases and packages over HTTPS from GitHub — this is separate from the local Web UI transport.
+The installer and updater download releases and packages over HTTPS from GitHub. This is separate from the local Web UI transport.
 
 ---
 
@@ -68,7 +70,7 @@ After installation, **autostream** only requires a short, one-time setup using a
 1. Connect your audio sources (turntable, CD player, etc.) and reboot the Pi.
 
    Inputs are optional at this stage. If nothing is connected yet, you can still
-   complete setup and add an input later — see [Setup Page 2](#setup-page-2--input--defaults) below.
+   complete setup and add an input later. See [Setup Page 2](#setup-page-2---input--defaults) below.
 
 2. Using **Safari** on your iPhone or iPad, navigate to:
 
@@ -78,38 +80,43 @@ After installation, **autostream** only requires a short, one-time setup using a
 
    Replace `autostream` with your Pi's hostname if you changed it during setup.
 
-3. The system will prompt for your PIN and will then guide you through two simple setup pages.
+3. If a PIN was set during installation, the system prompts for it before showing the setup pages. See [What the PIN does](#what-the-pin-does) below.
+
+### What the PIN does
+
+The PIN gates the Setup pages and this two-page setup wizard. The Home page, Equaliser, Service, About and Logs pages stay open to view without a PIN; the PIN only protects configuration.
+
+During installation you are asked to set a PIN (4-20 characters: letters, numbers and hyphens). Pressing Enter without typing one skips it, and Setup is then open to anyone on your network with no login at all. You can also set the PIN non-interactively with `--unattended PIN=1234`.
+
+The PIN is written in plain text to the SD card's boot partition (`pin.txt`), so it can be read directly from another computer if you forget it. You can change it later from **Setup -> System** using the **Change PIN** button.
 
 ---
 
-### Setup Page 1 — Speaker Selection
+### Setup Page 1 - Speaker Selection
 
-On the first setup page, all available **AirPlay / AirPlay 2** speakers on your network should appear.
+On the first setup page, choose the **Default Output**, the AirPlay / AirPlay 2 speaker that autostream should stream to.
 
-* Deselect any speakers you do not want to be available in this autostream appliance.
-* Tap **Continue** when finished.
+* Pick a speaker from the dropdown list.
+* If your speaker does not appear, make sure it is powered on and tap **Refresh** to rescan the network.
+* Tap **Continue** when finished. If nothing is selected you are asked to choose a speaker before continuing.
 
-If your speakers do not appear:
-
-* Ensure they are powered on
-* Tap **Refresh** to rescan the network
-
-![Setup Page 1 – Speaker Selection](setup-page-1.png)
+You are not choosing every speaker that will ever be usable here, just the one autostream defaults to. Other speakers can be made available and selected later from the [Home page](HOME-PAGE.md).
 
 ---
 
-### Setup Page 2 — Input & Defaults
+### Setup Page 2 - Input & Defaults
 
 On the second setup page:
 
 1. Choose your connected **input device** for **Input 1** from the list.
 2. Tick **Turntable** if that input is a record player (a phono pre-amp is required).
 3. Choose a **default volume level**.
+4. Confirm or change the appliance's **hostname**.
 
-Input 1 is optional. If you have no input connected yet, tap **Skip — configure
+Input 1 is optional. If you have no input connected yet, tap **Skip - configure
 later** to finish setup without one. You can set Input 1 up from the Setup page at
 any time, or pair a Bluetooth source, which assigns itself to a free input
-automatically (see [BLUETOOTH.md](BLUETOOTH.md)).
+automatically (see [Setup - Inputs](SETUP-INPUTS.md)).
 
 While no input is enabled, the Home screen shows a **"No input device configured"**
 notice above the Now Playing card. It disappears as soon as you enable an input.
@@ -117,18 +124,16 @@ notice above the Now Playing card. It disappears as soon as you enable an input.
 **Input 2** is not part of first-time setup. If you have a second input, enable it
 from the **Setup page** once setup is complete.
 
-![Setup Page 2 – Input Selection](setup-page-2.png)
+Your **default speaker** was chosen on Setup Page 1. If no speaker is selected when a new session starts, autostream automatically switches on that default speaker at your saved default volume. It does not override a speaker you already have selected.
 
-Your **default speakers** were chosen on Setup Page 1. When the system has been idle for some time, these default speakers will automatically start playing when music is detected. Any other previously selected speakers will be muted.
-
-Tap **Done** to complete setup.
+Tap **Finish** to complete setup.
 The system will then show the autostream **Home Screen**.
 
 ---
 
 ## Home Screen Web App Mode
 
-autostream is designed to be used from your device's home screen for an easy, app-like experience.
+autostream is designed to be used from your device's home screen for an easy, app-like experience. On iOS/Safari, autostream itself shows an in-app reminder banner (once a day, and never once you have already added it) prompting you to do this.
 
 ### Add autostream to the Home Screen
 
@@ -142,155 +147,17 @@ autostream is designed to be used from your device's home screen for an easy, ap
 ![Add to Home Screen](add-to-home-screen.png)
 ![IOS Add to Home Screen Prompt](add-to-home-screen-2.png)
 
-Once added, autostream behaves like a regular app — providing quick access to volume controls and speaker selection without opening Safari manually.
+Once added, autostream behaves like a regular app, providing quick access to volume controls and speaker selection without opening Safari manually.
 
 ---
 
-## Maintenance Tracking
+## Next steps
 
-**autostream** tracks stylus, belt, and bearing wear for inputs configured as turntables.
-
-### Finding the Service page
-
-Open the autostream Web UI and tap **Service** in the navigation. The Service page is only shown when at least one input is configured as a turntable.
-
-### What is tracked
-
-| Item | Basis |
-|------|-------|
-| Stylus | Playback hours only |
-| Belt | Playback hours, calendar time, or both |
-| Bearing | Playback hours, calendar time, or both |
-
-Set a dimension to **0 / Don't track** to disable tracking for that item.
-
-### Life values and presets
-
-The UI offers common presets for stylus and belt life, but you can type in any positive value. Custom values are accepted and saved normally.
-
-### During playback
-
-Counters are updated while playback is active, so the **Service** page reflects live values including the current session.
-
-Wear counters accrue only while the turntable is actually playing: repeat
-playback (replaying the in-memory recording) does not add stylus, belt, or
-bearing hours, since the turntable itself is idle. Total playback hours do
-include repeat playback.
-
-### Warning banners and indicators
-
-When a component is approaching or has exceeded its set life, a banner appears at the top of the Home Screen and a dot indicator appears next to the **Service** navigation item.
-
-### Resetting counters
-
-After servicing, tap the relevant button — **Mark Stylus Replaced**, **Mark Belt Replaced**, or **Mark Bearing Oiled** — to reset that counter to zero and clear the warning.
-
----
-
-## Track Identification
-
-autostream can identify what is playing and show the artist, title, album, and cover art on the Home screen. This feature is **off by default** and requires network access from the Pi to Shazam's recognition servers (`amp.shazam.com`). No API key is needed.
-
-Identification is powered by `vibra-mini`, a local Shazam recognition daemon that runs alongside autostream. Short clips of audio are fingerprinted on-device and matched against the Shazam catalog. No raw audio leaves the device.
-
-Vibra/Shazam is currently the only supported track-identification provider. The Setup page enables or disables identification; it does not offer a choice of recognition services.
-
-### Enabling track identification
-
-1. Open the autostream **Setup page** (`/setup`).
-2. Scroll to the **Track Identification** card.
-3. Toggle **Enable track identification** on.
-4. Tap **Save**.
-
-After saving, the Home screen will show a status indicator when audio is playing. Once a track is identified, the artist, title, album, and cover art appear.
-
-### How identification works
-
-autostream uses an event-driven approach rather than continuous polling:
-
-- **First attempt:** after roughly 25 seconds of playback, autostream analyses approximately seconds 10–25 of the track. This avoids fingerprinting intros and count-ins, which are less distinctive.
-- **If no match:** another attempt is made 5 seconds later using the latest 15-second audio window. Retries continue until a match is found or playback stops.
-- **After a match:** no further requests are sent until either a likely track boundary is detected or roughly 5 minutes have passed.
-- **Track changes:** when a short silent gap is followed by resumed audio, autostream waits another 25 seconds (the same lead-in period) before analysing the new track. This prevents the fingerprint from being dominated by the fade-out of the previous track.
-
-These timings are defaults and can be adjusted in the JSON configuration for diagnostics or unusual playback sources. See `docs/TROUBLESHOOTING.md` for tuning guidance.
-
-### Privacy and network access
-
-- Audio fingerprints are computed on-device. No raw audio leaves the Pi.
-- A compact fingerprint is sent to Shazam's servers (`amp.shazam.com`) for matching.
-- Cover art thumbnails are fetched from Shazam's CDN.
-- `amp.shazam.com` must be reachable from the Pi. If it is blocked by a firewall, identification will fail silently and the Home screen will remain in the "waiting" state.
-
----
-
-## SD Card Health Monitoring
-
-Some industrial SD cards report a wear-level ("endurance remaining") figure through a manufacturer-specific query. The Setup page has an **SD card health monitoring** row that can turn on a daily check of this figure, shown there and on the About page. It is off by default: the query only works on some cards, and issuing it to an unsupported card can take the card offline until the appliance is power-cycled — on a root-on-SD appliance that means the box locks up and the watchdog reboots it. The row shows whether the card's manufacturer looks like a supported family, but only the query itself proves it, so enabling it always shows a confirmation dialog explaining the reboot risk before it runs.
-
-To enable it, open the Setup page, find the **SD card health monitoring** row, choose a method (or leave it at **auto**) and tap **Enable**. Once a check succeeds, the row shows the endurance percentage remaining and when it was last checked, and the button switches to **Disable**. The chosen method is saved with the appliance's other state, so it survives `--update` — monitoring stays enabled, at the same method, across updates until you turn it off. Disabling it removes the last reading, and the About page stops showing SD health until monitoring is enabled again.
-
----
-
-## Update Channels
-
-autostream supports two update channels:
-
-- **stable** — only full GitHub releases. This is the default.
-- **dev** — the most recently published GitHub release, including pre-releases (alpha, beta, RC). Use this to test upcoming versions.
-
-### Enabling the pre-release channel
-
-1. Open the autostream **Setup page** (`/setup`).
-2. Scroll to the **Updates** card.
-3. Toggle **Enable pre-release updates** on.
-4. Tap **Save**.
-
-Manual checks and automatic updates both use the selected channel. The toggle is visible whether automatic updates are enabled or not.
-
-### Switching back to stable
-
-Toggle **Enable pre-release updates** off and save. autostream will no longer check for or install pre-releases.
-
-**Switching to stable does not automatically downgrade an installed pre-release.** If you are already running `0.7.0-beta.2` and switch to stable, the next offered update will be a numerically newer stable release (e.g. `0.7.0` or later). If you need to return to a known stable build immediately, use the console reinstall route described in the Troubleshooting guide.
-
----
-
-## Multi-Appliance Control
-
-If you have more than one autostream on the same network, you can view and control any of them from a single iOS Home Screen application.
-
-### How it works
-
-Each autostream discovers other eligible appliances automatically over mDNS. When more than one appliance is online, the **appliance pill** near the top of the Home page and Equaliser page becomes a selector. Tap it to see a list of discovered appliances.
-
-* The iOS Home Screen application (PWA) stays bound to the appliance from which it was originally installed. Its URL, identity, and session never change.
-* When you select another appliance, the bound appliance acts as a gateway. Volume, speaker selection, and equaliser settings sent through the Web UI apply to the remote appliance.
-* Selecting the bound appliance's own name returns to normal local control.
-
-### What you can control remotely
-
-Remote mode supports **Home** (volume, speaker selection) and **Equaliser** (EQ bands, output gain, trim). The Service, Setup, and Info pages are disabled while a remote appliance is selected; they remain local-only.
-
-### Discovery
-
-Discovery uses the local network's mDNS multicast. All autostream appliances and your phone must be on the same LAN segment — not separated by VLANs, guest networks, or bridges with multicast filtering. Discovery typically completes within a few seconds of a peer coming online.
-
-Each appliance must have a **unique hostname**. If two appliances share the same hostname, mDNS discovery can behave unpredictably. Set each appliance's hostname in its own Setup page.
-
-During adapter failover or multi-homing, one appliance may briefly be visible at
-more than one IP address. Autostream treats matching identity + hostname records
-as the same appliance and prefers a recently confirmed address.
-
-The **mDNS Grace Period** setting lives in **Setup -> System** and is stored in
-autostream's own configuration. It controls how long stale appliance-discovery
-records are retained before removal and is also forwarded to OwnTone/owntone-mini
-for its native device-removal grace setting.
-
-### Opting out of multi-appliance discovery
-
-If you do not want a specific autostream to appear in other appliances' selectors, open that appliance's **Setup page** and disable **Show this autostream to other appliances**. The appliance remains directly accessible at its own `http://<hostname>.local/` address; it is only hidden from peer selectors.
-
-### Recovery when a remote appliance goes offline
-
-If the remote appliance becomes unreachable, the UI automatically returns you to the bound appliance and shows a status message. You can then select a different appliance or continue with the bound appliance as normal.
+* [Playing your first track](FIRST-TRACK.md) - connect a source and hear it play.
+* [Home Page](HOME-PAGE.md) - volume, speaker selection and Now Playing.
+* [Equaliser](EQUALISER.md) - EQ bands, output gain and trim.
+* Setup pages: [Inputs](SETUP-INPUTS.md), [Playback](SETUP-PLAYBACK.md), [OwnTone](SETUP-OWNTONE.md) (including AirPlay 2 buffered/surround modes), [Track Identification](SETUP-TRACK-ID.md), [Dials](SETUP-DIALS.md), [Personalisation](SETUP-PERSONALISATION.md), [System](SETUP-SYSTEM.md) (Wi-Fi, hostname, SD card health), [Factory Reset](SETUP-FACTORY-RESET.md).
+* [Service](SERVICE.md) - stylus, belt and bearing wear tracking for turntable inputs.
+* [Multi-Appliance Control](MULTI-APPLIANCE.md) - view and control more than one autostream from a single Home Screen app.
+* [System Maintenance](SYSTEM-MAINTENANCE.md) - update channels and keeping autostream current.
+* [Troubleshooting](TROUBLESHOOTING.md) - if something is not working as expected.

@@ -160,7 +160,7 @@ If the sound becomes harsh, crunchy, or obviously distorted after audio tuning:
 4. set manual output gain based on the trim value that was needed
 5. reset the current trim, then leave auto-trim enabled as protection against future peaks
 
-For the full workflow, see [AUDIO-TUNING.md](AUDIO-TUNING.md).
+For the full workflow, see [Equaliser](EQUALISER.md).
 
 ---
 
@@ -260,7 +260,8 @@ For discovery to work, **all autostream appliances and your phone must be on the
 Also check:
 
 * Every appliance must have a **unique hostname** — duplicate hostnames cause unpredictable mDNS discovery.
-* The **"Show this autostream to other appliances"** setting must be enabled on any appliance you want to appear in peers' selectors. Appliances that have opted out do not appear.
+* The **"Allow control of this from other appliances"** setting (Setup -> Personalisation) must be enabled on any appliance you want to appear in peers' selectors. Appliances that have opted out do not appear.
+* To *drive* other appliances from this one, the controlling appliance needs **"Allow control of other appliances"** enabled (Setup -> Personalisation). That toggle is greyed out unless **Display Hostname** is also on.
 * An appliance with no stable identity (no CPU serial and no persistent fallback ID, such as a broken install) cannot participate in multi-appliance control.
 
 To inspect which `_autostream._tcp` services are visible from an appliance's console:
@@ -1151,6 +1152,12 @@ autostream discovers this by querying neighbouring appliances that announce
   playing, once the occupancy TTL expires and the next poll completes.
 - If the status persists unexpectedly, check that the other appliance is genuinely
   stopped and that mDNS is working (see *Appliance not appearing in selector* above).
+
+**Tip:** When **Allow control of other appliances** is enabled (Setup ->
+Personalisation), a greyed-out *In Use by* card is a shortcut. Tap anywhere on it
+except the toggle or volume slider to jump to that appliance's Home page in remote
+mode. If tapping does nothing, that toggle is off, or **Display Hostname** (which it
+depends on) is off.
 
 **After Wi-Fi loss or crash:** If the remote appliance lost network connectivity
 without sending a goodbye packet, the occupied state can persist briefly (at most a

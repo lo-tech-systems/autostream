@@ -60,7 +60,7 @@ controller.
 The dial software also supports four other panel/controller combinations in
 software: ST7735S at 128x128, ST7789 at 240x240 and 320x240, and ILI9341 at
 320x240. These are selectable from the **Screen Type** control on the main
-autostream Setup → Dials page (see `docs/dial/SETUP.md`), but they have **not
+autostream Setup → Dials page (see `GETTING-STARTED.md`), but they have **not
 yet been validated on real hardware** — treat their offsets, colour order, and
 timings as nominal until confirmed on a physical panel.
 
@@ -88,7 +88,7 @@ SPI0 must be enabled (the installer does this via `raspi-config nonint do_spi
 0` when available) and may require a reboot before the display becomes
 accessible. Enabling the screen is a software setting, separate from wiring:
 after connecting the panel, use the **Has Screen Fitted** toggle on the main
-autostream Setup → Dials page (see `docs/dial/SETUP.md`) to turn it on. If
+autostream Setup → Dials page (see `GETTING-STARTED.md`) to turn it on. If
 the panel's red and blue channels appear swapped, use the **Swap Red/Blue
 (BGR)** toggle on the same page — this is a common quirk on cheap panel
 breakouts and does not indicate a wiring fault. Changing the screen type or
@@ -186,7 +186,7 @@ panel.
 
 Do not attempt to wire both a resistive and a capacitive controller to the
 same dial — only one `touch_type` can be active at a time (see
-`docs/dial/SETUP.md`).
+`GETTING-STARTED.md`).
 
 ---
 
@@ -303,4 +303,4 @@ curl http://localhost/configure
 
 The dial itself has no browser-facing setup page — it serves only the JSON endpoints above
 on port 7842 (anything else 404s). Configure the dial from the main autostream appliance's
-web UI instead: Setup page → Dials panel. See `docs/dial/SETUP.md` for details.
+web UI instead: Setup page → Dials panel. See `GETTING-STARTED.md` for details.
