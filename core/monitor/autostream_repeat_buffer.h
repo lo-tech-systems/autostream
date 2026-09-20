@@ -1497,13 +1497,18 @@ inline constexpr double kPreRollSeconds = 5.0;
 // perform_pending_start()), so the audio spanning the probation window
 // itself is not captured into the eventual new recording, exactly as the
 // pre-1.0 s fade window never was either. What the headroom below buys is
-// operational slack: kInterruptSustainSeconds (to confirm) + kFadeSeconds
-// (autostream_monitor.h; the fade that follows confirmation) = 1.25 + 1.0 =
-// 2.25 s, well inside the 5 s bound above -- so a legitimate interrupt has
+// operational slack: kInterruptSustainSeconds (to confirm) +
+// kTakeoverCrossfadeSeconds (the crossfade that follows confirmation) =
+// 1.25 + 1.5 = 2.75 s, well inside the 5 s bound above -- so a legitimate interrupt has
 // comfortable room to confirm before timing out even under scheduling
 // jitter, without the probation window itself needing to grow anywhere
 // near kPreRollSeconds.
 inline constexpr double kInterruptSustainSeconds = 1.25;
+
+// Length of the crossfade the output mixer runs between the replay source
+// and the interrupting live source once a live interrupt is confirmed (or a
+// plain disarm fades replay alone, with no live counterpart ramping up).
+inline constexpr double kTakeoverCrossfadeSeconds = 1.5;
 
 class PreRollRing
 {

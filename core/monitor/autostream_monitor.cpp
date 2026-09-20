@@ -837,7 +837,8 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
 AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabled)
     : _socket_path(socket_path)
     , _test_hooks_enabled(test_hooks_enabled)
-    , _repeat_controller(g_output_format.rate, _fifo_mutex, _output_processor)
+    , _mixer(g_output_format.rate, static_cast<size_t>(g_output_format.rate / 50))
+    , _repeat_controller(g_output_format.rate, _mixer)
     , _control_server(*this)
 {
     // Create the two InputChannel objects.  They are not started here;
@@ -846,10 +847,7 @@ AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabl
     {
         _inputs[i] = std::make_unique<InputChannel>(
             i + 1,             // 1-based index
-            _fifo_writer,
-            _fifo_mutex,
-            _output_processor,
-            _dump_writer,
+            _mixer,
             _repeat_controller
         );
         // See InputChannel::set_session_end_hook()'s comment: this is the
@@ -942,6 +940,11 @@ void AudioMonitor::log_memory_line(const char* reason)
 void AudioMonitor::run()
 {
     _running.store(true);
+
+    // Idles (no writes) until a source activates -- see OutputStage's class
+    // comment. Started here rather than in the constructor so it is running
+    // before any input can start or a replay can be armed.
+    _output_stage.start();
 
     if (!_control_server.start(_socket_path))
     {
@@ -1076,8 +1079,13 @@ void AudioMonitor::stop()
     // Stop the control server (closes the socket).
     _control_server.stop();
 
+    // Stop the output stage -- every producer (inputs, replay) is already
+    // stopped above, so this just joins its thread -- before closing the
+    // FIFO it writes.
+    _output_stage.stop();
+
     // Close the FIFO under _fifo_mutex so it is serialised with any in-flight
-    // write() calls from the (now-stopped) InputChannel threads.
+    // write() call from the (now-stopped) output stage.
     {
         std::lock_guard<std::mutex> lock(_fifo_mutex);
         _fifo_writer.close();
@@ -1185,17 +1193,12 @@ std::string AudioMonitor::api_get_status()
     }
 
     {
-        // An owntone-hang watchdog signal for the Python side (docs/
-        // AUTOSTREAM-MONITOR-API.md) -- seconds the CURRENT active FIFO writer
-        // (live path or ReplayEngine, whichever owns the pipe right now) has
-        // been continuously failing/dropping writes. Deliberately picks only
-        // the currently-active writer's counter: the inactive one's value is
-        // stale by construction (see FifoWriter::stalled_seconds()'s and
-        // ReplayEngine::stalled_seconds()'s doc comments) and must never be
-        // surfaced.
-        double fifo_stalled_seconds = _repeat_controller.is_fifo_owned_by_replay()
-            ? _repeat_controller.replay_stalled_seconds()
-            : _fifo_writer.stalled_seconds();
+        // A backend-hang watchdog signal for the coordinator: seconds the
+        // FIFO writer, the output
+        // stage's single writer for every source, has been continuously
+        // failing/dropping writes (see FifoWriter::stalled_seconds()'s doc
+        // comment).
+        double fifo_stalled_seconds = _fifo_writer.stalled_seconds();
         oss << ",\"fifo\":{\"stalled_seconds\":" << fifo_stalled_seconds << "}";
     }
 
@@ -1512,15 +1515,11 @@ std::string AudioMonitor::api_set_fifo(const std::string& path)
     }
 
     // Acquire _fifo_mutex so this is properly serialised with any concurrent
-    // write() calls from the InputChannel process threads.
+    // write() call from the output stage's thread.
     {
         std::lock_guard<std::mutex> lock(_fifo_mutex);
         _fifo_writer.set_path(path);
     }
-
-    // ReplayEngine opens its OWN fd on the same path at replay start;
-    // it needs to know the path independently of FifoWriter.
-    _repeat_controller.set_fifo_path(path);
 
     LOG_INFO("[monitor] FIFO path set to '%s'", path.c_str());
     return "{\"type\":\"ack\",\"command\":\"set_fifo\",\"ok\":true}";
@@ -1608,10 +1607,11 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
                "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
     }
 
-    // Only one input may write to the shared FIFO at a time.  Allowing two
-    // concurrent capture sessions would interleave their PCM blocks in the
-    // pipe, producing a corrupted stream for OwnTone.  Enforce mutual
-    // exclusion here: enabling capture on one input disables it on all others.
+    // Only one input's OutputSource may be active on the output mixer at a
+    // time (the mixer itself can run a brief two-source crossfade, but only
+    // ever between replay and one live input -- never between the two live
+    // inputs). Enforce mutual exclusion here: enabling capture on one input
+    // disables it on all others.
     //
     // Sequence for a handoff (allow == true):
     //   1. Read which other inputs, if any, are currently marked as the active
@@ -1620,20 +1620,20 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
     //      already-active input.  Auto-trim must only be reset on a true handoff;
     //      resetting on an idempotent call would discard the trim learned for the
     //      session that is still running.
-    //   2. Store _allow_capture = false on all other inputs.  Their process
-    //      threads re-check this flag under _fifo_mutex before calling apply()
-    //      or writing, so any apply()/write that begins after this store will be
-    //      suppressed.
-    //   3. Acquire _fifo_mutex.  This blocks until any in-flight apply()+write
-    //      from a just-disabled thread completes (that thread also holds
-    //      _fifo_mutex during apply() and the FIFO write).
+    //   2. Store _allow_capture = false on all other inputs.  Each input's own
+    //      process thread re-checks this flag every block (sync_output_source()
+    //      deactivates its source, deliver_output() stops pushing), so the
+    //      outgoing input's audio stops reaching the mixer within one block of
+    //      this store -- no mutex involved on that side.
+    //   3. Acquire _fifo_mutex.  This blocks until the output stage's current
+    //      OutputProcessor::apply()+write (which run under this same mutex,
+    //      autostream_output_stage.cpp) completes.
     //   4. If this is a true handoff, reset auto-trim while holding _fifo_mutex.
     //      Because apply() — including the auto-trim CAS update — only runs
-    //      under _fifo_mutex, holding the lock here guarantees that no outgoing
-    //      process thread can write a stale negative trim after this reset.
-    //   5. Enable the new input while still under _fifo_mutex, so the first
-    //      apply()/write from the new input cannot race with a trailing write
-    //      from the old input.
+    //      under _fifo_mutex, holding the lock here guarantees the next block
+    //      the stage mixes never applies a stale negative trim.
+    //   5. Enable the new input while still under _fifo_mutex, so its first
+    //      block cannot be mixed before the trim reset above has taken effect.
     if (allow)
     {
         // Step 1: detect a real handoff before mutating any state.
@@ -1655,9 +1655,9 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
         {
             std::lock_guard<std::mutex> lock(_fifo_mutex);
 
-            // Step 4: reset trim inside the mutex so no outgoing apply() call
-            // can write a negative trim after this point (apply() is also under
-            // _fifo_mutex; see process_thread_func for the full invariant).
+            // Step 4: reset trim inside the mutex so the output stage's next
+            // apply() call (also under _fifo_mutex -- see OutputStage's
+            // thread_func()) never sees a stale negative trim.
             if (is_handoff)
                 _output_processor.reset_auto_trim();
 

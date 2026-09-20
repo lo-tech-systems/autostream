@@ -17,7 +17,6 @@
 #include <mpg123.h>
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -25,8 +24,6 @@
 #include <optional>
 #include <sstream>
 
-#include <fcntl.h>
-#include <poll.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -417,15 +414,13 @@ private:
 }   // namespace
 
 
-// Pipe-format conversion: convert_to_pipe_format() (autostream_repeat_buffer.h)
-// is the replay-side counterpart of the live path's deliver_output() wire
-// narrowing (autostream_monitor_io.cpp) -- both edges branch on
-// AudioMonitor::output_format_mode() so the wire layout never disagrees
-// between the two writers. Every OTHER part of ReplayEngine stays s16
-// internally -- dsp_pcm_buf, the decoder output, the replay-side ID tap, and
-// replay_peak_sample() all operate in the int16 domain; only this one
-// conversion, at the very edge before the bytes go on the wire, changes
-// width. See the helper's own doc comment for both wire layouts.
+// ReplayEngine stays s16 internally right up to process_slice()'s DSP
+// chain: the decoder output, the replay-side ID tap, and
+// replay_peak_sample() all operate in the int16 domain, matching the
+// recording's own on-disk format. process_slice() converts to float only at
+// the DSP stage (src_short_to_float_array()) and pushes float frames to the
+// output mixer; the wire's own int16/int32 width is chosen once, downstream,
+// by OutputStage -- this class never branches on output_format_mode() at all.
 
 
 // =============================================================================
@@ -568,11 +563,9 @@ void RepeatRecorder::worker_thread_func()
 // RepeatController
 // =============================================================================
 
-RepeatController::RepeatController(int sample_rate_hz, std::mutex& fifo_mutex,
-                                    OutputProcessor& output_processor)
+RepeatController::RepeatController(int sample_rate_hz, OutputMixer& mixer)
     : _sample_rate_hz(sample_rate_hz)
-    , _fifo_mutex(fifo_mutex)
-    , _output_processor(output_processor)
+    , _mixer(mixer)
     , _recorder(*this)
     , _replay(*this)
 {
@@ -616,7 +609,7 @@ void RepeatController::stop()
         std::lock_guard<std::mutex> lock(_repeat_mutex);
         discard_recording_locked();
         freed_chunks = teardown_arena_locked(freed_spare);
-        set_fifo_owner(FifoOwner::Live);
+        release_replay_output_locked();
     }
 }
 
@@ -755,7 +748,7 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
     {
         _pending_action = d.pending_action;
         // Single mutation choke point for the probation fast mirrors too
-        // (recording_wanted()/is_fifo_owned_by_replay()'s pattern): every
+        // (recording_wanted()'s fast-mirror pattern): every
         // write to _pending_action funnels through this one spot, so this
         // is the only place the mirrors can ever go stale relative to it.
         // Ordered AFTER the set_pending_interrupt_input block above so that
@@ -793,7 +786,19 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
     if (d.do_request_abort)
         _replay.request_abort();
     if (d.do_request_fade_out)
+    {
         _replay.request_fade_out();
+        // The fade itself is a gain ramp the output mixer runs on the
+        // Replay source; request_fade_out() only flags ReplayEngine's own
+        // session loop to notice once the ramp reaches zero. A plain disarm
+        // ramps replay alone.
+        _mixer.set_gain(OutputSource::Replay, 0.0f, kTakeoverCrossfadeSeconds);
+    }
+    // A live takeover ramps the interrupting input up over the same span,
+    // whether this decision started the replay fade or joined a disarm fade
+    // already in flight, so the two cross in the same blocks either way.
+    if (d.set_pending_action && d.pending_action == PendingAction::LiveInterrupt)
+        _mixer.set_gain(live_source(_pending_interrupt_input), 1.0f, kTakeoverCrossfadeSeconds);
     if (d.do_begin_replay)
         begin_replay_locked();
     if (d.do_request_pending_start)
@@ -905,22 +910,27 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
     }
 }
 
-void RepeatController::set_fifo_owner(FifoOwner owner)
+void RepeatController::release_replay_output_locked()
 {
-    // Guarded by _fifo_mutex: the live process threads already
-    // hold _fifo_mutex around their write section, so flipping the fast
-    // mirror under the same mutex ensures no live writer is mid-critical-
-    // section when ownership changes, and the very next live writer to
-    // acquire the mutex observes the new owner before it decides whether to
-    // write. Never held across a blocking write on either side.
-    std::lock_guard<std::mutex> fifo_lock(_fifo_mutex);
-    _fifo_owner_fast.store(static_cast<int>(owner), std::memory_order_relaxed);
+    _mixer.deactivate(OutputSource::Replay);
+
+    // A live input can be sitting muted for either of two reasons once a
+    // replay is gone: it lost a takeover crossfade (ramped to zero as the
+    // OTHER source took over -- see handle_event_locked()'s do_request_
+    // fade_out handling) and the disarm case ramps replay alone with no live
+    // counterpart, or it was muted through probation (notify_capture_
+    // started()) by a replay whose fade never actually admitted it (e.g.
+    // set_enabled(false) raced the fade to Discard first). Either way, a
+    // live input must not be left silenced once nothing is left to take
+    // over from it.
+    for (OutputSource src : { OutputSource::Live1, OutputSource::Live2 })
+        if (_mixer.is_muted(src))
+            _mixer.set_gain(src, 1.0f, 1.0);
 }
 
-void RepeatController::set_fifo_path(const std::string& path)
+OutputSource RepeatController::live_source(int input_index)
 {
-    std::lock_guard<std::mutex> lock(_repeat_mutex);
-    _fifo_path = path;
+    return (input_index == 2) ? OutputSource::Live2 : OutputSource::Live1;
 }
 
 std::string RepeatController::set_enabled(bool enabled, const std::string& codec_text,
@@ -1084,6 +1094,24 @@ void RepeatController::notify_capture_started(int input_index)
         double elapsed = get_monotonic_time() - _replay_start_time;
         ctx.replay_hold_active = elapsed < static_cast<double>(_origin_minimum_playback_seconds);
     }
+
+    // Mute the interrupting input through probation, BEFORE the decision
+    // below: this input activated its own OutputSource a moment earlier on
+    // this same thread with a 1 s fade-in (InputChannel::handle_session_
+    // edges()), which this overrides. Ordered first (before the decision,
+    // rather than after) so the source is already silent by the time
+    // handle_event_locked() runs, whichever cell it takes below -- arming
+    // probation (Replaying), or upgrading an already-running fade in place
+    // (FadingOut) without requesting a new one of its own. The confirmed-
+    // interrupt case that DOES request a fresh takeover ramp
+    // (ProbationConfirmed, Replaying -> FadingOut) always fires later, from
+    // a separate notify_probation_block() call, by which time this mute has
+    // long since taken effect -- so this call never itself needs to arrange
+    // the live side of a crossfade, only make sure nothing audible leaks
+    // out before one might start.
+    if (_state == RepeatState::Replaying || _state == RepeatState::FadingOut)
+        _mixer.set_gain(live_source(input_index), 0.0f, 0.0);
+
     handle_event_locked(RepeatEvent::CaptureStarted, ctx);
 }
 
@@ -1096,7 +1124,7 @@ void RepeatController::notify_probation_block(int input_index, bool above_thresh
     // runs regardless of capturing/recording_wanted() state, unlike the
     // recorder's own OnsetGate feed). It therefore MUST cost nothing in the
     // overwhelming common case (no probation in flight): two relaxed atomic
-    // loads, same discipline as recording_wanted()/is_fifo_owned_by_replay().
+    // loads, same discipline as recording_wanted()'s fast mirror.
     if (!_probation_armed_fast.load(std::memory_order_relaxed))
         return;
     if (_probation_input_fast.load(std::memory_order_relaxed) != input_index)
@@ -1936,11 +1964,12 @@ void RepeatController::begin_replay_locked()
     // notify_capture_started()'s replay_hold_active computation.
     _replay_start_time = get_monotonic_time();
 
-    // FifoOwner flips to Replay BEFORE the engine's thread is told to start,
-    // so the very next live-path FIFO write (should one somehow race in)
-    // already observes Replay and discards -- consistent with "flip
-    // ownership only at replay start... never mid-write".
-    set_fifo_owner(FifoOwner::Replay);
+    // Activated at full gain, no ramp: a replay only ever starts from
+    // silence, once the live session that preceded it (if any) has fully
+    // ended, so there is nothing here for it to cross-fade against.
+    // Activated BEFORE the engine's thread is told to start, so
+    // push_paced()'s very first call already finds the source active.
+    _mixer.activate(OutputSource::Replay, 1.0f, 0.0);
 
     _replay.request_start(_active_codec, _sample_rate_hz, &_buffer, _origin_input,
                            _origin_silence_threshold_sample,
@@ -2050,8 +2079,8 @@ bool RepeatController::is_replay_sourcing_input(int input_index) const
 
 void RepeatController::on_replay_session_ended_locked_entry()
 {
-    // Called by ReplayEngine's OWN thread once it has stopped writing (fade
-    // completed or a hard write error abort). Takes _repeat_mutex itself
+    // Called by ReplayEngine's OWN thread once it has stopped pushing (fade
+    // completed or a hard abort). Takes _repeat_mutex itself
     // (hence "_locked_entry" -- this function acquires the lock, unlike the
     // *_locked() helpers above which assume the caller already holds it).
     // No pre-lock chunk-storage local: ReplaySessionEnded's cells all
@@ -2064,13 +2093,13 @@ void RepeatController::on_replay_session_ended_locked_entry()
     // restart) lives in decide_repeat_
     // transition()'s ReplaySessionEnded cells -- see the matrix comment
     // above handle_event_locked(). This wrapper still does the one-time
-    // FifoOwner flip (unrelated to the RepeatState machine) and builds the
-    // event's ctx from data (interrupting_input, has_hold_bytes) the pure
-    // decision core cannot read off a real RepeatController itself.
+    // replay-output release (unrelated to the RepeatState machine) and
+    // builds the event's ctx from data (interrupting_input, has_hold_bytes)
+    // the pure decision core cannot read off a real RepeatController itself.
     if (_state != RepeatState::Replaying && _state != RepeatState::FadingOut)
         return;   // already handled by a racing notify_input_stopped()/set_enabled(false)
 
-    set_fifo_owner(FifoOwner::Live);
+    release_replay_output_locked();
 
     RepeatEventCtx ctx;
     ctx.interrupting_input = _pending_interrupt_input;
@@ -2382,20 +2411,13 @@ void ReplayEngine::request_start(CodecChoice codec, int sample_rate_hz,
 
 void ReplayEngine::request_fade_out()
 {
-    std::lock_guard<std::mutex> lk(_cmd_mutex);
-    // Must never downgrade a pending Start OR a pending Abort.
-    // Start: should not happen given the controller's own state gating,
-    // but defensive (a fade-out with no session to fade would be a no-op
-    // anyway -- see run_one_session()'s pre-fd-open loop -- but clobbering
-    // a not-yet-picked-up Start here would silently cancel a session that
-    // was about to begin). Abort: request_abort() is the hard-stop path
-    // (disable/reload/stop_input); a fade_out arriving after an abort
-    // has already been queued (e.g. set_enabled(false) racing a live-
-    // interrupt trigger) must not soften that into a graceful fade -- the
-    // controller has already committed to tearing the session down.
-    if (_pending_cmd != Cmd::Start && _pending_cmd != Cmd::Abort)
-        _pending_cmd = Cmd::FadeOut;
-    _cmd_cv.notify_all();
+    // The ramp itself is the output mixer's own gain ramp on OutputSource::
+    // Replay, started by the controller (RepeatController::handle_event_
+    // locked()) in the same call that decided a fade-out belongs here; this
+    // only flags run_one_session()'s own loop to notice, once per slice
+    // batch, when that ramp has reached zero. No session to run at all is
+    // harmless: the flag is simply cleared again at the next init_session().
+    _fade_requested.store(true, std::memory_order_relaxed);
 }
 
 void ReplayEngine::request_abort()
@@ -2465,21 +2487,20 @@ void ReplayEngine::thread_func()
         if (cmd == Cmd::Start)
         {
             // run_one_session() does not call the terminal handler itself --
-            // every one of its exit paths (open-abort, open error,
-            // decoder-init failure, mid-session abort, decode/write error,
-            // fade complete) funnels through its return value instead, and
-            // this is the single call site for
+            // every one of its exit paths (decoder-init failure, mid-session
+            // abort, decode/push error, fade complete) funnels through its
+            // return value instead, and this is the single call site for
             // on_replay_session_ended_locked_entry(). The reason
             // value itself is not consulted here -- the handler is reason-
-            // agnostic today, exactly as all four old call sites invoked it
-            // identically regardless of why the session ended.
+            // agnostic, invoking it identically regardless of why the
+            // session ended.
             run_one_session();
             _owner.on_replay_session_ended_locked_entry();
         }
-        // FadeOut/Abort with no session running: nothing to do (the
-        // controller only issues them while REPLAYING/FADING_OUT, i.e. while
-        // a session is active and this thread is inside run_one_session(),
-        // not waiting here -- this branch is defensive only).
+        // Abort with no session running: nothing to do (the controller only
+        // issues it while REPLAYING/FADING_OUT, i.e. while a session is
+        // active and this thread is inside run_one_session(), not waiting
+        // here -- this branch is defensive only).
 
         if (_stop_requested.load(std::memory_order_relaxed))
             break;
@@ -2510,18 +2531,16 @@ int replay_peak_sample(const int16_t* samples, size_t n_samples)
 // =============================================================================
 // ReplayEngine::ReplaySessionCtx
 //
-// RAII home for every per-session resource: fd, decoder, Reader, ID tap,
-// fade state, and the DSP-chain scratch buffers. Constructed once per
-// session (a local variable in run_one_session()) and destroyed when that
-// function returns via any path -- early or otherwise -- so a future exit
-// added to the middle of the session loop cannot leak the fd or the mpg123
-// decoder the way a hand-written early `return` could.
+// RAII home for every per-session resource: decoder, Reader, ID tap, and the
+// DSP-chain scratch buffers. Constructed once per session (a local variable
+// in run_one_session()) and destroyed when that function returns via any
+// path -- early or otherwise -- so a future exit added to the middle of the
+// session loop cannot leak the mpg123 decoder the way a hand-written early
+// `return` could.
 // =============================================================================
 
 struct ReplayEngine::ReplaySessionCtx
 {
-    int fd = -1;   // blocking-paced O_WRONLY fd on the FIFO, owned solely by the replay thread
-
     std::unique_ptr<Mp2Decoder>          decoder;   // null for the PCM tier
     std::optional<RepeatBuffer::Reader>  reader;    // no default ctor; emplaced by init_session()
     std::optional<IdTapResampler>        id_tap;    // no default ctor; emplaced by init_session()
@@ -2534,83 +2553,18 @@ struct ReplayEngine::ReplaySessionCtx
     RepeatController::LiveDspParams live_dsp;   // current pulled gain/EQ, refreshed once per
                                                  // staging refill -- see decode_next_slice()
 
-    bool   fading            = false;
-    double fade_elapsed_secs = 0.0;
-    double frames_played     = 0.0;
+    double frames_played = 0.0;
 
     // Scratch, sized once per session (never per-slice) to avoid heap churn.
     std::vector<uint8_t>  raw_buf = std::vector<uint8_t>(65536);
     std::vector<int16_t>  pcm_staging;
-    std::vector<uint8_t>  pipe_bytes;
     std::vector<float>    id_stereo_float;   // int16 slice -> normalised float, ID-tap input
-    std::vector<float>    dsp_float_buf;     // gain/EQ/OutputProcessor float stage
-    std::vector<int16_t>  dsp_pcm_buf;       // requantised s16 result
-
-    ~ReplaySessionCtx()
-    {
-        // decoder/reader/id_tap are RAII themselves; only the fd needs
-        // explicit teardown here -- same condition (fd >= 0) the pre-split
-        // code closed it under at every one of its exit points.
-        if (fd >= 0)
-            ::close(fd);
-    }
+    std::vector<float>    dsp_float_buf;     // post gain/EQ float stage, pushed to the mixer
 };
 
-// Opens this session's own blocking-paced fd on the FIFO.
-// O_NONBLOCK (not a literal blocking open) so a missing reader (ENXIO) or a
-// full pipe never hangs this thread without an abort check; the
-// poll(POLLOUT)-gated write loop in write_slice_paced() still lets the
-// reader's drain rate pace replay exactly as a blocking fd would.
-std::optional<ReplayEngine::SessionEndReason>
-ReplayEngine::open_fifo_for_session(ReplaySessionCtx& ctx, const std::string& path)
-{
-    ctx.fd = -1;
-    for (;;)
-    {
-        // Treat FadeOut the same as Abort here: there is no audio in flight
-        // yet to fade (no reader has ever been attached to write to), so a
-        // disarm arriving before the fd is even open has nothing to wait
-        // out -- end the session immediately rather than spinning forever
-        // ignoring the request: checking Abort alone here would leave a
-        // disarm sent while no reader is attached to the FIFO unable to
-        // unblock replay.
-        Cmd cmd = _pending_cmd.load();
-        if (cmd == Cmd::Abort || cmd == Cmd::FadeOut || _stop_requested.load(std::memory_order_relaxed))
-        {
-            _pending_cmd.store(Cmd::None);
-            return SessionEndReason::AbortedBeforeOpen;
-        }
-        int fd = ::open(path.c_str(), O_WRONLY | O_NONBLOCK);
-        if (fd >= 0)
-        {
-            // Same pipe, same resize -- the live-path FifoWriter and this
-            // replay fd are independent opens of the same named pipe, and
-            // the kernel does not remember a size across a close. See
-            // kFifoPipeBytes's doc comment.
-            if (resize_fifo_pipe(fd) < 0)
-            {
-                if (!_pipe_resize_warned)
-                {
-                    LOG_WARN("[repeat] F_SETPIPE_SZ to %d failed on '%s': %s; using default pipe size",
-                             kFifoPipeBytes, path.c_str(), strerror(errno));
-                    _pipe_resize_warned = true;
-                }
-            }
-            ctx.fd = fd;
-            return std::nullopt;
-        }
-        if (errno != ENXIO)
-        {
-            LOG_WARN("[repeat] ReplayEngine: open('%s') failed: %s", path.c_str(), strerror(errno));
-            return SessionEndReason::OpenError;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(kPollTimeoutMs));
-    }
-}
-
 // Decoder construction, Reader/ID-tap setup, and the ID-buffer/track-change-
-// seq reset -- everything that must happen exactly once, after the fd is
-// open, before the per-slice loop starts.
+// seq reset -- everything that must happen exactly once before the per-slice
+// loop starts.
 bool ReplayEngine::init_session(ReplaySessionCtx& ctx, CodecChoice codec, int rate_hz,
                                  const RepeatBuffer& buffer)
 {
@@ -2626,10 +2580,13 @@ bool ReplayEngine::init_session(ReplaySessionCtx& ctx, CodecChoice codec, int ra
 
     ctx.reader.emplace(buffer);
 
-    // Fresh session, fresh stall streak -- never carry a stall
-    // reading from a PRIOR replay session into this one's get_status()
-    // reporting (see _stall_since's doc comment).
+    // Fresh session: neither a stall streak nor a fade request from a PRIOR
+    // replay session may leak into this one (_stall_since's doc comment;
+    // request_fade_out() only ever fires while a session is active, but a
+    // fade requested right at the tail of the PREVIOUS session could
+    // otherwise still be sitting here set).
     _stall_since.store(0.0, std::memory_order_relaxed);
+    _fade_requested.store(false, std::memory_order_relaxed);
 
     // ctx.replay_filters/replay_eq_bands_cache hold this session's own
     // BiquadFilter delay-line state, entirely separate from any
@@ -2657,28 +2614,25 @@ bool ReplayEngine::init_session(ReplaySessionCtx& ctx, CodecChoice codec, int ra
     return true;
 }
 
-// One reader.next() batch: abort/fade-start check, buffer-end loop-wrap
-// handling, live gain/EQ pull, and codec decode/copy into ctx.pcm_staging.
+// One reader.next() batch: abort check, buffer-end loop-wrap handling, live
+// gain/EQ pull, and codec decode/copy into ctx.pcm_staging.
 ReplayEngine::SliceBatchOutcome
 ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
 {
     Cmd cmd = _pending_cmd.exchange(Cmd::None, std::memory_order_acq_rel);
     if (cmd == Cmd::Abort || _stop_requested.load(std::memory_order_relaxed))
         return SliceBatchOutcome::Aborted;
-    if (cmd == Cmd::FadeOut && !ctx.fading)
-    {
-        ctx.fading = true;
-        ctx.fade_elapsed_secs = 0.0;
-    }
 
     size_t n = ctx.reader->next(ctx.raw_buf.data(), ctx.raw_buf.size());
     if (n == 0)
     {
         // End of buffer: loop (loop_count++, reader.rewind()). Never happens
-        // mid-fade in practice (a fade
-        // completes in kFadeSeconds, far short of any recording), but if it did,
-        // looping mid-fade is harmless -- the fade gain continues to
-        // ramp down against the freshly-rewound stream.
+        // mid-fade in practice (a takeover crossfade completes in
+        // kTakeoverCrossfadeSeconds, far short of any recording), but if it
+        // did, looping mid-fade is harmless -- the mixer's gain ramp on
+        // OutputSource::Replay runs independently of anything this session
+        // loop does, so it keeps ramping down against the freshly-rewound
+        // stream exactly as it would against the un-rewound one.
         _loop_count.fetch_add(1, std::memory_order_relaxed);
         ctx.reader->rewind();
         ctx.frames_played = 0.0;
@@ -2759,11 +2713,11 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
     return SliceBatchOutcome::Ready;
 }
 
-// One kSliceFrames-sized slice: track-gap detect -> ID tap -> gain -> EQ ->
-// OutputProcessor -> fade envelope -> pipe-format conversion, writing the
-// result into ctx.pipe_bytes for write_slice_paced() to send.
-void ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, size_t slice_samples,
-                                  int rate_hz, int silence_threshold, double track_gap_seconds)
+// One kSliceFrames-sized slice: track-gap detect -> ID tap -> gain -> EQ,
+// then push_paced() into the output mixer's Replay ring. Returns
+// push_paced()'s outcome.
+bool ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, size_t slice_samples,
+                                  int silence_threshold, double track_gap_seconds)
 {
     size_t slice_frames = slice_samples / 2;
 
@@ -2809,11 +2763,11 @@ void ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, si
         }
     }
 
-    // ── Live DSP chain -- gain, then EQ, then the shared OutputProcessor
-    // (identical order to InputChannel::process_
-    // thread_func's live path: gain+ramp, per-input EQ, then
-    // OutputProcessor::apply()) -- EXCEPT the fade-in ramp, which is
-    // never re-played (only the settled current gain applies; see
+    // ── Live DSP chain -- gain, then EQ (identical order to InputChannel::
+    // apply_output_chain()'s live path) -- the shared OutputProcessor and
+    // any fade/crossfade envelope are applied once, downstream, by
+    // OutputStage and the mixer's own gain ramp respectively, not here; only
+    // the settled current gain applies during replay, never a fade-in (see
     // InputChannel::gain_linear()'s doc comment).
     ctx.dsp_float_buf.resize(slice_samples);
     src_short_to_float_array(slice, ctx.dsp_float_buf.data(),
@@ -2828,44 +2782,7 @@ void ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, si
     for (auto& filter : ctx.replay_filters)
         filter.process(ctx.dsp_float_buf.data(), static_cast<int>(slice_frames));
 
-    // OutputProcessor::apply() is shared, mutable state (the same
-    // instance the live InputChannel path calls) -- held under
-    // _fifo_mutex for exactly the duration of this call, mirroring
-    // the live path's own critical section (autostream_monitor_io.cpp),
-    // and NEVER across the blocking/poll-gated write in write_slice_paced()
-    // (this mutex is never held across write()).
-    {
-        std::lock_guard<std::mutex> fifo_lock(_owner._fifo_mutex);
-        _owner._output_processor.apply(ctx.dsp_float_buf.data(), static_cast<int>(slice_frames));
-    }
-
-    ctx.dsp_pcm_buf.resize(slice_samples);
-    src_float_to_short_array(ctx.dsp_float_buf.data(), ctx.dsp_pcm_buf.data(),
-                              static_cast<int>(slice_samples));
-
-    // ── Fade gain (disarm fade, linear, kFadeSeconds span) ──────────────
-    // Applied AFTER the DSP chain, by design, so a live gain
-    // change during the fade itself still scales correctly -- the
-    // fade is a final multiplicative envelope on top of whatever the
-    // DSP chain just produced, not a substitute baked-in level.
-    if (ctx.fading)
-    {
-        for (size_t f = 0; f < slice_frames; ++f)
-        {
-            double t = ctx.fade_elapsed_secs + static_cast<double>(f) / rate_hz;
-            double g = 1.0 - (t / kFadeSeconds);
-            if (g < 0.0) g = 0.0;
-            ctx.dsp_pcm_buf[f * 2]     = static_cast<int16_t>(ctx.dsp_pcm_buf[f * 2]     * g);
-            ctx.dsp_pcm_buf[f * 2 + 1] = static_cast<int16_t>(ctx.dsp_pcm_buf[f * 2 + 1] * g);
-        }
-        ctx.fade_elapsed_secs += static_cast<double>(slice_frames) / rate_hz;
-    }
-
-    // ── Pipe-format conversion ─────────────────────────────────────────────
-    // widen_to_s32 mirrors deliver_output()'s own mode check so the replay
-    // writer and the live writer never disagree about the wire layout.
-    bool widen_to_s32 = AudioMonitor::output_format_mode() != OutputFormatMode::Compatible;
-    convert_to_pipe_format(ctx.dsp_pcm_buf.data(), slice_samples, ctx.pipe_bytes, widen_to_s32);
+    return push_paced(ctx.dsp_float_buf.data(), slice_frames);
 }
 
 ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
@@ -2877,20 +2794,10 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
     int         silence_threshold   = _session_silence_threshold_sample;
     double      track_gap_seconds   = static_cast<double>(_session_track_change_silence_seconds);
 
-    std::string path;
-    {
-        std::lock_guard<std::mutex> lock(_owner._repeat_mutex);
-        path = _owner._fifo_path;
-    }
-
-    // ReplaySessionCtx owns the fd, decoder, Reader, ID tap, fade state,
-    // and DSP scratch for this session; its destructor closes the fd
-    // and tears everything else down when this function returns, via any
-    // path below.
+    // ReplaySessionCtx owns the decoder, Reader, ID tap, and DSP scratch for
+    // this session; its destructor tears everything down when this function
+    // returns, via any path below.
     ReplaySessionCtx ctx;
-
-    if (auto open_reason = open_fifo_for_session(ctx, path))
-        return *open_reason;
 
     if (!init_session(ctx, codec, rate_hz, *buffer))
         return SessionEndReason::DecoderInitFailed;
@@ -2919,9 +2826,9 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
         }
         if (outcome == SliceBatchOutcome::Wrapped)
         {
-            if (!write_loop_gap(ctx, rate_hz))
+            if (!write_loop_gap(rate_hz))
             {
-                reason = SessionEndReason::Aborted;   // reader absent / pipe error mid-gap
+                reason = SessionEndReason::Aborted;   // abort/shutdown observed mid-gap
                 break;
             }
             continue;
@@ -2931,7 +2838,7 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
 
         size_t total_samples = ctx.pcm_staging.size() - (ctx.pcm_staging.size() % 2);   // stereo-align
         size_t offset = 0;
-        bool write_failed = false;
+        bool push_failed = false;
 
         while (offset < total_samples)
         {
@@ -2941,10 +2848,9 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
                 break;
 
             const int16_t* slice = ctx.pcm_staging.data() + offset;
-            process_slice(ctx, slice, slice_samples, rate_hz, silence_threshold, track_gap_seconds);
-            if (!write_slice_paced(ctx))
+            if (!process_slice(ctx, slice, slice_samples, silence_threshold, track_gap_seconds))
             {
-                write_failed = true;
+                push_failed = true;
                 break;
             }
 
@@ -2954,23 +2860,27 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
             _position_seconds.store(ctx.frames_played / rate_hz, std::memory_order_relaxed);
         }
 
-        if (write_failed)
+        if (push_failed)
         {
-            reason = SessionEndReason::Aborted;   // reader absent / pipe error
+            reason = SessionEndReason::Aborted;   // abort/shutdown observed mid-push
             break;
         }
-        if (ctx.fading && ctx.fade_elapsed_secs >= kFadeSeconds)
+        // A requested fade (disarm, or a confirmed live interrupt) is the
+        // output mixer's own gain ramp on OutputSource::Replay; once it has
+        // reached zero the session is done -- see push_paced()'s own
+        // gain_is_zero() check for why a push landing here is itself
+        // already a clean outcome, not a stall, once this is true.
+        if (_fade_requested.load(std::memory_order_relaxed) &&
+            _owner._mixer.gain_is_zero(OutputSource::Replay))
         {
             reason = SessionEndReason::FadeComplete;
-            break;   // disarm fade complete: fall through to normal cleanup
+            break;
         }
     }
 
     _active.store(false, std::memory_order_relaxed);
-    // ctx's destructor closes the fd (and tears down the decoder/reader/ID
-    // tap) when this function returns, below -- the same condition (fd >= 0)
-    // the pre-split code closed it under at every one of its own exit
-    // points, now enforced structurally instead of by hand at each one.
+    // ctx's destructor tears down the decoder/reader/ID tap when this
+    // function returns, below.
 
     LOG_INFO("[repeat] Replay session ended (input %d)%s", origin,
              reason == SessionEndReason::FadeComplete ? " [fade complete]" : " [aborted]");
@@ -2978,87 +2888,71 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
     return reason;
 }
 
-bool ReplayEngine::write_slice_paced(ReplaySessionCtx& ctx)
+bool ReplayEngine::push_paced(const float* interleaved, size_t frames)
 {
-    // track_stall_outcome() below folds every exit of this loop
-    // into "fifo.stalled_seconds" the same way FifoWriter::write() does for
-    // the live path -- a poll() timeout (reader not draining) counts as a
-    // stall tick just like a hard write error, since either way no bytes are
-    // moving; a poll timeout alone does not exit the loop (it re-checks the
-    // abort flag and continues), so it is recorded inline below rather than
-    // via a single wrapped return.
-    const std::vector<uint8_t>& data = ctx.pipe_bytes;
-    size_t written = 0;
-    while (written < data.size())
+    // track_stall_outcome() below folds every exit of this loop into
+    // "fifo.stalled_seconds" the same way FifoWriter::write() does for the
+    // live path -- the ring staying full for longer than one output block
+    // period counts as a stall tick just like an abort, since either way no
+    // audio is moving; that alone does not exit the loop (it re-checks the
+    // abort flag and keeps retrying), so it is recorded inline below rather
+    // than via a single wrapped return.
+    const double block_period_seconds =
+        static_cast<double>(_owner._mixer.block_frames()) / static_cast<double>(_owner._mixer.rate_hz());
+
+    const float* ptr        = interleaved;
+    size_t       left       = frames;
+    double       wait_start = 0.0;   // 0 = not currently waiting on a full ring
+
+    while (left > 0)
     {
+        size_t n = _owner._mixer.push(OutputSource::Replay, ptr, left);
+        if (n > 0)
+        {
+            ptr        += n * 2;   // stereo
+            left       -= n;
+            wait_start  = 0.0;
+            continue;
+        }
+
         if (_pending_cmd.load(std::memory_order_relaxed) == Cmd::Abort ||
             _stop_requested.load(std::memory_order_relaxed))
             return track_stall_outcome(false);
 
-        pollfd pfd;
-        pfd.fd      = ctx.fd;
-        pfd.events  = POLLOUT;
-        pfd.revents = 0;
-        int pr = ::poll(&pfd, 1, kPollTimeoutMs);
-        if (pr < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            return track_stall_outcome(false);
-        }
-        if (pr == 0)
-        {
-            track_stall_outcome(false);   // reader not draining; keep polling
-            continue;   // timed out; loop back to re-check the abort flag
-        }
+        // push() also returns 0 once the mixer has auto-deactivated the
+        // Replay source, which is exactly what happens the instant a
+        // requested fade's gain ramp reaches zero (OutputMixer::mix_block()'s
+        // doc comment) -- report that as the clean fade completion it is,
+        // not a stall.
+        if (_fade_requested.load(std::memory_order_relaxed) &&
+            _owner._mixer.gain_is_zero(OutputSource::Replay))
+            return true;
 
-        if (pfd.revents & (POLLERR | POLLHUP))
-            return track_stall_outcome(false);   // reader gone
-
-        ssize_t n = ::write(ctx.fd, data.data() + written, data.size() - written);
-        if (n < 0)
-        {
-            if (errno == EAGAIN || errno == EINTR)
-                continue;
-            return track_stall_outcome(false);   // EPIPE/EBADF/etc -- SIGPIPE is
-                                                  // globally ignored (autostream_monitor.cpp),
-                                                  // so we always see the error return rather
-                                                  // than being killed.
-        }
-        written += static_cast<size_t>(n);
+        if (wait_start == 0.0)
+            wait_start = get_monotonic_time();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (get_monotonic_time() - wait_start > block_period_seconds)
+            track_stall_outcome(false);
     }
     return track_stall_outcome(true);
 }
 
-bool ReplayEngine::write_loop_gap(ReplaySessionCtx& ctx, int rate_hz)
+bool ReplayEngine::write_loop_gap(int rate_hz)
 {
-    // Silence, generated directly (no decode, no DSP chain, no fade, no ID
-    // tap, no TrackGapDetector update -- see this method's declaration
-    // comment) -- reuses ctx.pipe_bytes as scratch exactly like
-    // process_slice() does, and paces through the same write_slice_paced()
-    // so an abort/write-error/stall observed mid-gap behaves identically to
-    // one observed mid-content.
-    size_t gap_frames  = static_cast<size_t>(kLoopGapSeconds * rate_hz);
-    size_t gap_samples = gap_frames * 2u;   // stereo
+    // Silence, generated directly (no decode, no DSP chain, no ID tap, no
+    // TrackGapDetector update -- see this method's declaration comment),
+    // pushed through the same push_paced() so an abort/shutdown observed
+    // mid-gap behaves identically to one observed mid-content.
+    size_t gap_frames = static_cast<size_t>(kLoopGapSeconds * rate_hz);
+    std::vector<float> silence(std::min(kSliceFrames, gap_frames) * 2, 0.0f);
 
-    std::vector<int16_t> silence(std::min(kSliceFrames * 2, gap_samples), 0);
-
-    // Same mode check as process_slice() -- the gap must land on the wire
-    // in the same layout as the content either side of it.
-    bool widen_to_s32 = AudioMonitor::output_format_mode() != OutputFormatMode::Compatible;
-
-    size_t written_samples = 0;
-    while (written_samples < gap_samples)
+    size_t written_frames = 0;
+    while (written_frames < gap_frames)
     {
-        if (_pending_cmd.load(std::memory_order_relaxed) == Cmd::Abort ||
-            _stop_requested.load(std::memory_order_relaxed))
+        size_t chunk_frames = std::min(kSliceFrames, gap_frames - written_frames);
+        if (!push_paced(silence.data(), chunk_frames))
             return false;
-
-        size_t slice_samples = std::min(silence.size(), gap_samples - written_samples);
-        convert_to_pipe_format(silence.data(), slice_samples, ctx.pipe_bytes, widen_to_s32);
-        if (!write_slice_paced(ctx))
-            return false;
-        written_samples += slice_samples;
+        written_frames += chunk_frames;
     }
     return true;
 }

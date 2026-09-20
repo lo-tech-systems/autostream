@@ -719,11 +719,12 @@ static void test_pending_start_outcomes()
 // Constant derivations: the admission-gate constants (kMinAvailableMibForStart
 // / kSessionAdmissionMarginMib) were retired in the fixed-arena redesign (C2)
 // -- admission is now "does an arena exist", not a free-RAM threshold, so
-// there is nothing left to derive here. kFadeSeconds == 1.0 (change 4) still
-// applies unchanged.
+// there is nothing left to derive here. The takeover crossfade length
+// (kTakeoverCrossfadeSeconds, autostream_repeat_buffer.h) still applies
+// unchanged.
 // ---------------------------------------------------------------------------
 
-static_assert(ReplayEngine::kFadeSeconds == 1.0, "expected fade shortened to 1.0 s");
+static_assert(kTakeoverCrossfadeSeconds == 1.5, "expected takeover crossfade of 1.5 s");
 
 // ---------------------------------------------------------------------------
 // Full-matrix smoke pass: every (state, event) combination must return a

@@ -198,6 +198,80 @@ def test_monitor_memory(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# test_fifo_writer — FifoWriter backlog behaviour against a real named pipe
+# ---------------------------------------------------------------------------
+
+@SKIP_PLATFORM
+@SKIP_NO_GPP
+def test_fifo_writer(tmp_path):
+    """FifoWriter keeps a byte-exact backlog when the pipe is full."""
+    exe = tmp_path / "test_fifo_writer"
+    build = subprocess.run(
+        [
+            "g++", "-std=c++17", "-O2",
+            "-I", str(MONITOR_DIR),
+            str(TEST_DIR / "test_fifo_writer.cpp"),
+            str(MONITOR_DIR / "autostream_fifo_writer.cpp"),
+            str(MONITOR_DIR / "autostream_monitor_utils.cpp"),
+            "-lpthread",
+            "-o", str(exe),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert build.returncode == 0, (
+        f"test_fifo_writer build failed:\n{build.stderr}"
+    )
+
+    run = subprocess.run(
+        [str(exe)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert run.returncode == 0, (
+        f"test_fifo_writer failed:\n{run.stdout}\n{run.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# test_output_stage — OutputMixer gain ramps, mixing and ring accounting
+# ---------------------------------------------------------------------------
+
+@SKIP_PLATFORM
+@SKIP_NO_GPP
+def test_output_stage(tmp_path):
+    """OutputMixer pass-through, crossfade, underrun and activity rules."""
+    exe = tmp_path / "test_output_stage"
+    build = subprocess.run(
+        [
+            "g++", "-std=c++17", "-O2",
+            "-I", str(MONITOR_DIR),
+            str(TEST_DIR / "test_output_stage.cpp"),
+            "-lpthread",
+            "-o", str(exe),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert build.returncode == 0, (
+        f"test_output_stage build failed:\n{build.stderr}"
+    )
+
+    run = subprocess.run(
+        [str(exe)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode == 0, (
+        f"test_output_stage failed:\n{run.stdout}\n{run.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # test_monitor_dsp — requires libasound2-dev, libsamplerate0-dev
 # ---------------------------------------------------------------------------
 
@@ -251,7 +325,7 @@ def test_monitor_dsp(tmp_path):
 @SKIP_PLATFORM
 @SKIP_NO_GPP
 def test_all_monitor_sources_compile(tmp_path):
-    """All five monitor translation units compile cleanly with C++17."""
+    """All monitor translation units compile and link cleanly with C++17."""
     if not _have_alsa():
         pytest.skip("libasound2-dev not installed")
     if not _have_samplerate():
@@ -267,6 +341,8 @@ def test_all_monitor_sources_compile(tmp_path):
         MONITOR_DIR / "autostream_monitor_io.cpp",
         MONITOR_DIR / "autostream_monitor_utils.cpp",
         MONITOR_DIR / "autostream_repeat.cpp",
+        MONITOR_DIR / "autostream_fifo_writer.cpp",
+        MONITOR_DIR / "autostream_output_stage.cpp",
     ]
     exe = tmp_path / "autostream_monitor_check"
     build = subprocess.run(

@@ -91,6 +91,18 @@ g++ -std=c++17 -O2 \
     -lpthread -lasound -lsamplerate -latomic \
     -o "$BUILD_DIR/test_monitor_dsp"
 
+echo "=== Building test_fifo_writer (FifoWriter backlog against a real named pipe) ==="
+g++ -std=c++17 -Wall -Wextra -O2 \
+    -I "$MONITOR_DIR" \
+    "$TEST_DIR/test_fifo_writer.cpp" \
+    "$MONITOR_DIR/autostream_fifo_writer.cpp" \
+    "$MONITOR_DIR/autostream_monitor_utils.cpp" \
+    -lpthread \
+    -o "$BUILD_DIR/test_fifo_writer"
+
+echo "=== Building test_output_stage (header-only OutputMixer) ==="
+g++ -std=c++17 -Wall -Wextra -O2 -I "$MONITOR_DIR" "$TEST_DIR/test_output_stage.cpp" -lpthread -o "$BUILD_DIR/test_output_stage"
+
 echo "=== Building test_repeat_buffer (header-only, no system libs needed) ==="
 g++ -std=c++17 -Wall -Wextra -O2 \
     -I "$MONITOR_DIR" \
@@ -135,6 +147,14 @@ echo "=== Running test_monitor_dsp ==="
 "$BUILD_DIR/test_monitor_dsp"
 
 echo ""
+echo "=== Running test_fifo_writer ==="
+"$BUILD_DIR/test_fifo_writer"
+echo
+
+echo "=== Running test_output_stage ==="
+"$BUILD_DIR/test_output_stage"
+echo
+
 echo "=== Running test_repeat_buffer ==="
 "$BUILD_DIR/test_repeat_buffer"
 

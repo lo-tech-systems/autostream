@@ -543,17 +543,13 @@ static void test_output_bytes_per_frame_arithmetic_for_16bit_stereo()
 
 // ---------------------------------------------------------------------------
 // Scaling equivalence between the two wire-edge narrowing paths
-// deliver_output() can take for the SAME source
+// the output stage can take for the SAME source
 // float samples --
 //   (a) native:     src_float_to_int_array()  (float -> s32)
 //   (b) compatible: src_float_to_short_array() (float -> s16)
-// deliver_output() itself always runs (a) (needed for the dump tap/prefill
-// buffer regardless of mode) and, in compatible mode, ALSO runs (b) for the
-// wire. The prefill-flush path, however, cannot re-run (b) for
-// already-buffered blocks (the float source is gone by flush time -- see
-// _prefill_buf's declaration comment in autostream_monitor.h) and instead
-// narrows the RETAINED s32 buffer with a plain >>16. This test is the
-// justification for that substitution: it confirms >>16 of libsamplerate's
+// The output stage always runs (a) for the dump tap and, in compatible
+// mode, also runs (b) for the wire, so the two forms of one block must
+// agree. This test confirms >>16 of libsamplerate's
 // float->s32 output agrees with a direct float->s16 conversion of the same
 // source samples to within 1 LSB, for a representative set of amplitudes
 // (silence, near-full-scale, negative, small, mid-scale, a swept ramp).

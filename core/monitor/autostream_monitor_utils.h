@@ -256,18 +256,24 @@ extern SrcQualityState g_src_quality;
 // =============================================================================
 // FIFO pipe sizing
 //
-// Shared by every fd this daemon opens on the audio FIFO: the live-capture
-// writer (FifoWriter::try_open(), autostream_monitor_io.cpp) and the replay
-// writer (ReplayEngine::open_fifo_for_session(), autostream_repeat.cpp).
+// Used by the output stage's FifoWriter (autostream_fifo_writer.cpp), the
+// only writer on the audio FIFO.
 // =============================================================================
 
 // Requested pipe capacity, via F_SETPIPE_SZ. At the native 48000 Hz/32-bit/
-// 2ch output format (384,000 B/s) this gives the writer about 683 ms of
-// headroom to ride out a reader stall before it has to drop a block, instead
-// of the kernel's much smaller default. The kernel frees a pipe's buffer the
-// moment both ends are closed, so the size is never sticky across a close --
-// it has to be (and is) requested again on every open/reopen.
-inline constexpr int kFifoPipeBytes = 256 * 1024;
+// 2ch output format (384,000 B/s) this gives the writer about 2.7 s of
+// headroom to ride out a reader stall before FifoWriter's own backlog (see
+// its class comment) has to start queuing instead, well ahead of the
+// kernel's much smaller default. An unprivileged process cannot request
+// more than /proc/sys/fs/pipe-max-size regardless of this value -- 1 MiB on
+// the appliances this daemon ships on, i.e. this exact figure -- so
+// resize_fifo_pipe() below is a best-effort call: F_GETPIPE_SZ reports
+// whatever the kernel actually granted, and a failed F_SETPIPE_SZ just
+// leaves the fd at its (smaller) default pipe size rather than failing the
+// open. The kernel frees a pipe's buffer the moment both ends are closed, so
+// the size is never sticky across a close -- it has to be (and is)
+// requested again on every open/reopen.
+inline constexpr int kFifoPipeBytes = 1024 * 1024;
 
 // Best-effort F_SETPIPE_SZ(fd, kFifoPipeBytes), then F_GETPIPE_SZ to read
 // back what the kernel actually granted (it may round up to a page multiple,

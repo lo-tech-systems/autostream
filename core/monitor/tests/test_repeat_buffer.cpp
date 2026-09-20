@@ -2317,10 +2317,9 @@ static void test_u19_sustain_tracker_custom_threshold()
     // probation window plus the fade that follows confirmation must stay
     // comfortably inside kPreRollSeconds, the probation gate's own timeout
     // bound -- see kInterruptSustainSeconds' declaration comment for the
-    // full writeup. kFadeSeconds itself lives in autostream_monitor.h
-    // (ReplayEngine), out of reach of this header-only test file, so this
-    // checks the probation half of that arithmetic directly and leaves the
-    // combined check to test_repeat_transitions.cpp's static_asserts.
+    // full writeup. This checks the probation half of that arithmetic
+    // directly; the crossfade constant is asserted alongside it in
+    // test_repeat_transitions.cpp.
     static_assert(kInterruptSustainSeconds == 1.25, "expected probation window == 1.25 s");
     static_assert(kInterruptSustainSeconds < kPreRollSeconds,
                   "probation window must fit inside its own timeout bound");

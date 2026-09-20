@@ -882,6 +882,8 @@ deploy_phase() {
     "${INSTALL_DIR}/monitor/autostream_monitor_io.cpp" \
     "${INSTALL_DIR}/monitor/autostream_monitor_utils.cpp" \
     "${INSTALL_DIR}/monitor/autostream_repeat.cpp" \
+    "${INSTALL_DIR}/monitor/autostream_fifo_writer.cpp" \
+    "${INSTALL_DIR}/monitor/autostream_output_stage.cpp" \
     -lasound -lsamplerate -lpthread -latomic -ltwolame -lmpg123
   chmod 0755 "${INSTALL_DIR}/monitor/autostream_monitor"
 
