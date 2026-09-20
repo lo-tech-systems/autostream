@@ -861,8 +861,10 @@ AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabl
     }
 
     // Memory-usage log line cadence (see log_memory_line()/run()): start
-    // "already due" so the first line is emitted within the first minute of
-    // startup rather than waiting out a full 300 s/3600 s interval.
+    // "already due", so the first line is emitted at run()'s first due-check
+    // whatever the interval in force, rather than after a full 300 s/3600 s
+    // wait. run() holds that first check back by one check interval, so the
+    // coordinator has set this daemon's log level by then.
     int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count();
     _memory_last_logged.store(now_s - MEMORY_LOG_INTERVAL_IDLE_SECONDS - 1,
@@ -952,8 +954,11 @@ void AudioMonitor::run()
     // Throttles the memory-line due-check below to once every
     // MEMORY_LOG_CHECK_INTERVAL_SECONDS: the check itself is cheap (two
     // timestamp reads and an is_capturing() scan), but there is no reason to
-    // run it on every 100 ms wake.
-    double next_memory_check_time = 0.0;
+    // run it on every 100 ms wake. The first check is held back by one
+    // interval: the coordinator sets this daemon's log level over the
+    // control socket shortly after start, and a line emitted before that
+    // arrives would be dropped at the default level.
+    double next_memory_check_time = get_monotonic_time() + MEMORY_LOG_CHECK_INTERVAL_SECONDS;
 
     // Main loop: poll for shutdown and auto-restart crashed inputs.
     while (_running.load() && !g_shutdown_requested)
