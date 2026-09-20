@@ -8,8 +8,8 @@ Open **Setup** and expand the **Factory Reset** card, at the bottom of the Setup
 
 Factory Reset returns the appliance to first-run Wi-Fi setup mode. All settings are erased,
 and the appliance reboots into the same state it was in out of the box, broadcasting its own
-Wi-Fi access point (named `autostream_XXXX`, using the last four hex digits of its Wi-Fi MAC
-address) so you can reconnect and reconfigure it from scratch.
+Wi-Fi access point (named `autostream_XXXX`) so you can reconnect and reconfigure it from
+scratch.
 
 ## Running it
 
@@ -20,12 +20,5 @@ to reconnect to the appliance's Wi-Fi network afterwards using the factory-confi
 
 Choose **Continue** to proceed, or **Cancel** to back out without changing anything.
 Confirming disables both buttons and sends the reset request; on success, the browser is
-taken to a "resetting" placeholder page while the appliance reboots. If the request can't be
-scheduled, an inline error appears ("Reset could not be scheduled. Please try again.") and
-the buttons re-enable so you can try again; if the request fails because the appliance has
-already gone offline to reset, the browser is taken to the same placeholder page.
-
-## Gaps
-
-- [gap: how long the reset/reboot cycle takes before the Wi-Fi access point reappears was
-  not found in this code path]
+taken to a "resetting" placeholder page while the appliance reboots. If the request fails,
+an inline error appears and the buttons re-enable so you can try again.

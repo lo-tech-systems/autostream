@@ -1,7 +1,8 @@
 # System & Updates
 
-This is the Setup panel for the appliance's hostname, its mDNS discovery timing, SD card
-wear monitoring, and software updates.
+This is the Setup panel for the appliance's hostname, how long it remembers other
+appliances and speakers that have gone quiet, SD card wear monitoring, and software
+updates.
 
 ## Reaching the page
 
@@ -15,14 +16,13 @@ immediately (letters, numbers and hyphens only - anything else is rejected with 
 error). There's no reboot involved, but if you reach this appliance at
 `<hostname>.local`, you'll need to browse to the new address afterwards.
 
-## mDNS Grace Period
+## Grace Period
 
-A slider from 1 to 15 minutes (default 2) controlling how long autostream keeps a stale
-appliance-discovery record before dropping it, as the on-screen note says: "Minutes to keep
-stale appliance discovery records before removal." The same value is also forwarded to
-OwnTone/owntone-mini as its own native device-removal setting, so it governs both how long
-this appliance remembers other autostream appliances that have gone quiet on the network,
-and how long OwnTone waits before removing an AirPlay speaker that has stopped responding.
+A slider from 1 to 15 minutes (default 2) sets how long autostream keeps remembering an
+appliance or speaker that has gone quiet before it gives up on it. This covers both other
+autostream appliances that have dropped off the network and AirPlay speakers that have
+stopped responding: a shorter setting notices a gone-quiet device sooner, a longer one
+rides out brief network blips without dropping it too early.
 
 ## SD card health monitoring
 
@@ -62,8 +62,3 @@ asks for a plain confirmation before turning scheduled monitoring off again.
 The same panel also has an **Updates** card (Check / Install / Reboot, automatic updates,
 and a pre-release channel toggle). It's covered in depth in
 [System Maintenance](SYSTEM-MAINTENANCE.md) - this page only notes that it lives here.
-
-## Gaps
-
-- [gap: the schedule/frequency of the automatic SD card health check timer once enabled
-  was not traced beyond the Setup page's own code]

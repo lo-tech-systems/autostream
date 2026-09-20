@@ -121,9 +121,8 @@ early; it runs to completion (or until a new PIN is set) regardless.
 
 ## The encoder button: mute and unmute
 
-Pressing the encoder shaft (the built-in push-button on most KY-040 / EC11
-rotary encoders) toggles mute on and off for the currently selected
-speakers.
+Pressing the encoder shaft (the built-in push-button on most rotary
+encoders) toggles mute on and off for the currently selected speakers.
 
 - Muting sets the volume of all selected outputs to zero. It does not stop
   playback or deselect speakers.

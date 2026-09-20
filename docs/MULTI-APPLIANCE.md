@@ -79,8 +79,8 @@ You cannot change its Setup, Service, or other configuration remotely.
 
 ## Discovery requirements
 
-- Both appliances must be on the same LAN - discovery relies on mDNS (Bonjour-style
-  local network discovery) and does not cross routers or separate networks.
+- Both appliances must be on the same local network - discovery does not cross routers
+  or separate networks.
 - Each appliance needs its own unique hostname. Two appliances that end up reporting the
   same identity under different hostnames are treated as a conflict and the affected
   appliance is left out of the selector rather than risking cross-talk.

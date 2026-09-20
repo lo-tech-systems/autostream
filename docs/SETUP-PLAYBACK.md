@@ -88,9 +88,3 @@ A **More Owntone Settings** button opens a separate page covering AirPlay-specif
 (buffered audio, per-speaker modes, output offsets); see [Setup-OwnTone](SETUP-OWNTONE.md).
 Where the backend supports per-speaker timing offsets, a **Run Speaker Synchronisation** button
 also appears, opening the automatic alignment tool described in [Speaker Synchronisation](SPEAKER-SYNC.md).
-
-## Gaps
-
-- [gap: the exact CPU/quality trade-off of the three Input Resampling Quality tiers beyond
-  their on-card labels was not investigated in the resampler code. Only the tier names,
-  ordering, and the Best-tier hardware gate are documented here]

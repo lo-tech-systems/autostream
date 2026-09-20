@@ -33,9 +33,3 @@ Open **Setup** and expand the **Personalisation** card.
   details.
 - **Dark Mode** - switches the web UI to a dark colour theme. Applies immediately across
   the whole app.
-
-## Gaps
-
-- [gap: whether "Display Input Detail" and "Show Master Volume Control" have any effect
-  outside the Home page (for example the Equaliser page) was not checked here - only their
-  documented Home-page behaviour is covered]

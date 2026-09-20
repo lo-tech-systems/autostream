@@ -28,7 +28,7 @@ appliance can't answer, the affected fields read "Unavailable" instead.
 
 - **autostream Build** - the installed release tag (e.g. `0.6.0`).
 - **Device** - the Raspberry Pi model detected at startup.
-- **OS Build** - the OS name/codename from `/etc/os-release`.
+- **OS Build** - the operating system version.
 - **Total Playback Time** - cumulative playback hours across both inputs,
   to one decimal place. This includes time spent replaying the in-memory
   recording during output failover (repeat playback), not just live audio.
@@ -42,8 +42,8 @@ critical:
 
 | Bar | Shows | Healthy | Warning | Critical |
 |-----|-------|---------|---------|----------|
-| CPU Temperature | Current SoC temperature, as a percentage of 85°C (the Pi's soft-throttle point) | below 70°C | 70-78°C | above 78°C |
-| CPU Load | Current busy percentage (htop-style, not a scheduler load average) | below 70% | 70-85% | above 85% |
+| CPU Temperature | Current temperature, as a percentage of 85°C | below 70°C | 70-78°C | above 78°C |
+| CPU Load | Current busy percentage | below 70% | 70-85% | above 85% |
 | Memory Usage | Percentage used, plus free/total in MB | more than 96 MB free | 64-96 MB free | less than 64 MB free |
 | Disk Usage | Percentage used, plus free/total in GB, for the root filesystem | below 60% | 60-80% | above 80% |
 | SD Health | Manufacturer-reported endurance remaining, as a percentage | above 30% | 11-30% | 10% or below |
@@ -57,19 +57,19 @@ for how to enable it.
 The Services card lists the background services autostream depends on, each
 with a live systemd state:
 
-- **Autostream** (autostream.service)
-- **Audio Monitor** (autostream_monitor.service)
-- **Wi-Fi Watcher** (autostream_wifi_watcher.service)
-- **OwnTone** or **OwnTone Mini**, depending on which backend is installed (owntone.service)
-- **Vibra Mini** (vibra-mini.service)
-- **Bluetooth Service** (autostream_bluetooth.service) - only listed when the Bluetooth-input subsystem is installed
-- **NGINX** (nginx.service)
+- **Autostream**
+- **Audio Monitor**
+- **Wi-Fi Watcher**
+- **OwnTone** or **OwnTone Mini**, depending on which backend is installed
+- **Vibra Mini**
+- **Bluetooth Service** - only listed when the Bluetooth-input subsystem is installed
+- **NGINX**
 
 Each row shows the component's build/version where one is known, followed by
 its state: **OK** (unit active), **Failed** (unit not active), or
 **Disabled** - the Bluetooth row alone distinguishes "installed but
 switched off" (Disabled) from "installed, enabled, but not currently
-running" (Failed), since systemd reports both the same way.
+running" (Failed).
 
 If a component isn't currently connected to autostream but a build number is
 still known from an earlier session, its build shows `(last seen)` next to

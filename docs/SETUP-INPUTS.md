@@ -72,10 +72,6 @@ Bluetooth input is a **convenience option**, not an upgrade over a wired connect
 
 Audio quality may be better using a dedicated USB input, since Bluetooth compresses the audio inside the transmitting device before it reaches autostream. For most listening the difference is minor.
 
-### Supported hardware
-
-[gap: hardware compatibility (Pi model support, onboard-radio/USB-adapter behaviour on a Pi Zero 2 W) is a product/testing claim, not something the reviewed code checks or asserts, so it isn't verified here against source. Earlier documentation stated Bluetooth input is tested on Pi 3, 4, and 5, may work but isn't officially supported on a Pi Zero 2 W due to its shared Wi-Fi/Bluetooth antenna, and recommended a USB Bluetooth adapter on that model. Carry this forward only if a maintainer can confirm it's still accurate.]
-
 ### Turning it on
 
 Bluetooth input is built into every autostream appliance. There's nothing to install and nothing to reboot for, just to switch on.

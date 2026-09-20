@@ -26,9 +26,9 @@ Every dial discovered on the network, authorized or not, gets its own card:
 - **Firmware** version, shown next to the title only while the dial is
   authorized and online.
 - **Last seen**, shown for an authorized dial that is currently offline.
-- **UUID**: a 20-character hexadecimal identity broadcast in the dial's mDNS
-  record. It stays the same across reboots and firmware updates, so it's a
-  reliable way to tell two dials apart if neither has a name yet.
+- **UUID**: a unique identity code so you can tell two dials apart, even
+  before either has a name. It stays the same across reboots and firmware
+  updates.
 
 A brand new, unauthorized dial's card shows only its status and the **Allow
 dial to control this appliance** toggle. Its settings are hidden until it is

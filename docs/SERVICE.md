@@ -46,10 +46,6 @@ in the Service page:
 Changing a dropdown saves immediately (no Save button) and the panel's live
 figures update right away.
 
-[gap: whether a stylus life value outside the preset list can be set some
-other way (e.g. direct config file edit) is not a documented end-user path,
-so it is left out here even though the underlying normaliser tolerates it]
-
 ## During playback
 
 While a turntable input is playing, its playback time accumulates against

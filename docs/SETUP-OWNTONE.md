@@ -21,21 +21,18 @@ At the top of the page is an **AirPlay Settings** card:
   buffered and surround modes on every speaker's mode drop-down below (see
   [Enabling buffered audio](#enabling-buffered-audio)). Turning it off hides
   those modes again; any speaker that was using one falls back to Auto.
-- **Use uncompressed audio** - a toggle for ALAC compression on the AirPlay
-  stream.
+- **Use uncompressed audio** - a toggle that sends audio uncompressed.
 - **Start Buffer (ms)** - a drop-down controlling how much audio is queued
-  before playback starts on the buffered transport.
+  before playback starts.
 - **AirPlay User Agent** - a free-text field overriding the User-Agent
   string AirPlay advertises. Changing it restarts OwnTone; clearing it
   restores the backend's own default.
 
-Each of these controls is only shown, or only enabled, when the backend
-exposes it. If a control can't be read from the backend at all it's left
-out; if it's read but unsupported, it's shown disabled with a note
-explaining why. This whole page's live controls - mode, offset, and the
-settings above - only take full effect against the bundled owntone-mini
-engine. Running full/stock OwnTone instead disables most of them; see
-[FULL-OWNTONE.md](FULL-OWNTONE.md) for what still works there.
+Some of these controls only appear when your speaker supports them, and this
+page's live controls - mode, offset, and the settings above - only take
+full effect with the bundled owntone-mini engine; see
+[FULL-OWNTONE.md](FULL-OWNTONE.md) for what still works with full/stock
+OwnTone.
 
 ## Speaker rows
 
@@ -53,9 +50,8 @@ state) but shows: "Speaker not currently discovered. Saved mode will be
 applied when it reappears." Any mode you choose while it's away is saved
 and pushed to it automatically the next time autostream sees it.
 
-If the backend exposes only Auto for a speaker, its row shows: "Only Auto
-mode is currently exposed by this backend. Additional protocols will
-appear here when supported."
+If only Auto mode is currently available for a speaker, its row explains
+that other protocols will appear there when supported.
 
 ## AirPlay modes
 
@@ -72,7 +68,7 @@ With buffered audio off, or on a speaker that doesn't support it, the mode
 drop-down offers:
 
 - **Auto** - let the backend choose the best available transport.
-- **AirPlay** - force classic AirPlay 1 (RAOP).
+- **AirPlay** - force classic AirPlay 1.
 - **AirPlay 2** - force standard AirPlay 2.
 
 With buffered audio on, two more choices appear:
@@ -95,14 +91,13 @@ TV, and there's no way to select them for anything but a lone Apple TV.
   you want clean stereo-plus-bass through a 5.1 system rather than a
   synthesised surround effect.
 - **AirPlay 2 (5.1 upmix)** - spreads the stereo signal across all six
-  channels using a steering filter that derives centre, rear, and a
-  band-limited subwoofer feed from the source. This is a synthetic
-  surround effect, not a true discrete mix, and it costs noticeably more
-  processing power than the stereo mode above.
+  channels, creating centre, rear, and subwoofer channels from the source.
+  This is a synthetic surround effect, not a true discrete mix, and it
+  costs noticeably more processing power than the stereo mode above.
 
-A mode drop-down is only editable when the backend can accept mode changes
-for that speaker; otherwise the page shows the current mode as fixed text
-alongside the notes above.
+A mode drop-down is only editable when your speaker supports changing
+modes; otherwise the page shows the current mode as fixed text alongside
+the notes above.
 
 ## Output offsets
 
@@ -112,15 +107,7 @@ back to 0. This shifts that speaker's audio earlier or later relative to
 the others, for correcting small timing mismatches between speakers (for
 example one lagging behind the rest in a multi-room group).
 
-Offsets are applied live as you drag the slider (debounced briefly so it
-doesn't fire on every pixel of movement). The same offset values are what
-[Speaker Synchronisation](SPEAKER-SYNC.md) measures and writes
+Offsets are applied live as you drag the slider. The same offset values are
+what [Speaker Synchronisation](SPEAKER-SYNC.md) measures and writes
 automatically if you'd rather not set them by ear - run that first, then
 fine-tune here if needed.
-
-## Gaps
-
-- [gap: the exact mechanism/benefit of "Use uncompressed audio", "Start
-  Buffer", and "AirPlay User Agent" beyond their on-page labels was not
-  investigated in the audio pipeline code; only their UI behaviour is
-  documented here]

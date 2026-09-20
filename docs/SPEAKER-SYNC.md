@@ -14,10 +14,10 @@ back into step.
 
 Nothing is changed until you review the proposed offsets and choose to apply them.
 
-This needs owntone-mini 1.2 or above, which supports per-output playback offsets. If
-your backend doesn't support that, the Setup page won't show the **Run Speaker
-Synchronisation** button, and the Speaker Synchronisation page explains that calibration
-is unavailable rather than offering controls that couldn't do anything.
+This needs a backend that supports per-output playback offsets. If yours doesn't, the
+Setup page won't show the **Run Speaker Synchronisation** button, and the Speaker
+Synchronisation page explains that calibration is unavailable rather than offering
+controls that couldn't do anything.
 
 ## When to use it
 
