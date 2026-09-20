@@ -2527,6 +2527,8 @@ unsigned ReplayEngine::get_id_snapshot(int16_t* out, unsigned max_frames) const
 
 void ReplayEngine::thread_func()
 {
+    set_thread_realtime("replay-decode", kRtPrioReplay);
+
     for (;;)
     {
         Cmd cmd;

@@ -31,6 +31,10 @@
 #include <fcntl.h>
 #include <malloc.h>
 
+#include <cerrno>
+#include <pthread.h>
+#include <sched.h>
+
 
 // =============================================================================
 // FIFO pipe sizing
@@ -41,6 +45,29 @@ int resize_fifo_pipe(int fd)
     if (fcntl(fd, F_SETPIPE_SZ, kFifoPipeBytes) < 0)
         return -1;
     return fcntl(fd, F_GETPIPE_SZ);
+}
+
+
+// =============================================================================
+// Thread scheduling
+// =============================================================================
+
+void set_thread_realtime(const char* thread_label, int priority)
+{
+    struct sched_param sp{};
+    sp.sched_priority = priority;
+
+    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+    if (rc != 0)
+    {
+        // pthread_setschedparam() returns the error code directly; it does
+        // not set errno.
+        LOG_WARN("[%s] could not set SCHED_FIFO prio %d: %s; continuing at normal priority",
+                 thread_label, priority, strerror(rc));
+        return;
+    }
+
+    LOG_INFO("[%s] real-time scheduling active (SCHED_FIFO prio %d)", thread_label, priority);
 }
 
 

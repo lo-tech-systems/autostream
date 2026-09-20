@@ -285,6 +285,29 @@ int resize_fifo_pipe(int fd);
 
 
 // =============================================================================
+// Thread scheduling
+//
+// Real-time (SCHED_FIFO) priorities for the audio-critical threads, so a
+// transient CFS descheduling can no longer lose source samples or force
+// silence-padding. Capture is highest since a missed ALSA period is
+// unrecoverable; output is lowest of the four since a late FIFO write still
+// has the writer's own backlog to absorb it (see kFifoPipeBytes above).
+// =============================================================================
+
+constexpr int kRtPrioCapture = 60;
+constexpr int kRtPrioProcess = 58;
+constexpr int kRtPrioReplay  = 56;
+constexpr int kRtPrioOutput  = 54;
+
+// Best-effort SCHED_FIFO promotion for the calling thread. Requires
+// CAP_SYS_NICE (granted via the systemd unit's LimitRTPRIO); on any other
+// host this simply fails and the thread carries on at normal priority.
+// thread_label is used only in the log line, to identify which thread
+// called in. Never fatal.
+void set_thread_realtime(const char* thread_label, int priority);
+
+
+// =============================================================================
 // Timing
 // =============================================================================
 

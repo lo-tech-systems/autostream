@@ -1022,6 +1022,8 @@ unsigned InputChannel::get_id_snapshot(int16_t* out, unsigned max_frames) const
 //
 void InputChannel::capture_thread_func()
 {
+    set_thread_realtime("input-capture", kRtPrioCapture);
+
     // Size the local read buffer to one hardware period.
     // We re-read the period size after open; it will not change during a session.
     std::vector<int32_t> period_buf;
@@ -1120,6 +1122,8 @@ void InputChannel::capture_thread_func()
 //
 void InputChannel::process_thread_func()
 {
+    set_thread_realtime("input-process", kRtPrioProcess);
+
     // Pre-size processing scratch buffers (promoted from locals to members --
     // see the members' declaration comment in autostream_monitor.h for why
     // this introduces no new allocation). Sized once here, at thread entry,

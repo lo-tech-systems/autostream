@@ -76,6 +76,8 @@ void OutputStage::stop()
 
 void OutputStage::thread_func()
 {
+    set_thread_realtime("output-stage", kRtPrioOutput);
+
     const int    rate_hz      = _mixer.rate_hz();
     const size_t block_frames = _mixer.block_frames();
     const auto   block_period = std::chrono::duration<double>(

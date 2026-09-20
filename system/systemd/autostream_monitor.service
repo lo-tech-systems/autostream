@@ -48,6 +48,10 @@ OOMScoreAdjust=200
 # would fail.
 LimitMEMLOCK=infinity
 
+# Grants the SCHED_FIFO real-time priorities set_thread_realtime() requests
+# for the audio-critical threads (autostream_monitor_utils.cpp).
+LimitRTPRIO=80
+
 # Bounds glibc to two heaps so memory freed by one thread is more likely to
 # be reused (and consolidated back to the kernel) rather than spread across
 # a growing number of per-thread arenas.
