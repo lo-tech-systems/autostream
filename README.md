@@ -2,7 +2,7 @@
 
 # autostream
 
-**Stream turntables and CD players to AirPlay speakers — automatically.**
+**Stream turntables and CD players to AirPlay speakers - automatically.**
 
 **autostream** connects classic Hi-Fi gear to wireless multi-room speakers, making vinyl records and CDs play through AirPlay and AirPlay 2 speakers anywhere in your home. No apps to install. No complex configuration. Just press play.
 
@@ -16,14 +16,14 @@ One-line install on **Raspberry Pi OS Lite (Trixie)** for the companion **autost
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/dial_bootstrap.sh | sudo bash
 ```
 
-See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions and install options.
+See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions and install options, and the [documentation index](docs/README.md) for all the user guides.
 
 ---
 
 ## Features
 
 * Streams vinyl, CDs, tape decks, and other line-level sources to AirPlay speakers
-* Optional Bluetooth input — pair a Bluetooth-equipped turntable directly, no USB audio adapter needed
+* Optional Bluetooth input - pair a Bluetooth-equipped turntable directly, no USB audio adapter needed
 * Detects audio automatically - starts and stops the stream without any interaction
 * Supports HomePods and Stereo Paired HomePods, as well as third-party AirPlay and AirPlay 2 compatible speakers
 * iPhone-friendly web app for volume control and speaker selection, with PIN-protected setup
@@ -31,8 +31,8 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 * Switches between two connected sources automatically (e.g. turntable and CD player)
 * 6-band output equaliser and per-input 3-band equaliser
 * Stylus, belt, and bearing maintenance tracking for turntable inputs
-* Optional track identification — shows artist, title, album, and artwork on the Home screen; reacts to likely track changes automatically (powered by Shazam via the vibra-mini daemon; no API key required)
-* Repeat — loop the last ~74 minutes of buffered audio (in-RAM) back to your speakers when the source stops
+* Optional track identification - shows artist, title, album, and artwork on the Home screen; reacts to likely track changes automatically (powered by Shazam via the vibra-mini daemon; no API key required)
+* Repeat - loop the last ~74 minutes of buffered audio (in-RAM) back to your speakers when the source stops
 * Control multiple autostream appliances from a single iOS Home Screen application
 * About > System Info page shows build versions, service health, CPU temperature, and storage status
 
@@ -50,7 +50,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 
 **autostream** listens on one or two audio inputs. When sound is detected, it streams automatically to your AirPlay speakers. When the music stops, the stream stops. If you switch from vinyl to CD, **autostream** switches too.
 
-Everything runs locally on your network — no cloud services, no online accounts, no recommendations.
+Everything runs locally on your network - no cloud services, no online accounts, no recommendations.
 
 ---
 
@@ -58,14 +58,14 @@ Everything runs locally on your network — no cloud services, no online account
 
 Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames; private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.
 
-> Note: the installer and updater download releases and packages over HTTPS from GitHub — this is separate from the local Web UI transport.
+> Note: the installer and updater download releases and packages over HTTPS from GitHub - this is separate from the local Web UI transport.
 
 ---
 
 ## Platform & Requirements
 
-* **Raspberry Pi** — Pi Zero 2W minimum for autostream; Zero W minimum for dial. 8GB+ microSD card.
-* **OS** — **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream, unless deploying on Pi Zero W.
+* **Raspberry Pi** - Pi Zero 2W minimum for autostream; Zero W minimum for dial. 8GB+ microSD card.
+* **OS** - **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream, unless deploying on Pi Zero W.
 * **USB audio input**, for example:
   * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
   * USB ADC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
@@ -84,7 +84,7 @@ Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 2. Run the one-line installer above.
 3. Connect one or two audio sources.
 4. Reboot, then open Safari on iPhone and browse to `http://autostream.local/` (replace `autostream` with your Pi's hostname if you changed it).
-5. Complete the one-time setup — it takes two screens.
+5. Complete the one-time setup - it takes two screens.
 
 From there, just drop the needle or press play. **autostream** will do the rest.
 
@@ -99,7 +99,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for detailed setup instruction
 3. Run the dial one-line installer above.
 4. Reboot, then continue setup from the autostream web app (Setup → Dials)
 
-See [SETUP.md](docs/dial/SETUP.md) for detailed setup instructions and [BUILD-GUIDE.md](docs/dial/BUILD-GUIDE.md) for hardware build instructions.
+See [Getting Started](docs/dial/GETTING-STARTED.md) for detailed setup instructions and [BUILD-GUIDE.md](docs/dial/BUILD-GUIDE.md) for hardware build instructions.
 
 ---
 
@@ -118,4 +118,4 @@ See the `LICENSE` file for full terms.
 
 ---
 
-**autostream** is Copyright (c) 2025–2026, **Lo-tech Systems Limited**. All rights reserved.
+**autostream** is Copyright (c) 2025-2026, **Lo-tech Systems Limited**. All rights reserved.
