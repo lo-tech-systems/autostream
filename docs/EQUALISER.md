@@ -5,17 +5,8 @@ whatever is currently playing, after all sources have been mixed.
 There is no PIN gate on this page, so it stays reachable for quick adjustments while music is
 playing.
 
-Changes are saved automatically as you move a control. There is no save button, and nothing here
-needs a restart to take effect.
-
-## What this page does NOT control
-
-The six bands and gain slider on this page apply to the **output**, not to an individual input.
-Each input (turntable, line level, Bluetooth capture) has its own separate 3-band tone control
-(40Hz / Bass / Treble) and its own gain/trim slider, set up alongside that input's other options.
-See [Setup-Inputs](SETUP-INPUTS.md) for those. Use the input controls to correct a source that is
-consistently too quiet, too boomy, or too bright compared with your other source; use this page
-for the overall sound of the room.
+> Note: This page controls the overall output. Each input also has its own three-band
+> equaliser - see [Setup-Inputs](SETUP-INPUTS.md).
 
 ## Equaliser bands
 
@@ -38,17 +29,17 @@ six bands at once rather than reading the sliders individually.
 A **Flat** button above the curve zeroes all six bands in one tap. It does not change output
 gain or the auto-trim setting below.
 
-These bands are fixed in frequency and width; the page does not currently offer custom band
-frequencies or filter shapes.
-
 ## Output gain
 
 Below the Equaliser card, the **Output gain** slider sets the overall level of the final mix, on
 top of whatever the EQ bands are doing. It runs **-12 dB to +12 dB** in 0.5 dB steps and shows its
 current value (for example "+2.5 dB" or "-4.0 dB").
 
-This is the control to reach for when EQ boosts have made the output too loud, or when the
-source material itself is already close to full level (see "Why clipping happens" below).
+Applying bass boost and other equaliser effects can overload the digital signal headroom,
+particularly for modern recordings that are already produced near maximum output. The overall
+gain may then need to be reduced to compensate and keep a clean signal. The automatic trim
+function below can help you set this level. See
+[Why clipping happens](TROUBLESHOOTING.md#why-clipping-happens) if you want the background.
 
 ## Automatically trim gain (auto-trim)
 
@@ -67,18 +58,6 @@ stop that overshoot happening again, then holds that cut for the rest of the ses
 
 Auto-trim is a safety net for occasional loud peaks, not a substitute for setting a sensible
 baseline level yourself - see the recommended workflow below.
-
-## Why clipping happens
-
-EQ boosts add level as well as tone. A bass or presence boost that sounds good on most tracks can
-push a louder record or CD above full scale, which sounds hard, brittle, or obviously distorted.
-
-Many CDs, especially heavily compressed releases, are mastered very hot and leave little headroom
-in the original signal. Even a small EQ boost can be enough to clip them.
-
-The fix usually is not "less EQ" on its own - it's giving the tone controls some headroom to work
-in, by setting output gain to a negative value first. Treat EQ and output gain as one setting,
-not two independent ones.
 
 ## Recommended workflow
 

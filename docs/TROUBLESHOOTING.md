@@ -148,6 +148,21 @@ See [UNINSTALL.md](UNINSTALL.md) for the uninstall script details.
 
 ---
 
+### Why clipping happens
+
+EQ boosts add level as well as tone. A bass or presence boost that sounds good on most tracks can
+push a louder record or CD above full scale, which sounds hard, brittle, or obviously distorted.
+
+Many CDs, especially heavily compressed releases, are mastered very hot and leave little headroom
+in the original signal. Even a small EQ boost can be enough to clip them.
+
+The fix usually is not "less EQ" on its own - it's giving the tone controls some headroom to work
+in, by setting output gain to a negative value first. Treat EQ and output gain as one setting,
+not two independent ones. See [Equaliser](EQUALISER.md) for the controls and the recommended
+workflow.
+
+---
+
 ### Distorted or clipped audio after EQ changes
 
 Equaliser boosts and gain changes can cause clipping.
