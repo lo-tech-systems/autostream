@@ -30,6 +30,7 @@ This is the documentation for autostream and the autostream dial accessory. Pick
 
 - [Info](INFO.md) - autostream's About/status screen: component versions, service health, and appliance status.
 - [System Maintenance](SYSTEM-MAINTENANCE.md) - keeping an appliance healthy over time: updates, update channels, and removal.
+- [Advanced Operations](ADVANCED.md) - install options, including choosing the OwnTone backend.
 
 ## autostream dial
 

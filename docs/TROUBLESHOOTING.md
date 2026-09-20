@@ -362,6 +362,15 @@ Direct access to any appliance is always available from any browser at `http://<
 
 If your Wi-Fi name or password changes, the device may no longer be able to connect. **autostream**’s Wi-Fi watcher will attempt recovery by entering **AP mode** under specific conditions.
 
+#### Changing to a new network from the web UI
+
+If autostream is still reachable, or you simply want to move it to a different network:
+
+1. Go to **Setup -> System -> Network -> Change Wi-Fi Network**.
+2. The setup hotspot opens for up to 30 minutes.
+3. Connect to the hotspot and select the new network. For the first **15 minutes** autostream leaves the hotspot up and will not rejoin the old network, so you have time to connect and choose the new one even if the old network is still in range.
+4. If setup is not completed within 30 minutes, autostream reconnects to the previous network automatically.
+
 #### What AP / hotspot mode looks like
 
 ![autostream hotspot setup](autostream-hotspot.png)

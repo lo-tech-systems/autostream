@@ -10,56 +10,23 @@ curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/boo
 
 This downloads the latest stable release and installs everything autostream needs, including OwnTone for speaker discovery and streaming.
 
-### OwnTone Install Options
+During installation you are asked to set a PIN for the appliance. See [What the PIN does](#what-the-pin-does) below.
 
-By default, the installer builds **owntone-mini** from source. This is a lightweight build maintained by Lo-tech Systems, optimised for the Pi Zero and low-power devices.
-
-If you prefer to use the standard packaged OwnTone build instead, pass `--owntone=full`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --owntone=full
-```
-
-The default `owntone-mini` build supports AirPlay and Chromecast. Use `--owntone=full` if you need support for other protocols.
-
-During installation you are also asked to set a PIN for the appliance. See [What the PIN does](#what-the-pin-does) below.
+For install options, such as running a full OwnTone build instead of the bundled one, see [Advanced Operations](ADVANCED.md).
 
 ---
 
-## Wi-Fi and USB Adapters
+## Wi-Fi
 
-### Connecting to Wi-Fi
+autostream uses the Wi-Fi settings you gave the Pi, normally set with Raspberry Pi Imager when you flashed the card. USB Wi-Fi adapters are supported and used automatically when one is present.
 
-During first install, autostream opens a setup hotspot named **autostream_XXXX** (where XXXX is the last four hex digits of the built-in adapter's MAC address). Connect to it from your phone or laptop, then open `http://autostream.local/` and follow the on-screen steps to select your Wi-Fi network and enter the password.
-
-The setup hotspot uses the **built-in** Wi-Fi radio and is always available as a recovery path, even if a USB adapter is in use.
-
-### USB Wi-Fi adapters
-
-autostream automatically uses a USB Wi-Fi adapter when one is detected:
-
-- The setup hotspot page combines networks visible to both the built-in and USB adapters into a single, deduplicated list. A network appears once even if seen by both radios.
-- If a network is only visible through the USB adapter, a notice explains that removing the adapter would return autostream to hotspot mode.
-- On boot, autostream prefers a USB adapter over the built-in when one is found. No configuration is needed.
-- While a healthy built-in connection is active and playback is idle, autostream will automatically move to a newly inserted USB adapter after two stable detection passes.
-- The built-in adapter always remains the recovery hotspot. A USB adapter is never used for hotspot mode.
-
-**Adapter shown in the System pane:** go to [Setup -> System](SETUP-SYSTEM.md) to see which Wi-Fi adapter is currently active and to change the Wi-Fi network.
-
-### Changing the Wi-Fi network
-
-1. Go to **Setup -> System -> Network -> Change Wi-Fi Network**.
-2. The setup hotspot opens for up to 30 minutes.
-3. Connect to the hotspot SSID and select the new network. For the first **15 minutes** autostream leaves the hotspot up and will not rejoin your old network, so you have time to connect and choose the new one, even if the old network is still in range.
-4. If setup is not completed within 30 minutes, autostream reconnects to the previous network automatically.
+If you later change networks (a new router, for example), or you did not set Wi-Fi up with the Imager, autostream provides a setup hotspot on boot so you can point it at the new network. See [Connecting or changing Wi-Fi](TROUBLESHOOTING.md#changed-wi-fi-ssid-or-password) for how to use the hotspot and switch networks later.
 
 ---
 
 ## Network Access
 
-Autostream is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`). **HTTPS is not supported.** Publicly trusted certificates are not available for `.local` hostnames, and private HTTPS would require installing and trusting a local certificate authority on every phone or computer, which conflicts with autostream's zero-configuration setup and recovery design. Do not use `https://`.
-
-The installer and updater download releases and packages over HTTPS from GitHub. This is separate from the local Web UI transport.
+Connect to autostream in your browser at `http://<hostname>.local/`, for example `http://autostream.local/`. Use `http`, not `https`.
 
 ---
 
@@ -84,11 +51,11 @@ After installation, **autostream** only requires a short, one-time setup using a
 
 ### What the PIN does
 
-The PIN gates the Setup pages and this two-page setup wizard. The Home page, Equaliser, Service, About and Logs pages stay open to view without a PIN; the PIN only protects configuration.
+The PIN gates the Setup pages and this two-page setup wizard. The Home page, Equaliser, Service, Info and Logs pages stay open to view without a PIN; the PIN only protects configuration.
 
-During installation you are asked to set a PIN (4-20 characters: letters, numbers and hyphens). Pressing Enter without typing one skips it, and Setup is then open to anyone on your network with no login at all. You can also set the PIN non-interactively with `--unattended PIN=1234`.
+During installation you are asked to set a PIN (4-20 characters: letters, numbers and hyphens). Pressing Enter without typing one skips it, and Setup is then open to anyone on your network with no login at all. You can change it later from **Setup -> System** using the **Change PIN** button.
 
-The PIN is written in plain text to the SD card's boot partition (`pin.txt`), so it can be read directly from another computer if you forget it. You can change it later from **Setup -> System** using the **Change PIN** button.
+If you forget the PIN, see [Forgotten PIN](TROUBLESHOOTING.md#forgotten-pin) in Troubleshooting for how to recover it.
 
 ---
 
