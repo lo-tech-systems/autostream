@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- change: the web UI now prompts for an AirPlay PIN whenever the playback
+  backend reports an output waiting for pairing, not only when the user has
+  just switched it on. This matters for HomePods grouped behind an Apple TV,
+  where owntone-mini now drives the group through the Apple TV and the PIN
+  request can arrive when playback starts. Cancelling the prompt hides it
+  until that output next asks for a PIN
+- fix: the automatic default-output retry and the restart reconcile no
+  longer keep re-enabling an output that is waiting for a PIN, which would
+  otherwise make an Apple TV show a fresh PIN on every retry
+
 ## Version 0.6.0-beta.2
 
 - change: the bundled owntone-mini moves to 1.3.0, so installs and updates

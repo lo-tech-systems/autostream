@@ -29,8 +29,18 @@ import autostream_appliance_models as models
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _out(id_: str, name: str, selected: bool = False, volume: int = 50) -> SimpleNamespace:
-    return SimpleNamespace(id=id_, name=name, selected=selected, volume_percent=volume)
+def _out(
+    id_: str,
+    name: str,
+    selected: bool = False,
+    volume: int = 50,
+    needs_auth_key: bool = False,
+    requires_auth: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=id_, name=name, selected=selected, volume_percent=volume,
+        needs_auth_key=needs_auth_key, requires_auth=requires_auth,
+    )
 
 
 def _parsed(
@@ -179,12 +189,27 @@ class TestBuildOutputList:
     def test_result_dict_has_required_keys(self):
         raw = [_out("1", "Room")]
         result = models.build_output_list(_parsed(), raw)
-        assert set(result[0].keys()) == {"id", "name", "selected", "volume", "is_default"}
+        assert set(result[0].keys()) == {
+            "id", "name", "selected", "volume", "is_default",
+            "needs_auth_key", "requires_auth",
+        }
 
     def test_selected_flag_preserved(self):
         raw = [_out("1", "Room", selected=True)]
         result = models.build_output_list(_parsed(), raw)
         assert result[0]["selected"] is True
+
+    def test_needs_auth_key_true_passed_through(self):
+        raw = [_out("1", "Apple TV", needs_auth_key=True, requires_auth=True)]
+        result = models.build_output_list(_parsed(), raw)
+        assert result[0]["needs_auth_key"] is True
+        assert result[0]["requires_auth"] is True
+
+    def test_needs_auth_key_false_passed_through(self):
+        raw = [_out("1", "Room")]
+        result = models.build_output_list(_parsed(), raw)
+        assert result[0]["needs_auth_key"] is False
+        assert result[0]["requires_auth"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +659,10 @@ class TestBuildHomeStateAnnotation:
         return _ctx()
 
     def _make_out(self, id_, name, selected=False):
-        return SimpleNamespace(id=id_, name=name, selected=selected, volume_percent=50)
+        return SimpleNamespace(
+            id=id_, name=name, selected=selected, volume_percent=50,
+            needs_auth_key=False, requires_auth=False,
+        )
 
     def test_unselected_occupied_output_marked_remote_in_use(self, tmp_path):
         from unittest.mock import MagicMock

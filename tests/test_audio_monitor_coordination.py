@@ -852,11 +852,12 @@ class TestUpdateLivePlatformLogLevel:
 # _auto_select_default_output: default-output fallback
 # ---------------------------------------------------------------------------
 
-def _make_output(name="Test Speaker", out_id="1", selected=False):
+def _make_output(name="Test Speaker", out_id="1", selected=False, needs_auth_key=False):
     out = MagicMock()
     out.name = name
     out.id = out_id
     out.selected = selected
+    out.needs_auth_key = needs_auth_key
     return out
 
 

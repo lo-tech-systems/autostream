@@ -1331,6 +1331,13 @@ class _OwntoneReconcileTracker:
     with the same non-destructive semantics as device_initiated_pause -- it
     does not disturb the zero-streak, so a genuine restart-wipe that follows
     (latch cleared by an enable or session end) is still caught.
+
+    A zero-output state can also be waiting on the user to enter a PIN: an
+    AirPlay device that needs pairing is deselected by OwnTone rather than
+    left selected-but-erroring. update() accepts *awaiting_pin* as another
+    independent veto with the same non-destructive semantics -- re-arming
+    the retry here would just make the device flash a fresh PIN every retry
+    interval, so it is left alone until the user pairs it via the Web UI.
     """
 
     ZERO_POLL_THRESHOLD = 3
@@ -1348,6 +1355,10 @@ class _OwntoneReconcileTracker:
         # Same edge-detect discipline as last_device_pause_notice, for the
         # independent user_silenced veto.
         self.last_user_silenced_notice = False
+        self._awaiting_pin_notified = False
+        # Same edge-detect discipline as last_device_pause_notice, for the
+        # independent awaiting_pin veto.
+        self.last_awaiting_pin_notice = False
 
     def reset(self) -> None:
         self._consecutive_zero = 0
@@ -1356,6 +1367,8 @@ class _OwntoneReconcileTracker:
         self.last_device_pause_notice = False
         self._user_silenced_notified = False
         self.last_user_silenced_notice = False
+        self._awaiting_pin_notified = False
+        self.last_awaiting_pin_notice = False
 
     def update(
         self,
@@ -1366,6 +1379,7 @@ class _OwntoneReconcileTracker:
         last_user_action_at: float,
         device_initiated_pause: bool = False,
         user_silenced: bool = False,
+        awaiting_pin: bool = False,
     ) -> bool:
         """Advance one check. Returns True iff reconcile should fire now.
 
@@ -1383,6 +1397,8 @@ class _OwntoneReconcileTracker:
             self.last_device_pause_notice = False
             self._user_silenced_notified = False
             self.last_user_silenced_notice = False
+            self._awaiting_pin_notified = False
+            self.last_awaiting_pin_notice = False
             return False
 
         if selected_count > 0:
@@ -1392,12 +1408,15 @@ class _OwntoneReconcileTracker:
             self.last_device_pause_notice = False
             self._user_silenced_notified = False
             self.last_user_silenced_notice = False
+            self._awaiting_pin_notified = False
+            self.last_awaiting_pin_notice = False
             return False
 
         # selected_count == 0 while a session is active.
         self._consecutive_zero += 1
         self.last_device_pause_notice = False
         self.last_user_silenced_notice = False
+        self.last_awaiting_pin_notice = False
         if self._consecutive_zero < self.ZERO_POLL_THRESHOLD:
             return False
         if not self._armed:
@@ -1413,6 +1432,15 @@ class _OwntoneReconcileTracker:
             self._device_pause_notified = True
             return False
         self._device_pause_notified = False
+        if awaiting_pin:
+            # A deselected output is waiting for the user to enter a PIN --
+            # do not treat this as a fault. Keep counting so a genuine wipe
+            # that follows (the flag cleared, e.g. by pairing completing) is
+            # still caught.
+            self.last_awaiting_pin_notice = not self._awaiting_pin_notified
+            self._awaiting_pin_notified = True
+            return False
+        self._awaiting_pin_notified = False
         if user_silenced:
             # The user deliberately disabled the last selected output
             # through the Web UI -- do not treat the resulting zero-output
@@ -1449,6 +1477,7 @@ def _reconcile_owntone_outputs_if_wiped(
     """
     selected_count: Optional[int] = None
     device_paused = False
+    awaiting_pin = False
     if session_active and monitor is not None and monitor.owntone_base_url:
         outputs = monitor._get_owntone_outputs()
         if outputs is not None:
@@ -1461,6 +1490,10 @@ def _reconcile_owntone_outputs_if_wiped(
                 (not o.selected) and bool(o.extra_dict().get("paused_by_device"))
                 for o in outputs
             )
+            awaiting_pin = any(
+                (not o.selected) and bool(getattr(o, "needs_auth_key", False))
+                for o in outputs
+            )
 
     should_fire = tracker.update(
         session_active=session_active,
@@ -1469,11 +1502,16 @@ def _reconcile_owntone_outputs_if_wiped(
         last_user_action_at=_get_last_user_output_action_at(),
         device_initiated_pause=device_paused,
         user_silenced=user_silence_latch_active(),
+        awaiting_pin=awaiting_pin,
     )
     if tracker.last_device_pause_notice:
         logging.info(
             "Zero-output state is device-initiated (output paused by device); "
             "leaving outputs as they are."
+        )
+    if tracker.last_awaiting_pin_notice:
+        logging.info(
+            "Zero-output state is waiting for a PIN; leaving outputs as they are."
         )
     if tracker.last_user_silenced_notice:
         logging.info(
@@ -3648,6 +3686,18 @@ class AudioMonitor:
             )
             return False
 
+        if bool(getattr(default_out, "needs_auth_key", False)):
+            # OwnTone deselected this output pending pairing; probing it
+            # again here would make the device re-prompt for a PIN
+            # (e.g. flashing a new one on screen) on every retry interval.
+            # Leave it alone until the user pairs it via the Web UI.
+            self._throttled_owntone_log(
+                now, logging.INFO,
+                "Default output '%s' is waiting for a PIN; not auto-enabling it (%s).",
+                default_name, reason,
+            )
+            return False
+
         try:
             import autostream_output_usage as _ou
             _ou.refresh_now("default-output-auto-select", timeout=1.5)
@@ -3678,14 +3728,26 @@ class AudioMonitor:
             timeout=3,
         )
         if not update_result.ok:
-            self._throttled_owntone_log(
-                now,
-                logging.WARNING,
-                "Failed to apply default output settings for '%s' (%s): %s",
-                default_name,
-                reason,
-                update_result.message,
-            )
+            if update_result.error_code == "pin_required":
+                # Not a failure to escalate: the output needs pairing via
+                # the web interface, and retrying here would just make the
+                # device re-prompt for a PIN.
+                self._throttled_owntone_log(
+                    now,
+                    logging.INFO,
+                    "Default output '%s' requires a PIN; enable it via the web interface (%s).",
+                    default_name,
+                    reason,
+                )
+            else:
+                self._throttled_owntone_log(
+                    now,
+                    logging.WARNING,
+                    "Failed to apply default output settings for '%s' (%s): %s",
+                    default_name,
+                    reason,
+                    update_result.message,
+                )
             return False
 
         logging.info(

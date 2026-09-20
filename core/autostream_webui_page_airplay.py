@@ -493,6 +493,9 @@ def send_airplay_page(
             // treating this as a confirmed empty outputs list.
             return;
           }}
+          if (typeof maybePromptForPin === 'function') {{
+            try {{ maybePromptForPin(j.outputs); }} catch (e) {{}}
+          }}
           var outputs = j.outputs;
           if (outputs.length === 0) {{
             if (window.__OUTPUTS_EMPTY_SINCE == null) {{ window.__OUTPUTS_EMPTY_SINCE = Date.now(); }}
@@ -556,6 +559,8 @@ def send_airplay_page(
 
         window.addEventListener('DOMContentLoaded',function(){{
           window.__PENDING_OUTPUTS = new Set();
+          window.__PIN_DISMISSED = new Set();
+          window.__PIN_PROMPT_ACTIVE = false;
           window.__MASTER_DRAG_SNAPSHOTS = {{}};
           window.__MASTER_DRAG_BASE = 0;
           document.querySelectorAll('[data-volume-label-for]').forEach(s=>{{

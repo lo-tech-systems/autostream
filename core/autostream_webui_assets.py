@@ -767,6 +767,111 @@ HOME_CARDS_SCRIPT = """
     return j;
   }
 
+  // Runs the PIN-entry/verify/retry loop for one output. `c` is the
+  // checkbox element to keep in sync with the outcome, or null when there
+  // is no live checkbox (e.g. a poll-driven prompt for a card not being
+  // toggled by the user). Returns true once the output ends up enabled,
+  // false if the user cancelled or the retry ultimately failed.
+  async function runPinFlow(id, nm, volume, c) {
+    // Temporarily revert the toggle until fully enabled.
+    if (c) {
+      c.checked = false;
+      updateOutputStateVisual(String(id), false);
+    }
+
+    while (true) {
+      const pin = await showPinModal(nm || 'this speaker');
+      if (!pin) return false; // user cancelled
+
+      let jpin = null;
+      try {
+        jpin = await postPinOnly(id, pin);
+      } catch (e) {
+        // treat as failure; keep disabled
+        if (c) {
+          c.checked = false;
+          updateOutputStateVisual(String(id), false);
+        }
+        return false;
+      }
+
+      if (jpin && jpin.ok) {
+        // PIN accepted -> retry the original enable request (without pin)
+        try {
+          const jen = await postOutputUpdate(id, true, volume);
+          if (jen && jen.ok) {
+            if (c) {
+              c.checked = true;
+              updateOutputStateVisual(String(id), true);
+            }
+            return true;
+          }
+          // If it still asks for PIN, loop again.
+          if (jen && jen.pin_required) {
+            if (c) {
+              c.checked = false;
+              updateOutputStateVisual(String(id), false);
+            }
+            continue;
+          }
+        } catch (e) {
+          if (c) {
+            c.checked = false;
+            updateOutputStateVisual(String(id), false);
+          }
+        }
+        return false;
+      }
+
+      // Wrong PIN -> re-prompt
+      if (jpin && jpin.pin_invalid) {
+        continue;
+      }
+
+      // Other error -> stop
+      return false;
+    }
+  }
+
+  // Poll-driven counterpart to the PIN prompt in sendUpdate(): OwnTone can
+  // flag an output as needing a PIN (needs_auth_key) at any time, not just
+  // right after the user toggles it on, so the outputs poll offers the
+  // prompt itself. __PIN_DISMISSED tracks ids the user cancelled the
+  // prompt for, so the poll does not immediately re-open it every cycle;
+  // it is cleared per-id once that output stops needing a PIN, so a later
+  // re-request (e.g. the device forgot pairing again) prompts again.
+  async function maybePromptForPin(outputs) {
+    if (!window.__PIN_DISMISSED) window.__PIN_DISMISSED = new Set();
+    if (!window.__PENDING_OUTPUTS) window.__PENDING_OUTPUTS = new Set();
+    for (const o of outputs) {
+      if (!o.needs_auth_key) window.__PIN_DISMISSED.delete(String(o.id));
+    }
+    if (window.__PIN_PROMPT_ACTIVE) return;
+    const pinModal = document.getElementById('pinModal');
+    if (pinModal && pinModal.classList.contains('show')) return;
+
+    const target = outputs.find(function(o) {
+      const id = String(o.id);
+      return !!o.needs_auth_key && !window.__PIN_DISMISSED.has(id) &&
+        !window.__PENDING_OUTPUTS.has(id);
+    });
+    if (!target) return;
+
+    const id = String(target.id);
+    window.__PIN_PROMPT_ACTIVE = true;
+    window.__PENDING_OUTPUTS.add(id);
+    try {
+      const sl = document.getElementById('vol_slider_' + id);
+      const volume = sl ? normalizeVolume(parseInt(sl.value, 10)) : (window.__PRESET_VOLUME || 20);
+      const cb = document.getElementById('output_enabled_' + id);
+      const ok = await runPinFlow(id, target.name, volume, cb || null);
+      if (!ok) window.__PIN_DISMISSED.add(id);
+    } finally {
+      window.__PIN_PROMPT_ACTIVE = false;
+      window.__PENDING_OUTPUTS.delete(id);
+    }
+  }
+
   async function sendUpdate(id){
     const c=document.getElementById('output_enabled_'+id), s=document.getElementById('vol_slider_'+id);
     if (c && c.disabled) return;
@@ -805,64 +910,7 @@ HOME_CARDS_SCRIPT = """
       // If OwnTone requires a PIN, prompt and do PIN-only verification.
       // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
       if (selected && j && j.pin_required) {
-        // Temporarily revert the toggle until fully enabled.
-        if (c) {
-          c.checked = false;
-          updateOutputStateVisual(String(id), false);
-        }
-
-        while (true) {
-          const pin = await showPinModal(nm || 'this speaker');
-          if (!pin) return; // user cancelled
-
-          let jpin = null;
-          try {
-            jpin = await postPinOnly(id, pin);
-          } catch (e) {
-            // treat as failure; keep disabled
-            if (c) {
-              c.checked = false;
-              updateOutputStateVisual(String(id), false);
-            }
-            return;
-          }
-
-          if (jpin && jpin.ok) {
-            // PIN accepted -> retry the original enable request (without pin)
-            try {
-              const jen = await postOutputUpdate(id, true, volume);
-              if (jen && jen.ok) {
-                if (c) {
-                  c.checked = true;
-                  updateOutputStateVisual(String(id), true);
-                }
-                return;
-              }
-              // If it still asks for PIN, loop again.
-              if (jen && jen.pin_required) {
-                if (c) {
-                  c.checked = false;
-                  updateOutputStateVisual(String(id), false);
-                }
-                continue;
-              }
-            } catch (e) {
-              if (c) {
-                c.checked = false;
-                updateOutputStateVisual(String(id), false);
-              }
-            }
-            return;
-          }
-
-          // Wrong PIN -> re-prompt
-          if (jpin && jpin.pin_invalid) {
-            continue;
-          }
-
-          // Other error -> stop
-          return;
-        }
+        await runPinFlow(id, nm, volume, c);
       }
     } finally {
       window.__PENDING_OUTPUTS.delete(String(id));

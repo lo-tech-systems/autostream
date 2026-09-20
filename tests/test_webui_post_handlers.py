@@ -1726,3 +1726,25 @@ class TestApplyOutputMutationInitiatedBy:
         note_mock.assert_called_once()
         set_latch_mock.assert_not_called()
         clear_latch_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Poll-driven PIN prompt: source-string checks (same "grep the source"
+# style used elsewhere for embedded JS -- there is no browser/DOM harness
+# in this test suite).
+# ---------------------------------------------------------------------------
+
+class TestPollDrivenPinPromptSource:
+    def test_home_cards_script_defines_run_pin_flow(self):
+        from autostream_webui_assets import HOME_CARDS_SCRIPT
+        assert "function runPinFlow" in HOME_CARDS_SCRIPT
+
+    def test_home_cards_script_defines_maybe_prompt_for_pin(self):
+        from autostream_webui_assets import HOME_CARDS_SCRIPT
+        assert "function maybePromptForPin" in HOME_CARDS_SCRIPT
+
+    def test_airplay_page_calls_maybe_prompt_for_pin_from_outputs_poll(self):
+        source = (REPO_ROOT / "core" / "autostream_webui_page_airplay.py").read_text(
+            encoding="utf-8"
+        )
+        assert "maybePromptForPin(j.outputs)" in source

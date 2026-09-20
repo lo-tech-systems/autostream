@@ -87,12 +87,16 @@ def _outputs(*selected_flags) -> list:
 
 
 def _outputs_with_paused_flag(*selected_and_paused) -> list:
-    """Build synthetic outputs where each item is (selected, paused_by_device)."""
+    """Build synthetic outputs where each item is (selected, paused_by_device)
+    or (selected, paused_by_device, needs_auth_key)."""
     outs = []
-    for i, (selected, paused) in enumerate(selected_and_paused):
+    for i, item in enumerate(selected_and_paused):
+        selected, paused = item[0], item[1]
+        needs_auth_key = item[2] if len(item) > 2 else False
         extra = {"paused_by_device": paused} if paused else {}
         outs.append(SimpleNamespace(
             id=str(i), selected=bool(selected), name=f"out{i}",
+            needs_auth_key=bool(needs_auth_key),
             extra_dict=lambda extra=extra: extra,
         ))
     return outs
@@ -362,6 +366,56 @@ class TestOwntoneReconcileTrackerUserSilenced:
         assert tracker._device_pause_notified is False
 
 
+class TestOwntoneReconcileTrackerAwaitingPin:
+    """awaiting_pin veto: zero outputs because a deselected output is
+    waiting for the user to enter a PIN must not be treated as a
+    wiped-outputs fault."""
+
+    def test_awaiting_pin_veto_never_fires_even_past_threshold(self):
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        results = [
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, awaiting_pin=True,
+            )
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 10)
+        ]
+        assert all(r is False for r in results)
+
+    def test_flag_clearing_allows_prompt_fire_without_resetting_streak(self):
+        """Once the streak is past threshold under veto, dropping the flag
+        (e.g. the output pairs successfully) fires on the very next poll --
+        the veto never reset the zero-streak."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 2):
+            assert tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, awaiting_pin=True,
+            ) is False
+        assert tracker.update(
+            session_active=True, selected_count=0, now=now + 1000,
+            last_user_action_at=0.0, awaiting_pin=False,
+        ) is True
+
+    def test_notice_edge_flag_fires_once_per_streak(self):
+        """last_awaiting_pin_notice is an edge-detect flag: True only on the
+        poll where the zero-streak first crosses the threshold while
+        vetoed, not on every subsequent vetoed poll."""
+        tracker = _OwntoneReconcileTracker()
+        now = 1000.0
+        notices = []
+        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
+            tracker.update(
+                session_active=True, selected_count=0, now=now + i,
+                last_user_action_at=0.0, awaiting_pin=True,
+            )
+            notices.append(tracker.last_awaiting_pin_notice)
+        assert notices.count(True) == 1
+        assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
+
+
 # ── _reconcile_owntone_outputs_if_wiped: poll-loop wiring ───────────────────
 
 class TestReconcileWiring:
@@ -440,6 +494,24 @@ class TestReconcileWiring:
         state = get_owntone_selfheal_state()
         assert state["reconcile_fired_count"] == 0
 
+    def test_awaiting_pin_flag_prevents_rearm(self):
+        """A deselected output carrying needs_auth_key=True is waiting on
+        the user to enter a PIN -- reconcile must not fire, since firing
+        would just make OwnTone re-probe the device and prompt again."""
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        tracker = _OwntoneReconcileTracker()
+        outputs = _outputs_with_paused_flag((False, False, True), (False, False, False))
+
+        with patch.object(mon, "_get_owntone_outputs", return_value=outputs):
+            now = 1000.0
+            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
+                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
+
+        assert mon._owntone_enabled_ok is True
+        state = get_owntone_selfheal_state()
+        assert state["reconcile_fired_count"] == 0
+
     def test_no_paused_flag_still_rearms_as_today(self):
         """Same shape as the device-pause case but with the flag absent on
         every output: this is the pre-existing wiped-outputs fault path and
@@ -500,6 +572,45 @@ class TestReconcileWiring:
         assert fired_any is True
         state = get_owntone_selfheal_state()
         assert state["reconcile_fired_count"] == 1
+
+
+# ── _auto_select_default_output: PIN veto ───────────────────────────────────
+
+class TestAutoSelectDefaultOutputPinVeto:
+    """The default-output auto-select/retry path must not probe an output
+    that OwnTone has already flagged as needing a PIN -- doing so would make
+    the AirPlay device re-prompt (e.g. flash a fresh PIN on screen) on every
+    retry interval instead of waiting for the user to pair it via the Web
+    UI."""
+
+    def _default_output(self, needs_auth_key: bool):
+        return SimpleNamespace(
+            id="1", name="Test Speaker", selected=False,
+            needs_auth_key=needs_auth_key,
+        )
+
+    def test_returns_false_without_calling_update_output(self):
+        mon = _make_monitor()
+        outputs = [self._default_output(needs_auth_key=True)]
+        with patch.object(mon, "_get_owntone_outputs", return_value=outputs), \
+             patch("autostream_core.update_output") as mock_update:
+            result = mon._auto_select_default_output(1000.0, outputs, reason="retry")
+
+        assert result is False
+        mock_update.assert_not_called()
+
+    def test_default_output_without_pin_flag_still_enables(self):
+        """Sanity check: the veto is specific to needs_auth_key, not a
+        general regression in the auto-select path."""
+        mon = _make_monitor()
+        outputs = [self._default_output(needs_auth_key=False)]
+        mock_result = SimpleNamespace(ok=True, error_code="", message="")
+        with patch.object(mon, "_get_owntone_outputs", return_value=outputs), \
+             patch("autostream_core.update_output", return_value=mock_result) as mock_update:
+            result = mon._auto_select_default_output(1000.0, outputs, reason="retry")
+
+        assert result is True
+        mock_update.assert_called_once()
 
 
 # ── User-chosen-silence latch: module-level set/clear/read ──────────────────
