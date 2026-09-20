@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## Version 0.6.0-beta.3 - 2026-09-20
 
+- feat: the audio monitor runs its capture, input-processing, replay-decode
+  and output-stage threads at real-time priority (SCHED_FIFO), so a transient
+  scheduling delay can no longer drop captured samples or force silence into
+  playback. Each thread falls back to normal priority if the real-time grant
+  is unavailable.
+- feat: the audio monitor reports playback underruns per output source and,
+  per input, capture losses (recovered ALSA overruns and periods dropped when
+  processing falls behind) in its status, and logs a warning when an output
+  tick is scheduled more than half a second late, so audio dropouts can be
+  told apart from audio lost at capture.
+- change: this release builds owntone-mini 1.4.0.
 - fix: disabling SD card health monitoring removes the last reading and the
   About and Setup pages stop showing SD health until it is enabled again,
   so a stale figure can never claim better health than reality.
