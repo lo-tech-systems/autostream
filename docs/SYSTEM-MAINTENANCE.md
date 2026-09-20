@@ -4,9 +4,8 @@ Practical guidance for keeping an autostream appliance healthy over time:
 software updates, update channels, and what to do when you want the
 appliance gone.
 
-For the exact controls, see [SETUP-SYSTEM.md](SETUP-SYSTEM.md) (the
-**Setup → System → Updates** card). For the fields this section reports on,
-see [INFO.md](INFO.md).
+For the exact controls, see the [Setup > System > Updates](SETUP-SYSTEM.md#updates) card.
+For the fields this section reports on, see [Info](INFO.md).
 
 ## Software updates
 

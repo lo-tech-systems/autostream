@@ -1,6 +1,6 @@
 # Service
 
-The Service page (`/service`) tracks turntable maintenance: stylus wear, drive
+The Service page tracks turntable maintenance: stylus wear, drive
 belt life, and main bearing oil life. It has no PIN and is reachable from the
 bottom navigation on any autostream page.
 

@@ -20,7 +20,7 @@ For install options, such as running a full OwnTone build instead of the bundled
 
 autostream uses the Wi-Fi settings you gave the Pi, normally set with Raspberry Pi Imager when you flashed the card. USB Wi-Fi adapters are supported and used automatically when one is present.
 
-If you later change networks (a new router, for example), or you did not set Wi-Fi up with the Imager, autostream provides a setup hotspot on boot so you can point it at the new network. See [Connecting or changing Wi-Fi](TROUBLESHOOTING.md#changed-wi-fi-ssid-or-password) for how to use the hotspot and switch networks later.
+If you later change networks (a new router, for example), or you did not set Wi-Fi up with the Imager, autostream provides a setup hotspot on boot so you can point it at the new network. See [Connecting or changing Wi-Fi](TROUBLESHOOTING.md#connecting-or-changing-wi-fi) for how to use the hotspot and switch networks later.
 
 ---
 
@@ -53,7 +53,7 @@ After installation, **autostream** only requires a short, one-time setup using a
 
 The PIN gates the Setup pages and this two-page setup wizard. The Home page, Equaliser, Service, Info and Logs pages stay open to view without a PIN; the PIN only protects configuration.
 
-During installation you are asked to set a PIN (4-20 characters: letters, numbers and hyphens). Pressing Enter without typing one skips it, and Setup is then open to anyone on your network with no login at all. You can change it later from **Setup -> System** using the **Change PIN** button.
+During installation you are asked to set a PIN (4-20 characters: letters, numbers and hyphens). Pressing Enter without typing one skips it, and Setup is then open to anyone on your network with no login at all. You can change it later from [Setup > System](SETUP-SYSTEM.md) using the **Change PIN** button.
 
 If you forget the PIN, see [Forgotten PIN](TROUBLESHOOTING.md#forgotten-pin) in Troubleshooting for how to recover it.
 

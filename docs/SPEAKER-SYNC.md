@@ -33,7 +33,7 @@ reference and at least one other to be measured against it.
 ## How to run it
 
 1. Open **Setup**, expand the **Playback** card, and tap **Run Speaker
-   Synchronisation**. This opens `/align`.
+   Synchronisation**.
 2. Under **Select the outputs to calibrate**, switch on every speaker you want
    included. The first one you switch on becomes the reference (marked with a
    **Reference** chip) - the others are adjusted to match it, not the other way round.

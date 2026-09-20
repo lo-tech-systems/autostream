@@ -15,7 +15,7 @@ of them is already your saved default, in which case it still appears so you don
 of what's selected.
 
 If no outputs have been discovered yet, the list shows "Looking for speakers…" underneath
-while autostream keeps polling for them in the background.
+while autostream keeps looking for them in the background.
 
 ## Default Volume
 

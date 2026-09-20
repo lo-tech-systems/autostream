@@ -7,7 +7,7 @@ per-speaker output offsets.
 ## Reaching the page
 
 Open **Setup**, expand the **Playback** card, and tap **More Owntone
-Settings**. This opens `/owntone-setup`.
+Settings**.
 
 If your backend supports [output offsets](#output-offsets), the same card
 also shows a **Run Speaker Synchronisation** button, which opens the

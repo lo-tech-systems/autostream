@@ -14,8 +14,6 @@ Press play on the turntable or CD player itself. There is no play button in auto
 
 As soon as the input's level rises above the silence threshold, autostream treats this as the start of a listening session and begins streaming to your default speaker. There is no manual "start" step in the Web UI: the session starts itself as soon as it detects real audio.
 
-Once a session has started it is held open for a minimum time (30 seconds by default) even if the source dips briefly quiet, so a stylus drop or a quiet passage does not cut playback short.
-
 ## 4. Choose your speakers
 
 Your default speaker (chosen during [Setup Page 1](GETTING-STARTED.md#setup-page-1---speaker-selection)) is switched on automatically if nothing else is already selected. Open the [Home page](HOME-PAGE.md) at any time to:

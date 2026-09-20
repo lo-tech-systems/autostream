@@ -34,6 +34,15 @@ install command:
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --unattended PIN=1234
 ```
 
+## API reference
+
+autostream exposes local interfaces for integration and diagnostics. These are developer
+references, not needed for normal use:
+
+- [Monitor socket API](AUTOSTREAM-MONITOR-API.md) - the audio monitor's control and status interface.
+- [Log level API](LOG-LEVEL-API.md) - reading and setting log verbosity at runtime.
+- [API error contract](API-ERROR-CONTRACT.md) - how the web interface reports errors.
+
 ## See also
 
 - [Getting Started](GETTING-STARTED.md) - the normal install and setup.

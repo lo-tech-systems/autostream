@@ -8,8 +8,7 @@ disk, SD card wear).
 
 ## Getting there
 
-Tap **Info** in the bottom navigation bar (the page itself is served at
-`/about`). It opens on a hero screen with the autostream logo, the
+Tap **Info** in the bottom navigation bar. It opens on a hero screen with the autostream logo, the
 "Powered By Lo-tech Systems" logo, and the installed **autostream** version
 underneath. Below that are four rows: **System**, **Copyright**, **License**,
 and **Logs**.

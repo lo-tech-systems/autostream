@@ -64,14 +64,14 @@ The recovery page offers four actions:
 |--------|--------|
 | **Retry** | Refreshes the page to check whether the service has restarted. |
 | **Download Logs** | Downloads a ZIP of the dial and Wi-Fi setup logs (`dial-*.log`, `autostream_wifi_watcher.log`) to help diagnose the problem. |
-| **Reboot** | Triggers a graceful reboot. The page switches to a *rebooting* holding page and polls until the dial's service returns. |
+| **Reboot** | Triggers a graceful reboot. The page switches to a *rebooting* holding page and waits until the dial's service returns. |
 | **Factory Reset** | After a confirmation step, erases the dial's Wi-Fi credentials and settings, then reboots. Reconnect to the `autostream-dial_XXXX` hotspot afterwards to reconfigure Wi-Fi. |
 
 ### During a firmware update
 
 While an update is in progress, the browser is automatically redirected to
-an **updating** page that polls the update state and shows progress until
-the update completes and the service restarts.
+an **updating** page that shows progress until the update completes and the
+service restarts.
 
 ## When the dial won't come back
 

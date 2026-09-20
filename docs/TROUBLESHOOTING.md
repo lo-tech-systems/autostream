@@ -354,7 +354,7 @@ Direct access to any appliance is always available from any browser at `http://<
 
 ---
 
-### Changed Wi-Fi SSID or password
+### Connecting or changing Wi-Fi
 
 **autostream** stores the “configured SSID” marker at:
 

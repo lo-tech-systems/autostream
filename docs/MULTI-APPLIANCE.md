@@ -19,8 +19,7 @@ looking at and controlling a different appliance.
 
 ## Turning it on
 
-Multi-appliance control is configured in **Setup > Personalisation** - see
-[Setup-Personalisation](SETUP-PERSONALISATION.md) for the full settings card. Two
+Multi-appliance control is configured in [Setup > Personalisation](SETUP-PERSONALISATION.md). Two
 switches matter here:
 
 - **Display Hostname** - shows this appliance's hostname as a pill in the top-right of
@@ -41,8 +40,8 @@ it to open a dropdown listing:
 - Every other discovered autostream appliance, listed by hostname below a divider.
 
 If no other appliances are visible, the dropdown shows "No other appliances". The list
-refreshes automatically every 15 seconds, and again as soon as you open it, so a newly
-discovered or newly offline appliance shows up without a page reload.
+refreshes on its own, and again as soon as you open it, so a newly discovered or newly
+offline appliance shows up without a page reload.
 
 Tapping any entry takes you to that appliance's Home page (or Equaliser page, if that's
 where you tapped the pill from) in remote-control mode.
@@ -88,7 +87,7 @@ You cannot change its Setup, Service, or other configuration remotely.
 
 ## Opting out
 
-**Allow control of this from other appliances** (also in Setup > Personalisation)
+**Allow control of this from other appliances** (also in [Setup > Personalisation](SETUP-PERSONALISATION.md))
 controls whether this appliance announces itself to others at all. Turn it off and this
 appliance stops appearing in other appliances' selector dropdowns and output-card
 shortcuts - it becomes invisible to multi-appliance control network-wide, even though
@@ -98,8 +97,8 @@ control others.
 ## Recovery when a remote appliance goes offline
 
 If a remote appliance you're controlling stops responding (network drop, reboot, power
-loss), autostream's automatic polling detects the failure after a few consecutive
-attempts and returns you to your own appliance's Home page with a message explaining
+loss), autostream detects the failure after a few moments and returns you to your own
+appliance's Home page with a message explaining
 that the remote appliance is unavailable. You don't need to do anything else - reopen
 the selector once the other appliance is back to reconnect to it.
 

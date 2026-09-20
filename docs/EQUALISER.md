@@ -1,7 +1,7 @@
 # Equaliser
 
-The Equaliser page is served at `/equaliser`. It controls the **shared output stage** - the
-tone and level applied to whatever is currently playing, after all sources have been mixed.
+The Equaliser page controls the **shared output stage** - the tone and level applied to
+whatever is currently playing, after all sources have been mixed.
 There is no PIN gate on this page, so it stays reachable for quick adjustments while music is
 playing.
 
@@ -109,8 +109,8 @@ Example: if auto-trim settles at about -6 dB, set Output gain to about -6 dB, th
 
 ## Multiple appliances
 
-If **Display Hostname** and **Allow control of other appliances** are both enabled (Setup >
-Personalisation), a selector in the top-right of the page lets you jump to another autostream
+If **Display Hostname** and **Allow control of other appliances** are both enabled
+([Setup > Personalisation](SETUP-PERSONALISATION.md)), a selector in the top-right of the page lets you jump to another autostream
 appliance's Equaliser page and adjust it directly, the same way as on the Home page. See
 [Multi-Appliance](MULTI-APPLIANCE.md) for the full behaviour and what happens if the other
 appliance goes offline mid-edit.

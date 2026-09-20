@@ -1,17 +1,16 @@
 # Home Page
 
-The Home page is served at `/` and is the main screen for day-to-day use: it shows what's
-playing and lets you pick which speakers (AirPlay outputs) are active and how loud they are.
-
-It polls the appliance in the background (`/api/status` every 1.5 s, `/api/owntone/outputs_state`
-every 1.5 s) so it stays live without a manual refresh.
+The Home page is the main screen for day-to-day use. It shows what's playing and lets you pick
+which speakers (AirPlay outputs) are active and how loud they are. It updates on its own, with
+no manual refresh.
 
 ## Now Playing card
 
-The card at the top of the page shows either:
+The card at the top of the page shows one of:
 
 - **Ready** - no audio is currently detected on the active input.
 - **Now Playing** - an input is above the silence threshold.
+- **Repeat Play** - autostream is replaying the last recorded disc or record. See [Repeat playback](SETUP-PLAYBACK.md#repeat-playback).
 
 Under the heading, an icon and label identify the source: **Turntable**, **Bluetooth**, or
 **Line Level**, alongside the input's own label (for example "Input 1"). If a Bluetooth
@@ -24,7 +23,7 @@ identification service itself is unavailable it shows "Track ID function not ava
 
 ### Input detail and VU meter
 
-When **Display Input Detail** is enabled (Setup > Personalisation), the card also shows:
+When **Display Input Detail** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), the card also shows:
 
 - A "Locked · NN kHz" line once the input has locked to a sample rate.
 - A stereo VU meter (left/right level bars).
@@ -34,7 +33,7 @@ Both are hidden when this setting is off.
 ## Master Volume
 
 A **Master Volume** slider appears inside the Now Playing card, but only when
-**Show Master Volume Control** is enabled (Setup > Personalisation). It is disabled (greyed
+**Show Master Volume Control** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)). It is disabled (greyed
 out) whenever no output is currently selected. While active, dragging it scales the volume of
 every selected output proportionally, using each output's current volume as its starting
 point; it does not set every output to the same level.
@@ -72,15 +71,15 @@ that's using it.
 
 ## Repeat Play
 
-A small pill button reading **↻ Repeat Play** (or **↻ Replay Last** when nothing is currently
-playing but a buffered recording is available) appears next to the appliance name, but only
-when the repeat feature is enabled. Tapping it arms or starts a repeat/replay; while a replay
-is being stopped it reads **Stopping…** and the button is briefly disabled. See
-[Setup-Playback](SETUP-PLAYBACK.md) for how repeat is enabled and its defaults configured.
+autostream can repeat the last disc or record it played. When repeat is enabled in
+[Setup - Playback](SETUP-PLAYBACK.md#repeat-playback), a **Repeat Play** button appears at the
+top of the Home page. Tap it to replay the current record when it ends. The button reads
+**Replay Last** when nothing is playing but a recording is available, and **Stopping…** briefly
+while a replay is ending.
 
 ## Appliance selector
 
-If **Display Hostname** is enabled (Setup > Personalisation), a pill in the top-right shows
+If **Display Hostname** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), a pill in the top-right shows
 this appliance's hostname. If **Allow control of other appliances** is also enabled and other
 autostream appliances are visible on the network, tapping the pill opens a dropdown to jump to
 another appliance's Home or Equaliser page. See [Multi-Appliance](MULTI-APPLIANCE.md) for the
