@@ -456,11 +456,16 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         result = _core_mod.get_active_track_identification_snapshot()
         assert result is origin_snap
 
-    def test_capturing_monitor_takes_priority_over_a_replaying_one(self):
-        # Mutual exclusion is a daemon invariant for the SAME recording, but
-        # this function must still prefer an actually-capturing monitor over
-        # a concurrently-replaying one on a different input if it ever
-        # happens (belt-and-braces, matches the daemon's own priority).
+    def test_capturing_monitor_takes_priority_over_a_replaying_one_when_source_unknown(self):
+        # This covers the FALLBACK scan only (session source None/unknown,
+        # e.g. the very first poll cycle before _session_state is
+        # populated): with no session-tracker source to prefer, the
+        # fallback scan checks capturing first so a live capture on another
+        # input takes priority over a concurrently-replaying recording.
+        # Once the session source IS known, the session-tracker source
+        # takes precedence instead -- see
+        # test_session_source_replay_wins_over_a_capturing_monitor below for
+        # that (real) precedence behaviour.
         replay_snap = _TISnapshot(
             enabled=True, state=_STATE_IDENTIFIED, status_text="Identified",
             input_index=2, title="Replay Track",
@@ -480,8 +485,77 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         capturing_mon._ti_snapshot = capturing_snap
         _core_mod._track_id_service = MagicMock()
 
-        result = _core_mod.get_active_track_identification_snapshot()
+        _core_mod._set_session_state(False, None)  # source unknown/absent -- fallback path
+        try:
+            result = _core_mod.get_active_track_identification_snapshot()
+        finally:
+            _core_mod._set_session_state(False, None)
         assert result is capturing_snap
+
+    def test_session_source_replay_wins_over_a_capturing_monitor(self):
+        """Precedence fix: once the session tracker names "replay" as the
+        source, get_active_track_identification_snapshot() must return the
+        replay-origin monitor's snapshot even though a different input is
+        (per this belt-and-braces scenario) also capturing -- the session
+        state is authoritative, not the fallback scan's capturing-first
+        order (that order only applies when the source is not yet known,
+        see test_capturing_monitor_takes_priority_over_a_replaying_one_when_source_unknown
+        above)."""
+        replay_snap = _TISnapshot(
+            enabled=True, state=_STATE_IDENTIFIED, status_text="Identified",
+            input_index=2, title="Replay Track",
+        )
+        capturing_snap = _TISnapshot(
+            enabled=True, state=_STATE_IDENTIFIED, status_text="Identified",
+            input_index=1, title="Live Track",
+        )
+        replaying_mon = _mk_monitor(input_index=2, fifo_path="/tmp/test_wpr9_h.fifo")
+        replaying_mon.is_capturing = False
+        replaying_mon._replay_origin = True
+        replaying_mon._ti_snapshot = replay_snap
+
+        capturing_mon = _mk_monitor(input_index=1, fifo_path="/tmp/test_wpr9_i.fifo")
+        capturing_mon.is_capturing = True
+        capturing_mon._replay_origin = False
+        capturing_mon._ti_snapshot = capturing_snap
+        _core_mod._track_id_service = MagicMock()
+
+        _core_mod._set_session_state(True, "replay")
+        try:
+            result = _core_mod.get_active_track_identification_snapshot()
+        finally:
+            _core_mod._set_session_state(False, None)
+        assert result is replay_snap
+
+    def test_session_source_names_live_input_wins_over_other_capturing_input(self):
+        """Precedence fix, live-source branch: the session tracker's
+        "inputN" source picks that exact monitor's snapshot even when a
+        different input also happens to be capturing."""
+        input1_snap = _TISnapshot(
+            enabled=True, state=_STATE_IDENTIFIED, status_text="Identified",
+            input_index=1, title="Input 1 Track",
+        )
+        input2_snap = _TISnapshot(
+            enabled=True, state=_STATE_IDENTIFIED, status_text="Identified",
+            input_index=2, title="Input 2 Track",
+        )
+        mon1 = _mk_monitor(input_index=1, fifo_path="/tmp/test_wpr9_j.fifo")
+        mon1.is_capturing = True
+        mon1._replay_origin = False
+        mon1._ti_snapshot = input1_snap
+
+        mon2 = _mk_monitor(input_index=2, fifo_path="/tmp/test_wpr9_k.fifo")
+        mon2.is_capturing = False
+        mon2._replay_origin = False
+        mon2._ti_snapshot = input2_snap
+        _core_mod._track_id_service = MagicMock()
+
+        _core_mod._set_session_state(True, "input2")
+        try:
+            result = _core_mod.get_active_track_identification_snapshot()
+        finally:
+            _core_mod._set_session_state(False, None)
+        assert result is input2_snap
 
     def test_waiting_snapshot_when_service_enabled_but_nothing_actively_sourcing(self):
         mon = _mk_monitor(input_index=1)

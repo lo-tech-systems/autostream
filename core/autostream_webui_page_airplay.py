@@ -348,6 +348,12 @@ def send_airplay_page(
             _np_display_name = html.escape(f"{_input_prefix} – Track ID function not available")
         elif _ti_state == "not_found":
             _np_display_name = html.escape(f"{_input_prefix} – Unknown track")
+        elif _ti_state in ("waiting_for_audio", "analysing"):
+            # Use the API's own status_text ("Waiting for audio" /
+            # "Analysing") instead of collapsing both into the
+            # "Identifying Track…" catch-all.
+            _ti_status_text = str(_ti_dict.get("status_text") or "Identifying Track…")
+            _np_display_name = html.escape(f"{_input_prefix} – {_ti_status_text}")
         else:
             _np_display_name = html.escape(f"{_input_prefix} – Identifying Track…")
         _np_display_signal = ""

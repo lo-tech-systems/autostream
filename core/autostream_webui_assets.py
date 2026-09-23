@@ -1127,6 +1127,12 @@ HOME_CARDS_SCRIPT = """
       var suffix;
       if (tiState === 'error') { suffix = 'Track ID function not available'; }
       else if (tiState === 'not_found') { suffix = 'Unknown track'; }
+      else if (tiState === 'waiting_for_audio' || tiState === 'analysing') {
+        // Use the API's own status_text ("Waiting for audio" / "Analysing")
+        // instead of collapsing both into the "Identifying Track…" catch-all,
+        // so a stalled schedule is visibly different from one that is working.
+        suffix = String((ti && ti.status_text) || 'Identifying Track…');
+      }
       else { suffix = 'Identifying Track…'; }
       if (nameEl) nameEl.textContent = inputPrefix + ' – ' + suffix;
       if (signalEl) signalEl.textContent = '';

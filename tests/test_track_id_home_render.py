@@ -24,6 +24,7 @@ try:
         STATE_ERROR,
         STATE_NOT_FOUND,
         STATE_IDENTIFIED,
+        STATE_WAITING,
         TrackIdentificationSnapshot,
         disabled_snapshot,
     )
@@ -274,6 +275,27 @@ class TestTiInProgressRender:
     def test_analysing_shows_identifying_text(self):
         html = _render_airplay_page(ti_snapshot=self._snap(STATE_ANALYSING))
         assert "Identifying Track" in html
+
+    def test_analysing_with_status_text_shows_status_text_not_generic_label(self):
+        """Fix: waiting_for_audio/analysing now surface the API's own
+        status_text instead of collapsing into the "Identifying Track…"
+        catch-all, so a stalled schedule reads differently from a working
+        one. Checked against the actual rendered "<prefix> – <text>" label
+        (not a bare substring search), since the page also embeds the
+        client-side JS source, which mentions "Identifying Track…" in a
+        comment regardless of server-rendered state."""
+        html = _render_airplay_page(
+            ti_snapshot=self._snap(STATE_ANALYSING, status_text="Analysing"),
+        )
+        assert "– Analysing" in html
+        assert "– Identifying Track" not in html
+
+    def test_waiting_for_audio_with_status_text_shows_status_text(self):
+        html = _render_airplay_page(
+            ti_snapshot=self._snap(STATE_WAITING, status_text="Waiting for audio"),
+        )
+        assert "– Waiting for audio" in html
+        assert "– Identifying Track" not in html
 
     def test_not_found_shows_unknown_track(self):
         html = _render_airplay_page(ti_snapshot=self._snap(STATE_NOT_FOUND))

@@ -1241,6 +1241,152 @@ class TestCaptureStopReset:
 
 
 # ---------------------------------------------------------------------------
+# Replay-origin guards on the capture-edge handlers
+#
+# self._replay_origin is refreshed each poll cycle from the coordinator's
+# _replay_origin_input() before these callbacks run. When it is true,
+# _on_capture_started/_on_capture_stopped must leave the identification
+# cycle alone rather than tearing it down -- covers both a settling-noise
+# transient on the replay-origin input, and the ordinary armed-repeat
+# handoff (repeat starts replay inside the same capture-stop tick, so a
+# normal capture-end on the input becoming the replay origin also lands
+# here with self._replay_origin already true; the session arm re-arms it
+# separately). See both methods' docstrings.
+# ---------------------------------------------------------------------------
+
+class TestCaptureStoppedReplayOriginGuard:
+
+    def _armed_monitor(self, svc):
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = time.time() + 100.0
+        mon._ti_next_attempt_reason = "match"
+        mon._track_change_seq_baseline = 5
+        return mon
+
+    def test_replay_origin_true_preserves_identification_state(self):
+        svc = _make_service()
+        mon = self._armed_monitor(svc)
+        mon._replay_origin = True
+        gen_before = mon._ti_generation
+        next_attempt_before = mon._ti_next_attempt
+        snapshot_before = mon._ti_snapshot
+        client = MagicMock(spec=MonitorClient)
+
+        with patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+
+        assert mon._ti_generation == gen_before
+        assert mon._ti_next_attempt == next_attempt_before
+        assert mon._ti_next_attempt_reason == "match"
+        assert mon._track_change_seq_baseline == 5
+        assert mon._ti_snapshot is snapshot_before
+
+    def test_replay_origin_false_still_tears_down(self):
+        """Contrast case: without the replay-origin guard, the ordinary
+        teardown (existing behaviour) still runs."""
+        svc = _make_service()
+        mon = self._armed_monitor(svc)
+        mon._replay_origin = False
+        gen_before = mon._ti_generation
+        client = MagicMock(spec=MonitorClient)
+
+        with patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+
+        assert mon._ti_generation == gen_before + 1
+        assert mon._ti_next_attempt == 0.0
+        assert mon._ti_next_attempt_reason == ""
+        assert mon._track_change_seq_baseline == 0
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+    def test_replay_origin_true_still_emits_capture_stopped_info_log(self, caplog):
+        """Fix: the usual INFO capture-stopped line must still fire even
+        when the replay-origin guard short-circuits the teardown -- OwnTone
+        capture did stop, which is worth logging regardless of what happens
+        to identification (this is the normal handoff case's log line)."""
+        import logging
+        svc = _make_service()
+        mon = self._armed_monitor(svc)
+        mon._replay_origin = True
+        client = MagicMock(spec=MonitorClient)
+
+        with caplog.at_level(logging.INFO), \
+             patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+
+        assert any(
+            r.levelno == logging.INFO and "capture stopped" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_replay_origin_true_debug_log_mentions_session_arm_not_just_transient(self, caplog):
+        """Fix: the DEBUG message must be accurate for BOTH the probation
+        transient and the ordinary armed-repeat handoff -- not phrased as
+        if it were only ever a transient."""
+        import logging
+        svc = _make_service()
+        mon = self._armed_monitor(svc)
+        mon._replay_origin = True
+        client = MagicMock(spec=MonitorClient)
+
+        with caplog.at_level(logging.DEBUG), \
+             patch.object(core, "any_monitor_capturing", return_value=False), \
+             patch.object(core, "_stop_and_disable_owntone"):
+            mon._on_capture_stopped(client)
+
+        debug_messages = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("session arm" in m for m in debug_messages), debug_messages
+
+
+class TestCaptureStartedReplayOriginGuard:
+
+    def test_replay_origin_true_leaves_identification_cycle_untouched(self):
+        """No generation bump, no snapshot reset: this is a probation
+        transient during the monitor's own replay, not a real capture
+        start, so the already-armed replay identification cycle must
+        survive untouched."""
+        svc = _make_service()
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._replay_origin = True
+        gen_before = mon._ti_generation
+        snapshot_before = mon._ti_snapshot
+        mon._ti_next_attempt = 42.0
+        mon._ti_next_attempt_reason = "match"
+        mon._ti_inflight = True
+        inflight_token_before = mon._ti_inflight_token = object()
+
+        mon._on_capture_started()
+
+        assert mon._ti_generation == gen_before
+        assert mon._ti_snapshot is snapshot_before
+        assert mon._ti_next_attempt == 42.0
+        assert mon._ti_next_attempt_reason == "match"
+        assert mon._ti_inflight is True
+        assert mon._ti_inflight_token is inflight_token_before
+
+    def test_replay_origin_false_still_arms_normally(self):
+        """Contrast case: existing behaviour (a genuine capture start)
+        still resets and re-arms the cycle."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _active_monitor()
+        core._track_id_service = svc
+        mon._replay_origin = False
+        before = time.time()
+
+        mon._on_capture_started()
+
+        assert mon._ti_next_attempt >= before + 19
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+
+# ---------------------------------------------------------------------------
 # get_track_identification_snapshot
 # ---------------------------------------------------------------------------
 
@@ -1861,7 +2007,7 @@ class TestTrackIdentificationDuringReplay:
         """On the very cycle replay-sourcing BEGINS (was_actively_sourcing
         False -> True), _ingest_status must not itself baseline the seq or
         fire a track-change: that transition is armed by
-        _dispatch_session_event -> _arm_track_identification_for_replay()
+        _dispatch_session_event -> _arm_track_identification_for_session()
         after this same poll cycle, mirroring _on_capture_started."""
         svc = _make_service()
         mon = _make_monitor()
@@ -1880,12 +2026,12 @@ class TestTrackIdentificationDuringReplay:
         }
         mon._ingest_status(status, replay_origin=True)  # transition cycle
         # No track-change fired: baseline left at its old (now stale) value
-        # and generation untouched -- _arm_track_identification_for_replay()
+        # and generation untouched -- _arm_track_identification_for_session()
         # is responsible for re-baselining once the session tracker sees it.
         assert mon._ti_generation == gen_before
         assert mon._replay_origin is True  # field itself does update
 
-    def test_arm_track_identification_for_replay_baselines_seq(self):
+    def test_arm_track_identification_for_session_baselines_seq(self):
         svc = _make_service(analysis_lead_in=5, snapshot=15)
         mon = _make_monitor()
         mon.is_capturing = False
@@ -1895,13 +2041,13 @@ class TestTrackIdentificationDuringReplay:
         mon._apply_track_id_service(svc)
 
         before = time.time()
-        mon._arm_track_identification_for_replay()
+        mon._arm_track_identification_for_session()
 
         assert mon._track_change_seq_baseline == 9
         assert mon._ti_next_attempt_reason == "initial"
         assert mon._ti_next_attempt >= before + 19  # lead-in(5)+snapshot(15)
 
-    def test_arm_track_identification_for_replay_resets_generation_and_inflight(self):
+    def test_arm_track_identification_for_session_resets_generation_and_inflight(self):
         svc = _make_service()
         mon = _make_monitor()
         mon.is_capturing = False
@@ -1911,28 +2057,28 @@ class TestTrackIdentificationDuringReplay:
         mon._ti_inflight = True
         mon._ti_inflight_token = object()
 
-        mon._arm_track_identification_for_replay()
+        mon._arm_track_identification_for_session()
 
         assert mon._ti_generation == gen_before + 1
         assert mon._ti_inflight is False
         assert mon._ti_inflight_token is None
 
-    def test_arm_track_identification_for_replay_sets_waiting_snapshot(self):
+    def test_arm_track_identification_for_session_sets_waiting_snapshot(self):
         svc = _make_service()
         mon = _make_monitor()
         mon.is_capturing = False
         core._track_id_service = svc
         mon._apply_track_id_service(svc)
 
-        mon._arm_track_identification_for_replay()
+        mon._arm_track_identification_for_session()
         assert mon._ti_snapshot.state == STATE_WAITING
 
-    def test_arm_track_identification_for_replay_disabled_service_sets_disabled_snapshot(self):
+    def test_arm_track_identification_for_session_disabled_service_sets_disabled_snapshot(self):
         mon = _make_monitor()
         mon.is_capturing = False
         core._track_id_service = None
 
-        mon._arm_track_identification_for_replay()
+        mon._arm_track_identification_for_session()
         assert mon._ti_snapshot.state == STATE_DISABLED
 
     def test_session_started_replay_source_arms_via_dispatch(self):
@@ -1956,6 +2102,133 @@ class TestTrackIdentificationDuringReplay:
 
         assert origin_mon._track_change_seq_baseline == 4
         assert origin_mon._ti_next_attempt_reason == "initial"
+
+
+# ---------------------------------------------------------------------------
+# _apply_track_id_service: replay-origin scheduling
+#
+# Before this fix, _apply_track_id_service() only scheduled an initial
+# attempt when is_capturing was True; changing the track-ID setting live
+# mid-replay would park the schedule at 0.0 with nothing left to un-park it
+# until replay ended (the replay-origin input never transitions
+# is_capturing). Now it schedules whenever the input is actively sourcing
+# (capturing OR replay-origin).
+# ---------------------------------------------------------------------------
+
+class TestApplyServiceReplayOriginScheduling:
+
+    def test_schedules_initial_attempt_when_replay_origin_and_not_capturing(self):
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon._replay_origin = True
+        core._track_id_service = svc
+
+        before = time.time()
+        mon._apply_track_id_service(svc)
+
+        assert mon._ti_next_attempt >= before + 19  # lead-in(5)+snapshot(15)
+        assert mon._ti_next_attempt_reason == "initial"
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+    def test_does_not_schedule_when_neither_capturing_nor_replay_origin(self):
+        """Contrast case: existing behaviour is unchanged when the input is
+        genuinely idle (not capturing, not the replay origin) -- the
+        schedule stays parked until capture-start or a session-arm."""
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        mon._replay_origin = False
+        core._track_id_service = svc
+
+        mon._apply_track_id_service(svc)
+
+        assert mon._ti_next_attempt == 0.0
+        assert mon._ti_next_attempt_reason == ""
+
+    def test_still_schedules_when_capturing_and_not_replay_origin(self):
+        """Contrast case: the pre-existing is_capturing path still works."""
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _active_monitor()
+        mon._replay_origin = False
+        core._track_id_service = svc
+
+        before = time.time()
+        mon._apply_track_id_service(svc)
+
+        assert mon._ti_next_attempt >= before + 19
+
+
+# ---------------------------------------------------------------------------
+# maybe_trigger_track_identification: self-heal
+#
+# If an input is actively sourcing with the service enabled and nothing in
+# flight, but _ti_next_attempt is still the 0.0 sentinel (an arming path was
+# missed or raced), maybe_trigger_track_identification schedules an initial
+# attempt itself rather than staying parked forever. The self-heal must
+# schedule exactly once per stall -- a second call must not re-schedule or
+# busy-loop, since the freshly-set deadline now guards it.
+# ---------------------------------------------------------------------------
+
+class TestSelfHealSchedule:
+
+    def test_self_heal_schedules_when_parked_at_zero_while_replay_sourcing(self):
+        svc = _make_service(analysis_lead_in=5, snapshot=15)
+        mon = _make_monitor()
+        mon.is_capturing = False
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        # Simulate a missed/raced arming: schedule left at the sentinel.
+        mon._ti_next_attempt = 0.0
+        mon._ti_next_attempt_reason = ""
+
+        before = time.time()
+        mon.maybe_trigger_track_identification(client, before, replay_origin=True)
+
+        assert mon._ti_next_attempt != 0.0
+        assert mon._ti_next_attempt >= before + 19  # lead-in(5)+snapshot(15)
+        assert mon._ti_next_attempt_reason == "initial"
+        # Self-heal only schedules this cycle; it does not itself dispatch.
+        client.get_id_snapshot.assert_not_called()
+
+    def test_self_heal_does_not_apply_when_not_actively_sourcing(self):
+        """Not capturing and not the replay origin: self-heal must not fire
+        (nothing is actively sourcing, so nothing should be scheduled)."""
+        svc = _make_service()
+        mon = _make_monitor()
+        mon.is_capturing = False
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 0.0
+
+        mon.maybe_trigger_track_identification(client, time.time(), replay_origin=False)
+
+        assert mon._ti_next_attempt == 0.0
+        client.get_id_snapshot.assert_not_called()
+
+    def test_self_heal_does_not_rerun_or_busy_loop_on_second_call(self):
+        """Once self-heal schedules a deadline, an immediate second call
+        (same tick) must not reschedule or dispatch -- the deadline now
+        guards it, same as any other scheduled attempt."""
+        svc = _make_service()
+        mon = _active_monitor()  # capturing=True, silent=False
+        client = _make_client()
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_next_attempt = 0.0
+        mon._ti_next_attempt_reason = ""
+
+        now = time.time()
+        mon.maybe_trigger_track_identification(client, now)
+        scheduled_at = mon._ti_next_attempt
+        assert scheduled_at != 0.0
+
+        mon.maybe_trigger_track_identification(client, now)  # immediate re-call, same "now"
+
+        assert mon._ti_next_attempt == scheduled_at  # unchanged
+        client.get_id_snapshot.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

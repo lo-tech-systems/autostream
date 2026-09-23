@@ -894,7 +894,7 @@ class TestDispatchSessionEvent:
         origin_mon.is_capturing = False
         with patch.object(core, "_start_session_owntone"), \
              patch.object(origin_mon, "_nowplaying_publisher"), \
-             patch.object(origin_mon, "_arm_track_identification_for_replay") as arm_mock:
+             patch.object(origin_mon, "_arm_track_identification_for_session") as arm_mock:
             _dispatch_session_event(
                 "session_started", None, origin_mon, BASE_URL, new_source="replay",
             )
@@ -906,24 +906,27 @@ class TestDispatchSessionEvent:
         origin_mon.is_capturing = False
         with patch.object(prev_mon, "_nowplaying_publisher"), \
              patch.object(origin_mon, "_nowplaying_publisher"), \
-             patch.object(origin_mon, "_arm_track_identification_for_replay") as arm_mock:
+             patch.object(origin_mon, "_arm_track_identification_for_session") as arm_mock:
             _dispatch_session_event(
                 "source_changed", prev_mon, origin_mon, BASE_URL, new_source="replay",
             )
         arm_mock.assert_called_once()
 
-    def test_session_started_input_sourced_does_not_arm_replay_identification(self):
-        """A live-capture session start must not go through the replay-arming
-        path -- _on_capture_started (fired separately per-input) already
-        handles it."""
+    def test_session_started_input_sourced_also_arms_identification(self):
+        """A live-capture session start also goes through the session-arm
+        path (alongside _on_capture_started, fired separately per-input):
+        a live input taking over from a replay can reach session_started/
+        source_changed with no fresh is_capturing edge left to arm from
+        (see _arm_track_identification_for_session()'s docstring), so the
+        session-arm call must not be restricted to the "replay" source."""
         mon = self._mon(input_index=1, owntone_base_url=BASE_URL)
         with patch.object(core, "_start_session_owntone"), \
              patch.object(mon, "_nowplaying_publisher"), \
-             patch.object(mon, "_arm_track_identification_for_replay") as arm_mock:
+             patch.object(mon, "_arm_track_identification_for_session") as arm_mock:
             _dispatch_session_event(
                 "session_started", None, mon, BASE_URL, new_source="input1",
             )
-        arm_mock.assert_not_called()
+        arm_mock.assert_called_once()
 
 
 class TestStartSessionOwntone:

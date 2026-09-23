@@ -332,22 +332,52 @@ def get_track_identification_snapshot(input_index: int):
 def get_active_track_identification_snapshot():
     """Return track identification state for the monitor actively sourcing audio.
 
-    "Actively sourcing" means capturing, OR being the replay-origin
-    input of a currently replaying recording -- the same actively-sourcing
-    definition used by _ingest_status()/maybe_trigger_track_identification()
-    (see monitor._replay_origin, refreshed each poll cycle from the
+    Prefers the coordinator's own session tracker over "any capturing
+    monitor": _session_state["source"] (set each poll cycle by
+    _set_session_state(), from the same _SessionTracker.update() call that
+    drives _dispatch_session_event()) names the input that is genuinely the
+    session's audible source -- "input1"/"input2" for a live source or
+    "replay" for the replay-origin input. Without this, a probation
+    transient's brief capturing flicker on a second input could hijack the
+    displayed snapshot away from an input-1 replay purely by winning the
+    first is_capturing scan below, even though the session tracker (and the
+    receiver) still regard input 1 as the active source.
+
+    "Actively sourcing" (for the fallback scan below) means capturing, OR
+    being the replay-origin input of a currently replaying recording -- the
+    same actively-sourcing definition used by
+    _ingest_status()/maybe_trigger_track_identification() (see
+    monitor._replay_origin, refreshed each poll cycle from the
     coordinator's _replay_origin_input()). Without the replay-origin check,
     /api/status.track_identification would fall back to waiting_snapshot()
     during replay even though the origin monitor's _ti_snapshot already holds
     a live match -- the daemon confirms vibra keeps matching tracks during
-    replay, only the surfaced snapshot was wrong. Capturing is checked first
-    so a live capture on another input always takes priority over a
-    concurrently-replaying recording. Returns a waiting snapshot when the
-    service is configured but nothing is actively sourcing, or a disabled
-    snapshot when the service itself is off. Never blocks.
+    replay, only the surfaced snapshot was wrong. That fallback scan checks
+    capturing first so a live capture on another input takes priority over a
+    concurrently-replaying recording when the session source is not yet
+    known (e.g. very first poll cycle before _session_state is populated).
+    Returns a waiting snapshot when the service is configured but nothing is
+    actively sourcing, or a disabled snapshot when the service itself is
+    off. Never blocks.
     """
     with _monitors_lock:
         monitors = list(all_monitors)
+
+    source = get_session_state().get("source")
+    if source == "replay":
+        for m in monitors:
+            if m._replay_origin:
+                return m._ti_snapshot  # atomic under GIL
+    elif source is not None:
+        try:
+            idx = int(source[len("input"):])
+        except (ValueError, IndexError):
+            idx = None
+        if idx is not None:
+            for m in monitors:
+                if m.input_index == idx:
+                    return m._ti_snapshot  # atomic under GIL
+
     for m in monitors:
         if m.is_capturing:
             return m._ti_snapshot  # atomic under GIL
@@ -1208,11 +1238,13 @@ def _dispatch_session_event(
 
     *new_source* is the same _SessionTracker.update() call's vector key
     ("input1"/"input2"/"replay"/None) for new_monitor. When a
-    session_started or source_changed event lands on "replay",
-    this also arms new_monitor's identification cycle: is_capturing never
-    transitions to True for the replay origin input, so _on_capture_started
-    -- the only other place that arms it -- would otherwise never fire for a
-    replay-sourced session. See _arm_track_identification_for_replay().
+    session_started or source_changed event lands on any source (replay or
+    live), this also arms new_monitor's identification cycle: a
+    replay-sourced input never gets a fresh is_capturing 0->1 edge to arm
+    from, and a live input taking over from a replay can also reach this
+    event with no fresh edge left (see _arm_track_identification_for_
+    session()'s docstring for both cases), so this is the one place that
+    is guaranteed to run for either.
     """
     if event == "session_started":
         _session_nowplaying_start(new_monitor)
@@ -1232,10 +1264,10 @@ def _dispatch_session_event(
 
     if (
         event in ("session_started", "source_changed")
-        and new_source == "replay"
+        and new_source is not None
         and new_monitor is not None
     ):
-        new_monitor._arm_track_identification_for_replay()
+        new_monitor._arm_track_identification_for_session()
 
 
 # ── OwnTone-restart reconcile (mechanism 1) ─────────────────────────────────
@@ -2938,7 +2970,7 @@ class AudioMonitor:
         not change when replay starts/stops, there is no "started"/"stopped"
         edge to return; the seq baseline + identification-cycle arming for
         that transition is handled by _dispatch_session_event() ->
-        _arm_track_identification_for_replay(), which runs after this method
+        _arm_track_identification_for_session(), which runs after this method
         for the whole monitor set (mirrors _on_capture_started, which arms
         the same cycle for a real capturing transition).
         """
@@ -3130,7 +3162,24 @@ class AudioMonitor:
         coordinator's _SessionTracker session_started event via
         _start_session_owntone() / _session_nowplaying_start(), see the poll
         loop in run_autostream().
+
+        A settling-noise transient on the replay-origin input can flip
+        capturing true then false during its own replay (allowed since the
+        monitor probation commit). self._replay_origin is refreshed for
+        this same tick by _ingest_status() before this callback runs, so
+        when it is true this is that transient, not a real capture start:
+        the replay identification cycle (already armed by
+        _arm_track_identification_for_session()) must be left alone rather
+        than reset out from under it. Mirrors _on_capture_stopped()'s guard.
         """
+        if self._replay_origin:
+            logging.debug(
+                "Input %d (%s): own recording is replaying; capture-start "
+                "transient ignored, identification preserved.",
+                self.input_index, self.input_device,
+            )
+            return
+
         self._ti_generation += 1  # invalidate any worker queued before capture started
         self._ti_inflight = False
         self._ti_inflight_token = None
@@ -3146,7 +3195,10 @@ class AudioMonitor:
                 self.input_index, delay, svc.analysis_lead_in_seconds, svc.snapshot_seconds,
             )
             from track_id.models import waiting_snapshot
-            self._ti_snapshot = waiting_snapshot()
+            self._ti_snapshot = waiting_snapshot(
+                next_attempt_at=self._ti_next_attempt,
+                next_attempt_reason=self._ti_next_attempt_reason,
+            )
         else:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
@@ -3156,19 +3208,35 @@ class AudioMonitor:
             self.input_index, self.input_device,
         )
 
-    def _arm_track_identification_for_replay(self) -> None:
-        """Arm the identification cycle for a replay-sourced session.
+    def _arm_track_identification_for_session(self) -> None:
+        """Arm the identification cycle for this monitor's new session source.
 
         Mirrors _on_capture_started()'s track-ID setup (reset generation,
         invalidate in-flight state, schedule the initial attempt), but is
         invoked directly by _dispatch_session_event() for a session_started
-        or source_changed event landing on the "replay" source. is_capturing
-        never transitions to True in that case (the origin input isn't
-        capturing while its recording replays), so _on_capture_started would
-        otherwise never fire and this input's identification cycle would stay
-        parked at whatever state it was in before replay began: the daemon
-        serves replay-tap snapshots under origin_input, so the Python side
-        only needs to schedule attempts, not gate on is_capturing.
+        or source_changed event landing on this monitor -- for a
+        replay-sourced source ("replay") as well as a live one
+        ("input1"/"input2"). Generalized from a replay-only arm (see history)
+        because a live source can also reach a session_started/source_changed
+        event without a fresh is_capturing 0->1 edge to arm from:
+
+        - Replay case: is_capturing never transitions to True for the replay
+          origin input (the origin input isn't capturing while its recording
+          replays), so _on_capture_started would otherwise never fire and
+          this input's identification cycle would stay parked at whatever
+          state it was in before replay began: the daemon serves replay-tap
+          snapshots under origin_input, so the Python side only needs to
+          schedule attempts, not gate on is_capturing.
+
+        - Live case (confirmed-live-interrupt of a replay): a probation
+          transient can flip this input's is_capturing true while it is
+          still the replay origin; _on_capture_started()'s replay-origin
+          guard deliberately leaves the identification cycle alone for that
+          edge (see its docstring) so the in-flight replay identification
+          survives. If the transient turns into a genuine live takeover,
+          the session source changes to this input with no further
+          is_capturing edge to arm from (it was already True), so this
+          session-arm call is the only place left to do it.
 
         Also baselines track_change_seq here, since _ingest_status()'s
         steady-state seq check requires actively-sourcing on BOTH sides of
@@ -3176,7 +3244,7 @@ class AudioMonitor:
         on the same cycle this transition is first observed.
         """
         self._track_change_seq_baseline = self.track_change_seq
-        self._ti_generation += 1  # invalidate any worker queued before replay sourcing began
+        self._ti_generation += 1  # invalidate any worker queued before this session source began
         self._ti_inflight = False
         self._ti_inflight_token = None
         self._ti_next_attempt = 0.0
@@ -3187,18 +3255,21 @@ class AudioMonitor:
             delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
             self._schedule_track_id_after(time.time(), delay, "initial")
             logging.debug(
-                "track_id[%d]: initial attempt scheduled in %.0fs (replay-sourced session; "
-                "lead-in=%.0fs window=%.0fs).",
+                "track_id[%d]: initial attempt scheduled in %.0fs (session source "
+                "armed; lead-in=%.0fs window=%.0fs).",
                 self.input_index, delay, svc.analysis_lead_in_seconds, svc.snapshot_seconds,
             )
             from track_id.models import waiting_snapshot
-            self._ti_snapshot = waiting_snapshot()
+            self._ti_snapshot = waiting_snapshot(
+                next_attempt_at=self._ti_next_attempt,
+                next_attempt_reason=self._ti_next_attempt_reason,
+            )
         else:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
 
         logging.info(
-            "Input %d (%s): identification armed for replay-sourced session.",
+            "Input %d (%s): identification armed for session source.",
             self.input_index, self.input_device,
         )
 
@@ -3217,7 +3288,45 @@ class AudioMonitor:
         stay silent on the session-level effects. The session-level stop
         runs from the tracker's session_ended event, see the poll loop in
         run_autostream().
+
+        self._replay_origin is refreshed for this same tick by
+        _ingest_status() before this callback runs, so when it is true this
+        stop edge is one of two things, and either way the identification
+        schedule must be left alone:
+
+        - A settling-noise transient on the replay-origin input flipping
+          capturing true then false during its own replay (allowed since
+          the monitor probation commit): zeroing the identification
+          schedule here would kill identification until the replay's own
+          gap detector emits its next internal track boundary.
+
+        - The ordinary armed-repeat handoff: repeat starts replay inside
+          the same capture-stop tick, so an ordinary capture-end on the
+          input that is about to become the replay origin also lands here
+          with self._replay_origin already true. The session arm
+          (_arm_track_identification_for_session(), via
+          _dispatch_session_event()) re-arms this input's identification
+          cycle for the new replay source later in this same tick, so
+          tearing it down here would just be redone -- and would race the
+          re-arm if worker teardown timing ever shifted.
+
+        Mirrors _on_capture_started()'s guard. The usual INFO capture-stopped
+        line below is still emitted in both cases: OwnTone capture did stop,
+        which is worth logging regardless of what happens to identification.
         """
+        logging.info(
+            "Input %d (%s): capture stopped.",
+            self.input_index, self.input_device,
+        )
+
+        if self._replay_origin:
+            logging.debug(
+                "Input %d (%s): own recording is replaying; leaving "
+                "identification to the session arm.",
+                self.input_index, self.input_device,
+            )
+            return
+
         # Invalidate any running worker and clear scheduled deadlines so a
         # worker that completes after capture stops cannot overwrite the
         # waiting/disabled snapshot below or leave a stale _ti_next_attempt.
@@ -3233,11 +3342,6 @@ class AudioMonitor:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
 
-        logging.info(
-            "Input %d (%s): capture stopped.",
-            self.input_index, self.input_device,
-        )
-
     # ── Track identification ──────────────────────────────────────────────────
 
     def _apply_track_id_service(self, service) -> None:
@@ -3246,14 +3350,22 @@ class AudioMonitor:
             self._ti_generation += 1  # invalidate any in-flight worker for the old service
             if service is not None:
                 from track_id.models import waiting_snapshot
-                self._ti_snapshot = waiting_snapshot()
-                # Schedule first attempt if currently capturing; otherwise wait for capture-start.
-                if self.is_capturing:
+                # Schedule first attempt if actively sourcing (capturing, or
+                # the replay-origin input of a currently replaying
+                # recording); otherwise wait for capture-start / session-arm.
+                # Without the replay-origin half of this check, changing the
+                # track-ID setting mid-replay would park the schedule at 0.0
+                # with nothing left to un-park it until replay ends.
+                if self.is_capturing or self._replay_origin:
                     delay = service.analysis_lead_in_seconds + service.snapshot_seconds
                     self._schedule_track_id_after(time.time(), delay, "initial")
                 else:
                     self._ti_next_attempt = 0.0
                     self._ti_next_attempt_reason = ""
+                self._ti_snapshot = waiting_snapshot(
+                    next_attempt_at=(self._ti_next_attempt or None),
+                    next_attempt_reason=self._ti_next_attempt_reason,
+                )
             else:
                 from track_id.models import disabled_snapshot
                 self._ti_snapshot = disabled_snapshot()
@@ -3294,6 +3406,13 @@ class AudioMonitor:
         to live capture -- a replay-sourced input is silent by definition
         (it isn't capturing anything), so gating on it here would make
         replay-sourced identification permanently dead.
+
+        Self-heal: if this input is actively sourcing with the service
+        enabled and nothing in flight, but _ti_next_attempt is still the
+        0.0 sentinel (never armed, or a prior arming path was missed or
+        raced), schedule an initial attempt here rather than staying
+        parked forever. This bounds any such stall to one poll cycle plus
+        the normal initial-attempt delay.
         """
         svc = _track_id_service
         if svc is None:
@@ -3305,7 +3424,16 @@ class AudioMonitor:
             return
         if self._ti_inflight:
             return
-        if self._ti_next_attempt == 0.0 or now < self._ti_next_attempt:
+        if self._ti_next_attempt == 0.0:
+            delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
+            self._schedule_track_id_after(now, delay, "initial")
+            logging.debug(
+                "track_id[%d]: self-heal: schedule was parked at 0.0 while "
+                "actively sourcing; initial attempt scheduled in %.0fs.",
+                self.input_index, delay,
+            )
+            return
+        if now < self._ti_next_attempt:
             return
 
         # Attempt non-blocking acquisition of the process-wide admission gate.
@@ -3448,6 +3576,10 @@ class AudioMonitor:
             now = time.time()
 
             if self._ti_generation != my_gen or self._ti_inflight_token is not worker_token:
+                logging.info(
+                    "track_id[%d]: match discarded: stale generation/service.",
+                    self.input_index,
+                )
                 return  # stale: service replaced or capture restarted while we ran
 
             if result.matched:
@@ -3500,6 +3632,8 @@ class AudioMonitor:
                     confidence=result.confidence,
                     updated_at=now,
                     last_attempt_at=now,
+                    next_attempt_at=self._ti_next_attempt,
+                    next_attempt_reason=self._ti_next_attempt_reason,
                 )
             elif result.is_configuration_error:
                 self._schedule_track_id_after(now, TRACK_ID_ERROR_RETRY_SECONDS, "error")
@@ -3515,6 +3649,8 @@ class AudioMonitor:
                     provider=svc.provider_id,
                     updated_at=now,
                     last_attempt_at=now,
+                    next_attempt_at=self._ti_next_attempt,
+                    next_attempt_reason=self._ti_next_attempt_reason,
                 )
             else:
                 self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
@@ -3530,11 +3666,17 @@ class AudioMonitor:
                     provider=svc.provider_id,
                     updated_at=now,
                     last_attempt_at=now,
+                    next_attempt_at=self._ti_next_attempt,
+                    next_attempt_reason=self._ti_next_attempt_reason,
                 )
 
         except Exception as exc:
             now = time.time()
             if self._ti_generation != my_gen or self._ti_inflight_token is not worker_token:
+                logging.info(
+                    "track_id[%d]: match discarded: stale generation/service.",
+                    self.input_index,
+                )
                 return  # stale
             if isinstance(exc, TrackIDUpstreamRejectionError):
                 logging.warning(
@@ -3585,6 +3727,8 @@ class AudioMonitor:
                 updated_at=now,
                 last_attempt_at=now,
                 error=type(exc).__name__,
+                next_attempt_at=self._ti_next_attempt,
+                next_attempt_reason=self._ti_next_attempt_reason,
             )
 
         finally:

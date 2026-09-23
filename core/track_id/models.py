@@ -97,6 +97,12 @@ class TrackIdentificationSnapshot:
     updated_at: Optional[float] = None
     last_attempt_at: Optional[float] = None
     error: str = ""
+    # Diagnostics: when the next identification attempt is scheduled and
+    # why (e.g. "initial", "match", "no_match", "rate_limit"; see
+    # AudioMonitor._schedule_track_id_attempt()). None/"" when nothing is
+    # currently scheduled (service disabled, or an attempt is in flight).
+    next_attempt_at: Optional[float] = None
+    next_attempt_reason: str = ""
 
     def to_public_dict(self) -> dict:
         return {
@@ -113,6 +119,8 @@ class TrackIdentificationSnapshot:
             "updated_at": self.updated_at,
             "last_attempt_at": self.last_attempt_at,
             "error": self.error,
+            "next_attempt_at": self.next_attempt_at,
+            "next_attempt_reason": self.next_attempt_reason,
         }
 
 
@@ -124,12 +132,19 @@ def disabled_snapshot() -> TrackIdentificationSnapshot:
     )
 
 
-def waiting_snapshot(*, input_index: Optional[int] = None) -> TrackIdentificationSnapshot:
+def waiting_snapshot(
+    *,
+    input_index: Optional[int] = None,
+    next_attempt_at: Optional[float] = None,
+    next_attempt_reason: str = "",
+) -> TrackIdentificationSnapshot:
     return TrackIdentificationSnapshot(
         enabled=True,
         state=STATE_WAITING,
         status_text=state_status_text(STATE_WAITING),
         input_index=input_index,
+        next_attempt_at=next_attempt_at,
+        next_attempt_reason=next_attempt_reason,
     )
 
 
