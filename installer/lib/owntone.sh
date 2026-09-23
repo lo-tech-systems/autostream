@@ -114,12 +114,18 @@ install_owntone_mini_from_source() {
 
   info "Installing OwnTone Mini ${OWNTONE_MINI_VERSION} from lo-tech-systems source repository"
   update_progress "Installing OwnTone dependencies..." 65
-  apt_install nginx autotools-dev autoconf automake libtool gettext gawk \
-    gperf bison flex libconfuse-dev libunistring-dev libsqlite3-dev \
+  # libconfuse-dev, libunistring-dev, libsqlite3-dev, libxml2-dev,
+  # libwebsockets-dev, libprotobuf-c-dev and libgnutls28-dev were dropped:
+  # none of them are referenced by owntone-mini's configure.ac or
+  # src/libairptp/configure.ac any more (config went JSON-based, the
+  # websocket server now rides on libevent, and this build has no protobuf
+  # or TLS dependency at all).
+  apt_install nginx autotools-dev autoconf automake libtool libtool-bin \
+    gettext gawk gperf bison flex \
     libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libavutil-dev \
-    libxml2-dev libgcrypt20-dev libavahi-client-dev zlib1g-dev \
-    libevent-dev libplist-dev libsodium-dev libjson-c-dev libwebsockets-dev \
-    libcurl4-openssl-dev libprotobuf-c-dev libgnutls28-dev uuid-dev
+    libgcrypt20-dev libavahi-client-dev zlib1g-dev \
+    libevent-dev libplist-dev libsodium-dev libjson-c-dev \
+    libcurl4-openssl-dev uuid-dev
 
   if dpkg -s owntone >/dev/null 2>&1; then
     info "Removing packaged OwnTone before source install"

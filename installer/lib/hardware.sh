@@ -11,8 +11,8 @@
 # Firmware / watchdog helpers
 #############################################
 
-# update_pi_firmware_config: idempotent strip-then-insert of the watchdog and
-# disable-bt lines in /boot/firmware/config.txt.
+# update_pi_firmware_config: idempotent strip-then-insert of the watchdog,
+# GPU memory, and disable-bt lines in /boot/firmware/config.txt.
 #
 # dtoverlay=disable-bt doubles as the onboard-Bluetooth setting store: the
 # Setup page's onboard-radio toggle removes/reinserts the line in place
@@ -22,7 +22,10 @@
 # an UPDATE preserves the line's current presence/absence -- re-asserting
 # the fresh-install default would silently revert the opt-in, with the
 # radio loss deferred to whenever the appliance next reboots. The watchdog
-# line is unconditional in both modes.
+# and gpu_mem lines are unconditional in both modes: the appliance is
+# headless (no HDMI console in normal operation), so the GPU memory split
+# is minimised to leave more RAM to the audio pipeline, and that is a
+# permanent property of the appliance, not a runtime opt-in like the radio.
 #
 # Accepts an optional path argument overriding the config.txt location, and
 # an optional mode argument overriding INSTALL_MODE (install|update) -- both
@@ -53,11 +56,13 @@ update_pi_firmware_config() {
     awk -v bt_line="${bt_line}" -v write_bt="${write_bt}" '
       BEGIN { inserted=0 }
       /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }
+      /^[[:space:]]*gpu_mem[[:space:]]*=.*$/ { next }
       /^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$/ { next }
       {
         print
         if (!inserted && $0 ~ /^[[:space:]]*\[all\][[:space:]]*$/) {
           print "dtparam=watchdog=on"
+          print "gpu_mem=16"
           if (write_bt) print bt_line
           inserted=1
         }
@@ -67,12 +72,14 @@ update_pi_firmware_config() {
     {
       echo "[all]"
       echo "dtparam=watchdog=on"
+      echo "gpu_mem=16"
       if [[ "${write_bt}" == "1" ]]; then
         echo "${bt_line}"
       fi
       echo
       awk '
         /^[[:space:]]*dtparam=watchdog[[:space:]]*=.*$/ { next }
+        /^[[:space:]]*gpu_mem[[:space:]]*=.*$/ { next }
         /^[[:space:]]*dtoverlay=disable-bt([[:space:]]*|,.*)$/ { next }
         { print }
       ' "${cfg}"

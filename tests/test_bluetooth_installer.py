@@ -273,6 +273,73 @@ cat "{cfg.as_posix()}"
 
 
 # ---------------------------------------------------------------------------
+# hardware.sh — update_pi_firmware_config: gpu_mem=16 is unconditional on
+# both install and update (the appliance is headless; unlike the onboard-
+# radio line, there is no opt-in runtime action that could be reverted).
+# ---------------------------------------------------------------------------
+
+class TestFirmwareConfigGpuMem:
+    def _run_firmware_config(self, tmp_path, pre_existing: str = "",
+                             mode: str = "install") -> str:
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(pre_existing, encoding="utf-8")
+        script = f'''
+set -euo pipefail
+info() {{ :; }}
+warn() {{ :; }}
+error() {{ :; }}
+source "{HARDWARE_SH.as_posix()}"
+update_pi_firmware_config "{cfg.as_posix()}" "{mode}"
+cat "{cfg.as_posix()}"
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    @bash_capable
+    def test_install_writes_gpu_mem_16(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "[all]\n", mode="install")
+        assert "gpu_mem=16" in out
+
+    @bash_capable
+    def test_install_all_section_absent_writes_gpu_mem_16(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "", mode="install")
+        assert "gpu_mem=16" in out
+
+    @bash_capable
+    def test_update_forces_gpu_mem_16_over_existing_value(self, tmp_path):
+        # Unlike the onboard-radio line, gpu_mem has no runtime opt-in to
+        # preserve: any pre-existing value (custom or stock default) is
+        # replaced on every update.
+        out = self._run_firmware_config(
+            tmp_path, "[all]\ngpu_mem=128\n", mode="update",
+        )
+        assert out.count("gpu_mem=") == 1
+        assert "gpu_mem=16" in out
+
+    @bash_capable
+    def test_update_writes_gpu_mem_16_without_all_section(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "arm_64bit=1\n", mode="update")
+        assert "gpu_mem=16" in out
+        assert "[all]" in out
+
+    @bash_capable
+    def test_pre_existing_gpu_mem_deduplicated(self, tmp_path):
+        out = self._run_firmware_config(
+            tmp_path, "[all]\ngpu_mem=64\ngpu_mem=64\n", mode="install",
+        )
+        assert out.count("gpu_mem=") == 1
+        assert "gpu_mem=16" in out
+
+    @bash_capable
+    def test_gpu_mem_coexists_with_watchdog_and_bt_lines(self, tmp_path):
+        out = self._run_firmware_config(tmp_path, "[all]\n", mode="install")
+        assert "gpu_mem=16" in out
+        assert "dtparam=watchdog=on" in out
+        assert "dtoverlay=disable-bt" in out
+
+
+# ---------------------------------------------------------------------------
 # installer/lib/bluetooth.sh — pinned constants + always-install public API
 # ---------------------------------------------------------------------------
 

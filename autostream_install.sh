@@ -749,9 +749,20 @@ ensure_build_deps() {
   # python3-pil: now-playing artwork normalisation (covers are re-encoded to
   # the size receivers reliably display); without it oversized covers are
   # published as-is and may not appear on some receivers.
+  #
+  # autoconf/automake/libtool/libtool-bin/gettext/gawk/gperf/bison/flex/cmake:
+  # the autoreconf/cmake build toolchain owntone.sh and vibra.sh depend on.
+  # Those scripts' own apt_install calls only run when a source rebuild is
+  # actually triggered -- both have a fast path that skips straight past them
+  # on a routine update where the pinned version already reports as running,
+  # so a tool added to (or removed from) the box after that fast path was
+  # last exercised would go unensured until a rebuild is eventually forced.
+  # Listing them here too guarantees them on every install and update
+  # regardless of that fast path, at near-zero cost once already present.
   apt_install git build-essential libffi-dev pkg-config fq \
     libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev \
-    python3-dev python3-venv python3-pip python3-flask python3-pil
+    python3-dev python3-venv python3-pip python3-flask python3-pil \
+    autoconf automake libtool libtool-bin gettext gawk gperf bison flex cmake
 }
 
 # bootstrap_phase: first-time-only setup — users, groups, directories, base packages.
