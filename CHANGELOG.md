@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- fix: track identification no longer stalls during repeat/replay playback. A
+  brief transient on the replay-origin input could tear down the
+  identification schedule with no replay-aware re-arm, leaving identification
+  stuck on the previous track until the replay's own gap detector produced
+  its next boundary. The Home page and now-playing metadata also now show
+  the real "Waiting for audio" / "Analysing" state instead of a single
+  "Identifying Track…" label throughout.
+
 ## Version 0.6.0-beta.3 - 2026-09-20
 
 - feat: the audio monitor runs its capture, input-processing, replay-decode

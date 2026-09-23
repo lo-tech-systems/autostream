@@ -793,11 +793,11 @@ Run through this in order:
 
 Track identification uses Shazam recognition via the `vibra-mini` daemon. It is **off by default**. No API key is required - autostream talks to Shazam using the same mechanism as the Shazam mobile app (see [SETUP-TRACK-ID.md](SETUP-TRACK-ID.md)). Vibra/Shazam is currently the only supported provider; the Setup page does not offer a provider selector.
 
-#### Track identification stays "waiting" or never shows a result
+#### Track identification stays "waiting"/"analysing" or never shows a result
 
-The Home screen shows **Waiting** when the feature is enabled but no audio is currently playing. This is normal - identification only runs while a source is active.
+The Home screen shows **Waiting for audio** when the feature is enabled but no audio is currently playing. This is normal - identification only runs while a source is active (including a repeat/replay session, not just a live input). Once a source is active it moves to **Analysing** while a sample is being checked.
 
-After playback starts, the first analysis is scheduled roughly 25 seconds in. If the state stays "waiting" for longer than a minute:
+After playback starts, the first analysis is scheduled roughly 10 seconds in by default (see `analysis_lead_in_seconds` below). If the state stays on "Waiting for audio" or "Analysing" for longer than a minute:
 
 1. Open **Setup → Track Identification** and confirm the toggle is **on**.
 2. Check that the `vibra-mini` daemon is running:

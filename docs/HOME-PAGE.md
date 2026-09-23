@@ -18,9 +18,12 @@ turntable is connected it is still shown as a turntable.
 
 If [track identification](SETUP-TRACK-ID.md) is turned on, the card instead shows the identified
 track's title, artist and artwork once a match is found. Track identification is a global
-setting, not per input. While identification is in progress
-it shows "Identifying Track…"; if nothing is found it shows "Unknown track"; if the
-identification service itself is unavailable it shows "Track ID function not available".
+setting, not per input. While identification is in progress the card shows the current stage:
+"Waiting for audio" before analysis starts, then "Analysing" while a sample is being checked.
+If nothing is found it shows "Unknown track"; if the identification service itself is
+unavailable it shows "Track ID function not available". This works the same way during
+[repeat playback](#repeat-play): identification keeps tracking the replayed recording, not
+just live input.
 
 ### Input detail and VU meter
 
