@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.6.0-beta.4 - 2026-09-23
 
 - fix: track identification no longer stalls during repeat/replay playback. A
   brief transient on the replay-origin input could tear down the
@@ -9,6 +9,14 @@
   its next boundary. The Home page and now-playing metadata also now show
   the real "Waiting for audio" / "Analysing" state instead of a single
   "Identifying Track…" label throughout.
+- fix: the installer now sets gpu_mem to 16 in the Pi firmware config for
+  headless operation, and guarantees the owntone build toolchain (including
+  libtool-bin) is present on every install and update rather than only the
+  first, so a later rebuild cannot fail for a missing build tool.
+- change: this release builds owntone-mini 1.4.1, which adds the pipe
+  metadata teardown deadlock fix on top of the 1.4.0 memory-retention and
+  Apple-TV group memory work.
+- docs: describe the monitor's real-time thread scheduling.
 
 ## Version 0.6.0-beta.3 - 2026-09-20
 
