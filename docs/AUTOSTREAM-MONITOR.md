@@ -128,6 +128,45 @@ for higher-level orchestration, UI, settings, and playback-backend control.
 - Output EQ is shared across all sources and is applied once per mixed
   block, after per-input gain and EQ.
 
+## Thread Scheduling And Priority
+
+The audio-critical threads run under Linux's real-time `SCHED_FIFO` policy
+instead of the default best-effort scheduler, so a burst of ordinary system
+load cannot preempt them for long enough to lose samples or force a
+silence-fallback.
+
+- `set_thread_realtime()` (`autostream_monitor_utils.cpp`) wraps
+  `pthread_setschedparam(pthread_self(), SCHED_FIFO, ...)` for the calling
+  thread. Each audio-critical thread calls it once, near the top of its own
+  entry point, right after the thread starts:
+  - input capture (`autostream_monitor_io.cpp`) -- `kRtPrioCapture` = 60
+  - input processing (`autostream_monitor_io.cpp`) -- `kRtPrioProcess` = 58
+  - replay decode (`autostream_repeat.cpp`) -- `kRtPrioReplay` = 56
+  - the output stage (`autostream_output_stage.cpp`) -- `kRtPrioOutput` = 54
+- Under `SCHED_FIFO`, a higher priority number preempts a lower one. Capture
+  is highest because a missed ALSA period is unrecoverable -- the samples are
+  simply gone -- while the output stage is lowest of the four because a late
+  FIFO write still has the writer's own backlog (see the FIFO backlog note
+  under Notes And Caveats) to absorb it before anything is actually lost.
+- The promotion is best-effort and never fatal. It needs `CAP_SYS_NICE`,
+  granted via `LimitRTPRIO=80` in the systemd unit
+  (`system/systemd/autostream_monitor.service`). If `pthread_setschedparam`
+  fails for any reason -- missing capability, running outside the packaged
+  unit, a lower RT limit -- the thread logs a warning and continues at
+  normal scheduling; nothing else about it changes.
+- The kernel's real-time scheduling throttle (the default cap that reserves
+  some CPU time for non-RT work even when RT threads are runnable) is left
+  at whatever the host's default is. The monitor does not raise, lower, or
+  otherwise touch it.
+- This is a different safeguard from `mlockall` (see Notes And Caveats): RT
+  priority keeps these threads from being descheduled under load, while
+  `mlockall` keeps their memory from being paged out. A scheduling delay on
+  the capture thread risks losing samples from the source device before the
+  next ALSA period is read; a scheduling delay on the output thread risks a
+  FIFO underrun on the playback side. Both threads need both protections for
+  the same underlying reason: nothing else in the pipeline can recover audio
+  once either one actually stalls.
+
 ## Socket API
 
 The daemon listens on a Unix domain socket and speaks newline-delimited JSON.
