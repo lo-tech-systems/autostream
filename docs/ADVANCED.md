@@ -42,6 +42,7 @@ references, not needed for normal use:
 - [Monitor socket API](AUTOSTREAM-MONITOR-API.md) - the audio monitor's control and status interface.
 - [Log level API](LOG-LEVEL-API.md) - reading and setting log verbosity at runtime.
 - [API error contract](API-ERROR-CONTRACT.md) - how the web interface reports errors.
+- [Status API](STATUS-API.md) - the combined `/api/status` endpoint, including track identification.
 
 ## See also
 
