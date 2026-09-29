@@ -18,7 +18,7 @@
       "target": "owntone-mini",
       "key": "user_agent",
       "mode": "overwrite",
-      "value": "AirPlay/420",
+      "value": "AirPlay/950.7.1",
       "reason": "HomePod OS 27 rejects senders without an AirPlay/* User-Agent (403 on GET /info)"
     }
   ]

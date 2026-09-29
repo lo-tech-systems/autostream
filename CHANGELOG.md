@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- change: install and update now set owntone-mini's AirPlay User-Agent to
+  `AirPlay/950.7.1`, matching a current iPhone sender, in place of
+  `AirPlay/420`.
+
 ## Version 0.6.0-beta.4 - 2026-09-23
 
 - fix: track identification no longer stalls during repeat/replay playback. A

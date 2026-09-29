@@ -780,7 +780,7 @@ class TestShippedManifest:
         directive = next(d for d in directives if d["key"] == "user_agent")
         assert directive["target"] == "owntone-mini"
         assert directive["mode"] == "overwrite"
-        assert directive["value"] == "AirPlay/420"
+        assert directive["value"] == "AirPlay/950.7.1"
 
     def test_user_agent_directive_validates_check_only(self, tmp_path):
         directive_manifest = tmp_path / "user-agent-only.json"
