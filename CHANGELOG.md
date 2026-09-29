@@ -5,6 +5,9 @@
 - change: install and update now set owntone-mini's AirPlay User-Agent to
   `AirPlay/950.7.1`, matching a current iPhone sender, in place of
   `AirPlay/420`.
+- change: this release builds owntone-mini 1.4.2, which starts an Apple TV
+  led HomePod group reliably when playback begins from a stopped player, and
+  applies per-speaker volume to every member of a HomePod stereo pair.
 
 ## Version 0.6.0-beta.4 - 2026-09-23
 
