@@ -901,10 +901,27 @@ Persistent 403 or 406 responses indicate Shazam has rejected the request. autost
 ### HomePod refuses to play (403)
 
 HomePod OS 27 rejects senders that don't present an AirPlay-style User-Agent,
-refusing playback with an HTTP 403. autostream sets a compatible User-Agent
-automatically on install and update. If you need a different value, for example
-while diagnosing a different receiver, set it on the OwnTone setup page -
-clearing the field restores the default.
+refusing playback with an HTTP 403. The HomePod is still discovered, but it
+can't be enabled for playback, and autostream may show a PIN prompt even though
+no PIN appears on the HomePod or in the Home app.
+
+autostream sets the User-Agent to that of a current iPhone (`AirPlay/950.7.1`)
+on every install and update. This value has not yet been confirmed against
+HomePod OS 27. If a HomePod on OS 27 still refuses to play, a user has reported
+that `AirPlay/999.0.0` works
+([issue #26](https://github.com/lo-tech-systems/autostream/issues/26)):
+
+1. Open **Setup → AirPlay Settings → AirPlay User Agent**.
+2. Change the value to `AirPlay/999.0.0`.
+3. OwnTone restarts on its own. Try the HomePod again once it's back.
+
+Keep in mind:
+
+* Every update resets the User-Agent to the release default, replacing a value
+  you set yourself. Re-enter it after each update if you still need it.
+* Don't clear the field. An empty value makes OwnTone fall back to its own
+  product/version string, which is not AirPlay-style, so OS 27 HomePods refuse
+  it.
 
 ---
 

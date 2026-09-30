@@ -26,7 +26,10 @@ At the top of the page is an **AirPlay Settings** card:
   before playback starts.
 - **AirPlay User Agent** - a free-text field overriding the User-Agent
   string AirPlay advertises. Changing it restarts OwnTone; clearing it
-  restores the backend's own default.
+  restores the backend's own default. Every update resets it to the release
+  default (`AirPlay/950.7.1`). See
+  [HomePod refuses to play (403)](TROUBLESHOOTING.md#homepod-refuses-to-play-403)
+  if a HomePod on OS 27 won't connect.
 
 Some of these controls only appear when your speaker supports them, and this
 page's live controls - mode, offset, and the settings above - only take
