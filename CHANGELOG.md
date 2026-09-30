@@ -1,13 +1,41 @@
 # Changelog
 
-## Unreleased
+## Version 0.6.0 - 2026-09-30
 
-- change: install and update now set owntone-mini's AirPlay User-Agent to
-  `AirPlay/950.7.1`, matching a current iPhone sender, in place of
-  `AirPlay/420`.
-- change: this release builds owntone-mini 1.4.2, which starts an Apple TV
-  led HomePod group reliably when playback begins from a stopped player, and
-  applies per-speaker volume to every member of a HomePod stereo pair.
+The stable release of the 0.6 series. This summarises everything since 0.5.0;
+the beta sections below have the detail.
+
+- new: Speaker Synchronisation lines up your speakers automatically, with one
+  tap to apply the result.
+- new: output offsets take effect while music plays, so you can align by ear.
+- new: lossless AirPlay to receivers that support it, on by default for new
+  installs.
+- new: dial touch panels, more dial display types and on-screen playback
+  buttons.
+- new: SD card health monitoring, switched on from the Setup page.
+- new: settings changes shipped with a release apply on update, leaving values
+  you have changed alone.
+- improvement: steadier playback with fewer dropouts, and a smoother handover
+  between live input and repeat.
+- improvement: the repeat buffer reserves its memory up front and says how much
+  audio fits.
+- fix: HomePods grouped behind an Apple TV start reliably, and volume reaches
+  both members of a stereo pair (owntone-mini 1.4.2).
+- fix: track identification no longer stalls during repeat and replay.
+- change: the update rebuilds owntone-mini from source, which takes a long time
+  on a Pi Zero 2 W. Leave it powered; it reboots itself.
+
+### HomePod OS 27 and the AirPlay User-Agent
+
+HomePods on OS 27 refuse AirPlay senders without an AirPlay-style User-Agent:
+playback fails with a 403, and autostream may show a PIN prompt although no PIN
+appears. Every install and update now sets the User-Agent to that of a current
+iPhone, `AirPlay/950.7.1`, replacing any previous value. This has not yet been
+confirmed against OS 27. If a HomePod on OS 27 still refuses to play, a user
+has reported that `AirPlay/999.0.0` works
+([issue #26](https://github.com/lo-tech-systems/autostream/issues/26)): set it
+in Setup → AirPlay Settings → AirPlay User Agent, and OwnTone restarts on its
+own. Updates reset the value, so re-enter it after each update.
 
 ## Version 0.6.0-beta.4 - 2026-09-23
 
