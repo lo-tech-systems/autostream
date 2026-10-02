@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.6.1 - 2026-10-02
 
 - fix: on a fresh install protected by a setup PIN, opening the web UI now
   asks for the PIN and continues to first-boot setup, instead of showing
