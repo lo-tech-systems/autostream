@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- fix: on a fresh install protected by a setup PIN, opening the web UI now
+  asks for the PIN and continues to first-boot setup, instead of showing
+  only "Authentication required".
+
 ## Version 0.6.0 - 2026-09-30
 
 The stable release of the 0.6 series. This summarises everything since 0.5.0;

@@ -167,11 +167,8 @@ _BROWSER_GET_EXPECTED = [
     ("/owntone-setup",             AuthRequirement.FULL, "page", False, False),
     ("/rebooting",                 AuthRequirement.FULL, "page", True, False),
     ("/owntone-restarting",        AuthRequirement.FULL, "page", True, False),
-    # /first-boot/owntone and /first-boot/appliance are NOT migrated here --
-    # see the comment above their (absent) registration in
-    # autostream_webui_routes.py: do_GET's commissioning-else branch
-    # redirects them to "/" once already configured, a direction
-    # allow_unconfigured can't express.
+    # /first-boot/owntone and /first-boot/appliance are covered in the
+    # stateful table below (they also carry unconfigured_only).
     ("/api/status",                AuthRequirement.NONE, "api", False, True),
     ("/api/owntone/outputs_state", AuthRequirement.NONE, "api", True, True),
     ("/api/owntone/outputs",       AuthRequirement.FULL, "page", True, True),
@@ -400,8 +397,8 @@ class TestSpecialSchemeRouteParity:
 # (path, auth, kind, allow_unconfigured, unconfigured_only)
 _STATEFUL_GET_EXPECTED = [
     ("/auth",              AuthRequirement.NONE, "page", True, False),
-    ("/first-boot/owntone",   AuthRequirement.FULL, "api", True, True),
-    ("/first-boot/appliance", AuthRequirement.FULL, "api", True, True),
+    ("/first-boot/owntone",   AuthRequirement.FULL, "page", True, True),
+    ("/first-boot/appliance", AuthRequirement.FULL, "page", True, True),
     ("/logs/download",     AuthRequirement.FULL, "page", True, False),
 ]
 

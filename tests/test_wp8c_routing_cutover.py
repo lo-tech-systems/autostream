@@ -155,6 +155,69 @@ class TestCommissioningRouting:
         assert headers.get("Location") == "/"
 
 
+# ── First-boot pages with a PIN set ──────────────────────────────────────────
+
+@_skip
+class TestFirstBootPinRedirect:
+    """With a PIN set, the first-boot GET pages send visitors to the PIN page."""
+
+    def _pin_auth(self, authenticated: bool):
+        import secrets
+        import time
+        from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATUS_OK
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = "1234"
+        mgr._pin_status = PIN_STATUS_OK
+        cookie = {}
+        if authenticated:
+            tok = secrets.token_hex(32)
+            mgr._sessions[tok] = Session(
+                token=tok,
+                expires_at=int(time.time()) + 3600,
+                csrf_token=secrets.token_hex(32),
+                authenticated=True,
+            )
+            cookie = {"Cookie": f"{SESSION_COOKIE_NAME}={tok}"}
+        return mgr, cookie
+
+    def _do_get(self, tmp_path, path, authenticated):
+        mgr, cookie = self._pin_auth(authenticated)
+        handler = _make_get_handler(path)
+        handler.headers = cookie
+        handler._pending_auth_cookie = None
+        handler._pending_set_cookies = []
+        codes = []
+        headers = {}
+        handler.send_response.side_effect = lambda code: codes.append(code)
+        handler.send_header.side_effect = lambda k, v: headers.update({k: v})
+        page = "send_first_boot_" + path.rsplit("/", 1)[1] + "_page"
+
+        with patch("autostream_webui.AUTH", mgr), \
+             patch("autostream_webui.STATE", _fake_state(tmp_path)), \
+             patch("autostream_webui.is_commissioning_required", return_value=True), \
+             patch("autostream_webui.send_json") as mock_json, \
+             patch(f"autostream_webui.{page}") as mock_page:
+            handler.do_GET()
+
+        return codes, headers, mock_json, mock_page
+
+    @pytest.mark.parametrize("path", ["/first-boot/owntone", "/first-boot/appliance"])
+    def test_unauthenticated_get_redirects_to_auth(self, tmp_path, path):
+        codes, headers, mock_json, mock_page = self._do_get(tmp_path, path, authenticated=False)
+        assert codes == [302]
+        assert headers.get("Location") == f"/auth?next={path}"
+        mock_json.assert_not_called()
+        mock_page.assert_not_called()
+
+    @pytest.mark.parametrize("path", ["/first-boot/owntone", "/first-boot/appliance"])
+    def test_authenticated_get_renders_page(self, tmp_path, path):
+        codes, headers, mock_json, mock_page = self._do_get(tmp_path, path, authenticated=True)
+        assert 302 not in codes
+        mock_json.assert_not_called()
+        mock_page.assert_called_once()
+
+
 # ── Setup page — always liveEnabled=true ─────────────────────────────────────
 
 @_skip

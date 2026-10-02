@@ -668,15 +668,9 @@ register(
     )
 )
 
-# /first-boot/owntone and /first-boot/appliance are DELIBERATELY left in
-# the legacy do_GET elif chain: do_GET has an extra branch (the "else:
-# Already configured -- redirect away from first-boot pages" block, ahead
-# of the elif chain) that 302-redirects these two paths to "/" once
-# commissioning is no longer required. allow_unconfigured only expresses
-# the *opposite* direction (block during commissioning); it can't express
-# "block once no longer commissioning" too, so migrating these here would
-# silently drop that redirect. Left for a later batch once dispatch() (or
-# Route) grows a way to express both directions.
+# /first-boot/owntone and /first-boot/appliance are registered below with the
+# other stateful pages; unconfigured_only gives them the redirect to "/" once
+# commissioning is complete.
 
 # --- Simple GET APIs -----------------------------------------------------
 
@@ -1616,6 +1610,11 @@ register(
 )
 
 # --- Stateful pages: first-boot GET + POST pairs -----------------------------
+#
+# The GET pages are kind="page" so an unauthenticated visitor on a
+# PIN-protected appliance is redirected to /auth?next=<path> instead of
+# receiving a 401 JSON body. The POSTs are form/XHR submissions and keep the
+# 401 JSON response.
 
 register(
     Route(
@@ -1623,7 +1622,7 @@ register(
         methods=("GET",),
         handler="_route_get_first_boot_owntone",
         auth=AuthRequirement.FULL,
-        kind="api",
+        kind="page",
         allow_unconfigured=True,
         unconfigured_only=True,
     )
@@ -1635,7 +1634,7 @@ register(
         methods=("GET",),
         handler="_route_get_first_boot_appliance",
         auth=AuthRequirement.FULL,
-        kind="api",
+        kind="page",
         allow_unconfigured=True,
         unconfigured_only=True,
     )
