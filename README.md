@@ -4,13 +4,15 @@
 
 **autostream** connects classic Hi-Fi gear to wireless multi-room speakers, making analogue sources first-class citizens in your AirPlay world. No apps to install and no complex configuration: Just press play.
 
-> autostream works with HomeOS 27 and tvOS 27.
+> autostream is compatible with HomePod, Apple TV, Sonos and other AirPlay-compatible speakers (including the latest HomePod Software and tvOS releases).
 
 **autostream** is designed to be invisible - it converts a cheap Raspberry Pi into a tiny always-on audio streaming appliance with no clutter, and is easy to install with only one command needed.
 
 See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions and install options, and the [documentation index](docs/README.md) for all the user guides.
 
 ![autostream demo](docs/autostream-vinyl-airplay-demo.gif)
+
+> This project is not affiliated with or endorsed by Apple Inc, and no claim is made that operation with any device is authorised or will continue to work.
 
 ---
 
@@ -42,8 +44,8 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 
 **autostream dial** provides a physical control for all of your **autostream** appliances. It can be deployed in two ways:
 
-1. With a simple rotary encoder to provide a physical volume control for all speakers
-2. With a touch screen (with or without the encoder) to show album artwork and provide a simple interface to control volume and replay repeat recordings available on any of your **autostream** appliances   
+1. With a simple rotary encoder, to provide a physical volume control for all speakers
+2. With a touch screen, to show album artwork and provide a simple interface to control volume and replay repeat recordings available on any of your **autostream** appliances   
 
 **autostream dial** is currently under development with a preview available today. **autostream 0.7.0** - coming soon - will bring full functionality.
 
@@ -53,15 +55,15 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 
 **autostream** is accessed over **HTTP** at `http://<hostname>.local/` (for example, `http://autostream.local/`).
 
-> Note: Publicly trusted certificates are not available for `.local` hostnames so implementing HTTPS would require installing certificates on every phone or computer with might access **autostream**, which conflicts with it's zero-configuration setup and recovery design.
-
-> Note: the installer and updater download releases and packages over HTTPS from GitHub - this is separate from the local Web UI transport.
+> Note: Publicly trusted certificates are not available for `.local` hostnames.
 
 ---
 
 ## Platform & Requirements
 
-* **Raspberry Pi** - Pi Zero 2W minimum for autostream; Zero W minimum for dial. 8GB+ microSD card.
+* **Raspberry Pi**
+  *  Pi Zero 2W is the minimum for autostream; Zero W minimum for dial. 8GB+ microSD card.
+  *  Pi Model 3A is generally the cheapest readily available board (as of October 2026)
 * **OS** - **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream, unless deploying on Pi Zero W.
 * **USB audio input**, for example:
   * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
@@ -96,7 +98,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for detailed setup instruction
 
 ## Getting Started (autostream dial)
 
-Dial runs on it's own Raspberry Pi - it can't share with autostream.
+Dial runs on its own Raspberry Pi - it can't share with autostream.
 
 1. Deploy an **autostream** appliance first (see above).
 2. Flash **Raspberry Pi OS Lite (Trixie)** using Raspberry Pi Imager (remember to configure the WiFi in the tool), insert the microSD card into the Pi and boot up, then SSH in.
