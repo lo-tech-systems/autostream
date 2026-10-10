@@ -20,6 +20,7 @@ Deleted when the last capture stops.
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
+| `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |
 | `id` | 20 lowercase hex characters | This appliance's stable identity, matching the `appliance_id` returned by `POST /api/dial/status` (see below). Omitted entirely for an identity-less appliance. |
 
 A consumer that sees neither `dial_api` nor `audio_status` treats the appliance as a legacy
@@ -500,6 +501,52 @@ special-case any of these; it refetches `POST /api/dial/outputs` and shows the t
 |---|---|
 | `missing_output_id` | `id` is missing or empty |
 | `invalid_request_body` | `selected` is missing or not a boolean (the dial never sends `op`) |
+
+### `POST /api/dial/eq`
+
+UUID-in-body auth via the same `_dial_auth_gate` guard. Returns the bass and treble
+values the dial's Equaliser page shows, read from the stored output EQ bands.
+
+**Request body:**
+```json
+{"dial_id": "<id>"}
+```
+
+**Success response (200):**
+```json
+{"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "bass_db": 2, "treble_db": -1}
+```
+
+| `error` | Meaning |
+|---|---|
+| `config_error` | The appliance configuration could not be loaded |
+
+### `POST /api/dial/eq/set`
+
+UUID-in-body auth via the same `_dial_auth_gate` guard. Sets an absolute bass and/or
+treble value -- the dial computes its own clamped target (`clamp(shown + delta, -6,
++6)`) and sends the result, exactly as the per-output volume steppers do; this
+appliance clamps again defensively.
+
+Bass sets `peq1_db` (40 Hz low-shelf) and `peq2_db` (100 Hz peak) to the same value.
+Treble sets `peq6_db` (10 kHz high-shelf) to the full value and `peq5_db` (4 kHz peak)
+to half of it. `peq3_db`/`peq4_db` (300 Hz/1 kHz) are never touched by either field.
+Both fields are saved and applied to the running monitor in a single update.
+
+**Request body:**
+```json
+{"dial_id": "<id>", "bass_db": 2, "treble_db": -1}
+```
+
+At least one of `bass_db`/`treble_db` must be present; either may be sent alone.
+
+**Success response (200):** the same shape as `POST /api/dial/eq` above -- the
+read-back `bass_db`/`treble_db`, rounded and clamped to +/-6 dB, after the write.
+
+| `error` | Meaning |
+|---|---|
+| `invalid_request_body` (`400`) | Neither field present, or a present field is not an integer (or is a boolean) |
+| `eq_apply_failed` | The monitor daemon is unreachable; the stored config is still updated |
 
 ---
 
@@ -1149,6 +1196,7 @@ written to disk, and is persisted only if the apply succeeded:
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
 | `dial_outputs=v1` | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume |
+| `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
 UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API

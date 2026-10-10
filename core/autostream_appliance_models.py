@@ -523,6 +523,94 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
     return True, normalised_str, ""
 
 
+# ---------------------------------------------------------------------------
+# Dial bass/treble mapping onto the six output_eq bands
+#
+# The dial's Equaliser page shows two controls, bass and treble, each
+# +/-6 dB -- narrower than the Equaliser page's own +/-12 dB per-band range.
+# Bass moves peq1 (40 Hz low-shelf) and peq2 (100 Hz peak) together, equally;
+# treble moves peq6 (10 kHz high-shelf) by the full amount and peq5 (4 kHz
+# peak) by half of it, so the high shelf's own edge is not a hard step.
+# peq3/peq4 (300 Hz/1 kHz) are never touched by either control.
+# ---------------------------------------------------------------------------
+
+EQ_BASS_TREBLE_LIMIT_DB = 6
+_EQ_TREBLE_SECONDARY_SCALE = 0.5   # peq5's share of a treble move
+
+
+def eq_fields_for_bass(bass_db: int) -> dict:
+    """The two output_eq band fields a dial bass step writes: peq1 and peq2,
+    both set to *bass_db*."""
+    return {"peq1_db": float(bass_db), "peq2_db": float(bass_db)}
+
+
+def eq_fields_for_treble(treble_db: int) -> dict:
+    """The two output_eq band fields a dial treble step writes: peq6 at the
+    full value, peq5 at half of it (a float -- the schema accepts fractional
+    dB)."""
+    return {"peq6_db": float(treble_db), "peq5_db": treble_db * _EQ_TREBLE_SECONDARY_SCALE}
+
+
+def bass_treble_from_eq(oeq) -> tuple:
+    """(bass, treble) as the dial shows them: peq1 and peq6, rounded to the
+    nearest whole dB and clamped to the dial's own +/-6 dB range. A band the
+    Equaliser page set beyond that range simply reads as the limit on the
+    dial -- see the field's own read-back note where this is called."""
+    clamp = lambda v: max(-EQ_BASS_TREBLE_LIMIT_DB, min(EQ_BASS_TREBLE_LIMIT_DB, int(round(v))))
+    return clamp(oeq.peq1_db), clamp(oeq.peq6_db)
+
+
+def apply_eq_fields(config_path: str, values: dict, *, settings=None) -> tuple:
+    """Save and apply several output EQ band fields in one update: one store
+    write, one live apply of the merged six bands -- unlike calling
+    apply_eq_field() once per field, this never re-applies live or re-writes
+    the store more than once for a single dial tap that moves two bands at
+    once. Each field in *values* is validated through the same schema
+    apply_eq_field() uses; a field absent from *values* keeps its currently
+    stored value untouched (peq3/peq4 are never in *values* -- the dial never
+    writes them).
+
+    When *settings* is a SettingsStore instance, it is used as the sole
+    persistence mechanism, same as apply_eq_field().
+
+    Returns (ok, error_message).
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = settings if isinstance(settings, _SettingsStore) else None
+
+    from autostream_settings_schema import SETTINGS_SCHEMA
+    normalised: dict = {}
+    for field, value_raw in values.items():
+        if field not in _OUTPUT_EQ_BAND_FIELDS:
+            raise ValueError(f"Unknown field: {field!r}")
+        normalised[field] = SETTINGS_SCHEMA[f"output_eq.{field}"].validate(value_raw)
+
+    try:
+        if _store is not None:
+            pre_snap = _store.snapshot()
+            _store.update(lambda raw: raw.setdefault("output_eq", {}).update(normalised))
+            oeq = pre_snap.output_eq
+        else:
+            with CONFIG_IO_LOCK:
+                cfg = load_config(config_path)
+                p = parse_config(cfg)
+                cfg.setdefault("output_eq", {}).update(normalised)
+                save_config(config_path, cfg)
+            oeq = p.output_eq
+
+        band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_BAND_FIELDS}
+        band_vals.update(normalised)
+        set_live_output_eq(
+            band_vals["peq1_db"], band_vals["peq2_db"], band_vals["peq3_db"],
+            band_vals["peq4_db"], band_vals["peq5_db"], band_vals["peq6_db"],
+        )
+    except Exception as e:
+        logging.exception("apply_eq_fields: save failed")
+        return False, str(e)
+
+    return True, ""
+
+
 def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
     """Zero all EQ band fields (peq1–peq6). Does not change output gain or auto-trim.
 

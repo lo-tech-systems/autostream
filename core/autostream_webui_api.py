@@ -25,6 +25,8 @@ Contents:
   - send_dial_mute_post_json     -- POST /api/dial/mute
   - send_dial_outputs_post_json  -- POST /api/dial/outputs
   - send_dial_outputs_set_post_json -- POST /api/dial/outputs/set
+  - send_dial_eq_post_json       -- POST /api/dial/eq
+  - send_dial_eq_set_post_json   -- POST /api/dial/eq/set
   - apply_mute_action            -- shared mute/restore core (dial + WebUI)
   - send_mute_post_json          -- POST /api/mute (WebUI master-volume icon)
 """
@@ -123,11 +125,15 @@ from autostream_appliance_models import (
     _OUTPUT_EQ_BOOL_FIELDS,
     _OUTPUT_EQ_DB_FIELDS,
     apply_eq_field,
+    apply_eq_fields,
     apply_eq_reset,
     apply_output_mutation,
+    bass_treble_from_eq,
     build_equaliser_state,
     build_home_state,
     build_output_list,
+    eq_fields_for_bass,
+    eq_fields_for_treble,
     sanitize_output_body,
 )
 from autostream_player_service import (
@@ -1287,6 +1293,58 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
     )
     result["appliance_id"] = get_appliance_id()
     send_json(handler, 200, result)
+
+
+def send_dial_eq_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/eq — UUID-auth; the bass/treble the dial shows,
+    read back from the stored output_eq bands (peq1/peq6, rounded and
+    clamped to +/-6 dB -- see bass_treble_from_eq)."""
+    if _dial_auth_gate(handler, json_obj) is None:
+        return
+    try:
+        parsed = _config_snapshot(state)
+    except Exception as e:
+        logging.warning("dial eq: config load failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+    bass, treble = bass_treble_from_eq(parsed.output_eq)
+    send_json(handler, 200, {
+        "ok": True, "appliance_id": get_appliance_id(), "bass_db": bass, "treble_db": treble,
+    })
+
+
+def send_dial_eq_set_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/eq/set — UUID-auth; an absolute bass and/or treble
+    value (the dial computes its own clamped absolute, same shape as the
+    per-output volume steppers), mapped onto the output_eq bands and
+    applied in one write (see eq_fields_for_bass/eq_fields_for_treble and
+    apply_eq_fields). Defensively clamped again here regardless of what the
+    dial sent. peq3/peq4 are never touched by either field.
+    """
+    if _dial_auth_gate(handler, json_obj) is None:
+        return
+    values: dict = {}
+    for key, mapper in (("bass_db", eq_fields_for_bass), ("treble_db", eq_fields_for_treble)):
+        if key not in json_obj:
+            continue
+        raw = json_obj[key]
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+            return
+        values.update(mapper(max(-6, min(6, raw))))
+    if not values:
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        return
+    ok, err = apply_eq_fields(state.config_path, values, settings=getattr(state, "settings", None))
+    if not ok:
+        logging.warning("dial eq set: apply failed: %s", err)
+        send_json(handler, 200, {"ok": False, "error": "eq_apply_failed", "appliance_id": get_appliance_id()})
+        return
+    parsed = _config_snapshot(state)
+    bass, treble = bass_treble_from_eq(parsed.output_eq)
+    send_json(handler, 200, {
+        "ok": True, "appliance_id": get_appliance_id(), "bass_db": bass, "treble_db": treble,
+    })
 
 
 def _restore_locked(base_url: str, default_vol: int, selected: list) -> tuple[int, dict, list]:

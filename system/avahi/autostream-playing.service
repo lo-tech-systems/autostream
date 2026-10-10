@@ -10,6 +10,7 @@
     <txt-record>audio_status=v1</txt-record>
     <txt-record>dial_status=v1</txt-record>
     <txt-record>dial_outputs=v1</txt-record>
+    <txt-record>dial_eq=v1</txt-record>
     <txt-record>id=__APPLIANCE_ID__</txt-record>
   </service>
 </service-group>

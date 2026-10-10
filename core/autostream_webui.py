@@ -66,6 +66,8 @@ from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
     send_browser_api_error,
+    send_dial_eq_post_json,
+    send_dial_eq_set_post_json,
     send_dial_mute_post_json,
     send_dial_outputs_post_json,
     send_dial_outputs_set_post_json,
@@ -613,6 +615,20 @@ def _route_post_dial_outputs_set(handler, state):
     if json_obj is None:
         return
     send_dial_outputs_set_post_json(handler, state, json_obj)
+
+
+def _route_post_dial_eq(handler, state):
+    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
+    if json_obj is None:
+        return
+    send_dial_eq_post_json(handler, state, json_obj)
+
+
+def _route_post_dial_eq_set(handler, state):
+    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
+    if json_obj is None:
+        return
+    send_dial_eq_set_post_json(handler, state, json_obj)
 
 
 # --- Loopback-aware fast paths ----------------------------------------------
