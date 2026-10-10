@@ -15,6 +15,11 @@ publishing thread and must only signal (`Event.set`, `queue.put_nowait`,
 `Condition.notify`); a callback that blocks delays that publisher and
 nothing else. Consumers coalesce: several publishes before a consumer runs
 collapse into one wake, and the consumer reads the newest snapshot.
+`wait_for_change` is the same idea for a consumer that would rather block
+than be called: any number of threads may wait at once, each is woken by the
+publish that makes a newer snapshot, and each gets whatever is newest when it
+runs, so a waiter that loops on the `seq` it last saw never misses the latest
+state (it may skip intermediate ones).
 
 The core also runs the poll. `start()` runs one thread, `dial-core`: it
 polls the appliances every poll interval (or sooner when asked), and once a
@@ -26,7 +31,12 @@ is how a view tells a finished tick from the writes in between. A view
 reacts to the finished tick, never to a half-written one. What housekeeping
 does to the warning screens is queued for the view as `SourceEffects`
 (`take_effects`), as is what the worker callbacks (repeat results, network
-and SD health readings, volume readouts) mean for a screen.
+and SD health readings, volume readouts) mean for a screen. That queue is a
+channel for one view, not a notification mechanism: a second consumer should
+use `subscribe` or `wait_for_change` and read the snapshot. Taking is
+atomic, so two takers would split the effects between them, each effect going
+to exactly one; a core with no view attached keeps only the newest
+`EFFECTS_BACKLOG_MAX`.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -346,7 +356,11 @@ class DialCore:
     def subscribe(self, callback: Callable[[], None]) -> int:
         """Register a zero-argument signal callback, called after every
         publish on the publishing thread. Returns a handle for
-        `unsubscribe`."""
+        `unsubscribe`. The callback must only signal: it runs on whichever
+        thread published (the poll thread, a tap, a worker), so one that
+        blocks delays that thread. It may subscribe or unsubscribe (itself or
+        another) and may publish; an exception it raises is logged and
+        ignored."""
         with self._lock:
             handle = self._next_handle
             self._next_handle += 1
@@ -354,6 +368,10 @@ class DialCore:
         return handle
 
     def unsubscribe(self, handle: int) -> None:
+        """Remove a subscriber; an unknown handle is ignored. Safe from any
+        thread, including from inside a callback. A publish already past its
+        snapshot of the subscribers skips a callback removed before its turn,
+        but one already running is not interrupted."""
         with self._lock:
             self._subscribers.pop(handle, None)
 
@@ -385,8 +403,10 @@ class DialCore:
             snap = self._build_snapshot_locked()
             self._snapshot = snap
             self._cond.notify_all()
-            callbacks = list(self._subscribers.values())
-        for callback in callbacks:
+            callbacks = tuple(self._subscribers.items())
+        for handle, callback in callbacks:
+            if handle not in self._subscribers:
+                continue
             try:
                 callback()
             except Exception:
@@ -1616,9 +1636,10 @@ class DialCore:
         return effects
 
     def take_effects(self) -> list:
-        """The `SourceEffects` the housekeeping has queued since the last
-        call, oldest first: what the warning sources did that a view turns
-        into screens."""
+        """The effects queued since the last call, oldest first: what the
+        warning sources and worker callbacks did that a view turns into
+        screens. Single consumer (the view): the queue is emptied, so a
+        second caller would take effects the view never sees."""
         with self._lock:
             effects, self._effects = self._effects, []
         return effects
