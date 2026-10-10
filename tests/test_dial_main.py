@@ -1554,7 +1554,7 @@ class TestBuildTouchSourceWiring:
     background thread) faked out."""
 
     @contextmanager
-    def _built(self, confirm_presence=None, is_muted_value=False, step_percent=None):
+    def _built(self, confirm_presence=None, shown_muted_value=False, step_percent=None):
         """Construct via dial_main._build_touch_source() with the mocks
         still active, yielding everything a test needs — the invoked
         callbacks reference module globals (enqueue_delta etc.) resolved at
@@ -1583,7 +1583,7 @@ class TestBuildTouchSourceWiring:
              patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
              patch("dial_main.enqueue_delta") as mock_delta, \
              patch("dial_main.enqueue_mute", return_value=True) as mock_mute, \
-             patch("dial_main.is_muted", return_value=is_muted_value):
+             patch("dial_main.shown_muted", return_value=shown_muted_value):
             result = dm._build_touch_source(
                 cfg, display, confirm_presence=confirm_presence, step_percent=step_percent,
             )
@@ -1668,19 +1668,28 @@ class TestBuildTouchSourceWiring:
             mock_mute.assert_called_once()
             display.notify_touch_activity.assert_called_once()
 
-    def test_mute_toggle_repaints_glyph_from_returned_belief(self):
-        """The press flips the belief and repaints the glyph on the same
-        frame — set_overlay must be called with the new belief returned by
-        enqueue_mute(), not the pre-press one from is_muted()."""
-        from dial_touch_layout import TouchZone
+    def test_mute_toggle_passes_the_display_reported_state_to_enqueue_mute(self):
+        """on_mute_toggle must read shown_muted() for the display's current
+        source and hand it straight to enqueue_mute() -- the dial infers
+        nothing of its own; enqueue_mute() flips whatever is passed in."""
+        display_mock_source = "svc-1"
+        with self._built(shown_muted_value=True) as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            display.current_source_service_name.return_value = display_mock_source
+            captured["kwargs"]["on_mute_toggle"]()
+            mock_mute.assert_called_once_with(True)
 
+    def test_mute_toggle_reveals_the_overlay_without_publishing_muted(self):
+        """The overlay is revealed with no muted field of its own -- the
+        display's compose-time merge fills it in from the observation
+        store (shown_muted()) for whichever appliance is reporting; the
+        touch side has nothing further to publish."""
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_mute_toggle"]()
 
             display.set_overlay.assert_called_once()
             state = display.set_overlay.call_args[0][0]
             assert state.visible is True
-            assert state.muted is True  # enqueue_mute() was stubbed to return True
+            assert state.muted is None  # OverlayState's own tri-state default
 
     def test_reveal_overlay_sets_overlay_visible_and_signals_overlay_live(self):
         with self._built() as (cfg, display, result, captured, *_):
@@ -1693,15 +1702,16 @@ class TestBuildTouchSourceWiring:
             display.notify_touch_activity.assert_called_once()
             result.overlay_live.assert_called_once()
 
-    def test_reveal_overlay_reads_muted_from_belief(self):
-        """A reveal must show the CURRENT belief on its very first frame,
-        not the tri-state default — otherwise a mute set by the physical
-        button (or an earlier touch session) would briefly draw wrong."""
-        with self._built(is_muted_value=True) as (cfg, display, result, captured, *_):
+    def test_reveal_overlay_publishes_no_muted_field(self):
+        """A reveal publishes only visible=True -- muted is filled in at
+        compose time from the observation store (shown_muted()), never a
+        belief kept here, so there is nothing for the touch side to read
+        or publish about mute at reveal time."""
+        with self._built(shown_muted_value=True) as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_reveal_overlay"]()
 
             state = display.set_overlay.call_args[0][0]
-            assert state.muted is True
+            assert state.muted is None
 
     def test_dismiss_overlay_sets_overlay_hidden(self):
         with self._built() as (cfg, display, result, captured, *_):

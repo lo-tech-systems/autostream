@@ -81,10 +81,10 @@ from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_touch_layout import LayoutMetrics, TouchZone, list_layout_for, metrics_for
 from dial_volume import (
-    is_muted,
-    note_master_volume_positive,
     observe_master_volume,
+    observe_mute_state,
     select_volume_target,
+    shown_muted,
     shown_volume,
 )
 
@@ -1591,10 +1591,12 @@ class DialDisplay:
             dial_volume.shown_volume()), not the raw polled master_volume —
             the readout already reconciles the polled value with any
             pending delta.
-          - muted: the snapshot's own value when the touch side set one
-            explicitly, else the current mute belief (dial_volume.is_muted())
-            — a reveal that follows a mute from the physical button or an
-            earlier touch session must not show the tri-state default.
+          - muted: the reporting-from target's last reported mute state
+            (dial_volume.shown_muted()) — never the touch-published
+            snapshot's own field any more; the touch side's optimistic echo
+            of a press already lives in that same observation store (see
+            enqueue_mute()), so there is nothing left for the snapshot's own
+            value to add.
           - name: appliance_display_name() of the reporting-from target's
             service name, or "" when nothing is playing. ALWAYS populated
             whenever a controllable appliance is shown — unconditional,
@@ -1638,7 +1640,7 @@ class DialDisplay:
         album = now_playing.album if now_playing is not None else ""
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
-        muted = snapshot.muted if snapshot.muted is not None else is_muted()
+        muted = shown_muted(now_playing.service_name) if now_playing is not None else False
         pressed = self._pressed[0] if self._pressed is not None else None
         # Belt and braces: dots are meaningful only on the main screen —
         # _repaint_current_locked never reaches this merge for the repeat/
@@ -2608,11 +2610,11 @@ class DialDisplay:
         _display_repeat_locked).
 
         muted/volume feed the top band's display-only readout — the same
-        belief/reading the main screen's overlay shows (dial_volume.
-        is_muted()/shown_volume()), addressed at *screen*'s own appliance
-        rather than whatever the main overlay would currently show, since
-        the two screens can disagree about which appliance is focused for
-        as long as it takes the next poll to notice a manual focus change.
+        reading the main screen's overlay shows (dial_volume.shown_muted()/
+        shown_volume()), addressed at *screen*'s own appliance rather than
+        whatever the main overlay would currently show, since the two
+        screens can disagree about which appliance is focused for as long
+        as it takes the next poll to notice a manual focus change.
         """
         pressed = self._pressed[0] if self._pressed is not None else None
         if screen is None:
@@ -2621,7 +2623,7 @@ class DialDisplay:
                 start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
             )
         name = appliance_display_name(screen.service_name)
-        muted = is_muted()
+        muted = shown_muted(screen.service_name)
         volume = shown_volume(screen.service_name)
         rec = repeat_store.get(screen.appliance_id, now)
         if rec is None or not rec.available:
@@ -3149,6 +3151,7 @@ class DialDisplay:
             # below never runs in this branch to cover it another way.
             self._source_service_name = None
             observe_master_volume(None, None)
+            observe_mute_state(None, None)
             if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
                 self._reconcile_pass(roster, set())
                 self._last_reconcile_at = now
@@ -3403,17 +3406,11 @@ class DialDisplay:
         self._close_bound_screen_if_unfocused()
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
-        # Free reconciliation for the dial mute belief (dial_volume.py),
-        # restricted to the REPORTING-FROM target only (not "any target
-        # seen this poll" as before single-targeting): a master_volume > 0
-        # on some OTHER target proves nothing about whether the one this
-        # dial actually controls is muted — see the dial_volume module
-        # docstring's reconciliation paragraph. master_volume == 0 is NOT
-        # the mirror case — it proves nothing about the rest of the fleet —
-        # so it is deliberately not checked here at all.
+        # Mute is observed for the REPORTING-FROM target only, exactly like
+        # the volume readout just below — never inferred from a volume, only
+        # ever the flag this poll actually saw for this one target.
+        observe_mute_state(reporting_name, record.get("muted") if record else None)
         if isinstance(master_volume, int) and not isinstance(master_volume, bool):
-            if master_volume > 0:
-                note_master_volume_positive()
             observe_master_volume(reporting_name, master_volume)
         elif reporting_name is not None:
             observe_master_volume(reporting_name, None)

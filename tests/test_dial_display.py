@@ -104,11 +104,11 @@ def _track_id(**overrides) -> dict:
     return base
 
 
-def _status_result(track_id=None, status_error=None, appliance_id=None) -> dict:
+def _status_result(track_id=None, status_error=None, appliance_id=None, muted=False) -> dict:
     return {
         "playing": True, "master_volume": 50, "selected_output_count": 1,
         "track_id": track_id, "status_error": status_error,
-        "appliance_id": appliance_id,
+        "appliance_id": appliance_id, "muted": muted,
     }
 
 
@@ -396,72 +396,63 @@ class TestTargetSelectionFallback:
 # never be used to force the belief to muted.
 # ---------------------------------------------------------------------------
 
-class TestMuteBeliefReconciliationFromStatusPoll:
-    def test_positive_master_volume_notifies_the_mute_belief(self):
+class TestMuteObservationFromStatusPoll:
+    """The poll observes the reported `muted` flag into dial_volume's
+    observation store for the reporting-from target only -- it never infers
+    mute from a volume, and never touches any other target's observation
+    (see dial_volume.observe_mute_state/shown_muted)."""
+
+    def test_muted_field_observed_for_the_reporting_target(self):
         t = _target()
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         with patch("dial_display.fetch_target_status",
-                   return_value=_status_result(track_id=None)) as _, \
-             patch("dial_display.note_master_volume_positive") as mock_note:
+                   return_value=_status_result(track_id=None, muted=True)), \
+             patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_note.assert_called_once()
+        mock_observe.assert_called_once_with(t.service_name, True)
 
-    def test_zero_master_volume_does_not_notify_the_mute_belief(self):
+    def test_unmuted_field_observed_as_false(self):
         t = _target()
         display, fb, gt = _make_display(targets=[t])
         display.enable()
-        result = _status_result(track_id=None)
-        result["master_volume"] = 0
-        with patch("dial_display.fetch_target_status", return_value=result), \
-             patch("dial_display.note_master_volume_positive") as mock_note:
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, muted=False)), \
+             patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_note.assert_not_called()
+        mock_observe.assert_called_once_with(t.service_name, False)
 
-    def test_none_master_volume_does_not_notify_the_mute_belief(self):
-        # selected_output_count == 0 legitimately carries master_volume=None.
-        t = _target()
-        display, fb, gt = _make_display(targets=[t])
-        display.enable()
-        result = _status_result(track_id=None)
-        result["master_volume"] = None
-        result["selected_output_count"] = 0
-        with patch("dial_display.fetch_target_status", return_value=result), \
-             patch("dial_display.note_master_volume_positive") as mock_note:
-            display._poll_once()
-        mock_note.assert_not_called()
-
-    def test_status_error_response_does_not_notify_the_mute_belief(self):
+    def test_status_error_response_observes_none(self):
+        """A status_error response is never stored in the poll's `records`
+        map, so the reporting target's muted observation is None (unknown)
+        -- never left stale from a previous successful poll's inference,
+        and never a guess."""
         t = _target()
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         with patch("dial_display.fetch_target_status",
                    return_value=_status_result(status_error="timeout")), \
-             patch("dial_display.note_master_volume_positive") as mock_note:
+             patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_note.assert_not_called()
+        mock_observe.assert_called_once_with(t.service_name, None)
 
-    def test_positive_volume_on_a_non_reporting_target_does_not_notify(self):
+    def test_muted_on_a_non_reporting_target_is_never_observed(self):
         """Two targets, neither identified: the reporting-from target is the
-        oldest-playing (first) one. A positive volume on the OTHER, non-
-        reporting target must not notify the belief — restricting the
-        observation to the reporting-from target (C.5) is what stops a
-        mixed-fleet false "unmuted" belief once volume/mute address a
-        single target."""
+        oldest-playing (first) one. Only that target's muted flag reaches
+        the observation store -- the other target's is never consulted,
+        matching the single-reporting-target rule volume already follows."""
         t_reporting = _target(name="Older", service_name="older", playing_since=10.0)
         t_other = _target(name="Newer", service_name="newer", playing_since=20.0)
         display, fb, gt = _make_display(targets=[t_reporting, t_other])
         display.enable()
 
         def fake_fetch(target, dial_id, timeout_seconds):
-            result = _status_result(track_id=None)
-            result["master_volume"] = 0 if target.service_name == "older" else 50
-            return result
+            return _status_result(track_id=None, muted=(target.service_name != "older"))
 
         with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
-             patch("dial_display.note_master_volume_positive") as mock_note:
+             patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_note.assert_not_called()
+        mock_observe.assert_called_once_with("older", False)
 
     def test_fallback_reporting_target_is_oldest_when_nothing_identified(self):
         """With nothing identified, the reporting-from target is
@@ -478,26 +469,22 @@ class TestMuteBeliefReconciliationFromStatusPoll:
 
         assert mock_observe.call_args[0][0] == "older"
 
-    def test_positive_master_volume_actually_clears_the_real_belief(self):
+    def test_muted_flag_actually_reaches_the_real_observation_store(self):
         """End-to-end against the real dial_volume module (not a mock of
-        note_master_volume_positive) — proves the two modules are actually
-        wired together, not just that dial_display calls a same-named stub.
-        dial_display imports note_master_volume_positive directly from
-        dial_volume, so setting/reading dv._muted here observes exactly the
-        state that function mutates."""
+        observe_mute_state) — proves the two modules are actually wired
+        together, not just that dial_display calls a same-named stub."""
         import dial_volume as dv
-        original = dv._muted
-        dv._muted = True  # simulate an existing mute belief
+        dv.observe_mute_state(None, None)
         try:
             t = _target()
             display, fb, gt = _make_display(targets=[t])
             display.enable()
             with patch("dial_display.fetch_target_status",
-                       return_value=_status_result(track_id=None)):
+                       return_value=_status_result(track_id=None, muted=True)):
                 display._poll_once()
-            assert dv.is_muted() is False
+            assert dv.shown_muted(t.service_name) is True
         finally:
-            dv._muted = original
+            dv.observe_mute_state(None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1832,42 +1819,50 @@ class TestEffectiveOverlayMerge:
         result = display._effective_overlay_locked(snapshot)
         assert result is snapshot
 
-    def test_muted_none_is_filled_from_the_belief(self):
+    def test_no_now_playing_muted_is_always_false(self):
+        """With nothing playing there is no reporting-from target, so muted
+        is always False regardless of the observation store or whatever the
+        touch-published snapshot itself carries."""
         import dial_volume as dv
         display, fb, gt = _make_display(targets=[])
         display.enable()
-        original = dv._muted
-        dv._muted = True
+        dv.observe_mute_state("svc", True)
+        try:
+            result = display._effective_overlay_locked(OverlayState(visible=True, muted=True))
+            assert result.muted is False
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_muted_is_read_from_the_observation_store_for_now_playings_service(self):
+        import dial_volume as dv
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "Artist", "Title", 50)
+        dv.observe_mute_state("svc", True)
         try:
             result = display._effective_overlay_locked(OverlayState(visible=True))
             assert result.muted is True
         finally:
-            dv._muted = original
+            dv.observe_mute_state(None, None)
 
-    def test_explicit_muted_false_is_not_overridden_by_the_belief(self):
+    def test_touch_snapshots_own_muted_field_is_ignored(self):
+        """The observation store wins even when the touch-published
+        snapshot explicitly carries the opposite value -- the optimistic
+        echo of a press lives in the store itself (see
+        dial_volume.enqueue_mute()), not in any field on the snapshot
+        passed in here."""
         import dial_volume as dv
         display, fb, gt = _make_display(targets=[])
         display.enable()
-        original = dv._muted
-        dv._muted = True  # belief says muted...
-        try:
-            # ...but the touch snapshot explicitly says otherwise, and wins.
-            result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
-            assert result.muted is False
-        finally:
-            dv._muted = original
-
-    def test_explicit_muted_true_is_not_overridden_by_the_belief(self):
-        import dial_volume as dv
-        display, fb, gt = _make_display(targets=[])
-        display.enable()
-        original = dv._muted
-        dv._muted = False
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "Artist", "Title", 50)
+        dv.observe_mute_state("svc", False)
         try:
             result = display._effective_overlay_locked(OverlayState(visible=True, muted=True))
-            assert result.muted is True
+            assert result.muted is False
         finally:
-            dv._muted = original
+            dv.observe_mute_state(None, None)
 
     def test_visible_snapshot_merges_artist_and_readout_volume(self):
         import dial_volume as dv
@@ -4488,12 +4483,13 @@ class TestRepeatViewTopBandAndBaseImage:
 
     def test_muted_and_volume_fed_from_the_repeat_screens_own_appliance(self):
         display, aid = self._opened(state="idle")
-        with patch("dial_display.is_muted", return_value=True), \
+        with patch("dial_display.shown_muted", return_value=True) as mock_shown_muted, \
              patch("dial_display.shown_volume", return_value=37) as mock_shown_volume:
             with display._lock:
                 view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
         assert view.muted is True
         assert view.volume == 37
+        mock_shown_muted.assert_called_once_with("Kitchen")
         mock_shown_volume.assert_called_once_with("Kitchen")
 
     def test_base_image_passed_through_to_compose_repeat(self):

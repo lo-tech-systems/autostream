@@ -127,6 +127,7 @@ def _base_record(target: "PlayingTarget") -> dict:
         "playing": None,
         "master_volume": None,
         "selected_output_count": None,
+        "muted": None,
         "track_id": None,
         "repeat": None,
         "status_error": None,
@@ -276,6 +277,14 @@ def fetch_target_status(
         record["status_error"] = "bad_response"
         return record
 
+    muted = None
+    if "muted" in data:
+        raw_muted = data["muted"]
+        if not isinstance(raw_muted, bool):
+            record["status_error"] = "bad_response"
+            return record
+        muted = raw_muted
+
     if "appliance_id" in data:
         raw_appliance_id = data["appliance_id"]
         if raw_appliance_id is not None and not isinstance(raw_appliance_id, str):
@@ -292,6 +301,7 @@ def fetch_target_status(
     record["playing"] = playing
     record["master_volume"] = master_volume
     record["selected_output_count"] = selected_output_count
+    record["muted"] = muted
     record["track_id"] = track_id
     record["repeat"] = raw_repeat if isinstance(raw_repeat, dict) else None
     record["appliance_id"] = _parse_appliance_id(data)

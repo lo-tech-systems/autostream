@@ -5,32 +5,23 @@ call enqueue_delta() and button/touch press callbacks call enqueue_mute();
 both return immediately so GPIO interrupt callbacks and the touch thread are
 never blocked by network I/O.
 
-Mute is deterministic, not toggled independently by each appliance: this
-module holds a single `muted` belief (module-level, default False —
-optimistic-unmuted: a press happens because something is audible). A press
-flips the belief locally and enqueues the resulting ABSOLUTE action ("mute"
-or "restore") for every target to obey identically. This is what keeps a
-mixed-volume fleet from oscillating out of phase forever: when each appliance
-inferred its own action from its own volume, appliances at different levels
-disagreed about what a press meant and never converged.
+Mute is appliance state, not a dial belief: the appliance a press addresses
+owns whether it is muted and what its outputs return to on restore (process
+memory only — no persistence). This module keeps no belief of its own about
+mute; enqueue_mute() takes the caller's best knowledge of the CURRENT state
+(read from the observation store below, itself fed only by what an
+appliance actually reported) and enqueues the absolute action that flips it.
+This is what keeps a mixed-volume fleet from oscillating out of phase
+forever: every target obeys the same absolute instruction rather than each
+inferring its own action from its own volume.
 
-The belief self-corrects from traffic that already happens, at no extra
-network cost:
-  - Mute responses are authoritative — every target replies to the same
-    absolute instruction — and are folded in by _send_one_mute regardless of
-    which way they point (see _reconcile_muted()).
-  - A master_volume > 0 observed on the reporting-from target (a volume
-    fan-out response, or dial_display's status poll — see
-    select_volume_target() and dial_display._poll_once()) is definitive
-    proof the fleet is audible and sets the belief to unmuted via
-    note_master_volume_positive(). CRITICAL ASYMMETRY: master_volume == 0
-    from a single appliance proves nothing about the rest of the fleet and
-    must NEVER set the belief to muted — only the volume-positive inference
-    is safe from one observation. Restricting the observation to the
-    reporting-from target (rather than any target the poll happens to see)
-    matters once volume/mute address a single target: a positive volume on
-    some OTHER target proves nothing about whether the one this dial is
-    actually controlling is muted.
+The observation store is exactly the same shape as the optimistic volume
+readout just below it, and for the same reason: a value the dial can show
+immediately (an optimistic echo of the just-enqueued action) that the
+appliance's own response, or the next status poll, always overwrites. Unlike
+the volume readout there is no "positive value proves it" shortcut here —
+this module never infers mute from a volume; it only ever repeats back what
+an appliance's status/mute/volume response explicitly said.
 
 Volume and mute address a single "reporting-from" target by default — the
 display's chosen artwork source when it has one, else the oldest playing
@@ -53,10 +44,10 @@ Mute events are preserved in order relative to deltas: deltas before and
 after a mute event are coalesced independently, so the sequence
 delta+delta+mute+delta dispatches as combined-delta, mute-action,
 final-delta. Adjacent mute events collapse to the LAST one instead of
-cancelling in pairs: actions are absolute now, so re-asserting only the final
-state is idempotent and free to replay, and it corrects any drift the belief
-picked up in between; cancelling a pair would be consistent too but throws
-away that free correction for no benefit.
+cancelling in pairs: actions are absolute, so re-asserting only the final
+state is idempotent and free to replay, and it corrects any drift the
+appliance's actual state picked up in between; cancelling a pair would be
+consistent too but throws away that free correction for no benefit.
 
 Fan-out is concurrent: one thread per target with a 400 ms network timeout and
 a 600 ms join timeout (200 ms headroom ensures threads finish before clamped
@@ -83,7 +74,7 @@ import urllib.request
 from typing import Tuple, Union
 
 # Each queue item is either ("delta", int) or ("mute", bool) — the bool is
-# the resulting absolute belief (True = muted) at the moment it was enqueued.
+# the resulting absolute action (True = mute) at the moment it was enqueued.
 _Event = Union[Tuple[str, int], Tuple[str, bool]]
 _queue: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 
@@ -98,46 +89,49 @@ _on_readout_changed = None
 _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failures
 
 # ---------------------------------------------------------------------------
-# Mute belief — single module-level flag, guarded by a small leaf lock.
+# Optimistic volume readout AND mute observation store — module-level state
+# guarded by one small leaf lock.
 #
-# _muted_lock is NEVER held across network I/O and is never nested with
+# _readout_lock is NEVER held across network I/O and is never nested with
 # DialDisplay._lock in either direction — it is only ever taken standalone,
 # for the duration of a plain attribute read/write. This is what makes
-# enqueue_mute()/is_muted() safe to call from the touch thread and the
+# enqueue_mute()/shown_muted() safe to call from the touch thread and the
 # button thread, mirroring the discipline dial_display.DialDisplay documents
 # for notify_touch_activity()/set_overlay() and its own overlay leaf lock.
-# ---------------------------------------------------------------------------
-
-_muted_lock = threading.Lock()
-_muted = False  # optimistic default: something is playing, unmuted
-
-# ---------------------------------------------------------------------------
-# Optimistic volume readout — a second module-level flag, guarded by its own
-# leaf lock, mirroring the mute belief's discipline above exactly (never held
-# across I/O, never nested with any other lock).
 #
-# The overlay needs a number that reacts to every source of a delta (touch,
-# encoder, control socket) on the same frame as the press, is corrected by
-# the fast source of truth (the `volume` field in each /api/dial/volume
-# response, about 0.4s after a press — see _send_one()) and by the slow one
-# (dial_display's 6s status poll — see observe_master_volume()), and is
-# readable by the display without the display owning it. _readout_base is
-# the last observed master_volume for _readout_service; _readout_pending is
-# the sum of deltas enqueued since that observation. shown_volume() is base
-# plus pending, clamped to 0..100. Nothing in the wire protocol changes:
-# deltas stay stateless — this is purely a local display hint.
+# The overlay needs a volume number that reacts to every source of a delta
+# (touch, encoder, control socket) on the same frame as the press, is
+# corrected by the fast source of truth (the `volume` field in each
+# /api/dial/volume response, about 0.4s after a press — see _send_one()) and
+# by the slow one (dial_display's 6s status poll — see
+# observe_master_volume()), and is readable by the display without the
+# display owning it. _readout_base is the last observed master_volume for
+# _readout_service; _readout_pending is the sum of deltas enqueued since
+# that observation. shown_volume() is base plus pending, clamped to 0..100.
+# Nothing in the wire protocol changes: deltas stay stateless — this is
+# purely a local display hint.
 #
 # Known and accepted imprecision: a poll observation landing between a press
 # and its response resets pending, so the number can briefly show the
 # pre-press value until the response arrives (under 0.5s). The response then
 # wins. No time-stamping is added for this — the next observation always
 # reconciles it.
+#
+# The mute observation store follows the identical shape, keyed separately
+# (_readout_muted_service/_readout_muted) so a wide mute-all-playing fan-out
+# touching several targets at once can never clobber the volume readout's
+# own reporting-from target. There is no "positive proves it" shortcut for
+# mute the way there is for volume: nothing here infers a mute state, it
+# only ever repeats back what an appliance's own response said.
 # ---------------------------------------------------------------------------
 
 _readout_lock = threading.Lock()     # leaf lock, never held across I/O
 _readout_service: str | None = None  # target the base was observed on
 _readout_base: int | None = None     # last observed master_volume
 _readout_pending = 0                 # deltas enqueued since the base
+
+_readout_muted_service: str | None = None  # target the mute flag was observed on
+_readout_muted: bool | None = None         # last reported mute state for that target
 
 
 def observe_master_volume(service_name: str | None, volume: int | None) -> None:
@@ -162,6 +156,28 @@ def shown_volume(service_name: str | None) -> int | None:
         if service_name is None or service_name != _readout_service or _readout_base is None:
             return None
         return max(0, min(100, _readout_base + _readout_pending))
+
+
+def observe_mute_state(service_name: str | None, muted) -> None:
+    """Record the mute flag an appliance reported (a status poll, a mute
+    response or a volume response) for *service_name*. None clears (an
+    appliance switch, or an old appliance's response carrying no field);
+    anything that is not a plain bool is treated the same as None, exactly
+    like dial_target_status's own parsing of the field."""
+    global _readout_muted_service, _readout_muted
+    with _readout_lock:
+        _readout_muted_service = service_name
+        _readout_muted = muted if isinstance(muted, bool) else None
+
+
+def shown_muted(service_name: str | None) -> bool:
+    """The last reported mute state for *service_name*; False when unknown
+    or when the last observation was for a different target (a stale flag
+    from another appliance must never be shown)."""
+    with _readout_lock:
+        if service_name is None or service_name != _readout_muted_service:
+            return False
+        return bool(_readout_muted)
 
 
 # ---------------------------------------------------------------------------
@@ -219,59 +235,26 @@ def enqueue_delta(delta: int) -> None:
     _queue.put(("delta", delta))
 
 
-def enqueue_mute() -> bool:
-    """Flip the mute belief and enqueue the resulting absolute action.
+def enqueue_mute(currently_muted: bool) -> bool:
+    """Enqueue the absolute action that flips *currently_muted* -- the
+    reporting appliance's last-known mute state, read by the caller from
+    shown_muted() before calling this.
 
     Called from the touch thread and the button thread. Does no network
     I/O and never takes DialDisplay._lock — only the small dedicated
-    _muted_lock, held for a plain read-modify-write. Returns the new belief
-    immediately so the caller can repaint the touch glyph on the same frame
-    as the press; the worker thread later fans out the absolute
-    "mute"/"restore" action this belief implies.
+    _readout_lock, held for a plain write. Echoes the resulting state into
+    the observation store immediately, so the glyph updates on the same
+    frame as the press even before the appliance's response (about 0.4s
+    later) or the next status poll confirms it — either of those overwrites
+    this echo. Returns the requested state (the caller may use it, but
+    nothing here depends on that).
     """
-    global _muted
-    with _muted_lock:
-        _muted = not _muted
-        new_belief = _muted
-    _queue.put(("mute", new_belief))
-    return new_belief
-
-
-def is_muted() -> bool:
-    """Current mute belief. A cheap, lock-guarded read — safe to call from
-    any thread, including the touch thread (see enqueue_mute())."""
-    with _muted_lock:
-        return _muted
-
-
-def note_master_volume_positive() -> None:
-    """Record a master_volume > 0 observation seen anywhere (a volume
-    fan-out response, a status poll, ...) — definitive proof the fleet is
-    audible, so the belief becomes unmuted.
-
-    Never call this for master_volume == 0: a single appliance reporting 0
-    proves nothing about the rest of the fleet under the fleet mute rule —
-    see the module docstring's CRITICAL ASYMMETRY note.
-    """
-    global _muted
-    with _muted_lock:
-        _muted = False
-
-
-def _reconcile_muted(value) -> None:
-    """Fold an authoritative `muted` field from a mute response into the
-    belief.
-
-    Mute responses come from every target obeying the same absolute
-    instruction, so — unlike a bare volume observation — they may set the
-    belief either way. Silently ignored if the field is missing or not a
-    bool (defensive against a malformed/partial response).
-    """
-    global _muted
-    if not isinstance(value, bool):
-        return
-    with _muted_lock:
-        _muted = value
+    global _readout_muted
+    new_state = not currently_muted
+    with _readout_lock:
+        _readout_muted = new_state
+    _queue.put(("mute", new_state))
+    return new_state
 
 
 def _coalesce(first: _Event) -> list[_Event]:
@@ -370,12 +353,15 @@ def _send_one(target, uuid: str, delta: int, clamped: list) -> None:
         vol = data.get("volume", -1)
         if (delta > 0 and vol == 100) or (delta < 0 and vol == 0):
             clamped.append(True)
-        # Free reconciliation: this target just confirmed an audible master
-        # volume, which proves the fleet is not muted. Without this, turning
-        # the volume up while the belief is stale-muted would leave the next
-        # mute press sending a restore that no-ops, so the press looks dead.
-        if isinstance(vol, int) and not isinstance(vol, bool) and vol > 0:
-            note_master_volume_positive()
+        # The appliance's own mute state, reported alongside this response --
+        # a new appliance answers False after an unmute-by-volume-up and True
+        # after an ignored volume-down. An old appliance carries no field at
+        # all: guarded so that case leaves the store as it was, rather than
+        # overwriting a real observation (e.g. from the last status poll)
+        # with an absent one.
+        muted_field = data.get("muted")
+        if isinstance(muted_field, bool):
+            observe_mute_state(target.service_name, muted_field)
         if isinstance(vol, int) and not isinstance(vol, bool):
             # Fast-path reconciliation of the optimistic readout (see the
             # "Optimistic volume readout" section above) — this response is
@@ -417,9 +403,13 @@ def _send_one_mute(target, uuid: str, muted: bool) -> None:
             _log_mute_failure(target.ip, "ok=false error=%s", data.get("error", "unknown"))
             return
         _fail_counts.pop(target.ip, None)
-        # Free reconciliation: fold the authoritative belief this target
-        # reports back rather than discarding it — see _reconcile_muted().
-        _reconcile_muted(data.get("muted"))
+        # The appliance's own authoritative mute state, reported back for the
+        # target this action was actually sent to. Guarded the same way as
+        # _send_one() above: an absent or malformed field leaves the store
+        # as it was rather than clearing a real observation to unknown.
+        muted_field = data.get("muted")
+        if isinstance(muted_field, bool):
+            observe_mute_state(target.service_name, muted_field)
     except urllib.error.HTTPError as e:
         if e.code in (403, 412):
             logging.debug("mute POST %s: %d unauthorized", target.ip, e.code)

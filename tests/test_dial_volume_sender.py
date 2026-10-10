@@ -51,18 +51,21 @@ def _mock_urlopen_success(volume: int = 50, ok: bool = True):
 
 def _clear_state():
     dv._fail_counts.clear()
-    # Also reset the two pieces of module state introduced for single-
-    # targeting/optimistic-readout, so a test that doesn't explicitly reset
-    # them never inherits state left behind by an earlier test.
+    # Also reset the module state introduced for single-targeting/
+    # optimistic-readout and the mute observation store, so a test that
+    # doesn't explicitly reset them never inherits state left behind by an
+    # earlier test.
     dv.observe_master_volume(None, None)
+    dv.observe_mute_state(None, None)
     dv._on_readout_changed = None
     dv._mute_targets_fn = None
 
 
-def _reset_belief(value: bool = False) -> None:
-    """Directly set the module-level mute belief for test isolation — bypasses
-    the lock (fine: single-threaded test setup, not a concurrency test)."""
-    dv._muted = value
+def _seed_mute_observation(service_name: str, muted: bool) -> None:
+    """Seed the mute observation store as if an earlier response/poll had
+    already reported *muted* for *service_name* — the dial keeps no belief
+    of its own, only what it was last told."""
+    dv.observe_mute_state(service_name, muted)
 
 
 def _mock_urlopen_mute_success(muted: bool = True, ok: bool = True, extra: dict | None = None):
@@ -445,7 +448,6 @@ class TestQueueCoalescing:
 class TestSendOneMuteRequestFormat:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
 
     def test_body_matches_the_exact_wire_contract_for_mute(self):
         target = _target()
@@ -527,63 +529,82 @@ class TestSendOneMuteRequestFormat:
 
 
 # ---------------------------------------------------------------------------
-# _send_one_mute: free reconciliation — the "muted" field folds into belief
+# _send_one_mute: free observation — the "muted" field is folded into the
+# per-service observation store (dial_volume.observe_mute_state/
+# shown_muted), not any dial-side belief -- the dial keeps none.
 # ---------------------------------------------------------------------------
 
 class TestSendOneMuteReconciliation:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
 
-    def test_authoritative_muted_true_sets_belief_true(self):
-        _reset_belief(False)
+    def test_authoritative_muted_true_is_observed(self):
+        target = _target(service_name="svc")
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=True)):
-            dv._send_one_mute(_target(), "uuid", True)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", True)
+        assert dv.shown_muted("svc") is True
 
-    def test_authoritative_muted_false_sets_belief_false_even_if_we_asked_to_mute(self):
-        # Mute responses are authoritative and may set the belief either
-        # way — unlike a bare volume observation (see note_master_volume_positive).
-        _reset_belief(True)
+    def test_authoritative_muted_false_is_observed_even_if_we_asked_to_mute(self):
+        # Mute responses are authoritative and may report either state,
+        # regardless of which action this dial actually sent.
+        target = _target(service_name="svc")
+        _seed_mute_observation("svc", True)
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=False)):
-            dv._send_one_mute(_target(), "uuid", True)
-        assert dv.is_muted() is False
+            dv._send_one_mute(target, "uuid", True)
+        assert dv.shown_muted("svc") is False
 
-    def test_missing_muted_field_leaves_belief_unchanged(self):
-        _reset_belief(True)
+    def test_missing_muted_field_leaves_the_store_unchanged(self):
+        target = _target(service_name="svc")
+        _seed_mute_observation("svc", True)
         resp = MagicMock()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         resp.read.return_value = json.dumps({"ok": True}).encode()
         with patch("urllib.request.urlopen", return_value=resp):
-            dv._send_one_mute(_target(), "uuid", False)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", False)
+        assert dv.shown_muted("svc") is True
 
-    def test_non_bool_muted_field_leaves_belief_unchanged(self):
-        _reset_belief(True)
+    def test_non_bool_muted_field_leaves_the_store_unchanged(self):
+        target = _target(service_name="svc")
+        _seed_mute_observation("svc", True)
         resp = MagicMock()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         resp.read.return_value = json.dumps({"ok": True, "muted": "yes"}).encode()
         with patch("urllib.request.urlopen", return_value=resp):
-            dv._send_one_mute(_target(), "uuid", False)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", False)
+        assert dv.shown_muted("svc") is True
 
-    def test_ok_false_does_not_reconcile_belief(self):
-        _reset_belief(True)
+    def test_ok_false_does_not_observe(self):
+        target = _target(service_name="svc")
+        _seed_mute_observation("svc", True)
         with patch("urllib.request.urlopen",
                    return_value=_mock_urlopen_mute_success(muted=False, ok=False)):
-            dv._send_one_mute(_target(), "uuid", False)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", False)
+        assert dv.shown_muted("svc") is True
 
-    def test_partial_true_response_still_reconciles(self):
+    def test_partial_true_response_still_observes(self):
         """A response may carry "partial": true alongside ok/muted — that is
-        purely informational and must not block reconciliation."""
-        _reset_belief(False)
+        purely informational and must not block the observation."""
+        target = _target(service_name="svc")
         resp = _mock_urlopen_mute_success(muted=True, extra={"partial": True})
         with patch("urllib.request.urlopen", return_value=resp):
-            dv._send_one_mute(_target(), "uuid", True)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", True)
+        assert dv.shown_muted("svc") is True
+
+    def test_a_later_observation_for_a_different_service_makes_the_earlier_one_unknown(self):
+        """The store holds one reporting service at a time (see
+        shown_muted()'s service-equality gate) -- a later observation for a
+        different service means reading the earlier one back reports
+        unknown (False), never a stale value from the wrong appliance."""
+        target_a = _target(ip="6.0.0.1", service_name="svc-a")
+        target_b = _target(ip="6.0.0.2", service_name="svc-b")
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=True)):
+            dv._send_one_mute(target_a, "uuid", True)
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=False)):
+            dv._send_one_mute(target_b, "uuid", False)
+        assert dv.shown_muted("svc-a") is False  # unknown, not the stale True
+        assert dv.shown_muted("svc-b") is False  # the actual last-reported value
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +614,6 @@ class TestSendOneMuteReconciliation:
 class TestSendOneMuteFailureHandling:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
 
     def test_ok_false_increments_fail_count(self):
         target = _target(ip="1.2.3.9")
@@ -633,13 +653,14 @@ class TestSendOneMuteFailureHandling:
         assert not warning_msgs, "403 should not log at WARNING"
         assert debug_msgs, "403 should log at DEBUG"
 
-    def test_403_does_not_reconcile_belief(self):
-        """A 403 carries no body to fold in — the belief must be untouched."""
-        _reset_belief(True)
+    def test_403_does_not_observe(self):
+        """A 403 carries no body to fold in — the store must be untouched."""
+        target = _target(service_name="svc")
+        _seed_mute_observation("svc", True)
         err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err):
-            dv._send_one_mute(_target(), "uuid", False)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", False)
+        assert dv.shown_muted("svc") is True
 
     def test_412_does_not_increment_fail_count(self, caplog):
         import logging
@@ -664,13 +685,14 @@ class TestSendOneMuteFailureHandling:
         assert not warning_msgs, "412 should not log at WARNING"
         assert debug_msgs, "412 should log at DEBUG"
 
-    def test_412_does_not_reconcile_belief(self):
-        """A 412 carries no body to fold in — the belief must be untouched."""
-        _reset_belief(True)
+    def test_412_does_not_observe(self):
+        """A 412 carries no body to fold in — the store must be untouched."""
+        target = _target(service_name="svc")
+        _seed_mute_observation("svc", True)
         err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err):
-            dv._send_one_mute(_target(), "uuid", False)
-        assert dv.is_muted() is True
+            dv._send_one_mute(target, "uuid", False)
+        assert dv.shown_muted("svc") is True
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +702,6 @@ class TestSendOneMuteFailureHandling:
 class TestFanOutMute:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
 
     def test_sends_to_all_targets_with_the_same_absolute_action(self):
         targets = [_target("2.0.0.1"), _target("2.0.0.2"), _target("2.0.0.3")]
@@ -709,28 +730,27 @@ class TestFanOutMute:
 
         assert sent == []
 
-    def test_all_targets_403_leaves_belief_unreconciled(self):
+    def test_all_targets_403_leaves_the_store_unobserved(self):
         """All targets unauthorized: no target returns a body to fold in, so
-        the belief this dial already flipped to on press must survive
-        untouched — a mixed-LAN 403 must never look like a correction."""
-        _reset_belief(True)
-        targets = [_target("3.0.0.1"), _target("3.0.0.2")]
+        whatever the store already held survives untouched — a mixed-LAN
+        403 must never look like a correction."""
+        targets = [_target("3.0.0.1", service_name="svc"), _target("3.0.0.2", service_name="svc")]
+        _seed_mute_observation("svc", True)
         err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
 
         with patch("urllib.request.urlopen", side_effect=err):
             dv._fan_out_mute(targets, "uuid", True)
 
-        assert dv.is_muted() is True
+        assert dv.shown_muted("svc") is True
         assert dv._fail_counts.get("3.0.0.1", 0) == 0
         assert dv._fail_counts.get("3.0.0.2", 0) == 0
 
-    def test_partial_fan_out_failure_reconciles_from_the_surviving_target(self):
+    def test_partial_fan_out_failure_observes_from_the_surviving_target(self):
         """One target succeeds (and reports muted=True back), the other is
-        unreachable — the belief still gets the free reconciliation from the
+        unreachable — the store still gets the free observation from the
         one that answered, and the failing one's fail count is bumped."""
-        _reset_belief(False)
-        good = _target(ip="4.0.0.1")
-        bad = _target(ip="4.0.0.2")
+        good = _target(ip="4.0.0.1", service_name="good-svc")
+        bad = _target(ip="4.0.0.2", service_name="bad-svc")
 
         def fake_urlopen(req, timeout=None):
             if req.full_url.startswith(f"http://{bad.ip}"):
@@ -740,19 +760,19 @@ class TestFanOutMute:
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             dv._fan_out_mute([good, bad], "uuid", True)
 
-        assert dv.is_muted() is True
+        assert dv.shown_muted("good-svc") is True
         assert dv._fail_counts.get(bad.ip, 0) == 1
         assert dv._fail_counts.get(good.ip, 0) == 0
 
 
 # ---------------------------------------------------------------------------
-# enqueue_mute(): belief flip, no network I/O, no DialDisplay lock
+# enqueue_mute(): flips the caller-supplied reported state, no network I/O,
+# no DialDisplay lock, no belief of its own kept anywhere in this module.
 # ---------------------------------------------------------------------------
 
-class TestEnqueueMuteBelief:
+class TestEnqueueMuteAbsoluteAction:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
         # Drain any leftover queue items from a previous test.
         while True:
             try:
@@ -760,21 +780,14 @@ class TestEnqueueMuteBelief:
             except Exception:
                 break
 
-    def test_default_belief_is_unmuted(self):
-        assert dv.is_muted() is False
-
-    def test_first_press_flips_to_muted_and_enqueues_it(self):
-        new_belief = dv.enqueue_mute()
-        assert new_belief is True
-        assert dv.is_muted() is True
+    def test_reported_unmuted_flips_to_mute(self):
+        new_state = dv.enqueue_mute(False)
+        assert new_state is True
         assert dv._queue.get_nowait() == ("mute", True)
 
-    def test_second_press_flips_back_to_unmuted(self):
-        dv.enqueue_mute()
-        dv._queue.get_nowait()
-        new_belief = dv.enqueue_mute()
-        assert new_belief is False
-        assert dv.is_muted() is False
+    def test_reported_muted_flips_to_restore(self):
+        new_state = dv.enqueue_mute(True)
+        assert new_state is False
         assert dv._queue.get_nowait() == ("mute", False)
 
     def test_enqueue_mute_performs_no_network_io(self):
@@ -782,12 +795,23 @@ class TestEnqueueMuteBelief:
             raise AssertionError("enqueue_mute() must never touch the network")
 
         with patch("urllib.request.urlopen", side_effect=boom):
-            dv.enqueue_mute()  # must not raise
+            dv.enqueue_mute(False)  # must not raise
 
-    def test_note_master_volume_positive_forces_unmuted(self):
-        _reset_belief(True)
-        dv.note_master_volume_positive()
-        assert dv.is_muted() is False
+    def test_enqueue_mute_echoes_into_the_observation_store(self):
+        """The dial persists nothing, but a press must still repaint the
+        glyph on the same frame -- the echo lives in the mute observation
+        store (dial_volume._readout_muted), not any belief."""
+        dv.observe_mute_state("svc", False)
+        dv.enqueue_mute(False)
+        assert dv.shown_muted("svc") is True
+
+    def test_enqueue_mute_does_not_touch_which_service_the_store_reports_for(self):
+        """The echo updates only the value, never the tracked service -- it
+        applies to whichever service the store already associates with the
+        reporting appliance."""
+        dv.observe_mute_state("svc", False)
+        dv.enqueue_mute(False)
+        assert dv.shown_muted("other-svc") is False
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +824,6 @@ class TestEnqueueMuteBelief:
 class TestWorkerMuteDispatch:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
         dv._cfg = MagicMock(uuid="test-uuid")
 
     def test_mute_batch_item_dispatches_via_fan_out_mute(self):
@@ -865,7 +888,6 @@ class TestSelectVolumeTarget:
 class TestWorkerTargetResolution:
     def setup_method(self):
         _clear_state()
-        _reset_belief(False)
         dv._cfg = MagicMock(uuid="test-uuid")
 
     def _dispatch(self, batch):

@@ -234,7 +234,7 @@ class TestEnrichSuccess:
         for field in (
             "name", "ip", "port", "dial_api", "audio_status", "dial_status",
             "playing", "master_volume", "selected_output_count", "status_error",
-            "appliance_id",
+            "appliance_id", "muted",
         ):
             assert field in r, f"Missing field: {field}"
 
@@ -295,6 +295,59 @@ class TestApplianceIdField:
         with _mock_conn(body):
             record = fetch_target_status(t, "dial-id")
         assert record["appliance_id"] == aid
+
+
+# ---------------------------------------------------------------------------
+# muted field on the 200 success path
+# ---------------------------------------------------------------------------
+
+class TestMutedField:
+    def test_muted_true_is_stored(self):
+        t = _target()
+        body = _ok_response()
+        body["muted"] = True
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["muted"] is True
+
+    def test_muted_false_is_stored(self):
+        t = _target()
+        body = _ok_response()
+        body["muted"] = False
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["muted"] is False
+
+    def test_missing_muted_is_none(self):
+        """An older appliance that predates the mute-state feature simply
+        omits the field -- degrades to "unknown", not a schema violation."""
+        t = _target()
+        with _mock_conn(_ok_response()):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["muted"] is None
+
+    def test_non_bool_muted_is_bad_response(self):
+        t = _target()
+        body = _ok_response()
+        body["muted"] = "true"
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_null_muted_is_bad_response(self):
+        """Unlike appliance_id, an explicit null is not a valid value for
+        this field -- it is either a bool or absent entirely."""
+        t = _target()
+        body = _ok_response()
+        body["muted"] = None
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_unsupported_target_reports_muted_none(self):
+        t = _target(dial_status=False)
+        result = enrich_targets([t], "dial-id")
+        assert result[0]["muted"] is None
 
 
 # ---------------------------------------------------------------------------

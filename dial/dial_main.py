@@ -39,8 +39,8 @@ from dial_target_status import enrich_targets
 from dial_volume import (
     enqueue_delta,
     enqueue_mute,
-    is_muted,
     select_volume_target,
+    shown_muted,
     start_volume_worker,
 )
 
@@ -373,11 +373,12 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     def on_reveal_overlay() -> None:
         _confirm_presence()
         display.notify_touch_activity()
-        # muted is read from the belief (dial_volume.is_muted()) rather than
-        # left at the tri-state default so a reveal that follows a prior
-        # mute (from the physical button, or an earlier touch session)
-        # shows the correct glyph on its very first frame.
-        display.set_overlay(OverlayState(visible=True, muted=is_muted()))
+        # muted is left at the OverlayState default -- the display's own
+        # compose-time merge (_effective_overlay_locked) fills it in from
+        # the observation store (dial_volume.shown_muted()) for whichever
+        # appliance is actually reporting, which is the dial's only source
+        # of truth for mute; there is nothing to publish here.
+        display.set_overlay(OverlayState(visible=True))
         # The repaint thread services the overlay signal well ahead of any
         # human-perceptible delay; treating "signaled" as "rendered" here
         # (rather than blocking on the repaint thread's actual SPI push)
@@ -414,15 +415,17 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
 
     def on_mute_toggle() -> None:
         display.notify_touch_activity()
-        # Flip the belief and repaint the glyph immediately, on the same
-        # frame as the press — enqueue_mute() does no network I/O and takes
-        # no DialDisplay lock (see its docstring), so this stays as cheap as
-        # the volume callbacks above. on_set_pressed_zone() always runs
-        # immediately before this for the MUTE zone (see
-        # TouchStateMachine._arm) and already recorded the press on the
-        # pressed channel; this call only needs to update muted.
-        muted = enqueue_mute()
-        display.set_overlay(OverlayState(visible=True, muted=muted))
+        # enqueue_mute() flips whatever the reporting appliance last
+        # reported (read from the observation store, never inferred or
+        # persisted here) and echoes the request into that same store so the
+        # glyph updates on this frame; the appliance's response or the next
+        # status poll confirms it. Does no network I/O and takes no
+        # DialDisplay lock, so this stays as cheap as the volume callbacks
+        # above. on_set_pressed_zone() always runs immediately before this
+        # for the MUTE zone (see TouchStateMachine._arm) and already
+        # recorded the press on the pressed channel.
+        enqueue_mute(shown_muted(display.current_source_service_name()))
+        display.set_overlay(OverlayState(visible=True))
 
     def on_zone_tap(zone, index) -> None:
         # NAME opens the appliance selector (from either the main or the
@@ -720,7 +723,7 @@ def main() -> None:
         def on_press() -> None:
             http_server.confirm_volume()
             _pop_repeat_screen()
-            enqueue_mute()
+            enqueue_mute(shown_muted(getattr(display, "current_source_service_name", lambda: None)()))
 
         button = None
         if cfg.sw_gpio is None:
