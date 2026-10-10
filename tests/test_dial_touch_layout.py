@@ -1,10 +1,11 @@
 """Tests for dial_touch_layout.py — pure touch-zone geometry.
 
-Covers layout selection by aspect ratio across all profile sizes in
-dial_display_profiles.py, exact tiling (zones + dead zones cover the panel
-with no gap/overlap), the remainder policy (leftover pixels never land in a
-control rectangle), zone_at() hit-testing at zone centres and in dead-zone
-bands, and rough area parity between zones.
+Covers the band layout across all profile sizes in dial_display_profiles.py
+(layout_for()'s band/artist/cluster/down/up geometry), exact tiling (zones +
+dead zones cover the panel with no gap/overlap), the remainder policy
+(leftover pixels never land in a control rectangle), zone_at() hit-testing
+at zone centres and in dead-zone/artist/middle-band gaps, and the pinned
+160x128 reference geometry from the low-level design.
 """
 from __future__ import annotations
 
@@ -20,8 +21,8 @@ if _DIAL not in sys.path:
 
 from dial_touch_layout import (  # noqa: E402
     TouchZone,
-    WIDE_ASPECT_THRESHOLD,
     _dead_zone_margin,
+    layout_for,
     zone_at,
     zones_for,
 )
@@ -39,59 +40,6 @@ PROFILE_SIZES = [
 ]
 
 ALL_ZONES = {TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP}
-
-
-def _is_wide(width, height):
-    return width / height >= WIDE_ASPECT_THRESHOLD
-
-
-class TestLayoutSelection:
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_layout_matches_ratio_threshold(self, width, height):
-        zones = zones_for(width, height)
-        mute = zones[TouchZone.MUTE]
-        down = zones[TouchZone.DOWN]
-        up = zones[TouchZone.UP]
-
-        if _is_wide(width, height):
-            # WIDE: MUTE/DOWN/UP stacked left-to-right, each spanning the
-            # full height.
-            assert mute[1] == 0 and mute[3] == height
-            assert down[1] == 0 and down[3] == height
-            assert up[1] == 0 and up[3] == height
-            assert mute[2] <= down[0]
-            assert down[2] <= up[0]
-        else:
-            # SQUARE: MUTE is a full-width top band; DOWN/UP share a bottom
-            # band split left/right.
-            assert mute[0] == 0 and mute[2] == width
-            assert mute[3] <= down[1]
-            assert down[1] == up[1] and down[3] == up[3]
-            assert down[2] <= up[0]
-
-    def test_threshold_boundary_values(self):
-        # Exactly at the threshold -> WIDE.
-        zones = zones_for(180, 100)  # ratio == 1.8
-        assert zones[TouchZone.MUTE][1] == 0 and zones[TouchZone.MUTE][3] == 100
-
-        # Just under the threshold -> SQUARE.
-        zones = zones_for(179, 100)  # ratio < 1.8
-        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == 179
-
-    def test_sixteen_by_nine_selects_square(self):
-        # 16:9 sits just below the threshold, so a widescreen panel still
-        # gets the full-width mute band rather than three narrow columns.
-        zones = zones_for(1920, 1080)
-        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == 1920
-
-    def test_every_shipped_profile_size_selects_square(self):
-        # Every profile in dial_display_profiles is between 1.0 and 1.33, so
-        # they all take the square layout; WIDE is reserved for panels wider
-        # than 16:9, which none of them are.
-        for width, height in PROFILE_SIZES:
-            zones = zones_for(width, height)
-            assert zones[TouchZone.MUTE][0] == 0, (width, height)
-            assert zones[TouchZone.MUTE][2] == width, (width, height)
 
 
 class TestExactTiling:
@@ -122,7 +70,9 @@ class TestExactTiling:
                 )
                 # zone_at agrees with manual rectangle membership: a hit
                 # means exactly one rectangle contains the point, a miss
-                # (dead zone or, here, never out-of-bounds) means none does.
+                # (dead zone, artist area, middle band, or out-of-bounds)
+                # means none does. The middle half and the artist area are
+                # now dead pixels by construction, so this still holds.
                 assert (z is not None) == in_some_rect
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
@@ -133,42 +83,17 @@ class TestExactTiling:
 
 
 class TestRemainderPolicy:
-    """Non-evenly-divisible dimensions (160/3, 320/3, 128/3 all leave a
-    remainder) must not fatten a control zone — the leftover pixels must be
+    """Non-evenly-divisible widths (e.g. 320/2 is even, but the active width
+    after the dead-zone gap is subtracted is not always) must not fatten one
+    of DOWN/UP relative to the other — the leftover pixel(s) must be
     absorbed into a dead-zone gap."""
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_wide_zone_widths_equal_within_one_pixel(self, width, height):
-        if not _is_wide(width, height):
-            pytest.skip("SQUARE layout at this size")
-        zones = zones_for(width, height)
-        widths = [zones[z][2] - zones[z][0] for z in (TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP)]
-        assert max(widths) - min(widths) <= 1
-
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_square_down_up_widths_equal_within_one_pixel(self, width, height):
-        if _is_wide(width, height):
-            pytest.skip("WIDE layout at this size")
+    def test_down_up_widths_equal_within_one_pixel(self, width, height):
         zones = zones_for(width, height)
         dw = zones[TouchZone.DOWN][2] - zones[TouchZone.DOWN][0]
         uw = zones[TouchZone.UP][2] - zones[TouchZone.UP][0]
         assert abs(dw - uw) <= 1
-
-    def test_160_wide_remainder_not_in_a_zone(self):
-        # 160x128 is ratio 1.25, so it takes the SQUARE layout: MUTE spans
-        # the full width across the top and DOWN/UP split the bottom. The
-        # remainder policy is checked on the axes that actually get split —
-        # the vertical thirds, and the bottom row's left/right halves.
-        width, height = 160, 128
-        zones = zones_for(width, height)
-        total_zone_pixels = sum(
-            (x1 - x0) * (y1 - y0) for (x0, y0, x1, y1) in zones.values()
-        )
-        assert total_zone_pixels < width * height  # some pixels went to dead zones
-        down_w = zones[TouchZone.DOWN][2] - zones[TouchZone.DOWN][0]
-        up_w = zones[TouchZone.UP][2] - zones[TouchZone.UP][0]
-        assert down_w == up_w, "remainder leaked into unequal bottom-half widths"
-        assert zones[TouchZone.MUTE][0] == 0 and zones[TouchZone.MUTE][2] == width
 
 
 class TestZoneAt:
@@ -178,17 +103,6 @@ class TestZoneAt:
         for zone, (x0, y0, x1, y1) in zones.items():
             cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
             assert zone_at(cx, cy, width, height) == zone
-
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_dead_zone_between_wide_zones_returns_none(self, width, height):
-        if not _is_wide(width, height):
-            pytest.skip("SQUARE layout at this size")
-        zones = zones_for(width, height)
-        # Between MUTE and DOWN there must be at least one dead pixel.
-        boundary_x = zones[TouchZone.MUTE][2]
-        if boundary_x < zones[TouchZone.DOWN][0]:
-            mid = (boundary_x + zones[TouchZone.DOWN][0]) // 2
-            assert zone_at(mid, height // 2, width, height) is None
 
     def test_out_of_bounds_returns_none(self):
         assert zone_at(-1, 0, 160, 128) is None
@@ -202,22 +116,86 @@ class TestZoneAt:
         assert _dead_zone_margin(128, 128) == 3
         assert _dead_zone_margin(240, 240) > 3
 
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_tap_in_artist_area_and_middle_returns_none(self, width, height):
+        layout = layout_for(width, height)
 
-class TestZoneAreas:
-    """Zone areas should be roughly a third of the panel each, in both
-    layouts — "roughly" allows for the dead-zone bands and the asymmetric
-    1:2 vertical split in the SQUARE layout's row-vs-band shape, but no zone
-    should be wildly out of proportion."""
+        ax0, ay0, ax1, ay1 = layout.artist
+        acx, acy = (ax0 + ax1) // 2, (ay0 + ay1) // 2
+        assert zone_at(acx, acy, width, height) is None
+
+        mid_y = (layout.top_band[3] + layout.bottom_band[1]) // 2
+        assert zone_at(width // 2, mid_y, width, height) is None
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_areas_within_tolerance_of_a_third(self, width, height):
-        panel_area = width * height
-        zones = zones_for(width, height)
-        for zone, (x0, y0, x1, y1) in zones.items():
-            area = (x1 - x0) * (y1 - y0)
-            fraction = area / panel_area
-            assert 0.2 <= fraction <= 0.5, f"{zone} area fraction {fraction} out of range"
+    def test_divider_x_sits_in_the_gap(self, width, height):
+        layout = layout_for(width, height)
+        y0, y1 = layout.bottom_band[1], layout.bottom_band[3]
+        for y in range(y0, y1):
+            assert zone_at(layout.divider_x, y, width, height) is None
 
+
+class TestZonesForCompleteness:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_all_three_zones_present(self, width, height):
         assert set(zones_for(width, height).keys()) == ALL_ZONES
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_zones_for_matches_layout_for(self, width, height):
+        zones = zones_for(width, height)
+        layout = layout_for(width, height)
+        assert zones[TouchZone.MUTE] == layout.volume_cluster
+        assert zones[TouchZone.DOWN] == layout.down
+        assert zones[TouchZone.UP] == layout.up
+
+
+class TestBandLayout:
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_band_rects_are_a_quarter_of_the_height(self, width, height):
+        layout = layout_for(width, height)
+        band_h = height // 4
+        assert layout.top_band == (0, 0, width, band_h)
+        assert layout.bottom_band == (0, height - band_h, width, height)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_down_and_up_lie_inside_the_bottom_band(self, width, height):
+        layout = layout_for(width, height)
+        by0, by1 = layout.bottom_band[1], layout.bottom_band[3]
+        for rect in (layout.down, layout.up):
+            x0, y0, x1, y1 = rect
+            assert by0 <= y0 < y1 <= by1
+            assert 0 <= x0 < x1 <= width
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_mute_and_artist_lie_inside_the_top_band(self, width, height):
+        layout = layout_for(width, height)
+        ty0, ty1 = layout.top_band[1], layout.top_band[3]
+        for rect in (layout.volume_cluster, layout.artist):
+            x0, y0, x1, y1 = rect
+            assert ty0 <= y0 < y1 <= ty1
+            assert 0 <= x0 < x1 <= width
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_artist_and_mute_are_separated_by_two_margins(self, width, height):
+        layout = layout_for(width, height)
+        margin = _dead_zone_margin(width, height)
+        gap = layout.volume_cluster[0] - layout.artist[2]
+        assert gap == 2 * margin
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_middle_rows_contain_no_zone_pixel(self, width, height):
+        layout = layout_for(width, height)
+        for y in range(layout.top_band[3], layout.bottom_band[1]):
+            for x in range(width):
+                assert zone_at(x, y, width, height) is None
+
+
+def test_reference_geometry_exact():
+    """Pin the 160x128 numbers from the low-level design so any future
+    drift in the band-layout arithmetic is deliberate, not accidental."""
+    layout = layout_for(160, 128)
+    assert layout.volume_cluster == (99, 0, 160, 29)
+    assert layout.artist == (3, 0, 93, 32)
+    assert layout.down == (0, 99, 77, 128)
+    assert layout.up == (83, 99, 160, 128)
+    assert layout.divider_x == 80

@@ -19,8 +19,9 @@ Two kinds of base image reach compose():
     runs it through the transforms below unchanged.
 
 After the base is panel-sized, compose() applies, in order:
-  1. overlay — the touch-zone status overlay (mute/down/up glyphs plus a
-     pressed-zone highlight), drawn when OverlayState.visible is true. The
+  1. overlay — the now-playing controls overlay (dimmed top/bottom bands,
+     artist name, speaker glyph + master-volume readout, minus/plus glyphs
+     and a divider line), drawn when OverlayState.visible is true. The
      touch session is what makes it visible; overlay=None (the default) or
      an OverlayState with visible=False are both a strict no-op, pixel for
      pixel, which is what a dial with no touch panel always sees.
@@ -28,8 +29,8 @@ After the base is panel-sized, compose() applies, in order:
   3. BGR channel swap (when configured)
 
 The overlay is drawn BEFORE rotate/bgr so its geometry lives in the same
-compose-space coordinates as dial_touch_layout.zones_for() — the same
-module a future touch session hit-tests against — rather than in
+compose-space coordinates as dial_touch_layout.layout_for()/zones_for() —
+the same module the touch session hit-tests against — rather than in
 panel/rotated space.
 
 This is the same rotate-then-BGR logic and ordering that previously lived in
@@ -40,37 +41,50 @@ _display_locked()/compose() path. sleep()'s black fill is swap-symmetric so
 that is harmless; clear()'s background colour is not — an accepted cosmetic
 exception, limited to the fallback background and never artwork.
 
+Text rendering (artist name, volume number) never raises: every draw or
+measure call goes through _draw_text_safe()/_text_size(), which swallow any
+Pillow/font exception and report failure to the caller instead. The worst
+case for a text failure is an overlay with the glyphs but no text — never an
+exception escaping compose(). See _load_font() for the font fallback chain
+this same discipline extends to.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import functools
+import logging
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
-from dial_touch_layout import TouchZone, zones_for
+from dial_touch_layout import OverlayLayout, TouchZone, layout_for, zones_for
 
-# Overlay dim factor: the whole base frame is multiplied down to this
-# fraction of its brightness before the zone glyphs are drawn on top, the
+_logger = logging.getLogger(__name__)
+
+# Overlay dim factor: the top and bottom bands are multiplied down to this
+# fraction of their brightness before the glyphs/text are drawn on top, the
 # same ImageEnhance.Brightness idiom dial_display_image.py uses for the
 # ambient-blur backdrop (see BACKDROP_DARKEN_PERCENT there). 0.32 reads as a
 # ~68% dim — dark enough that the glyphs and the pressed-zone highlight are
 # unambiguous against any artwork, while the dimmed art is still faintly
 # visible behind it. Set against real hardware: 0.4 left bright album art
-# competing with the glyphs.
+# competing with the glyphs. The middle half of the panel is never dimmed.
 OVERLAY_DIM_FACTOR = 0.32
 
 # Glyph stroke colour and the pressed-zone highlight fill, chosen for
-# contrast against the dimmed backdrop produced by OVERLAY_DIM_FACTOR.
+# contrast against the dimmed backdrop produced by OVERLAY_DIM_FACTOR. Text
+# (artist name, volume number) is drawn in the same colour — see
+# _draw_text_safe().
 _GLYPH_RGB = (255, 255, 255)
 _PRESSED_FILL_RGB = (255, 255, 255)
 _PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
 
-# Divider-line colour: light-grey, near-white — a step down from the pure
-# white glyphs/highlight so the boundary lines read as structure rather than
-# competing with the glyphs for attention.
-_DIVIDER_RGB = (200, 200, 200)
+# Divider-line colour: pure white, matching the glyph/text colour, so the
+# single boundary line between DOWN and UP reads as clean structure against
+# the dimmed backdrop rather than blending into it.
+_DIVIDER_RGB = (255, 255, 255)
 
 # Divider-line width scales with the panel's short side using the same
 # reference axis dial_touch_layout._dead_zone_margin uses (128px short side
@@ -80,10 +94,25 @@ _DIVIDER_RGB = (200, 200, 200)
 # bigger panel.
 _DIVIDER_REFERENCE_SHORT_SIDE = 128
 
+# DejaVu Sans, installed by the dial installer via fonts-dejavu-core (see
+# installer/dial/helpers.sh install_image_packages()).
+DEJAVU_SANS_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+# Text/padding sizes at the 160x128 reference, scaled by the panel's short
+# side (the same axis dial_touch_layout._dead_zone_margin and
+# dial_display_image._blur_radius_for use), floored so a tiny panel still
+# gets legible text.
+_ARTIST_FONT_PX_AT_REFERENCE = 13
+_VOLUME_FONT_PX_AT_REFERENCE = 15
+_PAD_PX_AT_REFERENCE = 4
+_ICON_GAP_PX_AT_REFERENCE = 3
+_FONT_REFERENCE_SHORT_SIDE = 128
+
 
 @dataclass(frozen=True)
 class OverlayState:
-    """Immutable snapshot of what the touch-zone overlay should show.
+    """Immutable snapshot of what the now-playing controls overlay should
+    show.
 
     visible: when False (or when overlay is None entirely), compose() draws
         nothing and behaves exactly as it did before this feature existed —
@@ -92,14 +121,25 @@ class OverlayState:
         pressed. Only meaningful when visible is True.
     muted: tri-state — True draws the muted glyph variant, False the
         unmuted variant, and None (unknown, e.g. nothing selected/playing)
-        also draws the unmuted variant. See _draw_mute_glyph() for the
+        also draws the unmuted variant. See _draw_speaker_glyph() for the
         rationale: "unknown" defaults to the less alarming of the two
         glyphs rather than guessing a muted state that may not be true.
+    artist: the now-playing artist name, or "" to draw no artist text.
+        Always safe: an empty string, a too-long string (truncated with an
+        ellipsis) and a font-load failure all degrade to "no artist text",
+        never an exception.
+    volume: the master-volume readout (0-100), or None to draw the speaker
+        glyph alone with no digits — used when nothing has been observed
+        yet, or when the observation is for a different target. Appended
+        after muted so positional construction in existing tests/call sites
+        keeps working.
     """
 
     visible: bool = False
     pressed: TouchZone | None = None
     muted: bool | None = None
+    artist: str = ""
+    volume: int | None = None
 
 
 class DialDisplayCompositor:
@@ -150,35 +190,107 @@ class DialDisplayCompositor:
         return image
 
 
-def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayState) -> Image.Image:
-    """Return a new frame: *image* dimmed, with the three zone glyphs and an
-    optional pressed-zone highlight drawn on top, sized from
-    dial_touch_layout.zones_for() so this works at every profile size.
-    """
-    dimmed = ImageEnhance.Brightness(image.convert("RGB")).enhance(OVERLAY_DIM_FACTOR)
-    zones = zones_for(width, height)
-    draw = ImageDraw.Draw(dimmed)
+def _scaled_px(reference_px: int, width: int, height: int, floor: int) -> int:
+    """Scale *reference_px* (defined at the 160x128 reference, short side
+    128) to *width* x *height* by the panel's short side, floored at
+    *floor* so a tiny panel never loses legible text/padding entirely."""
+    return max(floor, round(min(width, height) * reference_px / _FONT_REFERENCE_SHORT_SIDE))
 
+
+def _pad_px(width: int, height: int) -> int:
+    """Padding (px) between a band's edge and the text/glyph drawn inside
+    it, scaled from the 160x128 reference."""
+    return _scaled_px(_PAD_PX_AT_REFERENCE, width, height, 2)
+
+
+@functools.lru_cache(maxsize=16)
+def _load_font(size: int):
+    """Load DejaVu Sans at *size*, falling back in order: the system TTF,
+    Pillow's built-in default font (sized when Pillow supports it, else
+    unsized), then None meaning "text disabled". Never raises. Memoised per
+    size: a font object is immutable and loading it is file I/O, so loading
+    once per process is the right cost.
+
+    Statelessness note: the compositor class itself holds no attributes and
+    its output is a pure function of its inputs (see TestStatelessness).
+    This cache is a memoised loader of an immutable resource, keyed only by
+    size — two processes, two compositor instances, or a cleared cache all
+    produce identical frames, so it does not violate that in spirit. Tests
+    that need a clean slate call _reset_font_cache().
+    """
+    try:
+        return ImageFont.truetype(DEJAVU_SANS_PATH, size)
+    except Exception:
+        _logger.warning(
+            "dial overlay: DejaVu Sans TTF unavailable at %r, falling back "
+            "to Pillow's default font", DEJAVU_SANS_PATH,
+        )
+
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        # Older Pillow: load_default() takes no size argument at all.
+        try:
+            return ImageFont.load_default()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    _logger.warning("dial overlay: Pillow's default font is unavailable; overlay text disabled")
+    return None
+
+
+def _reset_font_cache() -> None:
+    """Clear the memoised font cache. Test-only hook: lets a test exercise
+    the fallback chain from a clean slate without restarting the process."""
+    _load_font.cache_clear()
+
+
+def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayState) -> Image.Image:
+    """Return a new frame: *image* with its top/bottom bands dimmed, the
+    artist name, volume readout, minus/plus glyphs and a divider line drawn
+    on top, plus an optional pressed-zone highlight. Sized from
+    dial_touch_layout.layout_for()/zones_for() so this works at every
+    profile size.
+    """
+    layout = layout_for(width, height)
+    zones = zones_for(width, height)
+
+    frame = image.convert("RGB")
+    _dim_rect(frame, layout.top_band)
+    _dim_rect(frame, layout.bottom_band)
+
+    draw = ImageDraw.Draw(frame)
     if overlay.pressed is not None and overlay.pressed in zones:
         rect = zones[overlay.pressed]
-        _draw_pressed_highlight(dimmed, rect)
+        _draw_pressed_highlight(frame, rect)
         # Re-create the draw handle bound to the (possibly RGBA-composited)
-        # image so subsequent glyph strokes land on the highlighted frame.
-        draw = ImageDraw.Draw(dimmed)
+        # image so subsequent glyph/text strokes land on the highlighted
+        # frame.
+        draw = ImageDraw.Draw(frame)
 
-    _draw_mute_glyph(draw, zones[TouchZone.MUTE], overlay.muted)
-    _draw_minus_glyph(draw, zones[TouchZone.DOWN])
-    _draw_plus_glyph(draw, zones[TouchZone.UP])
+    volume_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
+    artist_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+    volume_font = _load_font(volume_px)
+    artist_font = _load_font(artist_px)
 
-    # Divider lines are drawn last, on top of the glyphs and highlight. They
-    # never spatially overlap either (they sit in the dead-zone gaps between
-    # zones.zones_for() rects, while glyphs/highlight are confined inside
-    # those rects), so draw order can't change what's visible — drawing them
-    # last simply keeps this as the smallest possible diff (an addition at
-    # the end of the function) and means any future overlay content added
-    # above the glyphs still can't bury the boundary lines.
-    _draw_dividers(draw, zones, width, height)
-    return dimmed
+    _draw_volume_cluster(draw, layout.volume_cluster, overlay.volume, overlay.muted, volume_font, width, height)
+    _draw_artist(draw, layout.artist, overlay.artist, artist_font, width, height)
+    _draw_minus_glyph(draw, layout.down)
+    _draw_plus_glyph(draw, layout.up)
+    _draw_band_divider(draw, layout, width, height)
+    return frame
+
+
+def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
+    """Dim *rect* of *frame* in place to OVERLAY_DIM_FACTOR of its original
+    brightness, leaving every pixel outside the rect untouched. Used for the
+    top and bottom bands only — the middle half of the panel keeps full
+    artwork brightness."""
+    region = frame.crop(rect)
+    dimmed_region = ImageEnhance.Brightness(region).enhance(OVERLAY_DIM_FACTOR)
+    frame.paste(dimmed_region, rect[:2])
 
 
 def _divider_line_width(width: int, height: int) -> int:
@@ -187,71 +299,15 @@ def _divider_line_width(width: int, height: int) -> int:
     return max(1, round(min(width, height) / _DIVIDER_REFERENCE_SHORT_SIDE))
 
 
-def _draw_dividers(
-    draw: ImageDraw.ImageDraw,
-    zones: dict[TouchZone, tuple[int, int, int, int]],
-    width: int,
-    height: int,
-) -> None:
-    """Draw light-grey dividing lines centred in the dead-zone gap between
-    each pair of adjacent zone rectangles from *zones* (as returned by
-    dial_touch_layout.zones_for()) — never at a hardcoded fraction of the
-    panel, so the lines can't disagree with where taps actually land.
-
-    Which pairs are "adjacent" — and whether the boundary is vertical or
-    horizontal — is read off the rects themselves rather than re-deriving
-    the WIDE/SQUARE choice zones_for() already made:
-      - MUTE and DOWN share the same (y0, y1) span in the WIDE layout
-        (vertical thirds: MUTE | DOWN | UP, each full-height) -> two
-        vertical dividers, MUTE|DOWN and DOWN|UP.
-      - Otherwise (SQUARE layout: full-width MUTE band on top, DOWN|UP
-        splitting the area below) -> one horizontal divider between the
-        MUTE band and the DOWN/UP band, plus one vertical divider between
-        DOWN and UP confined to that lower band's own height.
-    """
-    mute = zones[TouchZone.MUTE]
-    down = zones[TouchZone.DOWN]
-    up = zones[TouchZone.UP]
+def _draw_band_divider(draw: ImageDraw.ImageDraw, layout: OverlayLayout, width: int, height: int) -> None:
+    """Draw a single white vertical divider line at layout.divider_x,
+    spanning the bottom band from its top edge to its last visible row —
+    the boundary between the DOWN and UP glyphs."""
     line_width = _divider_line_width(width, height)
-
-    if (mute[1], mute[3]) == (down[1], down[3]) == (up[1], up[3]):
-        # WIDE: vertical thirds, all sharing the same full-height span.
-        _draw_vertical_divider(draw, mute, down, line_width)
-        _draw_vertical_divider(draw, down, up, line_width)
-    else:
-        # SQUARE: MUTE band on top; DOWN/UP split the band below it.
-        _draw_horizontal_divider(draw, mute, down, line_width)
-        _draw_vertical_divider(draw, down, up, line_width)
-
-
-def _draw_vertical_divider(
-    draw: ImageDraw.ImageDraw,
-    left_rect: tuple[int, int, int, int],
-    right_rect: tuple[int, int, int, int],
-    line_width: int,
-) -> None:
-    """Draw a vertical line centred in the horizontal gap between
-    *left_rect* (ends at x1) and *right_rect* (starts at x0), spanning the
-    union of their vertical extents."""
-    x = (left_rect[2] + right_rect[0]) // 2
-    y0 = min(left_rect[1], right_rect[1])
-    y1 = max(left_rect[3], right_rect[3])
-    draw.line([(x, y0), (x, y1 - 1)], fill=_DIVIDER_RGB, width=line_width)
-
-
-def _draw_horizontal_divider(
-    draw: ImageDraw.ImageDraw,
-    top_rect: tuple[int, int, int, int],
-    bottom_rect: tuple[int, int, int, int],
-    line_width: int,
-) -> None:
-    """Draw a horizontal line centred in the vertical gap between *top_rect*
-    (ends at y1) and *bottom_rect* (starts at y0), spanning the union of
-    their horizontal extents."""
-    y = (top_rect[3] + bottom_rect[1]) // 2
-    x0 = min(top_rect[0], bottom_rect[0])
-    x1 = max(top_rect[2], bottom_rect[2])
-    draw.line([(x0, y), (x1 - 1, y)], fill=_DIVIDER_RGB, width=line_width)
+    x = layout.divider_x
+    y0 = layout.bottom_band[1]
+    y1 = layout.bottom_band[3] - 1
+    draw.line([(x, y0), (x, y1)], fill=_DIVIDER_RGB, width=line_width)
 
 
 def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -291,10 +347,12 @@ def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int])
     draw.line([(cx, cy - r), (cx, cy + r)], fill=_GLYPH_RGB, width=stroke)
 
 
-def _draw_mute_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], muted: bool | None) -> None:
+def _draw_speaker_glyph(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None) -> None:
     """Draw a simple speaker glyph: a body (rectangle + triangle "cone") plus
     sound-wave arcs when unmuted, or a diagonal slash through the body when
-    muted.
+    muted. Sized from a square *box* (the glyph's own bounding box, not a
+    zone rectangle — see _draw_volume_cluster, which lays the icon box out
+    to the left of or in place of the volume digits).
 
     muted=True -> muted variant (slash). muted=False -> unmuted variant
     (arcs). muted=None ("unknown" — nothing selected/playing, so there is no
@@ -302,7 +360,10 @@ def _draw_mute_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int],
     "not muted" is the less alarming reading of an unknown state and avoids
     implying a mute the user never set.
     """
-    cx, cy, r = _zone_center_and_span(rect)
+    x0, y0, x1, y1 = box
+    cx = (x0 + x1) // 2
+    cy = (y0 + y1) // 2
+    r = max(2, min(x1 - x0, y1 - y0) // 2 - 1)
     stroke = max(1, r // 4)
 
     # Speaker body: a small rectangle (the driver) plus a triangle (the
@@ -334,10 +395,130 @@ def _draw_mute_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int],
         # Sound-wave arcs to the right of the cone.
         for i in range(1, 3):
             offset = i * max(1, r // 2)
-            box = [
+            box_arc = [
                 cone_tip_x - r // 3,
                 cy - offset,
                 cone_tip_x + offset,
                 cy + offset,
             ]
-            draw.arc(box, start=-45, end=45, fill=_GLYPH_RGB, width=stroke)
+            draw.arc(box_arc, start=-45, end=45, fill=_GLYPH_RGB, width=stroke)
+
+
+def _text_size(
+    draw: ImageDraw.ImageDraw, text: str, font
+) -> tuple[int, int, tuple[int, int, int, int]] | None:
+    """Measure *text* rendered in *font*: returns (width, height, bbox)
+    where bbox is the raw draw.textbbox((0, 0), ...) result, or None if
+    measurement raised. Guarded the same way as _draw_text_safe — a None
+    here must make the caller skip that text element only, never propagate
+    an exception out of compose()."""
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+    except Exception:
+        return None
+    left, top, right, bottom = bbox
+    return right - left, bottom - top, bbox
+
+
+def _draw_text_safe(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font) -> bool:
+    """Draw *text* at *xy* in the glyph colour, guarded so a Pillow/font
+    failure degrades to "no text drawn" rather than an exception escaping
+    compose(). Returns True on success, False if the draw call raised."""
+    try:
+        draw.text(xy, text, font=font, fill=_GLYPH_RGB)
+        return True
+    except Exception:
+        return False
+
+
+def _truncate_to_width(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> str:
+    """Shorten *text* so it (plus an ASCII ellipsis when shortened) fits
+    within *max_w* pixels in *font*. Returns the unmodified text when it
+    already fits, the longest fitting prefix plus "..." when it needs
+    shortening, or "" when nothing fits (not even one character plus the
+    ellipsis). Uses the three-dot ASCII string, not U+2026, so the bitmap
+    fallback font can render it too. A linear scan is fine here: artist
+    strings are short and this runs at most once per repaint."""
+    measured = _text_size(draw, text, font)
+    if measured is not None and measured[0] <= max_w:
+        return text
+
+    for end in range(len(text) - 1, 0, -1):
+        candidate = text[:end].rstrip() + "..."
+        measured = _text_size(draw, candidate, font)
+        if measured is not None and measured[0] <= max_w:
+            return candidate
+    return ""
+
+
+def _draw_volume_cluster(
+    draw: ImageDraw.ImageDraw,
+    rect: tuple[int, int, int, int],
+    volume: int | None,
+    muted: bool | None,
+    font,
+    width: int,
+    height: int,
+) -> None:
+    """Draw the volume readout inside *rect* (the top band's volume cluster,
+    == the MUTE zone): the speaker glyph, right aligned, and — when both a
+    *volume* number and a usable *font* are available — the volume digits to
+    its left. *width*/*height* are the panel dimensions (not the rect's own
+    size): padding, the icon-to-digits gap and the icon's own size all scale
+    from the panel's short side, the same reference axis every other overlay
+    dimension uses.
+
+    volume=None or font=None draws the glyph alone, right aligned — always
+    safe, since _load_font() never raises and this function never assumes a
+    font is present.
+    """
+    pad = _pad_px(width, height)
+    gap = _scaled_px(_ICON_GAP_PX_AT_REFERENCE, width, height, 2)
+    icon = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
+    cy = (rect[1] + rect[3]) // 2
+
+    x_icon = rect[2] - pad - icon
+    if volume is not None and font is not None:
+        text = str(volume)
+        measured = _text_size(draw, text, font)
+        if measured is not None:
+            text_w, text_h, bbox = measured
+            left, top, _, _ = bbox
+            x_text = rect[2] - pad - text_w
+            if _draw_text_safe(draw, (x_text - left, cy - text_h // 2 - top), text, font):
+                x_icon = x_text - gap - icon
+
+    icon_box = (x_icon, cy - icon // 2, x_icon + icon, cy - icon // 2 + icon)
+    _draw_speaker_glyph(draw, icon_box, muted)
+
+
+def _draw_artist(
+    draw: ImageDraw.ImageDraw,
+    rect: tuple[int, int, int, int],
+    artist: str,
+    font,
+    width: int,
+    height: int,
+) -> None:
+    """Draw *artist* left-aligned inside *rect* (the artist text area),
+    truncated with an ellipsis so it never reaches the volume cluster. A
+    blank *artist* string or a missing *font* draws nothing — always safe.
+    *width*/*height* are the panel dimensions, used only to scale the pad
+    margin (see _draw_volume_cluster)."""
+    if not artist or font is None:
+        return
+
+    pad = _pad_px(width, height)
+    max_w = rect[2] - rect[0] - pad
+    text = _truncate_to_width(draw, artist, font, max_w)
+    if not text:
+        return
+
+    measured = _text_size(draw, text, font)
+    if measured is None:
+        return
+    text_w, text_h, bbox = measured
+    left, top, _, _ = bbox
+    cy = (rect[1] + rect[3]) // 2
+    x = rect[0] + pad
+    _draw_text_safe(draw, (x - left, cy - text_h // 2 - top), text, font)

@@ -3,7 +3,9 @@
 Covers rotate/bgr in isolation and combined, identity when neither is set,
 the artwork-fit path (transform_artwork_for_panel runs and panel-fits a
 non-panel-sized input), the logo path (already-sized base passes through
-transforms only), statelessness, and the inert overlay parameter.
+transforms only), statelessness, the inert overlay parameter, the dimmed
+top/bottom bands and single divider line of the now-playing overlay, and
+the artist/volume text rendering (including its Pillow-failure fallbacks).
 """
 from __future__ import annotations
 
@@ -23,8 +25,16 @@ for _p in (_DIAL, _CORE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from dial_display_compositor import DialDisplayCompositor, OverlayState  # noqa: E402
-from dial_touch_layout import TouchZone, zones_for  # noqa: E402
+from dial_display_compositor import (  # noqa: E402
+    _ARTIST_FONT_PX_AT_REFERENCE,
+    _VOLUME_FONT_PX_AT_REFERENCE,
+    DialDisplayCompositor,
+    OverlayState,
+    _reset_font_cache,
+    _scaled_px,
+    _truncate_to_width,
+)
+from dial_touch_layout import TouchZone, layout_for, zones_for  # noqa: E402
 
 
 def _marked_image(size=(4, 4)):
@@ -280,20 +290,25 @@ class TestOverlayVisible:
         )
         assert list(no_overlay.getdata()) == list(not_visible.getdata())
 
-    def test_dim_darkens_mean_brightness(self, compositor):
+    def test_dim_darkens_bands_leaves_middle_unchanged(self, compositor):
         img = self._panel_image(color=(200, 200, 200))
         result = compositor.compose(
             img, img.width, img.height,
             rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True),
         )
+        layout = layout_for(img.width, img.height)
 
         def mean_brightness(im):
             data = list(im.getdata())
             total = sum(sum(px) for px in data)
             return total / (len(data) * 3)
 
-        assert mean_brightness(result) < mean_brightness(img)
+        assert mean_brightness(result.crop(layout.top_band)) < mean_brightness(img.crop(layout.top_band))
+        assert mean_brightness(result.crop(layout.bottom_band)) < mean_brightness(img.crop(layout.bottom_band))
+
+        middle_box = (0, layout.top_band[3], img.width, layout.bottom_band[1])
+        assert list(result.crop(middle_box).getdata()) == list(img.crop(middle_box).getdata())
 
     def test_muted_true_and_false_differ_in_mute_zone(self, compositor):
         img = self._panel_image()
@@ -370,45 +385,16 @@ class TestOverlayVisible:
         assert list(composed_then_swapped.getdata()) == list(expected.getdata())
 
 
-class TestOverlayDividers:
-    """Divider lines marking the boundaries between button areas — must be
-    derived from zones_for()'s own rectangles (never a hardcoded fraction),
-    sit in the dead-zone gaps rather than inside any zone's active area, and
-    must never appear when the overlay itself is inert."""
+class TestBandDivider:
+    """The single divider line between DOWN and UP in the bottom band —
+    must be derived from layout_for()'s own geometry, must sit outside both
+    button rectangles, and must never appear when the overlay is inert."""
 
     def _panel_image(self, size, color=(200, 150, 100)):
         return Image.new("RGB", size, color)
 
-    @staticmethod
-    def _gap_centers(zones):
-        """Return the expected divider-line positions for *zones*, using the
-        same adjacency test as the compositor: if MUTE/DOWN/UP all share one
-        (y0, y1) span it's the WIDE layout (two vertical gaps), otherwise
-        it's the SQUARE layout (one horizontal gap, one vertical gap below
-        it). Returns a list of (axis, coordinate, span) triples, axis in
-        {"x", "y"} meaning "a vertical line at x=coordinate spanning
-        y-range=span" or "a horizontal line at y=coordinate spanning
-        x-range=span" — span is the union of the two adjacent rects' extent
-        along the line's own axis, mirroring exactly what
-        _draw_vertical_divider/_draw_horizontal_divider compute, since a
-        vertical divider between DOWN and UP in the SQUARE layout is only
-        meaningful within their shared band, not the full panel height.
-        """
-        mute = zones[TouchZone.MUTE]
-        down = zones[TouchZone.DOWN]
-        up = zones[TouchZone.UP]
-        if (mute[1], mute[3]) == (down[1], down[3]) == (up[1], up[3]):
-            return [
-                ("x", (mute[2] + down[0]) // 2, (min(mute[1], down[1]), max(mute[3], down[3]))),
-                ("x", (down[2] + up[0]) // 2, (min(down[1], up[1]), max(down[3], up[3]))),
-            ]
-        return [
-            ("y", (mute[3] + down[1]) // 2, (min(mute[0], down[0]), max(mute[2], down[2]))),
-            ("x", (down[2] + up[0]) // 2, (min(down[1], up[1]), max(down[3], up[3]))),
-        ]
-
-    def test_lines_present_when_visible_wide_panel(self, compositor):
-        size = (320, 240)
+    @pytest.mark.parametrize("size", [(160, 128), (240, 240)])
+    def test_divider_column_differs_between_hidden_and_visible(self, compositor, size):
         img = self._panel_image(size)
         hidden = compositor.compose(
             img, *size, rotate=False, bgr=False, is_artwork=False,
@@ -418,17 +404,27 @@ class TestOverlayDividers:
             img, *size, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True),
         )
-        zones = zones_for(*size)
-        for axis, coord, span in self._gap_centers(zones):
-            if axis == "x":
-                sample_y = (span[0] + span[1]) // 2
-                assert hidden.getpixel((coord, sample_y)) != visible.getpixel((coord, sample_y))
-            else:
-                sample_x = (span[0] + span[1]) // 2
-                assert hidden.getpixel((sample_x, coord)) != visible.getpixel((sample_x, coord))
+        layout = layout_for(*size)
+        y0, y1 = layout.bottom_band[1], layout.bottom_band[3]
+        differing = any(
+            hidden.getpixel((layout.divider_x, y)) != visible.getpixel((layout.divider_x, y))
+            for y in range(y0, y1)
+        )
+        assert differing
 
-    def test_lines_present_when_visible_square_panel(self, compositor):
-        size = (240, 240)
+    @pytest.mark.parametrize("size", [(160, 128), (240, 240)])
+    def test_divider_column_falls_outside_down_and_up(self, size):
+        # By construction the divider sits in the dead-zone gap between
+        # DOWN and UP, so its column can never overlap either rectangle —
+        # confirmed structurally here (the touch-layout test suite already
+        # confirms zone_at(divider_x, ...) is None for every y).
+        layout = layout_for(*size)
+        dx = layout.divider_x
+        assert not (layout.down[0] <= dx < layout.down[2])
+        assert not (layout.up[0] <= dx < layout.up[2])
+
+    @pytest.mark.parametrize("size", [(160, 128), (240, 240)])
+    def test_middle_half_unaffected_by_divider(self, compositor, size):
         img = self._panel_image(size)
         hidden = compositor.compose(
             img, *size, rotate=False, bgr=False, is_artwork=False,
@@ -438,117 +434,203 @@ class TestOverlayDividers:
             img, *size, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True),
         )
-        zones = zones_for(*size)
-        for axis, coord, span in self._gap_centers(zones):
-            if axis == "x":
-                sample_y = (span[0] + span[1]) // 2
-                assert hidden.getpixel((coord, sample_y)) != visible.getpixel((coord, sample_y))
-            else:
-                sample_x = (span[0] + span[1]) // 2
-                assert hidden.getpixel((sample_x, coord)) != visible.getpixel((sample_x, coord))
+        layout = layout_for(*size)
+        middle_box = (0, layout.top_band[3], size[0], layout.bottom_band[1])
+        assert list(hidden.crop(middle_box).getdata()) == list(visible.crop(middle_box).getdata())
 
-    def _assert_lines_stay_in_gaps(self, compositor, size):
+
+class TestOverlayText:
+    """Artist name and volume-readout rendering, including the font
+    fallback chain and the guards that keep a text failure from ever raising
+    out of compose()."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _panel_image(self, size=(160, 128), color=(200, 150, 100)):
+        return Image.new("RGB", size, color)
+
+    def test_artist_text_confined_to_artist_rect(self, compositor):
+        size = (160, 128)
         img = self._panel_image(size)
-        hidden = compositor.compose(
+        layout = layout_for(*size)
+        with_artist = compositor.compose(
             img, *size, rotate=False, bgr=False, is_artwork=False,
-            overlay=OverlayState(visible=False),
+            overlay=OverlayState(visible=True, artist="Test Artist"),
         )
-        visible = compositor.compose(
+        without_artist = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist=""),
+        )
+        assert list(with_artist.crop(layout.artist).getdata()) != list(without_artist.crop(layout.artist).getdata())
+        assert list(with_artist.crop(layout.volume_cluster).getdata()) == list(
+            without_artist.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_empty_artist_leaves_artist_rect_dimmed_only(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        no_text = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist=""),
+        )
+        baseline = compositor.compose(
             img, *size, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True),
         )
-        zones = zones_for(*size)
-        width, height = size
+        assert list(no_text.crop(layout.artist).getdata()) == list(baseline.crop(layout.artist).getdata())
 
-        def inside_any_zone(x, y):
-            for (x0, y0, x1, y1) in zones.values():
-                if x0 <= x < x1 and y0 <= y < y1:
-                    return True
-            return False
-
-        # Every gap-center coordinate we expect a divider line at must not
-        # land inside any zone's active rectangle, at any point along the
-        # line's actual length (its span along the perpendicular axis, the
-        # same union the compositor itself draws across — see
-        # _gap_centers's docstring).
-        for axis, coord, span in self._gap_centers(zones):
-            if axis == "x":
-                for y in range(span[0], span[1]):
-                    assert not inside_any_zone(coord, y), (
-                        f"divider at x={coord} lands inside a zone at y={y}"
-                    )
-            else:
-                for x in range(span[0], span[1]):
-                    assert not inside_any_zone(x, coord), (
-                        f"divider at y={coord} lands inside a zone at x={x}"
-                    )
-
-        # And confirm hidden vs visible actually differ somewhere (the
-        # dividers, dim, glyphs, etc. all contribute) — a degenerate no-op
-        # implementation would trivially satisfy the "not inside a zone"
-        # checks above by drawing nothing at all.
-        assert list(hidden.getdata()) != list(visible.getdata())
-
-    def test_wide_panel_lines_fall_in_gaps_not_in_zones(self, compositor):
-        self._assert_lines_stay_in_gaps(compositor, (320, 240))
-
-    def test_square_panel_lines_fall_in_gaps_not_in_zones(self, compositor):
-        self._assert_lines_stay_in_gaps(compositor, (240, 240))
-
-    def test_square_panel_uses_square_layout_not_wide_layout(self, compositor):
-        """A square panel must draw the SQUARE layout's divider positions
-        (one horizontal band boundary, one vertical split below it) — not
-        the WIDE layout's two full-height vertical dividers."""
-        size = (240, 240)
-        zones = zones_for(*size)
-        gaps = self._gap_centers(zones)
-        axes = sorted(axis for axis, _, _ in gaps)
-        assert axes == ["x", "y"], "square panel should have one horizontal and one vertical divider"
-
-        mute = zones[TouchZone.MUTE]
-        down = zones[TouchZone.DOWN]
-        up = zones[TouchZone.UP]
-        # Confirm the fixture itself is genuinely square-shaped per
-        # zones_for's own layout choice (sanity check on the test, not the
-        # implementation): MUTE must NOT share DOWN's full vertical span.
-        assert (mute[1], mute[3]) != (down[1], down[3])
-        assert (down[1], down[3]) == (up[1], up[3])
-
-    def test_dividers_do_not_disturb_glyph_or_pressed_assertions(self, compositor):
-        """Re-run the pre-existing muted/unmuted and pressed-highlight
-        pixel checks at the 160x128 profile to confirm the new divider
-        drawing did not change their outcome."""
-        img = self._panel_image((160, 128))
-        muted = compositor.compose(
-            img, img.width, img.height,
-            rotate=False, bgr=False, is_artwork=False,
-            overlay=OverlayState(visible=True, muted=True),
+    def test_long_artist_does_not_bleed_into_the_gap(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        baseline = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
         )
-        unmuted = compositor.compose(
-            img, img.width, img.height,
-            rotate=False, bgr=False, is_artwork=False,
+        long_artist = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="A Very Long Artist Name Indeed" * 3),
+        )
+        gap_box = (layout.artist[2], layout.artist[1], layout.volume_cluster[0], layout.artist[3])
+        assert list(baseline.crop(gap_box).getdata()) == list(long_artist.crop(gap_box).getdata())
+
+    def test_volume_digits_vs_none_differ(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        with_volume = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=68),
+        )
+        without_volume = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=None),
+        )
+        assert list(with_volume.crop(layout.volume_cluster).getdata()) != list(
+            without_volume.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_volume_none_still_draws_glyph(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=None),
+        )
+        # A uniform dimmed rectangle (no glyph) would have exactly one
+        # colour; the speaker glyph's white strokes add a second.
+        cluster_colors = set(result.crop(layout.volume_cluster).getdata())
+        assert len(cluster_colors) > 1
+
+    @pytest.mark.parametrize("volume", [0, 100])
+    def test_volume_boundary_values_render(self, compositor, volume):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=volume),
+        )
+        none_result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=None),
+        )
+        assert list(result.crop(layout.volume_cluster).getdata()) != list(
+            none_result.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_muted_none_equals_muted_false(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        none_result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=None),
+        )
+        false_result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True, muted=False),
         )
-        x0, y0, x1, y1 = zones_for(img.width, img.height)[TouchZone.MUTE]
-        assert list(muted.crop((x0, y0, x1, y1)).getdata()) != list(
-            unmuted.crop((x0, y0, x1, y1)).getdata()
-        )
+        assert list(none_result.getdata()) == list(false_result.getdata())
 
-        unpressed = compositor.compose(
-            img, img.width, img.height,
-            rotate=False, bgr=False, is_artwork=False,
+    def test_font_fallback_truetype_unavailable_still_composes(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")):
+            result = compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, artist="Artist", volume=42),
+            )
+        assert result.size == size
+        # The speaker glyph does not depend on the font and still draws.
+        cluster_colors = set(result.crop(layout.volume_cluster).getdata())
+        assert len(cluster_colors) > 1
+
+    def test_font_fallback_default_font_also_unavailable_disables_text(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            result = compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, artist="Artist", volume=42),
+            )
+        baseline = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True),
         )
-        pressed = compositor.compose(
-            img, img.width, img.height,
-            rotate=False, bgr=False, is_artwork=False,
-            overlay=OverlayState(visible=True, pressed=TouchZone.DOWN),
-        )
-        zones = zones_for(img.width, img.height)
-        dx0, dy0, dx1, dy1 = zones[TouchZone.DOWN]
-        for zone, (x0, y0, x1, y1) in zones.items():
-            if zone == TouchZone.DOWN:
-                continue
-            region_a = unpressed.crop((x0, y0, x1, y1))
-            region_b = pressed.crop((x0, y0, x1, y1))
-            assert list(region_a.getdata()) == list(region_b.getdata())
+        # Text disabled entirely: the artist rect matches the no-text
+        # baseline exactly (dimmed background only).
+        assert list(result.crop(layout.artist).getdata()) == list(baseline.crop(layout.artist).getdata())
+        # The speaker glyph itself never depends on the font and still draws.
+        cluster_colors = set(result.crop(layout.volume_cluster).getdata())
+        assert len(cluster_colors) > 1
+
+    def test_draw_text_safe_swallows_a_raising_draw_text(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        with patch("PIL.ImageDraw.ImageDraw.text", side_effect=RuntimeError("boom")):
+            result = compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, artist="Artist", volume=42),
+            )
+        assert result.size == size
+
+    class _FakeDraw:
+        """A fake measurer for _truncate_to_width: 1 width-unit per
+        character, fixed height, never raises."""
+
+        def textbbox(self, xy, text, font=None):
+            return (0, 0, len(text), 10)
+
+    def test_truncate_to_width_returns_unmodified_text_when_it_fits(self):
+        result = _truncate_to_width(self._FakeDraw(), "hello", None, 10)
+        assert result == "hello"
+
+    def test_truncate_to_width_shortens_and_adds_ellipsis(self):
+        result = _truncate_to_width(self._FakeDraw(), "hello world", None, 8)
+        assert result.endswith("...")
+        assert len(result) <= 8
+
+    def test_truncate_to_width_returns_empty_when_nothing_fits(self):
+        result = _truncate_to_width(self._FakeDraw(), "hello", None, 2)
+        assert result == ""
+
+    @pytest.mark.parametrize("size,expected", [
+        ((160, 128), (13, 15)),
+        ((128, 128), (13, 15)),
+        ((240, 240), (24, 28)),
+        ((320, 240), (24, 28)),
+    ])
+    def test_scaled_px_matches_reference_sizes(self, size, expected):
+        width, height = size
+        expected_artist, expected_volume = expected
+        assert _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8) == expected_artist
+        assert _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9) == expected_volume

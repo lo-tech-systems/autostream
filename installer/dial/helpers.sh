@@ -31,9 +31,13 @@ install_os_packages() {
 
 install_image_packages() {
     # python3-pil is apt-provided (not pip) so it is visible in the dial venv
-    # via --system-site-packages. Called unconditionally on fresh install and
-    # --update so existing installs gain it without requiring a re-image.
-    apt-get install -y --no-install-recommends python3-pil
+    # via --system-site-packages. fonts-dejavu-core supplies the DejaVu Sans
+    # TTF the now-playing overlay renders artist/volume text with; it lives
+    # here (rather than install_os_packages()) because it is only needed by
+    # the display stack, same lifecycle as python3-pil. Called unconditionally
+    # on fresh install and --update so existing installs gain both without
+    # requiring a re-image.
+    apt-get install -y --no-install-recommends python3-pil fonts-dejavu-core
 }
 
 install_recovery_packages() {

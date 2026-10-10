@@ -480,6 +480,17 @@ class TestDisplayImageProcessingDeployment:
         fn_text = content[idx:idx + 400]
         assert "python3-pil" in fn_text
 
+    def test_install_image_packages_includes_fonts_dejavu_core(self):
+        """The now-playing overlay renders artist/volume text with DejaVu
+        Sans; install_image_packages() must install fonts-dejavu-core
+        alongside python3-pil so the TTF is present on every dial."""
+        content = self._helpers_content()
+        idx = content.find("install_image_packages() {")
+        assert idx != -1, "install_image_packages() definition not found"
+        end = content.find("\n}", idx)
+        fn_text = content[idx:end]
+        assert "fonts-dejavu-core" in fn_text
+
     def test_install_os_packages_does_not_include_pil(self):
         """python3-pil has its own install site; must not duplicate in install_os_packages."""
         content = self._helpers_content()

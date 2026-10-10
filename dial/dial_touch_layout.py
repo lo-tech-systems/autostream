@@ -1,14 +1,16 @@
 """dial_touch_layout.py — pure touch-zone geometry for the dial display.
 
-This module computes the three touch-zone rectangles (MUTE, DOWN, UP) for a
-given panel size, and answers hit-tests against them. It has NO hardware
-imports and NO dependency on Pillow, the compositor, or any I/O — it is
-arithmetic only, so it can be imported by both:
+This module computes the touch-zone rectangles (MUTE, DOWN, UP) and the
+overlay band geometry for a given panel size, and answers hit-tests against
+them. It has NO hardware imports and NO dependency on Pillow, the
+compositor, or any I/O — it is arithmetic only, so it can be imported by
+both:
 
   - the compositor (dial_display_compositor.py), to know where to draw the
-    zone glyphs, and
-  - the future touch session, to know which zone a raw touch coordinate
-    landed in.
+    overlay bands, the artist text, the volume cluster and the zone glyphs,
+    and
+  - the touch session (dial_touch.py), to know which zone a raw touch
+    coordinate landed in.
 
 Both consumers MUST share this single source of truth for the geometry —
 that is the entire reason this lives in its own module rather than being
@@ -24,52 +26,54 @@ must map them into compose-space (undo the rotation) before calling
 zone_at(). This module knows nothing about rotation, panel drivers, or
 physical mounting.
 
-LAYOUT SELECTION: chosen purely from the aspect ratio width/height, with a
-threshold just above 16:9:
-  - WIDE   (width/height >= 1.8): vertical thirds, left-to-right —
-           MUTE | DOWN | UP. Each zone spans the full panel height.
-  - SQUARE (width/height <  1.8): top third is MUTE (full width); the
-           bottom two-thirds is split left/right into DOWN | UP.
-All panels in dial_display_profiles.py are mounted landscape, and these are
-the only two shapes that occur across the profile table, so no other layout
-is defined.
+LAYOUT SELECTION: one band layout, used at every panel size — the layout is
+aspect-independent, so there is no ratio threshold and no alternate shape to
+select. The top and bottom `height // BAND_DIVISOR` rows are dimmed bands;
+everything in between is left untouched. The top band splits into the
+artist-name area (left, non-actuating) and the volume cluster (speaker
+glyph + master-volume number, right — this is also the MUTE zone). The
+bottom band splits into DOWN (left half) and UP (right half). All panels in
+dial_display_profiles.py are mounted landscape and this layout does not
+depend on their aspect ratio, so no other layout is defined.
 
-The threshold sits above 16:9 because the square layout reads better on
-real hardware at these sizes — a full-width mute band with the two volume
-controls beneath it gives each target more area than three narrow columns
-do. Every profile in the current table is between 1.0 and 1.33, so they all
-select SQUARE; the WIDE branch is kept for panels wider than 16:9, which
-none of the shipped profiles are.
-
-DEAD ZONES: every boundary between two zones carries a small inert band
-(the "dead zone") on each side, so an imprecise tap near a boundary hits
-neither neighbour rather than the wrong one. The margin is 3px at the
+DEAD ZONES: every boundary between two adjacent controls carries a small
+inert band (the "dead zone") on each side, so an imprecise tap near a
+boundary hits neither neighbour rather than the wrong one. Two such
+boundaries exist: between the artist text area and the volume cluster (a
+gap of 2*margin, the same width used between DOWN and UP), and between DOWN
+and UP themselves. The middle half of the panel (the rows strictly between
+the top and bottom bands) and the artist text area are dead for a different
+reason — they simply carry no control at all; `zone_at` returns None there
+exactly as it does in a genuine dead-zone gap. The margin is 3px at the
 160x128 profile (the shipped panel) and scales with the panel's short side
 using the same rule as dial_display_image._blur_radius_for — margin =
 round(min(width, height) * 3 / 128) with a floor of 1px. This keeps the
 dead-zone band feeling the same physical size across profiles rather than
 shrinking to nothing on a big panel or ballooning on a small one.
 
-REMAINDER POLICY: thirds do not divide the panel evenly (160/3, 320/3,
-128/3 all leave 1-2px over). Every split below computes each active zone's
-size with floor division so all zones in a split are equal (or as equal as
-integer division allows), then adds whatever pixels are left over into the
-LAST gap between zones. Leftover pixels therefore always land in a dead
-zone, never in a tappable rectangle. The union of the returned active zone
-rectangles plus the implied dead-zone bands exactly tiles the panel with no
-gap and no overlap.
+REMAINDER POLICY: an active width does not always divide evenly between the
+two zones sharing a split (DOWN and UP, after the dead-zone gap between
+them is subtracted). _split computes each active zone's size with floor
+division so all zones in a split are equal (or as equal as integer division
+allows), then adds whatever pixels are left over into the LAST gap between
+zones. Leftover pixels therefore always land in a dead zone, never in a
+tappable rectangle. The union of the returned active zone rectangles plus
+the implied dead-zone bands exactly tiles the panel with no gap and no
+overlap.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 
-# width/height at or above this ratio selects the WIDE (vertical thirds)
-# layout; below it selects the SQUARE (top third + bottom split) layout.
-# Set just above 16:9 so everything up to and including a 16:9 panel gets
-# the square layout — see LAYOUT SELECTION in the module docstring.
-WIDE_ASPECT_THRESHOLD = 1.8
+# Top and bottom bands each take this fraction of the panel height.
+BAND_DIVISOR = 4
+# The volume cluster (speaker glyph + number, the MUTE zone) takes this
+# fraction of the panel width at the right of the top band.
+CLUSTER_WIDTH_NUMERATOR = 2
+CLUSTER_WIDTH_DENOMINATOR = 5
 
 # Dead-zone margin (pixels either side of a boundary) at the reference
 # 160x128 profile. See module docstring for the scaling rule applied by
@@ -88,6 +92,23 @@ class TouchZone(str, Enum):
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
+
+
+@dataclass(frozen=True)
+class OverlayLayout:
+    """Full overlay geometry for one panel size — the single source of truth
+    for both where the compositor dims/draws and where the touch zones sit.
+    `volume_cluster`, `down` and `up` are exactly the MUTE/DOWN/UP zone
+    rectangles zones_for() returns; `artist` and the two band rectangles
+    have no corresponding TouchZone because they never actuate."""
+
+    top_band: Rect        # full-width dim region, rows [0, band_h)
+    bottom_band: Rect     # full-width dim region, rows [height-band_h, height)
+    artist: Rect          # text area, left part of top band (non-actuating)
+    volume_cluster: Rect  # glyph + number, right part of top band (== MUTE zone)
+    down: Rect            # bottom band, left half (== DOWN zone)
+    up: Rect              # bottom band, right half (== UP zone)
+    divider_x: int        # x of the vertical divider centre in the bottom band
 
 
 def _dead_zone_margin(width: int, height: int) -> int:
@@ -133,36 +154,59 @@ def _split(total: int, margin: int, weights: list[int]) -> list[tuple[int, int]]
     return bands
 
 
+def layout_for(width: int, height: int) -> OverlayLayout:
+    """Compute the full overlay geometry for a *width* x *height* panel.
+
+    m = _dead_zone_margin(width, height). Bands are a plain floor-divide of
+    the panel height (no dead-zone gap of their own — the artwork above and
+    below them is the "gap"); the artist/cluster split and the down/up split
+    each carry the usual dead-zone margins. See the module docstring for the
+    exact arithmetic and the pinned 160x128 reference numbers.
+    """
+    m = _dead_zone_margin(width, height)
+    band_h = height // BAND_DIVISOR
+    top_band: Rect = (0, 0, width, band_h)
+    bottom_band: Rect = (0, height - band_h, width, height)
+
+    cluster_w = width * CLUSTER_WIDTH_NUMERATOR // CLUSTER_WIDTH_DENOMINATOR
+    # Inset by m on the left and bottom so the pressed wash never touches the
+    # band edge or the artist area.
+    volume_cluster: Rect = (width - cluster_w + m, 0, width, band_h - m)
+    # The gap between artist and cluster is 2m, the same dead-zone width
+    # used between DOWN and UP.
+    artist: Rect = (m, 0, width - cluster_w - m, band_h)
+
+    (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1])
+    by0 = height - band_h + m
+    down: Rect = (dx0, by0, dx1, height)
+    up: Rect = (ux0, by0, ux1, height)
+    divider_x = (dx1 + ux0) // 2
+
+    return OverlayLayout(
+        top_band=top_band,
+        bottom_band=bottom_band,
+        artist=artist,
+        volume_cluster=volume_cluster,
+        down=down,
+        up=up,
+        divider_x=divider_x,
+    )
+
+
 def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
     """Return the ACTIVE (tappable) rectangle for each of the three zones,
     already shrunk by the dead-zone margins, in compose-space.
 
     Rectangles are (x0, y0, x1, y1) with x1/y1 exclusive (Python slice /
     range convention), so a point p is inside iff x0 <= p.x < x1 and
-    y0 <= p.y < y1.
+    y0 <= p.y < y1. A thin wrapper over layout_for() — see OverlayLayout for
+    the full geometry, including the non-actuating artist/band rectangles.
     """
-    margin = _dead_zone_margin(width, height)
-    ratio = width / height
-
-    if ratio >= WIDE_ASPECT_THRESHOLD:
-        # WIDE: vertical thirds, full height, left-to-right MUTE|DOWN|UP.
-        (mx0, mx1), (dx0, dx1), (ux0, ux1) = _split(width, margin, [1, 1, 1])
-        return {
-            TouchZone.MUTE: (mx0, 0, mx1, height),
-            TouchZone.DOWN: (dx0, 0, dx1, height),
-            TouchZone.UP: (ux0, 0, ux1, height),
-        }
-
-    # SQUARE: top third (full width) is MUTE; bottom two-thirds splits into
-    # DOWN (left) and UP (right). The vertical split uses weights [1, 2] so
-    # the top band gets one third of the active height and the bottom band
-    # two thirds, matching the layout spec (not two equal halves).
-    (ty0, ty1), (by0, by1) = _split(height, margin, [1, 2])
-    (dx0, dx1), (ux0, ux1) = _split(width, margin, [1, 1])
+    layout = layout_for(width, height)
     return {
-        TouchZone.MUTE: (0, ty0, width, ty1),
-        TouchZone.DOWN: (dx0, by0, dx1, by1),
-        TouchZone.UP: (ux0, by0, ux1, by1),
+        TouchZone.MUTE: layout.volume_cluster,
+        TouchZone.DOWN: layout.down,
+        TouchZone.UP: layout.up,
     }
 
 
