@@ -63,6 +63,8 @@ EXPECTED_COMMANDS = [
     "start_output_dump",
     "stop_output_dump",
     "list_devices",
+    "repeat_stop",
+    "repeat_seek",
 ]
 
 

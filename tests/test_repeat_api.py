@@ -72,7 +72,9 @@ from autostream_core import (
     _start_session_owntone,
     get_repeat_status,
     get_session_state,
+    send_live_repeat_transport,
     set_live_repeat_armed,
+    set_live_repeat_armed_ack,
     set_live_repeat_enabled,
 )
 
@@ -1479,13 +1481,61 @@ class TestLiveSetters:
         assert ok is False
 
     def test_set_live_repeat_armed_sends_command(self):
+        """set_live_repeat_armed() now goes through set_live_repeat_armed_ack()
+        (3.1), which calls MonitorClient.set_repeat_armed_ack() -- the daemon
+        socket call itself is unchanged (one set_repeat_armed command)."""
         mock_client = MagicMock()
-        mock_client.set_repeat_armed.return_value = True
+        mock_client.set_repeat_armed_ack.return_value = {"ok": True}
         with patch("autostream_core._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             ok = set_live_repeat_armed(True)
         assert ok is True
-        mock_client.set_repeat_armed.assert_called_once_with(True)
+        mock_client.set_repeat_armed_ack.assert_called_once_with(True)
+
+    def test_set_live_repeat_armed_ack_returns_daemon_ack(self):
+        mock_client = MagicMock()
+        ack = {"type": "ack", "command": "set_repeat_armed", "ok": True,
+               "state": "hold", "armed": True, "position_seconds": 0.0}
+        mock_client.set_repeat_armed_ack.return_value = ack
+        with patch("autostream_core._connected_monitor") as cm:
+            cm.return_value.__enter__.return_value = mock_client
+            result = set_live_repeat_armed_ack(True)
+        assert result == ack
+
+    def test_set_live_repeat_armed_ack_no_client_returns_none(self):
+        with patch("autostream_core._connected_monitor") as cm:
+            cm.return_value.__enter__.return_value = None
+            assert set_live_repeat_armed_ack(True) is None
+
+    def test_send_live_repeat_transport_stop_calls_repeat_stop(self):
+        mock_client = MagicMock()
+        mock_client.repeat_stop.return_value = {"ok": True, "state": "hold",
+                                                 "armed": False, "position_seconds": 0.0}
+        with patch("autostream_core._connected_monitor") as cm:
+            cm.return_value.__enter__.return_value = mock_client
+            ack = send_live_repeat_transport("stop")
+        assert ack["ok"] is True
+        mock_client.repeat_stop.assert_called_once_with()
+        mock_client.repeat_seek.assert_not_called()
+
+    def test_send_live_repeat_transport_seek_calls_repeat_seek_with_position(self):
+        mock_client = MagicMock()
+        mock_client.repeat_seek.return_value = {"ok": True, "state": "replaying",
+                                                 "armed": True, "position_seconds": 5.0}
+        with patch("autostream_core._connected_monitor") as cm:
+            cm.return_value.__enter__.return_value = mock_client
+            ack = send_live_repeat_transport("seek", 5.0)
+        assert ack["position_seconds"] == 5.0
+        mock_client.repeat_seek.assert_called_once_with(5.0)
+        mock_client.repeat_stop.assert_not_called()
+
+    def test_send_live_repeat_transport_no_client_returns_none(self):
+        """The socket is down (no connected client): both transport actions
+        must return None rather than raising."""
+        with patch("autostream_core._connected_monitor") as cm:
+            cm.return_value.__enter__.return_value = None
+            assert send_live_repeat_transport("stop") is None
+            assert send_live_repeat_transport("seek", 3.0) is None
 
     def test_monitor_client_set_repeat_enabled_command_shape(self):
         client = MonitorClient.__new__(MonitorClient)
@@ -1496,9 +1546,55 @@ class TestLiveSetters:
         cmd.assert_called_once_with({"type": "set_repeat_enabled", "enabled": True, "codec": "pcm"})
 
     def test_monitor_client_set_repeat_armed_command_shape(self):
+        """Pinned: set_repeat_armed() keeps its bool contract and still sends
+        exactly one _command call, even though it now delegates to
+        set_repeat_armed_ack() internally (3.1)."""
         client = MonitorClient.__new__(MonitorClient)
         client._sock = MagicMock()
         client._lock = __import__("threading").Lock()
         with patch.object(client, "_command", return_value={"ok": True}) as cmd:
             assert client.set_repeat_armed(True) is True
         cmd.assert_called_once_with({"type": "set_repeat_armed", "armed": True})
+
+    def test_monitor_client_set_repeat_armed_ack_returns_dict(self):
+        client = MonitorClient.__new__(MonitorClient)
+        client._sock = MagicMock()
+        client._lock = __import__("threading").Lock()
+        ack = {"type": "ack", "command": "set_repeat_armed", "ok": True,
+               "state": "hold", "armed": True, "position_seconds": 0.0}
+        with patch.object(client, "_command", return_value=ack) as cmd:
+            assert client.set_repeat_armed_ack(True) == ack
+        cmd.assert_called_once_with({"type": "set_repeat_armed", "armed": True})
+
+    def test_monitor_client_set_repeat_armed_ack_none_when_unreachable(self):
+        client = MonitorClient.__new__(MonitorClient)
+        client._sock = MagicMock()
+        client._lock = __import__("threading").Lock()
+        with patch.object(client, "_command", return_value=None):
+            assert client.set_repeat_armed_ack(True) is None
+
+    def test_monitor_client_repeat_stop_command_shape(self):
+        client = MonitorClient.__new__(MonitorClient)
+        client._sock = MagicMock()
+        client._lock = __import__("threading").Lock()
+        ack = {"ok": True, "state": "fading_out", "armed": False, "position_seconds": 3.0}
+        with patch.object(client, "_command", return_value=ack) as cmd:
+            assert client.repeat_stop() == ack
+        cmd.assert_called_once_with({"type": "repeat_stop"})
+
+    def test_monitor_client_repeat_seek_command_shape(self):
+        client = MonitorClient.__new__(MonitorClient)
+        client._sock = MagicMock()
+        client._lock = __import__("threading").Lock()
+        ack = {"ok": True, "state": "replaying", "armed": True, "position_seconds": 12.5}
+        with patch.object(client, "_command", return_value=ack) as cmd:
+            assert client.repeat_seek(12.5) == ack
+        cmd.assert_called_once_with({"type": "repeat_seek", "position_seconds": 12.5})
+
+    def test_monitor_client_repeat_seek_coerces_position_to_float(self):
+        client = MonitorClient.__new__(MonitorClient)
+        client._sock = MagicMock()
+        client._lock = __import__("threading").Lock()
+        with patch.object(client, "_command", return_value={"ok": True}) as cmd:
+            client.repeat_seek(0)
+        cmd.assert_called_once_with({"type": "repeat_seek", "position_seconds": 0.0})

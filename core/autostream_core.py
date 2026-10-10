@@ -2280,6 +2280,20 @@ def set_live_repeat_enabled(
         return client.set_repeat_enabled(bool(enabled), str(codec), target_minutes)
 
 
+def set_live_repeat_armed_ack(
+    armed: bool,
+    socket_path: Optional[str] = None,
+) -> Optional[dict]:
+    """Arm/disarm repeat replay immediately on autostream_monitor and return
+    the parsed daemon ack (None when the daemon is unreachable).
+
+    Session arm is runtime-only: no settings write accompanies
+    this call. Disarming during replay triggers the daemon's fade-out.
+    """
+    with _connected_monitor(socket_path) as client:
+        return None if client is None else client.set_repeat_armed_ack(bool(armed))
+
+
 def set_live_repeat_armed(
     armed: bool,
     socket_path: Optional[str] = None,
@@ -2289,10 +2303,24 @@ def set_live_repeat_armed(
     Session arm is runtime-only: no settings write accompanies
     this call. Disarming during replay triggers the daemon's fade-out.
     """
+    ack = set_live_repeat_armed_ack(armed, socket_path)
+    return bool(ack and ack.get("ok"))
+
+
+def send_live_repeat_transport(
+    action: str,
+    position_seconds: float = 0.0,
+    socket_path: Optional[str] = None,
+) -> Optional[dict]:
+    """Send a repeat-replay transport command ("stop" or "seek") to
+    autostream_monitor and return the parsed daemon ack (None when the
+    daemon is unreachable)."""
     with _connected_monitor(socket_path) as client:
         if client is None:
-            return False
-        return client.set_repeat_armed(bool(armed))
+            return None
+        if action == "stop":
+            return client.repeat_stop()
+        return client.repeat_seek(position_seconds)
 
 
 def build_output_eq_bands(
@@ -2694,11 +2722,31 @@ class MonitorClient:
             resp = self._command(cmd)
             return bool(resp and resp.get("ok"))
 
+    def set_repeat_armed_ack(self, armed: bool) -> Optional[dict]:
+        """Arm/disarm session replay and return the parsed daemon ack (None
+        when unreachable). See set_repeat_enabled re: old binaries."""
+        with self._lock:
+            return self._command({"type": "set_repeat_armed", "armed": bool(armed)})
+
     def set_repeat_armed(self, armed: bool) -> bool:
         """Arm/disarm session replay. See set_repeat_enabled re: old binaries."""
+        resp = self.set_repeat_armed_ack(armed)
+        return bool(resp and resp.get("ok"))
+
+    def repeat_stop(self) -> Optional[dict]:
+        """Stop repeat replay (fades out if currently replaying) and return
+        the parsed daemon ack (None when unreachable)."""
         with self._lock:
-            resp = self._command({"type": "set_repeat_armed", "armed": bool(armed)})
-            return bool(resp and resp.get("ok"))
+            return self._command({"type": "repeat_stop"})
+
+    def repeat_seek(self, position_seconds: float) -> Optional[dict]:
+        """Seek repeat replay to position_seconds and return the parsed
+        daemon ack (None when unreachable)."""
+        with self._lock:
+            return self._command({
+                "type": "repeat_seek",
+                "position_seconds": float(position_seconds),
+            })
 
     def set_log_level(self, log_level: str) -> bool:
         with self._lock:

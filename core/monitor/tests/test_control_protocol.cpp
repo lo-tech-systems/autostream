@@ -86,6 +86,8 @@ static const std::vector<std::string> EXPECTED_COMMANDS = {
     "start_output_dump",
     "stop_output_dump",
     "list_devices",
+    "repeat_stop",
+    "repeat_seek",
 };
 
 static void test_all_commands_dispatched(const std::string& dispatcher_src)
