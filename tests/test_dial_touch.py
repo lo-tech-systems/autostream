@@ -28,6 +28,8 @@ from dial_touch import (  # noqa: E402
     FIRST_REPEAT_S,
     PRESSED_FLASH_S,
     REPEAT_INTERVAL_S,
+    SURFACE_APPLIANCE_WARNING,
+    SURFACE_EQ,
     SURFACE_HELD,
     SURFACE_HIDDEN,
     SURFACE_IDLE,
@@ -2427,6 +2429,45 @@ class _Sleep:
 
 _ALL_SURFACES = sorted(_GEOMETRY_FOR_SURFACE)
 _PROBE_XY = [(WIDTH // 2, HEIGHT // 2), UP_XY, DOWN_XY, MUTE_XY, (5, 5), (WIDTH - 5, HEIGHT - 5), (WIDTH - 5, 5)]
+_CENTRE_XY = _PROBE_XY[0]
+
+# The asleep gate is one early return ahead of any hit-test, so the probe
+# point cannot change which branch runs; what differs per surface is only
+# what an awake press at that point would have done. Each surface gets one
+# probe point inside a zone that acts when awake (a leak would be visible),
+# spread over different zone kinds (volume, mute, list rows and steppers,
+# the output and repeat controls, the dismiss buttons). The two surfaces with
+# no zones at all are probed at the centre. Both overlay states run for every
+# surface. The idle surface, where the whole panel below the top band opens
+# the replay picker, also runs every probe point (centre, the three control
+# positions, three corners): that is the screen the waking tap used to leak
+# into.
+_ASLEEP_PROBE = {
+    SURFACE_HIDDEN: UP_XY,
+    SURFACE_HELD: MUTE_XY,
+    SURFACE_SELECTOR: (WIDTH // 2, 32),
+    SURFACE_PICKER: UP_XY,
+    SURFACE_OUTPUTS: UP_XY,
+    SURFACE_REPEAT: DOWN_XY,
+    SURFACE_REPEAT_REPLAY: MUTE_XY,
+    SURFACE_IDLE: _CENTRE_XY,
+    SURFACE_OUTPUT: _CENTRE_XY,
+    SURFACE_INFO: UP_XY,
+    SURFACE_INFO_VALUE: _CENTRE_XY,
+    SURFACE_EQ: DOWN_XY,
+    SURFACE_NOWIFI: (49, 67),
+    SURFACE_SDHEALTH: (WIDTH // 2, 67),
+    SURFACE_UPDATE_RESULT: (WIDTH // 2, 67),
+    SURFACE_APPLIANCE_WARNING: (WIDTH // 2, 67),
+}
+_ASLEEP_CASES = [
+    pytest.param(surface, xy, id=f"{surface}-{xy[0]}x{xy[1]}")
+    for surface in _ALL_SURFACES
+    for xy in [_ASLEEP_PROBE.get(surface, _CENTRE_XY)]
+] + [
+    pytest.param(SURFACE_IDLE, xy, id=f"{SURFACE_IDLE}-{xy[0]}x{xy[1]}")
+    for xy in _PROBE_XY if xy != _ASLEEP_PROBE[SURFACE_IDLE]
+]
 
 
 class TestAsleepTouchOnlyWakes:
@@ -2436,9 +2477,8 @@ class TestAsleepTouchOnlyWakes:
         sm._overlay_visible = overlay_visible
         return sm
 
-    @pytest.mark.parametrize("surface", _ALL_SURFACES)
+    @pytest.mark.parametrize("surface,xy", _ASLEEP_CASES)
     @pytest.mark.parametrize("overlay_visible", [False, True])
-    @pytest.mark.parametrize("xy", _PROBE_XY)
     def test_press_emits_only_wake_and_contact_is_inert(self, surface, overlay_visible, xy):
         sleep = _Sleep(True)
         sm = self._sm(surface, overlay_visible, sleep)

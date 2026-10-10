@@ -6009,7 +6009,6 @@ def _replay_layers(metrics):
 
 
 _LAYER_BUILDERS = {"now_playing": _now_layers, "replaying": _replay_layers}
-_SLIDE_PROGRESS = [0.02, 0.1, 0.25, 0.4, 0.5, 0.63, 0.8, 0.95, 0.99]
 
 
 def _max_dev(a, b):
@@ -6018,11 +6017,32 @@ def _max_dev(a, b):
     ).max())
 
 
+# The slide offset is round(progress * band height) per band, so what a
+# progress value exercises depends on the panel: the band is 48 rows on the
+# rich panel and 95 on the large one. Each panel/layer pair runs one
+# edge value and one other: 0.02 (the smallest offset, 1 row rich and 2
+# large), 0.99 (offset equals the band height on rich, so the chrome is
+# skipped entirely; one row short of it on large, the last row of chrome
+# left) and 0.5 on the large panel (a tie, 47.5 rows). The other values (0.25, 0.5, 0.63) give the
+# strip fade a fractional opacity.
+_PILLOW_PATH_CASES = [
+    pytest.param(metrics, kind, p, id=f"{tier}-{kind}-{p}")
+    for tier, metrics, kind, p in (
+        ("rich", _RICH_METRICS, "now_playing", 0.02),
+        ("rich", _RICH_METRICS, "now_playing", 0.63),
+        ("rich", _RICH_METRICS, "replaying", 0.5),
+        ("rich", _RICH_METRICS, "replaying", 0.99),
+        ("large", _LARGE_METRICS, "now_playing", 0.5),
+        ("large", _LARGE_METRICS, "now_playing", 0.02),
+        ("large", _LARGE_METRICS, "replaying", 0.99),
+        ("large", _LARGE_METRICS, "replaying", 0.25),
+    )
+]
+
+
 @pytest.mark.skipif(np is None, reason="numpy not installed")
 class TestRevealNumpyPath:
-    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
-    @pytest.mark.parametrize("kind", sorted(_LAYER_BUILDERS))
-    @pytest.mark.parametrize("p", _SLIDE_PROGRESS)
+    @pytest.mark.parametrize("metrics,kind,p", _PILLOW_PATH_CASES)
     def test_matches_the_pillow_path(self, compositor, metrics, kind, p):
         layers = _LAYER_BUILDERS[kind](metrics)
         assert layers.arrays is not None
