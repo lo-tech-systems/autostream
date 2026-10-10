@@ -83,13 +83,17 @@ def _minimal_cfg(tmp_path: Path) -> Path:
 class _SetupRenderer:
     """Renders the non-initial-setup page and returns the HTML."""
 
-    def render(self, tmp_path: Path) -> str:
+    def render(self, tmp_path: Path, audio1: dict | None = None) -> str:
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 
         cfg = _minimal_cfg(tmp_path)
+        if audio1:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            data["audio1"].update(audio1)
+            cfg.write_text(json.dumps(data), encoding="utf-8")
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
 
@@ -256,11 +260,49 @@ class TestSetupPageHtmlControls:
     def test_capture_device_2_wired(self, html):
         assert "settingsSaveField('audio2.capture_device', this.value)" in html
 
-    def test_turntable_1_wired(self, html):
-        assert "settingsSaveField('audio1.input_type', this.checked ? 'turntable' : 'line')" in html
+    def test_input_type_1_wired(self, html):
+        assert 'onchange="onInputTypeChange(1, this.value)"' in html
+        assert "settingsSaveField('audio' + inputIndex + '.input_type', type)" in html
 
-    def test_turntable_2_wired(self, html):
-        assert "settingsSaveField('audio2.input_type', this.checked ? 'turntable' : 'line')" in html
+    def test_input_type_2_wired(self, html):
+        assert 'onchange="onInputTypeChange(2, this.value)"' in html
+        assert "settingsSaveField('audio' + inputIndex + '.input_type', type)" in html
+
+    def test_sensitivity_slider_wired(self, html):
+        assert 'oninput="syncSilenceThreshold(1, this.value)"' in html
+        assert 'oninput="syncSilenceThreshold(2, this.value)"' in html
+        assert (
+            "settingsSaveFieldDebounced('audio' + inputIndex + '.silence_threshold', Number(value), 300)"
+            in html
+        )
+
+    def test_input_type_select_options_and_selection(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, audio1={"turntable": True})
+        select = html.split('id="audio1_input_type"', 1)[1].split("</select>", 1)[0]
+        assert '<option value="turntable" selected>Turntable</option>' in select
+        assert '<option value="cd">CD</option>' in select
+        assert '<option value="line">Line</option>' in select
+
+    def test_slider_range_and_value(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, audio1={"turntable": True})
+        slider = html.split('<input type="range" min="-70"', 1)[1].split(">", 1)[0]
+        assert 'max="-30" step="1" id="audio_silence_threshold"' in slider
+        assert 'value="-45"' in slider
+        assert '<span id="audio1_silence_threshold_val">-45 dB</span>' in html
+
+    def test_presets_attribute_matches_config(self, html):
+        import html as html_lib
+        from autostream_config import INPUT_TYPE_SILENCE_THRESHOLD_DBFS
+
+        raw = html.split('id="audio1_input_type"', 1)[1].split("data-presets='", 1)[1].split("'", 1)[0]
+        assert json.loads(html_lib.unescape(raw)) == INPUT_TYPE_SILENCE_THRESHOLD_DBFS
+
+    def test_level_span_present(self, html):
+        assert 'id="audio1_level_val"' in html
+        assert 'id="audio2_level_val"' in html
+
+    def test_no_hidden_threshold_field(self, html):
+        assert 'type="hidden" id="audio_silence_threshold"' not in html
 
     def test_output_select_wired(self, html):
         assert "settingsSaveField('owntone.output_name', this.value)" in html

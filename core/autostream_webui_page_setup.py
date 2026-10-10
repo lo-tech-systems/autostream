@@ -23,7 +23,14 @@ from typing import Callable, Optional
 from urllib.parse import parse_qs
 
 from autostream_config import (
+    INPUT_TYPES,
+    INPUT_TYPE_LABELS,
+    INPUT_TYPE_SILENCE_THRESHOLD_DBFS,
+    SILENCE_THRESHOLD_MAX_DBFS,
+    SILENCE_THRESHOLD_MIN_DBFS,
+    input_type_label,
     mark_configured,
+    normalize_input_type,
 )
 from autostream_dials import parse_dial_entries, sighting_needs_update
 
@@ -889,7 +896,7 @@ def _setup_input_card_html(
     parsed_input,
     capture_name: str,
     threshold_name: str,
-    turntable_name: str,
+    type_name: str,
     enabled: bool = True,
     enabled_name: Optional[str] = None,
     bt_enabled: bool = False,
@@ -981,7 +988,7 @@ def _setup_input_card_html(
         parsed_input,
         capture_name: str,
         threshold_name: str,
-        turntable_name: str,
+        type_name: str,
         enabled: bool = True,
         enabled_name: Optional[str] = None,
         bt_enabled: bool = False,
@@ -989,10 +996,14 @@ def _setup_input_card_html(
     ) -> str:
         prefix = "audio1" if input_index == 1 else "audio2"
         threshold_id = "audio_silence_threshold" if input_index == 1 else "audio2_silence_threshold"
-        turntable_note_id = f"{prefix}_turntable_note"
         settings_wrap_id = f"{prefix}_settings"
-        is_turntable = bool(parsed_input.is_turntable)
-        threshold_preset = suggested_silence_threshold_dbfs(is_turntable)
+        input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
+        threshold = float(parsed_input.silence_threshold_dbfs)
+        type_options = "".join(
+            f'<option value="{t}"{" selected" if t == input_type else ""}>{INPUT_TYPE_LABELS[t]}</option>'
+            for t in INPUT_TYPES
+        )
+        presets_json = json.dumps(INPUT_TYPE_SILENCE_THRESHOLD_DBFS)
 
         enabled_html = ""
         wrap_style = "block" if enabled else "none"
@@ -1029,17 +1040,15 @@ def _setup_input_card_html(
           {enabled_html}
           {settings_open}
             <label>Input device: <select name="{capture_name}" id="{capture_name}_select" data-input-index="{input_index}"{data_prev_attr} onchange="{capture_onchange}">{build_opts(parsed_input.capture_device, other_capture_device)}</select></label>
-            <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
-              <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index}); if(liveEnabled) settingsSaveField('audio{input_index}.input_type', this.checked ? 'turntable' : 'line');">
-                <span class="switch"></span>
-              </label>
-              <span>Turntable</span>
+            <label>Input type: <select name="{type_name}" id="{prefix}_input_type" data-current-type="{input_type}" data-presets='{presets_json}' onchange="onInputTypeChange({input_index}, this.value)">{type_options}</select></label>
+            <label><div class="slider-header"><span>Sensitivity:</span><span id="{prefix}_silence_threshold_val">{threshold:.0f} dB</span></div>
+            <input type="range" min="{SILENCE_THRESHOLD_MIN_DBFS:.0f}" max="{SILENCE_THRESHOLD_MAX_DBFS:.0f}" step="1" id="{threshold_id}" name="{threshold_name}" value="{threshold:.0f}" oninput="syncSilenceThreshold({input_index}, this.value)"></label>
+            <div id="{prefix}_sensitivity_note" class="helptext" style="text-align:left;">
+              Further left picks up quieter audio; further right ignores more background noise.
             </div>
-            <div id="{turntable_note_id}" class="helptext" style="text-align:left;">
-              Detection threshold preset: {threshold_preset:.0f} dB
+            <div class="helptext" style="text-align:left;">
+              Level: <span id="{prefix}_level_val">no level</span>
             </div>
-            <input type="hidden" id="{threshold_id}" name="{threshold_name}" value="{threshold_preset}">
           {settings_close}
         """
         return settings_card_html(inner_html, margin_top="0")
@@ -1049,7 +1058,7 @@ def _setup_input_card_html(
         parsed_input=parsed_input,
         capture_name=capture_name,
         threshold_name=threshold_name,
-        turntable_name=turntable_name,
+        type_name=type_name,
         enabled=enabled,
         enabled_name=enabled_name,
         bt_enabled=bt_enabled,
@@ -1462,10 +1471,10 @@ def _setup_input_summary_text(
 
     def _input_card_summary(parsed_input) -> str:
         dev = _friendly(parsed_input.capture_device)
-        mode = "Turntable" if parsed_input.is_turntable else "Line In"
+        mode = input_type_label(getattr(parsed_input, "input_type", "line"))
         if bt_enabled and parsed_input.capture_device == BLUETOOTH_LOOPBACK_HW:
             # Bluetooth input: the ALSA card name ("Loopback") and the
-            # turntable flag are implementation detail here \u2014 show the
+            # input type are implementation detail here \u2014 show the
             # connected device's name (or the connection state) instead.
             dev = "Bluetooth"
             mode = _bluetooth_input_fragment_text(bt_status)
@@ -1819,7 +1828,7 @@ def _card_detail_input1(ctx: SetupCtx) -> str:
         parsed_input=ctx.parsed.audio1,
         capture_name="audio_capture_device",
         threshold_name="audio_silence_threshold",
-        turntable_name="audio_turntable",
+        type_name="audio1_input_type",
         enabled=ctx.parsed.audio1_enabled,
         enabled_name="audio1_enabled",
         bt_enabled=ctx.bt_enabled,
@@ -1857,7 +1866,7 @@ def _card_detail_input2(ctx: SetupCtx) -> str:
         parsed_input=ctx.parsed.audio2,
         capture_name="audio2_capture_device",
         threshold_name="audio2_silence_threshold",
-        turntable_name="audio2_turntable",
+        type_name="audio2_input_type",
         enabled=ctx.parsed.audio2_enabled,
         enabled_name="audio2_enabled",
         bt_enabled=ctx.bt_enabled,
@@ -2872,6 +2881,35 @@ def send_setup_page(
             _btApplyStatus(body);
           }},
         }});
+        // Input level readout: one poller serves both input cards and runs
+        // only while one of them is open. The "above threshold" mark is the
+        // last sample compared with the slider here, so it follows the slider
+        // without waiting for the next poll.
+        var _inputLevelLast = {{}};
+        function _applyInputLevelMark(inputIndex){{
+          const el = document.getElementById('audio' + inputIndex + '_level_val');
+          if (!el) return;
+          const dbfs = _inputLevelLast[inputIndex];
+          if (!Number.isFinite(dbfs)) {{ el.textContent = 'no level'; return; }}
+          const slider = document.getElementById(inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold');
+          const above = slider ? dbfs >= Number(slider.value) : false;
+          el.textContent = Math.round(dbfs) + ' dB' + (above ? ' (above threshold)' : '');
+        }}
+        function _applyInputLevels(body){{
+          const inputs = (body && Array.isArray(body.inputs)) ? body.inputs : [];
+          [1, 2].forEach(function(i){{
+            const item = inputs.find(function(x){{ return x && x.index === i; }});
+            _inputLevelLast[i] = (item && typeof item.dbfs === 'number') ? item.dbfs : NaN;
+            _applyInputLevelMark(i);
+          }});
+        }}
+        var _inputLevelPoller = Poller({{
+          url: '/api/inputs/levels',
+          intervalMs: 1000,
+          activeOnly: true,
+          fetchOptions: {{headers: {{'X-CSRF-Token': window.__CSRF || ''}}}},
+          onData: _applyInputLevels,
+        }});
       </script>
     """
 
@@ -3186,23 +3224,45 @@ def send_setup_page(
           refreshPlaybackCardSub();
           if (liveEnabled) settingsSaveFieldDebounced('owntone.volume_percent', parseInt(v, 10), 300);
         }}
-        function thresholdPreset(checked){{ return checked ? -45 : -60; }}
         function syncInputUi(inputIndex){{
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
           const enabledName = prefix + '_enabled';
-          const turntableName = inputIndex === 1 ? 'audio_turntable' : 'audio2_turntable';
           const enabled = !!document.querySelector('input[name="' + enabledName + '"]')?.checked;
-          const turntable = !!document.querySelector('input[name="' + turntableName + '"]')?.checked;
           const settings = document.getElementById(prefix + '_settings');
           const preampCard = document.getElementById(prefix + '_preamp_card');
-          const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
-          const note = document.getElementById(prefix + '_turntable_note');
-          const threshold = thresholdPreset(turntable);
-          const hidden = document.getElementById(thresholdId);
           if (settings) settings.style.display = enabled ? 'block' : 'none';
           if (preampCard) preampCard.style.display = enabled ? 'block' : 'none';
-          if (hidden) hidden.value = String(threshold);
-          if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
+        }}
+        function inputTypePreset(inputIndex, type){{
+          const sel = document.getElementById('audio' + inputIndex + '_input_type');
+          if (!sel) return NaN;
+          let presets = {{}};
+          try {{ presets = JSON.parse(sel.dataset.presets || '{{}}'); }} catch (e) {{ presets = {{}}; }}
+          return Number(presets[type]);
+        }}
+        function _showSilenceThreshold(inputIndex, value){{
+          const valueEl = document.getElementById('audio' + inputIndex + '_silence_threshold_val');
+          if (valueEl) valueEl.textContent = String(value) + ' dB';
+          _applyInputLevelMark(inputIndex);
+        }}
+        function onInputTypeChange(inputIndex, type){{
+          const sel = document.getElementById('audio' + inputIndex + '_input_type');
+          const prev = sel ? sel.dataset.currentType : '';
+          const preset = inputTypePreset(inputIndex, type);
+          // The server moves the threshold to the new preset only when the
+          // preset changes; mirror that so the slider agrees with the file.
+          if (Number.isFinite(preset) && preset !== inputTypePreset(inputIndex, prev)) {{
+            const slider = document.getElementById(inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold');
+            if (slider) slider.value = String(preset);
+            _showSilenceThreshold(inputIndex, preset);
+          }}
+          if (sel) sel.dataset.currentType = type;
+          if (liveEnabled) settingsSaveField('audio' + inputIndex + '.input_type', type);
+          refreshInputCardSubs();
+        }}
+        function syncSilenceThreshold(inputIndex, value){{
+          _showSilenceThreshold(inputIndex, value);
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.silence_threshold', Number(value), 300);
         }}
         function eqPrefix(inputIndex){{ return inputIndex===1 ? 'audio1' : 'audio2'; }}
         function syncGain(inputIndex, value){{
@@ -3487,15 +3547,16 @@ def send_setup_page(
         }});
       </script>
       <script>
-        function _inputCardSub(captureSelName, turntableName, gainId) {{
+        function _inputCardSub(captureSelName, typeSelName, gainId) {{
           var sel = document.querySelector('select[name="' + captureSelName + '"]');
           var opt = sel ? sel.options[sel.selectedIndex] : null;
           var dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
-          var turntable = document.querySelector('input[name="' + turntableName + '"]');
-          var mode = (turntable && turntable.checked) ? 'Turntable' : 'Line In';
+          var typeSel = document.querySelector('select[name="' + typeSelName + '"]');
+          var typeOpt = typeSel ? typeSel.options[typeSel.selectedIndex] : null;
+          var mode = typeOpt ? typeOpt.text : 'Line';
           if (opt && opt.dataset.bt === '1') {{
             // Bluetooth input: show the connected device name (or connection
-            // state) instead of the ALSA card name and turntable flag. The
+            // state) instead of the ALSA card name and input type. The
             // string itself comes verbatim from the status poll's server-
             // computed ui.bt_input_text -- never re-derived from link/paired
             // here, so it can't drift from the card summary's own state.
@@ -3514,7 +3575,7 @@ def send_setup_page(
             if (en1 && !en1.checked) {{
               s1.textContent = 'Not configured';
             }} else {{
-              s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
+              s1.textContent = _inputCardSub('audio_capture_device', 'audio1_input_type', 'audio1_gain_db');
             }}
           }}
           var s2 = document.getElementById('input2-card-sub');
@@ -3523,7 +3584,7 @@ def send_setup_page(
             if (en && !en.checked) {{
               s2.textContent = 'Disabled';
             }} else {{
-              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_turntable', 'audio2_gain_db');
+              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_input_type', 'audio2_gain_db');
             }}
           }}
         }}
@@ -3592,6 +3653,7 @@ def send_setup_page(
           // their own panel is open (activeOnly Pollers -- see
           // _bt_card_js/refreshNetworkAdapterInfo's Poller construction).
           if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
+          if ((id === 'input1' || id === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }}
         // Deep link from the Home page dial-update banner.
@@ -3799,6 +3861,7 @@ def send_setup_page(
           var activePanel = document.querySelector('.setup-detail-panel.active');
           var activeId = activePanel ? activePanel.id.replace(/^panel-/, '') : null;
           if (activeId === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
+          if ((activeId === 'input1' || activeId === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.stop();
           if (activeId === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.stop();
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.remove('panel-open');

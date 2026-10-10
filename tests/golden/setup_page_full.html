@@ -329,7 +329,7 @@
       <div class="setup-list-card" onclick="openPanel('input2')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Input 2</span>
-          <span class="setup-list-card-sub" id="input2-card-sub">USB Line In · Line In · -3 dB</span>
+          <span class="setup-list-card-sub" id="input2-card-sub">USB Line In · Line · -3 dB</span>
         </div>
         <span class="setup-list-chevron">›</span>
       </div>
@@ -1050,23 +1050,45 @@
           refreshPlaybackCardSub();
           if (liveEnabled) settingsSaveFieldDebounced('owntone.volume_percent', parseInt(v, 10), 300);
         }
-        function thresholdPreset(checked){ return checked ? -45 : -60; }
         function syncInputUi(inputIndex){
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
           const enabledName = prefix + '_enabled';
-          const turntableName = inputIndex === 1 ? 'audio_turntable' : 'audio2_turntable';
           const enabled = !!document.querySelector('input[name="' + enabledName + '"]')?.checked;
-          const turntable = !!document.querySelector('input[name="' + turntableName + '"]')?.checked;
           const settings = document.getElementById(prefix + '_settings');
           const preampCard = document.getElementById(prefix + '_preamp_card');
-          const thresholdId = inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold';
-          const note = document.getElementById(prefix + '_turntable_note');
-          const threshold = thresholdPreset(turntable);
-          const hidden = document.getElementById(thresholdId);
           if (settings) settings.style.display = enabled ? 'block' : 'none';
           if (preampCard) preampCard.style.display = enabled ? 'block' : 'none';
-          if (hidden) hidden.value = String(threshold);
-          if (note) note.textContent = 'Detection threshold preset: ' + String(threshold) + ' dB';
+        }
+        function inputTypePreset(inputIndex, type){
+          const sel = document.getElementById('audio' + inputIndex + '_input_type');
+          if (!sel) return NaN;
+          let presets = {};
+          try { presets = JSON.parse(sel.dataset.presets || '{}'); } catch (e) { presets = {}; }
+          return Number(presets[type]);
+        }
+        function _showSilenceThreshold(inputIndex, value){
+          const valueEl = document.getElementById('audio' + inputIndex + '_silence_threshold_val');
+          if (valueEl) valueEl.textContent = String(value) + ' dB';
+          _applyInputLevelMark(inputIndex);
+        }
+        function onInputTypeChange(inputIndex, type){
+          const sel = document.getElementById('audio' + inputIndex + '_input_type');
+          const prev = sel ? sel.dataset.currentType : '';
+          const preset = inputTypePreset(inputIndex, type);
+          // The server moves the threshold to the new preset only when the
+          // preset changes; mirror that so the slider agrees with the file.
+          if (Number.isFinite(preset) && preset !== inputTypePreset(inputIndex, prev)) {
+            const slider = document.getElementById(inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold');
+            if (slider) slider.value = String(preset);
+            _showSilenceThreshold(inputIndex, preset);
+          }
+          if (sel) sel.dataset.currentType = type;
+          if (liveEnabled) settingsSaveField('audio' + inputIndex + '.input_type', type);
+          refreshInputCardSubs();
+        }
+        function syncSilenceThreshold(inputIndex, value){
+          _showSilenceThreshold(inputIndex, value);
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.silence_threshold', Number(value), 300);
         }
         function eqPrefix(inputIndex){ return inputIndex===1 ? 'audio1' : 'audio2'; }
         function syncGain(inputIndex, value){
@@ -1351,15 +1373,16 @@
         });
       </script>
       <script>
-        function _inputCardSub(captureSelName, turntableName, gainId) {
+        function _inputCardSub(captureSelName, typeSelName, gainId) {
           var sel = document.querySelector('select[name="' + captureSelName + '"]');
           var opt = sel ? sel.options[sel.selectedIndex] : null;
           var dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
-          var turntable = document.querySelector('input[name="' + turntableName + '"]');
-          var mode = (turntable && turntable.checked) ? 'Turntable' : 'Line In';
+          var typeSel = document.querySelector('select[name="' + typeSelName + '"]');
+          var typeOpt = typeSel ? typeSel.options[typeSel.selectedIndex] : null;
+          var mode = typeOpt ? typeOpt.text : 'Line';
           if (opt && opt.dataset.bt === '1') {
             // Bluetooth input: show the connected device name (or connection
-            // state) instead of the ALSA card name and turntable flag. The
+            // state) instead of the ALSA card name and input type. The
             // string itself comes verbatim from the status poll's server-
             // computed ui.bt_input_text -- never re-derived from link/paired
             // here, so it can't drift from the card summary's own state.
@@ -1378,7 +1401,7 @@
             if (en1 && !en1.checked) {
               s1.textContent = 'Not configured';
             } else {
-              s1.textContent = _inputCardSub('audio_capture_device', 'audio_turntable', 'audio1_gain_db');
+              s1.textContent = _inputCardSub('audio_capture_device', 'audio1_input_type', 'audio1_gain_db');
             }
           }
           var s2 = document.getElementById('input2-card-sub');
@@ -1387,7 +1410,7 @@
             if (en && !en.checked) {
               s2.textContent = 'Disabled';
             } else {
-              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_turntable', 'audio2_gain_db');
+              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_input_type', 'audio2_gain_db');
             }
           }
         }
@@ -1456,6 +1479,7 @@
           // their own panel is open (activeOnly Pollers -- see
           // _bt_card_js/refreshNetworkAdapterInfo's Poller construction).
           if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
+          if ((id === 'input1' || id === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }
         // Deep link from the Home page dial-update banner.
@@ -1663,6 +1687,7 @@
           var activePanel = document.querySelector('.setup-detail-panel.active');
           var activeId = activePanel ? activePanel.id.replace(/^panel-/, '') : null;
           if (activeId === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
+          if ((activeId === 'input1' || activeId === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.stop();
           if (activeId === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.stop();
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.remove('panel-open');
@@ -3995,6 +4020,35 @@
             if (!body || body.ok !== true) return;
             _btApplyStatus(body);
           },
+        });
+        // Input level readout: one poller serves both input cards and runs
+        // only while one of them is open. The "above threshold" mark is the
+        // last sample compared with the slider here, so it follows the slider
+        // without waiting for the next poll.
+        var _inputLevelLast = {};
+        function _applyInputLevelMark(inputIndex){
+          const el = document.getElementById('audio' + inputIndex + '_level_val');
+          if (!el) return;
+          const dbfs = _inputLevelLast[inputIndex];
+          if (!Number.isFinite(dbfs)) { el.textContent = 'no level'; return; }
+          const slider = document.getElementById(inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold');
+          const above = slider ? dbfs >= Number(slider.value) : false;
+          el.textContent = Math.round(dbfs) + ' dB' + (above ? ' (above threshold)' : '');
+        }
+        function _applyInputLevels(body){
+          const inputs = (body && Array.isArray(body.inputs)) ? body.inputs : [];
+          [1, 2].forEach(function(i){
+            const item = inputs.find(function(x){ return x && x.index === i; });
+            _inputLevelLast[i] = (item && typeof item.dbfs === 'number') ? item.dbfs : NaN;
+            _applyInputLevelMark(i);
+          });
+        }
+        var _inputLevelPoller = Poller({
+          url: '/api/inputs/levels',
+          intervalMs: 1000,
+          activeOnly: true,
+          fetchOptions: {headers: {'X-CSRF-Token': window.__CSRF || ''}},
+          onData: _applyInputLevels,
         });
       </script>
     <nav class="bottom-nav"><a href="/" class="nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg><span>Home</span></a><a href="/equaliser" class="nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span>Equaliser</span></a><a href="/service" class="nav-tab" id="service-nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>Service</span></a><a href="/setup" class="nav-tab nav-tab-active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg><span>Setup</span></a><a href="/about" class="nav-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span>Info</span></a></nav></body></html>

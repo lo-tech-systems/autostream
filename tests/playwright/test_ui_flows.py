@@ -217,6 +217,16 @@ class _StubHandler(BaseHTTPRequestHandler):
             key = self.path.rsplit("/", 1)[-1]
             body = _STUB_CARD_JSON.get(key, b'{"ok": false, "error": "unknown_card"}')
             ct = "application/json"
+        elif self.path.startswith("/api/inputs/levels"):
+            body = json.dumps({
+                "ok": True,
+                "connected": True,
+                "inputs": [
+                    {"index": 1, "enabled": True, "running": True, "dbfs": -52.0},
+                    {"index": 2, "enabled": False, "running": False, "dbfs": None},
+                ],
+            }).encode("utf-8")
+            ct = "application/json"
         elif self.path.startswith("/api/"):
             # Return a catch-all JSON response so the real page's XHR polling
             # (refreshOwntoneOutputs, update-status poller, etc.) does not
@@ -511,5 +521,72 @@ class TestPanelScopedPolling:
         _assert_poll_is_panel_scoped(
             page, base_url, "/api/network/status", "System", "panel-system"
         )
+
+    def test_input_levels_poll_is_panel_scoped(self, page: "Page", base_url: str):
+        _assert_poll_is_panel_scoped(
+            page, base_url, "/api/inputs/levels", "Input 1", "panel-input1"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Input card: type select, sensitivity slider and level readout.
+# ---------------------------------------------------------------------------
+
+@_requires_browser
+class TestInputTypeAndSensitivity:
+    def _open_input1(self, page: "Page", base_url: str) -> None:
+        page.goto(f"{base_url}/setup")
+        _open_setup_panel(page, "Input 1")
+        expect(page.locator("#panel-input1")).to_be_visible()
+
+    def test_controls_present(self, page: "Page", base_url: str):
+        self._open_input1(page, base_url)
+        expect(page.locator("#audio1_input_type")).to_be_visible()
+        expect(page.locator("#audio_silence_threshold")).to_be_visible()
+        expect(page.locator("#audio1_level_val")).to_be_visible()
+
+    def test_type_change_moves_slider_to_preset(self, page: "Page", base_url: str):
+        self._open_input1(page, base_url)
+        label = page.locator("#audio1_silence_threshold_val")
+        slider = page.locator("#audio_silence_threshold")
+        page.select_option("#audio1_input_type", "turntable")
+        expect(label).to_have_text("-45 dB")
+        assert slider.input_value() == "-45"
+        page.select_option("#audio1_input_type", "cd")
+        expect(label).to_have_text("-60 dB")
+        assert slider.input_value() == "-60"
+        # CD and Line share a preset, so a tuned value survives the switch.
+        slider.evaluate(
+            "el => { el.value = '-55'; el.dispatchEvent(new Event('input', {bubbles: true})); }"
+        )
+        page.select_option("#audio1_input_type", "line")
+        expect(label).to_have_text("-55 dB")
+        assert slider.input_value() == "-55"
+
+    def test_slider_label_follows(self, page: "Page", base_url: str):
+        self._open_input1(page, base_url)
+        page.locator("#audio_silence_threshold").evaluate(
+            "el => { el.value = '-55'; el.dispatchEvent(new Event('input', {bubbles: true})); }"
+        )
+        expect(page.locator("#audio1_silence_threshold_val")).to_have_text("-55 dB")
+
+    def test_level_readout(self, page: "Page", base_url: str):
+        self._open_input1(page, base_url)
+        slider = page.locator("#audio_silence_threshold")
+        slider.evaluate(
+            "el => { el.value = '-60'; el.dispatchEvent(new Event('input', {bubbles: true})); }"
+        )
+        expect(page.locator("#audio1_level_val")).to_have_text(
+            "-52 dB (above threshold)", timeout=3000
+        )
+        # Raising the threshold above the level drops the mark at once.
+        slider.evaluate(
+            "el => { el.value = '-40'; el.dispatchEvent(new Event('input', {bubbles: true})); }"
+        )
+        expect(page.locator("#audio1_level_val")).to_have_text("-52 dB")
+        page.locator("#panel-input1 .setup-detail-back button").click()
+        _open_setup_panel(page, "Input 2")
+        expect(page.locator("#panel-input2")).to_be_visible()
+        expect(page.locator("#audio2_level_val")).to_have_text("no level")
 
 
