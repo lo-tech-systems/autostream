@@ -36,12 +36,13 @@ for _p in (_DIAL, _CORE):
 
 import dial_display as dd
 from dial_config import DialDisplayConfig
-from dial_display import DialDisplay, SELECTOR_TIMEOUT_SECONDS
+from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_sdhealth import SdHealthView, STATUS_VALID
 from dial_touch_layout import TouchZone
+from dial_warnings import WarningManager, WarningStore
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces.json"
@@ -56,6 +57,11 @@ PRE_OUTPUTS_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_outputs.json"
 # TestPreOutputsScenariosUnchanged gives for the outputs feature, one layer
 # further back.
 PRE_BINDING_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_binding.json"
+# A frozen copy of GOLDEN_PATH taken immediately before the two bespoke
+# warnings (No-WiFi, SD health) were refactored onto the generalised warning
+# framework: see TestPreWarningsScenariosUnchanged below, the same proof
+# one layer further back still.
+PRE_WARNINGS_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_warnings.json"
 
 # Set to True locally to regenerate the golden fixture after a *deliberate*,
 # reviewed change. Must be False in committed code.
@@ -200,7 +206,7 @@ def _aid(tag: str) -> str:
     return (tag + "0" * 20)[:20]
 
 
-def _make_display(targets, get_roster, cfg=None, backend=None) -> tuple[DialDisplay, FakeBackend, MagicMock]:
+def _make_display(targets, get_roster, cfg=None, backend=None, warnings=None) -> tuple[DialDisplay, FakeBackend, MagicMock]:
     """*cfg*/*backend* let a scenario opt into a non-default profile/panel
     size (e.g. the compact tier's own 240x240 glass) — every existing call
     site leaves both None and gets exactly today's base-tier fixture."""
@@ -214,6 +220,7 @@ def _make_display(targets, get_roster, cfg=None, backend=None) -> tuple[DialDisp
         logo_path=_TEST_LOGO_PATH,
         backend_factory=lambda: fb,
         get_roster=get_roster,
+        warnings=warnings,
     )
     return display, fb, gt
 
@@ -229,7 +236,13 @@ class _Ctx:
         self.clock = _FakeClock(start=1000.0)
         self.status_by_id: dict[str, dict] = {}
         self.roster_override: list | None = None
-        self.display, self.fb, self.gt = _make_display(targets, self._get_roster, cfg=cfg, backend=backend)
+        # The warning manager's own clock is the same fake clock the
+        # "advance" step moves, kept in memory only (no state file):
+        # every scenario is fully deterministic and self-contained.
+        warnings = WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=self.clock)
+        self.display, self.fb, self.gt = _make_display(
+            targets, self._get_roster, cfg=cfg, backend=backend, warnings=warnings,
+        )
         self.frame_offset = 0
 
     def _get_roster(self) -> list:
@@ -308,6 +321,8 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._check_secondary_timeout()
     elif kind == "tick_repeat_line":
         d._tick_repeat_line()
+    elif kind == "tick_warnings":
+        d._tick_warnings()
     elif kind == "advance":
         ctx.clock.t += step[1]
     elif kind == "enable":
@@ -425,12 +440,12 @@ def _snapshot(ctx: _Ctx) -> dict:
         "eq_available": d._eq_available,
         "network": None if network is None else {
             "link": network.link, "bars": network.bars,
-            "down_streak": d._wifi_down_streak, "dismissed": d._wifi_dismissed,
+            "down_streak": d._wifi_down_streak, "dismissed": d._warnings.is_snoozed("nowifi"),
             "ever_connected": d._wifi_ever_connected,
         },
-        "nowifi_open": d._nowifi is not None,
+        "nowifi_open": d._warning_screen is not None and d._warning_screen.warning_id == "nowifi",
         "restarting_open": d._restarting is not None,
-        "sdhealth_open": d._sdhealth is not None,
+        "sdhealth_open": d._warning_screen is not None and d._warning_screen.warning_id == "sdhealth",
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
@@ -1597,16 +1612,112 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("sdhealth_timeout_closes_and_does_not_reraise", [
+    add("sdhealth_has_no_timeout", [
         ("targets", []),
         ("poll",),
         ("sd_health_view", STATUS_VALID, 15),
         ("repaint",),
-        ("advance", dd.SDHEALTH_TIMEOUT_SECONDS + 1),
+        ("advance", 3600.0),
         ("check_timeout",),
         ("repaint",),
-        ("sd_health_view", STATUS_VALID, 14),
+    ])
+
+    # ---- Warning re-show: wake and the once-a-second tick ----
+
+    add("sdhealth_sleep_then_wake_reshows", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
         ("repaint",),
+        ("sleep_locked",),
+        ("repaint",),
+        ("notify_touch_activity",),
+        ("repaint",),
+    ])
+
+    add("nowifi_sleep_then_wake_reshows", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_CONNECTED, 3),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("sleep_locked",),
+        ("repaint",),
+        ("notify_touch_activity",),
+        ("repaint",),
+    ])
+
+    add("sdhealth_dismiss_then_wake_stays_snoozed", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("sdhealth_dismiss",),
+        ("repaint",),
+        ("sleep_locked",),
+        ("repaint",),
+        ("notify_touch_activity",),
+        ("repaint",),
+    ])
+
+    add("sdhealth_snooze_expires_and_reshows", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("sdhealth_dismiss",),
+        ("repaint",),
+        ("advance", 604801.0),
+        ("tick_warnings",),
+        ("repaint",),
+    ])
+
+    add("sdhealth_critical_snooze_is_one_day", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 2),
+        ("repaint",),
+        ("sdhealth_dismiss",),
+        ("repaint",),
+        ("advance", 86401.0),
+        ("tick_warnings",),
+        ("repaint",),
+    ])
+
+    add("sdhealth_pending_behind_info_shows_on_tick_after_close", [
+        ("targets", []),
+        ("poll",),
+        ("open_info",),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("close_list",),
+        ("repaint",),
+        ("tick_warnings",),
+        ("repaint",),
+    ])
+
+    add("warnings_nowifi_outranks_sdhealth_when_both_pending", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_CONNECTED, 3),
+        ("open_info",),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("sd_health_view", STATUS_VALID, 10),
+        ("repaint",),
+        ("close_list",),
+        ("repaint",),
+        ("tick_warnings",),
+        ("repaint",),               # nowifi wins on priority
+        ("nowifi_dismiss",),
+        ("repaint",),
+        ("tick_warnings",),
+        ("repaint",),               # sdhealth follows once nowifi is dismissed
     ])
 
     return scenarios
@@ -2236,3 +2347,36 @@ class TestPreBindingScenariosUnchanged:
         new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
         binding_scenarios = [name for name in new if name.startswith("binding_")]
         assert len(binding_scenarios) == 14
+
+
+# ---------------------------------------------------------------------------
+# Proof that refactoring the two bespoke warnings (No-WiFi, SD health) onto
+# the generalised warning framework did not change any pre-existing
+# scenario's own recorded behaviour, random walks included: no snapshot key
+# was added or renamed (_snapshot reads "dismissed"/"nowifi_open"/
+# "sdhealth_open" from the manager and the one _warning_screen state
+# instead, to the same values), so this is a straight, no-strip comparison.
+# The one dropped scenario ("sdhealth_timeout_closes_and_does_not_reraise")
+# named a constant the framework deletes (no on-screen timeout is the
+# owner-confirmed target); its replacement is "sdhealth_has_no_timeout".
+# ---------------------------------------------------------------------------
+
+class TestPreWarningsScenariosUnchanged:
+    """Every scenario recorded before the warning framework, random walks
+    included, is byte-identical after it: no snapshot key changed, and the
+    one dropped scenario is the SD timeout the framework removes."""
+
+    _DROPPED = {"sdhealth_timeout_closes_and_does_not_reraise"}
+
+    def test_every_pre_existing_scenario_is_unchanged(self):
+        old = json.loads(PRE_WARNINGS_GOLDEN_PATH.read_text(encoding="utf-8"))
+        new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+        checked = 0
+        for name, old_trace in old.items():
+            if name in self._DROPPED:
+                assert name not in new
+                continue
+            assert name in new
+            assert new[name] == old_trace, f"{name!r} changed"
+            checked += 1
+        assert checked >= 60

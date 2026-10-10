@@ -374,7 +374,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
-    from dial_touch_layout import TouchZone
+    from dial_touch_layout import TouchZone, WARNING_ZONES
 
     # Any deliberate contact with the screen proves physical presence — the
     # reveal-then-arm scheme (see dial_touch.py) means a first touch may only
@@ -494,8 +494,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
         # bars; IDLE_REPLAY opens the replay picker; IDLE_INFO opens the
         # idle screen's read-only info page; IDLE_WIFI opens the No-WiFi
-        # page while the link is down; NOWIFI_* act on that page;
-        # SDHEALTH_DISMISS closes the SD card warning; OUTPUTS
+        # page while the link is down; any warning cell (WARNING_ZONES)
+        # goes to the display's warning dispatch; OUTPUTS
         # opens the outputs list; OUTPUT_* act on the per-output detail
         # page; ARTWORK hides the main screen's own bands for a few
         # seconds — see dial_touch.py's SURFACES paragraph for how a press
@@ -534,12 +534,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.open_info()
         elif zone == TouchZone.IDLE_WIFI:
             display.open_nowifi()
-        elif zone == TouchZone.NOWIFI_DISMISS:
-            display.nowifi_dismiss_tap()
-        elif zone == TouchZone.NOWIFI_RESTART:
-            display.nowifi_restart_tap()
-        elif zone == TouchZone.SDHEALTH_DISMISS:
-            display.sdhealth_dismiss_tap()
+        elif zone in WARNING_ZONES:
+            display.warning_button_tap(zone)
         elif zone == TouchZone.OUTPUTS:
             display.open_outputs()
         elif zone == TouchZone.OUTPUT_BACK:

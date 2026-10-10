@@ -50,6 +50,7 @@ from dial_touch_layout import (  # noqa: E402
     SUPERSAMPLE_LARGE,
     TOUCH_MIN_MM,
     TOUCH_SHORT_BELOW_BAND_MM,
+    WARNING_ZONES,
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
     CompactPickerLayout,
@@ -57,6 +58,7 @@ from dial_touch_layout import (  # noqa: E402
     EqLayout,
     InfoValueLayout,
     TouchZone,
+    WarningLayout,
     ZoneRect,
     _dead_zone_margin,
     compact_layout_for,
@@ -74,6 +76,7 @@ from dial_touch_layout import (  # noqa: E402
     output_layout_for,
     repeat_layout_for,
     sdhealth_layout_for,
+    warning_layout_for,
     repeat_zone_at,
     scale_px,
     zone_at,
@@ -988,6 +991,53 @@ class TestSdHealthLayout:
         cx, cy = (s.dismiss[0] + s.dismiss[2]) // 2, (s.dismiss[1] + s.dismiss[3]) // 2
         entry = hit_test(GEOMETRY_SDHEALTH, cx, cy, 160, 128)
         assert entry is not None and entry.zone == TouchZone.SDHEALTH_DISMISS
+
+
+class TestWarningLayout:
+    """warning_layout_for(): the No-WiFi table for two cells, the SD
+    health table for one, an even split of the same row for more."""
+
+    def test_two_buttons_matches_nowifi_exactly(self):
+        n = nowifi_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
+        w = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
+        assert w.card == n.card
+        assert w.message == n.message
+        assert w.cells == (n.dismiss, n.restart)
+        assert w.divider_y == n.divider_y
+        assert w.divider_xs == (n.divider_x,)
+
+    def test_one_button_matches_sdhealth_exactly(self):
+        s = sdhealth_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
+        w = warning_layout_for(320, 240, buttons=1, metrics=metrics_for(320, 240, 0.1778))
+        assert w.card == s.card
+        assert w.message == s.message
+        assert w.cells == (s.dismiss,)
+        assert w.divider_xs == ()
+
+    def test_zero_buttons_behaves_as_one(self):
+        s = sdhealth_layout_for(160, 128)
+        w = warning_layout_for(160, 128, buttons=0)
+        assert w.cells == (s.dismiss,)
+
+    def test_three_buttons_are_ascending_non_overlapping_with_margin_gaps(self):
+        metrics = metrics_for(320, 240, 0.1778)
+        w = warning_layout_for(320, 240, buttons=3, metrics=metrics)
+        assert len(w.cells) == 3
+        assert len(w.divider_xs) == 2
+        x0, _, x1, _ = w.card
+        prev_end = x0
+        for cell in w.cells:
+            assert cell[0] >= prev_end
+            assert cell[0] < cell[2] <= x1
+            prev_end = cell[2]
+        for i in range(len(w.cells) - 1):
+            gap = w.cells[i + 1][0] - w.cells[i][2]
+            assert gap == 2 * metrics.margin
+
+    def test_warning_zones_is_the_union_of_both_geometries(self):
+        nowifi_zones = {rect.zone for rect in zone_rects_for(GEOMETRY_NOWIFI, 160, 128)}
+        sdhealth_zones = {rect.zone for rect in zone_rects_for(GEOMETRY_SDHEALTH, 160, 128)}
+        assert WARNING_ZONES == nowifi_zones | sdhealth_zones
 
 
 # ---------------------------------------------------------------------------

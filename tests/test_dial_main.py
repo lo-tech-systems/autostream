@@ -1837,7 +1837,21 @@ class TestBuildTouchSourceWiring:
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.SDHEALTH_DISMISS, None)
-            display.sdhealth_dismiss_tap.assert_called_once()
+            display.warning_button_tap.assert_called_once_with(TouchZone.SDHEALTH_DISMISS)
+
+    def test_on_zone_tap_nowifi_dismiss_goes_to_the_warning_dispatch(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.NOWIFI_DISMISS, None)
+            display.warning_button_tap.assert_called_once_with(TouchZone.NOWIFI_DISMISS)
+
+    def test_on_zone_tap_nowifi_restart_goes_to_the_warning_dispatch(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.NOWIFI_RESTART, None)
+            display.warning_button_tap.assert_called_once_with(TouchZone.NOWIFI_RESTART)
 
     def test_on_zone_tap_list_back_closes_the_list_screen(self):
         from dial_touch_layout import TouchZone

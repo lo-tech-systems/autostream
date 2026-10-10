@@ -443,6 +443,10 @@ class TouchZone(str, Enum):
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 
+# Every zone a warning page can report, across all warning geometries;
+# dial_main routes any of these to the display's warning dispatch.
+WARNING_ZONES = frozenset((TouchZone.NOWIFI_DISMISS, TouchZone.NOWIFI_RESTART, TouchZone.SDHEALTH_DISMISS))
+
 
 # Hit-test geometries. These name a geometry, not a screen: the touch layer
 # maps its own surfaces onto them many-to-one (two surfaces share MAIN, two
@@ -1094,6 +1098,48 @@ def sdhealth_layout_for(width: int, height: int, metrics: "LayoutMetrics | None"
     n = nowifi_layout_for(width, height, metrics=metrics)
     dismiss = (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
     return SdHealthLayout(card=n.card, message=n.message, dismiss=dismiss, divider_y=n.divider_y)
+
+
+@dataclass(frozen=True)
+class WarningLayout:
+    """A warning page with any number of button cells: the No-WiFi card
+    and message row, the bottom row split into `cells` (left to right)
+    with a vertical divider between each neighbouring pair (divider_xs,
+    one fewer than the cells) under the shared horizontal divider."""
+
+    card: Rect
+    message: Rect
+    cells: tuple[Rect, ...]
+    divider_y: int
+    divider_xs: tuple[int, ...]
+
+
+def warning_layout_for(
+    width: int, height: int, buttons: int, metrics: "LayoutMetrics | None" = None,
+) -> WarningLayout:
+    """The warning page geometry for *buttons* cells. Two cells are the
+    No-WiFi table exactly (Dismiss | Restart); one cell is the SD card
+    warning's undivided row exactly; more are the same row split evenly
+    with the usual 2*margin dead gap between neighbours, offset to the
+    card's origin (whole-panel on compact). buttons < 1 is treated as 1."""
+    n = nowifi_layout_for(width, height, metrics=metrics)
+    count = max(1, int(buttons))
+    if count == 2:
+        return WarningLayout(
+            card=n.card, message=n.message, cells=(n.dismiss, n.restart),
+            divider_y=n.divider_y, divider_xs=(n.divider_x,),
+        )
+    if count == 1:
+        s = sdhealth_layout_for(width, height, metrics=metrics)
+        return WarningLayout(card=s.card, message=s.message, cells=(s.dismiss,), divider_y=s.divider_y, divider_xs=())
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    x0, y0, x1, _ = n.card
+    row_y0, row_y1 = n.dismiss[1], n.dismiss[3]
+    bands = _split(x1 - x0, metrics.margin, [1] * count)
+    cells = tuple((x0 + a, row_y0, x0 + b, row_y1) for a, b in bands)
+    divider_xs = tuple(x0 + (bands[i][1] + bands[i + 1][0]) // 2 for i in range(count - 1))
+    return WarningLayout(card=n.card, message=n.message, cells=cells, divider_y=n.divider_y, divider_xs=divider_xs)
 
 
 def _dead_zone_margin(width: int, height: int) -> int:

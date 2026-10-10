@@ -44,11 +44,10 @@ from dial_display_compositor import (  # noqa: E402
     BODY_LIST_ROWS,
     BODY_NONE,
     BODY_NOW_PLAYING,
-    BODY_NOWIFI,
     BODY_REPEAT_LINE,
     BODY_REPEAT_ROW,
-    BODY_SDHEALTH,
     BODY_TOGGLE_ROW,
+    BODY_WARNING,
     EQ_LIMIT_DB,
     Body,
     DialDisplayCompositor,
@@ -81,6 +80,7 @@ from dial_display_compositor import (  # noqa: E402
     RESTARTING_TEXT,
     SdHealthView,
     STARTING_TEXT,
+    WarningView,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
@@ -135,8 +135,10 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_NOWIFI,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
+    GEOMETRY_SDHEALTH,
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
     CompactPickerLayout,
@@ -152,6 +154,7 @@ from dial_touch_layout import (  # noqa: E402
     nowifi_layout_for,
     repeat_layout_for,
     sdhealth_layout_for,
+    warning_layout_for,
     zone_rects_for,
     zones_for,
 )
@@ -451,6 +454,28 @@ class TestStatelessness:
         compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=12), rotate=False, bgr=False)
         compositor.compose_sdhealth(None, 240, 240, SdHealthView(pressed=TouchZone.SDHEALTH_DISMISS),
                                     rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973))
+        after = dict(vars(compositor))
+        assert before == after == {}
+
+    def test_compose_warning_holds_no_attributes_that_change_between_calls(self, compositor):
+        before = dict(vars(compositor))
+        base = Image.new("RGB", (160, 128), (32, 32, 32))
+        compositor.compose_warning(
+            base, 160, 128,
+            WarningView(title="One", buttons=("Dismiss",), geometry=GEOMETRY_SDHEALTH),
+            rotate=False, bgr=False,
+        )
+        compositor.compose_warning(
+            None, 240, 240,
+            WarningView(title="Two", buttons=("Dismiss", "Restart"), geometry=GEOMETRY_NOWIFI,
+                        pressed=TouchZone.NOWIFI_RESTART),
+            rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973),
+        )
+        compositor.compose_warning(
+            base, 320, 240,
+            WarningView(title="Three", message="detail", buttons=("A", "B", "C"), geometry=GEOMETRY_NOWIFI),
+            rotate=False, bgr=False, metrics=metrics_for(320, 240, 0.1778),
+        )
         after = dict(vars(compositor))
         assert before == after == {}
 
@@ -2232,6 +2257,81 @@ class TestComposeSdHealth:
             frame = compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=15),
                                                 rotate=False, bgr=False)
         assert frame.size == (160, 128)
+
+
+# ---------------------------------------------------------------------------
+# compose_warning: the generic warning page compose_nowifi/compose_sdhealth
+# are now thin adapters over. Byte-identity of the adapters against the
+# generic call is the guard that the generalisation changed no pixel.
+# ---------------------------------------------------------------------------
+
+class TestComposeWarning:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _base(self, size):
+        return Image.new("RGB", size, (200, 200, 200))
+
+    @pytest.mark.parametrize("width,height,mm_per_px", [
+        (160, 128, None), (320, 240, 0.1778), (240, 240, 0.0973),
+    ])
+    @pytest.mark.parametrize("pressed", [None, TouchZone.NOWIFI_DISMISS, TouchZone.NOWIFI_RESTART])
+    def test_nowifi_adapter_is_byte_identical_to_the_generic_call(self, compositor, width, height, mm_per_px, pressed):
+        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else None
+        base = self._base((width, height))
+        adapter = compositor.compose_nowifi(base, width, height, NoWifiView(pressed=pressed),
+                                            rotate=False, bgr=False, metrics=metrics)
+        generic = compositor.compose_warning(
+            base, width, height,
+            WarningView(title="No WiFi", message="", buttons=("Dismiss", "Restart"),
+                        geometry=GEOMETRY_NOWIFI, pressed=pressed),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(adapter.getdata()) == list(generic.getdata())
+
+    @pytest.mark.parametrize("width,height,mm_per_px", [
+        (160, 128, None), (320, 240, 0.1778), (240, 240, 0.0973),
+    ])
+    @pytest.mark.parametrize("pressed", [None, TouchZone.SDHEALTH_DISMISS])
+    def test_sdhealth_adapter_is_byte_identical_to_the_generic_call(self, compositor, width, height, mm_per_px, pressed):
+        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else None
+        base = self._base((width, height))
+        adapter = compositor.compose_sdhealth(base, width, height, SdHealthView(percent=15, pressed=pressed),
+                                              rotate=False, bgr=False, metrics=metrics)
+        generic = compositor.compose_warning(
+            base, width, height,
+            WarningView(title="SD card low", message="15% left, replace soon", buttons=("Dismiss",),
+                        geometry=GEOMETRY_SDHEALTH, pressed=pressed),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(adapter.getdata()) == list(generic.getdata())
+
+    def test_three_buttons_draw_two_vertical_dividers(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_warning(
+            self._base((320, 240)), 320, 240,
+            WarningView(title="Three", buttons=("A", "B", "C"), geometry=GEOMETRY_NOWIFI),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        layout = warning_layout_for(320, 240, buttons=3, metrics=metrics)
+        for x in layout.divider_xs:
+            assert frame.getpixel((x, layout.cells[0][1] + 5)) == (255, 255, 255)
+            assert frame.getpixel((x, layout.message[1] + 4)) != (255, 255, 255)
+
+    def test_never_raises_without_a_font(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = compositor.compose_warning(
+                self._base((160, 128)), 160, 128,
+                WarningView(title="Hi", buttons=("Dismiss",), geometry=GEOMETRY_SDHEALTH),
+                rotate=False, bgr=False,
+            )
+        assert frame.size == (160, 128)
+
+    def test_body_buttons_default_is_empty_and_frame_unchanged(self):
+        assert Body() == Body(buttons=())
 
 
 # ---------------------------------------------------------------------------

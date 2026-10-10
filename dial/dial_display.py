@@ -30,13 +30,16 @@ through the display's focus accessor.
 
 This manager also consumes the network poller's view (dial_network.py, via
 on_network_view()) for the idle screen's Wi-Fi status icon and the No-WiFi
-page.
+page. Both the network view and the SD health reader feed the on-screen
+warning manager (dial_warnings.py) through _warning_active()/
+_warning_cleared().
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import io
 import logging
@@ -63,15 +66,21 @@ from dial_display_compositor import (
     EqViewState,
     InfoValueView,
     ListState,
-    NoWifiView,
+    NOWIFI_DISMISS_TEXT,
+    NOWIFI_MESSAGE_TEXT,
+    NOWIFI_RESTART_TEXT,
     OutputViewState,
     OverlayState,
     RepeatViewState,
-    SdHealthView as SdHealthFrameView,
+    SDHEALTH_BODY_TEXT,
+    SDHEALTH_BODY_TEXT_NO_PERCENT,
+    SDHEALTH_DISMISS_TEXT,
+    SDHEALTH_TITLE_TEXT,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
     WIFI_SIGNAL,
+    WarningView,
     format_mmss,
 )
 from dial_display_image import (
@@ -106,6 +115,8 @@ from dial_touch_layout import (
     CONTENT_COMPACT,
     CONTENT_LARGE,
     CONTENT_RICH,
+    GEOMETRY_NOWIFI,
+    GEOMETRY_SDHEALTH,
     LayoutMetrics,
     TouchZone,
     list_layout_for,
@@ -118,6 +129,14 @@ from dial_volume import (
     select_volume_target,
     shown_muted,
     shown_volume,
+)
+from dial_warnings import (
+    ACTION_DISMISS,
+    ACTION_RESTART,
+    WarningButton,
+    WarningDescriptor,
+    WarningManager,
+    WarningStore,
 )
 
 # The artwork fetch is shared with the OwnTone metadata publisher, which also
@@ -253,15 +272,80 @@ NOWIFI_PROMPT_STREAK = 3
 # The "Restarting..." screen is meant to end when the reboot takes the panel
 # down. If the reboot request itself failed (nginx down, helper refused),
 # fall back to main after this long so the dial is never stuck on it; the
-# poller then raises the No-WiFi page again if the link is still down.
+# warning tick then raises the No-WiFi page again if the link is still down.
 RESTARTING_TIMEOUT_SECONDS = 90.0
 
-# The SD card warning closes on its own after this long with no touch: it
-# can sit over a playing screen, so it must not block it indefinitely if
-# nobody is there to tap Dismiss. Opening it at all counts as shown for
-# the incident (see _open_sdhealth_locked), so it does not come back until
-# the reading recovers or the dial restarts.
-SDHEALTH_TIMEOUT_SECONDS = 60.0
+# How long a Dismiss of the SD card warning holds: a week, or a day once
+# the reading is under SDHEALTH_CRITICAL_PERCENT. Persisted, so a restart
+# does not bring the page back early; forgotten when the reading recovers.
+SDHEALTH_SNOOZE_S = 7 * 86400.0
+SDHEALTH_CRITICAL_PERCENT = 3
+SDHEALTH_CRITICAL_SNOOZE_S = 86400.0
+
+
+def _sdhealth_snooze_for(percent) -> float:
+    if isinstance(percent, int) and percent < SDHEALTH_CRITICAL_PERCENT:
+        return SDHEALTH_CRITICAL_SNOOZE_S
+    return SDHEALTH_SNOOZE_S
+
+
+def _sdhealth_message_for(percent) -> str:
+    if percent is None:
+        return SDHEALTH_BODY_TEXT_NO_PERCENT
+    return SDHEALTH_BODY_TEXT.format(percent=percent)
+
+
+# ---------------------------------------------------------------------------
+# On-screen warnings
+#
+# One descriptor per warning. A warning's source (the network poller, the
+# SD health reader) calls _warning_active()/_warning_cleared() on the
+# manager; everything else (which page, which buttons, what a Dismiss
+# means, what survives a restart, which one wins when two are due) is read
+# from its row here. Adding a warning is adding a row plus a source; the
+# screen-policy table, the opener, the painter and the touch dispatch are
+# all driven from this tuple.
+#
+# Priority: a lost link outranks a worn card (the page is the only way to
+# ask for a restart), so "nowifi" carries the higher number.
+#
+# A future appliance-pushed notice would be one more row, for example a
+# stylus-replacement reminder with a month-long persisted snooze that the
+# appliance clears when the user marks the stylus replaced:
+#
+#   WarningDescriptor(
+#       id="stylus", priority=25, screen="stylus", geometry=GEOMETRY_SDHEALTH,
+#       title="Replace stylus", message_for=lambda hours: f"{hours} h played",
+#       buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Dismiss", ACTION_DISMISS),),
+#       persisted=True, snooze_for=lambda _severity: 30 * 86400.0,
+#   )
+#
+# plus one surface-to-geometry entry in dial_touch (the surface name is
+# new, the one-cell geometry is shared) and a source that calls
+# _warning_active("stylus", severity=hours) / _warning_cleared("stylus").
+# ---------------------------------------------------------------------------
+
+WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
+    WarningDescriptor(
+        id="nowifi", priority=100, screen="nowifi", geometry=GEOMETRY_NOWIFI,
+        title=NOWIFI_MESSAGE_TEXT, message_for=None,
+        buttons=(
+            WarningButton(TouchZone.NOWIFI_DISMISS, NOWIFI_DISMISS_TEXT, ACTION_DISMISS),
+            WarningButton(TouchZone.NOWIFI_RESTART, NOWIFI_RESTART_TEXT, ACTION_RESTART),
+        ),
+        persisted=False, snooze_for=None,
+    ),
+    WarningDescriptor(
+        id="sdhealth", priority=50, screen="sdhealth", geometry=GEOMETRY_SDHEALTH,
+        title=SDHEALTH_TITLE_TEXT, message_for=_sdhealth_message_for,
+        buttons=(
+            WarningButton(TouchZone.SDHEALTH_DISMISS, SDHEALTH_DISMISS_TEXT, ACTION_DISMISS),
+        ),
+        persisted=True, snooze_for=_sdhealth_snooze_for,
+    ),
+)
+_WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
+_WARNING_BY_SCREEN: dict[str, WarningDescriptor] = {d.screen: d for d in WARNING_DESCRIPTORS}
 
 # A plain dark base pushed for the moment between the display switching to
 # show a different appliance and that appliance's own artwork/logo actually
@@ -671,11 +755,12 @@ class EqScreenState:
 
 
 @dataclass(frozen=True)
-class NoWifiState:
-    """The No-WiFi page: nothing but the clock every screen state carries.
-    Its content is fixed and the link state it reflects lives on the
-    manager (self._network) so the poller can update it while the page is
-    open."""
+class WarningScreenState:
+    """A warning page on screen: which warning, and the clock every
+    screen state carries. Its text is read at paint time from the
+    descriptor and the manager's latest severity, so a later reading
+    shows without reopening."""
+    warning_id: str
     opened_at: float
 
 
@@ -684,14 +769,6 @@ class RestartingState:
     """The "Restarting..." screen shown from a Restart tap until the reboot
     takes the panel down — or until RESTARTING_TIMEOUT_SECONDS, whichever
     comes first."""
-    opened_at: float
-
-
-@dataclass(frozen=True)
-class SdHealthState:
-    """The SD card warning: the percent it opened with (repainted from
-    self._sd_health at every paint, so a later reading shows) and the
-    clock every screen state carries."""
     opened_at: float
 
 
@@ -868,6 +945,7 @@ class DialDisplay:
         backend_factory=NoOpBackend,
         backend_factory_builder=None,
         get_roster=_default_get_roster,
+        warnings: "WarningManager | None" = None,
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
@@ -1095,8 +1173,8 @@ class DialDisplay:
         # atomic) — same discipline as the other lock-free-read fields above.
         # "main": the now-playing screen. "selector": the appliance list.
         # "repeat": the repeat screen. "picker": the replay picker.
-        # "nowifi": the No-WiFi page. "restarting": the reboot screen.
-        # "sdhealth": the SD card warning.
+        # "nowifi"/"sdhealth": warning pages (see WARNING_DESCRIPTORS).
+        # "restarting": the reboot screen.
         self._screen = "main"
         # Last-built rows, refreshed every poll tick regardless of whether
         # the selector is actually open (_refresh_selector_rows) so opening
@@ -1212,11 +1290,6 @@ class DialDisplay:
         # Consecutive down polls; reset by any connected poll. Poller
         # thread only.
         self._wifi_down_streak = 0
-        # Set by a Dismiss tap (touch thread), cleared by a connected poll
-        # (poller thread): while True the poller never re-opens the page
-        # for the current incident. Plain bool, both writers are single
-        # assignments.
-        self._wifi_dismissed = False
         # Whether any poll since this process started has reported the link
         # connected. Poller thread only (set in on_network_view), never
         # reset — not by a later down/ignored poll and not by disable()/
@@ -1228,10 +1301,9 @@ class DialDisplay:
         # dial that has lost a link it had flashes grey/red and raises the
         # No-WiFi page — the alarm is for a loss, not for booting.
         self._wifi_ever_connected = False
-        # The two new screens' own states — same write/read discipline as
+        # The restarting screen's own state, same write/read discipline as
         # self._info (opener under self._lock, cleared by
         # _close_secondary_locked via the policy table).
-        self._nowifi: "NoWifiState | None" = None
         self._restarting: "RestartingState | None" = None
         # ---- SD card health (the warning page and the info row) ---------
         # The latest reader view: written by the network poller's thread in
@@ -1242,12 +1314,15 @@ class DialDisplay:
         # threshold until one strictly above the recover threshold, or
         # until monitoring is off. Poller thread only.
         self._sd_low = False
-        # Set when the warning opens (repaint thread, under the lock) and
-        # cleared when the incident ends (poller thread): while True the
-        # poller never re-requests the page for this incident. Plain bool,
-        # both writers are single assignments.
-        self._sd_shown = False
-        self._sdhealth: "SdHealthState | None" = None
+        # The warning page on screen, if any (the one state attribute every
+        # warning row in the policy table shares), and the manager that
+        # owns which warnings are active, snoozed or due. The manager is
+        # injected by tests; the default reads and writes the dial's own
+        # state file.
+        self._warning_screen: "WarningScreenState | None" = None
+        self._warnings = warnings if warnings is not None else WarningManager(
+            WARNING_DESCRIPTORS, WarningStore(),
+        )
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -1324,6 +1399,8 @@ class DialDisplay:
                 self._repaint_thread.join(timeout=2)
             except RuntimeError:
                 pass
+        # A Dismiss inside the last tick has not been written yet.
+        self._warnings.flush()
         with self._lock:
             self._disable_locked()
 
@@ -2031,6 +2108,10 @@ class DialDisplay:
         self._showing = "waking"
         self._source_artwork_url = ""
         logging.info("dial display: activity resumed — waking")
+        # A warning that was popped by sleep, or became due while asleep,
+        # comes straight back: the request lands before the repaint that
+        # follows this wake folds its screen requests.
+        self._request_due_warning()
 
     def _record_error_locked(self, error_id: str) -> None:
         self._last_error = error_id
@@ -2462,6 +2543,7 @@ class DialDisplay:
                 self._tick_controls_hidden()
                 self._tick_controls_shown()
                 self._tick_wifi_flash()
+                self._tick_warnings()
                 self._tick_controls_reveal()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
@@ -3185,14 +3267,24 @@ class DialDisplay:
         self._screen = "output"
         return True
 
-    def _open_nowifi_locked(self) -> bool:
-        """The No-WiFi row's opener: refuse while the dial is restarting
-        (that screen must stay until the reboot lands or times out);
-        otherwise open with a fresh clock."""
+    def _open_warning_locked(self, warning_id: str) -> bool:
+        """Every warning row's opener (bound per row with functools.partial
+        in the policy table): refuse while the dial is restarting (that
+        screen must stay until the reboot lands or times out) and while a
+        higher-priority warning is already up; otherwise open with a fresh
+        clock. A page that is already showing this warning is reopened in
+        place (same screen, fresh clock)."""
         if self._screen == "restarting":
             return False
-        self._nowifi = NoWifiState(opened_at=time.monotonic())
-        self._screen = "nowifi"
+        desc = _WARNING_BY_ID[warning_id]
+        showing = self._warning_screen
+        if (
+            showing is not None and showing.warning_id != warning_id
+            and _WARNING_BY_ID[showing.warning_id].priority > desc.priority
+        ):
+            return False
+        self._warning_screen = WarningScreenState(warning_id=warning_id, opened_at=time.monotonic())
+        self._screen = desc.screen
         return True
 
     def _open_restarting_locked(self) -> bool:
@@ -3200,20 +3292,9 @@ class DialDisplay:
         page's own state on the way (this is the one screen reached
         directly from it, and it never returns there — the poller re-raises
         the page if the box is still up and still offline)."""
-        self._nowifi = None
+        self._warning_screen = None
         self._restarting = RestartingState(opened_at=time.monotonic())
         self._screen = "restarting"
-        return True
-
-    def _open_sdhealth_locked(self) -> bool:
-        """The SD card warning's opener: refuse while restarting or while
-        the No-WiFi page is up (a lost link is the more urgent alarm);
-        otherwise open with a fresh clock and mark the incident as shown."""
-        if self._screen in ("restarting", "nowifi"):
-            return False
-        self._sdhealth = SdHealthState(opened_at=time.monotonic())
-        self._sd_shown = True
-        self._screen = "sdhealth"
         return True
 
     def _apply_screen_requests_locked(self) -> None:
@@ -3684,16 +3765,27 @@ class DialDisplay:
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
-    def _display_nowifi_locked(self) -> None:
-        """Compose and push the No-WiFi page over the current base image
-        (the idle logo or the last artwork, dimmed; a flat chassis when
-        nothing has been rendered yet). Bypasses _display_locked() like
-        every other secondary screen. Caller holds self._lock."""
+    def _display_warning_locked(self) -> None:
+        """Compose and push the warning page on screen over the current
+        base image (the idle logo or the last artwork, dimmed; a flat
+        chassis when nothing has been rendered yet). Text comes from the
+        descriptor and the manager's latest severity, so a fresh reading
+        shows on the next repaint. Bypasses _display_locked() like every
+        other secondary screen. Caller holds self._lock."""
+        screen = self._warning_screen
+        if screen is None:
+            return
+        desc = _WARNING_BY_ID[screen.warning_id]
         pressed = self._pressed[0] if self._pressed is not None else None
+        message = desc.message_for(self._warnings.severity(desc.id)) if desc.message_for is not None else ""
+        view = WarningView(
+            title=desc.title, message=message,
+            buttons=tuple(b.label for b in desc.buttons), geometry=desc.geometry, pressed=pressed,
+        )
         metrics = self._metrics_locked()
         base = self._current_base_image
-        self._push_frame_locked(lambda: self._compositor.compose_nowifi(
-            base, metrics.width, metrics.height, NoWifiView(pressed=pressed),
+        self._push_frame_locked(lambda: self._compositor.compose_warning(
+            base, metrics.width, metrics.height, view,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
@@ -3703,19 +3795,6 @@ class DialDisplay:
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_restarting(
             metrics.width, metrics.height,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
-
-    def _display_sdhealth_locked(self) -> None:
-        """Compose and push the SD card warning over the current base
-        image, the No-WiFi page's own dressing. Caller holds self._lock."""
-        pressed = self._pressed[0] if self._pressed is not None else None
-        view = self._sd_health
-        percent = view.percent if view is not None else None
-        metrics = self._metrics_locked()
-        base = self._current_base_image
-        self._push_frame_locked(lambda: self._compositor.compose_sdhealth(
-            base, metrics.width, metrics.height, SdHealthFrameView(percent=percent, pressed=pressed),
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
@@ -3981,50 +4060,79 @@ class DialDisplay:
 
     # ---- Wi-Fi link: the idle icon and the No-WiFi page -------------------
 
+    # ---- On-screen warnings: the source API and the one request point ------
+
+    def _warning_active(self, warning_id: str, severity=None) -> None:
+        """A source reports its condition present (again). Lock-free, the
+        on_network_view() discipline: the manager records it and the page
+        is requested if it is due right now (main screen, awake, nothing
+        else requested). Calling this on every poll while the condition
+        holds is expected; the manager treats a repeat as a severity
+        refresh."""
+        self._warnings.set_active(warning_id, severity)
+        self._request_due_warning()
+
+    def _warning_cleared(self, warning_id: str) -> None:
+        """A source reports its condition gone: the incident ends (any
+        dismissal, in memory or on disk, is forgotten), an open page for
+        it closes on its own and a pending request for it is dropped.
+        Lock-free."""
+        self._warnings.clear(warning_id)
+        screen = _WARNING_BY_ID[warning_id].screen
+        if self._screen == screen:
+            self._screen_request = _policy(screen).back_to
+        elif self._screen_request == screen:
+            self._screen_request = None
+
+    def _request_due_warning(self) -> None:
+        """Request the page of the highest-priority warning that is active
+        and not snoozed, if any, and only while the main screen is showing
+        with nothing else requested and the panel awake (never over a
+        list, the info page, another warning or the restart screen, and
+        never into a sleeping panel: the wake path calls this again).
+        Callable with or without self._lock: plain reads and one plain
+        request write, the same writes on_network_view() makes."""
+        if self._display_sleeping or self._screen != "main" or self._screen_request is not None:
+            return
+        desc = self._warnings.due()
+        if desc is None:
+            return
+        self._screen_request = desc.screen
+        self._overlay_signal.set()
+
     def on_network_view(self, view: "NetworkView") -> None:
         """Callback for the network poller (dial_network.py). Runs on the
-        POLLER thread — never the poll/repaint/touch threads — and takes NO
+        POLLER thread, never the poll/repaint/touch threads, and takes NO
         lock of this class's own; every write here is a single attribute
-        assignment, and any screen change goes through self._screen_request
-        for the repaint thread to fold in (see _apply_screen_requests_
-        locked), exactly like on_repeat_result().
+        assignment, and any screen change goes through the warning
+        manager's request path (see _request_due_warning) for the repaint
+        thread to fold in, exactly like on_repeat_result().
 
-        connected: the streak and the dismissal both reset (the incident is
-        over), the ever-connected latch is set, and an open No-WiFi page
-        closes on its own.
-        down: the streak grows; at NOWIFI_PROMPT_STREAK the page opens
-        unless the dial has never been connected since it started (still
-        connecting: the icon flashes grey/blank instead and only a tap on
-        it opens the page), it was dismissed for this incident, is already
-        open or requested, another screen is in the way (never stomp on a
-        list or the repeat/EQ pages the user is looking at), or the dial is
-        restarting.
+        connected: the streak resets, the ever-connected latch is set and
+        the No-WiFi warning is cleared (the incident is over: an open page
+        closes on its own and a Dismiss is forgotten).
+        down: the streak grows; at NOWIFI_PROMPT_STREAK the warning goes
+        active unless the dial has never been connected since it started
+        (still connecting: the icon flashes grey/blank instead and only a
+        tap on it opens the page). Whether the page then opens is the
+        manager's call: not while dismissed for this incident, already
+        open or requested, another screen is in the way, or the panel is
+        asleep (it comes back on wake).
         ignored (setup mode, reboot pending): the streak resets but the
-        dismissal and the latch are kept — only a connected poll ends an
+        warning and the latch are kept; only a connected poll ends an
         incident.
-        unknown (a failed read): nothing changes at all — one missed poll
-        never flips the icon or the prompt.
+        unknown (a failed read): nothing changes at all.
         Never raises."""
         try:
             self._network = view
             if view.link == LINK_CONNECTED:
                 self._wifi_ever_connected = True
                 self._wifi_down_streak = 0
-                self._wifi_dismissed = False
-                if self._screen == "nowifi":
-                    self._screen_request = "main"
-                elif self._screen_request == "nowifi":
-                    self._screen_request = None
+                self._warning_cleared("nowifi")
             elif view.link == LINK_DOWN:
                 self._wifi_down_streak += 1
-                if (
-                    self._wifi_ever_connected
-                    and self._wifi_down_streak >= NOWIFI_PROMPT_STREAK
-                    and not self._wifi_dismissed
-                    and self._screen == "main"
-                    and self._screen_request is None
-                ):
-                    self._screen_request = "nowifi"
+                if self._wifi_ever_connected and self._wifi_down_streak >= NOWIFI_PROMPT_STREAK:
+                    self._warning_active("nowifi")
             elif view.link == LINK_IGNORED:
                 self._wifi_down_streak = 0
             self._overlay_signal.set()
@@ -4088,22 +4196,48 @@ class DialDisplay:
         self._screen_request = "nowifi"
         self._overlay_signal.set()
 
+    def warning_button_tap(self, zone: "TouchZone") -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for any warning
+        cell): resolve *zone* against the warning on screen first (two
+        one-cell warnings share a geometry, so the same zone can belong
+        to either), then against the registry for a tap that lands just
+        after the page closed, and run that button's action. Plain writes
+        plus a repaint signal; no lock, no I/O on this thread."""
+        showing = self._warning_screen
+        desc = _WARNING_BY_ID.get(showing.warning_id) if showing is not None else None
+        button = desc.button_for(zone) if desc is not None else None
+        if button is None:
+            owner = self._warnings.button_owner(zone)
+            if owner is None:
+                return
+            desc, button = owner
+        self._run_warning_action(desc, button.action)
+
+    def _run_warning_action(self, desc: "WarningDescriptor", action: str) -> None:
+        if action == ACTION_DISMISS:
+            # Dismiss is the only thing that starts a snooze: the manager
+            # applies the row's policy (incident-scoped or timed, and
+            # persisted or not) and the page closes. The icon keeps
+            # flashing for No-WiFi; a tap on it re-opens the page.
+            self._warnings.dismiss(desc.id)
+            self._screen_request = _policy(desc.screen).back_to
+            self._overlay_signal.set()
+        elif action == ACTION_RESTART:
+            # Show "Restarting..." at once, then ask for the reboot.
+            # request_reboot() does its I/O on its own short-lived thread
+            # and is rate-gated, so a second tap inside the cooldown only
+            # re-shows the screen. Never raises.
+            self._screen_request = "restarting"
+            self._overlay_signal.set()
+            _request_reboot()
+
     def nowifi_dismiss_tap(self) -> None:
-        """Touch-thread entry (NOWIFI_DISMISS): close the page and suppress
-        its automatic re-opening until a connected poll ends this
-        incident. The icon keeps flashing; a tap on it re-opens the page."""
-        self._wifi_dismissed = True
-        self._screen_request = _policy("nowifi").back_to
-        self._overlay_signal.set()
+        """Kept for existing direct callers/tests: the No-WiFi Dismiss cell."""
+        self._run_warning_action(_WARNING_BY_ID["nowifi"], ACTION_DISMISS)
 
     def nowifi_restart_tap(self) -> None:
-        """Touch-thread entry (NOWIFI_RESTART): show "Restarting..." at
-        once, then ask for the reboot. request_reboot() does its I/O on its
-        own short-lived thread and is rate-gated, so a second tap inside
-        the cooldown only re-shows the screen. Never raises."""
-        self._screen_request = "restarting"
-        self._overlay_signal.set()
-        _request_reboot()
+        """Kept for existing direct callers/tests: the No-WiFi Restart cell."""
+        self._run_warning_action(_WARNING_BY_ID["nowifi"], ACTION_RESTART)
 
     def _tick_wifi_flash(self) -> None:
         """Wake the repaint loop for the flash's next half-period while the
@@ -4113,50 +4247,45 @@ class DialDisplay:
         if self._wifi_flashing():
             self._overlay_signal.set()
 
+    def _tick_warnings(self) -> None:
+        """Once a second from the repaint thread's own timeout branch:
+        raise a warning whose snooze has just run out (or one that was
+        due while a list or menu was open), and write any snooze a
+        Dismiss changed since the last write. Lock-free plain reads, the
+        _check_secondary_timeout() discipline; the file write runs with
+        no lock held."""
+        self._request_due_warning()
+        self._warnings.flush()
+
     # ---- SD card health: the warning page --------------------------------
 
     def on_sd_health_view(self, view: "SdHealthView") -> None:
         """Callback for the SD health reader (dial_sdhealth.py). Runs on
         the network poller's thread; takes NO lock of this class's own,
-        the on_network_view() discipline: plain assignments and a screen
-        request the repaint thread folds in.
+        the on_network_view() discipline.
 
         A reading that is low (dial_sdhealth.is_low, with hysteresis)
-        starts or continues an incident; the page is requested once per
-        incident, and only while the main screen is showing with nothing
-        else requested (never over a list, the info page, the No-WiFi page
-        or the restart screen). A reading that is not low ends the
-        incident: the latch and the shown flag reset, and an open warning
-        closes on its own. Never raises."""
+        starts or refreshes the SD warning with the percent as its
+        severity; the manager decides whether the page opens (not while
+        snoozed by a Dismiss, not over another screen, not into a sleeping
+        panel). A reading that is not low ends the incident: the warning
+        clears, an open page closes on its own, and any snooze, including
+        one saved across restarts, is forgotten. Never raises."""
         try:
             self._sd_health = view
             low = _sd_is_low(view, self._sd_low)
+            self._sd_low = low
             if low:
-                self._sd_low = True
-                if (
-                    not self._sd_shown
-                    and self._screen == "main"
-                    and self._screen_request is None
-                ):
-                    self._screen_request = "sdhealth"
+                self._warning_active("sdhealth", severity=view.percent)
             else:
-                self._sd_low = False
-                self._sd_shown = False
-                if self._screen == "sdhealth":
-                    self._screen_request = "main"
-                elif self._screen_request == "sdhealth":
-                    self._screen_request = None
+                self._warning_cleared("sdhealth")
             self._overlay_signal.set()
         except Exception:
             logging.debug("dial display: on_sd_health_view raised", exc_info=True)
 
     def sdhealth_dismiss_tap(self) -> None:
-        """Touch-thread entry (SDHEALTH_DISMISS): close the page. The
-        opener already marked the incident as shown, so it stays closed
-        until the reading recovers or the dial restarts; the info page
-        keeps showing the value meanwhile."""
-        self._screen_request = _policy("sdhealth").back_to
-        self._overlay_signal.set()
+        """Kept for existing direct callers/tests: the SD warning's Dismiss cell."""
+        self._run_warning_action(_WARNING_BY_ID["sdhealth"], ACTION_DISMISS)
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
@@ -5156,20 +5285,6 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         close_reveals_overlay=False, closes_on_focus_clear=True, back_to="outputs",
         bound_to_appliance=True,
     ),
-    # The No-WiFi page: opened by the poller after NOWIFI_PROMPT_STREAK
-    # down polls or by a tap on the flashing idle icon; closed by Dismiss,
-    # by a connected poll, or by Restart (which replaces it). No inactivity
-    # timeout — it is an alarm, not a menu. defers_sleep=False: the page
-    # sleeps with the normal idle timer like the idle screen it sits over,
-    # and the poller re-raises it within one poll interval of the next
-    # wake if the link is still down.
-    "nowifi": ScreenPolicy(
-        name="nowifi", state_attr="_nowifi", surface=("nowifi", False, False, False),
-        open=DialDisplay._open_nowifi_locked, paint=DialDisplay._display_nowifi_locked, paged=False,
-        inactivity_timeout_s=None, touch_extends_timeout=False,
-        when_nothing_plays=IDLE_KEEP, defers_sleep=False,
-        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
-    ),
     # "Restarting...": nothing tappable; ends when the reboot takes the
     # panel down, or falls back to main after RESTARTING_TIMEOUT_SECONDS if
     # the reboot request failed.
@@ -5180,18 +5295,30 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
-    # The SD card warning: opened by the health reader once per incident
-    # (a reading below the low threshold, with hysteresis up to the recover
-    # threshold); closed by Dismiss, by its own timeout, or by a recovered
-    # reading. defers_sleep=False like the No-WiFi page.
-    "sdhealth": ScreenPolicy(
-        name="sdhealth", state_attr="_sdhealth", surface=("sdhealth", False, False, False),
-        open=DialDisplay._open_sdhealth_locked, paint=DialDisplay._display_sdhealth_locked, paged=False,
-        inactivity_timeout_s=SDHEALTH_TIMEOUT_SECONDS, touch_extends_timeout=False,
+}
+
+
+def _warning_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
+    """The policy row every warning page shares: opened by the warning
+    manager (or a tap on the flashing idle icon, for No-WiFi), painted
+    from its descriptor, closed by Dismiss, by its source clearing the
+    condition, or by Restart (which replaces it). No inactivity timeout:
+    it is an alarm, not a menu, and stays until acted on or cleared.
+    defers_sleep=False: the page sleeps with the normal idle timer like
+    the idle screen it sits over, and comes back on wake if still due."""
+    return ScreenPolicy(
+        name=desc.screen, state_attr="_warning_screen", surface=(desc.screen, False, False, False),
+        open=functools.partial(DialDisplay._open_warning_locked, warning_id=desc.id),
+        paint=DialDisplay._display_warning_locked, paged=False,
+        inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP, defers_sleep=False,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
-    ),
-}
+    )
+
+
+for _desc in WARNING_DESCRIPTORS:
+    SCREEN_POLICIES[_desc.screen] = _warning_policy_row(_desc)
+del _desc
 
 
 def _policy(name: str) -> ScreenPolicy:
