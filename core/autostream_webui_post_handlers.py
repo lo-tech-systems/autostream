@@ -22,6 +22,7 @@ import threading
 from typing import Optional
 from urllib.parse import parse_qs, quote
 
+from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_config import (
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
@@ -81,6 +82,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         from autostream_appliance_models import apply_output_mutation
         result = apply_output_mutation(
             base_url, out_id, payload, offset_ms=offset_ms, mode=mode, initiated_by="user",
+            requester=REQUESTER_WEBUI,
         )
         send_json(handler, 200, result)
     except Exception as e:

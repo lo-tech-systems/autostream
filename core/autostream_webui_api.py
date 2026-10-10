@@ -124,6 +124,7 @@ from autostream_core import (
     update_live_silence_threshold_dbfs,
     update_playback_input_config,
 )
+from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_appliance_models import (
     _dial_update_banner_text,
     _OUTPUT_EQ_ALL_FIELDS,
@@ -1663,6 +1664,7 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
 
     result = apply_output_mutation(
         base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
+        requester=REQUESTER_WEBUI,
     )
     send_json(handler, 200, result)
 

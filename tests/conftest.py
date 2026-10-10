@@ -297,3 +297,15 @@ def _reset_dial_mute_observation_store():
     m = _mod("dial_volume")
     if m is not None:
         m.observe_mute_state(None, None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_pin_pairing():
+    """Clear the pairing claims and PIN attempt counts around every test."""
+    m = _mod("autostream_pin_pairing")
+    if m is not None:
+        m.STATE.reset()
+    yield
+    m = _mod("autostream_pin_pairing")
+    if m is not None:
+        m.STATE.reset()

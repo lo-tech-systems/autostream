@@ -174,7 +174,7 @@ class TestOutputUpdatePIN:
         r = _call_output_update({"id": "1", "op": "pin"}, tmp_path=tmp_path)
         _, data = r["calls"][0]
         assert data["ok"] is False
-        assert "PIN" in data.get("error", "")
+        assert data.get("error") == "invalid_pin"
 
     def test_pin_op_invalid_pin_returns_pin_invalid(self, tmp_path):
         r = _call_output_update(
@@ -1748,3 +1748,34 @@ class TestPollDrivenPinPromptSource:
             encoding="utf-8"
         )
         assert "maybePromptForPin(j.outputs)" in source
+
+
+class TestOutputRequesterPassed:
+    def test_the_local_handler_names_the_webui_as_requester(self, tmp_path):
+        state = _make_state(tmp_path)
+        with patch("autostream_webui_post_handlers.send_json"), \
+             patch("autostream_webui_post_handlers.locked_load_config",
+                   return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
+             patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
+             patch("autostream_appliance_models.apply_output_mutation",
+                   return_value={"ok": True}) as mut:
+            mock_parse.return_value.owntone.base_url = "http://localhost:3689"
+            mock_parse.return_value.owntone.output_offsets_ms = {}
+            mock_parse.return_value.owntone.output_airplay_modes = {}
+            handle_output_update(MagicMock(), state, json.dumps({"id": "1", "selected": True}))
+        assert mut.call_args.kwargs["requester"] == "webui"
+        assert mut.call_args.kwargs["initiated_by"] == "user"
+
+    def test_the_federation_route_names_the_webui_as_requester(self):
+        import autostream_webui_api as api
+        parsed = MagicMock()
+        parsed.owntone.base_url = "http://localhost:3689"
+        parsed.owntone.output_offsets_ms = {}
+        parsed.owntone.output_airplay_modes = {}
+        with patch("autostream_webui_api.send_json"), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_api.apply_output_mutation",
+                   return_value={"ok": True}) as mut:
+            api.send_federation_output_json(
+                MagicMock(), MagicMock(), json.dumps({"id": "1", "selected": True}))
+        assert mut.call_args.kwargs["requester"] == "webui"

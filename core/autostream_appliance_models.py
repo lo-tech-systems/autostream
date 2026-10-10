@@ -16,6 +16,7 @@ import time
 from typing import Optional
 
 import autostream_mute_state as mute_state
+import autostream_pin_pairing as pairing
 from autostream_config import (
     CONFIG_IO_LOCK,
     load_config,
@@ -190,7 +191,8 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
 
     Applies hidden-output filtering, puts the configured default first, then
     alphabetical order.  Returns dicts with keys: id, name, selected, volume,
-    is_default, needs_auth_key, requires_auth, pin_pending.
+    is_default, needs_auth_key, requires_auth, pin_pending, pin_claim
+    (the requester currently entering a PIN for the output, or "").
 
     "volume" is the INTENDED level (autostream_mute_state.intended_level):
     while the appliance is muted this is the level the output will return to
@@ -225,6 +227,7 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
             "needs_auth_key": bool(out.needs_auth_key),
             "requires_auth": bool(out.requires_auth),
             "pin_pending": bool(out.pin_pending),
+            "pin_claim": pairing.holder(out_id),
         })
 
     if default_output_name:
@@ -694,6 +697,17 @@ def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
 # Shared output mutation
 # ---------------------------------------------------------------------------
 
+def _sanitized_volume(body: dict) -> int:
+    """The body's volume clamped to 0-100, or 50 when absent or not a number."""
+    raw_vol = body.get("volume")
+    if raw_vol is None:
+        return 50
+    try:
+        return max(0, min(100, int(raw_vol)))
+    except (ValueError, TypeError):
+        return 50
+
+
 def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
     """Derive the trusted output-mutation body from a raw browser/peer JSON body.
 
@@ -703,7 +717,8 @@ def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
     autostream_appliance_gateway.py) so the two write paths that forward a
     browser's POST body across the federation boundary re-derive the exact
     same accepted-field set from the exact same logic, rather than
-    hand-duplicating it. Only the documented ``{"id", "op", "pin"}`` and
+    hand-duplicating it. Only the documented ``{"id", "op", "pin"}``,
+    ``{"id", "op", "pin", "selected", "volume"}`` and
     ``{"id", "selected", "volume"}`` shapes are accepted; every other field
     on the raw body is dropped.
 
@@ -719,24 +734,23 @@ def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
     sanitized: dict = {"id": out_id}
     op = str(body.get("op") or "").strip().lower()
     if op == "pin":
-        pin_val = str(body.get("pin") or "")
-        if not pin_val:
+        pin_val = body.get("pin")
+        if not isinstance(pin_val, str) or not pairing.PIN_RE.match(pin_val):
             return None, "invalid_request_body"
         sanitized["op"] = "pin"
         sanitized["pin"] = pin_val
+        if "selected" in body:
+            selected_raw = body.get("selected")
+            if not isinstance(selected_raw, bool):
+                return None, "invalid_request_body"
+            sanitized["selected"] = selected_raw
+            sanitized["volume"] = _sanitized_volume(body)
     elif op == "":
         selected_raw = body.get("selected")
         if not isinstance(selected_raw, bool):
             return None, "invalid_request_body"
         sanitized["selected"] = selected_raw
-        raw_vol = body.get("volume")
-        if raw_vol is not None:
-            try:
-                sanitized["volume"] = max(0, min(100, int(raw_vol)))
-            except (ValueError, TypeError):
-                sanitized["volume"] = 50
-        else:
-            sanitized["volume"] = 50
+        sanitized["volume"] = _sanitized_volume(body)
     else:
         return None, "invalid_request_body"
 
@@ -752,6 +766,7 @@ def apply_output_mutation(
     mode: Optional[str] = None,
     output_name: str = "",
     initiated_by: str,
+    requester: Optional[str] = None,
 ) -> dict:
     """Apply an output toggle/volume change or PIN submission.
 
@@ -780,11 +795,22 @@ def apply_output_mutation(
         System-initiated calls (initiated_by="system", e.g. the coordinator's
         own auto-select/reconcile paths) perform none of the above.
 
+    requester: the identity that can enter a PIN for this mutation
+        (pairing.REQUESTER_WEBUI or pairing.dial_requester(...)); None when
+        the caller cannot. Supplied by trusted route code only. A PIN
+        attempt without one is counted against the WebUI's budget; an enable
+        that needs a PIN records the requester as the one pairing the output.
+
+    A "pin" op that also carries "selected" enables the output (using
+    "volume") straight after the PIN is accepted, in the same call.
+
     Raises ValueError if initiated_by is not "user" or "system".
 
     Returns a result dict with keys: ok, id, and optional
-    error/pin_required/pin_invalid (error is "encoder_capacity" when the
-    appliance's buffered-encode admission control declines the enable).
+    error/pin_required/pin_invalid/retry_after_s (error is "invalid_pin" for a
+    PIN that is not 4 to 8 digits and "rate_limited" when too many PINs were
+    tried, with retry_after_s the seconds to wait; error is "encoder_capacity"
+    when the appliance's buffered-encode admission control declines the enable).
     """
     initiated_by_text = str(initiated_by or "").strip().lower()
     if initiated_by_text not in ("user", "system"):
@@ -808,10 +834,17 @@ def apply_output_mutation(
         return {"ok": False, "error": "Missing output id"}
 
     if op == "pin":
-        pin_raw = body.get("pin")
-        pin = str(pin_raw).strip() if pin_raw is not None else ""
-        if not pin:
-            return {"ok": False, "error": "Missing PIN", "id": out_id_text}
+        pin = body.get("pin")
+        if not isinstance(pin, str) or not pairing.PIN_RE.match(pin):
+            return {"ok": False, "error": "invalid_pin", "id": out_id_text}
+        allowed, wait = pairing.note_attempt(requester or pairing.REQUESTER_WEBUI, out_id_text)
+        if not allowed:
+            return {
+                "ok": False,
+                "error": "rate_limited",
+                "retry_after_s": wait,
+                "id": out_id_text,
+            }
         pin_result = submit_output_pin(owntone_base_url, out_id_text, pin, timeout=3)
         if not pin_result.ok and pin_result.error_code == "pin_invalid":
             return {
@@ -822,7 +855,9 @@ def apply_output_mutation(
             }
         if not pin_result.ok:
             return {"ok": False, "id": out_id_text, "error": pin_result.message}
-        return {"ok": True, "id": out_id_text}
+        pairing.release(out_id_text)
+        if not body.get("selected"):
+            return {"ok": True, "id": out_id_text}
 
     selected = bool(body.get("selected", False))
     if selected:
@@ -879,6 +914,8 @@ def apply_output_mutation(
         )
         if not update_result.ok and update_result.error_code == "pin_required":
             # Output was NOT enabled; cache state is unchanged.
+            if requester:
+                pairing.claim(out_id_text, requester)
             return {
                 "ok": False,
                 "pin_required": True,

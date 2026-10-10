@@ -1560,3 +1560,22 @@ class TestGatewayLogging:
              caplog.at_level(logging.DEBUG):
             gw._handle_remote_response(handler, aid, 200, {"ok": True})
         assert not any("error response" in r.message for r in caplog.records)
+
+
+class TestGatewayOutputRequester:
+    def test_the_bound_branch_names_the_webui_as_requester(self):
+        parsed = MagicMock()
+        parsed.owntone.base_url = "http://localhost:3689"
+        parsed.owntone.output_offsets_ms = {}
+        parsed.owntone.output_airplay_modes = {}
+        with patch("autostream_appliance_gateway.resolve_appliance",
+                   return_value=("bound", None)), \
+             patch("autostream_appliance_gateway.locked_load_config", return_value={}), \
+             patch("autostream_appliance_gateway.parse_config", return_value=parsed), \
+             patch("autostream_appliance_gateway.send_json"), \
+             patch("autostream_appliance_gateway.apply_output_mutation",
+                   return_value={"ok": True}) as mut:
+            gw.send_gateway_output_json(
+                MagicMock(), MagicMock(), "a" * 20,
+                json.dumps({"id": "1", "selected": True}))
+        assert mut.call_args.kwargs["requester"] == "webui"

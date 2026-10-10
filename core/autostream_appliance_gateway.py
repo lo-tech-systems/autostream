@@ -41,6 +41,7 @@ import threading
 import time
 from typing import Optional
 
+from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_appliance_models import (
     apply_eq_field,
     apply_eq_reset,
@@ -786,6 +787,7 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
             return
         result = apply_output_mutation(
             base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
+        requester=REQUESTER_WEBUI,
         )
         send_json(handler, 200, result)
         return

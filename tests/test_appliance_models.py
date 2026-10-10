@@ -193,7 +193,7 @@ class TestBuildOutputList:
         result = models.build_output_list(_parsed(), raw)
         assert set(result[0].keys()) == {
             "id", "name", "selected", "volume", "is_default",
-            "needs_auth_key", "requires_auth", "pin_pending",
+            "needs_auth_key", "requires_auth", "pin_pending", "pin_claim",
         }
 
     def test_selected_flag_preserved(self):
@@ -744,3 +744,196 @@ class TestBuildHomeStateAnnotation:
         finally:
             ou.refresh_now = orig_refresh
         assert not refresh_calls, "build_home_state must not trigger refresh_now"
+
+
+# ---------------------------------------------------------------------------
+# PIN pairing: sanitiser rule, claim in the list, combined pin-and-enable
+# ---------------------------------------------------------------------------
+
+import logging as _logging
+
+import autostream_pin_pairing as _pairing
+
+
+def _result(ok: bool, error_code: str = "", message: str = ""):
+    return SimpleNamespace(ok=ok, error_code=error_code, message=message)
+
+
+_BAD_PINS = [
+    "123", "123456789", "12a4", "１２３４", " 1234", "1234\n",
+    "", "1234 ", "-123", None, 1234, 12.5, ["1", "2", "3", "4"], {"a": 1}, True,
+]
+
+
+class TestSanitizePin:
+    def test_sanitize_pin_accepts_digits_and_rejects_everything_else(self):
+        for pin in ("1234", "0000", "12345678"):
+            assert models.sanitize_output_body({"id": "1", "op": "pin", "pin": pin}) == (
+                {"id": "1", "op": "pin", "pin": pin}, None)
+        for pin in _BAD_PINS:
+            assert models.sanitize_output_body(
+                {"id": "1", "op": "pin", "pin": pin}) == (None, "invalid_request_body"), repr(pin)
+        assert models.sanitize_output_body({"id": "1", "op": "pin"}) == (
+            None, "invalid_request_body")
+
+    def test_sanitize_pin_keeps_selected_and_volume_when_given(self):
+        assert models.sanitize_output_body(
+            {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 30, "x": 1},
+        ) == ({"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 30}, None)
+        s, err = models.sanitize_output_body(
+            {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 500})
+        assert err is None and s["volume"] == 100
+        s, _ = models.sanitize_output_body(
+            {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": "x"})
+        assert s["volume"] == 50
+        s, _ = models.sanitize_output_body(
+            {"id": "1", "op": "pin", "pin": "1234", "selected": True})
+        assert s["volume"] == 50
+        s, _ = models.sanitize_output_body({"id": "1", "op": "pin", "pin": "1234"})
+        assert "selected" not in s and "volume" not in s
+
+    def test_sanitize_pin_rejects_a_non_bool_selected(self):
+        for sel in ("true", 1, 0, None, []):
+            assert models.sanitize_output_body(
+                {"id": "1", "op": "pin", "pin": "1234", "selected": sel},
+            ) == (None, "invalid_request_body"), repr(sel)
+
+    def test_sanitize_plain_shape_is_unchanged(self):
+        assert models.sanitize_output_body({"id": " 7 ", "selected": True, "volume": 20}) == (
+            {"id": "7", "selected": True, "volume": 20}, None)
+        assert models.sanitize_output_body({"id": "7", "selected": False}) == (
+            {"id": "7", "selected": False, "volume": 50}, None)
+        assert models.sanitize_output_body({"id": "7", "selected": True, "volume": 999}) == (
+            {"id": "7", "selected": True, "volume": 100}, None)
+        assert models.sanitize_output_body({"id": "7", "selected": "yes"}) == (
+            None, "invalid_request_body")
+        assert models.sanitize_output_body({"id": "", "selected": True}) == (
+            None, "missing_output_id")
+        assert models.sanitize_output_body({"id": "7", "op": "weird"}) == (
+            None, "invalid_request_body")
+
+
+class TestPinClaimInList:
+    def test_output_list_rows_carry_the_pairing_claim(self):
+        clock = SimpleNamespace(t=100.0)
+        fresh = _pairing.PairingState(clock=lambda: clock.t)
+        fresh.claim("1", "dial:abc")
+        with patch.object(_pairing, "STATE", fresh):
+            rows = models.build_output_list(
+                _parsed(), [_out("1", "Bedroom"), _out("2", "Kitchen")])
+        by_id = {r["id"]: r for r in rows}
+        assert by_id["1"]["pin_claim"] == "dial:abc"
+        assert by_id["2"]["pin_claim"] == ""
+
+
+class TestPinMutation:
+    _BASE = "http://x"
+
+    def _run(self, body, *, requester=None, pin_result=None, update_result=None):
+        with patch("autostream_appliance_models.submit_output_pin",
+                   return_value=pin_result or _result(True)) as pin_mock, \
+             patch("autostream_appliance_models.update_output",
+                   return_value=update_result or _result(True)) as upd_mock, \
+             patch("autostream_appliance_models._resolve_output_info",
+                   return_value=("Speaker", False)), \
+             patch("autostream_appliance_models._update_cached_selected"), \
+             patch("autostream_appliance_models.request_nowplaying_republish"), \
+             patch("autostream_appliance_models.clear_user_silence_latch"), \
+             patch("autostream_appliance_models.note_user_output_action"):
+            res = models.apply_output_mutation(
+                self._BASE, body.get("id", "o1"), body, initiated_by="user",
+                requester=requester)
+        return res, pin_mock, upd_mock
+
+    def test_pin_required_records_the_claim_for_a_requester_and_not_for_none(self):
+        need = _result(False, "pin_required", "needs pin")
+        res, _, _ = self._run({"id": "o1", "selected": True}, requester="dial:a",
+                              update_result=need)
+        assert res["pin_required"] is True
+        assert _pairing.holder("o1") == "dial:a"
+        res, _, _ = self._run({"id": "o2", "selected": True}, requester=None,
+                              update_result=need)
+        assert res["pin_required"] is True
+        assert _pairing.holder("o2") == ""
+
+    def test_a_good_pin_releases_the_claim(self):
+        _pairing.claim("o1", "webui")
+        res, _, _ = self._run({"id": "o1", "op": "pin", "pin": "1234"}, requester="webui")
+        assert res == {"ok": True, "id": "o1"}
+        assert _pairing.holder("o1") == ""
+
+    def test_a_wrong_pin_keeps_the_claim(self):
+        _pairing.claim("o1", "webui")
+        res, _, _ = self._run({"id": "o1", "op": "pin", "pin": "1234"}, requester="webui",
+                              pin_result=_result(False, "pin_invalid", "Wrong PIN"))
+        assert res["pin_invalid"] is True
+        assert _pairing.holder("o1") == "webui"
+
+    def test_pin_then_selected_enables_in_the_same_call(self):
+        res, pin_mock, upd_mock = self._run(
+            {"id": "o1", "op": "pin", "pin": "1234", "selected": True, "volume": 35},
+            requester="dial:a")
+        assert res == {"ok": True, "id": "o1"}
+        pin_mock.assert_called_once()
+        upd_mock.assert_called_once()
+        assert upd_mock.call_args.kwargs["enabled"] is True
+        assert upd_mock.call_args.kwargs["volume_percent"] == 35
+
+    def test_a_wrong_pin_does_not_enable(self):
+        res, _, upd_mock = self._run(
+            {"id": "o1", "op": "pin", "pin": "1234", "selected": True},
+            pin_result=_result(False, "pin_invalid", "Wrong PIN"))
+        assert res["ok"] is False and res["pin_invalid"] is True
+        upd_mock.assert_not_called()
+
+    def test_pin_only_still_returns_ok_without_enabling(self):
+        res, pin_mock, upd_mock = self._run({"id": "o1", "op": "pin", "pin": "1234"})
+        assert res == {"ok": True, "id": "o1"}
+        pin_mock.assert_called_once()
+        upd_mock.assert_not_called()
+
+    def test_pin_then_selected_can_ask_for_a_pin_again(self):
+        res, _, _ = self._run(
+            {"id": "o1", "op": "pin", "pin": "1234", "selected": True},
+            requester="dial:a", update_result=_result(False, "pin_required", "again"))
+        assert res["pin_required"] is True
+        assert _pairing.holder("o1") == "dial:a"
+
+    def test_a_malformed_pin_is_refused_before_the_player_is_called(self):
+        for pin in _BAD_PINS:
+            res, pin_mock, upd_mock = self._run({"id": "o1", "op": "pin", "pin": pin})
+            assert res == {"ok": False, "error": "invalid_pin", "id": "o1"}, repr(pin)
+            pin_mock.assert_not_called()
+            upd_mock.assert_not_called()
+
+    def test_the_sixth_pin_in_a_minute_is_rate_limited_before_the_player_is_called(self):
+        for _ in range(5):
+            res, _, _ = self._run({"id": "o1", "op": "pin", "pin": "1234"},
+                                  pin_result=_result(False, "pin_invalid", "Wrong"))
+            assert res["pin_invalid"] is True
+        res, pin_mock, upd_mock = self._run({"id": "o1", "op": "pin", "pin": "1234"})
+        assert res["ok"] is False and res["error"] == "rate_limited"
+        assert res["id"] == "o1"
+        assert isinstance(res["retry_after_s"], int) and res["retry_after_s"] >= 1
+        pin_mock.assert_not_called()
+        upd_mock.assert_not_called()
+
+    def test_the_webui_requester_is_used_when_none_is_given(self):
+        for _ in range(5):
+            self._run({"id": "o1", "op": "pin", "pin": "1234"})
+        # the shared budget is the WebUI's, whichever way the call names it
+        res, _, _ = self._run({"id": "o1", "op": "pin", "pin": "1234"}, requester="webui")
+        assert res["error"] == "rate_limited"
+        res, _, _ = self._run({"id": "o1", "op": "pin", "pin": "1234"}, requester="dial:a")
+        assert res == {"ok": True, "id": "o1"}
+
+    def test_nothing_logged_by_the_mutation_contains_the_pin(self, caplog):
+        pin = "73519"
+        with caplog.at_level(_logging.DEBUG):
+            self._run({"id": "o1", "op": "pin", "pin": pin}, requester="webui",
+                      pin_result=_result(False, "pin_invalid", "Wrong PIN"))
+            self._run({"id": "o1", "op": "pin", "pin": pin, "selected": True},
+                      requester="webui")
+            for _ in range(6):
+                self._run({"id": "o3", "op": "pin", "pin": pin})
+        assert pin not in caplog.text
