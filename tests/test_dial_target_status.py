@@ -326,20 +326,16 @@ class TestMutedField:
             result = enrich_targets([t], "dial-id")
         assert result[0]["muted"] is None
 
-    def test_non_bool_muted_is_bad_response(self):
+    # Unlike appliance_id, an explicit null is not a valid value for this
+    # field -- it is either a bool or absent entirely.
+    @pytest.mark.parametrize("value", [
+        pytest.param("true", id="non_bool"),
+        pytest.param(None, id="null"),
+    ])
+    def test_bad_muted_is_bad_response(self, value):
         t = _target()
         body = _ok_response()
-        body["muted"] = "true"
-        with _mock_conn(body):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_null_muted_is_bad_response(self):
-        """Unlike appliance_id, an explicit null is not a valid value for
-        this field -- it is either a bool or absent entirely."""
-        t = _target()
-        body = _ok_response()
-        body["muted"] = None
+        body["muted"] = value
         with _mock_conn(body):
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] == "bad_response"
@@ -480,22 +476,32 @@ class TestEnrichFailures:
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] == "timeout"
 
-    def test_oversized_response_returns_bad_response(self):
+    @pytest.mark.parametrize("reply", [
+        pytest.param(b"x" * 65537, id="oversized_response"),
+        pytest.param(b"not json", id="malformed_json"),
+        pytest.param(b"[1,2,3]", id="json_array_root"),
+        pytest.param({"ok": False, "error": "something_else"}, id="ok_false_unknown_error"),
+        # ok must be exactly false before the error field is honoured: absent,
+        # null and 0 are not ok:false, so the error field must not be honoured.
+        pytest.param({"error": "config_error"}, id="ok_missing_with_config_error"),
+        pytest.param({"ok": None, "error": "backend_unavailable"}, id="ok_null_with_config_error"),
+        pytest.param({"ok": 0, "error": "config_error"}, id="ok_integer_with_config_error"),
+        pytest.param({"ok": True, "playing": "yes", "master_volume": 50, "selected_output_count": 1},
+                     id="invalid_playing_field"),
+        pytest.param({"ok": True, "playing": True, "master_volume": None, "selected_output_count": True},
+                     id="boolean_selected_output_count"),
+        pytest.param({"ok": True, "playing": True, "master_volume": None, "selected_output_count": -1},
+                     id="negative_selected_output_count"),
+        pytest.param({"ok": True, "playing": False, "master_volume": 50, "selected_output_count": 0},
+                     id="master_volume_present_when_count_zero"),
+        pytest.param({"ok": True, "playing": True, "master_volume": None, "selected_output_count": 2},
+                     id="master_volume_null_when_count_positive"),
+        pytest.param({"ok": True, "playing": True, "master_volume": 101, "selected_output_count": 1},
+                     id="master_volume_out_of_range"),
+    ])
+    def test_bad_reply_returns_bad_response(self, reply):
         t = _target()
-        oversized = b"x" * 65537
-        with _mock_conn(oversized):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_malformed_json_returns_bad_response(self):
-        t = _target()
-        with _mock_conn(b"not json"):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_json_array_root_returns_bad_response(self):
-        t = _target()
-        with _mock_conn(b"[1,2,3]"):
+        with _mock_conn(reply):
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] == "bad_response"
 
@@ -510,69 +516,6 @@ class TestEnrichFailures:
         with _mock_conn({"ok": False, "error": "backend_unavailable"}):
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] == "backend_unavailable"
-
-    def test_ok_false_unknown_error_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": False, "error": "something_else"}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_ok_missing_with_config_error_returns_bad_response(self):
-        """ok absent but error:config_error must be bad_response, not config_error."""
-        t = _target()
-        with _mock_conn({"error": "config_error"}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_ok_null_with_config_error_returns_bad_response(self):
-        """ok:null is not ok:false — error field must not be honored."""
-        t = _target()
-        with _mock_conn({"ok": None, "error": "backend_unavailable"}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_ok_integer_with_config_error_returns_bad_response(self):
-        """ok:0 is not ok:false — error field must not be honored."""
-        t = _target()
-        with _mock_conn({"ok": 0, "error": "config_error"}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_invalid_playing_field_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": True, "playing": "yes", "master_volume": 50, "selected_output_count": 1}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_boolean_selected_output_count_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": True, "playing": True, "master_volume": None, "selected_output_count": True}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_negative_selected_output_count_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": True, "playing": True, "master_volume": None, "selected_output_count": -1}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_master_volume_present_when_count_zero_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": True, "playing": False, "master_volume": 50, "selected_output_count": 0}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_master_volume_null_when_count_positive_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": True, "playing": True, "master_volume": None, "selected_output_count": 2}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_master_volume_out_of_range_returns_bad_response(self):
-        t = _target()
-        with _mock_conn({"ok": True, "playing": True, "master_volume": 101, "selected_output_count": 1}):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
 
     def test_failed_enrichment_leaves_volume_fields_null(self):
         t = _target()
@@ -734,44 +677,17 @@ class TestTrackIdValidation:
             "artwork_url": "", "updated_at": None, "last_attempt_at": None,
         }
 
-    def test_track_id_not_object_is_bad_response(self):
+    @pytest.mark.parametrize("track_id", [
+        pytest.param("nope", id="track_id_not_object"),
+        pytest.param({"state": "disabled", "artwork_url": ""}, id="missing_enabled"),
+        pytest.param(_identified_track_id(state="playing"), id="invalid_state"),
+        pytest.param(_identified_track_id(artwork_url=123), id="non_string_artwork_url"),
+        pytest.param(_identified_track_id(title=42), id="non_string_title"),
+        pytest.param(_identified_track_id(updated_at="yesterday"), id="non_numeric_updated_at"),
+    ])
+    def test_bad_track_id_is_bad_response(self, track_id):
         t = _target()
-        body = {**_ok_response(), "track_id": "nope"}
-        with _mock_conn(body):
-            record = fetch_target_status(t, "dial-id")
-        assert record["status_error"] == "bad_response"
-
-    def test_missing_enabled_is_bad_response(self):
-        t = _target()
-        body = {**_ok_response(), "track_id": {"state": "disabled", "artwork_url": ""}}
-        with _mock_conn(body):
-            record = fetch_target_status(t, "dial-id")
-        assert record["status_error"] == "bad_response"
-
-    def test_invalid_state_is_bad_response(self):
-        t = _target()
-        body = {**_ok_response(), "track_id": _identified_track_id(state="playing")}
-        with _mock_conn(body):
-            record = fetch_target_status(t, "dial-id")
-        assert record["status_error"] == "bad_response"
-
-    def test_non_string_artwork_url_is_bad_response(self):
-        t = _target()
-        body = {**_ok_response(), "track_id": _identified_track_id(artwork_url=123)}
-        with _mock_conn(body):
-            record = fetch_target_status(t, "dial-id")
-        assert record["status_error"] == "bad_response"
-
-    def test_non_string_title_is_bad_response(self):
-        t = _target()
-        body = {**_ok_response(), "track_id": _identified_track_id(title=42)}
-        with _mock_conn(body):
-            record = fetch_target_status(t, "dial-id")
-        assert record["status_error"] == "bad_response"
-
-    def test_non_numeric_updated_at_is_bad_response(self):
-        t = _target()
-        body = {**_ok_response(), "track_id": _identified_track_id(updated_at="yesterday")}
+        body = {**_ok_response(), "track_id": track_id}
         with _mock_conn(body):
             record = fetch_target_status(t, "dial-id")
         assert record["status_error"] == "bad_response"
@@ -890,24 +806,16 @@ class TestRepeatFieldPassthrough:
 class TestContentTypeValidation:
     """Response Content-Type must be application/json; otherwise bad_response."""
 
-    def test_missing_content_type_returns_bad_response(self):
-        """No Content-Type header → bad_response."""
+    @pytest.mark.parametrize("content_type", [
+        # No Content-Type header at all.
+        pytest.param(None, id="missing_content_type"),
+        # Not JSON, even though the body is valid JSON.
+        pytest.param("text/html", id="text_html_content_type"),
+        pytest.param("text/plain; charset=utf-8", id="text_plain_content_type"),
+    ])
+    def test_wrong_content_type_returns_bad_response(self, content_type):
         t = _target()
-        with _mock_conn(_ok_response(), content_type=None):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_text_html_content_type_returns_bad_response(self):
-        """text/html Content-Type → bad_response even when body is valid JSON."""
-        t = _target()
-        with _mock_conn(_ok_response(), content_type="text/html"):
-            result = enrich_targets([t], "dial-id")
-        assert result[0]["status_error"] == "bad_response"
-
-    def test_text_plain_content_type_returns_bad_response(self):
-        """text/plain Content-Type → bad_response."""
-        t = _target()
-        with _mock_conn(_ok_response(), content_type="text/plain; charset=utf-8"):
+        with _mock_conn(_ok_response(), content_type=content_type):
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] == "bad_response"
 

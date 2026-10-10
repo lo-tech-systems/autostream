@@ -1891,32 +1891,38 @@ class TestBuildTouchSourceWiring:
             # Touch activity/presence are still genuine, though.
             display.notify_touch_activity.assert_called_once()
 
-    def test_set_pressed_zone_clear_after_a_list_zone_is_also_suppressed(self):
-        """The single-shot flash's own clear (zone=None) that follows a
-        LIST_* press must not leak through as a stray main-overlay update
-        either."""
+    # Every zone reports through the same unified pressed channel: the press
+    # goes to set_pressed() and never publishes an OverlayState.
+    @pytest.mark.parametrize("zone", [
+        pytest.param("REPEAT_PLAY", id="repeat_play"),
+        pytest.param("IDLE_REPLAY", id="idle_replay"),
+        pytest.param("DOTS", id="dots"),
+    ])
+    def test_set_pressed_zone_records_the_zone_on_the_pressed_channel(self, zone):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.LIST_BACK)
-            captured["kwargs"]["on_set_pressed_zone"](None)
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone[zone])
+            display.set_pressed.assert_called_once_with(TouchZone[zone], None)
             display.set_overlay.assert_not_called()
-            assert display.set_pressed.call_args_list == [
-                call(TouchZone.LIST_BACK, None), call(None, None),
-            ]
 
-    def test_set_pressed_zone_clear_after_name_uses_the_pressed_channel(self):
-        """NAME reports through the same unified pressed channel as every
-        other zone now — its press and clear both go through set_pressed(),
-        never set_overlay()."""
+    # The single-shot flash's own clear (zone=None) goes through set_pressed()
+    # too, whatever zone was pressed: it must never leak through as a stray
+    # main-overlay update.
+    @pytest.mark.parametrize("zone", [
+        pytest.param("LIST_BACK", id="after_a_list_zone"),
+        pytest.param("NAME", id="after_name"),
+        pytest.param("REPEAT_START", id="after_secondary_zone"),
+    ])
+    def test_set_pressed_zone_clear_uses_the_pressed_channel(self, zone):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.NAME)
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone[zone])
             captured["kwargs"]["on_set_pressed_zone"](None)
             display.set_overlay.assert_not_called()
             assert display.set_pressed.call_args_list == [
-                call(TouchZone.NAME, None), call(None, None),
+                call(TouchZone[zone], None), call(None, None),
             ]
 
     def test_on_zone_tap_name_opens_the_selector(self):
@@ -1927,54 +1933,51 @@ class TestBuildTouchSourceWiring:
             display.open_selector.assert_called_once()
             display.notify_touch_activity.assert_called_once()
 
-    def test_on_zone_tap_sdhealth_dismiss_closes_the_warning(self):
+    # (zone, row index, display method, expected call args or None for "called once")
+    @pytest.mark.parametrize("zone, row, method, args", [
+        pytest.param("LIST_BACK", None, "close_list", None, id="list_back_closes_the_list_screen"),
+        pytest.param("LIST_DOWN", None, "list_page", (1,), id="list_down_pages_forward"),
+        pytest.param("LIST_UP", None, "list_page", (-1,), id="list_up_pages_backward"),
+        pytest.param("LIST_ROW", 2, "list_row_tap", (2,), id="list_row_dispatches_to_list_row_tap"),
+        pytest.param("DOTS", None, "cycle_pages", None, id="dots_cycles_pages"),
+        pytest.param("EQ_BASS_DOWN", None, "eq_step", ("bass", -1), id="eq_bass_down_steps_bass_down"),
+        pytest.param("EQ_BASS_UP", None, "eq_step", ("bass", +1), id="eq_bass_up_steps_bass_up"),
+        pytest.param("EQ_TREBLE_DOWN", None, "eq_step", ("treble", -1), id="eq_treble_down_steps_treble_down"),
+        pytest.param("EQ_TREBLE_UP", None, "eq_step", ("treble", +1), id="eq_treble_up_steps_treble_up"),
+        pytest.param("REPEAT_PLAY", None, "repeat_toggle_tap", None, id="repeat_play_toggles_arm"),
+        pytest.param("REPEAT_START", None, "repeat_start_tap", None, id="repeat_start_taps_start"),
+        pytest.param("REPEAT_STOP", None, "repeat_stop_tap", None, id="repeat_stop_taps_stop"),
+        pytest.param("IDLE_REPLAY", None, "open_picker", None, id="idle_replay_opens_the_picker"),
+        pytest.param("IDLE_INFO", None, "open_info", None, id="idle_info_opens_the_info_page"),
+        pytest.param("OUTPUTS", None, "open_outputs", None, id="outputs_opens_the_outputs_list"),
+        pytest.param("OUTPUT_BACK", None, "close_list", None, id="output_back_closes_the_list_screen"),
+        pytest.param("OUTPUT_TOGGLE", None, "output_toggle_tap", None, id="output_toggle_taps_the_output"),
+        pytest.param("OUTPUT_UP", None, "output_volume_tap", (3,), id="output_up_steps_by_step_percent"),
+        pytest.param("OUTPUT_DOWN", None, "output_volume_tap", (-3,), id="output_down_steps_by_negative_step_percent"),
+    ])
+    def test_on_zone_tap_dispatches_to_the_display(self, zone, row, method, args):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.SDHEALTH_DISMISS, None)
-            display.warning_button_tap.assert_called_once_with(TouchZone.SDHEALTH_DISMISS)
+            captured["kwargs"]["on_zone_tap"](TouchZone[zone], row)
+            target = getattr(display, method)
+            if args is None:
+                target.assert_called_once()
+            else:
+                target.assert_called_once_with(*args)
 
-    def test_on_zone_tap_nowifi_dismiss_goes_to_the_warning_dispatch(self):
+    # The warning buttons are handed to the warning dispatch, zone and all.
+    @pytest.mark.parametrize("zone", [
+        pytest.param("SDHEALTH_DISMISS", id="sdhealth_dismiss_closes_the_warning"),
+        pytest.param("NOWIFI_DISMISS", id="nowifi_dismiss_goes_to_the_warning_dispatch"),
+        pytest.param("NOWIFI_RESTART", id="nowifi_restart_goes_to_the_warning_dispatch"),
+    ])
+    def test_on_zone_tap_warning_buttons_go_to_the_warning_dispatch(self, zone):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.NOWIFI_DISMISS, None)
-            display.warning_button_tap.assert_called_once_with(TouchZone.NOWIFI_DISMISS)
-
-    def test_on_zone_tap_nowifi_restart_goes_to_the_warning_dispatch(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.NOWIFI_RESTART, None)
-            display.warning_button_tap.assert_called_once_with(TouchZone.NOWIFI_RESTART)
-
-    def test_on_zone_tap_list_back_closes_the_list_screen(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_BACK, None)
-            display.close_list.assert_called_once()
-
-    def test_on_zone_tap_list_down_pages_forward(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_DOWN, None)
-            display.list_page.assert_called_once_with(1)
-
-    def test_on_zone_tap_list_up_pages_backward(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_UP, None)
-            display.list_page.assert_called_once_with(-1)
-
-    def test_on_zone_tap_list_row_dispatches_to_list_row_tap(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_ROW, 2)
-            display.list_row_tap.assert_called_once_with(2)
+            captured["kwargs"]["on_zone_tap"](TouchZone[zone], None)
+            display.warning_button_tap.assert_called_once_with(TouchZone[zone])
 
     def test_on_zone_tap_confirms_presence(self):
         from dial_touch_layout import TouchZone
@@ -1983,83 +1986,6 @@ class TestBuildTouchSourceWiring:
         with self._built(confirm_presence=confirm) as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.NAME, None)
         confirm.assert_called_once()
-
-    def test_on_zone_tap_dots_cycles_pages(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.DOTS, None)
-            display.cycle_pages.assert_called_once()
-
-    def test_on_zone_tap_eq_bass_down_steps_bass_down(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_BASS_DOWN, None)
-            display.eq_step.assert_called_once_with("bass", -1)
-
-    def test_on_zone_tap_eq_bass_up_steps_bass_up(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_BASS_UP, None)
-            display.eq_step.assert_called_once_with("bass", +1)
-
-    def test_on_zone_tap_eq_treble_down_steps_treble_down(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_TREBLE_DOWN, None)
-            display.eq_step.assert_called_once_with("treble", -1)
-
-    def test_on_zone_tap_eq_treble_up_steps_treble_up(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_TREBLE_UP, None)
-            display.eq_step.assert_called_once_with("treble", +1)
-
-    def test_on_zone_tap_repeat_play_toggles_arm(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_PLAY, None)
-            display.repeat_toggle_tap.assert_called_once()
-
-    def test_on_zone_tap_repeat_start_taps_start(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_START, None)
-            display.repeat_start_tap.assert_called_once()
-
-    def test_on_zone_tap_repeat_stop_taps_stop(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_STOP, None)
-            display.repeat_stop_tap.assert_called_once()
-
-    def test_on_zone_tap_idle_replay_opens_the_picker(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_REPLAY, None)
-            display.open_picker.assert_called_once()
-
-    def test_on_zone_tap_idle_info_opens_the_info_page(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_INFO, None)
-            display.open_info.assert_called_once()
-
-    def test_on_zone_tap_outputs_opens_the_outputs_list(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUTS, None)
-            display.open_outputs.assert_called_once()
 
     def test_on_zone_tap_artwork_hides_the_controls(self):
         from dial_touch_layout import TouchZone
@@ -2070,34 +1996,6 @@ class TestBuildTouchSourceWiring:
             # The touch session is told the controls are gone too.
             captured["instance"].overlay_hidden.assert_called_once()
 
-    def test_on_zone_tap_output_back_closes_the_list_screen(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_BACK, None)
-            display.close_list.assert_called_once()
-
-    def test_on_zone_tap_output_toggle_taps_the_output(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_TOGGLE, None)
-            display.output_toggle_tap.assert_called_once()
-
-    def test_on_zone_tap_output_up_steps_by_step_percent(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_UP, None)
-            display.output_volume_tap.assert_called_once_with(3)
-
-    def test_on_zone_tap_output_down_steps_by_negative_step_percent(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_DOWN, None)
-            display.output_volume_tap.assert_called_once_with(-3)
-
     def test_on_zone_tap_output_up_uses_live_step_percent_callable(self):
         from dial_touch_layout import TouchZone
 
@@ -2107,43 +2005,6 @@ class TestBuildTouchSourceWiring:
         ):
             captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_UP, None)
             display.output_volume_tap.assert_called_once_with(7)
-
-    def test_set_pressed_zone_repeat_play_records_the_zone(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_PLAY)
-            display.set_pressed.assert_called_once_with(TouchZone.REPEAT_PLAY, None)
-            display.set_overlay.assert_not_called()
-
-    def test_set_pressed_zone_idle_replay_records_the_zone(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.IDLE_REPLAY)
-            display.set_pressed.assert_called_once_with(TouchZone.IDLE_REPLAY, None)
-            display.set_overlay.assert_not_called()
-
-    def test_set_pressed_zone_clear_after_secondary_zone(self):
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_START)
-            captured["kwargs"]["on_set_pressed_zone"](None)
-            display.set_overlay.assert_not_called()
-            assert display.set_pressed.call_args_list == [
-                call(TouchZone.REPEAT_START, None), call(None, None),
-            ]
-
-    def test_set_pressed_zone_dots_records_the_zone(self):
-        """DOTS reports through the same unified pressed channel as every
-        other zone."""
-        from dial_touch_layout import TouchZone
-
-        with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.DOTS)
-            display.set_pressed.assert_called_once_with(TouchZone.DOTS, None)
-            display.set_overlay.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

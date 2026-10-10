@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -256,64 +257,42 @@ class TestMalformedBody:
 # ---------------------------------------------------------------------------
 
 class TestFieldBoundaries:
-    def test_name_too_long_rejected(self):
-        r = _call_handler("/configure", body={"name": "x" * 65})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_name"
-
-    def test_name_max_length_accepted(self):
-        r = _call_handler("/configure", body={"name": "x" * 64})
-        assert r["status"] == 200
-
-    def test_name_with_pipe_char_rejected(self):
-        r = _call_handler("/configure", body={"name": "bad|name"})
-        assert r["status"] == 400
-
-    def test_name_with_semicolon_rejected(self):
-        r = _call_handler("/configure", body={"name": "a;b"})
-        assert r["status"] == 400
-
-    def test_step_percent_zero_rejected(self):
-        r = _call_handler("/configure", body={"step_percent": 0})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_step_percent"
-
-    def test_step_percent_11_rejected(self):
-        r = _call_handler("/configure", body={"step_percent": 11})
-        assert r["status"] == 400
-
-    def test_step_percent_10_accepted(self):
-        r = _call_handler("/configure", body={"step_percent": 10})
-        assert r["status"] == 200
-
-    def test_step_percent_1_accepted(self):
-        r = _call_handler("/configure", body={"step_percent": 1})
-        assert r["status"] == 200
-
-    def test_step_percent_bool_rejected(self):
+    @pytest.mark.parametrize("body, error", [
+        pytest.param({"name": "x" * 65}, "invalid_name", id="name_too_long"),
+        pytest.param({"name": "bad|name"}, "invalid_name_chars", id="name_with_pipe_char"),
+        pytest.param({"name": "a;b"}, "invalid_name_chars", id="name_with_semicolon"),
+        pytest.param({"step_percent": 0}, "invalid_step_percent", id="step_percent_zero"),
+        pytest.param({"step_percent": 11}, "invalid_step_percent", id="step_percent_11"),
         # True is a bool, not an int for this field (bool is subclass of int — explicit trap)
-        r = _call_handler("/configure", body={"step_percent": True})
+        pytest.param({"step_percent": True}, "invalid_step_percent", id="step_percent_bool"),
+        pytest.param({"auto_update": 1}, "invalid_auto_update", id="auto_update_non_bool"),
+        pytest.param({"new_pin": "123"}, "invalid_new_pin", id="new_pin_too_short"),
+        pytest.param({"new_pin": "abcd"}, "invalid_new_pin", id="new_pin_non_digits"),
+        pytest.param({"update_channel": "beta"}, "invalid_update_channel",
+                     id="update_channel_unknown"),
+        pytest.param({"update_channel": 1}, "invalid_update_channel",
+                     id="update_channel_integer"),
+    ])
+    def test_out_of_range_field_rejected(self, body, error):
+        r = _call_handler("/configure", body=body)
         assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_step_percent"
+        assert r["data"]["error"] == error
 
-    def test_auto_update_non_bool_rejected(self):
-        r = _call_handler("/configure", body={"auto_update": 1})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_auto_update"
+    @pytest.mark.parametrize("body", [
+        pytest.param({"name": "x" * 64}, id="name_max_length"),
+        pytest.param({"step_percent": 10}, id="step_percent_10"),
+        pytest.param({"step_percent": 1}, id="step_percent_1"),
+        pytest.param({"update_channel": "stable"}, id="update_channel_stable"),
+        pytest.param({"update_channel": "dev"}, id="update_channel_dev"),
+    ])
+    def test_boundary_field_accepted(self, body):
+        r = _call_handler("/configure", body=body)
+        assert r["status"] == 200
 
     def test_auto_update_true_accepted(self):
         with patch("subprocess.run", return_value=MagicMock(returncode=0)):
             r = _call_handler("/configure", body={"auto_update": True})
         assert r["status"] == 200
-
-    def test_new_pin_too_short_rejected(self):
-        r = _call_handler("/configure", body={"new_pin": "123"})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_new_pin"
-
-    def test_new_pin_non_digits_rejected(self):
-        r = _call_handler("/configure", body={"new_pin": "abcd"})
-        assert r["status"] == 400
 
     def test_new_pin_4_digits_accepted(self):
         r = _call_handler("/configure", body={"new_pin": "1234"})
@@ -328,23 +307,6 @@ class TestFieldBoundaries:
         r = _call_handler("/configure", body={"new_pin": ""}, cfg=cfg2)
         assert r["status"] == 200
         assert r["save_calls"][0].pin == ""
-
-    def test_update_channel_unknown_rejected(self):
-        r = _call_handler("/configure", body={"update_channel": "beta"})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_update_channel"
-
-    def test_update_channel_stable_accepted(self):
-        r = _call_handler("/configure", body={"update_channel": "stable"})
-        assert r["status"] == 200
-
-    def test_update_channel_dev_accepted(self):
-        r = _call_handler("/configure", body={"update_channel": "dev"})
-        assert r["status"] == 200
-
-    def test_update_channel_integer_rejected(self):
-        r = _call_handler("/configure", body={"update_channel": 1})
-        assert r["status"] == 400
 
     def test_configure_ignores_unknown_mute_all_playing_field(self):
         """mute_all_playing is retired from /configure: an old appliance
@@ -1370,29 +1332,25 @@ class TestScreenSettingsPost:
         assert r["data"]["screen"]["always_show_controls"] is False
         assert r["save_calls"][0].display.always_show_controls is False
 
-    def test_post_non_bool_always_show_controls_returns_invalid_screen_settings(self):
-        r = _call_handler(
-            "/screen/settings",
-            body={"screen": {"fitted": True, "always_show_controls": 1}},
-        )
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-        assert r["save_calls"] == []
-
-    def test_post_unknown_touch_type_returns_invalid_screen_settings(self):
-        r = _call_handler(
-            "/screen/settings",
-            body={"screen": {"fitted": True, "touch_type": "no_such_controller"}},
-        )
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-        assert r["save_calls"] == []
-
-    def test_post_unknown_screen_type_returns_invalid_screen_settings(self):
-        r = _call_handler(
-            "/screen/settings",
-            body={"screen": {"fitted": True, "screen_type": "no_such_panel"}},
-        )
+    @pytest.mark.parametrize("screen_body", [
+        pytest.param({"screen": {"fitted": True, "always_show_controls": 1}},
+                     id="non_bool_always_show_controls"),
+        pytest.param({"screen": {"fitted": True, "touch_type": "no_such_controller"}},
+                     id="unknown_touch_type"),
+        pytest.param({"screen": {"fitted": True, "screen_type": "no_such_panel"}},
+                     id="unknown_screen_type"),
+        pytest.param({"screen": {"fitted": True, "rotate": 1}}, id="non_bool_rotate"),
+        pytest.param({"screen": {}}, id="missing_fitted"),
+        pytest.param({"screen": {"fitted": 1}}, id="non_bool_fitted"),
+        pytest.param({"screen": {"fitted": True, "rotation": 90}}, id="unknown_field"),
+        pytest.param({}, id="missing_screen_object"),
+        pytest.param({"screen": {"fitted": True, "volume_scope": True}},
+                     id="non_string_volume_scope"),
+        pytest.param({"screen": {"fitted": True, "mute_scope": "everything"}},
+                     id="unknown_mute_scope_value"),
+    ])
+    def test_post_invalid_returns_invalid_screen_settings(self, screen_body):
+        r = _call_handler("/screen/settings", body=screen_body)
         assert r["status"] == 400
         assert r["data"]["error"] == "invalid_screen_settings"
         assert r["save_calls"] == []
@@ -1402,32 +1360,6 @@ class TestScreenSettingsPost:
         assert r["status"] == 200
         assert r["data"]["screen"]["rotate"] is False
         assert r["save_calls"][0].display.rotate is False
-
-    def test_post_non_bool_rotate_returns_invalid_screen_settings(self):
-        r = _call_handler("/screen/settings", body={"screen": {"fitted": True, "rotate": 1}})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-
-    def test_post_missing_fitted_returns_invalid_screen_settings(self):
-        r = _call_handler("/screen/settings", body={"screen": {}})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-
-    def test_post_non_bool_fitted_returns_invalid_screen_settings(self):
-        r = _call_handler("/screen/settings", body={"screen": {"fitted": 1}})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-
-    def test_post_unknown_field_returns_invalid_screen_settings(self):
-        r = _call_handler("/screen/settings",
-                          body={"screen": {"fitted": True, "rotation": 90}})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-
-    def test_post_missing_screen_object_returns_invalid_screen_settings(self):
-        r = _call_handler("/screen/settings", body={})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
 
     def test_post_requires_pin_when_set(self):
         cfg = DialConfig(uuid="x", pin="9999")
@@ -1502,24 +1434,6 @@ class TestScreenSettingsPost:
         assert r["status"] == 200
         assert r["data"]["screen"]["volume_scope"] == "current"
         assert r["data"]["screen"]["mute_scope"] == "current"
-
-    def test_post_non_string_volume_scope_returns_invalid_screen_settings(self):
-        r = _call_handler(
-            "/screen/settings",
-            body={"screen": {"fitted": True, "volume_scope": True}},
-        )
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-        assert r["save_calls"] == []
-
-    def test_post_unknown_mute_scope_value_returns_invalid_screen_settings(self):
-        r = _call_handler(
-            "/screen/settings",
-            body={"screen": {"fitted": True, "mute_scope": "everything"}},
-        )
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_screen_settings"
-        assert r["save_calls"] == []
 
     def test_screen_apply_failed_body_carries_previous_scopes(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(
@@ -2648,167 +2562,9 @@ class TestCanConfirmPresenceAndRemainingMs:
 _AID = "a" * 20
 
 
-class _NotifyingDisplayStatusProvider(NoOpDisplayStatusProvider):
-    """Stand-in with a real notify_auth_changed hook to assert on."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.notified: list = []
-
-    def notify_auth_changed(self, appliance_id: str) -> None:
-        self.notified.append(appliance_id)
-
-
 class _RaisingNotifyDisplayStatusProvider(NoOpDisplayStatusProvider):
     def notify_auth_changed(self, appliance_id: str) -> None:
         raise RuntimeError("boom")
-
-
-class TestAuthChangedRoute:
-    def test_invalid_json_returns_400(self):
-        r = _call_handler("/auth-changed", body=b"not json")
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_json"
-
-    def test_non_object_body_returns_400(self):
-        r = _call_handler("/auth-changed", body=b"[1,2,3]")
-        assert r["status"] == 400
-        assert r["data"]["error"] == "body_must_be_object"
-
-    def test_missing_appliance_id_returns_400(self):
-        r = _call_handler("/auth-changed", body={})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_appliance_id"
-
-    def test_non_string_appliance_id_returns_400(self):
-        r = _call_handler("/auth-changed", body={"appliance_id": 12345})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_appliance_id"
-
-    def test_malformed_appliance_id_returns_400(self):
-        r = _call_handler("/auth-changed", body={"appliance_id": "not-hex-not-20-chars"})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_appliance_id"
-
-    def test_well_formed_body_returns_202_even_when_id_unknown(self):
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID})
-        assert r["status"] == 202
-        assert r["data"]["ok"] is True
-
-    def test_enqueues_on_display_when_ip_matches_rostered_sighting(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-        server._get_rostered_ips = lambda: {_AID: "127.0.0.1"}
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert r["status"] == 202
-        assert display.notified == [_AID]
-
-    def test_does_not_enqueue_when_ip_does_not_match_rostered_sighting(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-        server._get_rostered_ips = lambda: {_AID: "192.168.1.5"}
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="192.168.1.99")
-        assert r["status"] == 202
-        assert display.notified == []
-
-    def test_does_not_enqueue_when_id_not_rostered_at_all(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-        server._get_rostered_ips = lambda: {}
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert r["status"] == 202
-        assert display.notified == []
-
-    def test_get_rostered_ips_none_never_enqueues(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-        server._get_rostered_ips = None
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert r["status"] == 202
-        assert display.notified == []
-
-    def test_get_rostered_ips_raising_degrades_to_no_enqueue(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-
-        def _raise():
-            raise RuntimeError("mdns browser broke")
-        server._get_rostered_ips = _raise
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert r["status"] == 202
-        assert display.notified == []
-
-    def test_noop_display_provider_accepts_without_error(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        server._display_status = NoOpDisplayStatusProvider()
-        server._get_rostered_ips = lambda: {_AID: "127.0.0.1"}
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert r["status"] == 202
-
-    def test_notify_raising_does_not_break_the_response(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        server._display_status = _RaisingNotifyDisplayStatusProvider()
-        server._get_rostered_ips = lambda: {_AID: "127.0.0.1"}
-        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert r["status"] == 202
-        assert r["data"]["ok"] is True
-
-    def test_ip_rate_limit_refuses_second_push_within_window_but_still_202(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-        aid2 = "b" * 20
-        server._get_rostered_ips = lambda: {_AID: "127.0.0.1", aid2: "127.0.0.1"}
-        r1 = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                           setup_server=server, client_ip="127.0.0.1")
-        r2 = _call_handler("/auth-changed", body={"appliance_id": aid2},
-                           setup_server=server, client_ip="127.0.0.1")
-        assert r1["status"] == 202
-        assert r2["status"] == 202
-        # Same source IP, second push within the 2s window: refused
-        # (not enqueued) despite being individually well-formed and rostered.
-        assert display.notified == [_AID]
-
-    def test_id_rate_limit_refuses_second_push_within_window_but_still_202(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        display = _NotifyingDisplayStatusProvider()
-        server._display_status = display
-        server._get_rostered_ips = lambda: {_AID: "10.0.0.1"}
-        r1 = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                           setup_server=server, client_ip="10.0.0.1")
-        server._get_rostered_ips = lambda: {_AID: "10.0.0.2"}
-        r2 = _call_handler("/auth-changed", body={"appliance_id": _AID},
-                           setup_server=server, client_ip="10.0.0.2")
-        assert r1["status"] == 202
-        assert r2["status"] == 202
-        # Same appliance_id, second push within the 5s window (from a
-        # different source IP this time): refused despite matching its roster.
-        assert display.notified == [_AID]
-
-    def test_oversized_body_returns_413(self):
-        handler_cls, server = _make_handler_cls()
-        h = object.__new__(handler_cls)
-        h.path = "/auth-changed"
-        h.client_address = ("127.0.0.1", 1234)
-        h.headers = {"Content-Length": str(dhs.MAX_BODY + 1)}
-        h.rfile = io.BytesIO(b"x" * (dhs.MAX_BODY + 1))
-        result = {}
-        h._send_json = lambda s, d: result.update(status=s, data=d)
-        h.send_error = lambda code, *_: result.update(status=code)
-        h.do_POST()
-        assert result["status"] == 413
 
 
 # ---------------------------------------------------------------------------
@@ -3111,66 +2867,6 @@ class TestPushRoutesTable:
             other = "warnings" if expected == "auth" else "auth"
             assert getattr(server._display_status, other) == []
 
-    def test_other_paths_are_still_not_found(self):
-        r = _call_handler("/warnings-changed/", body={"appliance_id": _AID})
-        assert r["status"] == 404
-
-    def test_the_module_docstring_lists_the_route(self):
-        assert "POST /warnings-changed" in dhs.__doc__.replace("\n", " ")
-
-
-class TestWarningsChangedRoute:
-    def test_invalid_json_returns_400(self):
-        r = _call_handler("/warnings-changed", body=b"not json")
-        assert (r["status"], r["data"]["error"]) == (400, "invalid_json")
-
-    def test_non_object_body_returns_400(self):
-        r = _call_handler("/warnings-changed", body=b"[1,2,3]")
-        assert (r["status"], r["data"]["error"]) == (400, "body_must_be_object")
-
-    @pytest.mark.parametrize("body", [{}, {"appliance_id": 12345}, {"appliance_id": "nope"},
-                                      {"appliance_id": "A" * 20}, {"appliance_id": "a" * 21}])
-    def test_a_missing_or_malformed_id_returns_400(self, body):
-        r = _call_handler("/warnings-changed", body=body)
-        assert (r["status"], r["data"]["error"]) == (400, "invalid_appliance_id")
-
-    def test_well_formed_body_returns_202_even_when_unknown(self):
-        r = _call_handler("/warnings-changed", body={"appliance_id": _AID})
-        assert (r["status"], r["data"]) == (202, {"ok": True})
-
-    def test_a_matching_sighting_enqueues_through_the_hook(self):
-        server = _warnings_server()
-        _call_handler("/warnings-changed", body={"appliance_id": _AID},
-                      setup_server=server, client_ip="127.0.0.1")
-        assert server._display_status.warnings == [_AID]
-
-    def test_a_wrong_source_ip_is_dropped_with_the_same_answer(self):
-        server = _warnings_server({_AID: "192.168.1.5"})
-        r = _call_handler("/warnings-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="192.168.1.99")
-        assert (r["status"], r["data"]) == (202, {"ok": True})
-        assert server._display_status.warnings == []
-
-    def test_an_unknown_appliance_id_is_dropped_with_the_same_answer(self):
-        server = _warnings_server({"b" * 20: "127.0.0.1"})
-        r = _call_handler("/warnings-changed", body={"appliance_id": _AID},
-                          setup_server=server, client_ip="127.0.0.1")
-        assert (r["status"], r["data"]) == (202, {"ok": True})
-        assert server._display_status.warnings == []
-
-    def test_an_idle_appliances_address_is_accepted(self):
-        # What get_known_ips supplies for an appliance that is not playing.
-        server = _warnings_server({_AID: "10.1.2.3"})
-        _call_handler("/warnings-changed", body={"appliance_id": _AID},
-                      setup_server=server, client_ip="10.1.2.3")
-        assert server._display_status.warnings == [_AID]
-
-    def test_an_idle_appliances_auth_push_is_accepted_too(self):
-        server = _warnings_server({_AID: "10.1.2.3"})
-        _call_handler("/auth-changed", body={"appliance_id": _AID},
-                      setup_server=server, client_ip="10.1.2.3")
-        assert server._display_status.auth == [_AID]
-
     def test_the_limiter_is_shared_between_the_two_routes(self):
         server = _warnings_server()
         r1 = _call_handler("/auth-changed", body={"appliance_id": _AID}, setup_server=server)
@@ -3179,60 +2875,179 @@ class TestWarningsChangedRoute:
         assert server._display_status.auth == [_AID]
         assert server._display_status.warnings == []
 
-    def test_a_flood_enqueues_once_and_always_answers_202(self):
+    def test_other_paths_are_still_not_found(self):
+        r = _call_handler("/warnings-changed/", body={"appliance_id": _AID})
+        assert r["status"] == 404
+
+    def test_the_module_docstring_lists_the_route(self):
+        assert "POST /warnings-changed" in dhs.__doc__.replace("\n", " ")
+
+
+class _PushRoute(NamedTuple):
+    path: str
+    hook: str            # the _BothNotifyingProvider list this route fills
+    raising_provider: type
+
+    def notified(self, server) -> list:
+        return getattr(server._display_status, self.hook)
+
+
+@pytest.fixture(params=[
+    pytest.param(_PushRoute("/auth-changed", "auth", _RaisingNotifyDisplayStatusProvider),
+                 id="auth_changed"),
+    pytest.param(_PushRoute("/warnings-changed", "warnings", _RaisingWarningsProvider),
+                 id="warnings_changed"),
+])
+def push_route(request):
+    return request.param
+
+
+def _flood_ids():
+    return [f"{i:020x}" for i in range(1, 30)]
+
+
+def _raising_ip_source():
+    raise RuntimeError("mdns browser broke")
+
+
+class TestPushRouteBehaviour:
+    """Both push routes share one handler, one limiter and one sighting
+    lookup, and differ only in the hook they reach, so every case runs
+    against each."""
+
+    def test_invalid_json_returns_400(self, push_route):
+        r = _call_handler(push_route.path, body=b"not json")
+        assert (r["status"], r["data"]["error"]) == (400, "invalid_json")
+
+    def test_non_object_body_returns_400(self, push_route):
+        r = _call_handler(push_route.path, body=b"[1,2,3]")
+        assert (r["status"], r["data"]["error"]) == (400, "body_must_be_object")
+
+    @pytest.mark.parametrize("body", [
+        pytest.param({}, id="missing"),
+        pytest.param({"appliance_id": 12345}, id="non_string"),
+        pytest.param({"appliance_id": "not-hex-not-20-chars"}, id="malformed"),
+        pytest.param({"appliance_id": "nope"}, id="short_word"),
+        pytest.param({"appliance_id": "A" * 20}, id="uppercase"),
+        pytest.param({"appliance_id": "a" * 21}, id="21_chars"),
+    ])
+    def test_a_missing_or_malformed_id_returns_400(self, push_route, body):
+        r = _call_handler(push_route.path, body=body)
+        assert (r["status"], r["data"]["error"]) == (400, "invalid_appliance_id")
+
+    def test_well_formed_body_returns_202_even_when_unknown(self, push_route):
+        r = _call_handler(push_route.path, body={"appliance_id": _AID})
+        assert (r["status"], r["data"]) == (202, {"ok": True})
+
+    def test_a_matching_sighting_enqueues_through_the_hook(self, push_route):
+        server = _warnings_server()
+        r = _call_handler(push_route.path, body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert push_route.notified(server) == [_AID]
+
+    def test_a_wrong_source_ip_is_dropped_with_the_same_answer(self, push_route):
+        server = _warnings_server({_AID: "192.168.1.5"})
+        r = _call_handler(push_route.path, body={"appliance_id": _AID},
+                          setup_server=server, client_ip="192.168.1.99")
+        assert (r["status"], r["data"]) == (202, {"ok": True})
+        assert push_route.notified(server) == []
+
+    @pytest.mark.parametrize("rostered", [
+        pytest.param({}, id="id_not_rostered_at_all"),
+        pytest.param({"b" * 20: "127.0.0.1"}, id="unknown_appliance_id"),
+    ])
+    def test_an_unrostered_appliance_id_is_dropped_with_the_same_answer(
+            self, push_route, rostered):
+        server = _warnings_server(rostered)
+        r = _call_handler(push_route.path, body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert (r["status"], r["data"]) == (202, {"ok": True})
+        assert push_route.notified(server) == []
+
+    def test_an_idle_appliances_address_is_accepted(self, push_route):
+        # What get_known_ips supplies for an appliance that is not playing.
+        server = _warnings_server({_AID: "10.1.2.3"})
+        _call_handler(push_route.path, body={"appliance_id": _AID},
+                      setup_server=server, client_ip="10.1.2.3")
+        assert push_route.notified(server) == [_AID]
+
+    @pytest.mark.parametrize("source", [
+        pytest.param(None, id="none"),
+        pytest.param(_raising_ip_source, id="raising"),
+    ])
+    def test_a_raising_or_absent_ip_source_enqueues_nothing(self, push_route, source):
+        server = _warnings_server()
+        server._get_rostered_ips = source
+        r = _call_handler(push_route.path, body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert push_route.notified(server) == []
+
+    def test_a_provider_without_the_hook_accepts_without_error(self, push_route):
+        server = _warnings_server(provider=NoOpDisplayStatusProvider())
+        r = _call_handler(push_route.path, body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+
+    def test_a_raising_hook_does_not_break_the_response(self, push_route):
+        server = _warnings_server(provider=push_route.raising_provider())
+        r = _call_handler(push_route.path, body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert (r["status"], r["data"]["ok"]) == (202, True)
+
+    # The source IP is limited: a second push inside the window, whatever
+    # its id, is refused (not enqueued) yet still answered 202.
+    @pytest.mark.parametrize("ids", [
+        pytest.param([_AID, "b" * 20], id="second_push"),
+        pytest.param(_flood_ids(), id="a_flood_of_ids"),
+    ])
+    def test_ip_rate_limit_refuses_further_pushes_within_window_but_still_202(
+            self, push_route, ids):
+        server = _warnings_server({i: "127.0.0.1" for i in ids})
+        statuses = [
+            _call_handler(push_route.path, body={"appliance_id": i},
+                          setup_server=server, client_ip="127.0.0.1")["status"]
+            for i in ids
+        ]
+        assert set(statuses) == {202}
+        assert push_route.notified(server) == [ids[0]]
+
+    def test_id_rate_limit_refuses_second_push_within_window_but_still_202(self, push_route):
+        server = _warnings_server({_AID: "10.0.0.1"})
+        r1 = _call_handler(push_route.path, body={"appliance_id": _AID},
+                           setup_server=server, client_ip="10.0.0.1")
+        server._get_rostered_ips = lambda: {_AID: "10.0.0.2"}
+        r2 = _call_handler(push_route.path, body={"appliance_id": _AID},
+                           setup_server=server, client_ip="10.0.0.2")
+        assert r1["status"] == 202
+        assert r2["status"] == 202
+        # Same appliance_id, second push within the 5s window (from a
+        # different source IP this time): refused despite matching its roster.
+        assert push_route.notified(server) == [_AID]
+
+    def test_a_flood_enqueues_once_and_always_answers_202(self, push_route):
         server = _warnings_server()
         statuses = [
-            _call_handler("/warnings-changed", body={"appliance_id": _AID},
+            _call_handler(push_route.path, body={"appliance_id": _AID},
                           setup_server=server)["status"]
             for _ in range(50)
         ]
         assert set(statuses) == {202}
-        assert server._display_status.warnings == [_AID]
+        assert push_route.notified(server) == [_AID]
 
-    def test_a_flood_of_ids_from_one_ip_is_held_to_one(self):
-        ids = [f"{i:020x}" for i in range(1, 30)]
-        server = _warnings_server({i: "127.0.0.1" for i in ids})
-        for appliance_id in ids:
-            _call_handler("/warnings-changed", body={"appliance_id": appliance_id},
-                          setup_server=server)
-        assert server._display_status.warnings == [ids[0]]
-
-    def test_the_limiter_runs_before_the_sighting_lookup(self):
+    def test_the_limiter_runs_before_the_sighting_lookup(self, push_route):
         calls = []
         server = _warnings_server()
         server._get_rostered_ips = lambda: calls.append(1) or {_AID: "127.0.0.1"}
         for _ in range(5):
-            _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
+            _call_handler(push_route.path, body={"appliance_id": _AID}, setup_server=server)
         assert len(calls) == 1
 
-    def test_a_provider_without_the_hook_accepts_without_error(self):
-        server = _warnings_server(provider=NoOpDisplayStatusProvider())
-        r = _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
-        assert r["status"] == 202
-
-    def test_a_raising_hook_does_not_break_the_response(self):
-        server = _warnings_server(provider=_RaisingWarningsProvider())
-        r = _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
-        assert (r["status"], r["data"]["ok"]) == (202, True)
-
-    def test_a_raising_or_absent_ip_source_enqueues_nothing(self):
-        server = _warnings_server()
-
-        def _raise():
-            raise RuntimeError("browser broke")
-        server._get_rostered_ips = _raise
-        assert _call_handler("/warnings-changed", body={"appliance_id": _AID},
-                             setup_server=server)["status"] == 202
-        server2 = _warnings_server()
-        server2._get_rostered_ips = None
-        assert _call_handler("/warnings-changed", body={"appliance_id": _AID},
-                             setup_server=server2)["status"] == 202
-        assert server._display_status.warnings == server2._display_status.warnings == []
-
-    def test_an_oversized_body_returns_413(self):
+    def test_an_oversized_body_returns_413(self, push_route):
         handler_cls, server = _make_handler_cls()
         h = object.__new__(handler_cls)
-        h.path = "/warnings-changed"
+        h.path = push_route.path
         h.client_address = ("127.0.0.1", 1234)
         h.headers = {"Content-Length": str(dhs.MAX_BODY + 1)}
         h.rfile = io.BytesIO(b"x" * (dhs.MAX_BODY + 1))

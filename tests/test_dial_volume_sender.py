@@ -19,6 +19,7 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -87,33 +88,6 @@ class TestSendOneRequestFormat:
     def setup_method(self):
         _clear_state()
 
-    def test_sends_to_correct_url(self):
-        target = _target(ip="10.0.0.5", port=7842)
-        captured = []
-
-        def fake_urlopen(req, timeout=None):
-            captured.append((req.full_url, timeout))
-            return _mock_urlopen_success()
-
-        clamped = []
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one(target, "my-uuid", 5, clamped)
-
-        assert captured[0][0] == "http://10.0.0.5:7842/api/dial/volume"
-
-    def test_request_timeout_is_04(self):
-        target = _target()
-        captured_timeouts = []
-
-        def fake_urlopen(req, timeout=None):
-            captured_timeouts.append(timeout)
-            return _mock_urlopen_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one(target, "uuid", 3, [])
-
-        assert captured_timeouts[0] == pytest.approx(0.4, abs=0.01)
-
     def test_body_contains_dial_id_and_delta(self):
         target = _target()
         captured_bodies = []
@@ -128,32 +102,6 @@ class TestSendOneRequestFormat:
         assert captured_bodies[0]["dial_id"] == "dial-uuid-42"
         assert captured_bodies[0]["delta"] == 7
 
-    def test_content_type_header_is_json(self):
-        target = _target()
-        captured_headers = []
-
-        def fake_urlopen(req, timeout=None):
-            captured_headers.append(req.get_header("Content-type"))
-            return _mock_urlopen_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one(target, "uuid", 1, [])
-
-        assert captured_headers[0] == "application/json"
-
-    def test_method_is_post(self):
-        target = _target()
-        captured_methods = []
-
-        def fake_urlopen(req, timeout=None):
-            captured_methods.append(req.get_method())
-            return _mock_urlopen_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one(target, "uuid", 1, [])
-
-        assert captured_methods[0] == "POST"
-
 
 # ---------------------------------------------------------------------------
 # _send_one: application failure (ok=False)
@@ -162,13 +110,6 @@ class TestSendOneRequestFormat:
 class TestSendOneApplicationFailure:
     def setup_method(self):
         _clear_state()
-
-    def test_ok_false_increments_fail_count(self):
-        target = _target(ip="1.2.3.4")
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(ok=False)):
-            dv._send_one(target, "uuid", 1, [])
-
-        assert dv._fail_counts.get("1.2.3.4", 0) == 1
 
     def test_ok_false_does_not_set_clamped(self):
         target = _target()
@@ -180,62 +121,137 @@ class TestSendOneApplicationFailure:
 
 
 # ---------------------------------------------------------------------------
-# _send_one: 403 unauthorized — debug only
+# _send_one and _send_one_mute: one request shape, one set of failure rules
 # ---------------------------------------------------------------------------
 
-class TestSendOne403:
+class _SendKind(NamedTuple):
+    send: object       # send(target): one POST through the sender under test
+    success: object   # success(ok=True): the matching urlopen response
+    path: str
+
+
+def _send_volume(target):
+    dv._send_one(target, "uuid", 1, [])
+
+
+def _send_mute(target):
+    dv._send_one_mute(target, "uuid", True)
+
+
+@pytest.fixture(params=[
+    pytest.param(_SendKind(_send_volume, lambda ok=True: _mock_urlopen_success(ok=ok),
+                           "/api/dial/volume"), id="volume"),
+    pytest.param(_SendKind(_send_mute, lambda ok=True: _mock_urlopen_mute_success(muted=True, ok=ok),
+                           "/api/dial/mute"), id="mute"),
+])
+def send_kind(request):
+    return request.param
+
+
+class TestSendOneEitherKind:
     def setup_method(self):
         _clear_state()
 
-    def test_403_does_not_increment_fail_count(self, caplog):
+    def test_sends_to_correct_url(self, send_kind):
+        target = _target(ip="10.0.0.5", port=7842)
+        captured = []
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req.full_url)
+            return send_kind.success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            send_kind.send(target)
+
+        assert captured[0] == "http://10.0.0.5:7842" + send_kind.path
+
+    def test_request_timeout_is_04(self, send_kind):
+        target = _target()
+        captured_timeouts = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_timeouts.append(timeout)
+            return send_kind.success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            send_kind.send(target)
+
+        assert captured_timeouts[0] == pytest.approx(0.4, abs=0.01)
+
+    def test_content_type_header_is_json(self, send_kind):
+        target = _target()
+        captured_headers = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_headers.append(req.get_header("Content-type"))
+            return send_kind.success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            send_kind.send(target)
+
+        assert captured_headers[0] == "application/json"
+
+    def test_method_is_post(self, send_kind):
+        target = _target()
+        captured_methods = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_methods.append(req.get_method())
+            return send_kind.success()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            send_kind.send(target)
+
+        assert captured_methods[0] == "POST"
+
+    def test_ok_false_increments_fail_count(self, send_kind):
+        target = _target(ip="1.2.3.4")
+        with patch("urllib.request.urlopen", return_value=send_kind.success(ok=False)):
+            send_kind.send(target)
+
+        assert dv._fail_counts.get("1.2.3.4", 0) == 1
+
+    def test_success_clears_fail_count(self, send_kind):
+        ip = "5.5.5.5"
+        dv._fail_counts[ip] = 3
+        target = _target(ip=ip)
+        with patch("urllib.request.urlopen", return_value=send_kind.success()):
+            send_kind.send(target)
+        assert ip not in dv._fail_counts
+
+    # 403 (legacy) and 412 (typed) refusals are debug-only: not a failure.
+    @pytest.mark.parametrize("code, msg", [
+        pytest.param(403, "Forbidden", id="403"),
+        pytest.param(412, "Precondition Failed", id="412"),
+    ])
+    def test_refusal_does_not_increment_fail_count(self, send_kind, caplog, code, msg):
         import logging
         target = _target(ip="9.9.9.9")
-        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=code, msg=msg, hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err):
             with caplog.at_level(logging.DEBUG):
-                dv._send_one(target, "uuid", 1, [])
+                send_kind.send(target)
 
         assert dv._fail_counts.get("9.9.9.9", 0) == 0
 
-    def test_403_logs_at_debug_not_warning(self, caplog):
+    @pytest.mark.parametrize("code, msg", [
+        pytest.param(403, "Forbidden", id="403"),
+        pytest.param(412, "Precondition Failed", id="412"),
+    ])
+    def test_refusal_logs_at_debug_not_warning(self, send_kind, caplog, code, msg):
         import logging
         target = _target(ip="9.9.9.9")
-        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=code, msg=msg, hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err):
             with caplog.at_level(logging.DEBUG):
-                dv._send_one(target, "uuid", 1, [])
+                send_kind.send(target)
 
         warning_msgs = [r for r in caplog.records
                         if r.levelno >= logging.WARNING and "9.9.9.9" in r.getMessage()]
         debug_msgs   = [r for r in caplog.records
                         if r.levelno == logging.DEBUG and "9.9.9.9" in r.getMessage()]
-        assert not warning_msgs, "403 should not log at WARNING"
-        assert debug_msgs, "403 should log at DEBUG"
-
-    def test_412_does_not_increment_fail_count(self, caplog):
-        import logging
-        target = _target(ip="9.9.9.9")
-        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            with caplog.at_level(logging.DEBUG):
-                dv._send_one(target, "uuid", 1, [])
-
-        assert dv._fail_counts.get("9.9.9.9", 0) == 0
-
-    def test_412_logs_at_debug_not_warning(self, caplog):
-        import logging
-        target = _target(ip="9.9.9.9")
-        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            with caplog.at_level(logging.DEBUG):
-                dv._send_one(target, "uuid", 1, [])
-
-        warning_msgs = [r for r in caplog.records
-                        if r.levelno >= logging.WARNING and "9.9.9.9" in r.getMessage()]
-        debug_msgs   = [r for r in caplog.records
-                        if r.levelno == logging.DEBUG and "9.9.9.9" in r.getMessage()]
-        assert not warning_msgs, "412 should not log at WARNING"
-        assert debug_msgs, "412 should log at DEBUG"
+        assert not warning_msgs, f"{code} should not log at WARNING"
+        assert debug_msgs, f"{code} should log at DEBUG"
 
 
 # ---------------------------------------------------------------------------
@@ -269,14 +285,6 @@ class TestSendOneClamp:
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=5)):
             dv._send_one(_target(), "uuid", -5, clamped)
         assert not clamped
-
-    def test_success_clears_fail_count(self):
-        ip = "5.5.5.5"
-        dv._fail_counts[ip] = 3
-        target = _target(ip=ip)
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=50)):
-            dv._send_one(target, "uuid", 1, [])
-        assert ip not in dv._fail_counts
 
 
 # ---------------------------------------------------------------------------
@@ -475,58 +483,6 @@ class TestSendOneMuteRequestFormat:
 
         assert captured_bodies[0] == {"dial_id": "dial-uuid-42", "action": "restore"}
 
-    def test_sends_to_correct_url(self):
-        target = _target(ip="10.0.0.6", port=7842)
-        captured = []
-
-        def fake_urlopen(req, timeout=None):
-            captured.append(req.full_url)
-            return _mock_urlopen_mute_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one_mute(target, "uuid", True)
-
-        assert captured[0] == "http://10.0.0.6:7842/api/dial/mute"
-
-    def test_request_timeout_is_04(self):
-        target = _target()
-        captured_timeouts = []
-
-        def fake_urlopen(req, timeout=None):
-            captured_timeouts.append(timeout)
-            return _mock_urlopen_mute_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one_mute(target, "uuid", True)
-
-        assert captured_timeouts[0] == pytest.approx(0.4, abs=0.01)
-
-    def test_content_type_header_is_json(self):
-        target = _target()
-        captured_headers = []
-
-        def fake_urlopen(req, timeout=None):
-            captured_headers.append(req.get_header("Content-type"))
-            return _mock_urlopen_mute_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one_mute(target, "uuid", True)
-
-        assert captured_headers[0] == "application/json"
-
-    def test_method_is_post(self):
-        target = _target()
-        captured_methods = []
-
-        def fake_urlopen(req, timeout=None):
-            captured_methods.append(req.get_method())
-            return _mock_urlopen_mute_success()
-
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            dv._send_one_mute(target, "uuid", True)
-
-        assert captured_methods[0] == "POST"
-
 
 # ---------------------------------------------------------------------------
 # _send_one_mute: free observation — the "muted" field is folded into the
@@ -610,88 +566,22 @@ class TestSendOneMuteReconciliation:
 
 
 # ---------------------------------------------------------------------------
-# _send_one_mute: application failure and 403 (mirrors _send_one's rules)
+# _send_one_mute: a refusal carries no body, so nothing is observed
 # ---------------------------------------------------------------------------
 
 class TestSendOneMuteFailureHandling:
     def setup_method(self):
         _clear_state()
 
-    def test_ok_false_increments_fail_count(self):
-        target = _target(ip="1.2.3.9")
-        with patch("urllib.request.urlopen",
-                   return_value=_mock_urlopen_mute_success(muted=True, ok=False)):
-            dv._send_one_mute(target, "uuid", True)
-        assert dv._fail_counts.get("1.2.3.9", 0) == 1
-
-    def test_success_clears_fail_count(self):
-        ip = "5.5.5.9"
-        dv._fail_counts[ip] = 3
-        target = _target(ip=ip)
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=True)):
-            dv._send_one_mute(target, "uuid", True)
-        assert ip not in dv._fail_counts
-
-    def test_403_does_not_increment_fail_count(self, caplog):
-        import logging
-        target = _target(ip="9.9.9.8")
-        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            with caplog.at_level(logging.DEBUG):
-                dv._send_one_mute(target, "uuid", True)
-        assert dv._fail_counts.get("9.9.9.8", 0) == 0
-
-    def test_403_logs_at_debug_not_warning(self, caplog):
-        import logging
-        target = _target(ip="9.9.9.8")
-        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            with caplog.at_level(logging.DEBUG):
-                dv._send_one_mute(target, "uuid", True)
-        warning_msgs = [r for r in caplog.records
-                        if r.levelno >= logging.WARNING and "9.9.9.8" in r.getMessage()]
-        debug_msgs = [r for r in caplog.records
-                      if r.levelno == logging.DEBUG and "9.9.9.8" in r.getMessage()]
-        assert not warning_msgs, "403 should not log at WARNING"
-        assert debug_msgs, "403 should log at DEBUG"
-
-    def test_403_does_not_observe(self):
-        """A 403 carries no body to fold in — the store must be untouched."""
+    @pytest.mark.parametrize("code, msg", [
+        pytest.param(403, "Forbidden", id="403"),
+        pytest.param(412, "Precondition Failed", id="412"),
+    ])
+    def test_refusal_does_not_observe(self, code, msg):
+        """A refusal carries no body to fold in — the store must be untouched."""
         target = _target(service_name="svc")
         _seed_mute_observation("svc", True)
-        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            dv._send_one_mute(target, "uuid", False)
-        assert dv.shown_muted("svc") is True
-
-    def test_412_does_not_increment_fail_count(self, caplog):
-        import logging
-        target = _target(ip="9.9.9.7")
-        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            with caplog.at_level(logging.DEBUG):
-                dv._send_one_mute(target, "uuid", True)
-        assert dv._fail_counts.get("9.9.9.7", 0) == 0
-
-    def test_412_logs_at_debug_not_warning(self, caplog):
-        import logging
-        target = _target(ip="9.9.9.7")
-        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            with caplog.at_level(logging.DEBUG):
-                dv._send_one_mute(target, "uuid", True)
-        warning_msgs = [r for r in caplog.records
-                        if r.levelno >= logging.WARNING and "9.9.9.7" in r.getMessage()]
-        debug_msgs = [r for r in caplog.records
-                      if r.levelno == logging.DEBUG and "9.9.9.7" in r.getMessage()]
-        assert not warning_msgs, "412 should not log at WARNING"
-        assert debug_msgs, "412 should log at DEBUG"
-
-    def test_412_does_not_observe(self):
-        """A 412 carries no body to fold in — the store must be untouched."""
-        target = _target(service_name="svc")
-        _seed_mute_observation("svc", True)
-        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
+        err = urllib.error.HTTPError(url="", code=code, msg=msg, hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err):
             dv._send_one_mute(target, "uuid", False)
         assert dv.shown_muted("svc") is True
@@ -1345,16 +1235,10 @@ class TestRefusalsFeedAuthMap:
         from dial_auth import auth_map
         return auth_map.state("a" * 20)
 
-    def test_volume_412_marks_appliance_unauthorized(self):
+    def test_412_marks_appliance_unauthorized(self, send_kind):
         body = json.dumps({"ok": False, "error": "dial_not_authorized", "appliance_id": "a" * 20}).encode()
         with patch("urllib.request.urlopen", side_effect=_refusal(412, body)):
-            dv._send_one(_id_target(2), "uuid", 1, [])
-        assert self._state() == "unauthorized"
-
-    def test_mute_412_marks_appliance_unauthorized(self):
-        body = json.dumps({"ok": False, "error": "dial_not_authorized", "appliance_id": "a" * 20}).encode()
-        with patch("urllib.request.urlopen", side_effect=_refusal(412, body)):
-            dv._send_one_mute(_id_target(2), "uuid", True)
+            send_kind.send(_id_target(2))
         assert self._state() == "unauthorized"
 
     def test_volume_412_for_another_appliance_id_is_ignored(self):
@@ -1368,14 +1252,9 @@ class TestRefusalsFeedAuthMap:
             dv._send_one(_id_target(2), "uuid", 1, [])
         assert self._state() == "unknown"
 
-    def test_volume_legacy_403_marks_appliance_unauthorized(self):
+    def test_legacy_403_marks_appliance_unauthorized(self, send_kind):
         with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}")):
-            dv._send_one(_id_target(0), "uuid", 1, [])
-        assert self._state() == "unauthorized"
-
-    def test_mute_legacy_403_marks_appliance_unauthorized(self):
-        with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}")):
-            dv._send_one_mute(_id_target(0), "uuid", True)
+            send_kind.send(_id_target(0))
         assert self._state() == "unauthorized"
 
     def test_v2_403_stays_transient(self):
