@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+import math
 import os
 import sys
 import threading
@@ -721,6 +722,12 @@ class DialDisplay:
         # _render_logo_locked/_display_idle_locked (under self._lock) and by
         # touch_surface() (lock-free, same discipline as _idle_started_at).
         self._idle_affordance = False
+        # Monotonic deadline until which the controls bands are hidden after
+        # an artwork tap (0.0, i.e. never, until something arms it) — set by
+        # the touch thread, read lock-free by the repaint loop's deadline
+        # scheduling and by the overlay gates. Plain float write/read, same
+        # discipline as _idle_started_at.
+        self._controls_hidden_until: float = 0.0
 
         # ---- Selector, repeat and picker screen state -------------------
         # self._screen is written under self._lock — usually by the repaint
@@ -1580,7 +1587,16 @@ class DialDisplay:
 
     def _repaint_run(self) -> None:
         while not self._repaint_stop_event.is_set():
-            signaled = self._overlay_signal.wait(timeout=1.0)
+            # Wait no longer than the next moment something on screen must
+            # change on its own (the replaying counter's next second, a
+            # controls-hide window ending) — see _next_repaint_deadline().
+            # Never longer than a second either way, so stop() and the
+            # once-a-second housekeeping below are still noticed promptly
+            # when nothing is scheduled.
+            deadline = self._next_repaint_deadline()
+            now = time.monotonic()
+            timeout = 1.0 if deadline is None else max(0.0, min(1.0, deadline - now))
+            signaled = self._overlay_signal.wait(timeout=timeout)
             if self._repaint_stop_event.is_set():
                 break
             if not signaled:
@@ -2181,22 +2197,56 @@ class DialDisplay:
                 self._close_secondary_locked()
 
     def _tick_repeat_line(self) -> None:
-        """Recompose the repeat screen once a second while it is showing a
-        live Replaying position, so the line visibly counts up between
-        polls — called from the repeat thread's own 1s timeout branch. No
-        HTTP call is added for this: the interpolation is purely local
-        (see _interpolate_repeat_position()) and the next poll always
-        corrects any drift. A no-op while asleep (the repeat thread does
-        nothing then) or when the repeat screen is not the one on screen.
+        """Recompose the repeat screen once its live Replaying position
+        reaches its next displayed second, so the line visibly counts up
+        between polls without skipping or repeating a value — called from
+        the repeat thread's own timeout branch (see _repaint_run), which
+        sizes its wait so this lands within a few ms of that boundary. A
+        housekeeping wake that lands mid-second (the wait capped at a
+        second when something else is scheduled sooner, or the plain
+        fallback timeout) is not due and must not force an off-boundary
+        repaint. No HTTP call: the interpolation is purely local (see
+        _interpolate_repeat_position()) and the next poll always corrects
+        any drift. A no-op while asleep or when the repeat screen is not
+        the one on screen.
         """
         if self._screen != "repeat":
             return
         screen = self._repeat_screen
         if screen is None:
             return
-        rec = repeat_store.get(screen.appliance_id, time.monotonic())
-        if rec is not None and rec.state == "replaying":
+        now = time.monotonic()
+        rec = repeat_store.get(screen.appliance_id, now)
+        if rec is None or rec.state != "replaying":
+            return
+        shown = max(0.0, _interpolate_repeat_position(rec, now) - REPEAT_COUNTER_LATENCY_S)
+        remaining = math.floor(shown) + 1.0 - shown
+        # remaining is close to 1.0 right after crossing an integer second
+        # and close to 0.0 just before the next one — due only in the
+        # former case, within the same small scheduling tolerance
+        # _next_repaint_deadline() pads its own deadline by.
+        if remaining >= 1.0 - 0.015:
             self._overlay_signal.set()
+
+    def _next_repaint_deadline(self) -> "float | None":
+        """The earliest monotonic time something on screen must change on
+        its own: the replaying counter's next integer boundary, or the end
+        of a controls-hide window (see hide_controls()). None when nothing
+        is scheduled — the caller then falls back to its own housekeeping
+        cadence. Lock-free plain reads, the same discipline
+        _check_secondary_timeout() uses; reads repeat_store's own leaf lock
+        with no manager lock held, as _tick_repeat_line() does.
+        """
+        deadlines = []
+        if self._screen == "repeat" and self._repeat_screen is not None:
+            now = time.monotonic()
+            rec = repeat_store.get(self._repeat_screen.appliance_id, now)
+            if rec is not None and rec.state == "replaying":
+                shown = max(0.0, _interpolate_repeat_position(rec, now) - REPEAT_COUNTER_LATENCY_S)
+                deadlines.append(now + (math.floor(shown) + 1.0 - shown) + 0.005)
+        if self._controls_hidden_until > time.monotonic():
+            deadlines.append(self._controls_hidden_until + 0.005)
+        return min(deadlines) if deadlines else None
 
     def _tick_outputs_refresh(self) -> None:
         """Enqueue a fresh outputs-list fetch every OUTPUTS_REFRESH_S while
@@ -2473,7 +2523,11 @@ class DialDisplay:
             # (re)start reads "0:00" for the first couple of seconds
             # instead of a small negative-turned-huge wrapped value.
             pos = max(0.0, pos - REPEAT_COUNTER_LATENCY_S)
-            line = f"{format_mmss(pos)} / {format_mmss(rec.duration_seconds)}"
+            # Floored, not rounded: the displayed second must not advance
+            # until the full second has elapsed, or an off-boundary repaint
+            # (see _next_repaint_deadline) could show a value that then
+            # appears to jump back down a moment later.
+            line = f"{format_mmss(math.floor(pos))} / {format_mmss(rec.duration_seconds)}"
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=True, stop_pressed=False,

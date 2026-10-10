@@ -4245,20 +4245,48 @@ class TestRepeatLineInterpolation:
         pos = dd._interpolate_repeat_position(rec, now=99.0)  # clock went backwards
         assert pos >= 0.0
 
-    def test_tick_repeat_line_signals_only_while_replaying(self):
-        aid = "9" * 20
-        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
-        display, fb, gt = _make_display(targets=[t])
-        display.enable()
-        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="replaying", armed=True))
-        display.toggle_repeat_screen()
+    def _open_repeat_screen_directly(self, display, aid):
+        """Set up the repeat screen's own state without going through a
+        real poll, so the clock driving the replaying position can be
+        fully controlled by the test."""
         with display._lock:
-            display._repaint_current_locked()
-        assert display._screen == "repeat"
+            display._screen = "repeat"
+            display._repeat_screen = dd.RepeatScreenState(
+                appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+            )
 
+    def _seed_replaying(self, aid, position_seconds, observed_at=1000.0):
+        import dial_repeat_store as drs
+        drs.repeat_store.update(aid, drs.RepeatRecord(
+            available=True, state="replaying", armed=True,
+            recording_seconds=30.0, position_seconds=position_seconds, duration_seconds=30.0,
+            observed_at=observed_at,
+        ))
+
+    def test_tick_repeat_line_signals_at_the_boundary(self):
+        aid = "9" * 20
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._open_repeat_screen_directly(display, aid)
+        self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
+        # shown(now) = position + elapsed - REPEAT_COUNTER_LATENCY_S
+        #            = 5.0 + 1.002 - 2.0 = 4.002 -- just past the 4.0 boundary.
         display._overlay_signal.clear()
-        display._tick_repeat_line()
+        with patch("dial_display.time.monotonic", return_value=1001.002):
+            display._tick_repeat_line()
         assert display._overlay_signal.is_set()
+
+    def test_tick_repeat_line_does_not_signal_mid_second(self):
+        aid = "9" * 20
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._open_repeat_screen_directly(display, aid)
+        self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
+        # shown(now) = 5.0 + 1.5 - 2.0 = 4.5 -- mid-second, not due.
+        display._overlay_signal.clear()
+        with patch("dial_display.time.monotonic", return_value=1001.5):
+            display._tick_repeat_line()
+        assert not display._overlay_signal.is_set()
 
     def test_tick_repeat_line_noop_while_hold(self):
         aid = "10" * 10
@@ -4274,6 +4302,98 @@ class TestRepeatLineInterpolation:
         display._overlay_signal.clear()
         display._tick_repeat_line()
         assert not display._overlay_signal.is_set()
+
+
+class TestNextRepaintDeadline:
+    def _seed(self, aid, position_seconds, observed_at=1000.0):
+        import dial_repeat_store as drs
+        drs.repeat_store.update(aid, drs.RepeatRecord(
+            available=True, state="replaying", armed=True,
+            recording_seconds=30.0, position_seconds=position_seconds, duration_seconds=30.0,
+            observed_at=observed_at,
+        ))
+
+    def _opened(self, aid):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "repeat"
+            display._repeat_screen = dd.RepeatScreenState(
+                appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+            )
+        return display
+
+    @pytest.mark.parametrize("shown, expected_remaining", [(2.3, 0.7), (2.999, 0.001), (3.0, 1.0)])
+    def test_boundary_offset_from_shown_position(self, shown, expected_remaining):
+        aid = "d" * 20
+        display = self._opened(aid)
+        # Chosen so shown(now) == `shown` exactly: shown = position +
+        # elapsed - REPEAT_COUNTER_LATENCY_S, with elapsed fixed at 1.0.
+        position = shown + dd.REPEAT_COUNTER_LATENCY_S - 1.0
+        self._seed(aid, position_seconds=position, observed_at=1000.0)
+        now = 1001.0
+        with patch("dial_display.time.monotonic", return_value=now):
+            deadline = display._next_repaint_deadline()
+        assert deadline == pytest.approx(now + expected_remaining + 0.005, abs=1e-6)
+
+    def test_none_when_nothing_scheduled(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        assert display._next_repaint_deadline() is None
+
+    def test_none_while_hold_not_replaying(self):
+        aid = "f" * 20
+        display = self._opened(aid)
+        import dial_repeat_store as drs
+        drs.repeat_store.update(aid, drs.RepeatRecord(
+            available=True, state="hold", armed=False,
+            recording_seconds=30.0, position_seconds=0.0, duration_seconds=30.0,
+            observed_at=1000.0,
+        ))
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            assert display._next_repaint_deadline() is None
+
+    def test_controls_hidden_deadline_alone(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._controls_hidden_until = 1000.2
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            deadline = display._next_repaint_deadline()
+        assert deadline == pytest.approx(1000.205)
+
+    def test_earlier_of_repeat_and_controls_hidden_wins(self):
+        aid = "e" * 20
+        display = self._opened(aid)
+        # shown(1000.0) == 2.0 exactly -> repeat deadline is 1000.0 + 1.0 + 0.005.
+        self._seed(aid, position_seconds=2.0 + dd.REPEAT_COUNTER_LATENCY_S, observed_at=1000.0)
+        display._controls_hidden_until = 1000.3
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            deadline = display._next_repaint_deadline()
+        assert deadline == pytest.approx(1000.305)
+
+
+class TestRepeatCounterFloors:
+    """The replaying position line floors rather than rounds, so the
+    displayed second only ever advances once the full second has
+    elapsed."""
+
+    def test_position_floors_not_rounds(self):
+        import dial_repeat_store as drs
+        aid = "20" * 10
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        screen = dd.RepeatScreenState(
+            appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+        )
+        for position, expected in [(2.0, "0:00"), (2.9, "0:00"), (3.0, "0:01"), (3.9, "0:01")]:
+            drs.repeat_store.update(aid, drs.RepeatRecord(
+                available=True, state="replaying", armed=True,
+                recording_seconds=30.0, position_seconds=position,
+                duration_seconds=30.0, observed_at=1000.0,
+            ))
+            with display._lock:
+                view = display._build_repeat_view_locked(screen, 1000.0)
+            assert view.line.startswith(expected + " / "), (position, view.line)
 
 
 # ---------------------------------------------------------------------------
