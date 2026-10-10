@@ -22,6 +22,8 @@ from __future__ import annotations
 import http.client
 import json as _json
 import logging
+import threading
+import time
 
 from autostream_dials import (
     get_dial_sighting,
@@ -29,6 +31,7 @@ from autostream_dials import (
     validate_dial_name,
     write_dial_entry,
 )
+from autostream_rpi import get_appliance_id
 from autostream_webui_api import send_json, send_browser_api_error, _NGINX_INTERCEPTED_STATUSES
 
 _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
@@ -209,6 +212,66 @@ def dispatch_dial_management_post(handler, path: str, json_obj) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auth-changed push
+# ---------------------------------------------------------------------------
+# Best-effort notification to a dial that its authorization state may have
+# changed, so it can re-poll now instead of waiting for its next scheduled
+# tick. The push grants nothing by itself -- it only causes a poll -- so a
+# lost or failed push is harmless: the dial's own status poll is the only
+# source of authorization truth.
+
+_AUTH_PUSH_TIMEOUT_S = 1.0
+_AUTH_PUSH_RETRY_DELAY_S = 2.0
+
+
+def _post_auth_changed(ip: str, port: int, appliance_id: str, timeout: float) -> bool:
+    """One POST /auth-changed to the dial's own server. Never raises.
+
+    Returns True on any 2xx response. Plain http.client, no redirects
+    followed and no interest in the response body -- the push is advisory.
+    """
+    conn = None
+    try:
+        conn = http.client.HTTPConnection(ip, port, timeout=timeout)
+        body = _json.dumps({"appliance_id": appliance_id}).encode()
+        conn.request("POST", "/auth-changed", body=body,
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        return 200 <= resp.status < 300
+    except Exception as e:
+        logging.debug("dial auth push: POST %s:%s/auth-changed failed: %s", ip, port, e)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _auth_push_worker(uuid: str, appliance_id: str) -> None:
+    """Background-thread body: one push, one retry after a short delay."""
+    sighting = get_dial_sighting(uuid)
+    if sighting is None:
+        logging.debug("dial auth push: %s not sighted, skipping", uuid)
+        return
+    if _post_auth_changed(sighting.ip, sighting.port, appliance_id, _AUTH_PUSH_TIMEOUT_S):
+        return
+    time.sleep(_AUTH_PUSH_RETRY_DELAY_S)
+    _post_auth_changed(sighting.ip, sighting.port, appliance_id, _AUTH_PUSH_TIMEOUT_S)
+
+
+def notify_dial_auth_changed(uuid: str) -> None:
+    """Best-effort, fire-and-forget. Called by the authorize and revoke
+    handlers AFTER their response is sent. No-op when this appliance has no
+    identity (there is nothing to correlate on the dial).
+    """
+    appliance_id = get_appliance_id()
+    if not appliance_id:
+        return
+    threading.Thread(target=_auth_push_worker, args=(uuid, appliance_id),
+                     daemon=True, name="dial-auth-push").start()
+
+
+# ---------------------------------------------------------------------------
 # Authorize / revoke
 # ---------------------------------------------------------------------------
 
@@ -226,6 +289,10 @@ def handle_dial_authorize_post(handler, json_obj: dict) -> None:
         return
     write_dial_entry(uuid, name)
     send_json(handler, 200, {"ok": True})
+    try:
+        notify_dial_auth_changed(uuid)
+    except Exception as e:
+        logging.debug("dial auth push: enqueue failed after authorize: %s", e)
 
 
 def handle_dial_revoke_post(handler, json_obj: dict) -> None:
@@ -235,6 +302,10 @@ def handle_dial_revoke_post(handler, json_obj: dict) -> None:
         return
     remove_dial_entry(uuid)
     send_json(handler, 200, {"ok": True})
+    try:
+        notify_dial_auth_changed(uuid)
+    except Exception as e:
+        logging.debug("dial auth push: enqueue failed after revoke: %s", e)
 
 
 # ---------------------------------------------------------------------------
