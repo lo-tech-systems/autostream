@@ -125,8 +125,7 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     `rotate` and `bgr`: if present it must be a strict JSON boolean. This is
     what keeps an old appliance's whole-object POST (which never sends the
     field at all) from 400ing, and a new appliance never sends it to a dial
-    whose GET response did not advertise it in the first place — see the
-    cross-version compatibility notes in the design docs.
+    whose GET response did not advertise it in the first place.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
