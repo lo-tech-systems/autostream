@@ -2303,7 +2303,7 @@ class TestComposeWarning:
                                               rotate=False, bgr=False, metrics=metrics)
         generic = compositor.compose_warning(
             base, width, height,
-            WarningView(title="SD card low", message="15% left, replace soon", buttons=("Dismiss",),
+            WarningView(title="microSD Health", message="15% left, replace soon", buttons=("Dismiss",),
                         geometry=GEOMETRY_SDHEALTH, pressed=pressed),
             rotate=False, bgr=False, metrics=metrics,
         )
