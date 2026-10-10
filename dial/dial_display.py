@@ -162,7 +162,7 @@ class NowPlaying:
     """
     service_name: str
     artist: str
-    title: str          # kept for a future title line; unused by the overlay
+    title: str          # track title, drawn on the title line above the artist
     master_volume: int | None
 
 
@@ -979,11 +979,12 @@ class DialDisplay:
             return snapshot
         now_playing = self._now_playing
         artist = now_playing.artist if now_playing is not None else ""
+        title = now_playing.title if now_playing is not None else ""
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
         muted = snapshot.muted if snapshot.muted is not None else is_muted()
         return dataclasses.replace(
-            snapshot, visible=True, artist=artist, volume=volume, muted=muted, name=name,
+            snapshot, visible=True, artist=artist, title=title, volume=volume, muted=muted, name=name,
         )
 
     def _redisplay_current_locked(self) -> None:

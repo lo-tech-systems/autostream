@@ -218,6 +218,7 @@ def test_reference_geometry_exact():
     assert layout.volume_cluster == (99, 0, 160, 29)
     assert layout.name == (3, 0, 93, 32)
     assert layout.artist == (3, 80, 157, 96)
+    assert layout.title == (3, 64, 157, 80)
     assert layout.down == (0, 99, 77, 128)
     assert layout.up == (83, 99, 160, 128)
     assert layout.divider_x == 80

@@ -1475,6 +1475,7 @@ class TestEffectiveOverlayMerge:
         try:
             result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
             assert result.artist == "The Artist"
+            assert result.title == "Title"
             assert result.volume == 50
         finally:
             dv.observe_master_volume(None, None)
@@ -1484,6 +1485,7 @@ class TestEffectiveOverlayMerge:
         display.enable()
         result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
         assert result.artist == ""
+        assert result.title == ""
         assert result.volume is None
 
     def test_pressed_and_visible_fields_survive_the_merge_unchanged(self):

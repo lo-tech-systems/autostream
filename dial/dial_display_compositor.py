@@ -201,6 +201,7 @@ class OverlayState:
     artist: str = ""
     volume: int | None = None
     name: str = ""
+    title: str = ""
 
 
 @dataclass(frozen=True)
@@ -395,6 +396,7 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
     # afterwards, the same discipline the pressed-highlight branch above
     # uses.
     _draw_text_with_halo(frame, layout.name, overlay.name, artist_font, width, height)
+    _draw_text_with_halo(frame, layout.title, overlay.title, artist_font, width, height)
     _draw_text_with_halo(frame, layout.artist, overlay.artist, artist_font, width, height)
     draw = ImageDraw.Draw(frame)
     _draw_minus_glyph(draw, layout.down)

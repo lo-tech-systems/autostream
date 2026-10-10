@@ -130,6 +130,7 @@ class OverlayLayout:
     bottom_band: Rect     # full-width dim region, rows [height-band_h, height)
     name: Rect            # appliance name, left part of top band (== NAME zone)
     artist: Rect          # centre-low text line, just above the bottom band (non-actuating)
+    title: Rect           # track title line, directly above the artist line (non-actuating)
     volume_cluster: Rect  # glyph + number, right part of top band (== MUTE zone)
     down: Rect            # bottom band, left half (== DOWN zone)
     up: Rect              # bottom band, right half (== UP zone)
@@ -227,6 +228,8 @@ def layout_for(width: int, height: int) -> OverlayLayout:
     # inset by m on each side. Non-actuating: no TouchZone, no dead-zone gap.
     artist_h = band_h // 2
     artist: Rect = (m, height - band_h - artist_h, width - m, height - band_h)
+    # Track title sits one line directly above the artist, same height.
+    title: Rect = (m, height - band_h - 2 * artist_h, width - m, height - band_h - artist_h)
 
     (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1])
     by0 = height - band_h + m
@@ -239,6 +242,7 @@ def layout_for(width: int, height: int) -> OverlayLayout:
         bottom_band=bottom_band,
         name=name,
         artist=artist,
+        title=title,
         volume_cluster=volume_cluster,
         down=down,
         up=up,

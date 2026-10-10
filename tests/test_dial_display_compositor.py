@@ -291,6 +291,25 @@ class TestOverlayVisible:
         )
         assert list(result.getdata()) != list(img.getdata())
 
+    def test_title_line_draws_above_artist(self, compositor):
+        img = self._panel_image()
+        layout = layout_for(img.width, img.height)
+        with_title = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="A Track Title"),
+        )
+        without_title = compositor.compose(
+            img, img.width, img.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist"),
+        )
+        # The title line draws in the title rect (above the artist line).
+        assert (
+            list(with_title.crop(layout.title).getdata())
+            != list(without_title.crop(layout.title).getdata())
+        )
+
     def test_not_visible_is_byte_identical_to_no_overlay(self, compositor):
         img = self._panel_image()
         no_overlay = compositor.compose(
