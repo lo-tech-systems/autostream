@@ -23,8 +23,8 @@ from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
-    DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, outputs_tap, pin_capable_outputs,
-    pin_window_end, six_band,
+    DERIVED_EQ_IDS, awaiting_pin, outputs_tap, pin_capable_outputs, pin_window_end, six_band,
+    title_fallback,
 )
 from dial_warning_text import appliance_warning_key
 
@@ -206,8 +206,9 @@ def _now_playing_block(snapshot) -> dict | None:
         "album": playing.album,
         "playing": bool(playing.playing),
         # What the page shows as the track while the appliance is playing but
-        # has not named it yet; the same word the screen's view uses.
-        "title_fallback": PLAYING_TEXT if awaiting_title(playing) else "",
+        # has not named it yet: the input's name when the appliance sent one,
+        # else the same word the screen's view uses.
+        "title_fallback": title_fallback(playing),
     }
 
 

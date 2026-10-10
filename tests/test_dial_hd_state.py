@@ -73,7 +73,7 @@ class TestCorpus:
     def test_every_named_scenario_exists(self):
         assert set(hs.SCENARIO_NAMES) == {
             "starting", "nothing_playing", "playing_artwork", "playing_no_artwork",
-            "playing_untitled", "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
+            "playing_untitled", "playing_untitled_input", "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
             "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_two", "eq_six",
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
             "appliance_warning", "appliance_warning_notice", "disconnected",
@@ -150,13 +150,19 @@ class TestShape:
         # The same word the screen's view puts in its artist row.
         assert PLAYING_TEXT == dial_display.PLAYING_ARTIST_TEXT
 
-        def fallback(playing, title):
+        assert _state("playing_untitled_input")["now_playing"]["title_fallback"] == "CD"
+
+        def fallback(playing, title, input_label=""):
             held = hs.SCENARIOS["playing_untitled"]
-            now_playing = NowPlaying("Lounge", "Dire Straits", title, 42, playing=playing)
+            now_playing = NowPlaying(
+                "Lounge", "Dire Straits", title, 42, playing=playing, input_label=input_label)
             return held.with_snapshot(now_playing=now_playing).state()["now_playing"]["title_fallback"]
         assert fallback(True, "") == "Playing"
         assert fallback(True, "Tunnel of Love") == ""
         assert fallback(False, "") == ""
+        assert fallback(True, "", "CD") == "CD"
+        assert fallback(True, "Tunnel of Love", "CD") == ""
+        assert fallback(False, "", "CD") == ""
 
     def test_volume_carries_the_readout_and_the_mute_flag_handed_in(self):
         assert _state("playing_artwork", muted=True)["volume"] == {

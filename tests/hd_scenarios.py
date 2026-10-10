@@ -253,6 +253,9 @@ def _build() -> dict:
     add(Scenario("playing_untitled", _playing(
         artwork=False, now_playing=NowPlaying("Lounge", "", "", 42),
     )))
+    add(Scenario("playing_untitled_input", _playing(
+        artwork=False, now_playing=NowPlaying("Lounge", "", "", 42, input_label="CD"),
+    )))
     add(Scenario("replay_hold", _replay_snapshot("hold", recording=1122.0), muted=None))
     add(Scenario("replaying", _replay_snapshot("replaying", armed=True, position=120.0, duration=1100.0)))
     add(Scenario("fading_out", _replay_snapshot("fading_out", position=1099.0, duration=1100.0)))

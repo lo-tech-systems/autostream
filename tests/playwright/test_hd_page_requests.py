@@ -73,6 +73,19 @@ class TestUntitledTrack:
         expect(page.locator("#title")).to_have_text("Playing")
         expect(page.locator("#sub")).to_have_text("")
 
+    def test_a_playing_appliance_that_named_its_input_reads_the_input(self, page, hd):
+        hd.show(hs.SCENARIOS["playing_untitled_input"])
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("CD")
+        expect(page.locator("#sub")).to_have_text("")
+
+    def test_the_input_name_gives_way_to_a_real_title(self, page, hd):
+        hd.show(hs.SCENARIOS["playing_untitled_input"])
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("CD")
+        hd.show(hs.SCENARIOS["playing_artwork"])
+        expect(page.locator("#title")).to_have_text("Tunnel of Love")
+
     def test_nothing_playing_still_says_so(self, page, hd):
         hd.show(hs.SCENARIOS["nothing_playing"])
         open_page(page, hd)
