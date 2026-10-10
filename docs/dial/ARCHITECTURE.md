@@ -35,6 +35,7 @@ view](#the-hd-page-is-a-second-view).
 | `dial_capabilities.py` | What an appliance can do for the dial. A small registry of what appliances' capabilities replies said, and `appliance_capabilities()`, the one place every caller asks. An appliance of a generation with a capabilities endpoint is read from its reply once that has landed; every other appliance, and one whose reply has not arrived, is read from its mDNS flags. Pure data and one leaf lock. |
 | `dial_appliance_fetch.py` | The reader for what an appliance says about itself (its capabilities and its warnings). One worker thread, queue and HTTP client of its own, so a slow appliance delays nothing else. Results go back to the core. |
 | `dial_hd_server.py` | `HdServer`: the HD page's loopback web server, the page's static files, the state body, the held artwork, the event stream route and the settings, info, action and panel routes. Also the optional development listener. |
+| `dial_hd_backdrop.py` | `BackdropStore`: the page's blurred backdrops, rendered on first request on the handler thread and kept in memory, one per artwork key and one for the logo. |
 | `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
 | `dial_hd_state.py` | `build_state()`: the pure function that turns a core snapshot into the page's state body. |
 | `dial_hd_actions.py` | The page's actions as one table onto core methods, with the argument checks. |
@@ -110,7 +111,9 @@ is handed) to a plain dictionary. It does no I/O, takes no lock and reads no
 clock, so the same input is always the same output. The body carries a version
 and only grows: fields are added, never renamed or removed. It carries only
 what the page draws, with artwork as a local key and URL rather than the
-appliance's address.
+appliance's address. The blurred backdrop behind the artwork is rendered the
+first time the page asks for it. The render runs on that request's own thread
+under the store's lock and nothing else.
 
 **Change hub.** The core's subscriber callback, the config listener and the
 panel all call `ChangeHub.publish()`, which only records the request and wakes

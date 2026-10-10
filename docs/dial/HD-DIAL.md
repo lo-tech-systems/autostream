@@ -91,8 +91,11 @@ itself, unless you have just scrolled that list.
 ### Now playing and volume
 
 The right side shows the artwork, the track and artist, a mute button and the
-master volume slider. With nothing playing it shows the autostream logo and
-**Nothing playing**.
+master volume slider. The artwork sits on a soft, blurred copy of itself, and
+the logo does the same when nothing is playing. When the track changes, the
+picture and its blurred backdrop fade into the new one together (a plain
+change if the screen is set to reduce motion). With nothing playing the side
+shows the autostream logo and **Nothing playing**.
 
 To keep the screen restful, while something plays and nobody has touched the
 screen for about six seconds, the replay row, track line and volume row fade

@@ -28,6 +28,9 @@
 - improvement: the dial's outputs list marks the appliance's default output (a
   bullet on the small screen, a Default label on the HD page), and appliances
   now report it to dials.
+- improvement: the HD dial's artwork sits on a blurred backdrop, as the small
+  screen's does, and the picture and backdrop fade together when the track
+  changes.
 - improvement: appliances advertise a new dial protocol generation (v3) and
   serve a capabilities list that a dial reads in place of the discovery flags,
   so new dial features need no new discovery keys. Older dials and appliances

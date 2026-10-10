@@ -135,25 +135,44 @@ input.hslider::-moz-range-thumb { width: 28px; height: 28px; border: 0; border-r
 input.hslider:disabled { opacity: 0.4; cursor: default; }
 
 /* Right column: now playing */
-/* The right column is one centred group: the artwork frame, the replay row's
-   slot, the track row and the volume row, with small fixed gaps. The frame is
-   the largest square that fits (the height cap, the column width, or what is
-   left after the fixed rows), and the replay row's height is reserved while
-   it has content, so nothing can overlap. */
+/* Right column: the artwork zone over three fixed rows. The zone takes
+   whatever height the rows leave, so a filled replay row shrinks the zone
+   and the frame in it, never the rows. The backdrop fills the zone and the
+   frame is the largest square that fits inside it, under the height cap. */
 .right {
-    --gap: 10px; --replay-h: 0px;
-    min-width: 0; min-height: 0; container-type: size;
-    display: flex; flex-direction: column; justify-content: center; gap: var(--gap);
+    --gap: 10px; --art-inset: 12px;
+    min-width: 0; min-height: 0;
+    display: flex; flex-direction: column; gap: var(--gap);
 }
-.right:has(> .replay-row:not(:empty)) { --replay-h: calc(var(--row-h) + var(--gap)); }
+.art-zone {
+    position: relative; flex: 1 1 0; min-height: 0; container-type: size;
+    display: grid; place-items: center; border-radius: 14px; overflow: hidden;
+}
+.backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .art-frame {
-    --art: min(54vh, 100cqw, calc(100cqh - 2 * var(--row-h) - 3 * var(--gap) - var(--replay-h)));
-    flex: none; align-self: center; width: var(--art); height: var(--art);
+    --art: min(54vh, calc(100cqw - 2 * var(--art-inset)), calc(100cqh - 2 * var(--art-inset)));
+    position: relative; width: var(--art); height: var(--art);
     padding: 7px; border-radius: 14px;
     border: 1px solid var(--color-border-card); background: var(--color-surface-pane);
 }
-.art { width: 100%; height: 100%; object-fit: contain; border-radius: 8px; display: block; }
-.art.logo { padding: 8%; }
+/* The pictures lie over each other inside the frame's padding. An absolutely
+   placed image does not stretch between insets, so each gets a size too. */
+.art {
+    --art-box: calc(100% - 14px);
+    position: absolute; left: 7px; top: 7px; width: var(--art-box); height: var(--art-box);
+    object-fit: contain; border-radius: 8px; display: block;
+}
+.art.logo {
+    --art-box: calc((100% - 14px) * 0.84);
+    left: calc(7px + (100% - 14px) * 0.08); top: calc(7px + (100% - 14px) * 0.08);
+}
+/* A picture and its ghost cross-fade: the ghost holds the last picture and
+   fades out while the front, loaded hidden, fades in. */
+.art, .backdrop { transition: opacity 300ms ease; }
+.art.loading, .backdrop.loading { opacity: 0; transition: none; }
+.ghost { opacity: 0; pointer-events: none; }
+.ghost.showing { opacity: 1; transition: none; }
+.ghost:not([src]) { visibility: hidden; }
 .replay-row { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; min-height: var(--row-h); }
 .replay-row:empty { display: none; }
 .track-row { flex: none; display: flex; align-items: center; gap: 12px; min-width: 0; height: var(--row-h); }
@@ -203,6 +222,7 @@ input.hslider:disabled { opacity: 0.4; cursor: default; }
 
 button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
+    .art, .backdrop, .ghost { transition: none; }
     .toast, .output-card, .hd .output-toggle .switch, .hd .output-toggle .switch::after { transition: none; }
 }
 
@@ -230,9 +250,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .replay-counter.frozen { color: var(--color-text-dim); }
 
 /* Controls fade away on a playing screen nobody touches, and the artwork takes the room */
-.right.controls-hidden > :not(.art-frame) { display: none; }
+.right.controls-hidden > :not(.art-zone) { display: none; }
 .right.controls-hidden .art-frame { --art: min(100cqw, 100cqh); }
-.right > :not(.art-frame) { animation: reveal 200ms ease; }
+.right > :not(.art-zone) { animation: reveal 200ms ease; }
 @keyframes reveal { from { opacity: 0; } to { opacity: 1; } }
 
 /* Pull-down handle, scrim and sheet */
@@ -358,5 +378,5 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .sleep span { color: #2a3a4a; font-size: 0.87em; }
 
 @media (prefers-reduced-motion: reduce) {
-    .sheet, .eq, .scrim, .sleep, .progress-bar, .right > :not(.art-frame) { transition: none; animation: none; }
+    .sheet, .eq, .scrim, .sleep, .progress-bar, .right > :not(.art-zone) { transition: none; animation: none; }
 }

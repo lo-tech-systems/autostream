@@ -19,7 +19,8 @@
         tapMovePx: 6,               // a press that moves less than this is a tap
         dragCloseFraction: 3,       // a pull-down moved more than 1/this of its height stays moved
         userScrollHoldMs: 3000,     // after the user scrolls a list, the page leaves it alone this long
-        autoScrollSettleMs: 400     // scroll events this soon after the page's own scroll are not the user's
+        autoScrollSettleMs: 400,    // scroll events this soon after the page's own scroll are not the user's
+        pictureSettleMs: 2000       // a picture that has not loaded by then is shown anyway
     };
 
     // The first rule that matches gives an appliance row its label.
@@ -59,6 +60,7 @@
 
     const LOGO_URL = "/static/logo.png";
     const ARTWORK_PREFIX = "/api/v1/artwork/";
+    const LOGO_BACKDROP_URL = "/api/v1/logo/backdrop";
     const ACTION_PREFIX = "/api/v1/actions/";
 
     // Everything that is not an action under the action prefix.
@@ -453,6 +455,8 @@
         const known = mine && typeof volume.level === "number";
         const art = s.artwork && typeof s.artwork.url === "string" && s.artwork.url.indexOf(ARTWORK_PREFIX) === 0
             ? s.artwork.url : "";
+        const backdrop = art && typeof s.artwork.backdrop_url === "string"
+            && s.artwork.backdrop_url.indexOf(ARTWORK_PREFIX) === 0 ? s.artwork.backdrop_url : "";
         const text = nowPlayingText(s, focus);
 
         const panel = s.panel;
@@ -480,7 +484,7 @@
             speakersLabel: focus ? "Speakers on " + focus.name : "Speakers",
             speakers: speakers,
             speakersNote: speakerNote(focus, outputs, speakers),
-            title: text.title, sub: text.sub, art: art,
+            title: text.title, sub: text.sub, art: art, backdrop: backdrop,
             eqVisible: eq.available,
             volume: {
                 enabled: usable && known,
@@ -512,7 +516,8 @@
         appliancesList: $("appliances-list"), speakersList: $("speakers-list"),
         speakers: $("speakers"), speakersNote: $("speakers-note"), speakersLabel: $("speakers-label"),
         right: $("right"), replay: $("replay-row"),
-        art: $("art"), title: $("title"), sub: $("sub"), eq: $("eq-open"), mute: $("mute"),
+        art: $("art"), artPrev: $("art-prev"), backdrop: $("backdrop"), backdropPrev: $("backdrop-prev"),
+        artZone: $("art-zone"), title: $("title"), sub: $("sub"), eq: $("eq-open"), mute: $("mute"),
         master: $("master"), masterNum: $("master-num"), volumeRow: $("volume-row"),
         offline: $("offline"), toast: $("toast"),
         handle: $("handle"), scrim: $("scrim"), sheet: $("sheet"),
@@ -808,6 +813,59 @@
         node.scrollIntoView({ block: "nearest" });
     }
 
+    // The two pictures (artwork and its backdrop) change together: the ghosts
+    // take what is on screen, the fronts load the new sources hidden, and one
+    // class flip cross-fades them once both have loaded or fallen back.
+    const PICTURES = [
+        { front: els.art, ghost: els.artPrev, fallback: LOGO_URL },
+        { front: els.backdrop, ghost: els.backdropPrev, fallback: LOGO_BACKDROP_URL }
+    ];
+    const pictureSwap = { generation: 0, pending: 0, timer: null, open: false, target: LOGO_URL + " " + LOGO_BACKDROP_URL };
+
+    function swapPictures(artUrl, backdropUrl, logo) {
+        const target = artUrl + " " + backdropUrl;
+        if (pictureSwap.target === target) { return; }
+        pictureSwap.target = target;
+        pictureSwap.generation += 1;
+        clearTimeout(pictureSwap.timer);
+        const urls = [artUrl, backdropUrl];
+        // A change that arrives mid-load leaves the ghosts alone: they keep
+        // the last picture that was shown.
+        if (!pictureSwap.open) {
+            PICTURES.forEach((p) => {
+                p.ghost.setAttribute("src", p.front.getAttribute("src") || "");
+                p.ghost.classList.toggle("logo", p.front.classList.contains("logo"));
+                p.ghost.classList.add("showing");
+                p.front.classList.add("loading");
+            });
+        }
+        pictureSwap.open = true;
+        pictureSwap.pending = PICTURES.length;
+        PICTURES.forEach((p, i) => {
+            if (i === 0) { p.front.classList.toggle("logo", logo); }
+            p.front.setAttribute("src", urls[i]);
+        });
+        const generation = pictureSwap.generation;
+        pictureSwap.timer = setTimeout(() => finishSwap(generation), CONFIG.pictureSettleMs);
+    }
+
+    function finishSwap(generation) {
+        if (generation !== pictureSwap.generation || !pictureSwap.open) { return; }
+        pictureSwap.open = false;
+        pictureSwap.pending = 0;
+        clearTimeout(pictureSwap.timer);
+        void els.art.offsetWidth;   // commit the hidden state so the flip fades
+        PICTURES.forEach((p) => {
+            p.ghost.classList.remove("showing");
+            p.front.classList.remove("loading");
+        });
+    }
+
+    function pictureDone() {
+        pictureSwap.pending = Math.max(0, pictureSwap.pending - 1);
+        if (pictureSwap.pending === 0) { finishSwap(pictureSwap.generation); }
+    }
+
     function paint(vm) {
         els.app.classList.toggle("offline", vm.offline);
         els.app.classList.toggle("dimmed", vm.settings.dim !== null);
@@ -823,9 +881,7 @@
 
         setText(els.title, vm.title);
         setText(els.sub, vm.sub);
-        const src = vm.art || LOGO_URL;
-        if (els.art.getAttribute("src") !== src) { els.art.setAttribute("src", src); }
-        els.art.classList.toggle("logo", !vm.art);
+        swapPictures(vm.art || LOGO_URL, vm.backdrop || LOGO_BACKDROP_URL, !vm.art);
         els.eq.hidden = !vm.eqVisible;
         els.right.classList.toggle("controls-hidden", vm.controlsHidden);
         paintReplay(vm.replay);
@@ -1200,11 +1256,18 @@
     els.master.addEventListener("change", () => onMasterLevel(Number(els.master.value), true));
     trackDrag(els.master, () => "master");
     els.mute.addEventListener("click", onMute);
-    els.art.addEventListener("error", () => {
-        if (els.art.getAttribute("src") !== LOGO_URL) {
-            els.art.setAttribute("src", LOGO_URL);
-            els.art.classList.add("logo");
-        }
+    // A picture that fails falls back to the logo once; a failing fallback
+    // counts as loaded, so a swap always ends.
+    PICTURES.forEach((p, i) => {
+        p.front.addEventListener("load", pictureDone);
+        p.front.addEventListener("error", () => {
+            if (p.front.getAttribute("src") !== p.fallback) {
+                if (i === 0) { p.front.classList.add("logo"); }
+                p.front.setAttribute("src", p.fallback);
+                return;
+            }
+            pictureDone();
+        });
     });
 
     els.eq.addEventListener("click", () => setEqOpen(true));
@@ -1287,7 +1350,7 @@
         }
         if (els.right.contains(event.target)) {
             ui.touchAt = now;
-            ui.forceHidden = !!event.target.closest(".art-frame") && !!ui.vm && !ui.vm.controlsHidden;
+            ui.forceHidden = !!event.target.closest(".art-zone") && !!ui.vm && !ui.vm.controlsHidden;
             render();
         }
     }, true);

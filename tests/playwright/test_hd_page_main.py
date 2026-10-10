@@ -32,7 +32,7 @@ if _PLAYWRIGHT_INSTALLED:
     from playwright.sync_api import expect
 
 import hd_scenarios as hs  # noqa: E402
-from dial_core_state import NowPlaying, OutputRow, OutputsState  # noqa: E402
+from dial_core_state import Artwork, NowPlaying, OutputRow, OutputsState, artwork_key  # noqa: E402
 
 LOUNGE, KITCHEN = hs.LOUNGE, hs.KITCHEN
 SIZES = [(800, 480), (1024, 600), (1280, 800)]
@@ -254,7 +254,7 @@ class TestStates:
         assert slot.count() == 1
         order = page.evaluate(
             "[...document.querySelectorAll('#right > *')].map(e => e.className.split(' ')[0])")
-        assert order == ["art-frame", "replay-row", "track-row", "volume-row"]
+        assert order == ["art-zone", "replay-row", "track-row", "volume-row"]
 
     def test_markup_in_appliance_text_stays_text(self, page, hd):
         evil = "<img src=x onerror=alert(1)>"
@@ -268,7 +268,7 @@ class TestStates:
         expect(page.locator("#title")).to_have_text(evil)
         expect(rows(page).first.locator(".name")).to_have_text(evil)
         expect(card(page, "onerror").locator(".output-card-name")).to_have_text(evil)
-        assert page.locator("#app img").count() == 1
+        assert page.locator("#app img").count() == len(PICTURE_IDS)
         assert page.locator("#app [onerror]").count() == 0
 
 
@@ -753,30 +753,45 @@ class TestListCues:
             "['appliances-list', 'speakers-list'].map(i => document.getElementById(i).scrollTop)") == before
 
 
+COLUMN_SELECTORS = [".art-zone", ".art-frame", "#replay-row", ".track-row", "#volume-row"]
+
+
 def column_boxes(page) -> list:
     """The right column's visible blocks, top to bottom, as (name, box)."""
     boxes = page.evaluate(
-        """() => ['.art-frame', '#replay-row', '.track-row', '#volume-row'].map(sel => {
+        """(selectors) => selectors.map(sel => {
             const e = document.querySelector(sel);
             if (!e || getComputedStyle(e).display === 'none') { return null; }
             const r = e.getBoundingClientRect();
             return [sel, {x: r.x, y: r.y, width: r.width, height: r.height}];
-        }).filter(Boolean)"""
+        }).filter(Boolean)""",
+        COLUMN_SELECTORS,
     )
     return boxes
 
 
 def assert_column_sound(boxes, size) -> None:
     width, height = size
-    assert [name for name, _ in boxes][0] == ".art-frame"
+    assert [name for name, _ in boxes][:2] == [".art-zone", ".art-frame"]
     for _name, box in boxes:
         assert box["y"] >= -0.5 and box["y"] + box["height"] <= height + 0.5
         assert box["x"] >= -0.5 and box["x"] + box["width"] <= width + 0.5
-    for (_a, upper), (_b, lower) in zip(boxes, boxes[1:]):
+    zone, frame = boxes[0][1], boxes[1][1]
+    # The frame sits inside the zone, centred in it.
+    assert frame["x"] >= zone["x"] - 0.5 and frame["y"] >= zone["y"] - 0.5
+    assert frame["x"] + frame["width"] <= zone["x"] + zone["width"] + 0.5
+    assert frame["y"] + frame["height"] <= zone["y"] + zone["height"] + 0.5
+    assert abs((frame["x"] + frame["width"] / 2) - (zone["x"] + zone["width"] / 2)) <= 1
+    assert abs((frame["y"] + frame["height"] / 2) - (zone["y"] + zone["height"] / 2)) <= 1
+    # The zone starts the column; the rows follow it in order without overlap.
+    assert zone["y"] == min(box["y"] for _name, box in boxes)
+    below = [boxes[0]] + boxes[2:]
+    for (_a, upper), (_b, lower) in zip(below, below[1:]):
         assert lower["y"] >= upper["y"] + upper["height"] - 0.5, (upper, lower)
-    frame, below = boxes[0][1], boxes[1][1]
-    assert below["y"] - (frame["y"] + frame["height"]) <= 24
+    assert below[1][1]["y"] - (zone["y"] + zone["height"]) <= 24
     assert frame["height"] <= height * 0.54 + 1 and abs(frame["width"] - frame["height"]) <= 1
+    # The zone is most of the column even with the replay row showing.
+    assert zone["height"] >= (height - 34) * 0.55
 
 
 class TestRightColumn:
@@ -808,22 +823,271 @@ class TestRightColumn:
         hd.show(hs.SCENARIOS["playing_artwork"])
         open_page(page, hd, size)
         empty = column_boxes(page)
-        assert [n for n, _ in empty] == [".art-frame", ".track-row", "#volume-row"]
+        assert [n for n, _ in empty] == [".art-zone", ".art-frame", ".track-row", "#volume-row"]
         for name in ("replaying", "replay_hold", "fading_out"):
             hd.show(hs.SCENARIOS[name])
             expect(page.locator("#replay-row")).to_be_visible()
             filled = column_boxes(page)
-            assert [n for n, _ in filled] == [".art-frame", "#replay-row", ".track-row", "#volume-row"]
+            assert [n for n, _ in filled] == [
+                ".art-zone", ".art-frame", "#replay-row", ".track-row", "#volume-row"]
             assert_column_sound(filled, size)
-            assert filled[0][1]["height"] <= empty[0][1]["height"]
+            assert filled[0][1]["height"] <= empty[0][1]["height"] - 56
+            assert filled[1][1]["height"] <= empty[1][1]["height"]
+            # The track and volume rows do not move when the replay row fills.
+            assert dict(filled)[".track-row"]["height"] == dict(empty)[".track-row"]["height"]
+            assert dict(filled)["#volume-row"]["height"] == dict(empty)["#volume-row"]["height"]
         hd.cleanup()
+
+
+def real_cover(hd, name="cover") -> None:
+    """On the real server, hold a cover it can decode (the corpus's one is a
+    stand-in the imaging library rejects), under a key of its own."""
+    if hd.kind != "real":
+        return
+    key = artwork_key(f"https://provider.example/art/{name}.jpg")
+    held = Artwork("", key, _gradient_png(), "", hs.NOW - 5)
+    hd.backend.core.publish(artwork=held)
+
+
+class TestBackdrop:
+    def test_the_backdrop_layer_shows_the_artworks_backdrop(self, page, hd):
+        real_cover(hd)
+        open_page(page, hd)
+        backdrop = page.locator("#backdrop")
+        key = page.evaluate("document.getElementById('art').getAttribute('src')").rsplit("/", 1)[1]
+        expect(backdrop).to_have_attribute("src", f"/api/v1/artwork/{key}/backdrop")
+        wait_settled(page)
+        assert page.evaluate("document.getElementById('backdrop').naturalWidth") > 0
+        assert page.evaluate("getComputedStyle(document.getElementById('backdrop')).opacity") == "1"
+        assert backdrop.bounding_box() == page.locator(".art-zone").bounding_box()
+
+    def test_nothing_playing_shows_the_logo_backdrop(self, page, hd):
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        open_page(page, hd)
+        expect(page.locator("#backdrop")).to_have_attribute("src", "/api/v1/logo/backdrop")
+        expect(page.locator("#art")).to_have_class(re.compile("logo"))
+        page.wait_for_function("document.getElementById('backdrop').complete")
+        assert page.evaluate("document.getElementById('backdrop').naturalWidth") > 0
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    def test_the_zone_holds_the_backdrop_at_every_size(self, page, hd_mock, size):
+        hd = Driver("mock", hd_mock)
+        hd.show(hs.SCENARIOS["playing_artwork"])
+        open_page(page, hd, size)
+        zone = page.locator(".art-zone").bounding_box()
+        assert page.locator("#backdrop").bounding_box() == zone
+        first_row = page.locator(".track-row").bounding_box()
+        assert zone["y"] + zone["height"] <= first_row["y"]
+        hd.cleanup()
+
+    @pytest.mark.parametrize("scenario_name,share", [("playing_artwork", 1.0), ("nothing_playing", 0.84)])
+    def test_the_picture_fills_the_frame(self, page, hd_mock, scenario_name, share):
+        hd = Driver("mock", hd_mock)
+        hd.show(hs.SCENARIOS[scenario_name])
+        open_page(page, hd)
+        page.wait_for_function("document.getElementById('art').complete")
+        frame = page.locator(".art-frame").bounding_box()
+        art = page.locator("#art").bounding_box()
+        inner = frame["width"] - 16
+        assert abs(art["width"] - inner * share) <= 1 and abs(art["height"] - inner * share) <= 1
+        assert abs((art["x"] + art["width"] / 2) - (frame["x"] + frame["width"] / 2)) <= 1
+        assert abs((art["y"] + art["height"] / 2) - (frame["y"] + frame["height"] / 2)) <= 1
+        hd.cleanup()
+
+    def test_hidden_controls_keep_the_backdrop_behind_the_frame(self, page, hd):
+        open_page(page, hd)
+        page.locator(".art-frame").click()
+        expect(page.locator("#right")).to_have_class(re.compile("controls-hidden"))
+        zone = page.locator(".art-zone").bounding_box()
+        column = page.locator("#right").bounding_box()
+        assert page.locator("#backdrop").bounding_box() == zone
+        assert zone == column
+        frame = page.locator(".art-frame").bounding_box()
+        assert abs((frame["x"] + frame["width"] / 2) - (zone["x"] + zone["width"] / 2)) <= 1
+        assert abs((frame["y"] + frame["height"] / 2) - (zone["y"] + zone["height"] / 2)) <= 1
+
+    def test_a_tap_on_the_zone_beside_the_frame_toggles_the_controls(self, page, hd):
+        open_page(page, hd)
+        zone = page.locator(".art-zone").bounding_box()
+        expect(page.locator("#volume-row")).to_be_visible()
+        page.mouse.click(zone["x"] + 20, zone["y"] + zone["height"] / 2)
+        expect(page.locator("#volume-row")).to_be_hidden()
+        page.mouse.click(zone["x"] + 20, zone["y"] + zone["height"] / 2)
+        expect(page.locator("#volume-row")).to_be_visible()
+
+
+PICTURE_IDS = ("art", "art-prev", "backdrop", "backdrop-prev")
+LOGO_URL = "/static/logo.png"
+LOGO_BACKDROP = "/api/v1/logo/backdrop"
+
+SETTLED_JS = """() => {
+    const o = id => getComputedStyle(document.getElementById(id)).opacity;
+    return o('art') === '1' && o('backdrop') === '1' && o('art-prev') === '0'
+        && o('backdrop-prev') === '0' && !document.querySelector('.loading');
+}"""
+
+
+def wait_settled(page, timeout=5000) -> None:
+    """Both fronts shown, both ghosts gone, nothing still loading."""
+    page.wait_for_function(SETTLED_JS, timeout=timeout)
+
+
+WATCH_CLASSES = """
+(() => {
+    window.__classLog = [];
+    document.addEventListener('DOMContentLoaded', () => {
+        const watcher = new MutationObserver(records => {
+            for (const r of records) {
+                window.__classLog.push([r.target.id, r.target.className, performance.now()]);
+            }
+        });
+        for (const id of ['art', 'art-prev', 'backdrop', 'backdrop-prev']) {
+            watcher.observe(document.getElementById(id), {attributes: true, attributeFilter: ['class']});
+        }
+    });
+})();
+"""
+
+SAMPLE_OPACITIES = """() => {
+    window.__seen = [];
+    const sample = () => {
+        window.__seen.push(['art', 'art-prev', 'backdrop', 'backdrop-prev'].map(
+            id => getComputedStyle(document.getElementById(id)).opacity));
+        requestAnimationFrame(sample);
+    };
+    sample();
+}"""
+
+
+def not_found(route) -> None:
+    route.fulfill(status=404, content_type="application/json", body='{"ok":false}')
+
+
+ARTWORK_BACKDROP_URL = re.compile(r"/api/v1/artwork/[0-9a-f]{16}/backdrop$")
+LOGO_PICTURE_URLS = re.compile(r"/api/v1/logo/backdrop$|/static/logo\.png$")
+
+
+class TestPictureSwap:
+    def test_a_change_cross_fades_both_pictures(self, page, hd):
+        real_cover(hd)
+        page.add_init_script(WATCH_CLASSES)
+        open_page(page, hd)
+        wait_settled(page)
+        artwork_src = page.locator("#art").get_attribute("src")
+        backdrop_src = page.locator("#backdrop").get_attribute("src")
+        assert artwork_src.startswith("/api/v1/artwork/") and backdrop_src.endswith("/backdrop")
+        page.evaluate("window.__classLog.length = 0")
+
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        expect(page.locator("#art")).to_have_attribute("src", LOGO_URL)
+        expect(page.locator("#backdrop")).to_have_attribute("src", LOGO_BACKDROP)
+        expect(page.locator("#art-prev")).to_have_attribute("src", artwork_src)
+        expect(page.locator("#backdrop-prev")).to_have_attribute("src", backdrop_src)
+        wait_settled(page)
+
+        # Both pairs flip in the same step.
+        ends = {}
+        log = page.evaluate("window.__classLog")
+        for ident, classes, at in log:
+            names = classes.split()
+            if ident.endswith("-prev") and "showing" not in names:
+                ends[ident] = at
+            if not ident.endswith("-prev") and "loading" not in names:
+                ends[ident] = at
+        assert set(ends) == set(PICTURE_IDS), log
+        assert max(ends.values()) - min(ends.values()) < 50, ends
+
+        hd.show(hs.SCENARIOS["playing_artwork"])
+        expect(page.locator("#art")).to_have_attribute("src", re.compile("/api/v1/artwork/"))
+        expect(page.locator("#art-prev")).to_have_attribute("src", LOGO_URL)
+        wait_settled(page)
+        assert page.evaluate("document.getElementById('backdrop').naturalWidth") > 0
+
+    def test_the_ghost_passes_through_intermediate_opacities(self, page, hd):
+        real_cover(hd)
+        open_page(page, hd)
+        wait_settled(page)
+        page.evaluate(SAMPLE_OPACITIES)
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        expect(page.locator("#art")).to_have_attribute("src", LOGO_URL)
+        wait_settled(page)
+        seen = [float(frame[1]) for frame in page.evaluate("window.__seen")]
+        assert any(0.05 < value < 0.95 for value in seen), seen
+
+    def test_reduced_motion_cuts(self, page, hd):
+        real_cover(hd)
+        page.emulate_media(reduced_motion="reduce")
+        open_page(page, hd)
+        wait_settled(page)
+        page.evaluate(SAMPLE_OPACITIES)
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        expect(page.locator("#art")).to_have_attribute("src", LOGO_URL)
+        wait_settled(page)
+        page.wait_for_timeout(100)
+        seen = page.evaluate("window.__seen")
+        assert all(value in ("0", "1") for frame in seen for value in frame), seen
+        assert seen[-1] == ["1", "0", "1", "0"]
+
+    def test_a_missing_backdrop_falls_back_to_the_logo_backdrop(self, page, hd):
+        real_cover(hd)
+        page.route(ARTWORK_BACKDROP_URL, not_found)
+        open_page(page, hd)
+        expect(page.locator("#backdrop")).to_have_attribute("src", LOGO_BACKDROP)
+        wait_settled(page)
+        assert page.locator("#art").get_attribute("src").startswith("/api/v1/artwork/")
+        assert page.evaluate("document.getElementById('backdrop').naturalWidth") > 0
+
+    def test_nothing_sticks_when_everything_fails(self, page, hd):
+        real_cover(hd)
+        page.route(re.compile(r"/api/v1/artwork/"), not_found)
+        page.route(re.compile(r"/api/v1/logo/backdrop$"), not_found)
+        open_page(page, hd)
+        expect(page.locator("#art")).to_have_attribute("src", LOGO_URL)
+        expect(page.locator("#art")).to_have_class(re.compile("logo"))
+        wait_settled(page, 3000)
+
+    def test_a_stalled_load_settles(self, page, hd):
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        page.clock.install()
+        open_page(page, hd)
+        held = []
+        page.route(ARTWORK_BACKDROP_URL, lambda route: held.append(route))
+        hd.show(hs.SCENARIOS["playing_artwork"])
+        real_cover(hd)
+        expect(page.locator("#backdrop")).to_have_class(re.compile("loading"))
+        page.clock.run_for(2500)
+        expect(page.locator("#backdrop")).not_to_have_class(re.compile("loading"))
+        expect(page.locator("#art")).not_to_have_class(re.compile("loading"))
+        for route in held:
+            route.abort()
+
+    def test_a_quick_second_change_keeps_the_last_shown_picture_in_the_ghost(self, page, hd):
+        real_cover(hd)
+        open_page(page, hd)
+        wait_settled(page)
+        shown = page.locator("#art").get_attribute("src")
+        held = []
+        page.route(LOGO_PICTURE_URLS, lambda route: held.append(route))
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        expect(page.locator("#art")).to_have_attribute("src", LOGO_URL)
+        expect(page.locator("#art-prev")).to_have_attribute("src", shown)
+        expect(page.locator("#art-prev")).to_have_class(re.compile("showing"))
+        # Back to the first picture while the logo is still loading.
+        hd.show(hs.SCENARIOS["playing_artwork"])
+        real_cover(hd)
+        expect(page.locator("#art")).to_have_attribute("src", shown)
+        expect(page.locator("#art-prev")).to_have_attribute("src", shown)
+        wait_settled(page)
+        assert page.locator("#art-prev").get_attribute("src") == shown
+        for route in held:
+            route.abort()
 
 
 # ---------------------------------------------------------------------------
 # On demand: the review screenshots
 # ---------------------------------------------------------------------------
 
-SHOT_SCENARIOS = ("playing_artwork", "nothing_playing", "in_use_speaker", "unauthorized")
+SHOT_SCENARIOS = ("playing_artwork", "nothing_playing", "replaying", "in_use_speaker", "unauthorized")
 
 
 def _gradient_png(side: int = 96) -> bytes:
@@ -844,16 +1108,39 @@ def _gradient_png(side: int = 96) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+def _backdrop_bodies(art: bytes) -> tuple:
+    """Real backdrop renders for the cover and the logo when the imaging
+    library is here, else the corpus's stand-in."""
+    try:
+        import dial_display_image as images
+    except ImportError:
+        return hs.BACKDROP_BYTES, hs.BACKDROP_BYTES
+    logo = Path(__file__).resolve().parents[2] / "images" / "autostream-logo-centred-dark.png"
+    return images.render_artwork_backdrop(art), images.render_logo_backdrop(str(logo))
+
+
 @pytest.mark.skipif(not os.environ.get("HD_SHOTS_DIR"), reason="HD_SHOTS_DIR not set")
 @pytest.mark.parametrize("name", SHOT_SCENARIOS)
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
 def test_screenshots(page, hd_mock, name, size):
     hd = Driver("mock", hd_mock)
     art = _gradient_png()
-    page.route("**/api/v1/artwork/*", lambda route: route.fulfill(status=200, content_type="image/png", body=art))
+    cover_backdrop, logo_backdrop = _backdrop_bodies(art)
+    seen = []
+
+    def answer(body, kind):
+        def handler(route):
+            seen.append((kind, route.request.url))
+            route.fulfill(status=200, content_type=kind, body=body)
+        return handler
+
+    # The glob's * stops at a slash, so the artwork and its backdrop are separate routes.
+    page.route("**/api/v1/artwork/*", answer(art, "image/png"))
+    page.route("**/api/v1/artwork/*/backdrop", answer(cover_backdrop, "image/jpeg"))
+    page.route("**/api/v1/logo/backdrop", answer(logo_backdrop, "image/jpeg"))
     hd.show(hs.SCENARIOS[name])
     open_page(page, hd, size)
-    page.wait_for_function(
-        "(() => { const a = document.getElementById('art'); return a.complete; })()")
+    wait_settled(page)
+    assert any(kind == "image/jpeg" for kind, _url in seen)
     page.screenshot(path=str(Path(os.environ["HD_SHOTS_DIR"]) / f"hd_{name}_{size[0]}x{size[1]}.png"))
     hd.cleanup()

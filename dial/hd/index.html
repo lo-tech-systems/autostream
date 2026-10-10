@@ -28,7 +28,14 @@
 </section>
 </div>
 <div class="right" id="right">
-<div class="art-frame"><img class="art" id="art" src="/static/logo.png" alt="Artwork"></div>
+<div class="art-zone" id="art-zone">
+<img class="backdrop ghost" id="backdrop-prev" alt="" aria-hidden="true">
+<img class="backdrop" id="backdrop" src="/api/v1/logo/backdrop" alt="" aria-hidden="true">
+<div class="art-frame">
+<img class="art ghost logo" id="art-prev" alt="" aria-hidden="true">
+<img class="art logo" id="art" src="/static/logo.png" alt="Artwork">
+</div>
+</div>
 <div class="replay-row" id="replay-row"></div>
 <div class="track-row">
 <div class="track-text">
