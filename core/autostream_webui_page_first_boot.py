@@ -22,10 +22,13 @@ from typing import Optional
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
     FIFO_PATH,
+    INPUT_TYPE_LABELS,
+    INPUT_TYPES,
     load_state,
     mark_configured,
+    normalize_input_type,
     parse_config,
-    set_input_mode,
+    set_input_type,
 )
 from autostream_commissioning import (
     is_technically_complete,
@@ -155,7 +158,11 @@ def send_first_boot_appliance_page(
 
     monitor_devices = state.get_monitor_devices()
     current_dev1 = (snap.audio1.capture_device or "") if snap else ""
-    current_turntable1 = bool(snap.audio1.is_turntable) if snap else False
+    current_type1 = normalize_input_type(snap.audio1.input_type) if snap else "line"
+    type_options1 = "".join(
+        f'<option value="{t}"{" selected" if t == current_type1 else ""}>{INPUT_TYPE_LABELS[t]}</option>'
+        for t in INPUT_TYPES
+    )
     current_vol = int(snap.owntone.volume_percent) if snap else 20
     current_hn = get_system_hostname()
 
@@ -205,13 +212,10 @@ def send_first_boot_appliance_page(
         {_build_device_opts(current_dev1)}
       </select>
     </label>
-    <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.75rem;">
-      <label class="output-toggle" style="margin:0;">
-        <input type="checkbox" name="audio1_turntable" {'checked' if current_turntable1 else ''}>
-        <span class="switch"></span>
-      </label>
-      <span>Turntable (phono pre-amp required)</span>
-    </div>
+    <label style="display:block;margin-top:0.75rem;">Input type:
+      <select name="audio1_input_type">{type_options1}</select>
+    </label>
+    <div class="helptext" style="text-align:left;">Choose Turntable for a record player (phono pre-amp required).</div>
   </fieldset>
   <div style="margin-top:0.75rem;padding:0.75rem 1rem;border:1px solid #ccc;border-radius:8px;">
     <p style="margin:0 0 0.6rem;font-size:0.85rem;color:#666;">
@@ -319,7 +323,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     skip_input1 = fld("action", "") == "skip"
 
     audio1_dev = fld("audio1_capture_device", "").strip()
-    audio1_turntable = "audio1_turntable" in form
+    audio1_type = normalize_input_type(fld("audio1_input_type", "line"))
     if not skip_input1:
         if not is_valid_monitor_device_id(audio1_dev):
             send_first_boot_appliance_page(
@@ -348,7 +352,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             else:
                 raw.setdefault("audio1", {})["capture_device"] = audio1_dev
                 raw.setdefault("audio1", {})["enabled"] = True
-                set_input_mode(raw, 1, audio1_turntable)
+                set_input_type(raw, 1, audio1_type)
             raw.setdefault("owntone", {})["volume_percent"] = volume_percent
             # Fixed appliance path, not something first boot can choose
             raw.setdefault("general", {})["fifo_path"] = FIFO_PATH

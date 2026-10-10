@@ -153,9 +153,13 @@ class TestFirstBootAppliancePage:
         html = self._get_html(tmp_path)
         assert 'name="audio1_capture_device"' in html
 
-    def test_renders_turntable_checkbox(self, tmp_path):
+    def test_renders_input_type_select(self, tmp_path):
         html = self._get_html(tmp_path)
-        assert 'name="audio1_turntable"' in html
+        assert 'name="audio1_input_type"' in html
+        assert '<option value="turntable"' in html
+        assert '<option value="cd"' in html
+        assert '<option value="line" selected>Line</option>' in html
+        assert 'name="audio1_turntable"' not in html
 
     def test_renders_volume_slider(self, tmp_path):
         html = self._get_html(tmp_path)
@@ -367,7 +371,7 @@ class TestFirstBootFinishPost:
         html = _render(handler, written)
         assert "output" in html.lower()
 
-    def test_store_updated_with_correct_values(self, tmp_path):
+    def _finish_with(self, tmp_path, fields):
         from autostream_webui_page_first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
@@ -375,9 +379,9 @@ class TestFirstBootFinishPost:
         from urllib.parse import urlencode
         body = urlencode({
             "audio1_capture_device": VALID_ALSA,
-            "audio1_turntable": "on",
             "volume_percent": "40",
             "hostname": "autostream",
+            **fields,
         })
         with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
              patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
@@ -385,11 +389,31 @@ class TestFirstBootFinishPost:
              patch("autostream_webui_page_first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
-        snap = store.snapshot()
+        return store.snapshot()
+
+    def test_store_updated_with_correct_values(self, tmp_path):
+        snap = self._finish_with(tmp_path, {"audio1_input_type": "turntable"})
         assert snap.audio1.capture_device == VALID_ALSA
         assert snap.audio1.is_turntable is True
+        assert snap.audio1.input_type == "turntable"
         assert snap.audio1.silence_threshold_dbfs == -45.0
         assert snap.owntone.volume_percent == 40
+
+    def test_store_updated_for_a_cd_input(self, tmp_path):
+        snap = self._finish_with(tmp_path, {"audio1_input_type": "cd"})
+        assert snap.audio1.input_type == "cd"
+        assert snap.audio1.is_turntable is False
+        assert snap.audio1.silence_threshold_dbfs == -60.0
+
+    def test_missing_input_type_field_is_line(self, tmp_path):
+        snap = self._finish_with(tmp_path, {})
+        assert snap.audio1.input_type == "line"
+        assert snap.audio1.is_turntable is False
+        assert snap.audio1.silence_threshold_dbfs == -60.0
+
+    def test_unknown_input_type_field_is_line(self, tmp_path):
+        snap = self._finish_with(tmp_path, {"audio1_input_type": "reel"})
+        assert snap.audio1.input_type == "line"
 
     def test_finish_pushes_live_config_to_monitor(self, tmp_path):
         from autostream_webui_page_first_boot import handle_first_boot_finish_post
@@ -399,7 +423,7 @@ class TestFirstBootFinishPost:
         from urllib.parse import urlencode
         body = urlencode({
             "audio1_capture_device": VALID_ALSA,
-            "audio1_turntable": "on",
+            "audio1_input_type": "turntable",
             "volume_percent": "20",
             "hostname": "autostream",
         })
@@ -414,6 +438,7 @@ class TestFirstBootFinishPost:
         m_update.assert_called_once()
         assert m_update.call_args[0][0] == 1
         assert m_update.call_args[1]["is_turntable"] is True
+        assert m_update.call_args[1]["input_type"] == "turntable"
         m_reload.assert_called_once()
 
     def test_skip_button_present_in_appliance_page(self, tmp_path):
