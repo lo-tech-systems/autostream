@@ -3660,17 +3660,21 @@ class DialDisplay:
         if self._controls_hidden_until > time.monotonic():
             deadlines.append(self._controls_hidden_until + 0.005)
         now = time.monotonic()
-        if self._reveal_animating(now):
-            # The next reveal frame: a short gap after the last one was
-            # sent, or at once if that moment has passed, and never later
-            # than the end of the slide, so the settled frame paints on
-            # time. Only the end carries the usual small margin, so the
-            # settled frame's compose is sure to land past it; a mid-slide
-            # frame is due exactly when its gap is over, or the margin
-            # would add to every gap.
+        started = self._reveal_started_at
+        if started:
+            # A slide not yet settled: the next reveal frame a short gap
+            # after the last one was sent, or at once if that moment has
+            # passed, and never later than the end of the slide, so the
+            # settled frame paints on time. Only the end carries the usual
+            # small margin, so the settled frame's compose is sure to land
+            # past it; a mid-slide frame is due exactly when its gap is
+            # over, or the margin would add to every gap. Keyed on the start
+            # rather than on the slide still running: the last slide frame
+            # routinely finishes sending after the end, and the settled
+            # frame is then due at once, not at the next unrelated wake.
             next_frame = max(now, self._reveal_frame_at + REVEAL_FRAME_GAP_S)
-            end = self._reveal_started_at + REVEAL_ANIMATION_S
-            deadlines.append(next_frame if next_frame < end else end + 0.005)
+            end = started + REVEAL_ANIMATION_S
+            deadlines.append(next_frame if next_frame < end else max(now, end + 0.005))
         if self._controls_shown_until > time.monotonic() and self._compact_tier():
             deadlines.append(self._controls_shown_until + 0.005)
         if self._wifi_flashing():

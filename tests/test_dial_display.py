@@ -3637,8 +3637,16 @@ class TestArtworkReveal:
             clock.t = 1000.5495
             assert display._next_repaint_deadline() == pytest.approx(1000.0 + dd.REVEAL_ANIMATION_S + 0.005)
 
-            # Only the window's end is left.
+            # The last slide frame finished sending after the end: the
+            # settled frame is due at once, never at the next unrelated wake.
+            display._reveal_frame_at = 1000.56
             clock.t = 1000.56
+            assert display._next_repaint_deadline() == pytest.approx(1000.56)
+
+            # Once the end-of-slide tick has settled it, only the window's
+            # end is left.
+            display._tick_controls_reveal()
+            assert display._reveal_started_at == 0.0
             assert display._next_repaint_deadline() == pytest.approx(1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.005)
 
     def test_tick_signals_each_frame_and_once_at_the_end(self):
