@@ -156,7 +156,11 @@ REPEAT_COUNTER_LATENCY_S = 2.0
 # How long an artwork tap hides the top/bottom bands for — see
 # hide_controls(). Long enough to look at the artwork without the overlay
 # reappearing underneath, short enough that the controls are never truly
-# lost: any tap while hidden restores them at once anyway.
+# lost: any tap while hidden restores them at once anyway. Also the window a
+# compact screen's own controls stay shown after a touch/reveal before
+# fading back to bare artwork — see _show_compact_controls()/
+# _compact_controls_hidden() — the same "long enough to act on, short
+# enough to get out of the way" reasoning applies to both.
 CONTROLS_HIDE_SECONDS = 6.0
 
 # A plain dark base pushed for the moment between the display switching to
@@ -775,6 +779,22 @@ class DialDisplay:
         # scheduling and by the overlay gates. Plain float write/read, same
         # discipline as _idle_started_at.
         self._controls_hidden_until: float = 0.0
+        # Compact tier only: monotonic deadline until which a compact
+        # screen's own controls stay drawn, opened by a touch/reveal/screen
+        # change — see _show_compact_controls()/_compact_controls_hidden().
+        # Starts at 0.0 (already in the past), so a freshly shown compact
+        # screen reads as hidden until the first touch, by design (compact
+        # controls start hidden, never flashed on appearance). Plain float
+        # write/read, same discipline as _controls_hidden_until.
+        self._controls_shown_until: float = 0.0
+        # Touch-thread write, worker-thread read: the appliance id a Stop
+        # transport was just sent for, so on_repeat_result (worker thread)
+        # can tell a Stop's own ok ack apart from a Seek's without new
+        # plumbing through the repeat worker (both share the same
+        # "transport" kind) — see repeat_stop_tap()/on_repeat_result(). None
+        # when no stop is outstanding. Plain reference, same discipline as
+        # _focus_pending.
+        self._pending_repeat_stop_id: str | None = None
 
         # ---- Selector, repeat and picker screen state -------------------
         # self._screen is written under self._lock — usually by the repaint
@@ -1084,8 +1104,13 @@ class DialDisplay:
         idle reset and wake are applied by the repaint thread, which already
         holds self._lock when it composes — see _apply_touch_activity_locked.
         Setting the flag and signalling are both single atomic operations.
+        Also re-opens the compact tier's own controls window (see
+        _show_compact_controls()) — a plain float write beside the flag
+        write above, harmless on every other tier, where nothing ever reads
+        it.
         """
         self._touch_activity_pending = True
+        self._show_compact_controls()
         self._overlay_signal.set()
 
     def _apply_touch_activity_locked(self) -> bool:
@@ -1128,10 +1153,16 @@ class DialDisplay:
         hide_controls()) early: a normal reveal — the ordinary tap-to-show
         path, or an always-show track that just resumed showing controls —
         must not be fighting a hide window that still has time left on it.
-        Plain float write, same discipline as the window's own start.
+        Plain float write, same discipline as the window's own start. Also
+        opens the compact tier's own controls window (see
+        _show_compact_controls()) — this is the reveal path
+        (on_reveal_overlay -> set_overlay(visible=True)), so a compact
+        screen's first touch after being hidden shows its controls rather
+        than only ending the (irrelevant, off-compact) hide window.
         """
         if state.visible:
             self._controls_hidden_until = 0.0
+            self._show_compact_controls()
         with self._overlay_snapshot_lock:
             self._overlay_snapshot = state
         self._overlay_signal.set()
@@ -1190,9 +1221,17 @@ class DialDisplay:
         repaint recomposes a base image. An artwork tap (see hide_controls())
         also drops this to False for its own window, regardless of
         always_show_controls — the bands are hidden either way.
+
+        On the compact tier, always_show_controls is ignored (a compact
+        screen is never held permanently): instead the controls show for a
+        few seconds after a touch/reveal/screen change and then fade back
+        to bare artwork on their own — see _compact_controls_hidden().
         """
         return (
-            (self._config.always_show_controls or self._compact_tier())
+            (
+                (self._config.always_show_controls and not self._compact_tier())
+                or (self._compact_tier() and not self._compact_controls_hidden())
+            )
             and self._now_playing is not None
             and self._showing != "noop"
             and self._backend_open
@@ -1203,11 +1242,29 @@ class DialDisplay:
 
     def _compact_tier(self) -> bool:
         """True while the resolved content tier is compact — the physically
-        tiny 2x2 screens, which are always held (no reveal-then-arm step:
-        every cell on them is already a control, so a first-tap-only-
-        reveals rule would cost every action a second tap). Plain-arithmetic
-        read, safe from any thread, same as _layout_metrics() itself."""
+        tiny 2x2 screens. Plain-arithmetic read, safe from any thread, same
+        as _layout_metrics() itself."""
         return self._layout_metrics().content_tier == CONTENT_COMPACT
+
+    def _compact_controls_hidden(self) -> bool:
+        """Compact tier only: True once the controls window (see
+        _show_compact_controls()) has lapsed, or was never opened — a
+        freshly shown compact screen starts hidden (bare artwork), by
+        design: controls only appear after a touch/reveal, never flashed on
+        appearance. Always False off the compact tier. Plain float read,
+        same discipline as _controls_hidden()."""
+        return self._compact_tier() and time.monotonic() >= self._controls_shown_until
+
+    def _show_compact_controls(self) -> None:
+        """Re-open the compact tier's own controls window: plain float
+        write, no lock (touch-thread safe, and also called from the repeat
+        thread under self._lock on a screen change — a plain float write is
+        harmless either way). Stamped by set_overlay()'s reveal path,
+        notify_touch_activity() (every arm/tap/pressed-zone change) and a
+        screen change (_apply_screen_requests_locked) — see the module's
+        compact-controls design. A harmless no-op read/write on every other
+        tier, where nothing consults it."""
+        self._controls_shown_until = time.monotonic() + CONTROLS_HIDE_SECONDS
 
     def hide_controls(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an ARTWORK
@@ -1276,7 +1333,17 @@ class DialDisplay:
         layout only on that tier (see dial_touch_layout.GEOMETRY_REPEAT_
         REPLAY); every other tier paints one shared table for both states,
         so this branch is never taken there.
+
+        Ahead of every policy row: on the compact tier, once that screen's
+        own controls window has lapsed (see _compact_controls_hidden()),
+        main and repeat both report plain "hidden" with nothing tappable —
+        the main branch below already arrives at "hidden" on its own once
+        persistent_overlay_shown() is False, but the repeat screen's surface
+        is otherwise fixed by its policy row regardless of the window, so it
+        needs this explicit override.
         """
+        if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
+            return ("hidden", False, False, False)
         policy = _policy(self._screen)
         if policy.surface is not None:
             if (
@@ -1681,7 +1748,11 @@ class DialDisplay:
         that case.
         """
         held = (
-            (self._config.always_show_controls or self._compact_tier()) and self._now_playing is not None
+            (
+                (self._config.always_show_controls and not self._compact_tier())
+                or (self._compact_tier() and not self._compact_controls_hidden())
+            )
+            and self._now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
             and not self._controls_hidden()
@@ -1780,6 +1851,7 @@ class DialDisplay:
                 self._tick_repeat_line()
                 self._tick_outputs_refresh()
                 self._tick_controls_hidden()
+                self._tick_controls_shown()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -2023,6 +2095,11 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state == "replaying":
+            # Recorded so on_repeat_result (the worker thread) can tell this
+            # Stop's own ok ack apart from an unrelated Seek's — the repeat
+            # worker reports both under the same "transport" kind, so kind
+            # alone cannot distinguish them. See on_repeat_result().
+            self._pending_repeat_stop_id = screen.appliance_id
             enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "stop", 0.0)
 
     def set_pressed(self, zone, index=None) -> None:
@@ -2333,6 +2410,11 @@ class DialDisplay:
             # (e.g. DOTS/NAME/MUTE, shared between the main and repeat
             # screens) must not carry its wash onto the screen it opens.
             self._pressed = None
+            # A screen the user just opened (repeat) or was returned to
+            # (main after DOTS, or after a stop — see on_repeat_result())
+            # shows its own controls for a fresh window on the compact
+            # tier; a no-op off it.
+            self._show_compact_controls()
 
         policy = _policy(self._screen)
         if delta and policy.paged:
@@ -2420,6 +2502,8 @@ class DialDisplay:
                 deadlines.append(now + (math.floor(shown) + 1.0 - shown) + 0.005)
         if self._controls_hidden_until > time.monotonic():
             deadlines.append(self._controls_hidden_until + 0.005)
+        if self._controls_shown_until > time.monotonic() and self._compact_tier():
+            deadlines.append(self._controls_shown_until + 0.005)
         return min(deadlines) if deadlines else None
 
     def _tick_outputs_refresh(self) -> None:
@@ -2451,6 +2535,21 @@ class DialDisplay:
         deadline = self._controls_hidden_until
         if deadline and time.monotonic() >= deadline:
             self._controls_hidden_until = 0.0
+            self._overlay_signal.set()
+
+    def _tick_controls_shown(self) -> None:
+        """Wake the repaint loop exactly when a compact screen's own
+        controls window (see _show_compact_controls()) has just lapsed, so
+        the bands step aside on their own without waiting for an unrelated
+        touch or poll — called from the repeat thread's own timeout branch,
+        the same cadence _tick_controls_hidden() uses. One-shot: resets the
+        deadline to 0.0 once fired, the same "already in the past" value
+        _compact_controls_hidden() reads as hidden, so this does not keep
+        re-signalling every housekeeping tick after expiry. A no-op off the
+        compact tier."""
+        deadline = self._controls_shown_until
+        if deadline and time.monotonic() >= deadline and self._compact_tier():
+            self._controls_shown_until = 0.0
             self._overlay_signal.set()
 
     def _carried_paging_locked(self, prev, row_count: int) -> tuple[int, float]:
@@ -2754,9 +2853,11 @@ class DialDisplay:
         view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
         self._repeat_layout_shown = view.layout
         metrics = self._metrics_locked()
+        controls = not self._compact_controls_hidden()
         self._push_frame_locked(lambda: self._compositor.compose_repeat(
             metrics.width, metrics.height, view, base=self._current_base_image,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+            controls=controls,
         ))
 
     def _display_idle_locked(self) -> None:
@@ -2946,8 +3047,27 @@ class DialDisplay:
         now = time.monotonic()
         if status == 200 and isinstance(body, dict) and body.get("ok"):
             repeat_store.apply_ack(appliance_id, body, now)
+            if self._pending_repeat_stop_id == appliance_id:
+                # This ok ack is for the Stop this appliance's repeat_stop_
+                # tap() just sent (see that method) — on the compact tier,
+                # close the repeat screen back to the playing 2x2
+                # immediately, rather than waiting for it to time out or for
+                # the next poll to find the appliance not playing. Off
+                # compact the repeat screen simply stays, as today.
+                self._pending_repeat_stop_id = None
+                if (
+                    self._compact_tier() and self._screen == "repeat"
+                    and self._repeat_screen is not None
+                    and self._repeat_screen.appliance_id == appliance_id
+                ):
+                    self._screen_request = "main"
             self._overlay_signal.set()
             return
+
+        if self._pending_repeat_stop_id == appliance_id:
+            # A rejected/transient Stop leaves the repeat screen as today —
+            # only an ok ack pops it.
+            self._pending_repeat_stop_id = None
 
         auth_map.force_due(appliance_id)
         self._reconcile_due = True

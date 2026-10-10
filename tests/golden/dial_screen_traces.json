@@ -4329,7 +4329,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4349,9 +4349,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -4374,7 +4374,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4394,9 +4394,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -4419,7 +4419,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4439,9 +4439,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -4478,7 +4478,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "idle",
+        "hidden",
         false,
         false,
         false
@@ -4517,7 +4517,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "idle",
+        "hidden",
         false,
         false,
         false
@@ -4816,7 +4816,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4836,9 +4836,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -4866,7 +4866,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4886,9 +4886,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -4911,7 +4911,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4934,9 +4934,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -4964,7 +4964,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -4987,9 +4987,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },
@@ -5012,7 +5012,7 @@
       "outputs": null,
       "outputs_optimistic": null,
       "page_request": 0,
-      "persistent_overlay_shown": true,
+      "persistent_overlay_shown": false,
       "picker": {
         "opened_at": 0.0,
         "page": 0,
@@ -5035,9 +5035,9 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "held",
-        true,
-        true,
+        "hidden",
+        false,
+        false,
         false
       ]
     },

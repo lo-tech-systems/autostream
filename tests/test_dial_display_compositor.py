@@ -1365,6 +1365,52 @@ class TestComposeRepeatEnableLayout:
         assert result.size == (160, 128)
 
 
+class TestComposeRepeatControlsFalse:
+    """controls=False (the compact tier's manager path, once its own
+    controls window has lapsed) skips the whole pipeline and returns the
+    bare base — no header/body/footer, rotate/bgr only."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_returns_the_bare_base_undimmed(self, compositor):
+        base = Image.new("RGB", (160, 128), (100, 120, 140))
+        result = compositor.compose_repeat(
+            160, 128, _repeat_state(name="Kitchen", armed=True), base=base,
+            rotate=False, bgr=False, controls=False,
+        )
+        assert list(result.getdata()) == list(base.getdata())
+
+    def test_no_base_falls_back_to_the_flat_chassis(self, compositor):
+        result = compositor.compose_repeat(
+            160, 128, _repeat_state(), base=None, rotate=False, bgr=False, controls=False,
+        )
+        assert result.size == (160, 128)
+        assert result.getpixel((0, 0)) == (16, 16, 16)
+
+    def test_defaults_to_true_existing_callers_unaffected(self, compositor):
+        base = Image.new("RGB", (160, 128), (100, 120, 140))
+        with_controls = compositor.compose_repeat(
+            160, 128, _repeat_state(name="Kitchen"), base=base, rotate=False, bgr=False,
+        )
+        explicit_true = compositor.compose_repeat(
+            160, 128, _repeat_state(name="Kitchen"), base=base, rotate=False, bgr=False, controls=True,
+        )
+        assert list(with_controls.getdata()) == list(explicit_true.getdata())
+
+    def test_rotate_and_bgr_still_applied(self, compositor):
+        base = Image.new("RGB", (160, 128), (10, 20, 30))
+        base.putpixel((0, 0), (200, 0, 0))
+        result = compositor.compose_repeat(
+            160, 128, _repeat_state(), base=base, rotate=True, bgr=True, controls=False,
+        )
+        # rotate 180 puts (0,0) at (159,127); bgr swaps the R/B channels.
+        assert result.getpixel((159, 127)) == (0, 0, 200)
+
+
 class TestComposeRepeatTopBand:
     """The top band (dots, name, mute/volume readout) is shared verbatim by
     both layouts — see _draw_top_band_content(). Exercised once here at the

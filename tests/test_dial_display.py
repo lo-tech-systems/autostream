@@ -6124,21 +6124,71 @@ def _make_compact_display(targets=None, **overrides):
 
 
 class TestCompactPersistentOverlayAndSurface:
-    def test_persistent_overlay_shown_true_without_always_show_controls(self):
+    """Compact controls start hidden (bare artwork) and only appear for a
+    6 s window opened by a touch/reveal/screen change — see
+    _show_compact_controls()/_compact_controls_hidden(). Inverted from the
+    old "compact always held" behaviour."""
+
+    def test_persistent_overlay_shown_false_until_a_reveal(self):
         t = _target()
         display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
         display.enable()
         with display._lock:
             assert display._metrics_locked().content_tier == "compact"
         _poll_with_artwork(display, fb)
-        assert display.persistent_overlay_shown() is True
+        assert display.persistent_overlay_shown() is False
 
-    def test_touch_surface_reports_held_without_always_show_controls(self):
+    def test_touch_surface_reports_hidden_until_a_reveal(self):
         t = _target()
         display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
         display.enable()
         _poll_with_artwork(display, fb)
+        assert display.touch_surface() == ("hidden", False, False, False)
+
+    def test_reveal_opens_the_window_shown_and_held(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        display.set_overlay(OverlayState(visible=True))
+        assert display.persistent_overlay_shown() is True
         assert display.touch_surface()[0] == "held"
+
+    def test_window_lapses_back_to_hidden_after_six_seconds(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock):
+            display.set_overlay(OverlayState(visible=True))
+            assert display.persistent_overlay_shown() is True
+            clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
+            assert display.persistent_overlay_shown() is False
+            assert display.touch_surface()[0] == "hidden"
+
+    def test_touch_activity_extends_the_window(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock):
+            display.set_overlay(OverlayState(visible=True))
+            clock.t += 5.0
+            display.notify_touch_activity()
+            with display._lock:
+                display._repaint_current_locked()
+            clock.t += 5.9  # 10.9s from the reveal -- would be hidden without the extension
+            assert display.persistent_overlay_shown() is True
+
+    def test_always_show_controls_is_ignored_on_compact(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is False
+        assert display.touch_surface()[0] == "hidden"
 
     def test_still_false_when_nothing_is_playing(self):
         # Compact does not hold an overlay over bare logo — same guard as
@@ -6147,6 +6197,167 @@ class TestCompactPersistentOverlayAndSurface:
         display.enable()
         display._poll_once()
         assert display.persistent_overlay_shown() is False
+
+
+class TestCompactRepeatControlsWindow:
+    def _opened(self, aid):
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_compact_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        return display
+
+    def test_opening_the_repeat_screen_shows_its_controls(self):
+        display = self._opened("1" * 20)
+        assert display._screen == "repeat"
+        assert display.touch_surface()[0] == "repeat"
+
+    def test_repeat_controls_hide_after_six_seconds(self):
+        display = self._opened("2" * 20)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock):
+            clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
+            assert display.touch_surface()[0] == "hidden"
+
+    def test_repeat_frame_falls_back_to_bare_base_once_hidden(self):
+        display = self._opened("3" * 20)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock), \
+             patch.object(display._compositor, "compose_repeat", wraps=display._compositor.compose_repeat) as spy:
+            clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
+            with display._lock:
+                display._repaint_current_locked()
+            assert spy.call_args.kwargs["controls"] is False
+
+    def test_reveal_after_hidden_shows_repeat_again(self):
+        display = self._opened("4" * 20)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock):
+            clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
+            assert display.touch_surface()[0] == "hidden"
+            display.set_overlay(OverlayState(visible=True))
+            assert display.touch_surface()[0] == "repeat"
+
+
+class TestCompactStopFlow:
+    def test_ok_stop_ack_closes_the_repeat_screen_to_main(self):
+        import dial_repeat_store as drs
+        aid = "5" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_compact_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with patch("dial_display.enqueue_transport"):
+            display.repeat_stop_tap()
+        display.on_repeat_result(
+            "transport", aid, 200,
+            {"ok": True, "state": "hold", "armed": False, "position_seconds": 0.0},
+        )
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+        assert display.touch_surface()[0] == "held"
+
+    def test_rejected_stop_leaves_the_repeat_screen_open(self):
+        import dial_repeat_store as drs
+        aid = "6" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_compact_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with patch("dial_display.enqueue_transport"):
+            display.repeat_stop_tap()
+        display.on_repeat_result("transport", aid, 200, {"ok": False, "error": "fading_out"})
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+    def test_off_compact_the_same_ack_leaves_the_screen_on_repeat(self):
+        import dial_repeat_store as drs
+        aid = "7" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])  # base tier
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with patch("dial_display.enqueue_transport"):
+            display.repeat_stop_tap()
+        display.on_repeat_result(
+            "transport", aid, 200,
+            {"ok": True, "state": "hold", "armed": False, "position_seconds": 0.0},
+        )
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+
+class TestControlsShownDeadlineAndTick:
+    def test_next_repaint_deadline_includes_the_window_end(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock):
+            display.set_overlay(OverlayState(visible=True))
+            deadline = display._next_repaint_deadline()
+        assert deadline is not None
+        assert deadline == pytest.approx(display._controls_shown_until + 0.005)
+
+    def test_tick_controls_shown_signals_once_after_lapsing(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        clock = _FakeClock(time.monotonic())
+        with patch("dial_display.time.monotonic", clock):
+            display.set_overlay(OverlayState(visible=True))
+            clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
+            display._overlay_signal.clear()
+            display._tick_controls_shown()
+            assert display._overlay_signal.is_set()
+            assert display._controls_shown_until == 0.0
+            display._overlay_signal.clear()
+            display._tick_controls_shown()
+            assert not display._overlay_signal.is_set()
+
+    def test_off_compact_never_signals(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])  # base tier
+        display.enable()
+        _poll_with_artwork(display, fb)
+        display._controls_shown_until = time.monotonic() - 1.0
+        display._overlay_signal.clear()
+        display._tick_controls_shown()
+        assert not display._overlay_signal.is_set()
 
 
 class TestCompactRepeatSurfaceFlip:

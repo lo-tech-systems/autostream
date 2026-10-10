@@ -615,7 +615,7 @@ class DialDisplayCompositor:
 
     def compose_repeat(
         self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool, base=None,
-        metrics: LayoutMetrics | None = None,
+        metrics: LayoutMetrics | None = None, controls: bool = True,
     ):
         """Build one display-ready frame for the repeat screen.
 
@@ -632,9 +632,18 @@ class DialDisplayCompositor:
         Never raises: a font, glyph or base-image failure degrades to a
         plainer frame, matching compose()'s own discipline. metrics: see
         compose().
+
+        controls=False (only ever passed by the compact tier's own manager
+        path, once its controls window has lapsed — see
+        DialDisplay._compact_controls_hidden()) skips the whole pipeline and
+        returns *base* itself, undimmed, with only rotate/bgr applied — bare
+        artwork/logo, no header/body/footer at all. A parameter, not
+        attribute state, so the compositor stays stateless either way.
         """
         if metrics is None:
             metrics = metrics_for(width, height)
+        if not controls:
+            return _finish(_new_frame(base, width, height, BG_BASE), rotate, bgr)
         return _compose_frame(
             base, width, height, _repeat_frame(state, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
