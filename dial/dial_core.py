@@ -410,6 +410,9 @@ class DialCore:
         # housekeeping step drains it. The schedule belongs to that step's
         # thread alone; a wake only raises the flag.
         self._warnings_pending: set[str] = set()
+        # Appliances that pushed a state change, with the kinds of change they
+        # named ("any" when they named none), guarded by _push_lock.
+        self._state_pending: dict[str, set] = {}
         self._warnings_next_at: dict[str, float] = {}
         self._warnings_refetch_all = False
         self._last_reconcile_at = 0.0
@@ -1922,6 +1925,16 @@ class DialCore:
         asks the appliance for its warnings."""
         with self._push_lock:
             self._warnings_pending.add(appliance_id)
+        self._poll_wake.set()
+
+    def notify_state_changed(self, appliance_id: str, changed: tuple = ()) -> None:
+        """Record that *appliance_id* pushed a state change: queue the id with
+        what it said changed and wake the core thread, which asks the
+        appliance for its status on the tick that follows. No I/O; any
+        thread."""
+        kinds = set(changed) or {"any"}
+        with self._push_lock:
+            self._state_pending.setdefault(appliance_id, set()).update(kinds)
         self._poll_wake.set()
 
     def _queue_effects(self, effects):

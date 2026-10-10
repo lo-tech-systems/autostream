@@ -56,7 +56,9 @@ class FakeDialServer:
         self._touch_restart_lock = threading.Lock()
         self._last_touch_restart_monotonic: float | None = None
         self._announce_calls: list = []
-        self._push_limiter = dhs._PushLimiter()
+        self._push_limiters = {
+            name: dhs._PushLimiter(*limits) for name, limits in dhs._PUSH_LIMITS.items()
+        }
         self._get_rostered_ips = None
         self._sdmon_lock = threading.Lock()
         self._sdmon_probe: dict = {"running": False, "outcome": None, "reason": "", "finished_at": None}
@@ -2842,6 +2844,8 @@ class _BothNotifyingProvider(NoOpDisplayStatusProvider):
         super().__init__()
         self.auth: list = []
         self.warnings: list = []
+        self.state: list = []
+        self.state_changed: list = []
 
     def notify_auth_changed(self, appliance_id: str) -> None:
         self.auth.append(appliance_id)
@@ -2849,9 +2853,18 @@ class _BothNotifyingProvider(NoOpDisplayStatusProvider):
     def notify_warnings_changed(self, appliance_id: str) -> None:
         self.warnings.append(appliance_id)
 
+    def notify_state_changed(self, appliance_id: str, changed=()) -> None:
+        self.state.append(appliance_id)
+        self.state_changed.append(changed)
+
 
 class _RaisingWarningsProvider(NoOpDisplayStatusProvider):
     def notify_warnings_changed(self, appliance_id: str) -> None:
+        raise RuntimeError("boom")
+
+
+class _RaisingStateProvider(NoOpDisplayStatusProvider):
+    def notify_state_changed(self, appliance_id: str, changed=()) -> None:
         raise RuntimeError("boom")
 
 
@@ -2863,20 +2876,35 @@ def _warnings_server(ips=None, provider=None):
 
 
 class TestPushRoutesTable:
-    def test_the_table_names_both_routes(self):
+    def test_the_table_names_all_three_routes(self):
         assert dhs._PUSH_ROUTES == {
-            "/auth-changed": "notify_auth_changed",
-            "/warnings-changed": "notify_warnings_changed",
+            "/auth-changed": dhs._PushRoute("notify_auth_changed", "slow", False),
+            "/warnings-changed": dhs._PushRoute("notify_warnings_changed", "slow", False),
+            "/state-changed": dhs._PushRoute("notify_state_changed", "fast", True),
         }
 
+    def test_the_slow_limiter_keeps_its_intervals_and_the_fast_one_is_shorter(self):
+        assert dhs._PUSH_LIMITS == {"slow": (2.0, 5.0), "fast": (0.2, 0.2)}
+
     def test_each_route_reaches_only_its_own_hook(self):
-        for path, expected in (("/auth-changed", "auth"), ("/warnings-changed", "warnings")):
+        hooks = ("auth", "warnings", "state")
+        for path, expected in (("/auth-changed", "auth"), ("/warnings-changed", "warnings"),
+                               ("/state-changed", "state")):
             server = _warnings_server()
             r = _call_handler(path, body={"appliance_id": _AID}, setup_server=server)
             assert r["status"] == 202
             assert getattr(server._display_status, expected) == [_AID]
-            other = "warnings" if expected == "auth" else "auth"
-            assert getattr(server._display_status, other) == []
+            for other in hooks:
+                if other != expected:
+                    assert getattr(server._display_status, other) == []
+
+    def test_the_state_route_has_its_own_limiter(self):
+        server = _warnings_server()
+        r1 = _call_handler("/state-changed", body={"appliance_id": _AID}, setup_server=server)
+        r2 = _call_handler("/auth-changed", body={"appliance_id": _AID}, setup_server=server)
+        assert (r1["status"], r2["status"]) == (202, 202)
+        assert server._display_status.state == [_AID]
+        assert server._display_status.auth == [_AID]
 
     def test_the_limiter_is_shared_between_the_two_routes(self):
         server = _warnings_server()
@@ -2891,7 +2919,9 @@ class TestPushRoutesTable:
         assert r["status"] == 404
 
     def test_the_module_docstring_lists_the_route(self):
-        assert "POST /warnings-changed" in dhs.__doc__.replace("\n", " ")
+        doc = dhs.__doc__.replace("\n", " ")
+        assert "POST /warnings-changed" in doc
+        assert "POST /state-changed" in doc
 
 
 class _PushRoute(NamedTuple):
@@ -2908,6 +2938,8 @@ class _PushRoute(NamedTuple):
                  id="auth_changed"),
     pytest.param(_PushRoute("/warnings-changed", "warnings", _RaisingWarningsProvider),
                  id="warnings_changed"),
+    pytest.param(_PushRoute("/state-changed", "state", _RaisingStateProvider),
+                 id="state_changed"),
 ])
 def push_route(request):
     return request.param
@@ -2921,10 +2953,18 @@ def _raising_ip_source():
     raise RuntimeError("mdns browser broke")
 
 
+@pytest.fixture
+def frozen_push_clock():
+    """Hold the limiter's clock still, so a burst of calls is inside every
+    window however slowly the test runs."""
+    with patch.object(dhs.time, "monotonic", return_value=1000.0):
+        yield
+
+
 class TestPushRouteBehaviour:
-    """Both push routes share one handler, one limiter and one sighting
-    lookup, and differ only in the hook they reach, so every case runs
-    against each."""
+    """All push routes share one handler and one sighting lookup, and differ
+    only in the hook they reach and the limiter that paces them, so every
+    case runs against each."""
 
     def test_invalid_json_returns_400(self, push_route):
         r = _call_handler(push_route.path, body=b"not json")
@@ -3014,7 +3054,7 @@ class TestPushRouteBehaviour:
         pytest.param(_flood_ids(), id="a_flood_of_ids"),
     ])
     def test_ip_rate_limit_refuses_further_pushes_within_window_but_still_202(
-            self, push_route, ids):
+            self, push_route, frozen_push_clock, ids):
         server = _warnings_server({i: "127.0.0.1" for i in ids})
         statuses = [
             _call_handler(push_route.path, body={"appliance_id": i},
@@ -3024,7 +3064,7 @@ class TestPushRouteBehaviour:
         assert set(statuses) == {202}
         assert push_route.notified(server) == [ids[0]]
 
-    def test_id_rate_limit_refuses_second_push_within_window_but_still_202(self, push_route):
+    def test_id_rate_limit_refuses_second_push_within_window_but_still_202(self, push_route, frozen_push_clock):
         server = _warnings_server({_AID: "10.0.0.1"})
         r1 = _call_handler(push_route.path, body={"appliance_id": _AID},
                            setup_server=server, client_ip="10.0.0.1")
@@ -3037,7 +3077,7 @@ class TestPushRouteBehaviour:
         # different source IP this time): refused despite matching its roster.
         assert push_route.notified(server) == [_AID]
 
-    def test_a_flood_enqueues_once_and_always_answers_202(self, push_route):
+    def test_a_flood_enqueues_once_and_always_answers_202(self, push_route, frozen_push_clock):
         server = _warnings_server()
         statuses = [
             _call_handler(push_route.path, body={"appliance_id": _AID},
@@ -3047,7 +3087,7 @@ class TestPushRouteBehaviour:
         assert set(statuses) == {202}
         assert push_route.notified(server) == [_AID]
 
-    def test_the_limiter_runs_before_the_sighting_lookup(self, push_route):
+    def test_the_limiter_runs_before_the_sighting_lookup(self, push_route, frozen_push_clock):
         calls = []
         server = _warnings_server()
         server._get_rostered_ips = lambda: calls.append(1) or {_AID: "127.0.0.1"}
@@ -3067,6 +3107,64 @@ class TestPushRouteBehaviour:
         h.send_error = lambda code, *_: result.update(status=code)
         h.do_POST()
         assert result["status"] == 413
+
+
+class TestStatePush:
+    def _push(self, body):
+        server = _warnings_server()
+        r = _call_handler("/state-changed", body=body, setup_server=server)
+        assert r["status"] == 202
+        return server._display_status.state_changed
+
+    def test_changed_is_passed_as_a_tuple_of_its_strings(self):
+        assert self._push({"appliance_id": _AID, "changed": ["mute", "volume"]}) == [("mute", "volume")]
+
+    def test_non_string_and_empty_entries_are_left_out(self):
+        got = self._push({"appliance_id": _AID, "changed": ["mute", 3, None, "", ["x"], "eq"]})
+        assert got == [("mute", "eq")]
+
+    @pytest.mark.parametrize("changed", [
+        pytest.param("mute", id="a_string"),
+        pytest.param({"mute": 1}, id="an_object"),
+        pytest.param(7, id="a_number"),
+        pytest.param(None, id="null"),
+    ])
+    def test_a_changed_that_is_not_a_list_reads_as_none_named(self, changed):
+        assert self._push({"appliance_id": _AID, "changed": changed}) == [()]
+
+    def test_an_absent_changed_reads_as_none_named(self):
+        assert self._push({"appliance_id": _AID}) == [()]
+
+    def test_more_than_the_cap_are_cut(self):
+        names = [f"k{i}" for i in range(dhs._CHANGED_MAX + 10)]
+        got = self._push({"appliance_id": _AID, "changed": names})
+        assert got == [tuple(names[:dhs._CHANGED_MAX])]
+
+    def test_the_other_routes_are_called_with_the_id_alone(self):
+        server = _warnings_server()
+        server._display_status = MagicMock()
+        _call_handler("/auth-changed", body={"appliance_id": _AID, "changed": ["mute"]},
+                      setup_server=server)
+        server._display_status.notify_auth_changed.assert_called_once_with(_AID)
+
+    def test_a_bad_id_is_refused_and_nothing_is_queued(self):
+        server = _warnings_server()
+        r = _call_handler("/state-changed", body={"appliance_id": "x", "changed": ["mute"]},
+                          setup_server=server)
+        assert (r["status"], r["data"]["error"]) == (400, "invalid_appliance_id")
+        assert server._display_status.state == []
+
+    def test_the_fast_limiter_refuses_inside_its_window_and_allows_after_it(self):
+        limiter = dhs._PushLimiter(*dhs._PUSH_LIMITS["fast"])
+        assert limiter.allow("10.0.0.1", _AID, 100.0) is True
+        assert limiter.allow("10.0.0.1", _AID, 100.1) is False
+        assert limiter.allow("10.0.0.1", _AID, 100.25) is True
+
+    def test_the_limiter_intervals_default_to_the_slow_pair(self):
+        limiter = dhs._PushLimiter()
+        assert limiter.allow("10.0.0.1", _AID, 100.0) is True
+        assert limiter.allow("10.0.0.2", _AID, 104.0) is False
+        assert limiter.allow("10.0.0.2", _AID, 105.5) is True
 
 
 class TestSleepAfterAndBrightnessSettings:

@@ -765,6 +765,8 @@ class TestDialFinalCleanup:
         assert display.core._push_pending == {"a" * 20}
         display.notify_warnings_changed("b" * 20)
         assert display.core._warnings_pending == {"b" * 20}
+        display.notify_state_changed("c" * 20, ("mute",))
+        assert display.core._state_pending == {"c" * 20: {"mute"}}
         display.update_config(type("Cfg", (), {"fitted": False})())
         assert display.core.snapshot().polling is False
 

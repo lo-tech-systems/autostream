@@ -693,6 +693,25 @@ class TestPollSettings:
         core.set_poll_interval(3)
         assert not core._poll_wake.is_set()
 
+    def test_a_state_push_queues_the_id_with_its_kinds_and_wakes_the_loop(self):
+        core, gt = _make()
+        core._poll_wake.clear()
+        core.notify_state_changed("a" * 20, ("mute", "volume"))
+        assert core._poll_wake.is_set()
+        assert core._state_pending == {"a" * 20: {"mute", "volume"}}
+
+    def test_a_state_push_naming_nothing_reads_as_any_change(self):
+        core, gt = _make()
+        core.notify_state_changed("a" * 20)
+        core.notify_state_changed("b" * 20, ())
+        assert core._state_pending == {"a" * 20: {"any"}, "b" * 20: {"any"}}
+
+    def test_state_pushes_for_one_appliance_merge_their_kinds(self):
+        core, gt = _make()
+        core.notify_state_changed("a" * 20, ("mute",))
+        core.notify_state_changed("a" * 20, ("volume",))
+        assert core._state_pending == {"a" * 20: {"mute", "volume"}}
+
     def test_request_poll_wakes_and_reconcile_forces_the_roster_due(self):
         core, gt = _make()
         core._poll_wake.clear()
@@ -810,6 +829,17 @@ class TestCoreThread:
             core.start()
             assert self._wait_for(lambda: len(polls) == 1)
             core.request_poll()
+            assert self._wait_for(lambda: len(polls) == 2, limit=1.0)
+            core.stop()
+
+    def test_a_state_push_runs_a_tick_at_once(self):
+        core, gt = _make()
+        core.set_poll_interval(60)
+        polls = []
+        with patch.object(core, "poll_once", side_effect=lambda: polls.append(1)):
+            core.start()
+            assert self._wait_for(lambda: len(polls) == 1)
+            core.notify_state_changed("a" * 20, ("mute",))
             assert self._wait_for(lambda: len(polls) == 2, limit=1.0)
             core.stop()
 

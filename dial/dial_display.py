@@ -4434,6 +4434,11 @@ class DialDisplay:
         HTTP thread): the core fetches its warnings on its next tick."""
         self._core.notify_warnings_changed(appliance_id)
 
+    def notify_state_changed(self, appliance_id: str, changed: tuple = ()) -> None:
+        """Record that appliance_id's state-changed push arrived (from the
+        HTTP thread): the core polls it on its next tick, asleep or not."""
+        self._core.notify_state_changed(appliance_id, changed)
+
     def _apply_repeat_outcome(self, appliance_id: str, outcome) -> None:
         """React to what a repeat transport result meant: a poll at once for
         an accepted replay the dial follows (and for any rejection, with a

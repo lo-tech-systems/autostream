@@ -329,6 +329,7 @@ class TestCoreActionsStayInMemory:
             core.expire_warnings()
             core.flush_warnings()
             core.readout_changed()
+            core.notify_state_changed("a" * 20, ("mute",))
             core.set_inputs(["encoder"])
             core.take_effects()
             core.snapshot()

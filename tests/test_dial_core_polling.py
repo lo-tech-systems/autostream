@@ -640,6 +640,15 @@ class TestEqAvailable:
         assert display.core.snapshot().dots_active is True
 
 
+class TestStatePush:
+    def test_notify_state_changed_sets_poll_wake(self):
+        display, fb, gt = make_display(targets=[])
+        assert not display._core._poll_wake.is_set()
+        display.notify_state_changed("a" * 20, ("mute",))
+        assert display._core._poll_wake.is_set()
+        assert display._core._state_pending == {"a" * 20: {"mute"}}
+
+
 class TestWarningsPush:
     def test_notify_warnings_changed_queues_and_wakes_the_core(self):
         display, fb, gt = make_display(targets=[])

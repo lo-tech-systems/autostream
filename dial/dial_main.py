@@ -289,6 +289,9 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
     def notify_warnings_changed(self, appliance_id: str) -> None:
         self.core.notify_warnings_changed(appliance_id)
 
+    def notify_state_changed(self, appliance_id: str, changed: tuple = ()) -> None:
+        self.core.notify_state_changed(appliance_id, changed)
+
 
 def _on_appliance_fetch_result(core):
     """The appliance fetch worker's result callback: route each kind of read

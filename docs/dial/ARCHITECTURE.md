@@ -47,7 +47,7 @@ view](#the-hd-page-is-a-second-view).
 
 | Thread | Owner | What it does |
 |---|---|---|
-| `dial-core` | core | Polls appliances every poll interval, or sooner when asked. Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and refreshing watched outputs and EQ. |
+| `dial-core` | core | Polls appliances every poll interval, or sooner when asked or when an appliance pushes a change. Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and refreshing watched outputs and EQ. |
 | `dial-display-repaint` | view | Waits for a core snapshot or an overlay signal, folds the newest snapshot into the screen and paints. This is the only thread that composes and pushes frames. |
 | `touch-event-source` | touch | Reads the touch controller and turns touches into taps. Taps call core actions (never while holding the view lock) and the view's own screen changes. |
 | `volume-worker`, `eq-worker`, `outputs-worker`, `repeat-worker`, `network-worker` | workers | Do the slow appliance and system calls. Their results are handed back to the core, which folds them into state and queues what they mean for the screen. |
@@ -81,6 +81,15 @@ newer than `seen_seq` exists. Several publishes before a consumer runs collapse
 into one wake, and the consumer reads the newest snapshot, so a consumer that
 tracks the last `seq` it saw never misses the latest state (it may skip
 intermediate ones).
+
+**Pushes from appliances.** The dial's HTTP server accepts three advisory
+pushes from an appliance: `/auth-changed`, `/warnings-changed` and
+`/state-changed`. Each is checked against the appliance's current sighting,
+only queues the appliance id (a state push also carries what it said changed)
+and wakes the core thread; nothing is fetched on the HTTP thread. The core's
+reaction is a poll, so the push brings the next status request forward and the
+poll is still the truth. A push that is lost or never sent costs nothing but
+the wait for the regular poll.
 
 **The effects queue.** Some things the core learns are not state but an event
 the screen should react to once: a warning source began or cleared an incident,

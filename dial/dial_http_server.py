@@ -9,7 +9,7 @@ facing setup UI; dial configuration is done through the appliance web interface.
 Routes: GET /configure, POST /configure, GET /recovery_status,
 GET /update/status, GET /update/check, POST /update,
 POST /recovery/arm, POST /recovery/disarm, POST /auth-changed,
-POST /warnings-changed,
+POST /warnings-changed, POST /state-changed,
 GET /screen/settings, POST /screen/settings, GET /screen/image,
 GET /sdcard-health, POST /sdcard-health.
 """
@@ -24,7 +24,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from dial_config import (
     InvalidScreenSettings,
@@ -192,20 +192,35 @@ def _pin_clear_attempts(ip: str) -> None:
 
 # ---- appliance pushes: routes, appliance id and rate limiting ---------------
 
-# The routes an appliance pushes a change to, and the display-provider method
-# each one hands the appliance id to. Both share one body check, one source
-# check and one rate limiter.
+class _PushRoute(NamedTuple):
+    notify: str             # the display-provider method the appliance id is handed to
+    limiter: str            # which of _PUSH_LIMITS paces it
+    carries_changed: bool   # whether the body's `changed` list is passed on
+
+
+# The routes an appliance pushes a change to. All share one body check and one
+# source check; the rate limiter is chosen by the route.
 _PUSH_ROUTES = {
-    '/auth-changed':     'notify_auth_changed',
-    '/warnings-changed': 'notify_warnings_changed',
+    '/auth-changed':     _PushRoute('notify_auth_changed', 'slow', False),
+    '/warnings-changed': _PushRoute('notify_warnings_changed', 'slow', False),
+    '/state-changed':    _PushRoute('notify_state_changed', 'fast', True),
 }
+
+# (per source IP, per appliance id) seconds between accepted pushes. The
+# state hint is already held to a few a second by the appliance; its limiter
+# only guards against a sender that is not.
+_PUSH_LIMITS = {'slow': (2.0, 5.0), 'fast': (0.2, 0.2)}
+
+# The most `changed` entries read from a state push; the rest are ignored.
+_CHANGED_MAX = 16
 
 _APPLIANCE_ID_RE = re.compile(r'^[0-9a-f]{20}$')
 
 # Per source IP, at most one accepted push every _PUSH_IP_INTERVAL_S; per
-# appliance_id, at most one every _PUSH_ID_INTERVAL_S. A refused push is
-# still answered 202 and simply never enqueued — the response must not leak
-# whether the id is known, rostered, or rate-limited.
+# appliance_id, at most one every _PUSH_ID_INTERVAL_S (the defaults; a route's
+# limiter may use others). A refused push is still answered 202 and simply
+# never enqueued — the response must not leak whether the id is known,
+# rostered, or rate-limited.
 _PUSH_IP_INTERVAL_S = 2.0
 _PUSH_ID_INTERVAL_S = 5.0
 _PUSH_ENTRY_MAX_AGE_S = 60.0
@@ -214,7 +229,10 @@ _PUSH_ENTRY_MAX_AGE_S = 60.0
 class _PushLimiter:
     """Pure rate limiter for the appliance push routes, with its own leaf lock."""
 
-    def __init__(self) -> None:
+    def __init__(self, ip_interval_s: float = _PUSH_IP_INTERVAL_S,
+                 id_interval_s: float = _PUSH_ID_INTERVAL_S) -> None:
+        self._ip_interval_s = ip_interval_s
+        self._id_interval_s = id_interval_s
         self._lock = threading.Lock()
         self._by_ip: dict[str, float] = {}
         self._by_id: dict[str, float] = {}
@@ -224,9 +242,9 @@ class _PushLimiter:
             self._prune_locked(now)
             last_ip = self._by_ip.get(ip)
             last_id = self._by_id.get(appliance_id)
-            if last_ip is not None and now - last_ip < _PUSH_IP_INTERVAL_S:
+            if last_ip is not None and now - last_ip < self._ip_interval_s:
                 return False
-            if last_id is not None and now - last_id < _PUSH_ID_INTERVAL_S:
+            if last_id is not None and now - last_id < self._id_interval_s:
                 return False
             self._by_ip[ip] = now
             self._by_id[appliance_id] = now
@@ -432,7 +450,9 @@ class DialHTTPServer:
         self._last_touch_restart_monotonic: float | None = None
         self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
         self._display_status.update_config(cfg.display)
-        self._push_limiter = _PushLimiter()
+        self._push_limiters = {
+            name: _PushLimiter(*limits) for name, limits in _PUSH_LIMITS.items()
+        }
         # Zero-arg callable returning {appliance_id: ip} for every appliance
         # currently sighted, playing or idle — dial_main wires the real
         # mDNS-backed one; tests pass a dict-returning lambda. None (a
@@ -1027,15 +1047,17 @@ class DialHTTPServer:
                     )
                 self._send_json(200, {'ok': True})
 
-            def _handle_appliance_push(self, notify_name: str) -> None:
+            def _handle_appliance_push(self, route: _PushRoute) -> None:
                 """Advisory notification from an appliance that something
-                about appliance_id changed (its authorization, or its
-                warnings). Never authenticated (anyone on the LAN can reach
-                port 7842), so this grants nothing by itself — it only causes
-                a fetch or probe if the source IP matches a currently sighted
-                address of that id, and even then only hands the id to the
-                display provider's *notify_name*, which queues it; it never
-                fetches inline here on the single-threaded server.
+                about appliance_id changed (its authorization, its warnings,
+                or anything the dial shows). Never authenticated (anyone on
+                the LAN can reach port 7842), so this grants nothing by itself
+                — it only causes a fetch or probe if the source IP matches a
+                currently sighted address of that id, and even then only hands
+                the id (and, for a state push, the kinds of change it named)
+                to the display provider's method for the route, which queues
+                it; it never fetches inline here on the single-threaded
+                server.
                 """
                 body = self._read_body()
                 if body is None:
@@ -1059,7 +1081,8 @@ class DialHTTPServer:
                 self._send_json(202, {'ok': True})
 
                 ip = self.client_address[0]
-                if not dial_server._push_limiter.allow(ip, appliance_id, time.monotonic()):
+                if not dial_server._push_limiters[route.limiter].allow(
+                        ip, appliance_id, time.monotonic()):
                     return
                 rostered = dial_server._rostered_ips()
                 if rostered.get(appliance_id) != ip:
@@ -1068,10 +1091,17 @@ class DialHTTPServer:
                         self.path, appliance_id, ip,
                     )
                     return
-                notify = getattr(dial_server._display_status, notify_name, None)
+                notify = getattr(dial_server._display_status, route.notify, None)
                 if notify is not None:
                     try:
-                        notify(appliance_id)
+                        if route.carries_changed:
+                            raw = obj.get('changed')
+                            changed = tuple(
+                                c for c in raw[:_CHANGED_MAX] if isinstance(c, str) and c
+                            ) if isinstance(raw, list) else ()
+                            notify(appliance_id, changed)
+                        else:
+                            notify(appliance_id)
                     except Exception as e:
                         logging.debug("%s: enqueue failed: %s", self.path, e)
 
