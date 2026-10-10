@@ -520,8 +520,31 @@ class TestCoreFold:
         core.set_focus(AID)
         core.watch_eq(AID, "spi", True, fetch=False)
         assert core.snapshot().eq.capability_version == 1
-        core.on_capabilities_result(AID, "0.8.0", 200, _body())
+        with patch("dial_core._enqueue_eq_fetch"):
+            core.on_capabilities_result(AID, "0.8.0", 200, _body())
         assert core.snapshot().eq.capability_version == 2
+
+    def test_bands_read_under_the_old_version_are_dropped_and_read_again(self):
+        core = _core(_entry(proto=3, dial_eq=True))
+        core.set_focus(AID)
+        core.watch_eq(AID, "hd", True, fetch=False)
+        core.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": 2, "treble_db": -1})
+        assert [b.id for b in core.snapshot().eq.bands] == ["bass", "treble"]
+        with patch("dial_core._enqueue_eq_fetch") as fetch:
+            core.on_capabilities_result(AID, "0.8.0", 200, _body())
+        held = core.snapshot().eq
+        assert (held.capability_version, held.bands, held.loaded) == (2, (), False)
+        assert fetch.call_count == 1 and fetch.call_args[0][0].appliance_id == AID
+
+    def test_an_unchanged_version_leaves_the_bands_and_asks_for_nothing(self):
+        core = _core(_entry(proto=3, dial_eq=True))
+        core.set_focus(AID)
+        with patch("dial_core._enqueue_eq_fetch") as fetch:
+            core.on_capabilities_result(AID, "0.8.0", 200, _body())
+            core.watch_eq(AID, "hd", True, fetch=False)
+            core.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": 2, "treble_db": -1, "bands": []})
+            core.on_capabilities_result(AID, "0.8.0", 200, _body())
+        assert core.snapshot().eq.loaded is True and not fetch.called
 
     def test_a_refusal_reads_the_switch_point(self):
         core = _core(_entry(proto=3, dial_eq=True))

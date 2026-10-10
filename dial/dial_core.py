@@ -2046,7 +2046,9 @@ class DialCore:
         """Fold a capabilities read: a valid reply is recorded for the
         version it was asked for and the appliance list is derived again, so
         what the appliance can now do shows; anything else starts (or
-        lengthens) the appliance's backoff. A reply for an appliance no
+        lengthens) the appliance's backoff. An EQ state held for the
+        appliance under another version is emptied and read again, since its
+        bands were parsed as that version's. A reply for an appliance no
         longer on the roster changes nothing. True when the appliance list
         changed."""
         if _roster_entry(self._state.roster, appliance_id) is None:
@@ -2058,6 +2060,8 @@ class DialCore:
             return False
         dial_capabilities.record(appliance_id, version, capabilities, now)
         self._capabilities = self._read_capabilities(self._state.roster)
+
+        stale_eq = []
 
         def mutate(state: _CoreState) -> "bool | None":
             changed = False
@@ -2071,10 +2075,18 @@ class DialCore:
                 held is not None and held.appliance_id == appliance_id and caps is not None
                 and caps.eq_version and held.capability_version != caps.eq_version
             ):
-                state.eq = dataclasses.replace(held, capability_version=caps.eq_version)
+                # The bands held were read as the old version's, so they go
+                # with it; a fresh reading is asked for below.
+                state.eq = dataclasses.replace(
+                    held, capability_version=caps.eq_version, bands=(), loaded=False,
+                )
+                stale_eq.append(True)
                 changed = True
             return None if changed else False
-        return self._changed(mutate)
+        published = self._changed(mutate)
+        if stale_eq:
+            self.fetch_eq(appliance_id)
+        return published
 
     def _drain_push_probes(self) -> str:
         """Probe every appliance the push queue holds. Returns "probed"
