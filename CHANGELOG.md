@@ -105,6 +105,9 @@
   development listener on the local network (off by default).
 - docs: new HD dial guide; the dial architecture, screen and protocol
   documents describe the above.
+- change: this release builds owntone-mini 1.4.3. Nothing changes in how it
+  plays: its documentation and licence notices were brought up to date and
+  packaging it no longer uses was removed.
 
 ## Version 0.6.1 - 2026-10-02
 
