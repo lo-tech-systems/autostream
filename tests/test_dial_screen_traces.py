@@ -1412,7 +1412,8 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
 
     # The idle screen's own "i" affordance on compact: open the info page,
     # page through all three (2-rows-per-page) pages, wrapping back to the
-    # first, then X back to idle.
+    # first, tap a row to open its own drill-in value view, tap anywhere to
+    # return to the list (at the same page), then X back to idle.
     cfg3, fb3 = _compact_display_args()
     scenarios.append((
         "compact_idle_info_page_view_and_close",
@@ -1428,7 +1429,11 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("repaint",),
             ("list_page", 1),  # wraps back to page 0, not clamped
             ("repaint",),
-            ("close_list",),
+            ("list_row_tap", 0),  # opens the tapped field's own value view
+            ("repaint",),
+            ("close_list",),  # tap anywhere on the value view -> back to the list
+            ("repaint",),
+            ("close_list",),  # X on the list -> back to idle
             ("repaint",),  # back to idle
         ],
         {"cfg": cfg3, "backend": fb3},

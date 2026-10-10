@@ -6175,10 +6175,15 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_seven_screens(self):
+    def test_table_has_exactly_the_eight_screens(self):
         assert set(SCREEN_POLICIES) == {
-            "main", "selector", "picker", "info", "repeat", "outputs", "output",
+            "main", "selector", "picker", "info", "info_value", "repeat", "outputs", "output",
         }
+
+    def test_info_value_back_to_is_info(self):
+        # The compact info page's own drill-in returns to the list it
+        # opened from, not to main.
+        assert SCREEN_POLICIES["info_value"].back_to == "info"
 
     def test_state_attr_is_an_attribute_of_a_fresh_display(self):
         display, fb, gt = _make_display(targets=[])
@@ -6810,17 +6815,32 @@ class TestInfoPage:
         assert display._info is None
 
     def test_list_row_tap_on_info_is_a_no_op(self):
+        # Rich/large: the row is dead at the geometry level too (GEOMETRY_
+        # INFO carries no LIST_ROW entries there) — this is belt-and-braces
+        # only. _make_display() is a base/rich fixture, never compact.
         display, fb, gt = _make_display(targets=[])
         display.enable()
         self._opened(display)
         with patch.object(display, "selector_pick") as sp, \
              patch.object(display, "picker_pick") as pp, \
-             patch.object(display, "outputs_row_tap") as op:
+             patch.object(display, "outputs_row_tap") as op, \
+             patch.object(display, "info_row_tap") as ip:
             display.list_row_tap(0)
         sp.assert_not_called()
         pp.assert_not_called()
         op.assert_not_called()
+        ip.assert_not_called()
         assert display._screen == "info"
+
+    def test_list_row_tap_on_compact_info_calls_info_row_tap(self):
+        # On the compact tier the row IS tappable — see TestInfoRowTap for
+        # the actual index mapping.
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened(display)
+        with patch.object(display, "info_row_tap") as ip:
+            display.list_row_tap(1)
+        ip.assert_called_once_with(1)
 
 
 class TestInfoPagePaging:
@@ -6930,3 +6950,222 @@ class TestInfoPageLifetime:
             display._poll_once()
         close.assert_not_called()
         assert display._idle_started_at is None
+
+
+class TestInfoRowTap:
+    """info_row_tap(): the compact info list's own row->field mapping,
+    including through paging and the compact wrap — see _current_page_rows/
+    _rows_per_page, the same slice the repaint thread paints with."""
+
+    def _opened(self, display) -> None:
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        with display._lock:
+            display._repaint_current_locked()
+
+    def test_maps_row_to_absolute_index_on_page_0(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened(display)
+        display.info_row_tap(1)
+        assert display._info_value_index == 1
+        assert display._screen_request == "info_value"
+
+    def test_maps_row_to_absolute_index_on_page_2(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened(display)
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 2
+        display.info_row_tap(1)
+        # Page 2's second row is field 2*2+1 == 5 — "Disk free".
+        assert display._info_value_index == 5
+        assert display._info.rows[5].label == "Disk free"
+
+    def test_maps_correctly_after_a_wrap_back_to_page_0(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened(display)
+        for _ in range(3):  # 3 compact pages (6 rows / 2 per page): wraps
+            display.list_page(+1)
+            with display._lock:
+                display._repaint_current_locked()
+        assert display._info.page == 0
+        display.info_row_tap(0)
+        assert display._info_value_index == 0
+
+    def test_stale_index_leaves_the_list_open_and_requests_nothing(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened(display)
+        # Only 2 rows on the current page (indices 0/1) — 5 is stale.
+        display.info_row_tap(5)
+        assert display._screen_request is None
+        assert display._info_value_index is None
+        assert display._screen == "info"
+
+    def test_no_op_with_the_list_closed(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.info_row_tap(0)
+        assert display._screen_request is None
+        assert display._info_value_index is None
+
+
+class TestInfoValueScreen:
+    """InfoValueState / _open_info_value_locked / _display_info_value_locked:
+    the compact info page's own drill-in lifecycle — opens from a row tap,
+    reads its value fresh from self._info at every paint, times out and
+    tap-backs like every other list screen, and preserves the list's page
+    on return."""
+
+    def _opened_list(self, display) -> None:
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        with display._lock:
+            display._repaint_current_locked()
+
+    def _opened_value(self, display, index: int = 0) -> None:
+        self._opened_list(display)
+        display.info_row_tap(index)
+        with display._lock:
+            display._repaint_current_locked()
+
+    def test_opens_from_a_row_tap_and_keeps_the_list_as_its_parent(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)
+        assert display._screen == "info_value"
+        assert display._info_value.index == 0
+        assert display._info is not None
+
+    def test_refuses_when_the_info_list_is_not_open(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        display._info_value_index = 0
+        display._screen_request = "info_value"
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+        assert display._info_value is None
+
+    def test_refuses_a_stale_index(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_list(display)
+        display._info_value_index = 999
+        display._screen_request = "info_value"
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "info"
+        assert display._info_value is None
+
+    def test_paint_shows_the_tapped_fields_fresh_label_and_value(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        provided = (
+            ("Dial name", "Kitchen"), ("Firmware", "1.0"), ("IPv4", "10.0.0.5"),
+            ("WiFi", "HomeNet"), ("Signal", "Strong"), ("Disk free", "14.2 GB"),
+        )
+        display.set_info_provider(lambda: provided)
+        self._opened_list(display)
+        display._gather_info(display._info_gather_seq)
+        display.list_page(+1)  # page 1: page-relative row 0 is field 2, "IPv4"
+        with display._lock:
+            display._repaint_current_locked()
+        display.info_row_tap(0)
+        with patch.object(
+            display._compositor, "compose_info_value", wraps=display._compositor.compose_info_value,
+        ) as spy:
+            with display._lock:
+                display._repaint_current_locked()
+        assert display._screen == "info_value"
+        view = spy.call_args.args[2]
+        assert (view.label, view.value) == ("IPv4", "10.0.0.5")
+
+    def test_a_gather_landing_while_open_updates_the_value_on_next_repaint(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)  # "Dial name", placeholder "-"
+        assert display._screen == "info_value"
+        display.set_info_provider(lambda: (("Dial name", "Fresh Kitchen"),) + tuple(
+            (r.label, r.value) for r in display._info.rows[1:]
+        ))
+        display._gather_info(display._info_gather_seq)
+        with patch.object(
+            display._compositor, "compose_info_value", wraps=display._compositor.compose_info_value,
+        ) as spy:
+            with display._lock:
+                display._repaint_current_locked()
+        view = spy.call_args.args[2]
+        assert view.value == "Fresh Kitchen"
+
+    def test_close_from_the_value_view_returns_to_info_at_the_same_page(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_list(display)
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 1
+        display.info_row_tap(0)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "info_value"
+        display.close_list()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "info"
+        assert display._info.page == 1
+
+    def test_closes_after_timeout_and_clears_both_states(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)
+        opened_at = display._info_value.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
+        assert display._screen == "main"
+        assert display._info_value is None
+        assert display._info is None
+
+    def test_stays_open_before_timeout(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)
+        opened_at = display._info_value.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS - 1):
+            display._check_secondary_timeout()
+        assert display._screen == "info_value"
+
+    def test_touch_activity_extends_the_timeout(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)
+        old_opened_at = display._info_value.opened_at
+        display.notify_touch_activity()
+        with patch("dial_display.time.monotonic", return_value=old_opened_at + 1):
+            with display._lock:
+                display._apply_touch_activity_locked()
+        assert display._info_value.opened_at > old_opened_at
+
+    def test_sleep_is_deferred_while_open(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)
+        gt.return_value = []
+        with patch.object(display, "_close_secondary_locked") as close:
+            display._poll_once()
+        close.assert_not_called()
+        assert display._idle_started_at is None
+
+    def test_touch_surface_reports_info_value(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        self._opened_value(display, 0)
+        assert display.touch_surface() == ("info_value", False, False, False)

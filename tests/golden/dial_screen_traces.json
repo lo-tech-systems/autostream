@@ -4864,6 +4864,192 @@
       "repeat_close_reveal": false,
       "reporting_appliance_id": null,
       "screen": "info",
+      "screen_request": "info_value",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": true,
+      "info": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 6
+      },
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "info_value",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 6
+      },
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "info_value",
+      "screen_request": "info",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": true,
+      "info": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 6
+      },
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "info",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 6
+      },
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "info",
       "screen_request": "main",
       "selector": {
         "opened_at": 0.0,

@@ -56,6 +56,7 @@ from dial_auth import (
 from dial_display_compositor import (
     PLAY_GLYPH,
     DialDisplayCompositor,
+    InfoValueView,
     ListState,
     OutputViewState,
     OverlayState,
@@ -451,6 +452,16 @@ INFO_PLACEHOLDER_ROWS: tuple[InfoRow, ...] = tuple(
     InfoRow(label=label, value="-")
     for label in ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free")
 )
+
+
+@dataclass(frozen=True)
+class InfoValueState:
+    """The compact info page's own drill-in: which field is showing (an
+    absolute index into InfoState.rows, read fresh at paint — see
+    DialDisplay._display_info_value_locked, so a gather landing while the
+    view is open still shows up) and the inactivity clock."""
+    index: int
+    opened_at: float
 
 
 @dataclass(frozen=True)
@@ -891,6 +902,15 @@ class DialDisplay:
         # captured value against this one and drops its result if they no
         # longer match (the page closed and reopened, or closed outright).
         self._info_gather_seq = 0
+        # The compact info page's own drill-in state — same write/read
+        # discipline as self._info, kept alongside it (not cleared when the
+        # value view opens: the view is the list's child and reads its rows
+        # from self._info at every paint — see _display_info_value_locked).
+        self._info_value: InfoValueState | None = None
+        # Touch-thread plain write: the row a LIST_ROW tap on the compact
+        # info list chose, consumed by the value view's opener — the
+        # self._output_open_id shape.
+        self._info_value_index: int | None = None
         # Zero-arg callable -> tuple[InfoRow, ...], wired by set_info_provider()
         # at startup (dial_main.py, after the HTTP server exists). None
         # (e.g. a NoOpDisplayStatusProvider stand-in, or before wiring runs)
@@ -2069,11 +2089,14 @@ class DialDisplay:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW
         tap): routes to whichever list-chassis screen is actually open —
         the appliance selector (selector_pick), the replay picker
-        (picker_pick) or the outputs list (outputs_row_tap). A no-op on the
-        info page: its rows are already dead at the geometry level
-        (GEOMETRY_INFO carries no LIST_ROW entries at all), so this is
+        (picker_pick), the outputs list (outputs_row_tap) or, on the
+        compact tier only, the info page (info_row_tap). Off compact the
+        info page's rows are dead at the geometry level (GEOMETRY_INFO
+        carries no LIST_ROW entries there at all), so this stays a no-op —
         belt-and-braces only."""
         if self._screen == "info":
+            if self._compact_tier():
+                self.info_row_tap(index)
             return
         if self._screen == "picker":
             self.picker_pick(index)
@@ -2081,6 +2104,24 @@ class DialDisplay:
             self.outputs_row_tap(index)
         else:
             self.selector_pick(index)
+
+    def info_row_tap(self, index: int) -> None:
+        """Touch-thread entry (a LIST_ROW tap on the compact info list):
+        remember the tapped field's absolute position in InfoState.rows and
+        request the value view — the outputs_row_tap() shape. A stale
+        index (the row count changed between paint and tap) is ignored and
+        the list stays open, rather than falling back to "close" the way
+        selector_pick()/picker_pick()/outputs_row_tap() do: closing here
+        would pop past the list itself, since the info page has nothing to
+        fall back to but main. Plain reads and writes, no lock, no I/O."""
+        state = self._info
+        if state is None or not state.rows:
+            return
+        page_rows = self._current_page_rows(state)
+        if 0 <= index < len(page_rows):
+            self._info_value_index = state.page * self._rows_per_page() + index
+            self._screen_request = "info_value"
+            self._overlay_signal.set()
 
     def _rows_per_page(self) -> int:
         """Rows per list page for the active screen — the same density-aware
@@ -2481,14 +2522,33 @@ class DialDisplay:
 
     def _open_info_locked(self) -> bool:
         """The info row's opener: open at once with whatever rows the last
-        gather left (or the placeholders, on a fresh open), page 0, a
-        restarted inactivity clock. The actual data lands separately, from
+        gather left (or the placeholders, on a fresh open), a restarted
+        inactivity clock, and page 0 — except when this is a return from
+        the compact info page's own value view (self._screen ==
+        "info_value"), which preserves the list's page instead of
+        resetting it, so tapping back from a later page does not jump the
+        list back to its first one. The actual data lands separately, from
         the daemon thread open_info() already started — see _gather_info()."""
         rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
+        page = self._info.page if (self._screen == "info_value" and self._info is not None) else 0
         self._info = InfoState(
-            rows=rows, page=0, opened_at=time.monotonic(), gather_seq=self._info_gather_seq,
+            rows=rows, page=page, opened_at=time.monotonic(), gather_seq=self._info_gather_seq,
         )
         self._screen = "info"
+        return True
+
+    def _open_info_value_locked(self) -> bool:
+        """The compact info page's own drill-in opener: refuse (the list
+        stays showing) when the info list is not open or the touch-chosen
+        index (self._info_value_index, set by info_row_tap()) no longer
+        names a row in it — either way self._info is left untouched, since
+        the view is the list's child and its own back_to returns there."""
+        state, index = self._info, self._info_value_index
+        self._info_value_index = None
+        if self._screen != "info" or state is None or index is None or not (0 <= index < len(state.rows)):
+            return False
+        self._info_value = InfoValueState(index=index, opened_at=time.monotonic())
+        self._screen = "info_value"
         return True
 
     def _open_repeat_locked(self) -> bool:
@@ -2825,16 +2885,25 @@ class DialDisplay:
 
     def _build_info_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
         """Build the compositor's ListState for the info page's CURRENT
-        page — six read-only (label, False, value) rows, ALL pages held in
-        self._info.rows the same way SelectorState/PickerState hold theirs.
-        title/plain_background mark this as the read-only variant: the
-        compact tier's own title band reads "Info" instead of "Replay", and
-        the whole frame sits on the flat chassis colour rather than a
-        dimmed base image (the info page has no artwork/logo of its own to
-        dim)."""
+        page — six read-only rows, ALL pages held in self._info.rows the
+        same way SelectorState/PickerState hold theirs. title/
+        plain_background mark this as the read-only variant: the compact
+        tier's own title band reads "Info" instead of "Replay", and the
+        whole frame sits on the flat chassis colour rather than a dimmed
+        base image (the info page has no artwork/logo of its own to dim).
+
+        Row shape is tier-aware: the compact tier's own rows are names
+        only, (label, False) — no value, since a tap now opens the field's
+        own full-screen value view (see info_row_tap()/InfoValueState) and
+        the row itself only needs to name the field; every other tier keeps
+        the value drawn inline, (label, False, value), unchanged."""
+        if metrics is None:
+            metrics = self._layout_metrics()
+        compact = metrics.content_tier == CONTENT_COMPACT
+        to_row = (lambda row: (row.label, False)) if compact else (lambda row: (row.label, False, row.value))
         list_state = _list_state_for(
             self._info, _rows_per_page_for(width, height, metrics=metrics), "-",
-            lambda row: (row.label, False, row.value), pressed=self._pressed,
+            to_row, pressed=self._pressed,
         )
         return dataclasses.replace(list_state, title=INFO_TITLE, plain_background=True)
 
@@ -2899,6 +2968,28 @@ class DialDisplay:
         view = self._build_output_view_locked(time.monotonic())
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_output(
+            metrics.width, metrics.height, view,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+
+    def _display_info_value_locked(self) -> None:
+        """Compose and push the compact info page's own drill-in frame —
+        the compose_info_value() counterpart to _display_output_locked().
+        Reads the tapped field's label/value fresh from self._info.rows at
+        every paint (not a copy taken when the view opened), so a gather
+        landing while it is open shows up on the next repaint — see
+        InfoValueState's own docstring. An index that has since fallen out
+        of range (the row count shrank while the view was open) paints a
+        blank value rather than raising; the view itself is only ever
+        closed by a tap-back or its own timeout, never by this. Bypasses
+        _display_locked() entirely, like every other list-chassis screen's
+        own compose path. Caller holds self._lock."""
+        view_state = self._info_value
+        rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
+        row = rows[view_state.index] if view_state is not None and 0 <= view_state.index < len(rows) else None
+        view = InfoValueView(label=row.label if row else "", value=row.value if row else "-")
+        metrics = self._metrics_locked()
+        self._push_frame_locked(lambda: self._compositor.compose_info_value(
             metrics.width, metrics.height, view,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
@@ -3946,6 +4037,16 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    # The compact info page's own drill-in — a tapped field's own
+    # full-screen value, closed by a tap anywhere (LIST_BACK) or its own
+    # timeout, back to the list it opened from at the same page.
+    "info_value": ScreenPolicy(
+        name="info_value", state_attr="_info_value", surface=("info_value", False, False, False),
+        open=DialDisplay._open_info_value_locked, paint=DialDisplay._display_info_value_locked, paged=False,
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="info",
     ),
     "repeat": ScreenPolicy(
         name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True, True),

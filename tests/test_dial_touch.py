@@ -32,6 +32,7 @@ from dial_touch import (  # noqa: E402
     SURFACE_HIDDEN,
     SURFACE_IDLE,
     SURFACE_INFO,
+    SURFACE_INFO_VALUE,
     SURFACE_OUTPUT,
     SURFACE_OUTPUTS,
     SURFACE_PICKER,
@@ -50,11 +51,13 @@ from dial_touch import (  # noqa: E402
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO,
+    GEOMETRY_INFO_VALUE,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT_REPLAY,
     TouchZone,
     compact_layout_for,
+    compact_picker_layout_for,
     hit_test,
     idle_layout_for,
     layout_for,
@@ -1510,13 +1513,16 @@ class TestNewSurfacesArmImmediately:
 class TestInfoSurface:
     """SURFACE_INFO: the idle screen's own read-only info page. Held like
     every other list surface (see TestNewSurfacesArmImmediately's own
-    SURFACE_INFO cases), but its own geometry (GEOMETRY_INFO) carries no
-    LIST_ROW entries at all — a tap in a row cell lands in no zone."""
+    SURFACE_INFO cases). Off the compact tier its own geometry (GEOMETRY_
+    INFO) carries no LIST_ROW entries at all — a tap in a row cell lands in
+    no zone; on the compact tier the rows ARE tappable, opening the compact
+    info page's own drill-in (SURFACE_INFO_VALUE, below)."""
 
     def test_maps_to_geometry_info(self):
         assert _GEOMETRY_FOR_SURFACE[SURFACE_INFO] == GEOMETRY_INFO
 
-    def test_row_press_produces_no_action(self):
+    def test_row_press_produces_no_action_off_compact(self):
+        # WIDTH/HEIGHT (160x128) is a base-tier fixture, never compact.
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_INFO, False, now=0.0)
         actions = sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.1)
@@ -1535,6 +1541,39 @@ class TestInfoSurface:
         actions = sm2.on_filter_event(press_event(LIST_DOWN_XY), now=0.1)
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
         assert tap.zone == TouchZone.LIST_DOWN
+
+    def test_row_press_on_the_compact_info_surface_reports_list_row(self):
+        p = compact_picker_layout_for(240, 240, metrics=_COMPACT_METRICS)
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_INFO, False, now=0.0)
+        actions = sm.on_filter_event(press_event(_rect_center(p.row1)), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_ROW
+        assert tap.index == 1
+
+
+class TestInfoValueSurface:
+    """SURFACE_INFO_VALUE: the compact info page's own drill-in. Held like
+    every other list surface; its geometry (GEOMETRY_INFO_VALUE) is a
+    single whole-panel LIST_BACK entry, so any press anywhere reports the
+    same zone-tap back to the list."""
+
+    def test_maps_to_geometry_info_value(self):
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_INFO_VALUE] == GEOMETRY_INFO_VALUE
+
+    def test_arms_immediately_like_every_other_held_surface(self):
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_INFO_VALUE, False, now=0.0)
+        assert sm.overlay_visible is True
+        assert sm.held_visible is True
+
+    @pytest.mark.parametrize("xy", [(0, 0), (120, 120), (239, 239)])
+    def test_a_press_anywhere_reports_list_back(self, xy):
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_INFO_VALUE, False, now=0.0)
+        actions = sm.on_filter_event(press_event(xy), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_BACK
 
 
 class TestDotsGating:

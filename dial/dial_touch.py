@@ -119,6 +119,7 @@ from dial_touch_filter import TouchEvent, TouchEventType
 from dial_touch_layout import (
     GEOMETRY_IDLE,
     GEOMETRY_INFO,
+    GEOMETRY_INFO_VALUE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
@@ -202,10 +203,16 @@ SURFACE_OUTPUT = "output"
 # set_surface() below.
 SURFACE_REPEAT_REPLAY = "repeat_replay"
 # The idle screen's own read-only info page: held like every other list
-# surface (a press arms immediately, no reveal step), but its own geometry
-# (GEOMETRY_INFO) carries no LIST_ROW entries at all — a tap on a row lands
-# in no zone.
+# surface (a press arms immediately, no reveal step). Off the compact tier
+# its own geometry (GEOMETRY_INFO) carries no LIST_ROW entries at all — a
+# tap on a row lands in no zone; on the compact tier the rows ARE tappable,
+# opening the field's own value view below.
 SURFACE_INFO = "info"
+# The compact info page's own drill-in — a tapped field's own full-screen
+# value. Held like every other list surface; its geometry (GEOMETRY_INFO_
+# VALUE) is a single whole-panel LIST_BACK entry, so any press anywhere
+# reports the same zone-tap back to the list.
+SURFACE_INFO_VALUE = "info_value"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -222,6 +229,7 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_OUTPUTS: GEOMETRY_LIST,
     SURFACE_OUTPUT: GEOMETRY_OUTPUT,
     SURFACE_INFO: GEOMETRY_INFO,
+    SURFACE_INFO_VALUE: GEOMETRY_INFO_VALUE,
 }
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close
@@ -440,7 +448,11 @@ class TouchStateMachine:
         GEOMETRY_OUTPUT table, held like the selector.
         SURFACE_INFO: the idle screen's own read-only info page; hit-tests
         use the GEOMETRY_INFO table (the list table with every row entry
-        removed), held like the selector.
+        removed off the compact tier; unchanged, rows tappable, on it),
+        held like the selector.
+        SURFACE_INFO_VALUE: the compact info page's own drill-in; hit-tests
+        use the GEOMETRY_INFO_VALUE table (a single whole-panel LIST_BACK
+        entry), held like the selector.
 
         name_active, dots_active and outputs_active are recorded either
         way — even on a same-surface call — since any of them can change on
