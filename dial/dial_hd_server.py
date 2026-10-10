@@ -117,6 +117,7 @@ STATIC_FILES = {
     "hd-derive.js": _JS,
     "hd-requests.js": _JS,
     "hd-actions.js": _JS,
+    "hd-paint.js": _JS,
     "login.js": _JS,
     "theme.css": _CSS,
     "logo.png": _PNG,
