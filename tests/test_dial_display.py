@@ -11,6 +11,7 @@ degradation, and shutdown.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import io
@@ -71,6 +72,26 @@ from dial_warnings import WarningManager, WarningStore
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Module-level names the clock-driven tests replace. When a function that
+# reads one of these moves to another module, this is the one place to
+# repoint (the trace harness keeps the same pair of tuples).
+_PATCHES = (
+    "dial_display.fetch_target_status",
+    "dial_display.enrich_targets",
+    "dial_display._fetch_artwork",
+    "dial_display.decode_artwork",
+)
+_MONOTONIC_TARGETS = ("dial_display.time.monotonic",)
+
+
+@contextlib.contextmanager
+def _patch_monotonic(clock):
+    """Patch every time.monotonic reader with *clock*."""
+    with contextlib.ExitStack() as stack:
+        for target in _MONOTONIC_TARGETS:
+            stack.enter_context(patch(target, clock))
+        yield
 
 def _target(
     name="Kitchen", ip="192.168.1.10", port=80,
@@ -873,7 +894,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += 5.0
             status = display.get_status()
@@ -884,7 +905,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS - 1
             display._poll_once()
@@ -896,7 +917,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()  # idle timer starts
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()  # crosses threshold -> sleep
@@ -910,7 +931,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()
@@ -923,7 +944,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()
@@ -936,7 +957,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()  # asleep now
@@ -968,7 +989,7 @@ class TestIdleSleep:
 
         gt.return_value = []
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()  # asleep
@@ -992,7 +1013,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
             for _ in range(5):
                 display._poll_once()
@@ -1008,7 +1029,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()
@@ -1019,7 +1040,7 @@ class TestIdleSleep:
     def _asleep_display(self, clock):
         display, fb, gt = _make_display(targets=[])
         display.enable()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()
@@ -1030,7 +1051,7 @@ class TestIdleSleep:
         clock = _FakeClock()
         display, fb, gt = self._asleep_display(clock)
         gt.return_value = [_target(auth="unauthorized")]
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
         assert display.get_status()["display_sleeping"] is True
         assert fb.wake_calls == 0
@@ -1051,7 +1072,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[_target(auth="unauthorized")])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += 5.0
             display._poll_once()
@@ -1063,7 +1084,7 @@ class TestIdleSleep:
         display, fb, gt = self._asleep_display(clock)
         t = _target(auth="unknown")
         gt.return_value = [t]
-        with patch("dial_display.time.monotonic", clock),              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+        with _patch_monotonic(clock),              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
             display._poll_once()
         assert display.get_status()["display_sleeping"] is False
         assert fb.wake_calls == 1
@@ -1075,7 +1096,7 @@ class TestIdleSleep:
         refused = _target(name="Lounge", auth="unauthorized", playing_since=1.0)
         ok = _target(name="Kitchen", auth="authorized", playing_since=2.0)
         gt.return_value = [refused, ok]
-        with patch("dial_display.time.monotonic", clock),              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+        with _patch_monotonic(clock),              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
             display._poll_once()
         assert display.get_status()["display_sleeping"] is False
         assert display._reporting_appliance_id == ok.appliance_id
@@ -1084,7 +1105,7 @@ class TestIdleSleep:
         clock = _FakeClock()
         display, fb, gt = self._asleep_display(clock)
         gt.return_value = [_target(appliance_id="")]
-        with patch("dial_display.time.monotonic", clock),              patch("dial_display.fetch_target_status") as fetch:
+        with _patch_monotonic(clock),              patch("dial_display.fetch_target_status") as fetch:
             display._poll_once()
         fetch.assert_not_called()
         assert display.get_status()["display_sleeping"] is True
@@ -1095,7 +1116,7 @@ class TestIdleSleep:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()
@@ -2595,7 +2616,7 @@ class TestNotifyTouchActivity:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()  # idle timer starts (no targets)
             clock.t += 5.0
             assert display.get_status()["display_idle_seconds"] == 5
@@ -2611,7 +2632,7 @@ class TestNotifyTouchActivity:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()  # asleep now
@@ -2631,7 +2652,7 @@ class TestNotifyTouchActivity:
         display, fb, gt = _make_display(targets=[])
         display.enable()
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS - 1
             display.notify_touch_activity()
@@ -3438,7 +3459,7 @@ class TestArtworkReveal:
         """Touch mode: reveal the controls and let the slide-in finish, on a
         private clock well before the tests' own; returns the settled frame."""
         clock = _FakeClock(500.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=True))
             _repaint(display)
             clock.t += dd.REVEAL_ANIMATION_S + 0.1
@@ -3491,7 +3512,7 @@ class TestArtworkReveal:
         display, fb, gt, band_h = self._rich()
         held_frame = fb.displayed[-1]
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             # The first slide frame is the ordinary frame at progress 0,
@@ -3540,7 +3561,7 @@ class TestArtworkReveal:
         display, fb, gt, band_h = self._rich(always_show=False)
         shown_frame = self._shown_settled(display, fb)
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             # The window overrides the visible snapshot; the slide has begun.
@@ -3569,7 +3590,7 @@ class TestArtworkReveal:
         display, fb, gt, band_h = self._rich(always_show=False)
         shown_frame = self._shown_settled(display, fb)
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=False))
             _repaint(display)
             assert display._controls_hidden_until == 0.0
@@ -3612,7 +3633,7 @@ class TestArtworkReveal:
         display, fb, gt, band_h = self._rich(always_show=always_show)
         held_frame = self._shown_settled(display, fb) if not always_show else fb.displayed[-1]
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
@@ -3657,7 +3678,7 @@ class TestArtworkReveal:
     def test_reveal_tap_mid_slide_out_turns_around_without_a_jump(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.2
@@ -3686,7 +3707,7 @@ class TestArtworkReveal:
     def test_hide_mid_slide_in_turns_around_without_a_jump(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
@@ -3719,7 +3740,7 @@ class TestArtworkReveal:
     def test_first_frame_after_a_screen_change_does_not_slide(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.open_selector()
             _repaint(display)
             assert display._controls_last is None
@@ -3733,7 +3754,7 @@ class TestArtworkReveal:
     def test_first_touch_after_a_screen_change_in_touch_mode_slides_in(self):
         display, fb, gt, _ = self._rich(always_show=False)
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.open_selector()
             _repaint(display)
             display.close_list()
@@ -3749,7 +3770,7 @@ class TestArtworkReveal:
     def test_first_frame_after_waking_does_not_slide(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             with display._lock:
                 display._sleep_locked()
             assert display._controls_last is None
@@ -3763,7 +3784,7 @@ class TestArtworkReveal:
     def test_first_frame_after_the_idle_screen_does_not_slide(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             gt.return_value = []
             display._poll_once()
             _repaint(display)
@@ -3782,7 +3803,7 @@ class TestArtworkReveal:
         _poll_with_artwork(display, fb)
         held_frame = fb.displayed[-1]
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=True))
             display.hide_controls()
             _repaint(display)
@@ -3801,7 +3822,7 @@ class TestArtworkReveal:
         assert dd.REVEAL_FRAME_GAP_S == 0.001
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             display._reveal_frame_at = 1000.2
@@ -3811,7 +3832,7 @@ class TestArtworkReveal:
     def test_deadline_paces_from_the_end_of_the_frame(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             display._reveal_frame_at = 1000.03
@@ -3847,7 +3868,7 @@ class TestArtworkReveal:
         # it round instead of starting afresh.
         self._shown_settled(display, fb)
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=False))
             _repaint(display)
             assert display._reveal_started_at == 1000.0
@@ -3873,7 +3894,7 @@ class TestArtworkReveal:
     def test_second_tap_starts_a_new_slide_from_zero(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.2
@@ -3894,7 +3915,7 @@ class TestArtworkReveal:
     def test_end_of_slide_tick_does_not_clear_a_newer_slide(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.01
@@ -3928,7 +3949,7 @@ class TestArtworkReveal:
         display, fb, gt, _ = self._rich()
         held_frame = fb.displayed[-1]
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             assert display._reveal_started_at == 1000.0
@@ -3949,7 +3970,7 @@ class TestArtworkReveal:
     def test_now_playing_clear_mid_slide_takes_the_idle_path(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.1
@@ -3966,7 +3987,7 @@ class TestArtworkReveal:
         self._shown_settled(display, fb)
         assert display._controls_last is True
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             gt.return_value = []
             display._poll_once()
             assert display._now_playing is None
@@ -3981,7 +4002,7 @@ class TestArtworkReveal:
         display, fb, gt, band_h = self._rich()
         metrics = display._layout_metrics()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
@@ -4011,7 +4032,7 @@ class TestArtworkReveal:
     def test_chrome_change_mid_slide_rebuilds_layers_and_continues(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             with patch("dial_display.shown_volume", return_value=40):
@@ -4031,7 +4052,7 @@ class TestArtworkReveal:
     def test_sleep_mid_slide_resets(self):
         display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             _repaint(display)
             assert display._reveal_started_at == 1000.0
@@ -4075,7 +4096,7 @@ class TestArtworkReveal:
             reads.append(1)
             return 1000.0
 
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.hide_controls()
             reads.clear()
             with display._lock:
@@ -4154,7 +4175,7 @@ class TestReplayReveal:
         display, fb, base = self._opened()
         band_h = layout_for(fb.width, fb.height, metrics=display._layout_metrics()).top_band[3]
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             shown = fb.displayed[-1]
             display.repeat_toggle_tap()
@@ -4181,7 +4202,7 @@ class TestReplayReveal:
     def test_counter_keeps_ticking_while_hidden(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4203,7 +4224,7 @@ class TestReplayReveal:
     def test_replay_end_ends_the_window(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4217,7 +4238,7 @@ class TestReplayReveal:
     def test_screen_change_ends_the_window(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4230,7 +4251,7 @@ class TestReplayReveal:
     def test_window_expiry_shows_controls(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4244,7 +4265,7 @@ class TestReplayReveal:
         display, fb, base = self._opened()
         band_h = layout_for(fb.width, fb.height, metrics=display._layout_metrics()).top_band[3]
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             shown = fb.displayed[-1]
             display.repeat_toggle_tap()
@@ -4282,7 +4303,7 @@ class TestReplayReveal:
     def test_reveal_tap_slides_the_controls_in(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4306,7 +4327,7 @@ class TestReplayReveal:
     def test_reveal_tap_mid_slide_out_turns_around_without_a_jump(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4324,7 +4345,7 @@ class TestReplayReveal:
     def test_replay_stopping_does_not_slide_the_controls_in(self):
         display, fb, base = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4359,7 +4380,7 @@ class TestReplayReveal:
     def test_base_tier_hides_instantly(self):
         display, fb, base = self._opened(maker=_make_display)
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             display.repeat_toggle_tap()
             _repaint(display)
@@ -4369,7 +4390,7 @@ class TestReplayReveal:
     def test_compact_repeat_unaffected(self):
         display, fb, base = self._opened(maker=_make_compact_display)
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             _repaint(display)
             before = _pixels(fb.displayed[-1])
             display.repeat_toggle_tap()
@@ -4534,7 +4555,7 @@ class TestReconcilePass:
         def fake_enrich(targets, dial_id):
             return []
 
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display.enrich_targets", side_effect=fake_enrich) as mock_enrich:
             display._poll_once()  # sequential walk visits t1 only (breaks on its artwork)
@@ -4542,14 +4563,14 @@ class TestReconcilePass:
         pending_arg = mock_enrich.call_args[0][0]
         assert [t.service_name for t in pending_arg] == ["Two"]
 
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display.enrich_targets", side_effect=fake_enrich) as mock_enrich2:
             display._poll_once()  # same instant: within the 60s interval
         mock_enrich2.assert_not_called()
 
         clock.t += dd.RECONCILE_INTERVAL_SECONDS
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display.enrich_targets", side_effect=fake_enrich) as mock_enrich3:
             display._poll_once()
@@ -4567,7 +4588,7 @@ class TestReconcilePass:
         # no entry yet, which is always due.
         dial_auth.auth_map.apply(aid2, dial_auth.OUTCOME_UNAUTHORIZED, aid2, clock.t)
 
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_display.enrich_targets", return_value=[]) as mock_enrich:
             display._poll_once()
@@ -4744,7 +4765,7 @@ class TestRepeatStoreFeed:
                 ),
             }]
 
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), appliance_id=aid_playing)), \
              patch("dial_display.enrich_targets", side_effect=fake_enrich):
@@ -4850,7 +4871,7 @@ class TestRunPollGating:
     def _asleep_display(self, clock):
         display, fb, gt = _make_display(targets=[])
         display.enable()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display._poll_once()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()
@@ -4886,7 +4907,7 @@ class TestRunPollGating:
         clock = _FakeClock()
         display, fb, gt = self._asleep_display(clock)
         gt.return_value = [_target(auth=auth)]
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status",
                    return_value=_status_result(track_id=None)):
             self._run_one_iteration(display)
@@ -4898,7 +4919,7 @@ class TestRunPollGating:
         display, fb, gt = self._asleep_display(clock)
         gt.return_value = [_target(auth="unauthorized")]
         painted = len(fb.displayed)
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status") as mock_fetch:
             self._run_one_iteration(display)
         mock_fetch.assert_not_called()
@@ -4910,7 +4931,7 @@ class TestRunPollGating:
         clock = _FakeClock()
         display, fb, gt = self._asleep_display(clock)
         painted = len(fb.displayed)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._run_one_iteration(display)
         assert fb.wake_calls == 0
         assert len(fb.displayed) == painted
@@ -4923,7 +4944,7 @@ class TestRunPollGating:
         display, fb, gt = self._asleep_display(clock)
         display._last_roster = [t]
         display.notify_auth_changed(aid)
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status",
                    return_value=_status_result(appliance_id=aid, track_id=None)):
             self._run_one_iteration(display)
@@ -6961,7 +6982,7 @@ class TestRepeatCounterPaintedReference:
             if s is not None:
                 self._resync(clk, +s)
 
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)      # counter reads 3
             assert self._paint(display) == 3
             painted = self._run(display, clock, 8.0, before_tick=poll_lands)
@@ -6974,7 +6995,7 @@ class TestRepeatCounterPaintedReference:
     def test_late_wakes_never_skip(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             painted = self._run(display, clock, 6.0, late=0.05)   # 50 ms late every wake
@@ -6983,7 +7004,7 @@ class TestRepeatCounterPaintedReference:
     def test_signal_repaint_that_straddles_a_boundary_is_followed_at_once(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             clock.t = 1001.99                       # counter 4.99: a signal repaint paints 4
             assert self._paint(display) == 4
@@ -7000,7 +7021,7 @@ class TestRepeatCounterPaintedReference:
     def test_small_backward_resync_holds_the_painted_second(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             clock.t = 1000.1
@@ -7019,7 +7040,7 @@ class TestRepeatCounterPaintedReference:
         1 + REPEAT_COUNTER_HOLD_S of the re-sync."""
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             clock.t = 1000.05
@@ -7035,7 +7056,7 @@ class TestRepeatCounterPaintedReference:
         import dial_repeat_store as drs
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=9.0, observed_at=1000.0)
             assert self._paint(display) == 7
             clock.t = 1000.3
@@ -7056,7 +7077,7 @@ class TestRepeatCounterPaintedReference:
         import dial_repeat_store as drs
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=9.0, observed_at=1000.0)
             assert self._paint(display) == 7
             clock.t = 1000.2
@@ -7075,7 +7096,7 @@ class TestRepeatCounterPaintedReference:
     def test_loop_wrap_re_anchors_to_zero_then_counts_up(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=29.5, observed_at=1000.0)    # counter 27.5; wraps at raw 31.5
             assert self._paint(display) == 27
             painted = self._run(display, clock, 6.0)
@@ -7090,7 +7111,7 @@ class TestRepeatCounterPaintedReference:
         re-sync noise."""
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             painted = self._run(display, clock, 4.5)      # paints 4..8, last at 1005.005
@@ -7109,7 +7130,7 @@ class TestRepeatCounterPaintedReference:
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             # Counter value 2.5 at the open; a stale painted 3 would be held
             # by the guard if the open did not reset it.
             _poll_focused_with_repeat(
@@ -7127,7 +7148,7 @@ class TestRepeatCounterPaintedReference:
     def test_leaving_replaying_resets_and_a_return_re_anchors(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             self._seed(position=0.0, observed_at=1000.0, state="hold")
@@ -7141,7 +7162,7 @@ class TestRepeatCounterPaintedReference:
         import dial_repeat_store as drs
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             drs.repeat_store.update(self.AID, None)
@@ -7151,7 +7172,7 @@ class TestRepeatCounterPaintedReference:
     def test_builder_never_writes_the_reference(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
             display._repeat_painted_second = 3
             clock.t = 1000.1
@@ -7165,7 +7186,7 @@ class TestRepeatCounterPaintedReference:
     def test_deadline_targets_the_painted_seconds_successor(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)       # counter 3.0
             assert display._next_repaint_deadline() == pytest.approx(1000.0)   # nothing painted: owed
             assert self._paint(display) == 3
@@ -7402,7 +7423,7 @@ class TestFocusPendingGrace:
         display, fb, gt = _make_display(targets=[])
         aid = "d" * 20
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_manual_focus_pending(aid, "Kitchen")
             display._poll_once()
             assert display.manual_focus_id() == aid
@@ -7417,7 +7438,7 @@ class TestFocusPendingGrace:
                                     playing=False)
         display, fb, gt = _make_display(targets=[], roster=[idle_entry])
         clock = _FakeClock()
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch("dial_display.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
             display.set_manual_focus_pending(aid, "Kitchen")
@@ -9067,7 +9088,7 @@ class TestCompactPersistentOverlayAndSurface:
         display.enable()
         _poll_with_artwork(display, fb)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=True))
             assert display.persistent_overlay_shown() is True
             clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
@@ -9080,7 +9101,7 @@ class TestCompactPersistentOverlayAndSurface:
         display.enable()
         _poll_with_artwork(display, fb)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=True))
             clock.t += 5.0
             display.notify_touch_activity()
@@ -9125,14 +9146,14 @@ class TestCompactRepeatControlsWindow:
     def test_repeat_controls_hide_after_six_seconds(self):
         display = self._opened("2" * 20)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
             assert display.touch_surface()[0] == "hidden"
 
     def test_repeat_frame_falls_back_to_bare_base_once_hidden(self):
         display = self._opened("3" * 20)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock), \
+        with _patch_monotonic(clock), \
              patch.object(display._compositor, "compose_repeat", wraps=display._compositor.compose_repeat) as spy:
             clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
             with display._lock:
@@ -9142,7 +9163,7 @@ class TestCompactRepeatControlsWindow:
     def test_reveal_after_hidden_shows_repeat_again(self):
         display = self._opened("4" * 20)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
             assert display.touch_surface()[0] == "hidden"
             display.set_overlay(OverlayState(visible=True))
@@ -9233,7 +9254,7 @@ class TestControlsShownDeadlineAndTick:
         display.enable()
         _poll_with_artwork(display, fb)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=True))
             deadline = display._next_repaint_deadline()
         assert deadline is not None
@@ -9245,7 +9266,7 @@ class TestControlsShownDeadlineAndTick:
         display.enable()
         _poll_with_artwork(display, fb)
         clock = _FakeClock(time.monotonic())
-        with patch("dial_display.time.monotonic", clock):
+        with _patch_monotonic(clock):
             display.set_overlay(OverlayState(visible=True))
             clock.t += dd.CONTROLS_HIDE_SECONDS + 0.1
             display._overlay_signal.clear()

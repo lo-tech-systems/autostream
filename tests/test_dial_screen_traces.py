@@ -16,6 +16,7 @@ _REGENERATE to True, run this file once, then flip it back to False.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import random
@@ -62,6 +63,9 @@ PRE_BINDING_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_binding.json"
 # framework: see TestPreWarningsScenariosUnchanged below, the same proof
 # one layer further back still.
 PRE_WARNINGS_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_warnings.json"
+# A frozen copy of GOLDEN_PATH taken immediately before the display logic
+# starts moving into its own core; see TestPreCoreScenariosUnchanged below.
+PRE_CORE_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_core.json"
 
 # Set to True locally to regenerate the golden fixture after a *deliberate*,
 # reviewed change. Must be False in committed code.
@@ -473,6 +477,23 @@ def _snapshot(ctx: _Ctx) -> dict:
 _FAKE_ARTWORK_IMAGE = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
 
 
+# Every module-level name the scenarios replace, as (target, kwargs factory):
+# the factory gets the scenario context and the artwork image the scenario's
+# panel size needs. When a function that calls one of these moves to another
+# module, this tuple (and _MONOTONIC_TARGETS) is the one place to repoint.
+_PATCHES = (
+    ("dial_display.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
+    ("dial_display.enrich_targets", lambda ctx, img: {"side_effect": ctx.fake_enrich}),
+    ("dial_display._fetch_artwork", lambda ctx, img: {"return_value": (b"jpegdata", "")}),
+    ("dial_display.decode_artwork", lambda ctx, img: {"return_value": img}),
+    ("dial_display_compositor.transform_artwork_for_panel", lambda ctx, img: {"return_value": img}),
+    ("dial_display._request_reboot", lambda ctx, img: {}),
+)
+# Every place time.monotonic is read, all patched with the scenario's one
+# fake clock.
+_MONOTONIC_TARGETS = ("dial_display.time.monotonic",)
+
+
 def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:
     ctx = _Ctx(cfg=cfg, backend=backend)
     # The fake "transform" must still land on the active logical size (see
@@ -480,13 +501,11 @@ def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:
     # every existing (backend=None) scenario, a freshly sized one for a
     # scenario that opted into a non-default panel (e.g. the compact tier).
     artwork_image = _FAKE_ARTWORK_IMAGE if backend is None else Image.new("RGB", (backend.width, backend.height))
-    with patch("dial_display.time.monotonic", ctx.clock), \
-         patch("dial_display.fetch_target_status", side_effect=ctx.fake_fetch), \
-         patch("dial_display.enrich_targets", side_effect=ctx.fake_enrich), \
-         patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
-         patch("dial_display.decode_artwork", return_value=artwork_image), \
-         patch("dial_display_compositor.transform_artwork_for_panel", return_value=artwork_image), \
-         patch("dial_display._request_reboot"):
+    with contextlib.ExitStack() as stack:
+        for target in _MONOTONIC_TARGETS:
+            stack.enter_context(patch(target, ctx.clock))
+        for target, make_kwargs in _PATCHES:
+            stack.enter_context(patch(target, **make_kwargs(ctx, artwork_image)))
         ctx.display.enable()
         ctx.frame_offset = len(ctx.fb.displayed)
         trace = []
@@ -2447,3 +2466,21 @@ class TestPreWarningsScenariosUnchanged:
             assert new[name] == old_trace, f"{name!r} changed"
             checked += 1
         assert checked >= 60
+
+
+# ---------------------------------------------------------------------------
+# Frozen pre-core baseline: the whole corpus, nothing stripped, must stay
+# identical while the display logic is restructured.
+# ---------------------------------------------------------------------------
+
+class TestPreCoreScenariosUnchanged:
+    """Every scenario in the corpus, random walks included, is identical to
+    the frozen copy taken before the core extraction began."""
+
+    def test_every_scenario_is_unchanged(self):
+        old = json.loads(PRE_CORE_GOLDEN_PATH.read_text(encoding="utf-8"))
+        new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+        assert set(new) == set(old)
+        for name, old_trace in old.items():
+            assert new[name] == old_trace, f"{name!r} changed"
+        assert len(old) >= 60
