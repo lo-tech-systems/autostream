@@ -653,6 +653,13 @@ def _dial_card_html(
                     </label>
                     <span>Pre-release updates</span>
                   </div>
+                  <div class="dial-mute-all-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-mute-all" data-dial-action="save-config" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Mute all playing devices</span>
+                  </div>
                   <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <label class="output-toggle" style="margin:0;">
                       <input type="checkbox" class="dial-screen-fitted" data-dial-action="save-screen" disabled>
@@ -681,6 +688,13 @@ def _dial_card_html(
                   <div class="dial-screen-touch-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Touch Panel:</span>
                     <select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>
+                  </div>
+                  <div class="dial-screen-controls-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-screen-always-controls" data-dial-action="save-screen" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Always show on-screen controls</span>
                   </div>
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
@@ -3745,6 +3759,15 @@ def send_setup_page(
           card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
             row.classList.toggle('is-disabled', off);
           }});
+          // "Always show controls" additionally requires a real touch
+          // controller — a persistent overlay with dead minus/plus buttons
+          // on a screen-only dial is misleading. The dial itself does not
+          // check touch at runtime; this is purely a UI courtesy.
+          var ctlEl = card.querySelector('.dial-screen-always-controls');
+          var ctlRow = card.querySelector('.dial-screen-controls-row');
+          var noTouch = !touchEl || touchEl.value === '' || touchEl.value === 'none';
+          if (ctlEl) ctlEl.disabled = off || noTouch;
+          if (ctlRow) ctlRow.classList.toggle('is-disabled', off || noTouch);
         }}
 
         // Freezes every control on one card for an in-flight operation
@@ -4102,6 +4125,7 @@ def send_setup_page(
           var stepEl = card.querySelector('.dial-step');
           var autoEl = card.querySelector('.dial-autoupdate');
           var chanEl = card.querySelector('.dial-channel');
+          var muteAllEl = card.querySelector('.dial-mute-all');
           var body = {{uuid: uuid}};
           if (nameEl) body.name = nameEl.value.trim();
           if (stepEl) {{
@@ -4114,6 +4138,7 @@ def send_setup_page(
           }}
           if (autoEl) body.auto_update = autoEl.checked;
           if (chanEl) body.update_channel = chanEl.checked ? 'dev' : 'stable';
+          if (muteAllEl && card.dataset.muteAllCaps === '1') body.mute_all_playing = muteAllEl.checked;
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
             if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
@@ -4145,6 +4170,16 @@ def send_setup_page(
             }}
             if (autoEl && j.auto_update != null) autoEl.checked = !!j.auto_update;
             if (chanEl && j.update_channel != null) chanEl.checked = (j.update_channel === 'dev');
+            var muteAllEl = card.querySelector('.dial-mute-all');
+            var muteAllRow = card.querySelector('.dial-mute-all-row');
+            if (j.mute_all_playing !== undefined) {{
+              card.dataset.muteAllCaps = '1';
+              if (muteAllEl) muteAllEl.checked = !!j.mute_all_playing;
+              if (muteAllRow) muteAllRow.style.display = 'flex';
+            }} else {{
+              delete card.dataset.muteAllCaps;
+              if (muteAllRow) muteAllRow.style.display = 'none';
+            }}
             card.dataset.pinSet = j.pin_set ? 'true' : 'false';
             card.dataset.canConfirm = j.can_confirm_presence === false ? 'false' : 'true';
             _updateDialLockVisibility(card);
@@ -4222,6 +4257,21 @@ def send_setup_page(
               delete card.dataset.touchCaps;
               if (touchRow) touchRow.style.display = 'none';
             }}
+            // `always_show_controls` is a THIRD, independent capability gate
+            // -- a dial can support screen profiles and touch but still be
+            // on a release that predates this setting, and must never
+            // receive the field in the save body until its own GET has
+            // advertised it (see the cross-version compatibility notes).
+            var ctlEl = card.querySelector('.dial-screen-always-controls');
+            var ctlRow = card.querySelector('.dial-screen-controls-row');
+            if (j.screen && j.screen.always_show_controls !== undefined) {{
+              card.dataset.controlsCaps = '1';
+              if (ctlEl) ctlEl.checked = !!j.screen.always_show_controls;
+              if (ctlRow) ctlRow.style.display = 'flex';
+            }} else {{
+              delete card.dataset.controlsCaps;
+              if (ctlRow) ctlRow.style.display = 'none';
+            }}
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
@@ -4261,6 +4311,12 @@ def send_setup_page(
           // once the dial has published `supported_touch` separately.
           if (card.dataset.touchCaps === '1') {{
             screen.touch_type = touchEl ? touchEl.value : '';
+          }}
+          // Independent capability gate, same reasoning as touchCaps above:
+          // an older dial 400s the whole save on an unknown field.
+          if (card.dataset.controlsCaps === '1') {{
+            var ctlEl = card.querySelector('.dial-screen-always-controls');
+            screen.always_show_controls = ctlEl ? ctlEl.checked : false;
           }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
@@ -4775,10 +4831,12 @@ def send_setup_page(
               if (action === 'save-config' && (
                 ev.target.classList.contains('dial-autoupdate') ||
                 ev.target.classList.contains('dial-channel') ||
+                ev.target.classList.contains('dial-mute-all') ||
                 ev.target.classList.contains('dial-step')
               )) dialSaveConfig(card);
               if (action === 'save-screen') {{
-                if (ev.target.classList.contains('dial-screen-fitted')) dialSyncScreenControlsEnabled(card);
+                if (ev.target.classList.contains('dial-screen-fitted')
+                    || ev.target.classList.contains('dial-screen-touch')) dialSyncScreenControlsEnabled(card);
                 dialSaveScreenSettings(card, ev.target);
               }}
             }});
@@ -4786,6 +4844,7 @@ def send_setup_page(
               if (ev.target.dataset.dialAction === 'save-config'
                   && !ev.target.classList.contains('dial-autoupdate')
                   && !ev.target.classList.contains('dial-channel')
+                  && !ev.target.classList.contains('dial-mute-all')
                   && !ev.target.classList.contains('dial-step')) {{
                 dialSaveConfig(card);
               }}

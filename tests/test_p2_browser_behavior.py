@@ -1409,6 +1409,150 @@ class TestDialCardHtmlStructure:
         assert screen_gate_idx >= 0 and touch_gate_idx >= 0
         assert screen_gate_idx != touch_gate_idx
 
+    # ── Screen settings (Always show on-screen controls toggle) ───────────────
+
+    def test_always_controls_toggle_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'class="dial-screen-always-controls"' in result
+        assert "Always show on-screen controls" in result
+
+    def test_always_controls_row_after_touch_row_before_pin_button(self):
+        """The controls row must live in the locked section, after the
+        touch-panel row, and before the Change Dial PIN button."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        locked_idx = result.find("dial-locked-section")
+        touch_idx = result.find("dial-screen-touch-row")
+        controls_idx = result.find("dial-screen-controls-row")
+        pin_btn_idx = result.find('data-dial-action="change-pin"')
+        assert locked_idx >= 0 and touch_idx >= 0 and controls_idx >= 0 and pin_btn_idx >= 0
+        assert locked_idx < touch_idx < controls_idx < pin_btn_idx
+
+    def test_always_controls_row_hidden_by_default(self):
+        """The row must be hidden until the dial publishes
+        `always_show_controls` in GET /screen/settings."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        controls_row_idx = result.find("dial-screen-controls-row")
+        assert controls_row_idx >= 0
+        controls_row_tag = result[controls_row_idx - 10:controls_row_idx + 100]
+        assert "display:none" in controls_row_tag
+
+    def test_always_controls_row_carries_shared_dim_class(self):
+        """The new row must join the existing dial-screen-ctl-row group so
+        it dims/enables alongside bgr/type/touch under the same fitted
+        condition."""
+        src = _setup_page_src()
+        assert "dial-screen-controls-row dial-screen-ctl-row" in src
+
+    def test_dial_load_screen_settings_sets_controls_caps(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "j.screen.always_show_controls !== undefined" in body
+        assert "card.dataset.controlsCaps = '1'" in body
+        assert "delete card.dataset.controlsCaps" in body
+
+    def test_always_controls_save_body_gated_by_controls_caps(self):
+        """The save body must include always_show_controls only when the
+        controlsCaps gate flag is set -- an old dial 400s on an unknown
+        field."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.controlsCaps === '1'" in body
+        assert "screen.always_show_controls = " in body
+
+    def test_dial_sync_screen_controls_enabled_gates_on_touch_selection(self):
+        """The toggle must be disabled both when the screen is not fitted
+        and when no real touch controller is selected -- a persistent
+        overlay with dead minus/plus buttons on a screen-only dial would be
+        misleading."""
+        src = _setup_page_src()
+        fn_idx = src.find("function dialSyncScreenControlsEnabled(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn]
+        assert "var noTouch = !touchEl || touchEl.value === '' || touchEl.value === 'none';" in body
+        assert "ctlEl.disabled = off || noTouch;" in body
+        assert "ctlRow.classList.toggle('is-disabled', off || noTouch);" in body
+
+    def test_init_dials_card_resyncs_controls_row_on_touch_change(self):
+        """Changing the touch selector must re-evaluate the controls row's
+        enabled state, not just the fitted checkbox."""
+        src = _setup_page_src()
+        fn_idx = src.find("function _initDialsCard()")
+        assert fn_idx >= 0
+        next_fn = src.find("\n      </script>", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "ev.target.classList.contains('dial-screen-fitted')" in body
+        assert "ev.target.classList.contains('dial-screen-touch')" in body
+
+    # ── General config (Mute all playing devices toggle) ───────────────────────
+
+    def test_mute_all_toggle_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'class="dial-mute-all"' in result
+        assert "Mute all playing devices" in result
+
+    def test_mute_all_row_after_prerelease_before_screen_fitted(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        chan_idx = result.find("dial-channel")
+        mute_all_idx = result.find("dial-mute-all-row")
+        fitted_idx = result.find("dial-screen-fitted")
+        assert chan_idx >= 0 and mute_all_idx >= 0 and fitted_idx >= 0
+        assert chan_idx < mute_all_idx < fitted_idx
+
+    def test_mute_all_row_hidden_by_default(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        row_idx = result.find("dial-mute-all-row")
+        assert row_idx >= 0
+        row_tag = result[row_idx - 10:row_idx + 100]
+        assert "display:none" in row_tag
+
+    def test_dial_load_config_sets_mute_all_caps(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadConfig(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialLoadScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "j.mute_all_playing !== undefined" in body
+        assert "card.dataset.muteAllCaps = '1'" in body
+        assert "delete card.dataset.muteAllCaps" in body
+
+    def test_mute_all_save_body_gated_by_caps(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveConfig(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialLoadConfig", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.muteAllCaps === '1'" in body
+        assert "body.mute_all_playing = " in body
+
+    def test_init_dials_card_change_handler_includes_mute_all(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function _initDialsCard()")
+        assert fn_idx >= 0
+        next_fn = src.find("\n      </script>", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "ev.target.classList.contains('dial-mute-all')" in body
+        # Present in both the change-handler save-config list and the
+        # focusout exclusion list, next to dial-channel in each.
+        assert body.count("ev.target.classList.contains('dial-mute-all')") >= 2
+
     # ── Self-restart poll after a touch-controller change ─────────────────────
 
     def _touch_restart_poll_body(self, src):
