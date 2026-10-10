@@ -1765,8 +1765,10 @@
           // check touch at runtime; this is purely a UI courtesy.
           var ctlEl = card.querySelector('.dial-screen-always-controls');
           var ctlRow = card.querySelector('.dial-screen-controls-row');
-          var noTouch = card.dataset.surface !== 'kiosk'
-            && (!touchEl || touchEl.value === '' || touchEl.value === 'none');
+          var noTouch = !touchEl || touchEl.value === '' || touchEl.value === 'none';
+          // A kiosk dial has no touch controller selector; its touch is the
+          // display itself.
+          if (card.dataset.surface === 'kiosk') noTouch = false;
           if (ctlEl) ctlEl.disabled = off || noTouch;
           if (ctlRow) ctlRow.classList.toggle('is-disabled', off || noTouch);
           // Volume/mute scope: without a screen the dial cannot pick an
@@ -2542,7 +2544,9 @@
         function dialRenderLayoutNotes(card, layout) {
           var noteEl = card.querySelector('.dial-screen-layout-note');
           var warnEl = card.querySelector('.dial-screen-touch-warning');
-          if (!layout || typeof layout !== 'object' || card.dataset.surface === 'kiosk') {
+          // A kiosk dial has no panel layout to describe.
+          if (card.dataset.surface === 'kiosk') layout = null;
+          if (!layout || typeof layout !== 'object') {
             if (noteEl) noteEl.style.display = 'none';
             if (warnEl) warnEl.style.display = 'none';
             return;

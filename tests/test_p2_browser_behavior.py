@@ -1025,7 +1025,7 @@ class TestDialCardHtmlStructure:
         whole row is dimmed alongside being disabled."""
         src = _setup_page_src()
         # Every screen control row carries the shared class...
-        assert src.count('class="dial-screen-ctl-row"') >= 1
+        assert 'dial-screen-rotate-row dial-screen-ctl-row' in src
         assert 'dial-screen-bgr-row dial-screen-ctl-row' in src
         assert 'dial-screen-type-row dial-screen-ctl-row' in src
         assert 'dial-screen-touch-row dial-screen-ctl-row' in src
