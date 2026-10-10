@@ -32,9 +32,11 @@ work, not what we have confirmed. If you try one, please report what you see.
 
 A DSI panel with a backlight can be dimmed and switched off by the dial. So can
 an HDMI panel that supports the monitor control channel (DDC/CI), which many do:
-the dial sets its brightness and switches its backlight off when the screen
-sleeps. An HDMI panel that does not answer it keeps working, but the page dims
-and blacks out the picture instead and the panel's own backlight stays on.
+the dial sets its brightness, and when the screen sleeps it turns the panel's
+brightness right down. By default the panel stays powered while it sleeps; see
+[Sleep and waking](#sleep-and-waking) for the setting that switches it off. An
+HDMI panel that does not answer DDC/CI keeps working, but the page blacks out
+the picture instead and the panel's own backlight stays on.
 
 ## Installing
 
@@ -228,14 +230,40 @@ Resetting the counter in the appliance's Service page clears its warning.
 
 ### Sleep and waking
 
-After the **Sleep after** time with nothing playing the screen goes black. On a
-panel with a backlight (including an HDMI panel the dial controls over DDC/CI)
-the dial also switches the backlight off. The screen wakes when something
-starts playing, or when you touch it. An HDMI panel can take a second or two to
-come back, and may briefly show its own source banner as it does. The touch
-layer keeps working while the panel is off, so a touch still wakes it. A touch on a
-sleeping screen only wakes it: it never presses a control, so touch again to
-use what is under your finger.
+After the **Sleep after** time with nothing playing the screen goes black and
+says "Touch to wake". On a panel with a backlight (including an HDMI panel the
+dial controls over DDC/CI) the dial also turns the brightness down to its
+minimum, and leaves the panel powered. The screen wakes when something starts
+playing, or when you touch it, and the brightness comes straight back. A touch
+on a sleeping screen only wakes it: it never presses a control, so touch again
+to use what is under your finger.
+
+Some panels do not cope well with being powered down this way. They can wake
+with a ghost halo or other marks on the picture that last until the panel has
+run for a while. So the dial does not power an HDMI panel off by default.
+
+If you want the panel powered down while the screen sleeps, turn on **Switch
+the panel off when asleep** on the dial's card in the appliance's **Setup**
+page (see below). The dial then switches the panel off over DDC/CI when the
+screen sleeps and on again when it wakes. A panel woken this way can take a
+second or two to come back, and may briefly show its own source banner. The
+touch layer keeps working while the panel is off, so a touch still wakes it.
+The setting needs a panel that answers DDC/CI for power control; on any other
+panel, and on a DSI panel, it has no effect. It takes effect straight away,
+without restarting the dial.
+
+The appliance asks you to confirm before it turns the setting on, because some
+panels may be damaged by long periods powered down. Please test sleep with your
+panel before relying on it:
+
+1. Turn the setting on and let the screen sleep, or press **Sleep now** in the
+   pull-down sheet.
+2. Leave it asleep for a few minutes, then touch it. Check that it wakes at the
+   brightness you set and that the picture is clean.
+3. Repeat after a long sleep, such as overnight, and look for any ghosting or
+   marks on the picture.
+4. If you see any, turn the setting off. The panel is powered back on at once
+   and the dial goes back to dimming it.
 
 ### If the connection drops
 
@@ -249,6 +277,11 @@ shows **Brightness** and **Sleep after** in place of the rotate, colour order,
 size, layout and touch rows, which only matter to an SPI panel. They are the
 same settings as in the pull-down sheet. There is no **Show dial screen**
 button because an HD dial has no frame to show.
+
+**Switch the panel off when asleep** is only on the appliance's card, not in
+the pull-down sheet. It is off by default. Turning it on asks you to confirm
+first; turning it off does not. It is greyed out for a dial that does not have
+an HD screen.
 
 If you select **HD touchscreen** for a dial, the card reminds you that it
 needs the HD kiosk install.
@@ -365,15 +398,19 @@ that the kiosk's account is in the `input`, `video` and `render` groups
 (`id autostream-kiosk`; a change of group needs the kiosk restarted).
 
 **Brightness does nothing on an HDMI panel, or the panel never switches off.**
-The dial can only control an HDMI panel that answers DDC/CI. Check that the
+By default the panel is dimmed when it sleeps, not switched off; turn on
+**Switch the panel off when asleep** if you want it powered down. The dial can
+only control an HDMI panel that answers DDC/CI. Check that the
 module is loaded (`lsmod | grep i2c_dev`), that a `/dev/i2c-*` device exists,
 that the dial's account is in the `i2c` group (`id autostream`; a change of
 group needs the dial service restarted, or a reboot) and that the panel's own
 menu has not turned DDC/CI off. The dial logs a line naming the bus when it
 finds a panel (`HD panel: DDC backlight on`). If the panel does not answer, the
-page dims the picture instead, and on a panel that has no way to switch off
-its backlight over DDC/CI the screen goes black but the panel's light stays
-dim.
+screen goes black but the panel's own light stays on.
+
+**The panel shows a ghost image or marks after waking.** Turn off **Switch the
+panel off when asleep**. Some panels are left with image retention after being
+powered down, and it can take a period of continuous running to clear.
 
 **An appliance shows Not authorised.** Allow the dial on that appliance, as for
 any dial: [Getting Started](GETTING-STARTED.md#authorizing-the-dial).

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import tempfile
 import threading
@@ -140,7 +141,7 @@ def dial_url():
         server.shutdown()
 
 
-def _body(surface: str | None, *, hd_fields: bool = True) -> dict:
+def _body(surface: str | None, *, hd_fields: bool = True, panel_power_off: bool = False) -> dict:
     screen = {
         "fitted": True, "rotate": False, "bgr": False, "screen_type": "hd_kiosk" if surface == "kiosk" else "st7735s",
         "touch_type": "none", "screen_size_inches": None, "layout_size": None,
@@ -151,6 +152,7 @@ def _body(surface: str | None, *, hd_fields: bool = True) -> dict:
     if hd_fields:
         screen["sleep_after_s"] = 900
         screen["brightness"] = 45
+        screen["panel_power_off"] = panel_power_off
     return {
         "ok": True,
         "screen": screen,
@@ -229,3 +231,94 @@ class TestDialCardSurface:
         screen = _POSTS[-1]["screen"]
         assert "sleep_after_s" not in screen
         assert "brightness" not in screen
+        assert "panel_power_off" not in screen
+
+
+PANEL_OFF_WARNING = (
+    "Please test sleep with your panel; some panels may be damaged by extended periods powered-down"
+)
+
+
+def _toggle_panel_off(page: "Page") -> None:
+    page.locator(".dial-card .dial-screen-panel-off-row .switch").click()
+
+
+@_requires_browser
+class TestDialCardPanelOff:
+    def test_kiosk_dial_shows_the_toggle_enabled_and_off(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk"))
+        assert _visible(page, "dial-screen-panel-off-row")
+        box = page.locator(".dial-card .dial-screen-panel-off")
+        expect(box).to_be_enabled()
+        expect(box).not_to_be_checked()
+        expect(page.locator(".dial-card .dial-screen-panel-off-row")).not_to_have_class(re.compile("is-disabled"))
+        assert "Switch the panel off when asleep" in page.locator(
+            ".dial-card .dial-screen-panel-off-row").inner_text()
+
+    def test_it_shows_the_dials_stored_value(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk", panel_power_off=True))
+        expect(page.locator(".dial-card .dial-screen-panel-off")).to_be_checked()
+
+    def test_an_spi_dial_shows_it_greyed_out_and_off(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("spi", hd_fields=False))
+        assert _visible(page, "dial-screen-panel-off-row")
+        box = page.locator(".dial-card .dial-screen-panel-off")
+        expect(box).to_be_disabled()
+        expect(box).not_to_be_checked()
+        expect(page.locator(".dial-card .dial-screen-panel-off-row")).to_have_class(re.compile("is-disabled"))
+
+    def test_turning_it_on_asks_first_with_the_warning(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk"))
+        _toggle_panel_off(page)
+        modal = page.locator("#dialPanelOffModal")
+        expect(modal).to_be_visible()
+        assert modal.locator(".modal-bd p").inner_text() == PANEL_OFF_WARNING
+        expect(modal.get_by_role("button", name="Continue")).to_be_visible()
+        expect(modal.get_by_role("button", name="Cancel")).to_be_visible()
+        page.wait_for_timeout(300)
+        assert _POSTS == [], "nothing may be sent before the answer"
+
+    def test_cancel_sends_nothing_and_leaves_it_off(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk"))
+        _toggle_panel_off(page)
+        page.locator("#dialPanelOffCancel").click()
+        expect(page.locator("#dialPanelOffModal")).to_be_hidden()
+        expect(page.locator(".dial-card .dial-screen-panel-off")).not_to_be_checked()
+        page.wait_for_timeout(300)
+        assert _POSTS == []
+
+    def test_escape_cancels(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk"))
+        _toggle_panel_off(page)
+        page.keyboard.press("Escape")
+        expect(page.locator("#dialPanelOffModal")).to_be_hidden()
+        expect(page.locator(".dial-card .dial-screen-panel-off")).not_to_be_checked()
+        page.wait_for_timeout(300)
+        assert _POSTS == []
+
+    def test_continue_sends_the_setting(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk"))
+        _toggle_panel_off(page)
+        page.locator("#dialPanelOffOk").click()
+        expect(page.locator("#dialPanelOffModal")).to_be_hidden()
+        page.wait_for_timeout(300)
+        assert len(_POSTS) == 1
+        screen = _POSTS[0]["screen"]
+        assert screen["panel_power_off"] is True
+        assert screen["brightness"] == 45 and screen["sleep_after_s"] == 900
+        expect(page.locator(".dial-card .dial-screen-panel-off")).to_be_checked()
+
+    def test_turning_it_off_needs_no_confirmation(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk", panel_power_off=True))
+        _toggle_panel_off(page)
+        page.wait_for_timeout(300)
+        expect(page.locator("#dialPanelOffModal")).to_be_hidden()
+        assert len(_POSTS) == 1
+        assert _POSTS[0]["screen"]["panel_power_off"] is False
+
+    def test_other_saves_carry_the_stored_value(self, page: "Page", dial_url: str):
+        _open_dials(page, dial_url, _body("kiosk", panel_power_off=True))
+        page.locator(".dial-card .dial-screen-sleep").select_option("60")
+        page.wait_for_timeout(300)
+        assert _POSTS[-1]["screen"]["panel_power_off"] is True
+        expect(page.locator("#dialPanelOffModal")).to_be_hidden()

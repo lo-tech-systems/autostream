@@ -1288,6 +1288,7 @@ values from this endpoint.
     "poll_interval_s": 6,
     "sleep_after_s": 300,
     "brightness": 80,
+    "panel_power_off": false,
     "surface": "spi"
   },
   "supported": [
@@ -1356,6 +1357,7 @@ values from this endpoint.
 | `screen.poll_interval_s` | integer | How often the dial polls the appliances for their state, in whole seconds, from `2` to `6` inclusive. A lower value reacts sooner to a new track or a start/stop, at the cost of more traffic. Optional: omitted keeps the current value (`6` by default). Applies live. No capability gate |
 | `screen.sleep_after_s` | integer | Idle seconds before an HD screen sleeps: one of `0` (never), `60`, `300` or `900`. Optional: omitted keeps the current value (`300` by default). Applies live. Only a dial whose `screen.surface` is `"kiosk"` acts on it; every dial stores and reports it. No capability gate |
 | `screen.brightness` | integer | Backlight percentage of an HD screen while awake, from `5` to `100` inclusive. Optional: omitted keeps the current value (`80` by default). Applies live. Only a dial whose `screen.surface` is `"kiosk"` acts on it; every dial stores and reports it. No capability gate |
+| `screen.panel_power_off` | boolean | Whether an HD screen's HDMI panel is also powered down over its control channel while asleep. Optional: omitted keeps the current value (`false` by default); it must be a JSON boolean. Applies live, including while the screen is asleep. With `false` a sleeping panel is dimmed to its minimum and left powered, and power-off is never sent; with `true` it is powered off when the screen sleeps and on again when it wakes, on a panel that has the power control. It is off by default because some panels are left with image retention after being powered down. Only a dial whose `screen.surface` is `"kiosk"` acts on it, and an appliance sends it only to such a dial; every dial stores and reports it. No capability gate |
 | `screen.surface` | string | Where this dial's screen lives, derived from the selected profile: `"spi"` for a panel the dial drives itself, `"kiosk"` for an HD screen that shows a page the dial serves (profile `hd_kiosk`). Report only: a `screen` object sent with it, such as one fetched and posted back with a field changed, is accepted and the value is ignored. A kiosk dial has no frame, so `GET /screen/image` answers `404` and `runtime.backend` is `noop`. An old dial does not send the field; read its absence as `"spi"` |
 | `scope.volume`, `scope.mute` | string | The EFFECTIVE values: the stored `screen.volume_scope`/`screen.mute_scope` while `screen.fitted` is true, otherwise always `"all"` - a dial with no screen (or one too small to select an appliance) cannot choose which appliance to address. Informational only; a client never sends either back |
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
@@ -1518,6 +1520,7 @@ restart was actually fired for it:
     "poll_interval_s": 6,
     "sleep_after_s": 300,
     "brightness": 80,
+    "panel_power_off": false,
     "surface": "spi"
   },
   "layout_sizes": [],
@@ -1669,6 +1672,10 @@ newly-saved `screen`, and the `screen_apply_failed` path reflects the still-pers
   that has never been set). When present it must be a JSON integer (not a boolean, float
   or string) from `5` to `100` inclusive. Anything else is rejected outright. It has no
   capability gate, and an appliance screen save leaves a configured value unchanged.
+- `panel_power_off` is optional; when omitted, the dial keeps its current value (`false` on a
+  dial that has never been set). When present it must be a JSON boolean (not `0`/`1` or a
+  string). Anything else is rejected outright. It has no capability gate, and a save that
+  leaves it out leaves a configured value unchanged.
 - `surface` is report only and is not accepted: it is an unknown field in a posted
   `screen` object.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
@@ -1710,7 +1717,8 @@ written to disk, and is persisted only if the apply succeeded:
     "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false,
     "touch_type": "none", "always_show_controls": false, "screen_size_inches": null,
     "layout_size": null, "volume_scope": "current", "mute_scope": "current",
-    "poll_interval_s": 6, "sleep_after_s": 300, "brightness": 80, "surface": "spi"
+    "poll_interval_s": 6, "sleep_after_s": 300, "brightness": 80, "panel_power_off": false,
+    "surface": "spi"
   },
   "layout_sizes": [ "..." ],
   "layout": { "...": "..." },

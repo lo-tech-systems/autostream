@@ -1418,6 +1418,57 @@ class TestDialCardHtmlStructure:
         assert 'class="dial-screen-always-controls"' in result
         assert "Always show on-screen controls" in result
 
+    # ── Screen settings (Switch the panel off when asleep toggle) ─────────────
+
+    def test_panel_off_toggle_present_in_card_after_the_sleep_row(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'class="dial-screen-panel-off"' in result
+        assert "Switch the panel off when asleep" in result
+        assert result.find("dial-screen-sleep-row") < result.find("dial-screen-panel-off-row")
+        # Starts hidden and disabled; the load makes it available.
+        row_start = result.find('class="dial-screen-panel-off-row"')
+        assert "display:none" in result[row_start:row_start + 160]
+        box = result.find('class="dial-screen-panel-off"')
+        assert "disabled" in result[box:result.find(">", box)]
+        assert 'data-dial-action="save-screen"' in result[box - 40:result.find(">", box)]
+
+    def test_panel_off_save_is_sent_for_a_kiosk_dial_only(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        body = src[fn_idx:src.find("async function dialUpdateFirmware", fn_idx)]
+        gate = body.find("card.dataset.surface === 'kiosk'")
+        assert 0 <= gate < body.find("screen.panel_power_off = ")
+
+    def test_panel_off_confirmation_modal_has_cancel_and_continue(self):
+        self._setup_stubs()
+        src = _setup_page_src()
+        start = src.find('id="dialPanelOffModal"')
+        assert start >= 0
+        end = src.find("</div>", src.find("modal-ft", start))
+        block = src[start:end]
+        assert ("Please test sleep with your panel; some panels may be damaged "
+                "by extended periods powered-down") in block
+        assert 'id="dialPanelOffCancel">Cancel<' in block
+        assert 'id="dialPanelOffOk">Continue<' in block
+        assert "modal-btn-secondary" in block and "modal-btn-primary" in block
+
+    def test_turning_the_toggle_on_is_confirmed_before_it_is_saved(self):
+        src = _setup_page_src()
+        start = src.find("classList.contains('dial-screen-panel-off') && ev.target.checked")
+        assert start >= 0
+        block = src[start:start + 500]
+        assert block.find("dialConfirmPanelOff(") < block.find("dialSaveScreenSettings(card, ev.target)")
+        assert "ev.target.checked = false" in block
+
+    def test_panel_off_is_disabled_unless_the_dial_is_a_kiosk(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialSyncScreenControlsEnabled(card)")
+        body = src[fn_idx:fn_idx + 2500]
+        assert "card.dataset.surface !== 'kiosk'" in body
+        assert "panelOffRow.classList.toggle('is-disabled', panelOffOff)" in body
+
     def test_always_controls_row_after_touch_row_before_pin_button(self):
         """The controls row must live in the locked section, after the
         touch-panel row, and before the Change Dial PIN button."""

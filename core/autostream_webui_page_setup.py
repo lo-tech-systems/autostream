@@ -757,6 +757,13 @@ def _dial_card_html(
                       <option value="0">Never</option>
                     </select>
                   </div>
+                  <div class="dial-screen-panel-off-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <label class="output-toggle" style="margin:0;">
+                      <input type="checkbox" class="dial-screen-panel-off" data-dial-action="save-screen" disabled>
+                      <span class="switch"></span>
+                    </label>
+                    <span>Switch the panel off when asleep</span>
+                  </div>
                   <div class="dial-screen-controls-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <label class="output-toggle" style="margin:0;">
                       <input type="checkbox" class="dial-screen-always-controls" data-dial-action="save-screen" disabled>
@@ -2210,6 +2217,19 @@ def send_setup_page(
     </div>
   </div>
 </div>"""
+    _dial_panel_off_modal_div = """\
+<div id="dialPanelOffModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialPanelOffModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="dialPanelOffModalTitle">Switch the panel off when asleep</div>
+    <div class="bd modal-bd">
+      <p>Please test sleep with your panel; some panels may be damaged by extended periods powered-down</p>
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialPanelOffCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPanelOffOk">Continue</button>
+    </div>
+  </div>
+</div>"""
     _dial_screen_modal_div = """\
 <div id="dialScreenModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialScreenModalTitle">
   <div class="panel modal-panel" style="--modal-width:44rem;">
@@ -2317,7 +2337,7 @@ def send_setup_page(
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_sd_health_modal_div}\n{_hostname_modal_div}\n"
         f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_dial_result_modal_div}\n"
-        f"{_dial_screen_modal_div}\n{_wifi_hotspot_modal_div}\n"
+        f"{_dial_panel_off_modal_div}\n{_dial_screen_modal_div}\n{_wifi_hotspot_modal_div}\n"
         f"{_bt_pairing_modal_div}\n"
         f"{INFO_MODAL_HTML}"
     )
@@ -3877,6 +3897,12 @@ def send_setup_page(
           var sleepEl = card.querySelector('.dial-screen-sleep');
           if (brightEl) brightEl.disabled = off;
           if (sleepEl) sleepEl.disabled = off;
+          // The panel power setting only applies to an HD dial's HDMI panel.
+          var panelOffEl = card.querySelector('.dial-screen-panel-off');
+          var panelOffRow = card.querySelector('.dial-screen-panel-off-row');
+          var panelOffOff = off || card.dataset.surface !== 'kiosk';
+          if (panelOffEl) panelOffEl.disabled = panelOffOff;
+          if (panelOffRow) panelOffRow.classList.toggle('is-disabled', panelOffOff);
           if (bgrEl) bgrEl.disabled = off;
           if (typeEl) typeEl.disabled = off;
           if (sizeEl) sizeEl.disabled = off;
@@ -4143,6 +4169,25 @@ def send_setup_page(
           if (titleEl) titleEl.textContent = title;
           if (msgEl) msgEl.textContent = message;
           modal.classList.add('show');
+        }}
+
+        // Cancel/Continue confirmation for switching the panel off, in the
+        // same modal markup as the other dial dialogs. *onContinue* or
+        // *onCancel* runs once, whichever button (or Escape) closes it.
+        var _dialPanelOffChoice = null;
+        function dialConfirmPanelOff(onContinue, onCancel) {{
+          var modal = document.getElementById('dialPanelOffModal');
+          if (!modal) {{ onCancel(); return; }}
+          _dialPanelOffChoice = {{ok: onContinue, cancel: onCancel}};
+          modal.classList.add('show');
+        }}
+
+        function _dialClosePanelOff(confirmed) {{
+          var modal = document.getElementById('dialPanelOffModal');
+          if (modal) modal.classList.remove('show');
+          var choice = _dialPanelOffChoice;
+          _dialPanelOffChoice = null;
+          if (choice) (confirmed ? choice.ok : choice.cancel)();
         }}
 
         function _dialCloseResultModal() {{
@@ -4593,6 +4638,12 @@ def send_setup_page(
             delete card.dataset.sleepCaps;
             if (sleepRow) sleepRow.style.display = 'none';
           }}
+          // Shown for every dial so it reads as unavailable on an SPI one;
+          // dialSyncScreenControlsEnabled greys it out unless this is a kiosk.
+          var panelOffEl = card.querySelector('.dial-screen-panel-off');
+          var panelOffRow = card.querySelector('.dial-screen-panel-off-row');
+          if (panelOffEl) panelOffEl.checked = kiosk && screen.panel_power_off === true;
+          if (panelOffRow) panelOffRow.style.display = 'flex';
           // A kiosk profile chosen while a panel is still active needs the
           // kiosk install on the dial first.
           var noteEl = card.querySelector('.dial-screen-hd-note');
@@ -4769,6 +4820,11 @@ def send_setup_page(
             var sleepEl = card.querySelector('.dial-screen-sleep');
             if (sleepEl && sleepEl.value !== '') screen.sleep_after_s = parseInt(sleepEl.value, 10);
           }}
+          // Only an HD dial has the setting; an SPI dial would refuse the field.
+          if (card.dataset.surface === 'kiosk') {{
+            var panelOffEl = card.querySelector('.dial-screen-panel-off');
+            if (panelOffEl) screen.panel_power_off = panelOffEl.checked;
+          }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
@@ -4778,10 +4834,12 @@ def send_setup_page(
           // Snapshot the changed control's previous value before posting —
           // a <select> can't be reverted with a simple !checked flip like
           // the checkboxes, so remember what to restore it to on failure.
+          // The change has already happened, so a checkbox's previous value
+          // is the opposite of its current one.
           var prevValue = null;
           if (changedEl) {{
             prevValue = (changedEl.tagName === 'SELECT' || changedEl.type === 'number' || changedEl.type === 'range')
-              ? changedEl.value : changedEl.checked;
+              ? changedEl.value : !changedEl.checked;
           }}
           try {{
             var result = await _dialPost('/api/dial/screen/settings', body);
@@ -5473,6 +5531,10 @@ def send_setup_page(
           }});
           var resultOk = document.getElementById('dialResultModalOk');
           if (resultOk) resultOk.addEventListener('click', _dialCloseResultModal);
+          var panelOffOk = document.getElementById('dialPanelOffOk');
+          var panelOffCancel = document.getElementById('dialPanelOffCancel');
+          if (panelOffOk) panelOffOk.addEventListener('click', function() {{ _dialClosePanelOff(true); }});
+          if (panelOffCancel) panelOffCancel.addEventListener('click', function() {{ _dialClosePanelOff(false); }});
           var dialScreenClose = document.getElementById('dialScreenModalClose');
           var dialScreenRefresh = document.getElementById('dialScreenModalRefresh');
           if (dialScreenClose) dialScreenClose.addEventListener('click', _dialCloseScreenModal);
@@ -5498,6 +5560,8 @@ def send_setup_page(
             if (ev.key === 'Escape' && nm && nm.classList.contains('show')) closeDialNameModal();
             var sm = document.getElementById('dialScreenModal');
             if (ev.key === 'Escape' && sm && sm.classList.contains('show')) _dialCloseScreenModal();
+            var pm = document.getElementById('dialPanelOffModal');
+            if (ev.key === 'Escape' && pm && pm.classList.contains('show')) _dialClosePanelOff(false);
           }});
         }});
         // Dials card (lazy-loaded): the .dial-card bindings below used
@@ -5551,6 +5615,14 @@ def send_setup_page(
                 if (ev.target.classList.contains('dial-volume-scope')
                     || ev.target.classList.contains('dial-mute-scope')) {{
                   ev.target.dataset.stored = ev.target.value;
+                }}
+                if (ev.target.classList.contains('dial-screen-panel-off') && ev.target.checked) {{
+                  // Switching the panel off can harm some panels: ask first,
+                  // and send nothing unless the answer is Continue.
+                  dialConfirmPanelOff(function() {{
+                    dialSaveScreenSettings(card, ev.target);
+                  }}, function() {{ ev.target.checked = false; }});
+                  return;
                 }}
                 dialSaveScreenSettings(card, ev.target);
               }}

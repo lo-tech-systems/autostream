@@ -6,13 +6,16 @@
   drawing straight to the display. It uses far less memory (about 140 MiB on a
   512 MB Pi 3 Model A+), so a 512 MB board is enough for an HD dial. The HD
   install adds `cog` and `libgles2`.
-- new: an HD dial now dims and switches off an HDMI panel's backlight when the
-  panel supports the monitor control channel (DDC/CI). Brightness follows the
-  setting, the backlight goes off when the screen sleeps and comes back on a
-  touch (the panel may briefly show its own source banner). A panel that does
-  not answer keeps the old behaviour of the page dimming the picture. The HD
-  install loads `i2c-dev` at boot and adds the dial's account to the `i2c`
-  group; nothing new is installed.
+- new: an HD dial now controls an HDMI panel's brightness when the panel
+  supports the monitor control channel (DDC/CI). Brightness follows the
+  setting, and when the screen sleeps the panel is turned down to its minimum
+  and left powered while the page shows "Touch to wake". A panel that does not
+  answer keeps the page blacking out the picture. Powering the panel off while
+  it sleeps is a setting, off by default, because some panels are left with
+  image retention after being powered down: **Switch the panel off when
+  asleep** on the dial's card in Setup, which asks you to confirm before it
+  turns on. The HD install loads `i2c-dev` at boot and adds the dial's account
+  to the `i2c` group; nothing new is installed.
 - improvement: the HD dial reads "Playing" as the track while an appliance is
   playing but has not named the track yet (as a track changes, or at the start
   of playback), as the small screen does, instead of "Nothing playing".
