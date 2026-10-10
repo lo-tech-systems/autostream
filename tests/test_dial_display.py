@@ -11062,6 +11062,30 @@ class TestUntypedRefusal:
             display._poll_once()
         assert call(aid) not in force_due.call_args_list
 
+    def test_unchecked_appliance_that_refuses_is_never_shown_on_first_sight(self):
+        aid = "a1" * 10
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=self._refusal()) as fetch:
+            display._poll_once()
+        assert fetch.call_count == 1
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
+        assert display._reporting_appliance_id is None
+        assert display._now_playing is None
+
+    def test_unchecked_appliance_that_accepts_is_shown_with_one_request(self):
+        aid = "b2" * 10
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        ok = _status_result(track_id=_track_id(), appliance_id=None)
+        with patch("dial_display.fetch_target_status", return_value=ok) as fetch:
+            display._poll_once()
+        assert fetch.call_count == 1
+        assert display._reporting_appliance_id == aid
+        assert display._now_playing is not None and display._now_playing.playing
+
     def test_plain_unauthorized_without_body_id_is_still_uncorrelated(self):
         aid = "4" * 20
         t = _target(name="Hall", service_name="Hall", appliance_id=aid)

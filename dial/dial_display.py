@@ -55,6 +55,7 @@ from PIL import Image, ImageChops
 from dial_auth import (
     AUTH_AUTHORIZED,
     AUTH_UNAUTHORIZED,
+    AUTH_UNKNOWN,
     OUTCOME_AUTHORIZED,
     OUTCOME_TRANSIENT,
     OUTCOME_UNAUTHORIZED,
@@ -5100,7 +5101,7 @@ class DialDisplay:
             logging.warning(
                 "dial display: appliance %s refused this dial; allow it in "
                 "that appliance's web UI",
-                target.name,
+                appliance_display_name(target.service_name or target.name),
             )
         return changed
 
@@ -5487,6 +5488,35 @@ class DialDisplay:
             auth_map.force_due(appliance_id)
         if started_refused:
             self._reconcile_due = True
+        # An appliance that has just started playing and has never answered
+        # this dial (after a restart, say) is checked before anything below
+        # wakes the panel for it or shows it: otherwise one that refuses the
+        # dial would be shown as playing until a later poll hid it again.
+        # Only for an unpinned poll (a focus or a binding is checked by the
+        # walk itself, which releases it on a refusal), and in the walk's
+        # own order, stopping at the first appliance that does not refuse:
+        # that is the one the walk would have asked first anyway. The
+        # replies are kept for the walk, which uses them instead of asking
+        # again.
+        first_checks: dict[str, tuple[float, dict]] = {}
+        if self._manual_focus_id is None and self._bound_appliance_id is None:
+            for t in visible_targets:
+                if (
+                    t.auth != AUTH_UNKNOWN or not t.dial_status
+                    or t.appliance_id in self._prev_playing_ids
+                ):
+                    break
+                sent_at = time.monotonic()
+                result = fetch_target_status(t, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+                self._apply_status_to_auth(t, result)
+                self._apply_status_to_repeat(t.appliance_id, result, time.monotonic())
+                first_checks[t.service_name] = (sent_at, result)
+                if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED:
+                    break
+        if first_checks:
+            visible_targets = [
+                t for t in visible_targets if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED
+            ]
         self._prev_playing_ids = playing_ids
         # The merged playing+idle roster — this is where general (idle)
         # sightings get noted into the auth map (dial_mdns.get_roster()'s
@@ -5694,7 +5724,7 @@ class DialDisplay:
         selected_title = ""
         selected_album = ""
         records: dict[str, dict] = {}
-        visited: set[str] = set()
+        visited: set[str] = set(first_checks)  # already asked this tick
         # Monotonic time each mute-feeding status request was sent, so the
         # mute observation below can tell a stale reply from a fresh one. A
         # service never fetched this tick counts as sent at 0.0: still a poll
@@ -5766,11 +5796,15 @@ class DialDisplay:
                         break
                     continue
 
-                status_sent_at[target.service_name] = time.monotonic()
-                result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+                checked = first_checks.get(target.service_name)
+                if checked is not None:
+                    status_sent_at[target.service_name], result = checked
+                else:
+                    status_sent_at[target.service_name] = time.monotonic()
+                    result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+                    self._apply_status_to_auth(target, result)
+                    self._apply_status_to_repeat(target.appliance_id, result, time.monotonic())
                 visited.add(target.service_name)
-                self._apply_status_to_auth(target, result)
-                self._apply_status_to_repeat(target.appliance_id, result, time.monotonic())
                 status_error = result.get("status_error")
 
                 if is_focus and status_error == "unauthorized":

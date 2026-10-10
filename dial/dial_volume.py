@@ -719,10 +719,11 @@ def _note_refusal(target, err: urllib.error.HTTPError) -> None:
             auth_map.state(target.appliance_id) == AUTH_UNAUTHORIZED
             and auth_map.record_refusal(target.appliance_id)
         ):
+            from dial_mdns import appliance_display_name
             logging.warning(
                 "dial volume: appliance %s refused this dial; allow it in "
                 "that appliance's web UI",
-                target.name,
+                appliance_display_name(target.service_name or target.name),
             )
     except Exception:
         logging.debug("volume refusal note failed", exc_info=True)
