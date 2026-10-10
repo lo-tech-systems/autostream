@@ -198,6 +198,10 @@ appliance** (see [Getting Started](GETTING-STARTED.md#authorizing-the-dial)).
 The row returns to normal once the appliance has accepted the dial and the
 dial has next checked in with it.
 
+The screen goes to sleep after 5 minutes with nothing playing on any
+appliance the dial may control. It wakes when one of those appliances starts
+playing, or when you touch it.
+
 An appliance that has not authorised the dial no longer wakes the screen.
 Playing on it does not turn a sleeping panel on, does not keep an idle panel
 awake, and does not put a "Playing" view on screen. The dial does not send it

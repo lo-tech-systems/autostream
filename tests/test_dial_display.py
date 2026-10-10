@@ -851,7 +851,7 @@ class TestLogoFallback:
 
 
 # ---------------------------------------------------------------------------
-# Idle sleep — 15 minutes of no playing targets dims the display; any
+# Idle sleep — 5 minutes of no playing targets dims the display; any
 # playing target (including erroring ones, but not unauthorized or
 # identity-less ones) counts as activity.
 # ---------------------------------------------------------------------------

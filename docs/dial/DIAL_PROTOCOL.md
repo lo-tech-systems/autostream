@@ -1116,7 +1116,7 @@ values from this endpoint.
 | `runtime.last_error` | string | Last non-fatal display/fetch/render error identifier, or `""` |
 | `runtime.last_error_at` | number\|null | Unix timestamp for `last_error`, or `null` |
 | `runtime.display_sleeping` | bool | `true` once the display has been idle for `display_idle_seconds` and the backend has blanked/slept it |
-| `runtime.display_idle_seconds` | int | Seconds since idling began, capped at the 15-minute sleep threshold; resets to `0` while showing content |
+| `runtime.display_idle_seconds` | int | Seconds since idling began, capped at the 5-minute sleep threshold; resets to `0` while showing content |
 
 Never returns secrets or provider artwork URLs.
 

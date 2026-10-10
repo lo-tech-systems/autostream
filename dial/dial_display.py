@@ -182,7 +182,7 @@ _DEFAULT_PANEL_HEIGHT = get_profile(DEFAULT_PROFILE_KEY).height
 DISPLAY_POLL_INTERVAL_SECONDS = 6
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
-DISPLAY_IDLE_SLEEP_SECONDS = 15 * 60
+DISPLAY_IDLE_SLEEP_SECONDS = 5 * 60
 RECONCILE_INTERVAL_SECONDS = 60
 # How long the appliance-selector screen stays open with no touch activity
 # before it closes back to the main (now-playing) screen. Refreshed by any
