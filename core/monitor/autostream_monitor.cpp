@@ -807,6 +807,16 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         bool armed = json_get_bool(json_command, "armed", false);
         return _monitor.api_set_repeat_armed(armed);
     }
+    else if (type == "repeat_stop")
+    {
+        return _monitor.api_repeat_stop();
+    }
+    else if (type == "repeat_seek")
+    {
+        // A missing field means seek 0, which is Start.
+        float pos = json_get_float(json_command, "position_seconds", 0.0f);
+        return _monitor.api_repeat_seek(static_cast<double>(pos));
+    }
     else if (type == "debug_fail_input")
     {
         int idx = json_get_int(json_command, "input", 0);
@@ -1986,11 +1996,45 @@ std::string AudioMonitor::api_set_repeat_enabled(bool enabled, const std::string
     return "{\"type\":\"ack\",\"command\":\"set_repeat_enabled\",\"ok\":true}";
 }
 
+std::string AudioMonitor::transport_ack_json(const char* command,
+                                              const RepeatController::TransportAck& a)
+{
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1);
+    oss << "{\"type\":\"ack\",\"command\":\"" << command << "\","
+        << "\"ok\":" << (a.ok ? "true" : "false") << ",";
+    if (!a.ok)
+        oss << "\"error\":\"" << json_escape(a.error) << "\",";
+    oss << "\"state\":\"" << repeat_state_name(a.state) << "\","
+        << "\"armed\":" << (a.armed ? "true" : "false") << ","
+        << "\"position_seconds\":" << a.position_seconds << "}";
+    return oss.str();
+}
+
 std::string AudioMonitor::api_set_repeat_armed(bool armed)
 {
-    _repeat_controller.set_armed(armed);
+    auto a = _repeat_controller.set_armed(armed);
     LOG_INFO("[monitor] set_repeat_armed(armed=%s) applied", armed ? "true" : "false");
-    return "{\"type\":\"ack\",\"command\":\"set_repeat_armed\",\"ok\":true}";
+    return transport_ack_json("set_repeat_armed", a);
+}
+
+std::string AudioMonitor::api_repeat_stop()
+{
+    auto a = _repeat_controller.request_stop();
+    LOG_INFO("[monitor] repeat_stop applied (state=%s, armed=%s)",
+             repeat_state_name(a.state), a.armed ? "true" : "false");
+    return transport_ack_json("repeat_stop", a);
+}
+
+std::string AudioMonitor::api_repeat_seek(double position_seconds)
+{
+    auto a = _repeat_controller.request_seek(position_seconds);
+    if (!a.ok)
+        LOG_INFO("[monitor] repeat_seek(%.1f) rejected: %s", position_seconds, a.error.c_str());
+    else
+        LOG_INFO("[monitor] repeat_seek(%.1f) applied (state=%s, armed=%s)",
+                 position_seconds, repeat_state_name(a.state), a.armed ? "true" : "false");
+    return transport_ack_json("repeat_seek", a);
 }
 
 std::string AudioMonitor::api_debug_fail_input(int input_index)

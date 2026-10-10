@@ -826,10 +826,96 @@ Behavior:
 - `armed:false` at any other time is just a flag clear (nothing to interrupt)
 
 Success response (always `"ok":true` -- there is no rejectable input beyond
-the boolean itself):
+the boolean itself). `state`, `armed` and `position_seconds` reflect the
+engine immediately after the call; an older Python client that only reads
+`ok` keeps working unchanged:
 
 ```json
-{"type":"ack","command":"set_repeat_armed","ok":true}
+{"type":"ack","command":"set_repeat_armed","ok":true,
+ "state":"replaying","armed":true,"position_seconds":0.0}
+```
+
+### `repeat_stop`
+
+Stops an active replay. Idempotent -- acks `"ok":true` in every daemon
+state, including when nothing is playing.
+
+Request:
+
+```json
+{"type":"repeat_stop"}
+```
+
+Behavior:
+
+- Clears the session-arm flag unconditionally, in every state (a stop also
+  disarms)
+- While replay is active, starts the same 1.5 s fade-out `set_repeat_armed`'s
+  disarm does; once complete, replay stops and the recording is retained
+  (re-armable), not freed
+- While a fade-out is already running (a disarm, or a live-interrupt fade),
+  a stop request has nothing further to do -- the fade already ends in the
+  held state
+- In every other state (nothing playing, or a live source is recording),
+  a no-op beyond clearing the arm flag
+
+Response:
+
+```json
+{"type":"ack","command":"repeat_stop","ok":true,
+ "state":"fading_out","armed":false,"position_seconds":12.4}
+```
+
+`state` is the lowercase daemon state (`idle`, `recording`, `hold`,
+`replaying`, `fading_out`, `pending`) after the call. `position_seconds` is
+the replay engine's current position; 0 when nothing is or was replaying.
+
+### `repeat_seek`
+
+Moves the replay position, or starts a replay from a given position in a
+retained (held) recording.
+
+Request:
+
+```json
+{"type":"repeat_seek","position_seconds":0}
+```
+
+`position_seconds` is optional; a missing field means `0`, which restarts
+the recording from its head.
+
+Behavior:
+
+- While a finished recording is sitting idle (held, nothing playing): arms
+  the session and starts replay at `min(max(position_seconds, 0),
+  duration)`, exactly as `set_repeat_armed` with `armed:true` would, plus
+  the requested start position
+- While replay is active: seeks the running session to the same clamped
+  position; applied by the replay thread at its next decode batch, so this
+  never blocks the caller
+- Seeking to exactly the recording's duration lands at end-of-buffer: the
+  next read is empty, so the normal loop-wrap runs (the 1.5 s inter-loop
+  gap, then a restart from the head) -- "seek to the end" behaves as
+  "restart after the gap"
+- Rejected (`"ok":false`, engine state unchanged) when: the position is not
+  finite or negative (`invalid_position`); the feature is disabled
+  (`repeat_unavailable`); a live source is currently recording
+  (`source_active`); a fade-out is in progress (`fading_out`); or there is
+  no recording to seek into, idle or an empty held buffer (`no_recording`)
+
+Success response:
+
+```json
+{"type":"ack","command":"repeat_seek","ok":true,
+ "state":"replaying","armed":true,"position_seconds":0.0}
+```
+
+Rejection response (`state`/`armed`/`position_seconds` still reflect the
+engine, unchanged by the rejected call):
+
+```json
+{"type":"ack","command":"repeat_seek","ok":false,"error":"source_active",
+ "state":"recording","armed":false,"position_seconds":0.0}
 ```
 
 ### `debug_fail_input` (test-only)

@@ -621,6 +621,116 @@ static void test_pending_start_outcomes()
 }
 
 // ---------------------------------------------------------------------------
+// StopRequested (request_stop())
+// ---------------------------------------------------------------------------
+
+static void test_stop_requested()
+{
+    for (RepeatState s : kAllStates)
+    {
+        for (bool armed : {false, true})
+        {
+            RepeatDecision d = decide_repeat_transition(
+                s, armed, /*enabled_cfg=*/true, PendingAction::None, false,
+                RepeatEvent::StopRequested, RepeatEventCtx{});
+
+            if (s == RepeatState::Replaying)
+            {
+                CHECK(d.kind == RepeatDecision::Kind::Apply, state_name(s));
+                CHECK(d.change_state && d.next_state == RepeatState::FadingOut, state_name(s));
+                CHECK(d.do_request_fade_out, state_name(s));
+                CHECK(d.log_tag == RepeatLogTag::StopDuringReplayFadingOut, state_name(s));
+                // No other flag: _armed clearing is the wrapper's job, never
+                // this table's -- nothing else about this cell fires.
+                CHECK(!d.set_origin, state_name(s));
+                CHECK(!d.do_free_recording, state_name(s));
+                CHECK(!d.do_request_abort, state_name(s));
+                CHECK(!d.do_begin_replay, state_name(s));
+                CHECK(!d.do_request_seek, state_name(s));
+                CHECK(!d.do_request_pending_start, state_name(s));
+                CHECK(!d.set_pending_action, state_name(s));
+                CHECK(!d.set_pending_restorable, state_name(s));
+                CHECK(!d.set_pending_interrupt_input, state_name(s));
+            }
+            else if (s == RepeatState::FadingOut)
+            {
+                CHECK(d.kind == RepeatDecision::Kind::Ignored, state_name(s));
+            }
+            else
+            {
+                CHECK(d.kind == RepeatDecision::Kind::NoOp, state_name(s));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SeekRequested (request_seek())
+// ---------------------------------------------------------------------------
+
+static void test_seek_requested()
+{
+    RepeatEventCtx ctx;
+    ctx.seek_position_seconds = 12.5;
+
+    for (RepeatState s : kAllStates)
+    {
+        RepeatDecision d = decide_repeat_transition(
+            s, /*armed=*/false, /*enabled_cfg=*/true, PendingAction::None, false,
+            RepeatEvent::SeekRequested, ctx);
+
+        if (s == RepeatState::Hold)
+        {
+            CHECK(d.kind == RepeatDecision::Kind::Apply, state_name(s));
+            CHECK(d.do_begin_replay, state_name(s));
+            CHECK(!d.change_state, state_name(s));
+            CHECK(!d.do_request_seek, state_name(s));
+            CHECK(d.log_tag == RepeatLogTag::SeekInHoldBeginReplay, state_name(s));
+        }
+        else if (s == RepeatState::Replaying)
+        {
+            CHECK(d.kind == RepeatDecision::Kind::Apply, state_name(s));
+            CHECK(d.do_request_seek, state_name(s));
+            CHECK(!d.change_state, state_name(s));
+            CHECK(!d.do_begin_replay, state_name(s));
+            CHECK(d.log_tag == RepeatLogTag::SeekDuringReplay, state_name(s));
+        }
+        else if (s == RepeatState::FadingOut)
+        {
+            CHECK(d.kind == RepeatDecision::Kind::Ignored, state_name(s));
+        }
+        else   // Idle, Recording, Pending
+        {
+            CHECK(d.kind == RepeatDecision::Kind::NoOp, state_name(s));
+        }
+
+        // The requested position itself never changes which Kind fires --
+        // only the wrapper's own pre-validation (under _repeat_mutex, before
+        // this event is ever raised) can reject a seek.
+        RepeatEventCtx ctx2;
+        ctx2.seek_position_seconds = 999.0;
+        RepeatDecision d2 = decide_repeat_transition(
+            s, false, true, PendingAction::None, false, RepeatEvent::SeekRequested, ctx2);
+        CHECK(d2.kind == d.kind, state_name(s));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// repeat_state_name() -- pins the six lowercase spellings the daemon's
+// transport ack (and, downstream, the Python status object) depend on.
+// ---------------------------------------------------------------------------
+
+static void test_state_names()
+{
+    CHECK(std::string(repeat_state_name(RepeatState::Idle))      == "idle",       "state name: Idle");
+    CHECK(std::string(repeat_state_name(RepeatState::Recording)) == "recording",  "state name: Recording");
+    CHECK(std::string(repeat_state_name(RepeatState::Hold))      == "hold",       "state name: Hold");
+    CHECK(std::string(repeat_state_name(RepeatState::Replaying)) == "replaying",  "state name: Replaying");
+    CHECK(std::string(repeat_state_name(RepeatState::FadingOut)) == "fading_out", "state name: FadingOut");
+    CHECK(std::string(repeat_state_name(RepeatState::Pending))   == "pending",    "state name: Pending");
+}
+
+// ---------------------------------------------------------------------------
 // Constant derivations: the admission-gate constants (kMinAvailableMibForStart
 // / kSessionAdmissionMarginMib) were retired in the fixed-arena redesign (C2)
 // -- admission is now "does an arena exist", not a free-RAM threshold, so
@@ -639,12 +749,13 @@ static_assert(kTakeoverCrossfadeSeconds == 1.5, "expected takeover crossfade of 
 
 static void test_full_matrix_smoke()
 {
-    static const std::array<RepeatEvent, 12> kAllEvents = {
+    static const std::array<RepeatEvent, 14> kAllEvents = {
         RepeatEvent::EnabledOn, RepeatEvent::EnabledOff, RepeatEvent::CaptureStarted,
         RepeatEvent::CaptureStopped, RepeatEvent::Armed, RepeatEvent::Disarmed,
         RepeatEvent::InputStopped, RepeatEvent::ReplaySessionEnded,
         RepeatEvent::PendingStartSucceeded, RepeatEvent::PendingStartFailed,
         RepeatEvent::ProbationConfirmed, RepeatEvent::ProbationTimedOut,
+        RepeatEvent::StopRequested, RepeatEvent::SeekRequested,
     };
 
     for (RepeatState s : kAllStates)
@@ -684,6 +795,9 @@ int main()
     test_input_stopped();
     test_replay_session_ended();
     test_pending_start_outcomes();
+    test_stop_requested();
+    test_seek_requested();
+    test_state_names();
     test_full_matrix_smoke();
 
     std::printf("%d/%d tests passed\n", g_tests - g_failed, g_tests);

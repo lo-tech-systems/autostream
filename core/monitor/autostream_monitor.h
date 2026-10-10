@@ -1100,16 +1100,26 @@ public:
     // has reached zero -- the ramp's shape and length are entirely the
     // mixer's and the controller's concern, not this class's.
     //
-    // All three request_*() calls are called by RepeatController under
-    // _repeat_mutex and only set atomics -- they never block, so the
-    // caller's lock hold time stays short.
+    // Every request_*() call here (including request_seek() below) is
+    // called by RepeatController under _repeat_mutex and only sets
+    // atomics -- none of them ever block, so the caller's lock hold time
+    // stays short.
     void request_start(CodecChoice codec, int sample_rate_hz,
                         const RepeatBuffer* buffer,
                         int origin_input,
                         int origin_silence_threshold_sample,
-                        float origin_track_change_silence_seconds);
+                        float origin_track_change_silence_seconds,
+                        double start_position_seconds = 0.0);
     void request_fade_out();
     void request_abort();   // hard stop, no fade (disable/reload/stop_input)
+
+    // Requests a mid-session seek to position_seconds, applied by the
+    // replay thread at the top of its next slice batch (decode_next_slice()).
+    // Only sets an atomic, never blocks -- same contract as
+    // request_fade_out(). Legal only while a session is active (Replaying);
+    // the caller (RepeatController::request_seek()) never calls this
+    // outside that state.
+    void request_seek(double position_seconds);
 
     struct Snapshot
     {
@@ -1210,6 +1220,16 @@ private:
     bool init_session(ReplaySessionCtx& ctx, CodecChoice codec, int rate_hz,
                        const RepeatBuffer& buffer);
 
+    // Seeks ctx.reader to `seconds` (byte-rate converted, frame-aligned per
+    // codec) and resets the decoder/filter state at the new landing point --
+    // the loop-wrap recipe decode_next_slice() runs at buffer-end, minus the
+    // loop-count increment and the inter-loop gap, plus the position write.
+    // Used both by a mid-session request_seek() (decode_next_slice()) and by
+    // a replay that starts partway through the buffer (run_one_session(), a
+    // seek-in-Hold). Returns false only if the decoder reset itself fails.
+    bool seek_session(ReplaySessionCtx& ctx, CodecChoice codec, int rate_hz,
+                       double seconds);
+
     // One reader.next() batch: abort check, buffer-end loop-wrap handling,
     // live gain/EQ pull, and codec decode/copy into ctx.pcm_staging.
     SliceBatchOutcome decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec);
@@ -1285,6 +1305,12 @@ private:
     // the session, not how the fade itself sounds or how long it takes.
     std::atomic<bool>        _fade_requested{false};
 
+    // Set by request_seek(), consumed once per slice batch by
+    // decode_next_slice(). < 0 means "no seek pending" -- the sentinel a
+    // legal position (>= 0.0, validated by RepeatController::request_seek()
+    // before this is ever reached) can never collide with.
+    std::atomic<double>      _seek_request_seconds{-1.0};
+
     // Parameters captured by request_start(), read only by the replay thread
     // after it wakes (no concurrent writer while a session is active, since
     // RepeatController only calls request_start() from Hold/Idle).
@@ -1294,6 +1320,7 @@ private:
     int                  _session_origin_input = 0;
     int                  _session_silence_threshold_sample = 0;
     float                _session_track_change_silence_seconds = 1.25f;
+    double               _session_start_position_seconds = 0.0;
 
     // Live session state, updated by the replay thread, read by
     // get_snapshot()/track_change_seq()/get_id_snapshot() from other threads.
@@ -1359,6 +1386,25 @@ private:
 // between Idle and Recording) so existing numeric _state_fast values for
 // Idle/Recording/Hold/Replaying/FadingOut are unchanged.
 enum class RepeatState { Idle, Recording, Hold, Replaying, FadingOut, Pending };
+
+// The lowercase RepeatState spellings the transport ack and the Python
+// status object both depend on. Header-only (not in autostream_repeat.cpp)
+// so test_repeat_transitions.cpp can pin these exact strings without
+// linking libtwolame/libmpg123, the same link-independence reason
+// decide_repeat_transition() itself lives here.
+inline const char* repeat_state_name(RepeatState s)
+{
+    switch (s)
+    {
+        case RepeatState::Idle:       return "idle";
+        case RepeatState::Recording:  return "recording";
+        case RepeatState::Hold:       return "hold";
+        case RepeatState::Replaying:  return "replaying";
+        case RepeatState::FadingOut:  return "fading_out";
+        case RepeatState::Pending:    return "pending";
+    }
+    return "idle";   // unreachable: every enumerator handled above
+}
 
 struct RepeatStatus
 {
@@ -1487,6 +1533,8 @@ enum class RepeatEvent
     ProbationConfirmed,       // notify_probation_block(): sustained its armed window
                               // (kImmediateInterruptSustainSeconds or kInterruptSustainSeconds)
     ProbationTimedOut,        // notify_probation_block(): unconfirmed within the window
+    StopRequested,            // request_stop()
+    SeekRequested,            // request_seek(position)
 };
 
 // Read-only, event-specific extra data decide_repeat_transition() needs
@@ -1519,6 +1567,11 @@ struct RepeatEventCtx
     // _pending_interrupt_revert_origin (set at the ReplaySessionEnded x
     // LiveInterrupt cell -- see that cell's log_tag comment).
     int  revert_origin_input = 0;
+
+    // SeekRequested: the clamped target position, computed by the wrapper
+    // (request_seek()) under _repeat_mutex before this event is raised.
+    // Armed/ReplaySessionEnded: 0 (unused).
+    double seek_position_seconds = 0.0;
 };
 
 // Which specific LOG_* call (if any) a decision corresponds to. Chosen by
@@ -1549,6 +1602,9 @@ enum class RepeatLogTag
     ReplaySessionEndedLiveInterruptDisabledFreed, // ReplaySessionEnded, LiveInterrupt, disabled before fade finished: freed, no new session
     ReplaySessionEndedRetainedHold,       // ReplaySessionEnded, None -> Hold
     PendingStartFailedRevertedToHold,     // PendingStartFailed, has_hold_bytes -> Hold (old recording survives)
+    StopDuringReplayFadingOut,            // StopRequested, Replaying -> FadingOut
+    SeekDuringReplay,                     // SeekRequested, Replaying -> RequestSeek
+    SeekInHoldBeginReplay,                // SeekRequested, Hold -> BeginReplay at position
 };
 
 // Pure decision returned by decide_repeat_transition(): describes what
@@ -1600,13 +1656,14 @@ struct RepeatDecision
     // latter needs the former's new value already in place, for the one
     // cell that sets both at once), then do_free_recording, then
     // change_state/set_origin, then do_request_abort, then
-    // do_request_fade_out, then do_begin_replay, then
+    // do_request_fade_out, then do_request_seek, then do_begin_replay, then
     // do_request_pending_start.
     bool do_request_fade_out      = false;
     bool do_request_abort         = false;
     bool do_request_pending_start = false;
     bool do_free_recording        = false;   // discard_recording_locked() (arena persists -- see its own comment)
     bool do_begin_replay          = false;   // begin_replay_locked()
+    bool do_request_seek          = false;   // ReplayEngine::request_seek(ctx.seek_position_seconds)
 
     RepeatLogTag log_tag = RepeatLogTag::None;
 };
@@ -1725,6 +1782,27 @@ struct RepeatDecision
 // │ Pending    │ NoOp                           │ NoOp                          │
 // └────────────┴─────────────────────────────┴──────────────────────────────┘
 //
+// ┌────────────┬───────────────────────────────┬──────────────────────────────┐
+// │ state      │ StopRequested                  │ SeekRequested (ctx.seek_      │
+// │            │                                │ position_seconds)             │
+// ├────────────┼───────────────────────────────┼──────────────────────────────┤
+// │ Idle       │ NoOp                            │ NoOp (wrapper answers          │
+// │            │                                 │   no_recording first, never    │
+// │            │                                 │   raises)                      │
+// │ Recording  │ NoOp                            │ NoOp (wrapper answers          │
+// │            │                                 │   source_active first)         │
+// │ Hold       │ NoOp                            │ Apply: BeginReplay at ctx      │
+// │            │                                 │   position (wrapper set        │
+// │            │                                 │   _armed = true first)         │
+// │ Replaying  │ Apply: state->FadingOut,        │ Apply: RequestSeek             │
+// │            │   RequestFadeOut, log           │   (do_request_seek), log       │
+// │            │   StopDuringReplayFadingOut     │   SeekDuringReplay             │
+// │ FadingOut  │ Ignored (fade in flight         │ Ignored (wrapper answers       │
+// │            │   continues)                    │   fading_out first)            │
+// │ Pending    │ NoOp                            │ NoOp (wrapper answers          │
+// │            │                                 │   source_active first)         │
+// └────────────┴───────────────────────────────┴──────────────────────────────┘
+//
 // ┌────────────┬────────────────────────────────────────────────────────────┐
 // │ state      │ InputStopped (input_index; wrapper already matched origin)  │
 // ├────────────┼────────────────────────────────────────────────────────────┤
@@ -1764,7 +1842,11 @@ struct RepeatDecision
 // any (state, event) cell: each RepeatEvent maps 1:1 to exactly one of the
 // original six functions (plus perform_pending_start(), folded in above --
 // see RepeatEvent's declaration comment), so no two functions ever compete
-// to define the same cell.
+// to define the same cell. The two later-added events, StopRequested and
+// SeekRequested, map 1:1 the same way to RepeatController::request_stop()/
+// request_seek() -- the wrapper-level validation those two functions do
+// under _repeat_mutex, before either event is ever raised, is what keeps
+// every "wrapper answers X first" cell above unreachable in practice.
 // =============================================================================
 
 inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bool enabled_cfg,
@@ -2178,6 +2260,66 @@ inline RepeatDecision decide_repeat_transition(RepeatState state, bool armed, bo
             d.log_tag = RepeatLogTag::ProbationTimedOutReplayContinues;
             return d;
         }
+
+        case RepeatEvent::StopRequested:
+        {
+            // _armed is cleared by the wrapper (request_stop()) in every
+            // state before this event is raised -- never by this table (a
+            // stop always disarms, matching the class's own request_stop()
+            // doc comment).
+            if (state == RepeatState::Replaying)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.change_state = true;
+                d.next_state = RepeatState::FadingOut;
+                d.do_request_fade_out = true;
+                d.log_tag = RepeatLogTag::StopDuringReplayFadingOut;
+            }
+            else if (state == RepeatState::FadingOut)
+            {
+                // A fade is already in flight (disarm or a confirmed
+                // interrupt); a stop while it runs has nothing further to
+                // do -- the fade already ends in Hold.
+                d.kind = RepeatDecision::Kind::Ignored;
+            }
+            else
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+            }
+            return d;
+        }
+
+        case RepeatEvent::SeekRequested:
+        {
+            // The wrapper (request_seek()) has already validated the
+            // position and the state under _repeat_mutex before raising
+            // this event -- see request_seek()'s own comment for the
+            // source_active/no_recording/fading_out/invalid_position
+            // rejections this table never has to represent. It also sets
+            // _armed = true itself, in the Hold branch only, before raising
+            // this event -- never this table.
+            if (state == RepeatState::Hold)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.do_begin_replay = true;
+                d.log_tag = RepeatLogTag::SeekInHoldBeginReplay;
+            }
+            else if (state == RepeatState::Replaying)
+            {
+                d.kind = RepeatDecision::Kind::Apply;
+                d.do_request_seek = true;
+                d.log_tag = RepeatLogTag::SeekDuringReplay;
+            }
+            else if (state == RepeatState::FadingOut)
+            {
+                d.kind = RepeatDecision::Kind::Ignored;
+            }
+            else
+            {
+                d.kind = RepeatDecision::Kind::NoOp;
+            }
+            return d;
+        }
     }
 
     d.kind = RepeatDecision::Kind::Impossible;   // unreachable: all enumerators handled above
@@ -2264,12 +2406,44 @@ public:
     // (RECORDING or HOLD) immediately, and fades+frees an active replay.
     std::string set_enabled(bool enabled, const std::string& codec_text, int target_minutes = -1);
 
+    // Result of a transport/arm call (set_armed()/request_stop()/
+    // request_seek()), the shape the socket ack and, downstream, the dial
+    // protocol both surface. state/armed/position_seconds are always the
+    // engine's values AFTER the call, even on a rejection -- a caller never
+    // has to make a second query to redraw a correct screen from a
+    // rejected request.
+    struct TransportAck
+    {
+        bool        ok               = false;
+        std::string error;                          // empty when ok
+        RepeatState state             = RepeatState::Idle;
+        bool        armed             = false;
+        double      position_seconds  = 0.0;
+    };
+
     // {"type":"set_repeat_armed",...} handler. Setting armed=true
     // while HOLD (finished recording, idle) starts replay immediately.
     // Setting armed=false while REPLAYING triggers the kTakeoverCrossfadeSeconds
     // disarm fade; the buffer is retained (HOLD) afterwards and remains re-armable.
-    // Returns "" always (no rejectable inputs beyond the bool itself).
-    std::string set_armed(bool armed);
+    // Always ok (no rejectable inputs beyond the bool itself).
+    TransportAck set_armed(bool armed);
+
+    // {"type":"repeat_stop",...} handler. Idempotent: acks ok:true in every
+    // state. Clears _armed unconditionally (a stop also disarms), then
+    // fades an active replay (Replaying -> FadingOut) or is a no-op
+    // everywhere else. Never rejects.
+    TransportAck request_stop();
+
+    // {"type":"repeat_seek",...} handler. Validated under _repeat_mutex
+    // before anything is raised: not-finite/negative -> invalid_position;
+    // disabled -> repeat_unavailable; Recording/Pending -> source_active;
+    // FadingOut -> fading_out; Idle or an empty Hold buffer -> no_recording.
+    // A valid seek in Hold arms and begins replay at clamp(position); a
+    // valid seek while Replaying is applied by the replay thread at its
+    // next slice batch. position_seconds in the ack is the clamped
+    // requested position on an accepted seek, else the engine's current
+    // position.
+    TransportAck request_seek(double position_seconds);
 
     // Fast, lock-free check for the audio-thread tap call site. Must stay
     // cheap: a single relaxed atomic load in the common disabled case.
@@ -2435,11 +2609,20 @@ private:
     void handle_event_locked(RepeatEvent event,
                               const RepeatEventCtx& ctx = RepeatEventCtx{});
 
-    // Begins replay from a HOLD recording. Caller holds _repeat_mutex. Used
-    // by notify_capture_stopped() (armed at capture-stop), set_armed()
-    // (arm-while-HOLD), and on_replay_session_ended_locked_entry()
-    // (re-arm-during-a-disarm-fade restart).
-    void begin_replay_locked();
+    // Begins replay from a HOLD recording, at start_position_seconds (0.0 =
+    // the head, the default every caller but request_seek()'s Hold branch
+    // uses). Caller holds _repeat_mutex. Used by notify_capture_stopped()
+    // (armed at capture-stop), set_armed() (arm-while-HOLD),
+    // on_replay_session_ended_locked_entry() (re-arm-during-a-disarm-fade
+    // restart), and request_seek() (seek-in-Hold starts a replay at the
+    // requested position).
+    void begin_replay_locked(double start_position_seconds = 0.0);
+
+    // Builds a TransportAck from the engine's CURRENT state (after whatever
+    // mutation the caller already applied) -- state/armed/position_seconds
+    // always reflect the post-call engine, ok/error are exactly what the
+    // caller passes. Caller holds _repeat_mutex.
+    TransportAck ack_locked(bool ok, const char* error) const;
 
     // The deferred second half of a session start, run by
     // RepeatRecorder's worker thread (never the audio thread) after
@@ -3622,8 +3805,19 @@ public:
     // must be auto|mp2_160|mp2_192|mp2_224|mp2_256|mp2_320|mp2_384|pcm.
     std::string api_set_repeat_enabled(bool enabled, const std::string& codec, int target_minutes = -1);
 
-    // Repeat feature: session arm/disarm.
+    // Repeat feature: session arm/disarm. The ack additionally carries
+    // state/armed/position_seconds (transport_ack_json()) -- additive over
+    // the plain ok:true this used to return, so an older Python client
+    // still parses the ack, it just ignores the extra fields.
     std::string api_set_repeat_armed(bool armed);
+
+    // Repeat feature transport: stop an active replay (idempotent; acks
+    // ok:true in every state) and mid-buffer/mid-session seek. See
+    // RepeatController::request_stop()/request_seek() for the full
+    // validation/state-machine contract; these wrappers only convert the
+    // TransportAck to the wire ack shape.
+    std::string api_repeat_stop();
+    std::string api_repeat_seek(double position_seconds);
 
     // Test-only socket command ({"type":"debug_fail_input","input":N}),
     // gated at runtime by test_hooks_enabled() (--test-hooks), unlike the
@@ -3677,6 +3871,15 @@ private:
     // was_active (whether this input was the active FIFO writer before
     // stop()), so callers that need it for logging don't have to re-read it.
     bool stop_input_with_teardown(int i);
+
+    // Builds the wire ack shape shared by set_repeat_armed/repeat_stop/
+    // repeat_seek: {"type":"ack","command":"<command>","ok":...,
+    // "state":...,"armed":...,"position_seconds":...}, plus "error" only
+    // when !a.ok. Numbers are formatted the same way api_get_status()'s
+    // "repeat" block is (std::ostringstream, std::fixed,
+    // std::setprecision(1)).
+    static std::string transport_ack_json(const char* command,
+                                           const RepeatController::TransportAck& a);
 
     static constexpr int NUM_INPUTS  = 2;
 

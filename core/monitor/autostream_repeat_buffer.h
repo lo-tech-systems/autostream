@@ -495,6 +495,36 @@ public:
             _offset    = 0;
         }
 
+        // Moves the cursor to absolute byte offset `offset` from the current head
+        // (clamped to total_bytes()). Walks chunks summing `used`, the same walk
+        // next() performs. Returns the offset actually landed on. Used by
+        // ReplayEngine for a pointer-shift seek; the caller is responsible for
+        // frame alignment (see ReplayEngine::seek_session()).
+        size_t seek_bytes(size_t offset)
+        {
+            clamp_to_head();
+            size_t remaining = offset;
+            size_t seq = _buffer->_head_seq;
+            size_t bound = _buffer->_head_seq + _buffer->_chunks.size();
+            size_t landed = 0;
+            while (seq < bound)
+            {
+                const Chunk& c = _buffer->_chunks[seq - _buffer->_head_seq];
+                if (remaining < c.used)
+                {
+                    _chunk_seq = seq;
+                    _offset    = remaining;
+                    return landed + remaining;
+                }
+                remaining -= c.used;
+                landed    += c.used;
+                ++seq;
+            }
+            _chunk_seq = bound;    // end of buffer: next() returns 0 -> wrap
+            _offset    = 0;
+            return landed;
+        }
+
     private:
         void clamp_to_head()
         {

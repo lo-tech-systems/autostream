@@ -249,6 +249,108 @@ static void test_u5_reader_survives_drop()
 }
 
 // ---------------------------------------------------------------------------
+// Reader::seek_bytes
+// ---------------------------------------------------------------------------
+
+static void test_reader_seek_bytes()
+{
+    const size_t kChunk = 16;
+
+    // Seek within the first chunk: lands exactly, and next() continues from
+    // there.
+    {
+        RepeatBuffer buf(kChunk);
+        auto data = make_pattern(40);   // 16 + 16 + 8
+        buf.append(data.data(), data.size());
+
+        RepeatBuffer::Reader reader(buf);
+        size_t landed = reader.seek_bytes(5);
+        CHECK(landed == 5, "seek_bytes: within first chunk lands at the requested offset");
+
+        std::vector<uint8_t> out(35);
+        size_t n = reader.next(out.data(), out.size());
+        CHECK(n == 35, "seek_bytes: next() returns everything from the seek point onward");
+        CHECK(std::memcmp(out.data(), data.data() + 5, 35) == 0,
+              "seek_bytes: post-seek stream matches the original data from offset 5");
+    }
+
+    // Seek across a chunk boundary: lands in the correct (seq, offset), and
+    // next() continues from there byte-exact.
+    {
+        RepeatBuffer buf(kChunk);
+        auto data = make_pattern(40);   // 16 + 16 + 8
+        buf.append(data.data(), data.size());
+
+        RepeatBuffer::Reader reader(buf);
+        size_t landed = reader.seek_bytes(20);   // 4 bytes into the second chunk
+        CHECK(landed == 20, "seek_bytes: across a chunk boundary lands at the requested offset");
+
+        std::vector<uint8_t> out(20);
+        size_t n = reader.next(out.data(), out.size());
+        CHECK(n == 20, "seek_bytes: next() returns the remaining 20 bytes after the boundary seek");
+        CHECK(std::memcmp(out.data(), data.data() + 20, 20) == 0,
+              "seek_bytes: post-boundary-seek stream matches the original data from offset 20");
+    }
+
+    // Seek beyond total_bytes(): clamps to the end; next() returns 0.
+    {
+        RepeatBuffer buf(kChunk);
+        auto data = make_pattern(40);
+        buf.append(data.data(), data.size());
+
+        RepeatBuffer::Reader reader(buf);
+        size_t landed = reader.seek_bytes(1000);
+        CHECK(landed == 40, "seek_bytes: past-the-end seek clamps to total_bytes()");
+
+        uint8_t tail;
+        CHECK(reader.next(&tail, 1) == 0, "seek_bytes: read after an end-of-buffer seek returns 0");
+    }
+
+    // Seek after a dropped head: measured from the NEW head, not the
+    // original one (clamp_to_head() applies to seek_bytes() the same way it
+    // applies to next()).
+    {
+        RepeatBuffer buf(kChunk);
+        auto data = make_pattern(48);   // 3 full 16-byte chunks
+        buf.append(data.data(), data.size());
+        buf.drop_oldest_chunk();        // drops the first 16 bytes
+
+        RepeatBuffer::Reader reader(buf);   // constructed after the drop: starts at the new head
+        size_t landed = reader.seek_bytes(4);
+        CHECK(landed == 4, "seek_bytes: after a dropped head, offset is measured from the new head");
+
+        std::vector<uint8_t> out(4);
+        size_t n = reader.next(out.data(), out.size());
+        CHECK(n == 4, "seek_bytes: next() after the head-relative seek returns the expected bytes");
+        CHECK(std::memcmp(out.data(), data.data() + 16 + 4, 4) == 0,
+              "seek_bytes: bytes match the surviving data, offset from the new head");
+    }
+
+    // Seek 0 is equivalent to rewind().
+    {
+        RepeatBuffer buf(kChunk);
+        auto data = make_pattern(40);
+        buf.append(data.data(), data.size());
+
+        RepeatBuffer::Reader reader_seek(buf);
+        uint8_t discard[10];
+        reader_seek.next(discard, sizeof(discard));   // advance the cursor first
+        reader_seek.seek_bytes(0);
+
+        RepeatBuffer::Reader reader_rewind(buf);
+        reader_rewind.next(discard, sizeof(discard));
+        reader_rewind.rewind();
+
+        std::vector<uint8_t> out_seek(40), out_rewind(40);
+        size_t n_seek   = reader_seek.next(out_seek.data(), out_seek.size());
+        size_t n_rewind = reader_rewind.next(out_rewind.data(), out_rewind.size());
+        CHECK(n_seek == n_rewind, "seek_bytes(0): reads back the same length as rewind()");
+        CHECK(std::memcmp(out_seek.data(), out_rewind.data(), n_seek) == 0,
+              "seek_bytes(0): reads back byte-identical to rewind()");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // U6 — Target-duration codec selection (pick_codec_for_target())
 // ---------------------------------------------------------------------------
 
@@ -2367,6 +2469,7 @@ int main()
     test_u3_truncate_tail();
     test_u4_reader_sequential();
     test_u5_reader_survives_drop();
+    test_reader_seek_bytes();
     test_u6_pick_codec_for_target();
     test_u14_byte_rate_for_new_tiers();
     test_plan_arena();

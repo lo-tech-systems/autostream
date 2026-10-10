@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -320,6 +321,13 @@ public:
             return;
 
         mpg123_param(_mh, MPG123_FLAGS, MPG123_QUIET, 0);
+        // Disable mpg123's default resync byte limit (1024): a seek can
+        // land mid-frame (pointer-shift semantics, no frame-boundary
+        // search), and at the highest bitrate this ladder allows
+        // (384 kbps, 1152-byte frames) the default limit is shorter than a
+        // single frame, so a resync could fail outright. -1 means
+        // unlimited.
+        mpg123_param(_mh, MPG123_RESYNC_LIMIT, -1, 0);
         // Force a single fixed output format; reject anything else so a
         // format surprise never silently changes the pipe's byte layout.
         mpg123_format_none(_mh);
@@ -349,6 +357,10 @@ public:
 
         mpg123_close(_mh);
         mpg123_format_none(_mh);
+        // Re-forced after the reopen, same reason as the constructor: a
+        // fresh feed stream starts with mpg123's default resync limit,
+        // which a mid-frame seek landing at the highest bitrate can exceed.
+        mpg123_param(_mh, MPG123_RESYNC_LIMIT, -1, 0);
         if (mpg123_format(_mh, _sample_rate_hz, MPG123_STEREO, MPG123_ENC_SIGNED_16) != MPG123_OK
             || mpg123_open_feed(_mh) != MPG123_OK)
         {
@@ -835,8 +847,10 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
     // already in flight, so the two cross in the same blocks either way.
     if (d.set_pending_action && d.pending_action == PendingAction::LiveInterrupt)
         _mixer.set_gain(live_source(_pending_interrupt_input), 1.0f, kTakeoverCrossfadeSeconds);
+    if (d.do_request_seek)
+        _replay.request_seek(ctx.seek_position_seconds);
     if (d.do_begin_replay)
-        begin_replay_locked();
+        begin_replay_locked(ctx.seek_position_seconds);
     if (d.do_request_pending_start)
         _recorder.request_pending_start();
 
@@ -935,6 +949,15 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
             LOG_INFO("[repeat] New session admission refused; reverted to HOLD (input %d), "
                      "recording survives",
                      ctx.revert_origin_input);
+            break;
+        case RepeatLogTag::StopDuringReplayFadingOut:
+            LOG_INFO("[repeat] Stop requested; replay fading out");
+            break;
+        case RepeatLogTag::SeekDuringReplay:
+            LOG_INFO("[repeat] Seek requested during replay: %.1f s", ctx.seek_position_seconds);
+            break;
+        case RepeatLogTag::SeekInHoldBeginReplay:
+            LOG_INFO("[repeat] Seek in hold; replay starting at %.1f s", ctx.seek_position_seconds);
             break;
     }
 }
@@ -1993,7 +2016,7 @@ void RepeatController::notify_capture_stopped(int input_index)
         begin_replay_locked();
 }
 
-void RepeatController::begin_replay_locked()
+void RepeatController::begin_replay_locked(double start_position_seconds)
 {
     if (_state != RepeatState::Hold || _buffer.total_bytes() == 0)
         return;   // nothing to replay (e.g. armed with an empty/never-started recording)
@@ -2015,14 +2038,16 @@ void RepeatController::begin_replay_locked()
 
     _replay.request_start(_active_codec, _sample_rate_hz, &_buffer, _origin_input,
                            _origin_silence_threshold_sample,
-                           _origin_track_change_silence_seconds);
+                           _origin_track_change_silence_seconds,
+                           start_position_seconds);
 
-    LOG_INFO("[repeat] Replay starting (input %d, %.1f s, codec=%s)",
+    LOG_INFO("[repeat] Replay starting (input %d, %.1f s, codec=%s, start=%.1f s)",
              _origin_input, duration,
-             _active_codec == CodecChoice::PcmS16 ? "pcm" : "mp2");
+             _active_codec == CodecChoice::PcmS16 ? "pcm" : "mp2",
+             start_position_seconds);
 }
 
-std::string RepeatController::set_armed(bool armed)
+RepeatController::TransportAck RepeatController::set_armed(bool armed)
 {
     std::lock_guard<std::mutex> lock(_repeat_mutex);
 
@@ -2039,7 +2064,60 @@ std::string RepeatController::set_armed(bool armed)
     else if (!armed && was_armed)
         handle_event_locked(RepeatEvent::Disarmed);
 
-    return "";
+    return ack_locked(true, "");
+}
+
+RepeatController::TransportAck RepeatController::request_stop()
+{
+    std::lock_guard<std::mutex> lock(_repeat_mutex);
+    _armed = false;                                  // a stop also disarms, in every state
+    handle_event_locked(RepeatEvent::StopRequested);
+    return ack_locked(true, "");
+}
+
+RepeatController::TransportAck RepeatController::request_seek(double position_seconds)
+{
+    std::lock_guard<std::mutex> lock(_repeat_mutex);
+    if (!std::isfinite(position_seconds) || position_seconds < 0.0)
+        return ack_locked(false, "invalid_position");
+    if (!_enabled_cfg)
+        return ack_locked(false, "repeat_unavailable");
+    switch (_state)
+    {
+        case RepeatState::Recording:
+        case RepeatState::Pending:   return ack_locked(false, "source_active");
+        case RepeatState::FadingOut: return ack_locked(false, "fading_out");
+        case RepeatState::Idle:      return ack_locked(false, "no_recording");
+        case RepeatState::Hold:
+        case RepeatState::Replaying: break;
+    }
+    if (_buffer.total_bytes() == 0)
+        return ack_locked(false, "no_recording");
+
+    long rate = byte_rate_for(_active_codec, _sample_rate_hz);
+    double duration = rate > 0 ? double(_buffer.total_bytes()) / double(rate) : 0.0;
+    double clamped = std::min(std::max(position_seconds, 0.0), duration);
+
+    RepeatEventCtx ctx;
+    ctx.seek_position_seconds = clamped;
+    if (_state == RepeatState::Hold)
+        _armed = true;                               // seek-in-Hold arms, like a web-UI arm
+    handle_event_locked(RepeatEvent::SeekRequested, ctx);
+
+    TransportAck a = ack_locked(true, "");
+    a.position_seconds = clamped;
+    return a;
+}
+
+RepeatController::TransportAck RepeatController::ack_locked(bool ok, const char* error) const
+{
+    TransportAck a;
+    a.ok               = ok;
+    a.error             = ok ? std::string() : std::string(error);
+    a.state             = _state;
+    a.armed             = _armed;
+    a.position_seconds  = _replay.get_snapshot().position_seconds;
+    return a;
 }
 
 void RepeatController::notify_input_stopped(int input_index)
@@ -2457,7 +2535,8 @@ void ReplayEngine::request_start(CodecChoice codec, int sample_rate_hz,
                                   const RepeatBuffer* buffer,
                                   int origin_input,
                                   int origin_silence_threshold_sample,
-                                  float origin_track_change_silence_seconds)
+                                  float origin_track_change_silence_seconds,
+                                  double start_position_seconds)
 {
     _session_codec                        = codec;
     _session_rate_hz                      = sample_rate_hz;
@@ -2465,10 +2544,20 @@ void ReplayEngine::request_start(CodecChoice codec, int sample_rate_hz,
     _session_origin_input                 = origin_input;
     _session_silence_threshold_sample     = origin_silence_threshold_sample;
     _session_track_change_silence_seconds = origin_track_change_silence_seconds;
+    _session_start_position_seconds       = start_position_seconds;
 
     std::lock_guard<std::mutex> lk(_cmd_mutex);
     _pending_cmd = Cmd::Start;
     _cmd_cv.notify_all();
+}
+
+void ReplayEngine::request_seek(double position_seconds)
+{
+    // Only sets an atomic, never blocks -- decode_next_slice() consumes it
+    // once per slice batch. Legal only while a session is active
+    // (Replaying); RepeatController::request_seek() never calls this from
+    // any other state.
+    _seek_request_seconds.store(position_seconds, std::memory_order_release);
 }
 
 void ReplayEngine::request_fade_out()
@@ -2651,6 +2740,9 @@ bool ReplayEngine::init_session(ReplaySessionCtx& ctx, CodecChoice codec, int ra
     // otherwise still be sitting here set).
     _stall_since.store(0.0, std::memory_order_relaxed);
     _fade_requested.store(false, std::memory_order_relaxed);
+    // A seek requested at the tail of a PRIOR session (mid-fade, or a race
+    // with the session ending) must not leak into this one.
+    _seek_request_seconds.store(-1.0, std::memory_order_relaxed);
 
     // ctx.replay_filters/replay_eq_bands_cache hold this session's own
     // BiquadFilter delay-line state, entirely separate from any
@@ -2686,6 +2778,14 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
     Cmd cmd = _pending_cmd.exchange(Cmd::None, std::memory_order_acq_rel);
     if (cmd == Cmd::Abort || _stop_requested.load(std::memory_order_relaxed))
         return SliceBatchOutcome::Aborted;
+
+    // A pending mid-session seek (RepeatController::request_seek() while
+    // Replaying) is applied once here, before the next read -- consuming it
+    // (exchange back to the "none" sentinel) so it never re-applies on a
+    // later slice batch.
+    double seek = _seek_request_seconds.exchange(-1.0, std::memory_order_acq_rel);
+    if (seek >= 0.0 && !seek_session(ctx, codec, _session_rate_hz, seek))
+        return SliceBatchOutcome::DecodeError;
 
     size_t n = ctx.reader->next(ctx.raw_buf.data(), ctx.raw_buf.size());
     if (n == 0)
@@ -2775,6 +2875,53 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
         return SliceBatchOutcome::Retry;   // decoder still accumulating a partial frame
 
     return SliceBatchOutcome::Ready;
+}
+
+// Seeks ctx.reader to `seconds` and resets decoder/filter state at the new
+// landing point -- the loop-wrap recipe decode_next_slice() runs at
+// buffer-end (above), minus the loop-count increment, minus the inter-loop
+// gap, plus the position write. Used both by a mid-session seek
+// (decode_next_slice()) and by a replay starting partway through the
+// buffer (run_one_session(), a seek-in-Hold). MP2 relies on mpg123's resync
+// (Mp2Decoder's constructor/reset() both raise MPG123_RESYNC_LIMIT) rather
+// than aligning down to a frame boundary: the buffer tracks bytes, not MP2
+// frames (16 MiB chunks make chunk boundaries useless as seek points
+// anyway), and a nominal frame size is not exact at 44.1 kHz either (MP2
+// frame length alternates with padding); a mid-frame landing costs at most
+// one discarded frame, at a point where no seam handling beyond pointer-
+// shift semantics was ever promised. PCM has no decoder to resync, so it
+// aligns down to the 4-byte stereo s16 frame instead -- mandatory there:
+// an odd byte offset would swap channels. Returns false only if the
+// decoder reset itself fails (mirrors decode_next_slice()'s own loop-wrap
+// handling of the same failure).
+bool ReplayEngine::seek_session(ReplaySessionCtx& ctx, CodecChoice codec,
+                                 int rate_hz, double seconds)
+{
+    long byte_rate = byte_rate_for(codec, rate_hz);
+    if (byte_rate <= 0)
+        return false;
+
+    size_t align = (codec == CodecChoice::PcmS16) ? 4 : 1;
+    size_t want = static_cast<size_t>(seconds * static_cast<double>(byte_rate));
+    want -= want % align;
+
+    size_t got = ctx.reader->seek_bytes(want);
+    ctx.frames_played = static_cast<double>(got) / static_cast<double>(byte_rate)
+                         * static_cast<double>(rate_hz);
+
+    // Same loop-seam reset init_session()/decode_next_slice()'s wrap path
+    // apply: filter delay-line state and the decoder's buffered bitstream
+    // state must not carry across a discontinuous jump.
+    ctx.replay_filters.clear();
+    ctx.replay_eq_bands_cache.reset();
+    if (ctx.decoder && !ctx.decoder->reset())
+    {
+        LOG_WARN("[repeat] ReplayEngine: decoder reset failed at seek; aborting replay");
+        return false;
+    }
+
+    _position_seconds.store(ctx.frames_played / rate_hz, std::memory_order_relaxed);
+    return true;
 }
 
 // One kSliceFrames-sized slice: track-gap detect -> ID tap -> gain -> EQ,
@@ -2874,6 +3021,14 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
     _position_seconds.store(0.0, std::memory_order_relaxed);
     _loop_count.store(0, std::memory_order_relaxed);
     _active.store(true, std::memory_order_relaxed);
+
+    // A seek-in-Hold start (RepeatController::request_seek()'s Hold branch,
+    // via begin_replay_locked(start_position_seconds)): land the reader at
+    // the requested position before the first slice is read, rather than
+    // always starting at the head.
+    if (_session_start_position_seconds > 0.0 &&
+        !seek_session(ctx, codec, rate_hz, _session_start_position_seconds))
+        return SessionEndReason::DecoderInitFailed;
 
     SessionEndReason reason = SessionEndReason::FadeComplete;   // default: only overwritten below
                                                                  // on an abort/error path (mirrors
