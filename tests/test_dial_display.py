@@ -37,7 +37,9 @@ from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
     effective_diagonal_inches,
     get_profile,
+    layout_context_for,
     mm_per_px_for,
+    mm_per_px_for_size,
 )
 from dial_mdns import PlayingTarget
 from dial_touch_layout import TouchZone, list_layout_for, metrics_for
@@ -184,7 +186,7 @@ def _roster_from_targets(targets) -> list:
 
 def _make_display(
     fitted=True, rotate=False, bgr=False, screen_type=DEFAULT_PROFILE_KEY,
-    always_show_controls=False, screen_size_inches=None,
+    always_show_controls=False, screen_size_inches=None, layout_size=None,
     targets=None, backend=None,
     get_targets=None,
     get_roster=None,
@@ -194,6 +196,7 @@ def _make_display(
     cfg = DialDisplayConfig(
         fitted=fitted, rotate=rotate, bgr=bgr, screen_type=screen_type,
         always_show_controls=always_show_controls, screen_size_inches=screen_size_inches,
+        layout_size=layout_size,
     )
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
@@ -886,7 +889,10 @@ class TestPushFrameLocked:
         display, fb, gt = _make_display()
         display.enable()
         before = len(fb.displayed)
-        sentinel = object()
+        # Sized to the backend's own dims so the push-time resample is
+        # skipped (same size in and out) and the identical object reaches
+        # the backend, unchanged — the point of this test.
+        sentinel = Image.new("RGB", (fb.width, fb.height))
         with display._lock:
             display._push_frame_locked(lambda: sentinel)
         assert fb.displayed[-1] is sentinel
@@ -1216,7 +1222,7 @@ def _marked_image(size: tuple[int, int] = (4, 4)) -> "Image.Image":
 
 class TestRotation:
     def test_rotate_true_rotates_image_before_backend_display(self):
-        img = _marked_image()
+        img = _marked_image(size=(FakeBackend.width, FakeBackend.height))
 
         display_off, fb_off, _ = _make_display(rotate=False)
         display_off.enable()
@@ -1284,7 +1290,7 @@ class TestRotation:
 
 class TestBgr:
     def test_bgr_true_swaps_channels_before_backend_display(self):
-        img = _marked_image()
+        img = _marked_image(size=(FakeBackend.width, FakeBackend.height))
 
         display_off, fb_off, _ = _make_display(bgr=False)
         display_off.enable()
@@ -1301,7 +1307,7 @@ class TestBgr:
         assert list(fb_on.displayed[-1].getdata()) == list(expected.getdata())
 
     def test_rotate_and_bgr_compose_together(self):
-        img = _marked_image()
+        img = _marked_image(size=(FakeBackend.width, FakeBackend.height))
 
         display, fb, _ = _make_display(rotate=True, bgr=True)
         display.enable()
@@ -2995,6 +3001,231 @@ class TestListPagingMatchesPaintedRows:
         assert display._selector.page == 1
         display.selector_pick(0)  # row 0 of PAGE 1 == the fifth target overall
         assert display.manual_focus_id() == "4" * 20
+
+
+# ---------------------------------------------------------------------------
+# Layout size — render at a logical size, resample to the panel. The None
+# path is the regression corpus for byte-identity (see the pin below); the
+# rest of this suite exercises a chosen size.
+# ---------------------------------------------------------------------------
+
+class TestResampleFilter:
+    def test_shrinking_either_axis_uses_box(self):
+        assert dd._resample_filter((640, 480), (320, 240)) is dd._RESAMPLE_BOX
+        assert dd._resample_filter((640, 480), (640, 240)) is dd._RESAMPLE_BOX
+
+    def test_growing_both_axes_uses_nearest(self):
+        assert dd._resample_filter((160, 128), (320, 240)) is dd._RESAMPLE_NEAREST
+
+    def test_equal_size_falls_on_the_nearest_branch(self):
+        # Never actually reached in practice — _push_frame_locked skips the
+        # call entirely when sizes already match — but the function's own
+        # boundary behaviour is pinned here regardless.
+        assert dd._resample_filter((320, 240), (320, 240)) is dd._RESAMPLE_NEAREST
+
+
+class TestNonePathByteIdentity:
+    """The None path must stay byte-identical to today: no resize, and
+    _layout_metrics() computes exactly what _metrics_locked() always has."""
+
+    def test_no_resize_when_composed_size_already_matches_physical(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        display, fb, gt = _make_display(screen_type="ili9341_320x240", screen_size_inches=2.8, backend=fb)
+        display.enable()
+        fb.displayed.clear()
+        sentinel = Image.new("RGB", (320, 240))
+        with patch.object(display._compositor, "compose", return_value=sentinel), \
+             patch("dial_display._resample_filter") as mock_resample:
+            display._display_locked(sentinel)
+        assert fb.displayed[-1] is sentinel
+        mock_resample.assert_not_called()
+
+    def test_layout_metrics_matches_metrics_for_default_formula(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        display, fb, gt = _make_display(screen_type="ili9341_320x240", screen_size_inches=2.8, backend=fb)
+        display.enable()
+        assert display._layout_metrics() == metrics_for(320, 240, mm_per_px=display._mm_per_px)
+
+
+class TestRendersAtLogicalArrivesPhysical:
+    def test_large_on_320x240_panel(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large", backend=fb,
+        )
+        with patch("dial_display._resample_filter", wraps=dd._resample_filter) as spy:
+            display.enable()
+        assert display._current_base_image.size == (640, 480)
+        assert fb.displayed[-1].size == (320, 240)
+        spy.assert_called_with((640, 480), (320, 240))
+
+    def test_small_on_320x240_panel(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="small", backend=fb,
+        )
+        display.enable()
+        assert display._current_base_image.size == (160, 128)
+        assert fb.displayed[-1].size == (320, 240)
+
+    def test_medium_on_160x128_panel(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 160, 128
+        display, fb, gt = _make_display(
+            screen_type=DEFAULT_PROFILE_KEY, screen_size_inches=1.8, layout_size="medium", backend=fb,
+        )
+        display.enable()
+        assert display._current_base_image.size == (320, 240)
+        assert fb.displayed[-1].size == (160, 128)
+
+    def test_large_artwork_poll_renders_at_logical_size(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        t = _target()
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large",
+            backend=fb, targets=[t],
+        )
+        display.enable()
+        fake_image = _marked_image(size=(640, 480))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        assert display._current_rendered_image.size == (640, 480)
+        assert fb.displayed[-1].size == (320, 240)
+
+
+class TestMetricsFollowLayout:
+    def test_large_on_320x240(self):
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large",
+        )
+        m = display._layout_metrics()
+        assert m.content_tier == "large"
+        assert m.rows_per_page == 4
+        assert m.supersample == 2
+        assert m.mm_per_px == pytest.approx(0.0889, abs=1e-4)
+        assert display._rows_per_page() == 4
+
+    def test_small_on_320x240(self):
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="small",
+        )
+        m = display._layout_metrics()
+        assert m.content_tier == "base"
+        assert m.rows_per_page == 3
+        assert display._rows_per_page() == 3
+
+
+class TestArtworkGuardDropsStaleLayoutSizedFrame:
+    def test_dropped_when_logical_size_changed_mid_fetch(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        t = _target()
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, backend=fb, targets=[t],
+        )
+        display.enable()
+        before = len(fb.displayed)
+        fake_image = _marked_image(size=(320, 240))
+        # Simulates a layout_size change racing the fetch: _logical_dims()
+        # returns the size active when the transform ran, then the new
+        # (superseded) size for the guard check taken under the lock.
+        with patch.object(display, "_logical_dims", side_effect=[(320, 240), (640, 480)]), \
+             patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        assert display._current_rendered_image is None
+        assert len(fb.displayed) == before
+
+
+class TestUpdateConfigLayoutChange:
+    def _opened_with_artwork(self, screen_type="ili9341_320x240", screen_size_inches=2.8):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        t = _target()
+        display, fb, gt = _make_display(
+            screen_type=screen_type, screen_size_inches=screen_size_inches, backend=fb, targets=[t],
+        )
+        display.enable()
+        fake_image = _marked_image(size=(320, 240))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        return display, fb, gt
+
+    def test_none_to_large_drops_caches_and_shows_logo_at_new_size(self):
+        display, fb, gt = self._opened_with_artwork()
+        assert display._current_rendered_image is not None
+        fb.displayed.clear()
+        display._poll_wake.clear()
+
+        status = display.update_config(DialDisplayConfig(
+            fitted=True, screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large",
+        ))
+
+        assert display._current_rendered_image is None
+        assert display._source_artwork_url == ""
+        assert display._screen == "main"
+        assert len(fb.displayed) == 1
+        assert display._current_base_image.size == (640, 480)
+        assert fb.displayed[-1].size == (320, 240)
+        assert display._poll_wake.is_set()
+
+    def test_screen_size_only_change_still_redisplays_without_dropping_caches(self):
+        display, fb, gt = self._opened_with_artwork()
+        cached = display._current_rendered_image
+        fb.displayed.clear()
+
+        display.update_config(DialDisplayConfig(
+            fitted=True, screen_type="ili9341_320x240", screen_size_inches=3.5,
+        ))
+
+        assert display._current_rendered_image is cached
+        assert len(fb.displayed) == 1
+
+    def test_none_to_none_other_field_change_does_not_drop_caches(self):
+        display, fb, gt = self._opened_with_artwork()
+        cached = display._current_rendered_image
+
+        display.update_config(DialDisplayConfig(
+            fitted=True, screen_type="ili9341_320x240", screen_size_inches=2.8, bgr=True,
+        ))
+
+        assert display._current_rendered_image is cached
+
+
+class TestLayoutMetricsLockFree:
+    def test_callable_while_lock_held_by_another_thread(self):
+        display, fb, gt = _make_display()
+        result: dict = {}
+        ready = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            with display._lock:
+                ready.set()
+                release.wait(timeout=2)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        try:
+            assert ready.wait(timeout=2)
+            result["metrics"] = display._layout_metrics()
+        finally:
+            release.set()
+            t.join(timeout=2)
+        assert "metrics" in result  # returned without blocking on self._lock
 
 
 # ---------------------------------------------------------------------------

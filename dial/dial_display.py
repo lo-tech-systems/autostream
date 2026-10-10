@@ -41,6 +41,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from PIL import Image
+
 from dial_auth import (
     AUTH_AUTHORIZED,
     AUTH_UNAUTHORIZED,
@@ -65,9 +67,8 @@ from dial_display_image import (
 from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
     UnknownDisplayProfileError,
-    effective_diagonal_inches,
     get_profile,
-    mm_per_px_for,
+    layout_context_for,
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
@@ -140,6 +141,28 @@ _REPEAT_LOOP_GAP_S = 1.5
 # nothing further to subtract, and the duration side of "m:ss / m:ss" is
 # never touched by this.
 REPEAT_COUNTER_LATENCY_S = 2.0
+
+# Pillow renamed these resample enums in recent versions; fall back for
+# older installs, the same guard dial_display_image.py/dial_display_
+# compositor.py use for their own resizes.
+try:
+    _RESAMPLE_BOX = Image.Resampling.BOX
+    _RESAMPLE_NEAREST = Image.Resampling.NEAREST
+except AttributeError:  # Pillow < 9.1
+    _RESAMPLE_BOX = Image.BOX
+    _RESAMPLE_NEAREST = Image.NEAREST
+
+
+def _resample_filter(source: tuple[int, int], target: tuple[int, int]):
+    """The Pillow filter for scaling a finished frame from its logical size
+    to the panel: BOX (area averaging, cheap, exact for the integer
+    reductions the layout-size table produces) whenever either axis
+    shrinks; NEAREST when both grow, so a small layout previewed on a
+    larger panel keeps its hard pixel edges rather than a blurred
+    rendition of them."""
+    if target[0] < source[0] or target[1] < source[1]:
+        return _RESAMPLE_BOX
+    return _RESAMPLE_NEAREST
 
 
 def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
@@ -416,12 +439,17 @@ class DialDisplay:
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
-        # Physical pixel pitch (mm/px) for the configured screen_type and
-        # its effective size (override or profile default) — a float
-        # written only under self._lock (here and in update_config) and
-        # read under the lock at compose time via _metrics_locked(). No
-        # touch-thread access.
-        self._mm_per_px = _mm_per_px_for_config(config)
+        # The logical size frames are composed/hit-tested in, the physical
+        # size they are resampled to, and the density per LOGICAL pixel —
+        # one LayoutContext per config object (see dial_display_profiles.
+        # layout_context_for()), written only under self._lock (here and in
+        # update_config). No touch-thread access.
+        self._layout = layout_context_for(config)
+        # Physical pixel pitch (mm/px) per LOGICAL pixel, kept as its own
+        # attribute since it predates self._layout and is what tests and
+        # _layout_metrics() read directly — always equal to self._layout.
+        # mm_per_px.
+        self._mm_per_px = self._layout.mm_per_px
         self._get_display_targets = get_display_targets
         # Merged playing+idle roster, injected like get_display_targets
         # above (default dial_mdns.get_roster, for tests). Read only by the
@@ -709,8 +737,17 @@ class DialDisplay:
         with self._lock:
             old_config = self._config
             self._config = config
-            self._mm_per_px = _mm_per_px_for_config(config)
+            self._layout = layout_context_for(config)
+            self._mm_per_px = self._layout.mm_per_px
             screen_type_changed = old_config.screen_type != config.screen_type
+            # A screen_type change already drops every cache via the swap
+            # branch below; screen_size_inches alone changes only density,
+            # not the logical size, and the existing redisplay_changed path
+            # re-pushes the still-valid cached frame for it. So this is
+            # narrowed to layout_size alone — the one field that can change
+            # what size every cached frame and list/zone layout was built
+            # at without also being caught by one of those two paths.
+            layout_changed = old_config.layout_size != config.layout_size
             if screen_type_changed:
                 # Rebuild unconditionally, NOT only when fitted: a screen_type
                 # change accepted while the display is off must still be in
@@ -739,17 +776,31 @@ class DialDisplay:
                     # under the new settings immediately rather than waiting
                     # for the next poll. Never runs alongside a screen_type
                     # change (see the swap branch above).
-                    redisplay_changed = (
-                        old_config.fitted and not screen_type_changed
-                        and (
-                            old_config.rotate != config.rotate
-                            or old_config.bgr != config.bgr
-                            or old_config.always_show_controls != config.always_show_controls
-                            or old_config.screen_size_inches != config.screen_size_inches
+                    if layout_changed and self._backend_open and old_config.fitted:
+                        # The logical size or density changed under the open
+                        # backend: every cached frame was composed at the old
+                        # size, and every list page and zone was laid out in
+                        # it. Drop the caches, pop to main, show the logo at
+                        # the new size at once, and let the next poll refetch
+                        # artwork at that size.
+                        self._source_artwork_url = ""
+                        self._current_rendered_image = None
+                        self._current_base_image = None
+                        self._close_secondary_locked()
+                        self._render_logo_locked()
+                        self._poll_wake.set()
+                    else:
+                        redisplay_changed = (
+                            old_config.fitted and not screen_type_changed
+                            and (
+                                old_config.rotate != config.rotate
+                                or old_config.bgr != config.bgr
+                                or old_config.always_show_controls != config.always_show_controls
+                                or old_config.screen_size_inches != config.screen_size_inches
+                            )
                         )
-                    )
-                    if redisplay_changed and self._backend_open:
-                        self._redisplay_current_locked()
+                        if redisplay_changed and self._backend_open:
+                            self._redisplay_current_locked()
             else:
                 self._disable_locked()
         return self.get_status()
@@ -1158,23 +1209,47 @@ class DialDisplay:
             return backend.width, backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
+    def _logical_dims(self) -> tuple[int, int]:
+        """The compose-space size every frame is built and hit-tested in:
+        the chosen layout size when one is set, else the open backend's own
+        dimensions (or the default profile's, when no backend is open) —
+        exactly what _active_panel_dims() has always returned. May be
+        called with or without self._lock held (plain attribute reads)."""
+        if self._layout.size_chosen:
+            return self._layout.logical_size
+        return self._active_panel_dims()
+
+    def _layout_metrics(self) -> LayoutMetrics:
+        """LayoutMetrics for the logical size and the density per logical
+        pixel. Pure arithmetic on plain attribute reads, so safe from any
+        thread, with or without self._lock — the touch thread's page
+        slicing and the repaint thread's compose both read this one
+        function, so they can never disagree about rows per page."""
+        width, height = self._logical_dims()
+        return metrics_for(
+            width, height, mm_per_px=self._mm_per_px, size_chosen=self._layout.size_chosen,
+        )
+
     def _metrics_locked(self) -> LayoutMetrics:
-        """The active panel's LayoutMetrics — physical size (self._mm_per_px)
-        plus the open backend's (or the default profile's) dimensions.
-        Caller holds self._lock; computed once per compose, a handful of
-        multiplications, nothing per pixel."""
-        width, height = self._active_panel_dims()
-        return metrics_for(width, height, mm_per_px=self._mm_per_px)
+        """The active screen's LayoutMetrics. Caller holds self._lock;
+        computed once per compose, a handful of multiplications, nothing
+        per pixel. A thin delegate to _layout_metrics() kept under its own
+        name for its existing call sites."""
+        return self._layout_metrics()
 
     def _push_frame_locked(self, compose) -> None:
-        """Compose one frame and push it to the backend, recording a write
-        failure the same way for every screen. *compose* is a zero-argument
-        callable returning the finished frame; it runs inside the guard so a
-        compositor failure is handled identically to a backend failure.
-        Caller holds self._lock and has already checked the backend is open.
-        Never raises."""
+        """Compose one frame at the logical size and push it to the
+        backend, resampling to the panel's physical size first if the two
+        differ — recording a write failure the same way for every screen.
+        *compose* is a zero-argument callable returning the finished frame;
+        it runs inside the guard so a compositor failure is handled
+        identically to a backend/resample failure. Caller holds self._lock
+        and has already checked the backend is open. Never raises."""
         try:
             composed = compose()
+            physical = (self._backend.width, self._backend.height)
+            if composed.size != physical:
+                composed = composed.resize(physical, _resample_filter(composed.size, physical))
             self._backend.display(composed)
         except Exception as e:
             self._record_error_locked("display_write_failed")
@@ -1313,7 +1388,7 @@ class DialDisplay:
     # ---- logo fallback -------------------------------------------------
 
     def _render_logo_locked(self) -> None:
-        width, height = self._active_panel_dims()
+        width, height = self._logical_dims()
         image = load_logo(self._logo_path, width, height)
         if image is None:
             self._record_error_locked("logo_unavailable")
@@ -1496,14 +1571,11 @@ class DialDisplay:
             self.selector_pick(index)
 
     def _rows_per_page(self) -> int:
-        """Rows per list page for the active panel — the same density-aware
-        count the repaint thread paints with, so the touch-thread page slice
-        and the painted page can never disagree about which rows are on
-        screen. Safe with or without self._lock (reads _active_panel_dims and
-        self._mm_per_px only, exactly as _metrics_locked does)."""
-        width, height = self._active_panel_dims()
-        metrics = metrics_for(width, height, mm_per_px=self._mm_per_px)
-        return _rows_per_page_for(width, height, metrics=metrics)
+        """Rows per list page for the active screen — the same density-aware
+        count the repaint thread paints with (_layout_metrics()), so the
+        touch-thread page slice and the painted page can never disagree
+        about which rows are on screen. Safe with or without self._lock."""
+        return self._layout_metrics().rows_per_page
 
     def _current_page_rows(self, state) -> tuple:
         """The current page's slice of *state*.rows, for either a
@@ -2658,10 +2730,10 @@ class DialDisplay:
             self.show_logo()
             return
 
-        width, height = self._active_panel_dims()
+        width, height = self._logical_dims()
         # rotate/bgr are deferred to _display_locked() below (and to any
-        # later cached-reuse push) — this call only produces the panel-
-        # fitted, pre-rotate/BGR base that gets cached as
+        # later cached-reuse push) — this call only produces the logical-
+        # size, pre-rotate/BGR base that gets cached as
         # self._current_rendered_image.
         transformed = self._compositor.compose(
             image, width, height,
@@ -2671,13 +2743,12 @@ class DialDisplay:
         with self._lock:
             if not (self._backend_open and self._backend is not None):
                 return
-            if transformed.size != (self._backend.width, self._backend.height):
-                # A screen_type swap raced with this fetch/transform, which
-                # ran outside the lock against the backend that was active
-                # at the time — composed for its (now superseded) dims. Drop
-                # the stale-sized frame rather than letting the new backend
-                # silently letterbox it; the next poll recomposes at the now
-                # -active dims.
+            if transformed.size != self._logical_dims():
+                # A screen_type or layout_size change raced with this
+                # fetch/transform, which ran outside the lock against the
+                # size active at the time — composed for a (now superseded)
+                # size. Drop the stale-sized frame; the next poll recomposes
+                # at the now-active size.
                 logging.debug(
                     "dial display: dropping frame sized for a superseded backend"
                 )
@@ -2693,18 +2764,6 @@ class DialDisplay:
         logging.info("dial display: artwork replaced (%s)", url_key)
         if was_showing == "logo":
             logging.info("dial display: showing artwork")
-
-
-def _mm_per_px_for_config(config) -> float:
-    """Physical pixel pitch for *config*'s screen_type/screen_size_inches,
-    falling back to the default profile if the key is unresolvable — the
-    same fallback _adafruit_backend_factory_for_screen_type uses. Physical
-    size only; carries no opinion about tier or rendering."""
-    try:
-        profile = get_profile(config.screen_type)
-    except UnknownDisplayProfileError:
-        profile = get_profile(DEFAULT_PROFILE_KEY)
-    return mm_per_px_for(profile, effective_diagonal_inches(profile, config.screen_size_inches))
 
 
 def _adafruit_backend_factory_for_screen_type(screen_type: str):
