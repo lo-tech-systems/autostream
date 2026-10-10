@@ -92,7 +92,7 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    NowPlaying, OutputRow, PickerRow, SelectorRow, availability, choose_pin,
+    FocusState, NowPlaying, OutputRow, PickerRow, SelectorRow, availability, choose_pin,
     dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
     reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
     walk_order, with_accepted_replay,
@@ -103,6 +103,7 @@ from dial_core_poll import (
     url_log_key as _url_log_key,
 )
 import dial_core_poll
+from dial_core import DialCore
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
@@ -1033,6 +1034,7 @@ class DialDisplay:
         warnings: "WarningManager | None" = None,
         update_watcher: "UpdateWatcher | None" = None,
         update_seen_path: str = UPDATE_SEEN_PATH,
+        core: "DialCore | None" = None,
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
@@ -1127,6 +1129,10 @@ class DialDisplay:
         self._overlay_snapshot_lock = threading.Lock()
         self._overlay_snapshot = OverlayState()
         self._overlay_signal = threading.Event()
+        # The appliance model's published snapshots. The poll still signals
+        # its own repaints, so nothing here subscribes or reads the snapshot
+        # yet: a subscription would wake the repaint thread on every tick.
+        self._core = core if core is not None else DialCore(dial_id, get_display_targets, get_roster)
         # Set by notify_touch_activity() (touch thread, lock-free); consumed
         # by the repaint thread under self._lock.
         self._touch_activity_pending = False
@@ -5227,6 +5233,29 @@ class DialDisplay:
         return targets
 
     def _poll_once(self) -> None:
+        self._poll_tick()
+        # Outside every display lock: the core takes only its own.
+        with self._lock:
+            fitted = self._config.fitted
+        now_playing = self._now_playing
+        self._core.publish_tick(
+            polling=bool(fitted),
+            focus=FocusState(
+                manual_id=self._manual_focus_id,
+                bound_id=self._bound_appliance_id,
+                pending=self._focus_pending,
+                reporting_id=self._reporting_appliance_id,
+                source_service_name=self._source_service_name,
+                accepted_replay=self._accepted_replay,
+                idle_focus=now_playing is not None and not now_playing.playing,
+            ),
+            now_playing=now_playing,
+            idle_affordance=self._idle_affordance,
+            outputs_available=self._outputs_available,
+            eq_available=self._eq_available,
+        )
+
+    def _poll_tick(self) -> None:
         with self._lock:
             fitted = self._config.fitted
         if not fitted:
