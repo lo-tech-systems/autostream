@@ -1824,14 +1824,14 @@ class TestNewSurfaceMapsToGeometryRepeatReplay:
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
         assert tap.zone == TouchZone.REPEAT_STOP
 
-    def test_top_row_time_tap_reports_dots_gated_by_dots_active(self):
-        # The time strip reuses the DOTS zone for "tap = back" — gated by
+    def test_tl_back_control_tap_reports_dots_gated_by_dots_active(self):
+        # The back control reuses the DOTS zone for "tap = back" — gated by
         # dots_active exactly like the main/repeat surfaces' own DOTS cell.
         sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
         sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.0, dots_active=False)
-        assert sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.top_row)), now=0.1) == []
+        assert sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.tl)), now=0.1) == []
         sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.2, dots_active=True)
-        actions = sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.top_row)), now=0.3)
+        actions = sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.tl)), now=0.3)
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
         assert tap.zone == TouchZone.DOTS
 
