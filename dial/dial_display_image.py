@@ -10,6 +10,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import io
 import logging
 import warnings
 
@@ -81,6 +82,11 @@ BACKDROP_BLUR_RADIUS = _blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT)
 # brightness, keeping the foreground art the clear visual focus.
 BACKDROP_DARKEN_PERCENT = 35
 
+# The HD page's backdrop: fixed size (the page stretches it with
+# object-fit: cover) and JPEG quality (a blurred wash needs no more).
+BACKDROP_WIDTH, BACKDROP_HEIGHT = 320, 240
+BACKDROP_JPEG_QUALITY = 80
+
 try:
     _RESAMPLE = Image.Resampling.LANCZOS
 except AttributeError:  # Pillow < 9.1
@@ -93,8 +99,6 @@ def decode_artwork(data: bytes) -> Image.Image | None:
     Returns None on any decode failure, unsupported format, or oversized
     image — callers must fall back to the logo. Never raises.
     """
-    import io
-
     try:
         img = Image.open(io.BytesIO(data), formats=_ARTWORK_FORMATS)
         img.load()
@@ -146,6 +150,14 @@ def _cover_panel(img: Image.Image, width: int = PANEL_WIDTH, height: int = PANEL
     return cropped.resize((width, height), _RESAMPLE)
 
 
+def _ambient_backdrop(img: Image.Image, width: int, height: int, radius: int) -> Image.Image:
+    """Cover (width, height) with *img*, blur it into a colour wash and darken
+    it so a foreground reads clearly on top."""
+    backdrop = _cover_panel(img, width, height)
+    backdrop = backdrop.filter(ImageFilter.GaussianBlur(radius))
+    return ImageEnhance.Brightness(backdrop).enhance(1 - BACKDROP_DARKEN_PERCENT / 100)
+
+
 def transform_artwork_for_panel(
     img: Image.Image,
     width: int = PANEL_WIDTH,
@@ -184,9 +196,7 @@ def transform_artwork_for_panel(
         return fitted
 
     radius = _blur_radius_for(width, height) if blur_radius is None else blur_radius
-    backdrop = _cover_panel(img, width, height)
-    backdrop = backdrop.filter(ImageFilter.GaussianBlur(radius))
-    backdrop = ImageEnhance.Brightness(backdrop).enhance(1 - BACKDROP_DARKEN_PERCENT / 100)
+    backdrop = _ambient_backdrop(img, width, height, radius)
 
     offset = (
         (width - fitted.width) // 2,
@@ -225,3 +235,24 @@ def load_logo(path: str, width: int = PANEL_WIDTH, height: int = PANEL_HEIGHT) -
     except Exception as e:
         logging.debug("dial display: logo transform failed: %s", e)
         return None
+
+
+def backdrop_bytes(img: Image.Image, width: int = BACKDROP_WIDTH, height: int = BACKDROP_HEIGHT) -> bytes:
+    """The ambient backdrop of *img* at (width, height), JPEG encoded."""
+    out = io.BytesIO()
+    _ambient_backdrop(img, width, height, _blur_radius_for(width, height)).save(
+        out, "JPEG", quality=BACKDROP_JPEG_QUALITY)
+    return out.getvalue()
+
+
+def render_artwork_backdrop(data: bytes) -> bytes | None:
+    """The backdrop for fetched artwork bytes; None when they do not decode."""
+    img = decode_artwork(data)
+    return None if img is None else backdrop_bytes(img)
+
+
+def render_logo_backdrop(path: str) -> bytes | None:
+    """The backdrop for the logo file: the logo letterboxed on its background,
+    then the same wash; None when the file does not load."""
+    img = load_logo(path, BACKDROP_WIDTH, BACKDROP_HEIGHT)
+    return None if img is None else backdrop_bytes(img)

@@ -302,3 +302,80 @@ class TestLoadLogo:
         img = load_logo(path, 240, 240)
         assert img is not None
         assert img.size == (240, 240)
+
+
+def _checkerboard(size=(400, 400), cell=20) -> Image.Image:
+    img = Image.new("RGB", size)
+    px = img.load()
+    for y in range(size[1]):
+        for x in range(size[0]):
+            on = ((x // cell) + (y // cell)) % 2 == 0
+            px[x, y] = (240, 240, 240) if on else (10, 10, 10)
+    return img
+
+
+def _channel_means(img):
+    from PIL import ImageStat
+    return ImageStat.Stat(img).mean
+
+
+class TestBackdropBytes:
+    def test_is_a_jpeg_of_the_fixed_size(self):
+        data = ddi.backdrop_bytes(_checkerboard())
+        assert data[:2] == b"\xff\xd8"
+        out = Image.open(io.BytesIO(data))
+        assert out.format == "JPEG"
+        assert out.mode == "RGB"
+        assert out.size == (ddi.BACKDROP_WIDTH, ddi.BACKDROP_HEIGHT) == (320, 240)
+
+    def test_is_darkened(self):
+        src = _checkerboard()
+        cover = ddi._cover_panel(src, 320, 240)
+        out = Image.open(io.BytesIO(ddi.backdrop_bytes(src))).convert("RGB")
+        for got, ref in zip(_channel_means(out), _channel_means(cover)):
+            assert got <= ref * (1 - BACKDROP_DARKEN_PERCENT / 100) + 2
+
+    def test_is_blurred(self):
+        src = _checkerboard()
+        cover = ddi._cover_panel(src, 320, 240)
+        out = Image.open(io.BytesIO(ddi.backdrop_bytes(src))).convert("RGB")
+        from PIL import ImageStat
+        for got, ref in zip(ImageStat.Stat(out).stddev, ImageStat.Stat(cover).stddev):
+            assert got < ref
+
+    def test_same_input_same_bytes_and_different_inputs_differ(self):
+        a = _checkerboard()
+        b = Image.new("RGB", (400, 400), (200, 30, 30))
+        assert ddi.backdrop_bytes(a) == ddi.backdrop_bytes(a)
+        assert ddi.backdrop_bytes(a) != ddi.backdrop_bytes(b)
+
+    def test_honours_the_requested_size(self):
+        out = Image.open(io.BytesIO(ddi.backdrop_bytes(_checkerboard(), 100, 60)))
+        assert out.size == (100, 60)
+
+
+class TestRenderBackdrops:
+    def test_artwork_bytes_render(self):
+        data = ddi.render_artwork_backdrop(_jpeg_bytes())
+        assert data is not None and data[:2] == b"\xff\xd8"
+
+    def test_undecodable_artwork_is_none(self):
+        assert ddi.render_artwork_backdrop(b"not an image") is None
+
+    def test_oversized_artwork_is_none(self):
+        buf = io.BytesIO()
+        Image.new("L", (4200, 4000)).save(buf, format="PNG")
+        assert ddi.render_artwork_backdrop(buf.getvalue()) is None
+
+    def test_logo_backdrop_of_the_shipped_asset(self):
+        path = REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
+        data = ddi.render_logo_backdrop(str(path))
+        assert data is not None
+        out = Image.open(io.BytesIO(data)).convert("RGB")
+        assert out.size == (320, 240)
+        corner = out.getpixel((0, 0))
+        for got, want in zip(corner, (9, 26, 42)):
+            assert abs(got - want) <= 3
+
+    def test_missing_logo_is_none(self, tmp_path):
+        assert ddi.render_logo_backdrop(str(tmp_path / "absent.png")) is None
