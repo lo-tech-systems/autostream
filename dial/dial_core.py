@@ -46,6 +46,7 @@ import dataclasses
 import logging
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Callable
 
@@ -53,7 +54,7 @@ import dial_capabilities
 import dial_core_poll
 from dial_appliance_fetch import _FetchTarget
 from dial_appliance_fetch import enqueue as _enqueue_appliance_fetch
-from dial_auth import AUTH_UNAUTHORIZED, auth_map
+from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTCOME_UNAUTHORIZED, auth_map
 from dial_capabilities import CAPABILITIES_ENDPOINT_PROTO, appliance_capabilities
 from dial_config import SCOPE_ALL
 from dial_core_state import (
@@ -63,7 +64,8 @@ from dial_core_state import (
     NowPlaying, OutputsState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, reporting_for, resolve_focus,
-    started_refused, visible_targets, walk_order, with_accepted_replay,
+    started_refused, validate_appliance_warnings, visible_targets, walk_order,
+    with_accepted_replay,
 )
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
@@ -96,6 +98,18 @@ DEFAULT_POLL_INTERVAL_S = 6
 RECONCILE_INTERVAL_S = 60
 # The housekeeping tick, and so the longest the core thread sleeps.
 HOUSEKEEPING_INTERVAL_S = 1.0
+# An appliance's warnings are fetched when it pushes a change, and again at
+# this interval as the repair for a push that never arrived. Each appliance
+# carries its own offset inside the spread, derived from its id, so a roster
+# of appliances is not all asked in the same second.
+WARNINGS_RECONCILE_S = 12 * 60
+WARNINGS_RECONCILE_SPREAD_S = 3 * 60
+
+
+def _warnings_spread(appliance_id: str) -> float:
+    """The appliance's own offset, in seconds, inside the reconcile spread."""
+    return float(zlib.crc32(appliance_id.encode("utf-8")) % int(WARNINGS_RECONCILE_SPREAD_S))
+
 # How often the dial's own address is read again.
 ADDRESS_REFRESH_S = 60.0
 # The most effects held for a view that is not draining them (none is
@@ -350,6 +364,12 @@ class DialCore:
         self._thread: threading.Thread | None = None
         self._push_lock = threading.Lock()
         self._push_pending: set[str] = set()
+        # Appliances that pushed a warnings change, guarded by _push_lock; the
+        # housekeeping step drains it. The schedule belongs to that step's
+        # thread alone; a wake only raises the flag.
+        self._warnings_pending: set[str] = set()
+        self._warnings_next_at: dict[str, float] = {}
+        self._warnings_refetch_all = False
         self._last_reconcile_at = 0.0
         self._reconcile_due = True          # the first tick reconciles
         self._prev_playing_ids: set[str] = set()
@@ -1655,6 +1675,7 @@ class DialCore:
         thread may call it."""
         if reconcile:
             auth_map.force_due()
+            self._warnings_refetch_all = True
             self.request_reconcile()
         else:
             self._poll_wake.set()
@@ -1672,6 +1693,14 @@ class DialCore:
         with self._push_lock:
             self._push_pending.add(appliance_id)
         auth_map.force_due(appliance_id)
+        self._poll_wake.set()
+
+    def notify_warnings_changed(self, appliance_id: str) -> None:
+        """Record that *appliance_id* pushed a warnings change. Does no I/O:
+        it queues the id and wakes the core thread, whose housekeeping step
+        asks the appliance for its warnings."""
+        with self._push_lock:
+            self._warnings_pending.add(appliance_id)
         self._poll_wake.set()
 
     def _queue_effects(self, effects):
@@ -1750,6 +1779,7 @@ class DialCore:
         effects = self.tick_housekeeping(now)
         self.refresh_watched(now)
         self._refresh_capabilities(now)
+        self._refresh_appliance_warnings(now)
         self._refresh_dial_info(now)
         if effects.changes or effects.restarting or effects.signal:
             self._queue_effects(effects)
@@ -1768,6 +1798,77 @@ class DialCore:
                 _enqueue_appliance_fetch(
                     "capabilities", _FetchTarget(appliance_id, r.ip, r.port, version),
                 )
+
+    def _refresh_appliance_warnings(self, now: float) -> None:
+        """Ask every authorised appliance that supplies warnings for them: at
+        once when it pushed a change or has not been asked yet (a first
+        sighting, or after a wake), else when its interval has run. An
+        appliance that has left, refused this dial or lost the capability has
+        its warnings cleared and its schedule dropped, so it is asked at once
+        when it is authorised again. Nothing is asked while polling is off.
+        The worker coalesces repeats for one appliance. No lock is held."""
+        with self._push_lock:
+            pushed, self._warnings_pending = self._warnings_pending, set()
+        if self._warnings_refetch_all:
+            self._warnings_refetch_all = False
+            self._warnings_next_at.clear()
+        appliances = {a.appliance_id: a for a in self._snapshot.appliances if a.appliance_id}
+        for appliance_id in list(self._warnings_next_at):
+            a = appliances.get(appliance_id)
+            if a is None or not a.supplies_warnings or a.auth != AUTH_AUTHORIZED:
+                del self._warnings_next_at[appliance_id]
+        for appliance_id, a in appliances.items():
+            if a.warnings and (not a.supplies_warnings or a.auth == AUTH_UNAUTHORIZED):
+                self._replace_appliance_warnings(appliance_id, ())
+        if not self._polling:
+            return
+        for appliance_id, a in appliances.items():
+            if not a.supplies_warnings or a.auth != AUTH_AUTHORIZED:
+                continue
+            if appliance_id not in pushed and now < self._warnings_next_at.get(appliance_id, 0.0):
+                continue
+            self._warnings_next_at[appliance_id] = (
+                now + WARNINGS_RECONCILE_S + _warnings_spread(appliance_id)
+            )
+            _enqueue_appliance_fetch("warnings", _FetchTarget(appliance_id, a.ip, a.port))
+
+    def on_warnings_result(self, appliance_id: str, status, body) -> bool:
+        """Fold a warnings read. A 412 refusing this dial demotes the
+        appliance in the auth map and clears its warnings. A well-formed
+        success (ok, for this appliance, with a list) replaces them, an empty
+        list included. Anything else (no reply, another status, ok false, a
+        reply naming another appliance) changes nothing and the schedule
+        stands. True when the appliance's warnings changed."""
+        if self._snapshot.appliance(appliance_id) is None:
+            return False
+        if status == 412 and isinstance(body, dict) and body.get("error") == "dial_not_authorized":
+            body_id = body.get("appliance_id")
+            auth_map.apply(appliance_id, OUTCOME_UNAUTHORIZED, body_id, time.monotonic())
+            if body_id != appliance_id:
+                return False
+            return self._replace_appliance_warnings(appliance_id, ())
+        if (
+            status != 200 or not isinstance(body, dict) or body.get("ok") is not True
+            or body.get("appliance_id") != appliance_id
+            or not isinstance(body.get("warnings"), list)
+        ):
+            return False
+        return self._replace_appliance_warnings(
+            appliance_id, validate_appliance_warnings(body, appliance_id),
+        )
+
+    def _replace_appliance_warnings(self, appliance_id: str, warnings) -> bool:
+        """Hand *warnings* to the core's slot for the appliance and say what
+        changed in the log (counts only). True when the slot changed."""
+        before = self._snapshot.appliance(appliance_id)
+        held = before.warnings if before is not None else ()
+        if not self.set_appliance_warnings(appliance_id, warnings).accepted:
+            return False
+        after = self._snapshot.appliance(appliance_id)
+        if after is None or after.warnings == held:
+            return False
+        logging.info("appliance warnings: %s %d warning(s)", after.name, len(after.warnings))
+        return True
 
     def on_capabilities_result(
         self, appliance_id: str, version: str, status, body,

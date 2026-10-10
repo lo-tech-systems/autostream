@@ -55,7 +55,7 @@ class FakeDialServer:
         self._touch_restart_lock = threading.Lock()
         self._last_touch_restart_monotonic: float | None = None
         self._announce_calls: list = []
-        self._auth_push_limiter = dhs._PushLimiter()
+        self._push_limiter = dhs._PushLimiter()
         self._get_rostered_ips = None
         self._sdmon_lock = threading.Lock()
         self._sdmon_probe: dict = {"running": False, "outcome": None, "reason": "", "finished_at": None}
@@ -3010,3 +3010,178 @@ class TestUpdateStatusResultFields:
                      encoding="utf-8")
         data = self._get(f)
         assert (data["percent"], data["attempt"], data["max_attempts"]) == (0, 0, 0)
+
+
+class _BothNotifyingProvider(NoOpDisplayStatusProvider):
+    """Stand-in with both push hooks, recording which one was called."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.auth: list = []
+        self.warnings: list = []
+
+    def notify_auth_changed(self, appliance_id: str) -> None:
+        self.auth.append(appliance_id)
+
+    def notify_warnings_changed(self, appliance_id: str) -> None:
+        self.warnings.append(appliance_id)
+
+
+class _RaisingWarningsProvider(NoOpDisplayStatusProvider):
+    def notify_warnings_changed(self, appliance_id: str) -> None:
+        raise RuntimeError("boom")
+
+
+def _warnings_server(ips=None, provider=None):
+    server = FakeDialServer(DialConfig(uuid="test-uuid"))
+    server._display_status = provider if provider is not None else _BothNotifyingProvider()
+    server._get_rostered_ips = (lambda: ips) if ips is not None else (lambda: {_AID: "127.0.0.1"})
+    return server
+
+
+class TestPushRoutesTable:
+    def test_the_table_names_both_routes(self):
+        assert dhs._PUSH_ROUTES == {
+            "/auth-changed": "notify_auth_changed",
+            "/warnings-changed": "notify_warnings_changed",
+        }
+
+    def test_each_route_reaches_only_its_own_hook(self):
+        for path, expected in (("/auth-changed", "auth"), ("/warnings-changed", "warnings")):
+            server = _warnings_server()
+            r = _call_handler(path, body={"appliance_id": _AID}, setup_server=server)
+            assert r["status"] == 202
+            assert getattr(server._display_status, expected) == [_AID]
+            other = "warnings" if expected == "auth" else "auth"
+            assert getattr(server._display_status, other) == []
+
+    def test_other_paths_are_still_not_found(self):
+        r = _call_handler("/warnings-changed/", body={"appliance_id": _AID})
+        assert r["status"] == 404
+
+    def test_the_module_docstring_lists_the_route(self):
+        assert "POST /warnings-changed" in dhs.__doc__.replace("\n", " ")
+
+
+class TestWarningsChangedRoute:
+    def test_invalid_json_returns_400(self):
+        r = _call_handler("/warnings-changed", body=b"not json")
+        assert (r["status"], r["data"]["error"]) == (400, "invalid_json")
+
+    def test_non_object_body_returns_400(self):
+        r = _call_handler("/warnings-changed", body=b"[1,2,3]")
+        assert (r["status"], r["data"]["error"]) == (400, "body_must_be_object")
+
+    @pytest.mark.parametrize("body", [{}, {"appliance_id": 12345}, {"appliance_id": "nope"},
+                                      {"appliance_id": "A" * 20}, {"appliance_id": "a" * 21}])
+    def test_a_missing_or_malformed_id_returns_400(self, body):
+        r = _call_handler("/warnings-changed", body=body)
+        assert (r["status"], r["data"]["error"]) == (400, "invalid_appliance_id")
+
+    def test_well_formed_body_returns_202_even_when_unknown(self):
+        r = _call_handler("/warnings-changed", body={"appliance_id": _AID})
+        assert (r["status"], r["data"]) == (202, {"ok": True})
+
+    def test_a_matching_sighting_enqueues_through_the_hook(self):
+        server = _warnings_server()
+        _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                      setup_server=server, client_ip="127.0.0.1")
+        assert server._display_status.warnings == [_AID]
+
+    def test_a_wrong_source_ip_is_dropped_with_the_same_answer(self):
+        server = _warnings_server({_AID: "192.168.1.5"})
+        r = _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="192.168.1.99")
+        assert (r["status"], r["data"]) == (202, {"ok": True})
+        assert server._display_status.warnings == []
+
+    def test_an_unknown_appliance_id_is_dropped_with_the_same_answer(self):
+        server = _warnings_server({"b" * 20: "127.0.0.1"})
+        r = _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert (r["status"], r["data"]) == (202, {"ok": True})
+        assert server._display_status.warnings == []
+
+    def test_an_idle_appliances_address_is_accepted(self):
+        # What get_known_ips supplies for an appliance that is not playing.
+        server = _warnings_server({_AID: "10.1.2.3"})
+        _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                      setup_server=server, client_ip="10.1.2.3")
+        assert server._display_status.warnings == [_AID]
+
+    def test_an_idle_appliances_auth_push_is_accepted_too(self):
+        server = _warnings_server({_AID: "10.1.2.3"})
+        _call_handler("/auth-changed", body={"appliance_id": _AID},
+                      setup_server=server, client_ip="10.1.2.3")
+        assert server._display_status.auth == [_AID]
+
+    def test_the_limiter_is_shared_between_the_two_routes(self):
+        server = _warnings_server()
+        r1 = _call_handler("/auth-changed", body={"appliance_id": _AID}, setup_server=server)
+        r2 = _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
+        assert (r1["status"], r2["status"]) == (202, 202)
+        assert server._display_status.auth == [_AID]
+        assert server._display_status.warnings == []
+
+    def test_a_flood_enqueues_once_and_always_answers_202(self):
+        server = _warnings_server()
+        statuses = [
+            _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                          setup_server=server)["status"]
+            for _ in range(50)
+        ]
+        assert set(statuses) == {202}
+        assert server._display_status.warnings == [_AID]
+
+    def test_a_flood_of_ids_from_one_ip_is_held_to_one(self):
+        ids = [f"{i:020x}" for i in range(1, 30)]
+        server = _warnings_server({i: "127.0.0.1" for i in ids})
+        for appliance_id in ids:
+            _call_handler("/warnings-changed", body={"appliance_id": appliance_id},
+                          setup_server=server)
+        assert server._display_status.warnings == [ids[0]]
+
+    def test_the_limiter_runs_before_the_sighting_lookup(self):
+        calls = []
+        server = _warnings_server()
+        server._get_rostered_ips = lambda: calls.append(1) or {_AID: "127.0.0.1"}
+        for _ in range(5):
+            _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
+        assert len(calls) == 1
+
+    def test_a_provider_without_the_hook_accepts_without_error(self):
+        server = _warnings_server(provider=NoOpDisplayStatusProvider())
+        r = _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
+        assert r["status"] == 202
+
+    def test_a_raising_hook_does_not_break_the_response(self):
+        server = _warnings_server(provider=_RaisingWarningsProvider())
+        r = _call_handler("/warnings-changed", body={"appliance_id": _AID}, setup_server=server)
+        assert (r["status"], r["data"]["ok"]) == (202, True)
+
+    def test_a_raising_or_absent_ip_source_enqueues_nothing(self):
+        server = _warnings_server()
+
+        def _raise():
+            raise RuntimeError("browser broke")
+        server._get_rostered_ips = _raise
+        assert _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                             setup_server=server)["status"] == 202
+        server2 = _warnings_server()
+        server2._get_rostered_ips = None
+        assert _call_handler("/warnings-changed", body={"appliance_id": _AID},
+                             setup_server=server2)["status"] == 202
+        assert server._display_status.warnings == server2._display_status.warnings == []
+
+    def test_an_oversized_body_returns_413(self):
+        handler_cls, server = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path = "/warnings-changed"
+        h.client_address = ("127.0.0.1", 1234)
+        h.headers = {"Content-Length": str(dhs.MAX_BODY + 1)}
+        h.rfile = io.BytesIO(b"x" * (dhs.MAX_BODY + 1))
+        result = {}
+        h._send_json = lambda s, d: result.update(status=s, data=d)
+        h.send_error = lambda code, *_: result.update(status=code)
+        h.do_POST()
+        assert result["status"] == 413

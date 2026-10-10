@@ -621,22 +621,18 @@ class TestDialFinalCleanup:
         # currently rostered sighting before enqueueing a probe.
         assert callable(kwargs["get_rostered_ips"])
 
-    def test_get_rostered_ips_maps_appliance_id_to_ip_and_drops_identityless(self):
-        """The get_rostered_ips callable passed to DialHTTPServer must build
-        {appliance_id: ip} from get_playing_targets(), skipping rows with no
-        identity (an older or identity-less appliance is never rostered by
-        appliance_id)."""
+    def test_get_rostered_ips_is_the_known_sighting_map(self):
+        """The get_rostered_ips callable passed to DialHTTPServer is the mDNS
+        module's known-sighting map, which covers idle appliances as well as
+        playing ones."""
         import dial_main as dm
-        from dial_mdns import PlayingTarget
+        import dial_mdns
 
         cfg = _make_cfg()
         cfg.display = MagicMock(fitted=False, screen_size_inches=None)
         mock_http = MagicMock()
         mock_http._server = MagicMock()
         mock_control = MagicMock()
-
-        with_id = PlayingTarget(ip="10.0.0.1", port=80, name="A", appliance_id="a" * 20)
-        without_id = PlayingTarget(ip="10.0.0.2", port=80, name="B", appliance_id="")
 
         class _QuickEvent(threading.Event):
             def wait(self, timeout=None):
@@ -656,11 +652,10 @@ class TestDialFinalCleanup:
              patch("dial_main.start_outputs_worker"), \
              patch("dial_main.start_eq_worker"), patch("dial_main.start_network_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
-             patch("dial_main.get_playing_targets", return_value=[with_id, without_id]), \
              patch("threading.Event", _QuickEvent):
             dm.main()
             _, kwargs = mock_http_cls.call_args
-            assert kwargs["get_rostered_ips"]() == {"a" * 20: "10.0.0.1"}
+            assert kwargs["get_rostered_ips"] is dial_mdns.get_known_ips
 
     def test_display_stack_import_failure_degrades_to_noop(self):
         """If dial_display (e.g. Pillow) is unavailable, main() must degrade to
@@ -757,6 +752,8 @@ class TestDialFinalCleanup:
         assert len(started) == 1 and not started[0].is_alive()
         display.notify_auth_changed("a" * 20)
         assert display.core._push_pending == {"a" * 20}
+        display.notify_warnings_changed("b" * 20)
+        assert display.core._warnings_pending == {"b" * 20}
         display.update_config(type("Cfg", (), {"fitted": False})())
         assert display.core.snapshot().polling is False
 

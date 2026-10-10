@@ -31,6 +31,7 @@ from dial_info import current_ipv4, gather_dial_info
 from dial_led import DialLED
 from dial_mdns import (
     get_display_targets,
+    get_known_ips,
     get_playing_targets,
     start_general_browser,
     start_playing_browser,
@@ -278,6 +279,9 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
     def notify_auth_changed(self, appliance_id: str) -> None:
         self.core.notify_auth_changed(appliance_id)
 
+    def notify_warnings_changed(self, appliance_id: str) -> None:
+        self.core.notify_warnings_changed(appliance_id)
+
 
 def _on_appliance_fetch_result(core):
     """The appliance fetch worker's result callback: route each kind of read
@@ -285,6 +289,8 @@ def _on_appliance_fetch_result(core):
     def on_result(kind, appliance_id, version, status, body):
         if kind == "capabilities":
             core.on_capabilities_result(appliance_id, version, status, body)
+        elif kind == "warnings":
+            core.on_warnings_result(appliance_id, status, body)
     return on_result
 
 
@@ -749,9 +755,7 @@ def main() -> None:
 
     http_server = DialHTTPServer(
         cfg, display_status_provider=display,
-        get_rostered_ips=lambda: {
-            t.appliance_id: t.ip for t in get_playing_targets() if t.appliance_id
-        },
+        get_rostered_ips=get_known_ips,
     )
     http_server.start()
 
@@ -829,7 +833,7 @@ def main() -> None:
 
     # The appliance self-description reader: its own thread, queue and HTTP
     # client (see dial_appliance_fetch.py's module docstring). The core asks
-    # for capabilities as appliances appear and folds the replies.
+    # for capabilities and warnings as appliances appear and folds the replies.
     start_appliance_fetch_worker(cfg, on_result=_on_appliance_fetch_result(core))
 
     # The Wi-Fi link poller: its own thread, one loopback read of the local

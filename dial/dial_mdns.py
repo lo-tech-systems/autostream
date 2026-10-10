@@ -270,6 +270,34 @@ def get_playing_targets() -> list[PlayingTarget]:
     return [_with_auth(t) for t in _resolved(list(_browser.get_snapshot().values()))]
 
 
+def get_known_ips() -> dict[str, str]:
+    """appliance_id -> ip for every appliance sighted right now, playing or
+    idle: what a push from an appliance is checked against.
+
+    A playing sighting's address wins over the general one for the same id,
+    as in the roster. A playing record that carries no id takes the id of the
+    general sighting at the same (ip, port), as resolve_legacy_ids does; a
+    legacy or conflicted general sighting is never listed. Unlike
+    get_roster() and get_playing_targets() it feeds nothing to dial_auth and
+    takes only the browsers' own leaf locks, so any thread may
+    call it."""
+    general = _general_browser.get_snapshot()
+    with _general_lock:
+        conflicts = frozenset(_general_conflicts)
+    by_addr = {(g.ip, g.port): g.appliance_id for g in general.values()}
+    known: dict[str, str] = {}
+    for t in _browser.get_snapshot().values():
+        appliance_id = t.appliance_id or (
+            by_addr.get((t.ip, t.port), "") if t.needs_id_resolution else ""
+        )
+        if appliance_id:
+            known[appliance_id] = t.ip
+    for appliance_id, g in general.items():
+        if appliance_id not in known and appliance_id not in conflicts and not g.legacy:
+            known[appliance_id] = g.ip
+    return known
+
+
 def get_display_targets() -> list[PlayingTarget]:
     """Return currently visible playing targets, ordered for display-source selection.
 

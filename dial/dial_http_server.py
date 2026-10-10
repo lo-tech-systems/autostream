@@ -9,6 +9,7 @@ facing setup UI; dial configuration is done through the appliance web interface.
 Routes: GET /configure, POST /configure, GET /recovery_status,
 GET /update/status, GET /update/check, POST /update,
 POST /recovery/arm, POST /recovery/disarm, POST /auth-changed,
+POST /warnings-changed,
 GET /screen/settings, POST /screen/settings, GET /screen/image,
 GET /sdcard-health, POST /sdcard-health.
 """
@@ -189,7 +190,15 @@ def _pin_clear_attempts(ip: str) -> None:
         _pin_attempts.pop(ip, None)
 
 
-# ---- POST /auth-changed: appliance id and push rate limiting ---------------
+# ---- appliance pushes: routes, appliance id and rate limiting ---------------
+
+# The routes an appliance pushes a change to, and the display-provider method
+# each one hands the appliance id to. Both share one body check, one source
+# check and one rate limiter.
+_PUSH_ROUTES = {
+    '/auth-changed':     'notify_auth_changed',
+    '/warnings-changed': 'notify_warnings_changed',
+}
 
 _APPLIANCE_ID_RE = re.compile(r'^[0-9a-f]{20}$')
 
@@ -203,7 +212,7 @@ _PUSH_ENTRY_MAX_AGE_S = 60.0
 
 
 class _PushLimiter:
-    """Pure rate limiter for POST /auth-changed, with its own leaf lock."""
+    """Pure rate limiter for the appliance push routes, with its own leaf lock."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -418,11 +427,11 @@ class DialHTTPServer:
         self._last_touch_restart_monotonic: float | None = None
         self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
         self._display_status.update_config(cfg.display)
-        self._auth_push_limiter = _PushLimiter()
-        # Zero-arg callable returning {appliance_id: ip} for every currently
-        # rostered playing target — dial_main wires the real mDNS-backed one;
-        # tests pass a dict-returning lambda. None (a display-less/bare test
-        # server) behaves as "nothing rostered".
+        self._push_limiter = _PushLimiter()
+        # Zero-arg callable returning {appliance_id: ip} for every appliance
+        # currently sighted, playing or idle — dial_main wires the real
+        # mDNS-backed one; tests pass a dict-returning lambda. None (a
+        # display-less/bare test server) behaves as "nothing rostered".
         self._get_rostered_ips = get_rostered_ips
         # The SD card health probe runs on its own short-lived thread (the
         # guarded wrapper can take 90 s and the appliance proxy waits 4 s),
@@ -491,7 +500,7 @@ class DialHTTPServer:
         self._touch_runtime = value
 
     def _rostered_ips(self) -> dict:
-        """appliance_id -> ip for every currently rostered playing target.
+        """appliance_id -> ip for every currently sighted appliance.
 
         Wraps the injected get_rostered_ips callable so a broken or absent
         browser can never turn a push into a 500 — a raising or unset
@@ -503,7 +512,7 @@ class DialHTTPServer:
         try:
             return self._get_rostered_ips()
         except Exception as e:
-            logging.debug("auth-changed: get_rostered_ips raised: %s", e)
+            logging.debug("appliance push: get_rostered_ips raised: %s", e)
             return {}
 
     def _touch_restart_allowed(self) -> bool:
@@ -794,8 +803,8 @@ class DialHTTPServer:
                     self._handle_recovery_arm()
                 elif self.path == '/recovery/disarm':
                     self._handle_recovery_disarm()
-                elif self.path == '/auth-changed':
-                    self._handle_auth_changed()
+                elif self.path in _PUSH_ROUTES:
+                    self._handle_appliance_push(_PUSH_ROUTES[self.path])
                 else:
                     self.send_error(404)
 
@@ -828,14 +837,15 @@ class DialHTTPServer:
                     )
                 self._send_json(200, {'ok': True})
 
-            def _handle_auth_changed(self) -> None:
-                """Advisory notification from an appliance that appliance_id's
-                authorization changed. Never authenticated (anyone on the LAN
-                can reach port 7842), so this grants nothing by itself — it
-                only causes a probe if the source IP matches a currently
-                rostered sighting of that id, and even then only enqueues the
-                probe on the display; it never fetches inline here on the
-                single-threaded server.
+            def _handle_appliance_push(self, notify_name: str) -> None:
+                """Advisory notification from an appliance that something
+                about appliance_id changed (its authorization, or its
+                warnings). Never authenticated (anyone on the LAN can reach
+                port 7842), so this grants nothing by itself — it only causes
+                a fetch or probe if the source IP matches a currently sighted
+                address of that id, and even then only hands the id to the
+                display provider's *notify_name*, which queues it; it never
+                fetches inline here on the single-threaded server.
                 """
                 body = self._read_body()
                 if body is None:
@@ -859,21 +869,21 @@ class DialHTTPServer:
                 self._send_json(202, {'ok': True})
 
                 ip = self.client_address[0]
-                if not dial_server._auth_push_limiter.allow(ip, appliance_id, time.monotonic()):
+                if not dial_server._push_limiter.allow(ip, appliance_id, time.monotonic()):
                     return
                 rostered = dial_server._rostered_ips()
                 if rostered.get(appliance_id) != ip:
                     logging.debug(
-                        "auth-changed: %s from %s does not match a rostered sighting",
-                        appliance_id, ip,
+                        "%s: %s from %s does not match a sighting",
+                        self.path, appliance_id, ip,
                     )
                     return
-                notify = getattr(dial_server._display_status, "notify_auth_changed", None)
+                notify = getattr(dial_server._display_status, notify_name, None)
                 if notify is not None:
                     try:
                         notify(appliance_id)
                     except Exception as e:
-                        logging.debug("auth-changed: enqueue failed: %s", e)
+                        logging.debug("%s: enqueue failed: %s", self.path, e)
 
             def _handle_configure(self) -> None:
                 body = self._read_body()

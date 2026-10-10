@@ -561,3 +561,12 @@ class TestEqAvailable:
         display = _make_eq_display(dial_eq=True)
         display._core._update_availability(time.monotonic())
         assert display.core.snapshot().dots_active is True
+
+
+class TestWarningsPush:
+    def test_notify_warnings_changed_queues_and_wakes_the_core(self):
+        display, fb, gt = make_display(targets=[])
+        assert not display._core._poll_wake.is_set()
+        display.notify_warnings_changed("a" * 20)
+        assert display._core._poll_wake.is_set()
+        assert display._core._warnings_pending == {"a" * 20}

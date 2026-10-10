@@ -67,7 +67,7 @@ Announced continuously by a dial device.
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |
 | `dial_sdmon` | `v1` | The dial exposes `GET`/`POST /sdcard-health` (section 4) and can run the guarded SD card health probe |
-| `dial_proto` | `v2` | The dial speaks the 0.7 dialect (see below): it understands typed refusals on every route, matches them to an appliance by `appliance_id`, and treats `muted` as authoritative. Absent on older dials |
+| `dial_proto` | `v3` | The dial speaks the third dialect (see below). It includes everything `v2` means: typed refusals on every route matched to an appliance by `appliance_id`, and `muted` treated as authoritative. `v2` on 0.7 dials; absent on older dials |
 
 Port: **7842** (dial HTTP server).
 
@@ -92,6 +92,12 @@ What `v3` adds to `v2`, on an appliance:
 - **Appliance warnings.** `POST /api/dial/warnings` lists what the appliance wants a dial to
   show (wear and power supply notices); the capabilities endpoint reports `dial_warnings`
   as `1`.
+
+What `v3` means, on a dial: it reads `GET /api/dial/capabilities` from an appliance that
+advertises `v3` and uses the reply in place of the TXT capability keys, shows the six-band EQ,
+fetches `POST /api/dial/warnings` from an appliance that reports `dial_warnings`, and accepts
+`POST /warnings-changed` (section 4). An appliance sends the warnings push only to a dial that
+advertises `v3`.
 
 What `v2` means:
 
@@ -1024,8 +1030,10 @@ poll can react without waiting for its next scheduled tick.
 
 **No PIN required, and never authenticated** - anyone on the LAN can reach port 7842, so
 this endpoint grants nothing by itself: it only causes the dial to enqueue a probe, and
-only when the source IP matches a sighting the dial has already rostered for that
-`appliance_id` (see `_autostream-playing._tcp`/`_autostream._tcp` above). Authorization
+only when the source IP matches a sighting the dial currently has of that `appliance_id`,
+whether the appliance is playing or idle (see `_autostream-playing._tcp`/`_autostream._tcp`
+above). An earlier dial matched only playing appliances, so a push from an idle appliance was
+dropped and left to the dial's next scheduled check. Authorization
 truth for the dial protocol routes still comes entirely from the dial's own status poll.
 
 **Request body:**
@@ -1054,6 +1062,14 @@ Advisory, appliance-initiated notification that the warnings an appliance report
 authentication and the same answers as `POST /auth-changed` above: the body is
 `{"appliance_id": "<id>"}`, the reply is always `202 {"ok": true}`, and the push only causes
 the dial to fetch the list itself, so it grants nothing and carries no warning text.
+
+On the dial the two push routes share one body check, one source-address check (the same
+current-sighting rule as above) and one rate limiter, so an auth push and a warnings push for
+one appliance inside 5 seconds drop the second; the dial's own 12 minute fetch repairs a
+dropped push. A push never fetches on the dial's HTTP thread: it queues the appliance id and
+the dial's core thread asks the appliance for its warnings. The dial also fetches the list
+when an appliance is first seen authorised, and again on every wake, and clears an
+appliance's warnings when it refuses the dial or leaves the network.
 
 The appliance pushes to a dial only when all of these hold: the dial is in the appliance's
 authorized list, the appliance currently sees it on the network, and the dial advertises

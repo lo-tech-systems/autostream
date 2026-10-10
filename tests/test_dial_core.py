@@ -1854,3 +1854,257 @@ class TestApplianceWarningsFeed:
         core, manager, _ = _lounge_core()
         core.set_appliance_warnings(BID, (_stylus(),))
         assert core.snapshot().due_warning_id not in _WARNING_BY_ID
+
+
+# ---- where an appliance's warnings come from -----------------------------------
+
+import dial_capabilities  # noqa: E402
+from dial_auth import auth_map  # noqa: E402
+from dial_core import (  # noqa: E402
+    WARNINGS_RECONCILE_S, WARNINGS_RECONCILE_SPREAD_S, _warnings_spread,
+)
+
+_ID_A = "a" * 20
+_ID_B = "b" * 20
+
+
+def _warn_body(appliance_id, *warnings, ok=True):
+    return {
+        "ok": ok, "appliance_id": appliance_id,
+        "warnings": [
+            dict(id=w, severity="warning", title="Replace stylus", message="500 h", dismissal="week")
+            for w in warnings
+        ],
+    }
+
+
+def _supplier(appliance_id=_ID_A, name="Kitchen", auth=AUTH_AUTHORIZED, proto=3, version="0.8.0"):
+    return RosterEntry(
+        appliance_id=appliance_id, service_name=name, name=name, ip="192.0.2.10", port=80,
+        playing=False, repeat_capable=False, auth=auth, dial_proto_version=proto,
+        version=version,
+    )
+
+
+def _learn(appliance_id=_ID_A, version="0.8.0", warnings=1):
+    dial_capabilities.record(
+        appliance_id, version, {"dial_status": 1, "dial_warnings": warnings}, 0.0,
+    )
+
+
+class TestApplianceWarningsSource:
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        dial_capabilities.registry.clear()
+        auth_map.reset()
+        with patch("dial_core._enqueue_appliance_fetch") as enq:
+            self.fetches = enq
+            yield
+        dial_capabilities.registry.clear()
+        auth_map.reset()
+
+    def _core(self, *entries, polling=True):
+        core, manager, wall = _warning_core()
+        for e in entries:
+            if e.dial_proto_version >= 3:
+                _learn(e.appliance_id, e.version)
+        core.set_roster(list(entries))
+        core.set_polling(polling)
+        return core
+
+    def _asked(self):
+        return [(c.args[0], c.args[1].appliance_id) for c in self.fetches.call_args_list]
+
+    def test_a_first_authorised_sighting_is_fetched_on_the_next_step(self):
+        core = self._core(_supplier())
+        core._refresh_appliance_warnings(1000.0)
+        assert self._asked() == [("warnings", _ID_A)]
+        target = self.fetches.call_args.args[1]
+        assert (target.ip, target.port) == ("192.0.2.10", 80)
+
+    def test_the_housekeeping_tick_runs_the_step(self):
+        core = self._core(_supplier())
+        core._housekeeping(1000.0)
+        assert ("warnings", _ID_A) in self._asked()
+
+    def test_a_push_fetches_at_once_and_restarts_the_interval(self):
+        core = self._core(_supplier())
+        core._refresh_appliance_warnings(1000.0)
+        self.fetches.reset_mock()
+        core._refresh_appliance_warnings(1001.0)
+        assert not self.fetches.called
+        core.notify_warnings_changed(_ID_A)
+        core._refresh_appliance_warnings(1002.0)
+        assert self._asked() == [("warnings", _ID_A)]
+        self.fetches.reset_mock()
+        core._refresh_appliance_warnings(1002.0 + WARNINGS_RECONCILE_S - 1)
+        assert not self.fetches.called
+
+    def test_the_interval_boundary_includes_the_appliances_own_spread(self):
+        core = self._core(_supplier())
+        core._refresh_appliance_warnings(1000.0)
+        due = 1000.0 + WARNINGS_RECONCILE_S + _warnings_spread(_ID_A)
+        self.fetches.reset_mock()
+        core._refresh_appliance_warnings(due - 0.5)
+        assert not self.fetches.called
+        core._refresh_appliance_warnings(due)
+        assert self._asked() == [("warnings", _ID_A)]
+
+    def test_the_spread_differs_between_ids_and_stays_inside_its_window(self):
+        spreads = {_warnings_spread(c * 20) for c in "abcdefgh"}
+        assert len(spreads) > 1
+        assert all(0.0 <= s < WARNINGS_RECONCILE_SPREAD_S for s in spreads)
+        assert _warnings_spread(_ID_A) == _warnings_spread(_ID_A)
+
+    def test_a_wake_fetches_every_appliance_again(self):
+        core = self._core(_supplier(_ID_A), _supplier(_ID_B, name="Lounge"))
+        core._refresh_appliance_warnings(1000.0)
+        self.fetches.reset_mock()
+        core.request_poll(reconcile=True)
+        core._refresh_appliance_warnings(1001.0)
+        assert sorted(self._asked()) == [("warnings", _ID_A), ("warnings", _ID_B)]
+        self.fetches.reset_mock()
+        core._refresh_appliance_warnings(1002.0)
+        assert not self.fetches.called
+
+    def test_nothing_is_fetched_for_an_appliance_that_cannot_or_may_not(self):
+        core = self._core(
+            _supplier(_ID_A, proto=2),
+            _supplier(_ID_B, name="Lounge", auth=AUTH_UNAUTHORIZED),
+            _supplier("c" * 20, name="Study", auth=AUTH_UNKNOWN),
+        )
+        core.notify_warnings_changed(_ID_A)
+        core.notify_warnings_changed(_ID_B)
+        core._refresh_appliance_warnings(1000.0)
+        assert not self.fetches.called
+
+    def test_an_appliance_without_the_capability_is_not_fetched(self):
+        core, _, _ = _warning_core()
+        _learn(_ID_A, warnings=0)
+        core.set_roster([_supplier()])
+        core.set_polling(True)
+        core._refresh_appliance_warnings(1000.0)
+        assert not self.fetches.called
+
+    def test_polling_off_fetches_nothing_and_resumes_when_on(self):
+        core = self._core(_supplier(), polling=False)
+        core.notify_warnings_changed(_ID_A)
+        core._refresh_appliance_warnings(1000.0)
+        assert not self.fetches.called
+        core.set_polling(True)
+        core._refresh_appliance_warnings(1001.0)
+        assert self._asked() == [("warnings", _ID_A)]
+
+    def test_a_good_reply_lands_in_the_slot_and_logs_a_count(self, caplog):
+        core = self._core(_supplier())
+        with caplog.at_level("INFO"):
+            assert core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        assert [w.id for w in core.snapshot().appliance(_ID_A).warnings] == ["stylus"]
+        assert "appliance warnings: Kitchen 1 warning(s)" in caplog.text
+        assert "Replace stylus" not in caplog.text
+        assert not core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+
+    def test_an_empty_list_clears_the_slot(self):
+        core = self._core(_supplier())
+        core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        assert core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A))
+        assert core.snapshot().appliance(_ID_A).warnings == ()
+        assert core.snapshot().due_warning_id is None
+
+    @pytest.mark.parametrize("status,body", [
+        (None, None),
+        (403, {}),
+        (400, {"ok": False, "error": "missing_dial_id"}),
+        (200, {"ok": False, "error": "config_error"}),
+        (200, {"ok": True, "appliance_id": _ID_A}),
+        (200, {"ok": True, "appliance_id": _ID_B, "warnings": []}),
+        (200, {"ok": True, "appliance_id": _ID_A, "warnings": "x"}),
+        (200, None),
+        (500, _warn_body(_ID_A)),
+    ])
+    def test_anything_else_keeps_what_is_held(self, status, body):
+        core = self._core(_supplier())
+        core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        seq = core.snapshot().seq
+        assert not core.on_warnings_result(_ID_A, status, body)
+        assert [w.id for w in core.snapshot().appliance(_ID_A).warnings] == ["stylus"]
+        assert core.snapshot().seq == seq
+
+    def test_a_refusal_clears_the_slot_and_demotes_auth(self):
+        core = self._core(_supplier())
+        core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        refusal = {"ok": False, "error": "dial_not_authorized", "appliance_id": _ID_A}
+        assert core.on_warnings_result(_ID_A, 412, refusal)
+        assert core.snapshot().appliance(_ID_A).warnings == ()
+        assert auth_map.state(_ID_A) == AUTH_UNAUTHORIZED
+
+    def test_a_refusal_naming_another_appliance_changes_nothing(self):
+        core = self._core(_supplier())
+        core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        refusal = {"ok": False, "error": "dial_not_authorized", "appliance_id": _ID_B}
+        assert not core.on_warnings_result(_ID_A, 412, refusal)
+        assert len(core.snapshot().appliance(_ID_A).warnings) == 1
+        assert auth_map.state(_ID_A) != AUTH_UNAUTHORIZED
+
+    def test_a_roster_that_shows_the_refusal_clears_and_forgets_the_schedule(self):
+        core = self._core(_supplier())
+        core._refresh_appliance_warnings(1000.0)
+        core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        core.set_roster([_supplier(auth=AUTH_UNAUTHORIZED)])
+        self.fetches.reset_mock()
+        core._refresh_appliance_warnings(1001.0)
+        assert core.snapshot().appliance(_ID_A).warnings == ()
+        assert not self.fetches.called
+        core.set_roster([_supplier()])
+        core._refresh_appliance_warnings(1002.0)
+        assert self._asked() == [("warnings", _ID_A)]
+
+    def test_an_appliance_that_leaves_loses_its_warnings_and_its_schedule(self):
+        core = self._core(_supplier(_ID_A), _supplier(_ID_B, name="Lounge"))
+        core._refresh_appliance_warnings(1000.0)
+        core.on_warnings_result(_ID_B, 200, _warn_body(_ID_B, "stylus"))
+        core.set_roster([_supplier(_ID_A)])
+        assert core.snapshot().due_warning_id is None
+        core._refresh_appliance_warnings(1001.0)
+        assert _ID_B not in core._warnings_next_at
+        core.set_roster([_supplier(_ID_A), _supplier(_ID_B, name="Lounge")])
+        self.fetches.reset_mock()
+        core._refresh_appliance_warnings(1002.0)
+        assert self._asked() == [("warnings", _ID_B)]
+
+    def test_losing_the_capability_clears_the_slot(self):
+        core = self._core(_supplier())
+        core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        _learn(_ID_A, warnings=0)
+        core.set_roster([_supplier(name="Kitchen2")])
+        core._refresh_appliance_warnings(1000.0)
+        assert core.snapshot().appliance(_ID_A).warnings == ()
+        assert not self.fetches.called
+
+    def test_a_result_for_an_unknown_appliance_is_ignored(self):
+        core = self._core(_supplier())
+        assert not core.on_warnings_result(_ID_B, 200, _warn_body(_ID_B, "stylus"))
+
+    def test_the_push_entry_point_only_queues_and_wakes(self):
+        core = self._core(_supplier())
+        core._poll_wake.clear()
+        core.notify_warnings_changed(_ID_A)
+        assert core._poll_wake.is_set()
+        assert not self.fetches.called
+        assert core._warnings_pending == {_ID_A}
+
+    def test_the_step_makes_no_network_call_of_its_own(self):
+        core = self._core(_supplier())
+        with patch("http.client.HTTPConnection") as conn, patch("socket.create_connection") as sock:
+            core._refresh_appliance_warnings(1000.0)
+            core.on_warnings_result(_ID_A, 200, _warn_body(_ID_A, "stylus"))
+        assert not conn.called and not sock.called
+        assert self.fetches.called
+
+    def test_the_step_holds_no_lock_while_it_enqueues(self):
+        core = self._core(_supplier())
+        held = []
+        self.fetches.side_effect = lambda *a: held.append(
+            (core._lock.locked(), core._push_lock.locked()))
+        core._refresh_appliance_warnings(1000.0)
+        assert held == [(False, False)]

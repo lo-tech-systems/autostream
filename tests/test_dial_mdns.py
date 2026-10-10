@@ -920,3 +920,73 @@ class TestDialProto:
         roster = dm.get_roster()
         assert [(r.playing, r.dial_proto_version, r.status_reports_mute)
                 for r in roster] == [(True, 2, True), (False, 2, True)]
+
+
+# ---------------------------------------------------------------------------
+# get_known_ips: what an appliance push is checked against.
+# ---------------------------------------------------------------------------
+
+class TestGetKnownIps:
+    def setup_method(self):
+        _clear()
+        _clear_general()
+        dial_auth.auth_map.reset()
+
+    _add_playing = TestGetRoster._add_playing
+    _add_general = TestGetRoster._add_general
+
+    def test_nothing_sighted_is_empty(self):
+        assert dm.get_known_ips() == {}
+
+    def test_a_playing_sighting_with_an_id_is_listed(self):
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1")
+        assert dm.get_known_ips() == {_VALID_ID: "10.0.0.1"}
+
+    def test_an_idle_general_only_sighting_is_listed(self):
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.9", port=9999)
+        assert dm.get_known_ips() == {_VALID_ID: "10.0.0.9"}
+
+    def test_the_playing_address_wins_for_an_id_in_both(self):
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1", port=100)
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.2", port=200)
+        assert dm.get_known_ips() == {_VALID_ID: "10.0.0.1"}
+
+    def test_an_idless_playing_record_takes_the_id_of_the_general_one_at_its_address(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7", port="80",
+                                         txt="dial_api=v1 dial_status=v1"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.7", port="80",
+                                                  txt=f"id={_VALID_ID}"))
+        assert dm.get_known_ips() == {_VALID_ID: "10.0.0.7"}
+
+    def test_an_idless_playing_record_with_no_match_is_not_listed(self):
+        self._add_playing(appliance_id="", ip="10.0.0.7")
+        assert dm.get_known_ips() == {}
+
+    def test_a_conflicted_general_sighting_is_not_listed(self):
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.1", port=80)
+        with dm._general_lock:
+            dm._general_conflicts.add(_VALID_ID)
+        assert dm.get_known_ips() == {}
+
+    def test_a_legacy_general_sighting_is_not_listed(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID}"))
+        assert dm.get_known_ips() == {}
+
+    def test_it_feeds_nothing_to_the_auth_map(self):
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.9", port=9999)
+        self._add_playing(appliance_id=_VALID_ID2, ip="10.0.0.3", name="Lounge")
+        dial_auth.auth_map.reset()
+        with patch.object(dial_auth.auth_map, "note_sighting") as note, \
+                patch.object(dial_auth.auth_map, "apply") as apply:
+            assert set(dm.get_known_ips()) == {_VALID_ID, _VALID_ID2}
+        note.assert_not_called()
+        apply.assert_not_called()
+        assert dial_auth.auth_map.states() == {}
+
+    def test_a_legacy_id_resolution_is_not_fed_either(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7", port="80",
+                                         txt="dial_api=v1 dial_status=v1"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.7", port="80",
+                                                  txt=f"id={_VALID_ID}"))
+        dm.get_known_ips()
+        assert dial_auth.auth_map.states() == {}

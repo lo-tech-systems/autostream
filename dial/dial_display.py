@@ -4356,6 +4356,11 @@ class DialDisplay:
         HTTP thread): the core probes it on its next tick, asleep or not."""
         self._core.notify_auth_changed(appliance_id)
 
+    def notify_warnings_changed(self, appliance_id: str) -> None:
+        """Record that appliance_id's warnings-changed push arrived (from the
+        HTTP thread): the core fetches its warnings on its next tick."""
+        self._core.notify_warnings_changed(appliance_id)
+
     def _poll_io(self) -> PollIO:
         """The calls the core's poll makes, looked up in this module when
         they run, so replacing one here (a test does) takes effect."""

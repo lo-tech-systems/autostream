@@ -331,6 +331,22 @@ class TestFetchWorker:
         assert (conn.host, conn.port, conn.timeout) == ("10.0.0.5", 8080, daf.FETCH_TIMEOUT_S)
         assert conn.closed
 
+    def test_the_warnings_request_is_a_post_carrying_the_dials_id(self):
+        raw = json.dumps({"ok": True, "appliance_id": AID, "warnings": []}).encode()
+        with patch("dial_appliance_fetch.http.client.HTTPConnection", _conn_class(raw)):
+            status, body = daf._send_one("warnings", self._target())
+        method, path, payload, headers = _FakeConn.last.request_args
+        assert (status, body["warnings"]) == (200, [])
+        assert (method, path) == ("POST", "/api/dial/warnings")
+        assert json.loads(payload) == {"dial_id": "dial-uuid"}
+        assert headers == {"Content-Type": "application/json"}
+
+    def test_a_refusal_body_is_reported_with_its_status(self):
+        raw = json.dumps({"ok": False, "error": "dial_not_authorized", "appliance_id": AID}).encode()
+        with patch("dial_appliance_fetch.http.client.HTTPConnection", _conn_class(raw, 412)):
+            status, body = daf._send_one("warnings", self._target())
+        assert (status, body["error"]) == (412, "dial_not_authorized")
+
     def test_a_connection_failure_is_none_none(self):
         def boom(*a, **kw):
             raise OSError("refused")
@@ -517,3 +533,15 @@ class TestCoreFold:
         core = _core(_entry(proto=2, dial_eq=True))
         state = core.snapshot().appliances[0]
         assert state.dial_eq_version == 1 and not state.supplies_warnings
+
+
+class TestResultRouting:
+    def test_each_kind_reaches_its_core_method(self):
+        from dial_main import _on_appliance_fetch_result
+        core = MagicMock()
+        route = _on_appliance_fetch_result(core)
+        route("capabilities", AID, "0.8.0", 200, {"a": 1})
+        route("warnings", AID, "", 412, {"b": 2})
+        route("other", AID, "", 200, {})
+        core.on_capabilities_result.assert_called_once_with(AID, "0.8.0", 200, {"a": 1})
+        core.on_warnings_result.assert_called_once_with(AID, 412, {"b": 2})

@@ -1,7 +1,7 @@
 """dial_appliance_fetch.py — reads of an appliance's own descriptive endpoints,
 own thread.
 
-Fetches what an appliance says about itself (today its capabilities) from one
+Fetches what an appliance says about itself (its capabilities and its warnings) from one
 appliance at a time over a worker thread, queue and HTTP client of its own,
 entirely separate from dial_eq.py's, dial_outputs.py's, dial_volume.py's and
 dial_repeat.py's workers. A slow or unreachable appliance holds up only this
@@ -41,6 +41,7 @@ _MAX_RESPONSE_BYTES = 64 * 1024
 # kind: (method, path, body builder given the dial's own id)
 _KINDS = {
     "capabilities": ("GET", "/api/dial/capabilities", lambda dial_id: None),
+    "warnings": ("POST", "/api/dial/warnings", lambda dial_id: {"dial_id": dial_id}),
 }
 
 
