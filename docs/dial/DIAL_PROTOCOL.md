@@ -381,6 +381,13 @@ artwork URL. This includes the `disabled` example below, and `waiting_for_audio`
 The endpoint remains read-only: it never fetches remote artwork or mutates track
 identification state on the request path.
 
+Once the appliance accepts a repeat seek, stop or arm request, this status reflects the
+result straight away rather than on the appliance's next internal refresh: the `repeat`
+object shows the new state and position, and `playing` is `true` for an accepted replay.
+Starting or seeking a replay also restarts track identification, so `track_id` reads
+`waiting_for_audio` until a fresh identification lands, rather than continuing to show the
+track from before the seek.
+
 #### `repeat` object
 
 | Field | Type | Notes |
