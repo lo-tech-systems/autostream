@@ -10333,3 +10333,201 @@ class TestBootSplash:
         display.enable()
         assert len(fb.displayed) == 1
         assert display.get_status()["showing"] == "logo"
+
+
+def _make_outputs_eq_display(appliance_id="a" * 20):
+    """A display whose reporting appliance offers both the outputs list and
+    the EQ page, so the outputs list can be opened from the EQ page."""
+    display, fb, gt = _make_display(targets=[])
+    display._reporting_appliance_id = appliance_id
+    display._last_roster = [_roster_entry(appliance_id=appliance_id, dial_outputs=True, dial_eq=True)]
+    display._update_eq_available()
+    return display
+
+
+class TestOutputsReturnToOpeningPage:
+    """Closing the outputs list returns to whichever main page opened it."""
+
+    @pytest.mark.parametrize("origin", ["main", "repeat", "eq"])
+    def test_close_goes_back_to_the_opening_page(self, origin):
+        display = _make_outputs_display()
+        display._screen = origin
+        assert display._open_outputs_locked() is True
+        with patch("dial_display._enqueue_eq_fetch"):
+            display.close_list()
+        assert display._screen_request == origin
+
+    def test_other_screens_return_to_main(self):
+        display = _make_outputs_display()
+        display._outputs_return = "eq"
+        display._screen = "selector"
+        display._open_outputs_locked()
+        assert display._outputs_return == "main"
+
+    def test_detail_page_keeps_the_opening_page(self):
+        display = _make_outputs_display()
+        display._screen = "repeat"
+        display._open_outputs_locked()
+        display._screen = "output"
+        display._open_outputs_locked()
+        assert display._outputs_return == "repeat"
+
+    def test_detail_back_still_goes_to_the_list(self):
+        display = _make_outputs_display()
+        display._screen = "eq"
+        display._open_outputs_locked()
+        display._screen = "output"
+        display.close_list()
+        assert display._screen_request == "outputs"
+
+    def test_back_to_eq_reopens_it_and_drops_the_outputs_state(self):
+        display = _make_outputs_eq_display()
+        with display._lock:
+            assert display._open_eq_locked() is True
+            assert display._open_outputs_locked() is True
+        with patch("dial_display._enqueue_eq_fetch") as fetch:
+            display.close_list()
+        fetch.assert_called_once()
+        with display._lock:
+            display._apply_screen_requests_locked()
+        assert display._screen == "eq"
+        assert display._eq is not None
+        assert display._outputs is None
+        assert display._output_detail is None
+
+    def test_back_to_a_page_that_cannot_open_falls_back_to_main(self):
+        display = _make_outputs_display()
+        display._screen = "repeat"
+        with display._lock:
+            display._open_outputs_locked()
+        display._last_roster = []  # the appliance has gone: the repeat opener refuses
+        display.close_list()
+        with display._lock:
+            display._apply_screen_requests_locked()
+        assert display._screen == "main"
+        assert display._outputs is None
+
+    def test_timeout_goes_back_to_the_opening_page(self):
+        display = _make_outputs_eq_display()
+        with display._lock:
+            display._open_eq_locked()
+            display._open_outputs_locked()
+        display._outputs = dataclasses.replace(display._outputs, opened_at=time.monotonic() - 3600)
+        with patch("dial_display._enqueue_eq_fetch"):
+            display._check_secondary_timeout()
+        assert display._screen_request == "eq"
+        assert display._screen == "outputs"
+
+    def test_timeout_opened_from_main_still_closes(self):
+        display = _make_outputs_display()
+        with display._lock:
+            display._open_outputs_locked()
+        display._outputs = dataclasses.replace(display._outputs, opened_at=time.monotonic() - 3600)
+        display._check_secondary_timeout()
+        assert display._screen == "main"
+        assert display._outputs is None
+
+
+class TestReplayTimer:
+    """The replay position line shown on the main page after a picker start."""
+
+    AID = "a" * 20
+
+    def _display(self, state="hold", **repeat):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._manual_focus_id = self.AID
+        now = time.monotonic()
+        drs.repeat_store.update(self.AID, drs.parse_repeat_object(_repeat_obj(state=state, **repeat), now))
+        display._arm_replay_timer(self.AID)
+        return display, fb
+
+    def test_picker_pick_arms_the_timer(self):
+        display, fb, gt = TestPickerPick()._opened_with_row(aid=self.AID)
+        with patch("dial_display.enqueue_transport"):
+            display.picker_pick(0)
+        assert display._replay_timer_id == self.AID
+        assert display._replay_timer_shown_at == 0.0
+
+    def test_shows_the_held_position_at_full_opacity(self):
+        display, fb = self._display(recording_seconds=12.0)
+        now = time.monotonic()
+        with display._lock:
+            timer = display._replay_timer_locked(now)
+        assert timer == ("0:00 / 0:12", 1.0, None)
+        assert display._replay_timer_shown_at == now
+
+    def test_fades_after_the_show_window_then_ends(self):
+        display, fb = self._display()
+        now = time.monotonic()
+        display._replay_timer_shown_at = now - dd.REPLAY_TIMER_SHOW_S - dd.REPLAY_TIMER_FADE_S / 2
+        with display._lock:
+            text, alpha, _ = display._replay_timer_locked(now)
+        assert alpha == pytest.approx(0.5)
+        display._replay_timer_shown_at = now - dd.REPLAY_TIMER_SHOW_S - dd.REPLAY_TIMER_FADE_S
+        with display._lock:
+            assert display._replay_timer_locked(now) is None
+        assert display._replay_timer_id is None
+
+    def test_not_drawn_for_another_shown_appliance(self):
+        display, fb = self._display()
+        display._manual_focus_id = "b" * 20
+        with display._lock:
+            assert display._replay_timer_locked(time.monotonic()) is None
+        assert display._replay_timer_id == self.AID
+
+    def test_not_drawn_on_the_compact_tier(self):
+        display, fb = self._display()
+        display._compact_tier = lambda: True
+        with display._lock:
+            assert display._replay_timer_locked(time.monotonic()) is None
+
+    def test_dropped_when_nothing_shows_within_the_arm_window(self):
+        display, fb = self._display(state="recording")
+        now = time.monotonic()
+        display._replay_timer_armed_at = now - dd.REPLAY_TIMER_ARM_S
+        with display._lock:
+            assert display._replay_timer_locked(now) is None
+        assert display._replay_timer_id is None
+
+    def test_a_rejected_seek_drops_it(self):
+        display, fb = self._display()
+        display.on_repeat_result("transport", self.AID, 412, {"ok": False, "error": "no_recording"})
+        assert display._replay_timer_id is None
+
+    def test_main_paint_draws_it(self):
+        display, fb = self._display(recording_seconds=12.0)
+        compose = MagicMock(wraps=display._compositor.compose)
+        display._compositor.compose = compose
+        with display._lock:
+            display._display_locked(display._current_base_image)
+        assert compose.call_args.kwargs["timer_text"] == "0:00 / 0:12"
+        assert compose.call_args.kwargs["timer_alpha"] == 1.0
+
+    def test_deadline_waits_for_the_first_position_then_the_fade(self):
+        display, fb = self._display()
+        now = time.monotonic()
+        assert display._replay_timer_deadline(now) == pytest.approx(now + 0.25)
+        display._replay_timer_shown_at = now
+        assert display._replay_timer_deadline(now) == pytest.approx(now + dd.REPLAY_TIMER_SHOW_S + 0.005)
+
+    def test_deadline_is_floored_after_its_own_signal(self):
+        display, fb = self._display()
+        now = time.monotonic()
+        display._replay_timer_shown_at = now - dd.REPLAY_TIMER_SHOW_S - 0.1
+        display._replay_timer_signal_at = now
+        assert display._replay_timer_deadline(now) >= now + dd.REPLAY_TIMER_FADE_GAP_S
+
+    def test_deadline_drops_a_timer_whose_replay_ended(self):
+        import dial_repeat_store as drs
+        display, fb = self._display()
+        display._replay_timer_shown_at = time.monotonic()
+        drs.repeat_store.clear(self.AID)
+        display._replay_timer_deadline(time.monotonic())
+        assert display._replay_timer_id is None
+
+    def test_no_deadline_off_the_main_page(self):
+        display, fb = self._display()
+        display._screen = "repeat"
+        assert display._replay_timer_deadline(time.monotonic()) is None

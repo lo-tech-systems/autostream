@@ -247,13 +247,17 @@ and how much recording it's holding.*
 wrapping) on the left, and the two visible rows on the right.*
 
 Tapping a row starts that recording playing from the beginning straight
-away and follows it on screen.
+away and follows it on screen. On rich and larger panels the now-playing
+screen shows the replay's position over the artwork for about ten seconds,
+so you can see it has started, then fades it away.
 
 ## Per-output control
 
 Rich panels only, and only for appliances that advertise support for it.
 Opened by tapping the volume readout (the speaker icon and number, top
-right of the now-playing or repeat screen):
+right of the now-playing, repeat or EQ page). Closing the list, or leaving
+it alone until it times out, takes you back to the page you opened it
+from:
 
 ![Outputs list showing two speaker names, one with a volume level shown](images/outputs-list-rich.png)
 
@@ -279,9 +283,10 @@ dots to the third page:
 
 ![EQ page: Bass and Treble bars, each with a dB reading and minus/plus steppers](images/eq-rich.png)
 
-*Bass over Treble, each with its own reading in dB and its own minus/plus.
-The master volume still shows top right; there's no mute or outputs
-control on this page.*
+*Bass over Treble, each with its own reading in dB and its own minus/plus,
+over the current artwork, dimmed. The master volume still shows top right,
+and tapping it opens the outputs list as on the other two pages; there's no
+mute control on this page.*
 
 ## Info page
 

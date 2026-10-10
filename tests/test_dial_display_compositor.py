@@ -5481,6 +5481,135 @@ def _tol(a, b, tol=2):
     )
 
 
+def _artwork_gradient(width, height):
+    """A panel-sized base with no flat area, so any pixel the compositor
+    draws over or dims is detectable against it."""
+    image = Image.new("RGB", (width, height))
+    image.putdata([((x * 7) % 256, (y * 5) % 256, 200) for y in range(height) for x in range(width)])
+    return image
+
+
+class TestComposeEqArtwork:
+    """The EQ page draws the current artwork, dimmed across the whole
+    panel, behind the bars, as the other two main pages do."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        _reset_render_caches()
+        yield
+        _reset_font_cache()
+        _reset_render_caches()
+
+    def test_artwork_shows_dimmed_where_nothing_is_drawn(self, compositor):
+        base = _artwork_gradient(320, 240)
+        result = compositor.compose_eq(
+            320, 240, _eq_state(name=""), rotate=False, bgr=False, base=base, metrics=_RICH_METRICS,
+        )
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        # The left edge of the gap between the two bar rows: no caption,
+        # track, control or divider reaches it.
+        point = (0, layout.bass.row[3] + 1)
+        expected = tuple(c * OVERLAY_DIM_FACTOR for c in base.getpixel(point))
+        assert all(abs(got - want) <= 1 for got, want in zip(result.getpixel(point), expected))
+
+    def test_top_band_is_dimmed_once_not_twice(self, compositor):
+        base = _artwork_gradient(320, 240)
+        result = compositor.compose_eq(
+            320, 240, _eq_state(name=""), rotate=False, bgr=False, base=base, metrics=_RICH_METRICS,
+        )
+        expected = tuple(c * OVERLAY_DIM_FACTOR for c in base.getpixel((0, 0)))
+        assert all(abs(got - want) <= 1 for got, want in zip(result.getpixel((0, 0)), expected))
+
+    def test_no_base_keeps_the_chassis_colour(self, compositor):
+        from dial_display_compositor import _LIST_BG_RGB
+        result = compositor.compose_eq(320, 240, _eq_state(name=""), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        assert result.getpixel((0, 239)) == expected
+
+    def test_base_is_not_mutated(self, compositor):
+        base = _artwork_gradient(320, 240)
+        before = base.tobytes()
+        compositor.compose_eq(320, 240, _eq_state(), rotate=False, bgr=False, base=base, metrics=_RICH_METRICS)
+        assert base.tobytes() == before
+
+
+class TestComposeTimerLine:
+    """compose()'s replay timer line: drawn in the artwork between the top
+    band and the first album/title line, faded by timer_alpha, absent on
+    the compact tier, and a strict no-op when not asked for."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        _reset_render_caches()
+        yield
+        _reset_font_cache()
+        _reset_render_caches()
+
+    def _compose(self, compositor, metrics, **kwargs):
+        base = _artwork_gradient(metrics.width, metrics.height)
+        overlay = kwargs.pop("overlay", OverlayState(visible=True, dots=True, name="Kitchen", volume=40))
+        return base, compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, **kwargs,
+        )
+
+    def _timer_rect(self, metrics):
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        first = layout.album if layout.album is not None else layout.title
+        return (first[0], layout.top_band[3], first[2], first[1])
+
+    def test_no_timer_is_byte_identical(self, compositor):
+        _, without = self._compose(compositor, _RICH_METRICS)
+        _, with_none = self._compose(compositor, _RICH_METRICS, timer_text=None)
+        assert with_none.tobytes() == without.tobytes()
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_draws_only_inside_its_rect(self, compositor, metrics):
+        _, plain = self._compose(compositor, metrics)
+        _, timed = self._compose(compositor, metrics, timer_text="0:07 / 3:12")
+        bbox = _diff_bbox(plain, timed)
+        assert bbox is not None
+        x0, y0, x1, y1 = self._timer_rect(metrics)
+        assert x0 <= bbox[0] and y0 <= bbox[1] and bbox[2] <= x1 and bbox[3] <= y1
+
+    def test_drawn_with_no_overlay_too(self, compositor):
+        base, timed = self._compose(compositor, _RICH_METRICS, overlay=None, timer_text="0:07 / 3:12")
+        assert timed.tobytes() != base.tobytes()
+
+    def test_does_not_draw_on_the_cached_base(self, compositor):
+        base, _ = self._compose(compositor, _RICH_METRICS, overlay=None)
+        before = base.tobytes()
+        compositor.compose(
+            base, 320, 240, rotate=False, bgr=False, is_artwork=False, overlay=None,
+            metrics=_RICH_METRICS, timer_text="0:07 / 3:12",
+        )
+        assert base.tobytes() == before
+
+    def test_alpha_fades_between_absent_and_full(self, compositor):
+        _, plain = self._compose(compositor, _RICH_METRICS)
+        _, full = self._compose(compositor, _RICH_METRICS, timer_text="0:07 / 3:12")
+        _, half = self._compose(compositor, _RICH_METRICS, timer_text="0:07 / 3:12", timer_alpha=0.5)
+        _, gone = self._compose(compositor, _RICH_METRICS, timer_text="0:07 / 3:12", timer_alpha=0.0)
+        assert gone.tobytes() == plain.tobytes()
+        assert half.tobytes() not in (plain.tobytes(), full.tobytes())
+
+    def test_ignored_on_the_compact_tier(self, compositor):
+        metrics = metrics_for(160, 128, 25.9 / 128)
+        assert metrics.content_tier == CONTENT_COMPACT
+        _, plain = self._compose(compositor, metrics)
+        _, timed = self._compose(compositor, metrics, timer_text="0:07 / 3:12")
+        assert timed.tobytes() == plain.tobytes()
+
+    def test_rotate_applies_after_the_line(self, compositor):
+        base = _artwork_gradient(320, 240)
+        kw = dict(is_artwork=False, overlay=None, metrics=_RICH_METRICS, timer_text="0:07 / 3:12")
+        upright = compositor.compose(base, 320, 240, rotate=False, bgr=False, **kw)
+        rotated = compositor.compose(base, 320, 240, rotate=True, bgr=False, **kw)
+        assert rotated.tobytes() == upright.transpose(Image.ROTATE_180).tobytes()
+
+
 def _reveal_frames(compositor, metrics, overlay, p):
     """(out, shown, bare) for one reveal progress over the gradient base."""
     w, h = metrics.width, metrics.height

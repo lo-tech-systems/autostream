@@ -253,6 +253,17 @@ CONTROLS_HIDE_SECONDS = 6.0
 REVEAL_ANIMATION_S = 0.55
 REVEAL_FRAME_GAP_S = 0.001
 
+# The replay position line shown on the main page after a picker start
+# (see picker_pick()): fully shown for REPLAY_TIMER_SHOW_S from the first
+# frame that has a position to show, then faded out over
+# REPLAY_TIMER_FADE_S, one frame every REPLAY_TIMER_FADE_GAP_S (the line
+# is a small window, so the fade is cheap). A pick whose replay has
+# produced nothing to show within REPLAY_TIMER_ARM_S is dropped.
+REPLAY_TIMER_SHOW_S = 10.0
+REPLAY_TIMER_FADE_S = 1.0
+REPLAY_TIMER_FADE_GAP_S = 0.04
+REPLAY_TIMER_ARM_S = 10.0
+
 
 def _reveal_ease(t: float) -> float:
     """Smoothstep easing for the artwork-tap reveal: the chrome starts
@@ -1379,6 +1390,23 @@ class DialDisplay:
         # see toggle_repeat_screen() and dial_touch.TouchStateMachine.
         # force_overlay_visible()).
         self._repeat_close_reveal = False
+        # The page the outputs list goes back to when it closes: the main
+        # page it was opened from ("main", "repeat" or "eq"), recorded by
+        # _open_outputs_locked() and kept across the per-output detail
+        # page, whose own back returns to the list. See _back_target().
+        self._outputs_return = "main"
+        # The replay position line shown on the main page after a replay
+        # is started from the picker (see picker_pick()): the appliance it
+        # is for (None: no timer), when the pick armed it, when its first
+        # line was drawn (0.0: not yet; the REPLAY_TIMER_SHOW_S window
+        # counts from then), and when the last fade frame left. Written by
+        # the touch thread (arm) and the repaint thread (the rest); plain
+        # float/str assignments, the same discipline as self._pressed.
+        self._replay_timer_id: "str | None" = None
+        self._replay_timer_armed_at = 0.0
+        self._replay_timer_shown_at = 0.0
+        self._replay_timer_frame_at = 0.0
+        self._replay_timer_signal_at = 0.0  # last repaint the timer's own tick asked for
         # Touch-thread requests (open_selector/close_list/list_page/
         # toggle_repeat_screen/open_picker) are flag writes only — plain
         # str/int, no lock — folded into self._screen/self._selector/
@@ -2494,6 +2522,7 @@ class DialDisplay:
         )
         animating, progress = self._advance_reveal_locked(now, steady, slide_ok)
         overlay = self._effective_overlay_locked(snapshot, now=now, animating=animating)
+        timer = self._replay_timer_locked(now) if self._screen == "main" else None
         self._push_frame_locked(lambda: self._compositor.compose(
             image, metrics.width, metrics.height,
             rotate=self._config.rotate,
@@ -2502,7 +2531,16 @@ class DialDisplay:
             overlay=overlay,
             metrics=metrics,
             reveal_progress=progress,
+            timer_text=timer[0] if timer else None,
+            timer_alpha=timer[1] if timer else 1.0,
         ))
+        if timer:
+            # The same reference the repeat screen's own counter advances
+            # against (see _display_repeat_locked()); that screen re-anchors
+            # it whenever it opens.
+            self._repeat_painted_second = timer[2]
+            if timer[1] < 1.0:
+                self._replay_timer_frame_at = time.monotonic()
         if animating:
             # Paced from the moment the frame has actually left, so the
             # loop's wait between slide frames is a real gap with the lock
@@ -2742,6 +2780,7 @@ class DialDisplay:
                 self._tick_wifi_flash()
                 self._tick_warnings()
                 self._tick_controls_reveal()
+                self._tick_replay_timer()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -2835,9 +2874,30 @@ class DialDisplay:
 
     def close_list(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_BACK
-        tap): pop back to main from whichever list-chassis screen (the
-        appliance selector or the replay picker) is open."""
-        self._screen_request = _policy(self._screen).back_to
+        tap): pop back from whichever list-chassis screen is open — to its
+        policy row's back_to, or for the outputs list to the main page it
+        was opened from (see _back_target())."""
+        self._request_back(self._screen)
+
+    def _back_target(self, screen: str) -> str:
+        """Where a back/close from *screen* goes: the outputs list returns
+        to the main page that opened it (self._outputs_return, recorded by
+        _open_outputs_locked()); every other screen to its policy row's
+        back_to. Lock-free plain reads."""
+        if screen == "outputs":
+            return self._outputs_return
+        return _policy(screen).back_to
+
+    def _request_back(self, screen: str) -> None:
+        """Lock-free request to leave *screen* for _back_target(screen).
+        Going back to the EQ page also asks the EQ worker for a fresh
+        reading, as cycle_pages() does on the way in."""
+        target = self._back_target(screen)
+        if target == "eq":
+            entry = self._eq_target_lockfree()
+            if entry is not None:
+                _enqueue_eq_fetch(_EqTarget(entry.appliance_id, entry.ip, entry.port))
+        self._screen_request = target
         self._overlay_signal.set()
 
     close_selector = close_list  # alias kept for existing direct callers/tests
@@ -3080,8 +3140,7 @@ class DialDisplay:
         volume readout on main. Lock-free request, exactly like
         close_list()."""
         if self._screen == screen:
-            self._screen_request = _policy(self._screen).back_to
-            self._overlay_signal.set()
+            self._request_back(screen)
 
     def set_manual_focus_pending(self, appliance_id: str, service_name: str) -> None:
         """Touch-thread entry (the replay picker's picker_pick()): pin the
@@ -3170,8 +3229,20 @@ class DialDisplay:
             if 0 <= index < len(page_rows):
                 row = page_rows[index]
                 self.set_manual_focus_pending(row.appliance_id, row.service_name)
+                self._arm_replay_timer(row.appliance_id)
                 enqueue_transport(_RepeatTarget(row.appliance_id, row.ip, row.port), "seek", 0.0)
         self.close_list()
+
+    def _arm_replay_timer(self, appliance_id: "str | None") -> None:
+        """Touch-thread (arm) or any thread (clear, with None): start or
+        drop the main page's replay position line — see compose()'s
+        timer_text and _replay_timer_locked(). Lock-free plain writes; the
+        id is written last so a reader never pairs a new id with stale
+        times."""
+        self._replay_timer_armed_at = time.monotonic()
+        self._replay_timer_shown_at = 0.0
+        self._replay_timer_frame_at = 0.0
+        self._replay_timer_id = appliance_id
 
     def _outputs_target_lockfree(self):
         """The roster entry the outputs screens act on: the focused/
@@ -3442,6 +3513,13 @@ class DialDisplay:
         entry = self._outputs_target_lockfree()
         if entry is None:
             return False
+        if self._screen in _PAGE_ORDER:
+            # Opened from one of the three main pages: close back to it.
+            # (Coming back up from the per-output detail page keeps the
+            # page the list was first opened from.)
+            self._outputs_return = self._screen
+        elif self._screen != "output":
+            self._outputs_return = "main"
         prev = self._outputs
         keep = prev is not None and prev.appliance_id == entry.appliance_id
         self._outputs = OutputsState(
@@ -3516,7 +3594,19 @@ class DialDisplay:
         self._page_request = 0
 
         if request is not None:
-            _policy(request).open(self)
+            opened = _policy(request).open(self)
+            if previous_screen in ("outputs", "output") and request in ("repeat", "eq"):
+                # Back from the outputs screens to the page that opened
+                # them. That page may have nothing left to show (the replay
+                # was dropped, the EQ capability went away): fall back to
+                # main rather than leave the list up. Either way the
+                # outputs screens' own state goes with them.
+                if opened:
+                    self._outputs = None
+                    self._output_detail = None
+                    self._output_open_id = None
+                else:
+                    self._close_secondary_locked()
 
         if self._screen != previous_screen:
             # A press on a zone the new screen shares with the old one
@@ -3568,6 +3658,12 @@ class DialDisplay:
         if state is None:
             return
         if time.monotonic() - state.opened_at >= policy.inactivity_timeout_s:
+            if self._screen in ("outputs", "output") and self._outputs_return != "main":
+                # Timing out of the outputs screens goes back to the main
+                # page they were opened from, like closing the list does.
+                if self._screen_request is None:
+                    self._request_back("outputs")
+                return
             with self._lock:
                 self._close_secondary_locked()
 
@@ -3618,11 +3714,75 @@ class DialDisplay:
         if screen is None:
             return
         now = time.monotonic()
-        rec = repeat_store.get(screen.appliance_id, now)
+        due = self._repeat_counter_due(repeat_store.get(screen.appliance_id, now), now)
+        if due is not None and due <= now:
+            self._overlay_signal.set()
+
+    def _repeat_counter_due(self, rec, now: float) -> "float | None":
+        """When the running replay counter for repeat-store record *rec*
+        next needs a paint: *now* when one is already owed (nothing painted
+        yet, or the second moved under a signal repaint or a re-sync), else
+        the moment the counter first passes the painted second, plus the
+        small scheduling pad the other deadlines use. While a re-sync hold
+        is on (value below painted) that is over a second out; the repaint
+        loop's own one-second cap trims it and the tick then simply finds
+        itself not due and reschedules. None when *rec* is not replaying.
+        Shared by every line that shows the counter: the repeat screen and
+        the main page's replay timer (see _replay_timer_deadline())."""
         if rec is None or rec.state != "replaying":
-            return
+            return None
         value = _repeat_counter_value(rec, now)
-        if self._repeat_counter_second(value) != self._repeat_painted_second:
+        painted = self._repeat_painted_second
+        if self._repeat_counter_second(value) != painted:
+            return now
+        return now + (painted + 1.0 - value) + 0.005
+
+    def _replay_timer_deadline(self, now: float) -> "float | None":
+        """When the main page's replay timer line next needs a paint (see
+        _replay_timer_locked()), or None when there is no timer on screen.
+        While armed but not yet shown, a quarter-second check for its first
+        position; while shown, the counter's next second (or at once, when
+        a paint is owed), then the fade's frames, then one last paint to
+        clear it. A timer that has run out, or whose replay has ended, is
+        dropped here as well as in _replay_timer_locked(), so it ends even
+        while the main page is not painting through _display_locked() (the
+        idle screen, say). No deadline is ever sooner than
+        REPLAY_TIMER_FADE_GAP_S after the last one this timer signalled,
+        so a paint that does not advance it can never make the loop spin.
+        Plain reads and lock-free plain writes, the same discipline as
+        _arm_replay_timer(); reads repeat_store's own leaf lock."""
+        appliance_id = self._replay_timer_id
+        if appliance_id is None or self._screen != "main" or self._display_sleeping:
+            return None
+        shown = self._replay_timer_shown_at
+        if not shown:
+            if now - self._replay_timer_armed_at >= REPLAY_TIMER_ARM_S:
+                self._replay_timer_id = None
+                return None
+            return now + 0.25
+        elapsed = now - shown
+        rec = repeat_store.get(appliance_id, now)
+        if elapsed >= REPLAY_TIMER_SHOW_S + REPLAY_TIMER_FADE_S or self._repeat_position_line(rec, now) is None:
+            # One last paint, without the line.
+            self._replay_timer_id = None
+            due = now
+        elif elapsed >= REPLAY_TIMER_SHOW_S:
+            due = max(now, self._replay_timer_frame_at + REPLAY_TIMER_FADE_GAP_S)
+        else:
+            due = shown + REPLAY_TIMER_SHOW_S + 0.005
+            counter_due = self._repeat_counter_due(rec, now)
+            if counter_due is not None:
+                due = min(due, counter_due)
+        return max(due, self._replay_timer_signal_at + REPLAY_TIMER_FADE_GAP_S)
+
+    def _tick_replay_timer(self) -> None:
+        """Repaint thread's own 1s-timeout branch: signal a repaint when the
+        main page's replay timer line is due one (see
+        _replay_timer_deadline())."""
+        now = time.monotonic()
+        deadline = self._replay_timer_deadline(now)
+        if deadline is not None and deadline <= now:
+            self._replay_timer_signal_at = now
             self._overlay_signal.set()
 
     def _next_repaint_deadline(self) -> "float | None":
@@ -3640,23 +3800,9 @@ class DialDisplay:
         deadlines = []
         if self._screen == "repeat" and self._repeat_screen is not None:
             now = time.monotonic()
-            rec = repeat_store.get(self._repeat_screen.appliance_id, now)
-            if rec is not None and rec.state == "replaying":
-                value = _repeat_counter_value(rec, now)
-                painted = self._repeat_painted_second
-                if self._repeat_counter_second(value) != painted:
-                    # A paint is already owed (nothing painted yet, or the
-                    # second moved under a signal repaint or a re-sync):
-                    # wake at once rather than at the next boundary.
-                    deadlines.append(now)
-                else:
-                    # The moment the counter first passes the painted
-                    # second, plus the same small scheduling pad the other
-                    # deadlines use. While a re-sync hold is on (value
-                    # below painted) this is over a second out and the
-                    # caller's own one-second cap trims it; the tick then
-                    # simply finds itself not due and reschedules.
-                    deadlines.append(now + (painted + 1.0 - value) + 0.005)
+            due = self._repeat_counter_due(repeat_store.get(self._repeat_screen.appliance_id, now), now)
+            if due is not None:
+                deadlines.append(due)
         if self._controls_hidden_until > time.monotonic():
             deadlines.append(self._controls_hidden_until + 0.005)
         now = time.monotonic()
@@ -3681,6 +3827,9 @@ class DialDisplay:
             now = time.monotonic()
             half = WIFI_FLASH_HALF_PERIOD_S
             deadlines.append((math.floor(now / half) + 1) * half + 0.005)
+        timer_due = self._replay_timer_deadline(time.monotonic())
+        if timer_due is not None:
+            deadlines.append(timer_due)
         return min(deadlines) if deadlines else None
 
     def _tick_outputs_refresh(self) -> None:
@@ -4057,6 +4206,55 @@ class DialDisplay:
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
+    def _repeat_position_line(self, rec, now: float) -> "tuple[str, int | None] | None":
+        """The replay position line for repeat-store record *rec* and the
+        counter second it reads (None unless the replay is running), or
+        None when *rec* has no replay to show (absent, unavailable, or a
+        live source). hold reads 0:00; replaying reads the interpolated
+        counter through _repeat_counter_second(); fading_out freezes at
+        the last observed position. Shared by the repeat screen and the
+        main page's replay timer line so the two always read alike."""
+        if rec is None or not rec.available:
+            return None
+        if rec.state == "hold":
+            return f"0:00 / {format_mmss(rec.recording_seconds)}", None
+        if rec.state == "replaying":
+            second = self._repeat_counter_second(_repeat_counter_value(rec, now))
+            return f"{format_mmss(second)} / {format_mmss(rec.duration_seconds)}", second
+        if rec.state == "fading_out":
+            return f"{format_mmss(rec.position_seconds)} / {format_mmss(rec.duration_seconds)}", None
+        return None
+
+    def _replay_timer_locked(self, now: float) -> "tuple[str, float, int | None] | None":
+        """The main page's replay timer line right now, as (text, alpha,
+        counter second), or None when none is drawn. Only for the appliance
+        the pick was for, and only while it is the one shown; never on the
+        compact tier. The show window starts at the first frame with a
+        position to show, then the line fades. The timer is dropped once it
+        has faded, when its replay ends, or when a pick has shown nothing
+        within REPLAY_TIMER_ARM_S. Caller holds self._lock; repaint thread
+        (reads repeat_store's own leaf lock, as _build_repeat_view_locked()
+        does)."""
+        appliance_id = self._replay_timer_id
+        if appliance_id is None or self._compact_tier():
+            return None
+        if appliance_id != (self._manual_focus_id or self._reporting_appliance_id):
+            return None
+        shown_at = self._replay_timer_shown_at
+        position = self._repeat_position_line(repeat_store.get(appliance_id, now), now)
+        if position is None:
+            if shown_at or now - self._replay_timer_armed_at >= REPLAY_TIMER_ARM_S:
+                self._replay_timer_id = None
+            return None
+        if not shown_at:
+            shown_at = self._replay_timer_shown_at = now
+        elapsed = now - shown_at
+        if elapsed >= REPLAY_TIMER_SHOW_S + REPLAY_TIMER_FADE_S:
+            self._replay_timer_id = None
+            return None
+        alpha = 1.0 if elapsed < REPLAY_TIMER_SHOW_S else 1.0 - (elapsed - REPLAY_TIMER_SHOW_S) / REPLAY_TIMER_FADE_S
+        return position[0], alpha, position[1]
+
     def _build_repeat_view_locked(self, screen: "RepeatScreenState | None", now: float) -> RepeatViewState:
         """Build the compositor's RepeatViewState from the repeat store's
         CURRENT record for *screen* — the daemon-state-to-layout mapping:
@@ -4105,7 +4303,7 @@ class DialDisplay:
         if rec.state == "hold":
             # Already reads 0:00 — there is nothing running yet for the
             # counter-latency clamp (REPEAT_COUNTER_LATENCY_S) to apply to.
-            line = f"0:00 / {format_mmss(rec.recording_seconds)}"
+            line, _ = self._repeat_position_line(rec, now)
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=False, stop_pressed=False,
@@ -4121,8 +4319,7 @@ class DialDisplay:
             # little never makes the line step back or repeat. All of that
             # is _repeat_counter_second(); the frame carries the integer
             # it drew so _display_repeat_locked() can commit it.
-            second = self._repeat_counter_second(_repeat_counter_value(rec, now))
-            line = f"{format_mmss(second)} / {format_mmss(rec.duration_seconds)}"
+            line, second = self._repeat_position_line(rec, now)
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=True, stop_pressed=False,
@@ -4133,7 +4330,7 @@ class DialDisplay:
         # interpolation — the fade is a fixed-length event, not a running
         # clock), Start is dimmed and inert, Stop is drawn pressed to read
         # as "already actioned" rather than merely disabled.
-        line = f"{format_mmss(rec.position_seconds)} / {format_mmss(rec.duration_seconds)}"
+        line, _ = self._repeat_position_line(rec, now)
         return RepeatViewState(
             name=name, layout="replaying", armed=rec.armed, line=line,
             start_enabled=False, stop_enabled=True, stop_pressed=True,
@@ -4235,13 +4432,15 @@ class DialDisplay:
     def _display_eq_locked(self) -> None:
         """Compose and push the EQ-page frame — the compose_eq()
         counterpart to _display_repeat_locked(). Bypasses _display_locked()
-        entirely: this screen has its own dark-chassis compose path and
-        must never pick up the main now-playing overlay. Caller holds
+        entirely: this screen has its own compose path and must never pick
+        up the main now-playing overlay. Passes self._current_base_image
+        through as compose_eq()'s `base`, drawn dimmed behind the bars so
+        the page shows the same artwork as the other two. Caller holds
         self._lock."""
         view = self._build_eq_view_locked(self._eq, time.monotonic())
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_eq(
-            metrics.width, metrics.height, view,
+            metrics.width, metrics.height, view, base=self._current_base_image,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
@@ -4768,6 +4967,10 @@ class DialDisplay:
         if pending is not None and pending[0] == appliance_id:
             self._focus_pending = None
             self._manual_focus_id = None
+        if self._replay_timer_id == appliance_id:
+            # The replay did not start: nothing for the timer line to show.
+            self._arm_replay_timer(None)
+            self._overlay_signal.set()
 
     def on_outputs_result(self, kind: str, appliance_id: str, status, body, request) -> None:
         """Callback for the outputs worker (dial_outputs.py). Runs on the

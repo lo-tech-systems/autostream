@@ -769,6 +769,8 @@ class DialDisplayCompositor:
         overlay=None,
         metrics: LayoutMetrics | None = None,
         reveal_progress: float = 0.0,
+        timer_text: str | None = None,
+        timer_alpha: float = 1.0,
     ):
         """Build one display-ready frame from *base*.
 
@@ -798,6 +800,16 @@ class DialDisplayCompositor:
             on the compact tier, which has no bands to slide, and whenever
             the overlay is not drawn at all. Values outside 0..1 (or NaN)
             clamp to the nearer endpoint.
+        timer_text: the replay position line shown for a short while after
+            a replay is started from the idle screen's picker, drawn
+            centred in the artwork between the top band and the album/
+            title lines, with the same halo the repeat screen's position
+            line uses, over whatever else the frame shows. None (the
+            default) draws nothing and leaves the frame byte-identical.
+            Ignored on the compact tier, whose controls fill the panel.
+        timer_alpha: the timer line's opacity, 0.0 to 1.0, for its fade
+            out. A paint parameter like reveal_progress: the manager owns
+            the clock.
         """
         if base is None:
             return base
@@ -809,29 +821,39 @@ class DialDisplayCompositor:
         if is_artwork:
             image = transform_artwork_for_panel(image, width, height, blur_radius=metrics.blur_radius)
 
+        framed = self._compose_main(image, metrics, overlay, reveal_progress)
+        if timer_text and timer_alpha > 0.0 and metrics.content_tier != CONTENT_COMPACT:
+            framed = _draw_timer_line(framed, timer_text, timer_alpha, metrics)
+        return _finish(framed, rotate, bgr)
+
+    @staticmethod
+    def _compose_main(image, metrics: LayoutMetrics, overlay, reveal_progress: float):
+        """compose()'s own frame, in compose space (before rotate/BGR).
+        May return *image* itself when nothing is drawn over it, so a
+        caller that draws further must not do so in place."""
         if overlay is None or not overlay.visible:
-            return _finish(image, rotate, bgr)
+            return image
 
         if metrics.content_tier == CONTENT_COMPACT:
             frame = _compact_controls_frame(overlay, image.width, image.height, metrics)
             return _compose_frame(
-                image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
+                image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics,
             )
         if reveal_progress >= 1.0:
             # The bands have left the panel: the same frame a hidden overlay
             # produces, through the same call.
-            return _finish(image, rotate, bgr)
+            return image
         frame = _now_playing_frame(overlay, image.width, image.height, metrics)
         if not reveal_progress > 0.0:
             return _compose_frame(
-                image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
+                image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics,
             )
         layout = layout_for(image.width, image.height, metrics=metrics)
         layers = _reveal_layers(
             frame, image.width, image.height, metrics,
             layout.top_band, layout.bottom_band, layout.artwork,
         )
-        return _finish(_reveal_frame(image, layers, reveal_progress), rotate, bgr)
+        return _reveal_frame(image, layers, reveal_progress)
 
     def compose_list(
         self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool,
@@ -960,23 +982,24 @@ class DialDisplayCompositor:
 
     def compose_eq(
         self, width: int, height: int, state: "EqViewState", *, rotate: bool, bgr: bool,
-        metrics: LayoutMetrics | None = None,
+        base=None, metrics: LayoutMetrics | None = None,
     ):
-        """Build one display-ready frame for the EQ page: a dark chassis
-        background (no artwork, matching the repeat/outputs screens), the
-        shared top band with three pager dots (the third one filled) and
-        the master-volume readout (display-only here — the encoder still
-        steps volume from this page; there is no OUTPUTS zone on it), and
-        the bass/treble bar rows (see BODY_EQ_BARS/_body_eq_bars). rotate/
-        bgr are applied last, in the same order every other compose*() call
-        uses. Never raises: a font or glyph failure degrades to a plainer
-        frame, matching every other screen's discipline. metrics: see
-        compose().
+        """Build one display-ready frame for the EQ page: *base* (the
+        current artwork frame or the logo, already panel-sized; None falls
+        back to the flat chassis colour) dimmed across the whole panel,
+        matching the artwork the other two pages show, then the shared top
+        band with three pager dots (the third one filled) and the
+        master-volume readout (the OUTPUTS zone over it opens the outputs
+        list, as on the other two pages), and the bass/treble bar rows (see
+        BODY_EQ_BARS/_body_eq_bars). rotate/bgr are applied last, in the
+        same order every other compose*() call uses. Never raises: a font
+        or glyph failure degrades to a plainer frame, matching every other
+        screen's discipline. metrics: see compose().
         """
         if metrics is None:
             metrics = metrics_for(width, height)
         return _compose_frame(
-            None, width, height, _eq_frame(state, width, height, metrics),
+            base, width, height, _eq_frame(state, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -2400,6 +2423,32 @@ def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
     _draw_text_with_halo(img, layout.line, body.line, font, metrics, align="center")
 
 
+def _draw_timer_line(img: Image.Image, text: str, alpha: float, metrics: LayoutMetrics) -> Image.Image:
+    """The main screen's replay position line (see compose()'s timer_text):
+    *text* centred at the readout size, with its halo, in the artwork
+    between the top band and the first of the album/title lines, blended
+    in at *alpha*. Returns a new image; *img* is never drawn on, since it
+    may be the caller's cached base. Never raises: any failure returns
+    *img* unchanged."""
+    try:
+        layout = layout_for(img.width, img.height, metrics=metrics)
+        first_line = layout.album if layout.album is not None else layout.title
+        rect = (first_line[0], layout.top_band[3], first_line[2], first_line[1])
+        if rect[3] <= rect[1]:
+            return img
+        out = img.copy()
+        region = out.crop(rect)
+        drawn = region.copy()
+        local = (0, 0, rect[2] - rect[0], rect[3] - rect[1])
+        _draw_text_with_halo(drawn, local, text, _load_font(metrics.font_readout), metrics, align="center")
+        if alpha < 1.0:
+            drawn = Image.blend(region, drawn, max(0.0, alpha))
+        out.paste(drawn, rect[:2])
+        return out
+    except Exception:
+        return img
+
+
 # The row marker's box side as a fraction of the row height. At 0.75 the
 # glyph's reach (0.28 of the box each way) gives a 25 px triangle on a
 # 60 px row against a 24 px body font: the marker reads at the text's own
@@ -3098,9 +3147,11 @@ def _eq_pressed_rects(
 
 
 def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    # The bars fill the whole panel below the top band, so the artwork
+    # behind them is dimmed everywhere, not just under the bands.
     return Frame(
-        background=BG_CHASSIS,
-        dim_top=True,
+        background=BG_BASE,
+        dim_all=True,
         pressed=_eq_pressed_rects(state.pressed, width, height, metrics),
         header=Header(
             name=state.name, volume=state.volume, muted=state.muted, dots_filled=2, dots_count=3,
