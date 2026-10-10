@@ -1,11 +1,12 @@
 """Tests for dial_touch_layout.py — pure touch-zone geometry.
 
 Covers the band layout across all profile sizes in dial_display_profiles.py
-(layout_for()'s band/artist/cluster/down/up geometry), exact tiling (zones +
-dead zones cover the panel with no gap/overlap), the remainder policy
-(leftover pixels never land in a control rectangle), zone_at() hit-testing
-at zone centres and in dead-zone/artist/middle-band gaps, and the pinned
-160x128 reference geometry from the low-level design.
+(layout_for()'s band/name/artist/cluster/down/up geometry), exact tiling
+(zones + dead zones cover the panel with no gap/overlap), the remainder
+policy (leftover pixels never land in a control rectangle), zone_at()
+hit-testing at zone centres and in dead-zone/artist/middle-band gaps, the
+selector surface's list_layout_for()/list_zone_at(), and the pinned 160x128
+reference geometry from the low-level design.
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from dial_touch_layout import (  # noqa: E402
     TouchZone,
     _dead_zone_margin,
     layout_for,
+    list_layout_for,
+    list_zone_at,
     zone_at,
     zones_for,
 )
@@ -39,7 +42,7 @@ PROFILE_SIZES = [
     (320, 240),  # ili9341_320x240 (duplicate size, both must work)
 ]
 
-ALL_ZONES = {TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP}
+ALL_ZONES = {TouchZone.NAME, TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP}
 
 
 class TestExactTiling:
@@ -70,9 +73,12 @@ class TestExactTiling:
                 )
                 # zone_at agrees with manual rectangle membership: a hit
                 # means exactly one rectangle contains the point, a miss
-                # (dead zone, artist area, middle band, or out-of-bounds)
-                # means none does. The middle half and the artist area are
-                # now dead pixels by construction, so this still holds.
+                # (dead zone, the relocated artist line, middle band, or
+                # out-of-bounds) means none does. The NAME zone now covers
+                # what used to be the non-actuating artist area; the
+                # relocated artist line (centre-low) is itself non-actuating
+                # and stays dead pixels by construction, so this still
+                # holds.
                 assert (z is not None) == in_some_rect
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
@@ -117,9 +123,15 @@ class TestZoneAt:
         assert _dead_zone_margin(240, 240) > 3
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_tap_in_artist_area_and_middle_returns_none(self, width, height):
+    def test_tap_in_name_area_hits_name_and_middle_returns_none(self, width, height):
         layout = layout_for(width, height)
 
+        # The old artist-area rectangle is now the NAME zone.
+        nx0, ny0, nx1, ny1 = layout.name
+        ncx, ncy = (nx0 + nx1) // 2, (ny0 + ny1) // 2
+        assert zone_at(ncx, ncy, width, height) == TouchZone.NAME
+
+        # The relocated (centre-low) artist line is still non-actuating.
         ax0, ay0, ax1, ay1 = layout.artist
         acx, acy = (ax0 + ax1) // 2, (ay0 + ay1) // 2
         assert zone_at(acx, acy, width, height) is None
@@ -144,6 +156,7 @@ class TestZonesForCompleteness:
     def test_zones_for_matches_layout_for(self, width, height):
         zones = zones_for(width, height)
         layout = layout_for(width, height)
+        assert zones[TouchZone.NAME] == layout.name
         assert zones[TouchZone.MUTE] == layout.volume_cluster
         assert zones[TouchZone.DOWN] == layout.down
         assert zones[TouchZone.UP] == layout.up
@@ -167,20 +180,28 @@ class TestBandLayout:
             assert 0 <= x0 < x1 <= width
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_mute_and_artist_lie_inside_the_top_band(self, width, height):
+    def test_mute_and_name_lie_inside_the_top_band(self, width, height):
         layout = layout_for(width, height)
         ty0, ty1 = layout.top_band[1], layout.top_band[3]
-        for rect in (layout.volume_cluster, layout.artist):
+        for rect in (layout.volume_cluster, layout.name):
             x0, y0, x1, y1 = rect
             assert ty0 <= y0 < y1 <= ty1
             assert 0 <= x0 < x1 <= width
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_artist_and_mute_are_separated_by_two_margins(self, width, height):
+    def test_name_and_mute_are_separated_by_two_margins(self, width, height):
         layout = layout_for(width, height)
         margin = _dead_zone_margin(width, height)
-        gap = layout.volume_cluster[0] - layout.artist[2]
+        gap = layout.volume_cluster[0] - layout.name[2]
         assert gap == 2 * margin
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_artist_sits_above_bottom_band_and_never_overlaps_it(self, width, height):
+        layout = layout_for(width, height)
+        ax0, ay0, ax1, ay1 = layout.artist
+        assert ay1 == layout.bottom_band[1]
+        assert ay0 < ay1
+        assert 0 <= ax0 < ax1 <= width
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_middle_rows_contain_no_zone_pixel(self, width, height):
@@ -195,7 +216,77 @@ def test_reference_geometry_exact():
     drift in the band-layout arithmetic is deliberate, not accidental."""
     layout = layout_for(160, 128)
     assert layout.volume_cluster == (99, 0, 160, 29)
-    assert layout.artist == (3, 0, 93, 32)
+    assert layout.name == (3, 0, 93, 32)
+    assert layout.artist == (3, 80, 157, 96)
     assert layout.down == (0, 99, 77, 128)
     assert layout.up == (83, 99, 160, 128)
     assert layout.divider_x == 80
+
+
+class TestListLayout:
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_three_rows_per_page_on_every_profile(self, width, height):
+        layout = list_layout_for(width, height)
+        assert layout.rows_per_page == 3
+        assert len(layout.rows) == 3
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_rows_tile_from_zero_to_bar_with_no_gap_or_overlap(self, width, height):
+        layout = list_layout_for(width, height)
+        bar_h = height // 4
+        expected_top = 0
+        for x0, y0, x1, y1 in layout.rows:
+            assert (x0, x1) == (0, width)
+            assert y0 == expected_top
+            assert y1 - y0 == layout.row_h
+            expected_top = y1
+        assert expected_top == height - bar_h
+        assert layout.bar == (0, height - bar_h, width, height)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_bar_splits_into_three_with_dead_gaps(self, width, height):
+        layout = list_layout_for(width, height)
+        margin = _dead_zone_margin(width, height)
+        # The first gap (back -> down) never absorbs the remainder, so it is
+        # always exactly 2*margin; the last gap (down -> up) may be wider by
+        # the leftover pixel(s) — see _split's REMAINDER POLICY.
+        assert layout.down[0] - layout.back[2] == 2 * margin
+        assert layout.up[0] - layout.down[2] >= 2 * margin
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_row_centres_hit_list_row_with_index(self, width, height):
+        layout = list_layout_for(width, height)
+        for i, (x0, y0, x1, y1) in enumerate(layout.rows):
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            assert list_zone_at(cx, cy, width, height) == (TouchZone.LIST_ROW, i)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_bar_centres_hit_back_down_up(self, width, height):
+        layout = list_layout_for(width, height)
+        for zone, rect in (
+            (TouchZone.LIST_BACK, layout.back),
+            (TouchZone.LIST_DOWN, layout.down),
+            (TouchZone.LIST_UP, layout.up),
+        ):
+            x0, y0, x1, y1 = rect
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            assert list_zone_at(cx, cy, width, height) == (zone, None)
+
+    def test_gaps_between_bar_zones_return_none(self):
+        layout = list_layout_for(160, 128)
+        gap_x = (layout.back[2] + layout.down[0]) // 2
+        gap_y = (layout.bar[1] + layout.bar[3]) // 2
+        assert list_zone_at(gap_x, gap_y, 160, 128) is None
+
+    def test_out_of_bounds_returns_none(self):
+        assert list_zone_at(-1, 0, 160, 128) is None
+        assert list_zone_at(0, -1, 160, 128) is None
+        assert list_zone_at(160, 0, 160, 128) is None
+        assert list_zone_at(1000, 1000, 160, 128) is None
+
+    def test_reference_geometry_exact(self):
+        """Pin the 160x128 numbers so any future drift is deliberate."""
+        layout = list_layout_for(160, 128)
+        assert layout.row_h == 32
+        assert layout.rows == ((0, 0, 160, 32), (0, 32, 160, 64), (0, 64, 160, 96))
+        assert layout.bar == (0, 96, 160, 128)

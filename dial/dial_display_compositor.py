@@ -48,6 +48,26 @@ case for a text failure is an overlay with the glyphs but no text — never an
 exception escaping compose(). See _load_font() for the font fallback chain
 this same discipline extends to.
 
+The appliance name (top-left) and the artist line (centre-low) are both
+drawn over arbitrary album art, so both go through _draw_text_with_halo()
+rather than a plain draw.text(): a soft, Gaussian-blurred dark glow is
+composited behind the text before the text itself is drawn, so it stays
+legible whether the artwork behind it is light or dark. The halo is drawn
+per element, confined to that element's own rectangle — never as a
+whole-frame effect — the same discipline _draw_glyph_supersampled() applies
+to the selector chassis's check mark and chevrons (rendered at a higher
+resolution and downsampled with LANCZOS, so small diagonal strokes read
+smoothly rather than aliasing).
+
+compose_list() is the second top-level entry point this module offers,
+alongside compose(): it builds the appliance-selector screen (a dark
+chassis with up to three rows and a back|down|up bar) from a ListState
+snapshot, sharing dial_touch_layout.list_layout_for()'s geometry with
+dial_touch.py's selector-surface hit-test — the same single-source-of-truth
+discipline compose()'s overlay geometry already follows. Like compose(), it
+applies rotate/BGR last and never raises: a font or glyph failure degrades
+to a plainer row, never an exception.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
@@ -56,10 +76,23 @@ import functools
 import logging
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
-from dial_touch_layout import OverlayLayout, TouchZone, layout_for, zones_for
+from dial_touch_layout import (
+    OverlayLayout,
+    TouchZone,
+    layout_for,
+    list_layout_for,
+    zones_for,
+)
+
+# Pillow renamed the resample enum in recent versions; fall back for older
+# installs, the same guard dial_display_image.py uses for its own resizes.
+try:
+    _LANCZOS = Image.Resampling.LANCZOS
+except AttributeError:
+    _LANCZOS = Image.LANCZOS
 
 _logger = logging.getLogger(__name__)
 
@@ -108,6 +141,26 @@ _PAD_PX_AT_REFERENCE = 4
 _ICON_GAP_PX_AT_REFERENCE = 3
 _FONT_REFERENCE_SHORT_SIDE = 128
 
+# Halo (soft dark glow behind text drawn over artwork — see the module
+# docstring and _draw_text_with_halo()). The stroke gives the glyph outline
+# its dark "ink"; the blur then softens that outline into a glow rather than
+# a hard silhouette. Both scale with the panel's short side, the same
+# reference axis every other overlay dimension uses.
+_HALO_STROKE_PX_AT_REFERENCE = 2
+_HALO_BLUR_RADIUS_AT_REFERENCE = 2
+_HALO_RGBA = (0, 0, 0, 255)
+
+# Selector chassis (compose_list) — a dark background distinct from any
+# artwork, so the list unambiguously reads as a different screen.
+_LIST_BG_RGB = (16, 16, 16)
+_LIST_SEPARATOR_RGB = (48, 48, 48)
+
+# Small glyphs (the selector's check mark and back/down/up chevrons) are
+# drawn at this multiple of their target box size on a transparent layer,
+# then downsampled with LANCZOS — antialiasing applied per glyph, not to
+# the whole frame. See _draw_glyph_supersampled().
+_GLYPH_SUPERSAMPLE = 4
+
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -133,6 +186,13 @@ class OverlayState:
         yet, or when the observation is for a different target. Appended
         after muted so positional construction in existing tests/call sites
         keeps working.
+    name: the appliance's display name, or "" to draw nothing and leave the
+        NAME tap-zone inert. Always visible whenever a focused/controllable
+        appliance is shown — see the low-level design's Q4: this is
+        unconditional, never gated on how many appliances are authorized.
+        Drawn top-left with a soft halo (see _draw_text_with_halo()), the
+        same as the artist line. Appended last so positional construction
+        in existing tests/call sites keeps working.
     """
 
     visible: bool = False
@@ -140,6 +200,33 @@ class OverlayState:
     muted: bool | None = None
     artist: str = ""
     volume: int | None = None
+    name: str = ""
+
+
+@dataclass(frozen=True)
+class ListState:
+    """Immutable snapshot of what the appliance-selector screen should show
+    — the compose_list() counterpart to OverlayState. Built by the display
+    manager from its SelectorState (dial_display.py) on the repaint thread;
+    this module has no idea what an "appliance" is, only rows to draw.
+
+    rows: (label, checked) pairs for the CURRENT page only — at most
+        ListLayout.rows_per_page entries (3 on every shipped profile).
+        checked marks the row that is the current focus.
+    has_prev: whether a previous page exists — gates whether the LIST_UP
+        chevron is drawn lit (see dial_touch_layout.ListLayout.up and the
+        LIST_UP -> selector_page(-1) dispatch in dial_main.py).
+    has_next: whether a next page exists — gates the LIST_DOWN chevron
+        (selector_page(+1)).
+    pressed: the (TouchZone, index) currently being pressed, or None. index
+        is only meaningful for LIST_ROW; the other zones ignore it. Mirrors
+        OverlayState.pressed for the main surface.
+    """
+
+    rows: tuple[tuple[str, bool], ...] = ()
+    has_prev: bool = False
+    has_next: bool = False
+    pressed: tuple[TouchZone, int | None] | None = None
 
 
 class DialDisplayCompositor:
@@ -188,6 +275,31 @@ class DialDisplayCompositor:
         if bgr:
             image = Image.merge("RGB", image.split()[::-1])
         return image
+
+    def compose_list(self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool):
+        """Build one display-ready frame for the appliance-selector screen.
+
+        Always starts from a flat dark background (_LIST_BG_RGB) — there is
+        no artwork on this screen. Draws up to ListLayout.rows_per_page rows
+        (label, plus a check glyph on the row `state` marks checked), a 1px
+        separator under each row, and the bottom back|down|up bar (dimmed
+        like compose()'s bottom band, with the down/up chevrons drawn at
+        OVERLAY_DIM_FACTOR brightness when no next/previous page exists).
+        rotate/bgr are applied last, in the same order compose() uses.
+
+        Shares dial_touch_layout.list_layout_for()'s geometry with
+        dial_touch.py's selector-surface hit-test — the single source of
+        truth for where each row and bar zone sits. Never raises: a font or
+        glyph failure degrades to a plainer row, matching compose()'s own
+        text-failure discipline.
+        """
+        frame = _draw_list(width, height, state)
+
+        if rotate:
+            frame = frame.transpose(Image.ROTATE_180)
+        if bgr:
+            frame = Image.merge("RGB", frame.split()[::-1])
+        return frame
 
 
 def _scaled_px(reference_px: int, width: int, height: int, floor: int) -> int:
@@ -249,10 +361,10 @@ def _reset_font_cache() -> None:
 
 def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayState) -> Image.Image:
     """Return a new frame: *image* with its top/bottom bands dimmed, the
-    artist name, volume readout, minus/plus glyphs and a divider line drawn
-    on top, plus an optional pressed-zone highlight. Sized from
-    dial_touch_layout.layout_for()/zones_for() so this works at every
-    profile size.
+    appliance name, artist line, volume readout, minus/plus glyphs and a
+    divider line drawn on top, plus an optional pressed-zone highlight.
+    Sized from dial_touch_layout.layout_for()/zones_for() so this works at
+    every profile size.
     """
     layout = layout_for(width, height)
     zones = zones_for(width, height)
@@ -276,7 +388,15 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
     artist_font = _load_font(artist_px)
 
     _draw_volume_cluster(draw, layout.volume_cluster, overlay.volume, overlay.muted, volume_font, width, height)
-    _draw_artist(draw, layout.artist, overlay.artist, artist_font, width, height)
+    # Both the name (top-left) and the artist line (centre-low) are drawn
+    # over arbitrary album art, so both get the soft halo — see the module
+    # docstring and _draw_text_with_halo(). Each call mutates frame in
+    # place (a paste, not a new object), so the draw handle is re-created
+    # afterwards, the same discipline the pressed-highlight branch above
+    # uses.
+    _draw_text_with_halo(frame, layout.name, overlay.name, artist_font, width, height)
+    _draw_text_with_halo(frame, layout.artist, overlay.artist, artist_font, width, height)
+    draw = ImageDraw.Draw(frame)
     _draw_minus_glyph(draw, layout.down)
     _draw_plus_glyph(draw, layout.up)
     _draw_band_divider(draw, layout, width, height)
@@ -492,33 +612,187 @@ def _draw_volume_cluster(
     _draw_speaker_glyph(draw, icon_box, muted)
 
 
-def _draw_artist(
-    draw: ImageDraw.ImageDraw,
+def _halo_stroke_px(width: int, height: int) -> int:
+    return _scaled_px(_HALO_STROKE_PX_AT_REFERENCE, width, height, 1)
+
+
+def _halo_blur_radius(width: int, height: int) -> int:
+    return _scaled_px(_HALO_BLUR_RADIUS_AT_REFERENCE, width, height, 1)
+
+
+def _draw_text_with_halo(
+    frame: Image.Image,
     rect: tuple[int, int, int, int],
-    artist: str,
+    text: str,
     font,
     width: int,
     height: int,
 ) -> None:
-    """Draw *artist* left-aligned inside *rect* (the artist text area),
-    truncated with an ellipsis so it never reaches the volume cluster. A
-    blank *artist* string or a missing *font* draws nothing — always safe.
-    *width*/*height* are the panel dimensions, used only to scale the pad
-    margin (see _draw_volume_cluster)."""
-    if not artist or font is None:
+    """Draw *text* left-aligned inside *rect*, legible over arbitrary album
+    art: a soft, Gaussian-blurred dark glow is composited behind the text
+    before the text itself is drawn in the glyph colour. Used for both the
+    appliance name (top-left) and the artist line (centre-low) — see the
+    module docstring's halo paragraph.
+
+    A blank *text*, a missing *font*, truncation-to-nothing, or any Pillow
+    failure while building the halo all degrade gracefully: the halo step
+    is skipped/caught and the plain text still gets drawn (matching every
+    other text helper's discipline of never letting a text failure escape
+    compose()). The halo itself is confined strictly to *rect* — it is
+    composited on a *rect*-sized layer and pasted back into *rect* only, so
+    it can never bleed into a neighbouring zone.
+    """
+    if not text or font is None:
         return
 
+    draw = ImageDraw.Draw(frame)
     pad = _pad_px(width, height)
     max_w = rect[2] - rect[0] - pad
-    text = _truncate_to_width(draw, artist, font, max_w)
-    if not text:
+    if max_w <= 0:
+        return
+    truncated = _truncate_to_width(draw, text, font, max_w)
+    if not truncated:
         return
 
-    measured = _text_size(draw, text, font)
+    measured = _text_size(draw, truncated, font)
     if measured is None:
         return
     text_w, text_h, bbox = measured
     left, top, _, _ = bbox
     cy = (rect[1] + rect[3]) // 2
     x = rect[0] + pad
-    _draw_text_safe(draw, (x - left, cy - text_h // 2 - top), text, font)
+    y = cy - text_h // 2
+    xy = (x - left, y - top)
+
+    rect_w, rect_h = rect[2] - rect[0], rect[3] - rect[1]
+    if rect_w > 0 and rect_h > 0:
+        try:
+            stroke = _halo_stroke_px(width, height)
+            radius = _halo_blur_radius(width, height)
+            local_xy = (xy[0] - rect[0], xy[1] - rect[1])
+            halo_layer = Image.new("RGBA", (rect_w, rect_h), (0, 0, 0, 0))
+            ImageDraw.Draw(halo_layer).text(
+                local_xy, truncated, font=font,
+                fill=_HALO_RGBA, stroke_width=stroke, stroke_fill=_HALO_RGBA,
+            )
+            halo_layer = halo_layer.filter(ImageFilter.GaussianBlur(radius))
+            region = frame.crop(rect).convert("RGBA")
+            composited = Image.alpha_composite(region, halo_layer).convert("RGB")
+            frame.paste(composited, (rect[0], rect[1]))
+        except Exception:
+            pass  # the halo is cosmetic only — fall through to plain text.
+
+    _draw_text_safe(ImageDraw.Draw(frame), xy, truncated, font)
+
+
+def _draw_glyph_supersampled(frame: Image.Image, rect: tuple[int, int, int, int], draw_fn) -> None:
+    """Draw a small glyph antialiased: *draw_fn(draw, w, h)* renders into a
+    transparent (w, h) canvas at _GLYPH_SUPERSAMPLE times *rect*'s size,
+    which is then downsampled with LANCZOS and alpha-composited back into
+    *rect*. Used for the selector chassis's check mark and chevrons, whose
+    diagonal strokes would otherwise alias visibly at these small sizes —
+    the same per-element (never whole-frame) antialiasing the halo helper
+    above applies to text. Any Pillow failure is swallowed: a glyph that
+    fails to render simply does not appear, never an exception.
+    """
+    x0, y0, x1, y1 = rect
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    try:
+        big_w, big_h = w * _GLYPH_SUPERSAMPLE, h * _GLYPH_SUPERSAMPLE
+        big = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+        draw_fn(ImageDraw.Draw(big), big_w, big_h)
+        small = big.resize((w, h), _LANCZOS)
+        region = frame.crop(rect).convert("RGBA")
+        composited = Image.alpha_composite(region, small).convert("RGB")
+        frame.paste(composited, (x0, y0))
+    except Exception:
+        pass
+
+
+def _draw_check_tick(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """Two-segment check mark into a (w, h) canvas — see
+    _draw_glyph_supersampled, which supplies the supersampled canvas."""
+    stroke = max(1, min(w, h) // 6)
+    x0, y0 = w * 0.12, h * 0.55
+    x1, y1 = w * 0.42, h * 0.82
+    x2, y2 = w * 0.88, h * 0.18
+    draw.line([(x0, y0), (x1, y1)], fill=_GLYPH_RGB, width=stroke, joint="curve")
+    draw.line([(x1, y1), (x2, y2)], fill=_GLYPH_RGB, width=stroke, joint="curve")
+
+
+def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit: bool) -> None:
+    """A simple two-segment chevron (back/down/up) into a (w, h) canvas —
+    see _draw_glyph_supersampled. *lit*=False dims it to OVERLAY_DIM_FACTOR
+    of the glyph colour, matching a disabled/no-more-pages affordance."""
+    stroke = max(1, min(w, h) // 7)
+    color = _GLYPH_RGB if lit else tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
+    cx, cy = w / 2, h / 2
+    r = min(w, h) * 0.28
+    if direction == "left":
+        points = [(cx + r, cy - r), (cx - r, cy), (cx + r, cy + r)]
+    elif direction == "down":
+        points = [(cx - r, cy - r), (cx, cy + r), (cx + r, cy - r)]
+    else:  # "up"
+        points = [(cx - r, cy + r), (cx, cy - r), (cx + r, cy + r)]
+    draw.line(points, fill=color, width=stroke, joint="curve")
+
+
+def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
+    """Render the appliance-selector chassis (compose-space, pre rotate/BGR)
+    — see DialDisplayCompositor.compose_list()."""
+    layout = list_layout_for(width, height)
+    frame = Image.new("RGB", (width, height), _LIST_BG_RGB)
+    draw = ImageDraw.Draw(frame)
+
+    def _pressed_rect(pressed):
+        if pressed is None:
+            return None
+        zone, index = pressed
+        if zone == TouchZone.LIST_ROW:
+            if index is not None and 0 <= index < len(layout.rows):
+                return layout.rows[index]
+            return None
+        return {
+            TouchZone.LIST_BACK: layout.back,
+            TouchZone.LIST_DOWN: layout.down,
+            TouchZone.LIST_UP: layout.up,
+        }.get(zone)
+
+    pressed_rect = _pressed_rect(state.pressed)
+    if pressed_rect is not None:
+        _draw_pressed_highlight(frame, pressed_rect)
+        draw = ImageDraw.Draw(frame)
+
+    row_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+    row_font = _load_font(row_px)
+    pad = _pad_px(width, height)
+
+    for i, (x0, y0, x1, y1) in enumerate(layout.rows):
+        draw.line([(x0, y1 - 1), (x1 - 1, y1 - 1)], fill=_LIST_SEPARATOR_RGB, width=1)
+        if i >= len(state.rows):
+            continue
+        label, checked = state.rows[i]
+        check_box = layout.row_h
+        text_x1 = x1 - pad - (check_box if checked else 0)
+        if label and row_font is not None and text_x1 > x0 + pad:
+            text = _truncate_to_width(draw, label, row_font, text_x1 - (x0 + pad))
+            if text:
+                measured = _text_size(draw, text, row_font)
+                if measured is not None:
+                    text_w, text_h, bbox = measured
+                    left, top, _, _ = bbox
+                    cy = (y0 + y1) // 2
+                    _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font)
+        if checked:
+            check_rect = (x1 - pad - check_box, y0, x1 - pad, y1)
+            _draw_glyph_supersampled(frame, check_rect, _draw_check_tick)
+            draw = ImageDraw.Draw(frame)
+
+    _dim_rect(frame, layout.bar)
+    draw = ImageDraw.Draw(frame)
+    _draw_glyph_supersampled(frame, layout.back, lambda d, w, h: _draw_chevron(d, w, h, "left", True))
+    _draw_glyph_supersampled(frame, layout.down, lambda d, w, h: _draw_chevron(d, w, h, "down", state.has_next))
+    _draw_glyph_supersampled(frame, layout.up, lambda d, w, h: _draw_chevron(d, w, h, "up", state.has_prev))
+    return frame

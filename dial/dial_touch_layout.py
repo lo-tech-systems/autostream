@@ -29,27 +29,41 @@ physical mounting.
 LAYOUT SELECTION: one band layout, used at every panel size — the layout is
 aspect-independent, so there is no ratio threshold and no alternate shape to
 select. The top and bottom `height // BAND_DIVISOR` rows are dimmed bands;
-everything in between is left untouched. The top band splits into the
-artist-name area (left, non-actuating) and the volume cluster (speaker
-glyph + master-volume number, right — this is also the MUTE zone). The
-bottom band splits into DOWN (left half) and UP (right half). All panels in
-dial_display_profiles.py are mounted landscape and this layout does not
-depend on their aspect ratio, so no other layout is defined.
+everything in between is left untouched. The top band splits into the NAME
+zone (left — the appliance name; tap to open the appliance selector) and
+the volume cluster (speaker glyph + master-volume number, right — this is
+also the MUTE zone). The bottom band splits into DOWN (left half) and UP
+(right half). The artist name, relocated to a centre-low line just above
+the bottom band, is a non-actuating label with no touch zone of its own.
+All panels in dial_display_profiles.py are mounted landscape and this
+layout does not depend on their aspect ratio, so no other layout is
+defined.
 
 DEAD ZONES: every boundary between two adjacent controls carries a small
 inert band (the "dead zone") on each side, so an imprecise tap near a
 boundary hits neither neighbour rather than the wrong one. Two such
-boundaries exist: between the artist text area and the volume cluster (a
-gap of 2*margin, the same width used between DOWN and UP), and between DOWN
-and UP themselves. The middle half of the panel (the rows strictly between
-the top and bottom bands) and the artist text area are dead for a different
-reason — they simply carry no control at all; `zone_at` returns None there
-exactly as it does in a genuine dead-zone gap. The margin is 3px at the
-160x128 profile (the shipped panel) and scales with the panel's short side
-using the same rule as dial_display_image._blur_radius_for — margin =
-round(min(width, height) * 3 / 128) with a floor of 1px. This keeps the
-dead-zone band feeling the same physical size across profiles rather than
-shrinking to nothing on a big panel or ballooning on a small one.
+boundaries exist: between the NAME zone and the volume cluster (a gap of
+2*margin, the same width used between DOWN and UP), and between DOWN and UP
+themselves. The middle half of the panel (the rows strictly between the top
+and bottom bands, other than the artist label's own rect) is dead for a
+different reason — it simply carries no control at all; `zone_at` returns
+None there exactly as it does in a genuine dead-zone gap. The margin is 3px
+at the 160x128 profile (the shipped panel) and scales with the panel's
+short side using the same rule as dial_display_image._blur_radius_for —
+margin = round(min(width, height) * 3 / 128) with a floor of 1px. This
+keeps the dead-zone band feeling the same physical size across profiles
+rather than shrinking to nothing on a big panel or ballooning on a small
+one.
+
+SURFACES: this module describes geometry for TWO surfaces, never mixed. The
+MAIN surface (`zone_at`/`zones_for`/`layout_for`) is the now-playing
+screen: NAME, MUTE, DOWN, UP, plus the non-actuating artist label. The
+SELECTOR surface (`list_zone_at`/`list_layout_for`) is the appliance list:
+LIST_ROW (one per visible row), LIST_BACK, LIST_DOWN and LIST_UP. A caller
+never mixes the two — which surface to hit-test against is decided
+elsewhere (dial_touch.TouchStateMachine.set_surface) — but both are pure
+functions of (x, y, width, height) and both are the ONLY hit-test functions
+any state machine calls.
 
 REMAINDER POLICY: an active width does not always divide evenly between the
 two zones sharing a split (DOWN and UP, after the dead-zone gap between
@@ -83,12 +97,22 @@ _REFERENCE_SHORT_SIDE = 128
 
 
 class TouchZone(str, Enum):
-    """The three touch zones. Compares equal to its own string value, so
-    callers may use TouchZone.MUTE or the literal "mute" interchangeably."""
+    """The touch zones across both surfaces (see the module docstring's
+    SURFACES paragraph). Compares equal to its own string value, so callers
+    may use TouchZone.MUTE or the literal "mute" interchangeably.
+
+    MUTE, DOWN, UP, NAME: the main (now-playing) surface.
+    LIST_BACK, LIST_DOWN, LIST_UP, LIST_ROW: the selector surface.
+    """
 
     MUTE = "mute"
     DOWN = "down"
     UP = "up"
+    NAME = "name"
+    LIST_BACK = "list_back"
+    LIST_DOWN = "list_down"
+    LIST_UP = "list_up"
+    LIST_ROW = "list_row"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -98,17 +122,36 @@ Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 class OverlayLayout:
     """Full overlay geometry for one panel size — the single source of truth
     for both where the compositor dims/draws and where the touch zones sit.
-    `volume_cluster`, `down` and `up` are exactly the MUTE/DOWN/UP zone
-    rectangles zones_for() returns; `artist` and the two band rectangles
-    have no corresponding TouchZone because they never actuate."""
+    `name`, `volume_cluster`, `down` and `up` are exactly the NAME/MUTE/
+    DOWN/UP zone rectangles zones_for() returns; `artist` and the two band
+    rectangles have no corresponding TouchZone because they never actuate."""
 
     top_band: Rect        # full-width dim region, rows [0, band_h)
     bottom_band: Rect     # full-width dim region, rows [height-band_h, height)
-    artist: Rect          # text area, left part of top band (non-actuating)
+    name: Rect            # appliance name, left part of top band (== NAME zone)
+    artist: Rect          # centre-low text line, just above the bottom band (non-actuating)
     volume_cluster: Rect  # glyph + number, right part of top band (== MUTE zone)
     down: Rect            # bottom band, left half (== DOWN zone)
     up: Rect              # bottom band, right half (== UP zone)
     divider_x: int        # x of the vertical divider centre in the bottom band
+
+
+@dataclass(frozen=True)
+class ListLayout:
+    """Full selector-screen geometry for one panel size — the single source
+    of truth for both where the compositor draws the appliance list and
+    where the selector's touch zones sit. `back`, `down` and `up` are
+    exactly the LIST_BACK/LIST_DOWN/LIST_UP zone rectangles list_zone_at()
+    resolves to; `rows` are the LIST_ROW rectangles for the CURRENT page,
+    top to bottom, full width."""
+
+    rows: tuple[Rect, ...]   # rows_per_page rectangles, full width, top to bottom
+    bar: Rect                # bottom band (undivided) — back|down|up live here
+    back: Rect               # bar, left third (== LIST_BACK zone)
+    down: Rect               # bar, middle third (== LIST_DOWN zone)
+    up: Rect                 # bar, right third (== LIST_UP zone)
+    row_h: int
+    rows_per_page: int
 
 
 def _dead_zone_margin(width: int, height: int) -> int:
@@ -159,9 +202,12 @@ def layout_for(width: int, height: int) -> OverlayLayout:
 
     m = _dead_zone_margin(width, height). Bands are a plain floor-divide of
     the panel height (no dead-zone gap of their own — the artwork above and
-    below them is the "gap"); the artist/cluster split and the down/up split
-    each carry the usual dead-zone margins. See the module docstring for the
-    exact arithmetic and the pinned 160x128 reference numbers.
+    below them is the "gap"); the name/cluster split and the down/up split
+    each carry the usual dead-zone margins. The artist line sits centre-low,
+    directly above the bottom band, with no dead-zone gap of its own (it
+    never actuates, so there is nothing to protect it from). See the module
+    docstring for the exact arithmetic and the pinned 160x128 reference
+    numbers.
     """
     m = _dead_zone_margin(width, height)
     band_h = height // BAND_DIVISOR
@@ -170,11 +216,17 @@ def layout_for(width: int, height: int) -> OverlayLayout:
 
     cluster_w = width * CLUSTER_WIDTH_NUMERATOR // CLUSTER_WIDTH_DENOMINATOR
     # Inset by m on the left and bottom so the pressed wash never touches the
-    # band edge or the artist area.
+    # band edge or the name area.
     volume_cluster: Rect = (width - cluster_w + m, 0, width, band_h - m)
-    # The gap between artist and cluster is 2m, the same dead-zone width
-    # used between DOWN and UP.
-    artist: Rect = (m, 0, width - cluster_w - m, band_h)
+    # The gap between the name zone and cluster is 2m, the same dead-zone
+    # width used between DOWN and UP. This is the same rectangle the artist
+    # text occupied before it moved centre-low.
+    name: Rect = (m, 0, width - cluster_w - m, band_h)
+
+    # Centre-low line, just above the bottom band — half the band height,
+    # inset by m on each side. Non-actuating: no TouchZone, no dead-zone gap.
+    artist_h = band_h // 2
+    artist: Rect = (m, height - band_h - artist_h, width - m, height - band_h)
 
     (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1])
     by0 = height - band_h + m
@@ -185,6 +237,7 @@ def layout_for(width: int, height: int) -> OverlayLayout:
     return OverlayLayout(
         top_band=top_band,
         bottom_band=bottom_band,
+        name=name,
         artist=artist,
         volume_cluster=volume_cluster,
         down=down,
@@ -194,8 +247,8 @@ def layout_for(width: int, height: int) -> OverlayLayout:
 
 
 def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
-    """Return the ACTIVE (tappable) rectangle for each of the three zones,
-    already shrunk by the dead-zone margins, in compose-space.
+    """Return the ACTIVE (tappable) rectangle for each of the main-surface
+    zones, already shrunk by the dead-zone margins, in compose-space.
 
     Rectangles are (x0, y0, x1, y1) with x1/y1 exclusive (Python slice /
     range convention), so a point p is inside iff x0 <= p.x < x1 and
@@ -204,6 +257,7 @@ def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
     """
     layout = layout_for(width, height)
     return {
+        TouchZone.NAME: layout.name,
         TouchZone.MUTE: layout.volume_cluster,
         TouchZone.DOWN: layout.down,
         TouchZone.UP: layout.up,
@@ -211,9 +265,56 @@ def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
 
 
 def zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
-    """Return the zone containing compose-space point (x, y), or None if the
-    point falls in a dead zone or outside the panel entirely."""
+    """Return the main-surface zone containing compose-space point (x, y),
+    or None if the point falls in a dead zone or outside the panel
+    entirely."""
     for zone, (x0, y0, x1, y1) in zones_for(width, height).items():
         if x0 <= x < x1 and y0 <= y < y1:
             return zone
+    return None
+
+
+def list_layout_for(width: int, height: int) -> ListLayout:
+    """Compute the full selector-screen geometry for a *width* x *height*
+    panel: rows_per_page rows tiling [0, height - bar_h), full width, plus a
+    bottom bar split three ways (back|down|up) with the usual dead-zone
+    margins. Row height equals the bar height (never below 32px on any
+    shipped profile), which is what makes rows_per_page exactly 3 on every
+    profile listed in dial_display_profiles.py.
+    """
+    m = _dead_zone_margin(width, height)
+    bar_h = height // BAND_DIVISOR
+    row_h = bar_h
+    rows_per_page = (height - bar_h) // row_h
+    rows = tuple((0, i * row_h, width, (i + 1) * row_h) for i in range(rows_per_page))
+
+    (bx0, bx1), (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1, 1])
+    by0 = height - bar_h + m
+    return ListLayout(
+        rows=rows,
+        bar=(0, height - bar_h, width, height),
+        back=(bx0, by0, bx1, height),
+        down=(dx0, by0, dx1, height),
+        up=(ux0, by0, ux1, height),
+        row_h=row_h,
+        rows_per_page=rows_per_page,
+    )
+
+
+def list_zone_at(x: int, y: int, width: int, height: int) -> tuple[TouchZone, int | None] | None:
+    """Return (zone, row_index) for the selector surface at compose-space
+    point (x, y): (LIST_ROW, i) inside row i, (LIST_BACK/LIST_DOWN/LIST_UP,
+    None) inside the bottom bar, or None in a dead zone or outside the
+    panel. row_index is only ever set for LIST_ROW."""
+    layout = list_layout_for(width, height)
+    for i, (x0, y0, x1, y1) in enumerate(layout.rows):
+        if x0 <= x < x1 and y0 <= y < y1:
+            return (TouchZone.LIST_ROW, i)
+    for zone, (x0, y0, x1, y1) in (
+        (TouchZone.LIST_BACK, layout.back),
+        (TouchZone.LIST_DOWN, layout.down),
+        (TouchZone.LIST_UP, layout.up),
+    ):
+        if x0 <= x < x1 and y0 <= y < y1:
+            return (zone, None)
     return None

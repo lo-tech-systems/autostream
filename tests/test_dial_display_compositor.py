@@ -4,8 +4,9 @@ Covers rotate/bgr in isolation and combined, identity when neither is set,
 the artwork-fit path (transform_artwork_for_panel runs and panel-fits a
 non-panel-sized input), the logo path (already-sized base passes through
 transforms only), statelessness, the inert overlay parameter, the dimmed
-top/bottom bands and single divider line of the now-playing overlay, and
-the artist/volume text rendering (including its Pillow-failure fallbacks).
+top/bottom bands and single divider line of the now-playing overlay, the
+name/artist halo text rendering (including its Pillow-failure fallbacks),
+and the appliance-selector chassis (compose_list()).
 """
 from __future__ import annotations
 
@@ -29,12 +30,13 @@ from dial_display_compositor import (  # noqa: E402
     _ARTIST_FONT_PX_AT_REFERENCE,
     _VOLUME_FONT_PX_AT_REFERENCE,
     DialDisplayCompositor,
+    ListState,
     OverlayState,
     _reset_font_cache,
     _scaled_px,
     _truncate_to_width,
 )
-from dial_touch_layout import TouchZone, layout_for, zones_for  # noqa: E402
+from dial_touch_layout import TouchZone, layout_for, list_layout_for, zones_for  # noqa: E402
 
 
 def _marked_image(size=(4, 4)):
@@ -215,6 +217,18 @@ class TestStatelessness:
         result_a = a.compose(img, img.width, img.height, rotate=True, bgr=True, is_artwork=False)
         result_b = b.compose(img, img.width, img.height, rotate=True, bgr=True, is_artwork=False)
         assert list(result_a.getdata()) == list(result_b.getdata())
+
+    def test_compose_list_same_inputs_produce_same_output(self, compositor):
+        state = ListState(rows=(("CD Player", True), ("Kitchen", False)), has_prev=False, has_next=True)
+        first = compositor.compose_list(160, 128, state, rotate=False, bgr=False)
+        second = compositor.compose_list(160, 128, state, rotate=False, bgr=False)
+        assert list(first.getdata()) == list(second.getdata())
+
+    def test_compose_list_holds_no_attributes_that_change_between_calls(self, compositor):
+        before = dict(vars(compositor))
+        compositor.compose_list(160, 128, ListState(rows=(("A", False),)), rotate=False, bgr=False)
+        after = dict(vars(compositor))
+        assert before == after == {}
 
 
 class TestOverlayInert:
@@ -484,7 +498,11 @@ class TestOverlayText:
         )
         assert list(no_text.crop(layout.artist).getdata()) == list(baseline.crop(layout.artist).getdata())
 
-    def test_long_artist_does_not_bleed_into_the_gap(self, compositor):
+    def test_long_artist_does_not_bleed_past_its_own_rect(self, compositor):
+        # The artist line now sits centre-low, no longer adjacent to the
+        # volume cluster — the thing worth pinning is that a very long
+        # artist string still gets truncated inside its own rect rather
+        # than overflowing into the inset margin to its right.
         size = (160, 128)
         img = self._panel_image(size)
         layout = layout_for(*size)
@@ -496,8 +514,8 @@ class TestOverlayText:
             img, *size, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True, artist="A Very Long Artist Name Indeed" * 3),
         )
-        gap_box = (layout.artist[2], layout.artist[1], layout.volume_cluster[0], layout.artist[3])
-        assert list(baseline.crop(gap_box).getdata()) == list(long_artist.crop(gap_box).getdata())
+        margin_box = (layout.artist[2], layout.artist[1], size[0], layout.artist[3])
+        assert list(baseline.crop(margin_box).getdata()) == list(long_artist.crop(margin_box).getdata())
 
     def test_volume_digits_vs_none_differ(self, compositor):
         size = (160, 128)
@@ -634,3 +652,240 @@ class TestOverlayText:
         expected_artist, expected_volume = expected
         assert _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8) == expected_artist
         assert _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9) == expected_volume
+
+
+class TestOverlayName:
+    """The appliance name (top-left, halo text) — always drawn whenever a
+    focused/controllable appliance is shown (Q4: unconditional, never
+    gated on how many appliances are authorized). Mirrors TestOverlayText's
+    checks for the artist line, since both go through the same halo
+    helper."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _panel_image(self, size=(160, 128), color=(200, 150, 100)):
+        return Image.new("RGB", size, color)
+
+    def test_default_overlay_state_name_is_empty(self):
+        assert OverlayState().name == ""
+
+    def test_empty_name_leaves_name_rect_dimmed_only(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        no_name = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name=""),
+        )
+        baseline = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        assert list(no_name.crop(layout.name).getdata()) == list(baseline.crop(layout.name).getdata())
+
+    def test_name_draws_pixels_in_name_rect_and_none_in_cluster(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        with_name = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="CD Player"),
+        )
+        without_name = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name=""),
+        )
+        assert list(with_name.crop(layout.name).getdata()) != list(without_name.crop(layout.name).getdata())
+        assert list(with_name.crop(layout.volume_cluster).getdata()) == list(
+            without_name.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_long_name_does_not_bleed_into_the_gap(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        baseline = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        long_name = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="A Very Long Appliance Name Indeed" * 3),
+        )
+        gap_box = (layout.name[2], layout.name[1], layout.volume_cluster[0], layout.name[3])
+        assert list(baseline.crop(gap_box).getdata()) == list(long_name.crop(gap_box).getdata())
+
+    def test_name_pressed_highlight_differs(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        unpressed = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="CD Player"),
+        )
+        pressed = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="CD Player", pressed=TouchZone.NAME),
+        )
+        assert list(unpressed.getdata()) != list(pressed.getdata())
+
+    def test_halo_makes_name_legible_over_dark_and_light_artwork(self, compositor):
+        # The point of the halo is that the same text differs from a plain
+        # backdrop whether that backdrop is dark or light — i.e. some part
+        # of what is drawn is not just the artwork's own colour showing
+        # through. A crude but effective proxy: the name rect must contain
+        # more than the two colours a flat dim would produce (background +
+        # glyph) once a dark glow is composited in as well.
+        for color in ((10, 10, 10), (240, 240, 240)):
+            img = self._panel_image(color=color)
+            layout = layout_for(160, 128)
+            result = compositor.compose(
+                img, 160, 128, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, name="CD Player"),
+            )
+            colors = set(result.crop(layout.name).getdata())
+            assert len(colors) > 2
+
+    def test_font_fallback_unavailable_disables_name_text(self, compositor):
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            result = compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, name="CD Player"),
+            )
+        baseline = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True),
+        )
+        assert list(result.crop(layout.name).getdata()) == list(baseline.crop(layout.name).getdata())
+
+    def test_halo_failure_still_draws_plain_text(self, compositor):
+        # If the halo compositing step itself raises, the plain text must
+        # still be drawn — the halo is cosmetic, never load-bearing.
+        size = (160, 128)
+        img = self._panel_image(size)
+        layout = layout_for(*size)
+        with patch("dial_display_compositor.ImageFilter.GaussianBlur", side_effect=RuntimeError("boom")):
+            result = compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, name="CD Player"),
+            )
+        baseline_blank = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name=""),
+        )
+        assert list(result.crop(layout.name).getdata()) != list(baseline_blank.crop(layout.name).getdata())
+
+
+class TestComposeList:
+    """The appliance-selector chassis — compose_list(). Pixel checks against
+    the 160x128 profile so row/bar geometry is deterministic."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_never_raises_and_returns_panel_sized_frame(self, compositor):
+        state = ListState(rows=(("CD Player", True), ("Kitchen", False), ("Study", False)))
+        result = compositor.compose_list(160, 128, state, rotate=False, bgr=False)
+        assert result.size == (160, 128)
+
+    def test_checked_row_differs_from_unchecked_row(self, compositor):
+        layout = list_layout_for(160, 128)
+        checked = compositor.compose_list(
+            160, 128, ListState(rows=(("CD Player", True),)), rotate=False, bgr=False,
+        )
+        unchecked = compositor.compose_list(
+            160, 128, ListState(rows=(("CD Player", False),)), rotate=False, bgr=False,
+        )
+        assert list(checked.crop(layout.rows[0]).getdata()) != list(unchecked.crop(layout.rows[0]).getdata())
+
+    def test_down_up_dimmed_when_no_prev_next(self, compositor):
+        layout = list_layout_for(160, 128)
+        lit = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False),), has_prev=True, has_next=True),
+            rotate=False, bgr=False,
+        )
+        unlit = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False),), has_prev=False, has_next=False),
+            rotate=False, bgr=False,
+        )
+        assert list(lit.crop(layout.down).getdata()) != list(unlit.crop(layout.down).getdata())
+        assert list(lit.crop(layout.up).getdata()) != list(unlit.crop(layout.up).getdata())
+
+    def test_back_is_always_lit_regardless_of_paging(self, compositor):
+        layout = list_layout_for(160, 128)
+        a = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False),), has_prev=False, has_next=False),
+            rotate=False, bgr=False,
+        )
+        b = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False),), has_prev=True, has_next=True),
+            rotate=False, bgr=False,
+        )
+        assert list(a.crop(layout.back).getdata()) == list(b.crop(layout.back).getdata())
+
+    def test_pressed_row_wash_confined_to_its_rectangle(self, compositor):
+        layout = list_layout_for(160, 128)
+        state_rows = (("CD Player", True), ("Kitchen", False), ("Study", False))
+        unpressed = compositor.compose_list(160, 128, ListState(rows=state_rows), rotate=False, bgr=False)
+        pressed = compositor.compose_list(
+            160, 128, ListState(rows=state_rows, pressed=(TouchZone.LIST_ROW, 1)),
+            rotate=False, bgr=False,
+        )
+        assert list(unpressed.getdata()) != list(pressed.getdata())
+        for i, rect in enumerate(layout.rows):
+            if i == 1:
+                continue
+            assert list(unpressed.crop(rect).getdata()) == list(pressed.crop(rect).getdata())
+
+    def test_pressed_bar_zone_wash(self, compositor):
+        layout = list_layout_for(160, 128)
+        unpressed = compositor.compose_list(160, 128, ListState(rows=(("A", False),)), rotate=False, bgr=False)
+        pressed = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False),), pressed=(TouchZone.LIST_BACK, None)),
+            rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(layout.back).getdata()) != list(pressed.crop(layout.back).getdata())
+
+    def test_stale_pressed_row_index_is_ignored(self, compositor):
+        # A row index beyond the current page (e.g. the roster shrank
+        # between paint and tap) must never raise.
+        result = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False),), pressed=(TouchZone.LIST_ROW, 5)),
+            rotate=False, bgr=False,
+        )
+        assert result.size == (160, 128)
+
+    def test_rotate_and_bgr_applied_like_compose(self, compositor):
+        state = ListState(rows=(("CD Player", True),))
+        plain = compositor.compose_list(160, 128, state, rotate=False, bgr=False)
+        rotated = compositor.compose_list(160, 128, state, rotate=True, bgr=False)
+        assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
+
+        swapped = compositor.compose_list(160, 128, state, rotate=False, bgr=True)
+        assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
+
+    def test_more_rows_than_page_are_ignored_not_raised(self, compositor):
+        # compose_list only ever draws rows_per_page rows — the display is
+        # responsible for paging state.rows down to one page before calling
+        # this. Extra entries must be ignored, never raise or overflow.
+        rows = tuple((f"Appliance {i}", False) for i in range(10))
+        result = compositor.compose_list(160, 128, ListState(rows=rows), rotate=False, bgr=False)
+        assert result.size == (160, 128)
+
+    def test_never_raises_with_font_cache_cleared_and_no_font_available(self, compositor):
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            result = compositor.compose_list(
+                160, 128, ListState(rows=(("CD Player", True),)), rotate=False, bgr=False,
+            )
+        assert result.size == (160, 128)
