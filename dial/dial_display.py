@@ -306,6 +306,50 @@ class PickerState:
 
 
 # ---------------------------------------------------------------------------
+# List-chassis paging (shared by the appliance selector and the replay
+# picker, which page the same way over different row types)
+# ---------------------------------------------------------------------------
+
+def _rows_per_page_for(width: int, height: int) -> int:
+    return list_layout_for(width, height).rows_per_page
+
+
+def _clamp_page(page: int, row_count: int, rows_per_page: int) -> int:
+    """Clamp *page* into [0, last page] for *row_count* rows; 0 when empty."""
+    max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
+    return max(0, min(page, max_page))
+
+
+def _page_slice(rows: tuple, page: int, rows_per_page: int) -> tuple[int, tuple]:
+    """(start index, the rows on *page*)."""
+    start = page * rows_per_page
+    return start, rows[start:start + rows_per_page]
+
+
+def _list_state_for(state, rows_per_page: int, placeholder: str, to_row) -> ListState:
+    """Build the compositor's ListState for *state*'s current page, or a
+    single non-selected *placeholder* row when there are no rows. *to_row*
+    maps one row of *state* to the row tuple ListState carries. pressed
+    stays None: the list chassis has no live press feedback yet."""
+    if state is None or not state.rows:
+        return ListState(rows=((placeholder, False),), has_prev=False, has_next=False)
+    start, page_rows = _page_slice(state.rows, state.page, rows_per_page)
+    return ListState(
+        rows=tuple(to_row(row) for row in page_rows),
+        has_prev=state.page > 0,
+        has_next=start + rows_per_page < len(state.rows),
+    )
+
+
+def _selector_list_row(row: SelectorRow) -> tuple:
+    return (row.label, row.current, LOOP_GLYPH) if row.replaying else (row.label, row.current)
+
+
+def _picker_list_row(row: PickerRow) -> tuple:
+    return (row.label, False, format_mmss(row.seconds))
+
+
+# ---------------------------------------------------------------------------
 # Backend protocol
 # ---------------------------------------------------------------------------
 
@@ -1080,6 +1124,23 @@ class DialDisplay:
             return backend.width, backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
+    def _push_frame_locked(self, compose) -> None:
+        """Compose one frame and push it to the backend, recording a write
+        failure the same way for every screen. *compose* is a zero-argument
+        callable returning the finished frame; it runs inside the guard so a
+        compositor failure is handled identically to a backend failure.
+        Caller holds self._lock and has already checked the backend is open.
+        Never raises."""
+        try:
+            composed = compose()
+            self._backend.display(composed)
+        except Exception as e:
+            self._record_error_locked("display_write_failed")
+            self._log_limiter.log(
+                logging.WARNING, "display_write_failed",
+                "dial display: backend write failed: %s", e,
+            )
+
     def _display_locked(self, image) -> None:
         """Compose and write *image* to the backend — the single hand-off
         point every frame reaches on its way to hardware.
@@ -1112,21 +1173,13 @@ class DialDisplay:
         self._current_base_image = image
         width, height = self._active_panel_dims()
         overlay = self._effective_overlay_locked(self._overlay_snapshot)
-        try:
-            composed = self._compositor.compose(
-                image, width, height,
-                rotate=self._config.rotate,
-                bgr=self._config.bgr,
-                is_artwork=False,
-                overlay=overlay,
-            )
-            self._backend.display(composed)
-        except Exception as e:
-            self._record_error_locked("display_write_failed")
-            self._log_limiter.log(
-                logging.WARNING, "display_write_failed",
-                "dial display: backend write failed: %s", e,
-            )
+        self._push_frame_locked(lambda: self._compositor.compose(
+            image, width, height,
+            rotate=self._config.rotate,
+            bgr=self._config.bgr,
+            is_artwork=False,
+            overlay=overlay,
+        ))
 
     def _effective_overlay_locked(self, snapshot: OverlayState) -> OverlayState:
         """Merge now-playing state into the touch-published overlay snapshot
@@ -1148,10 +1201,8 @@ class DialDisplay:
             earlier touch session must not show the tri-state default.
           - name: appliance_display_name() of the reporting-from target's
             service name, or "" when nothing is playing. ALWAYS populated
-            whenever a controllable appliance is shown — per the low-level
-            design's Q4, this is unconditional, never gated on how many
-            appliances are authorized (the plan's "two or more" wording is
-            explicitly withdrawn there).
+            whenever a controllable appliance is shown — unconditional,
+            never gated on how many appliances are authorized.
 
         held-visible: when always_show_controls is on and a controllable
         appliance is shown (self._now_playing is not None — true for real
@@ -1300,14 +1351,11 @@ class DialDisplay:
         self._apply_screen_requests_locked()
         if not (self._backend_open and self._backend is not None):
             return woke
-        if self._screen == "selector":
-            self._display_selector_locked()
+        if self._screen in ("selector", "picker"):
+            self._display_list_locked()
             return woke
         if self._screen == "repeat":
             self._display_repeat_locked()
-            return woke
-        if self._screen == "picker":
-            self._display_picker_locked()
             return woke
         if self._current_base_image is None:
             return woke
@@ -1384,7 +1432,7 @@ class DialDisplay:
         """
         selector = self._selector
         if selector is not None and selector.rows:
-            page_rows = self._selector_page_rows(selector)
+            page_rows = self._current_page_rows(selector)
             if 0 <= index < len(page_rows):
                 self.set_manual_focus(page_rows[index].appliance_id)
         self.close_list()
@@ -1399,24 +1447,21 @@ class DialDisplay:
         else:
             self.selector_pick(index)
 
-    def _selector_page_rows(self, selector: SelectorState) -> tuple[SelectorRow, ...]:
-        """The CURRENT page's slice of *selector*.rows — shared by
-        selector_pick() (touch thread, lock-free) and _build_list_state_
-        locked() (repaint thread) so the two can never disagree about which
-        rows are on screen. rows_per_page comes from dial_touch_layout, the
-        same single source of truth the touch hit-test itself reads."""
+    def _rows_per_page(self) -> int:
+        """Rows per list page for the active panel. Safe with or without
+        self._lock (reads _active_panel_dims only)."""
         width, height = self._active_panel_dims()
-        rows_per_page = list_layout_for(width, height).rows_per_page
-        start = selector.page * rows_per_page
-        return selector.rows[start:start + rows_per_page]
+        return _rows_per_page_for(width, height)
 
-    def _picker_page_rows(self, picker: PickerState) -> tuple[PickerRow, ...]:
-        """The CURRENT page's slice of *picker*.rows — the PickerState
-        counterpart to _selector_page_rows()."""
-        width, height = self._active_panel_dims()
-        rows_per_page = list_layout_for(width, height).rows_per_page
-        start = picker.page * rows_per_page
-        return picker.rows[start:start + rows_per_page]
+    def _current_page_rows(self, state) -> tuple:
+        """The current page's slice of *state*.rows, for either a
+        SelectorState or a PickerState (both carry rows and page). Shared by
+        the touch-thread pick entries (lock-free) and the repaint-thread list
+        builders so the two can never disagree about which rows are on
+        screen; rows_per_page comes from dial_touch_layout, the same source
+        the hit-test reads. Takes no lock and writes nothing."""
+        _, page_rows = _page_slice(state.rows, state.page, self._rows_per_page())
+        return page_rows
 
     def toggle_repeat_screen(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a DOTS tap):
@@ -1559,7 +1604,7 @@ class DialDisplay:
         failure) clears it again in on_repeat_result()."""
         picker = self._picker
         if picker is not None and picker.rows:
-            page_rows = self._picker_page_rows(picker)
+            page_rows = self._current_page_rows(picker)
             if 0 <= index < len(page_rows):
                 row = page_rows[index]
                 self.set_manual_focus_pending(row.appliance_id, row.service_name)
@@ -1635,11 +1680,7 @@ class DialDisplay:
             else None
         )
         if delta and active is not None:
-            width, height = self._active_panel_dims()
-            rows_per_page = list_layout_for(width, height).rows_per_page
-            row_count = len(active.rows)
-            max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
-            new_page = max(0, min(active.page + delta, max_page))
+            new_page = _clamp_page(active.page + delta, len(active.rows), self._rows_per_page())
             if new_page != active.page:
                 updated = dataclasses.replace(active, page=new_page)
                 if self._screen == "selector":
@@ -1692,6 +1733,14 @@ class DialDisplay:
         if rec is not None and rec.state == "replaying":
             self._overlay_signal.set()
 
+    def _carried_paging_locked(self, prev, row_count: int) -> tuple[int, float]:
+        """(page, opened_at) to keep across a row rebuild: the previous page
+        clamped to the new row count, and the previous opened_at, or (0, 0.0)
+        when there was no previous state. Caller holds self._lock."""
+        if prev is None:
+            return 0, 0.0
+        return _clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
+
     def _refresh_selector_rows(self, targets: list, reporting_id: str | None) -> None:
         """Rebuild the selector's row list from *targets*. Runs on the poll
         thread at the end of every _poll_once, whether or not the selector
@@ -1728,11 +1777,7 @@ class DialDisplay:
         )
         with self._lock:
             prev = self._selector
-            width, height = self._active_panel_dims()
-            rows_per_page = list_layout_for(width, height).rows_per_page
-            max_page = max(0, (len(rows) - 1) // rows_per_page) if rows else 0
-            page = max(0, min(prev.page, max_page)) if prev is not None else 0
-            opened_at = prev.opened_at if prev is not None else 0.0
+            page, opened_at = self._carried_paging_locked(prev, len(rows))
             self._selector = SelectorState(rows=rows, page=page, opened_at=opened_at)
 
     def _refresh_picker_rows(self, roster: list, now: float) -> None:
@@ -1756,11 +1801,7 @@ class DialDisplay:
         )
         with self._lock:
             prev = self._picker
-            width, height = self._active_panel_dims()
-            rows_per_page = list_layout_for(width, height).rows_per_page
-            max_page = max(0, (len(rows) - 1) // rows_per_page) if rows else 0
-            page = max(0, min(prev.page, max_page)) if prev is not None else 0
-            opened_at = prev.opened_at if prev is not None else 0.0
+            page, opened_at = self._carried_paging_locked(prev, len(rows))
             self._picker = PickerState(rows=rows, page=page, opened_at=opened_at)
 
     def _refresh_idle_affordance(self, roster: list, now: float) -> None:
@@ -1780,26 +1821,13 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _build_list_state_locked(self, width: int, height: int) -> ListState:
-        """Build the compositor's ListState for the CURRENT page. Caller
-        holds self._lock; runs on the repeat thread only. Live touch-press
-        feedback is not wired into the selector chassis in this phase —
-        pressed is always None here (compose_list still supports it, for
-        the compositor's own tests). A replaying row's secondary slot
-        carries the LOOP_GLYPH sentinel; every other row stays a plain
-        2-tuple."""
-        selector = self._selector
-        if selector is None or not selector.rows:
-            return ListState(rows=(("No devices", False),), has_prev=False, has_next=False)
-        rows_per_page = list_layout_for(width, height).rows_per_page
-        start = selector.page * rows_per_page
-        page_rows = selector.rows[start:start + rows_per_page]
-        return ListState(
-            rows=tuple(
-                (row.label, row.current, LOOP_GLYPH) if row.replaying else (row.label, row.current)
-                for row in page_rows
-            ),
-            has_prev=selector.page > 0,
-            has_next=start + rows_per_page < len(selector.rows),
+        """Build the compositor's ListState for the appliance selector's
+        CURRENT page. Caller holds self._lock; runs on the repeat thread
+        only. Live touch-press feedback is not wired into the selector
+        chassis in this phase — pressed is always None here (compose_list
+        still supports it, for the compositor's own tests)."""
+        return _list_state_for(
+            self._selector, _rows_per_page_for(width, height), "No devices", _selector_list_row,
         )
 
     def _build_picker_list_state_locked(self, width: int, height: int) -> ListState:
@@ -1807,59 +1835,25 @@ class DialDisplay:
         page — the PickerState counterpart to _build_list_state_locked().
         Each row's secondary slot carries the buffer length, formatted
         "m:ss"."""
-        picker = self._picker
-        if picker is None or not picker.rows:
-            return ListState(rows=(("Nothing to replay", False),), has_prev=False, has_next=False)
-        rows_per_page = list_layout_for(width, height).rows_per_page
-        start = picker.page * rows_per_page
-        page_rows = picker.rows[start:start + rows_per_page]
-        return ListState(
-            rows=tuple((row.label, False, format_mmss(row.seconds)) for row in page_rows),
-            has_prev=picker.page > 0,
-            has_next=start + rows_per_page < len(picker.rows),
+        return _list_state_for(
+            self._picker, _rows_per_page_for(width, height), "Nothing to replay", _picker_list_row,
         )
 
-    def _display_selector_locked(self) -> None:
-        """Compose and push the selector-screen frame — the compose_list()
-        counterpart to _display_locked(). Bypasses _display_locked()
-        entirely (that path composes the artwork/overlay screen and would
-        overwrite self._current_base_image, which must survive a selector
-        visit unchanged so closing it re-paints the same base). Caller
-        holds self._lock.
-        """
+    def _display_list_locked(self) -> None:
+        """Compose and push whichever list-chassis screen is open (the
+        appliance selector or the replay picker). Bypasses _display_locked()
+        so self._current_base_image survives a list visit unchanged and the
+        frame never picks up the main now-playing overlay. Caller holds
+        self._lock; the backend-open check is _repaint_current_locked's."""
         width, height = self._active_panel_dims()
-        list_state = self._build_list_state_locked(width, height)
-        try:
-            composed = self._compositor.compose_list(
-                width, height, list_state,
-                rotate=self._config.rotate, bgr=self._config.bgr,
-            )
-            self._backend.display(composed)
-        except Exception as e:
-            self._record_error_locked("display_write_failed")
-            self._log_limiter.log(
-                logging.WARNING, "display_write_failed",
-                "dial display: backend write failed: %s", e,
-            )
-
-    def _display_picker_locked(self) -> None:
-        """Compose and push the replay-picker frame — the compose_list()
-        counterpart for the picker, sharing the same list chassis as the
-        appliance selector. Caller holds self._lock."""
-        width, height = self._active_panel_dims()
-        list_state = self._build_picker_list_state_locked(width, height)
-        try:
-            composed = self._compositor.compose_list(
-                width, height, list_state,
-                rotate=self._config.rotate, bgr=self._config.bgr,
-            )
-            self._backend.display(composed)
-        except Exception as e:
-            self._record_error_locked("display_write_failed")
-            self._log_limiter.log(
-                logging.WARNING, "display_write_failed",
-                "dial display: backend write failed: %s", e,
-            )
+        if self._screen == "picker":
+            list_state = self._build_picker_list_state_locked(width, height)
+        else:
+            list_state = self._build_list_state_locked(width, height)
+        self._push_frame_locked(lambda: self._compositor.compose_list(
+            width, height, list_state,
+            rotate=self._config.rotate, bgr=self._config.bgr,
+        ))
 
     def _build_repeat_view_locked(self, screen: "RepeatScreenState | None", now: float) -> RepeatViewState:
         """Build the compositor's RepeatViewState from the repeat store's
@@ -1937,7 +1931,7 @@ class DialDisplay:
     def _display_repeat_locked(self) -> None:
         """Compose and push the repeat-screen frame — the compose_repeat()
         counterpart to _display_locked(). Bypasses _display_locked()
-        entirely, like _display_selector_locked(): this screen has its own
+        entirely, like _display_list_locked(): this screen has its own
         compose path and must never pick up the main now-playing overlay.
         Passes self._current_base_image through as compose_repeat()'s
         `base` — the replaying layout draws it (dimmed) behind the
@@ -1945,18 +1939,10 @@ class DialDisplay:
         self._lock."""
         view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
         width, height = self._active_panel_dims()
-        try:
-            composed = self._compositor.compose_repeat(
-                width, height, view, base=self._current_base_image,
-                rotate=self._config.rotate, bgr=self._config.bgr,
-            )
-            self._backend.display(composed)
-        except Exception as e:
-            self._record_error_locked("display_write_failed")
-            self._log_limiter.log(
-                logging.WARNING, "display_write_failed",
-                "dial display: backend write failed: %s", e,
-            )
+        self._push_frame_locked(lambda: self._compositor.compose_repeat(
+            width, height, view, base=self._current_base_image,
+            rotate=self._config.rotate, bgr=self._config.bgr,
+        ))
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
@@ -1975,18 +1961,10 @@ class DialDisplay:
             return
         width, height = self._active_panel_dims()
         base = load_logo(self._replay_logo_path, width, height) or self._current_base_image
-        try:
-            composed = self._compositor.compose_idle(
-                base, width, height,
-                rotate=self._config.rotate, bgr=self._config.bgr,
-            )
-            self._backend.display(composed)
-        except Exception as e:
-            self._record_error_locked("display_write_failed")
-            self._log_limiter.log(
-                logging.WARNING, "display_write_failed",
-                "dial display: backend write failed: %s", e,
-            )
+        self._push_frame_locked(lambda: self._compositor.compose_idle(
+            base, width, height,
+            rotate=self._config.rotate, bgr=self._config.bgr,
+        ))
 
     # ---- polling loop ----------------------------------------------------
 

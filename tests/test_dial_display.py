@@ -831,6 +831,39 @@ class TestBackendFailureDegradation:
         assert fb.opened is False
 
 
+class TestPushFrameLocked:
+    def test_compose_raising_records_failure_and_skips_the_backend(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        before = len(fb.displayed)
+
+        def bad_compose():
+            raise RuntimeError("compose blew up")
+
+        with display._lock:
+            display._push_frame_locked(bad_compose)
+        assert display.get_status()["last_error"] == "display_write_failed"
+        assert len(fb.displayed) == before
+
+    def test_backend_raising_records_the_same_failure(self):
+        display, fb, gt = _make_display(backend=FakeBackend(fail_display=True))
+        display.enable()
+        with display._lock:
+            display._push_frame_locked(lambda: object())
+        assert display.get_status()["last_error"] == "display_write_failed"
+
+    def test_success_pushes_exactly_once_and_records_no_error(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        before = len(fb.displayed)
+        sentinel = object()
+        with display._lock:
+            display._push_frame_locked(lambda: sentinel)
+        assert fb.displayed[-1] is sentinel
+        assert len(fb.displayed) == before + 1
+        assert display.get_status()["last_error"] == ""
+
+
 # ---------------------------------------------------------------------------
 # update_config live apply
 # ---------------------------------------------------------------------------
@@ -2656,6 +2689,130 @@ class TestSelectorPickAndPage:
         display.selector_pick(0)  # row 0 of PAGE 1, not row 0 overall
         expected_id = targets[rows_per_page].appliance_id
         assert display.manual_focus_id() == expected_id
+
+
+# ---------------------------------------------------------------------------
+# Shared paging/list-state helpers — pure functions, exercised directly
+# without a display instance where possible.
+# ---------------------------------------------------------------------------
+
+class TestClampPageAndPageSlice:
+    def test_clamp_page_empty_rows_is_zero(self):
+        assert dd._clamp_page(3, 0, 3) == 0
+
+    def test_clamp_page_beyond_last_clamps(self):
+        assert dd._clamp_page(10, 5, 3) == 1  # 5 rows at 3/page -> pages 0, 1
+
+    def test_clamp_page_exact_multiple_has_no_extra_trailing_page(self):
+        assert dd._clamp_page(2, 6, 3) == 1  # 6 rows at 3/page -> pages 0, 1 only
+
+    def test_clamp_page_negative_clamps_to_zero(self):
+        assert dd._clamp_page(-1, 5, 3) == 0
+
+    def test_page_slice_returns_start_and_rows(self):
+        rows = tuple(range(5))
+        start, page_rows = dd._page_slice(rows, 1, 3)
+        assert start == 3
+        assert page_rows == (3, 4)
+
+    def test_page_slice_stale_page_yields_empty_tuple(self):
+        rows = tuple(range(5))
+        _, page_rows = dd._page_slice(rows, 5, 3)  # well past the last page
+        assert page_rows == ()
+
+
+class TestListStateForHelper:
+    def test_none_state_gives_placeholder(self):
+        state = dd._list_state_for(None, 3, "No rows", lambda r: (r, False))
+        assert state.rows == (("No rows", False),)
+        assert state.has_prev is False
+        assert state.has_next is False
+
+    def test_empty_state_gives_placeholder(self):
+        selector = dd.SelectorState(rows=(), page=0, opened_at=0.0)
+        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        assert state.rows == (("No devices", False),)
+        assert state.has_prev is False
+        assert state.has_next is False
+
+    def test_replaying_selector_row_maps_to_loop_glyph_triple(self):
+        rows = (dd.SelectorRow(appliance_id="a", label="A", current=False, replaying=True),)
+        selector = dd.SelectorState(rows=rows, page=0, opened_at=0.0)
+        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        assert state.rows == (("A", False, dd.LOOP_GLYPH),)
+
+    def test_non_replaying_selector_row_maps_to_pair(self):
+        rows = (dd.SelectorRow(appliance_id="a", label="A", current=True, replaying=False),)
+        selector = dd.SelectorState(rows=rows, page=0, opened_at=0.0)
+        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        assert state.rows == (("A", True),)
+
+    def test_picker_row_maps_to_label_and_formatted_duration(self):
+        rows = (dd.PickerRow(appliance_id="a", service_name="A", ip="1.2.3.4", port=80,
+                              label="A", seconds=90.0),)
+        picker = dd.PickerState(rows=rows, page=0, opened_at=0.0)
+        state = dd._list_state_for(picker, 3, "Nothing to replay", dd._picker_list_row)
+        assert state.rows == (("A", False, "1:30"),)
+
+    def test_has_next_true_only_when_rows_remain_after_the_page(self):
+        rows = tuple(
+            dd.SelectorRow(appliance_id=str(i), label=str(i), current=False)
+            for i in range(4)
+        )
+        first_page = dd._list_state_for(
+            dd.SelectorState(rows=rows, page=0, opened_at=0.0), 3, "No devices", dd._selector_list_row,
+        )
+        assert first_page.has_next is True
+        second_page = dd._list_state_for(
+            dd.SelectorState(rows=rows, page=1, opened_at=0.0), 3, "No devices", dd._selector_list_row,
+        )
+        assert second_page.has_next is False
+
+
+class TestCurrentPageRows:
+    def test_selector_state_page_one(self):
+        display, fb, gt = _make_display(targets=[])
+        rows = tuple(dd.SelectorRow(appliance_id=str(i), label=str(i), current=False) for i in range(5))
+        selector = dd.SelectorState(rows=rows, page=1, opened_at=0.0)
+        page_rows = display._current_page_rows(selector)
+        assert [r.appliance_id for r in page_rows] == ["3", "4"]
+
+    def test_picker_state_page_one(self):
+        display, fb, gt = _make_display(targets=[])
+        rows = tuple(
+            dd.PickerRow(appliance_id=str(i), service_name=str(i), ip="1.2.3.4", port=80,
+                         label=str(i), seconds=float(i))
+            for i in range(5)
+        )
+        picker = dd.PickerState(rows=rows, page=1, opened_at=0.0)
+        page_rows = display._current_page_rows(picker)
+        assert [r.appliance_id for r in page_rows] == ["3", "4"]
+
+
+class TestDisplayListLockedRouting:
+    def test_picker_screen_routes_to_the_picker_builder(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch.object(
+            display._compositor, "compose_list", wraps=display._compositor.compose_list,
+        ) as spy:
+            with display._lock:
+                display._screen = "picker"
+                display._display_list_locked()
+        assert spy.call_count == 1
+        assert spy.call_args[0][2].rows == (("Nothing to replay", False),)
+
+    def test_selector_screen_routes_to_the_selector_builder(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch.object(
+            display._compositor, "compose_list", wraps=display._compositor.compose_list,
+        ) as spy:
+            with display._lock:
+                display._screen = "selector"
+                display._display_list_locked()
+        assert spy.call_count == 1
+        assert spy.call_args[0][2].rows == (("No devices", False),)
 
 
 class TestSelectorTimeout:
