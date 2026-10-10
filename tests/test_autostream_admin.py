@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -336,6 +337,51 @@ class TestAvahiXmlEscaping:
         assert rc == 0
         content = svc_file.read_text(encoding="utf-8")
         assert "id=" + args.id in content
+
+    def test_playing_service_advertises_dial_proto_v2_and_keeps_dial_api_v1(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream-playing.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir),              patch.object(m, "_PLAYING_SERVICE", svc_file):
+            assert m._write_playing_service(args) == 0
+
+        records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
+        assert "dial_proto=v2" in records
+        assert "dial_api=v1" in records
+        assert "dial_status=v1" in records
+        assert "audio_status=v1" in records
+        assert "id=" + args.id in records
+        assert not any(r.startswith("dial_api=") and r != "dial_api=v1" for r in records)
+
+    def test_playing_service_advertises_dial_proto_without_id(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream-playing.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = ""
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir),              patch.object(m, "_PLAYING_SERVICE", svc_file):
+            assert m._write_playing_service(args) == 0
+
+        records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
+        assert "dial_proto=v2" in records
+        assert "dial_api=v1" in records
+
+    def test_playing_service_template_advertises_dial_proto_v2_and_keeps_dial_api_v1(self):
+        template = Path(__file__).resolve().parent.parent / "system" / "avahi" / "autostream-playing.service"
+        records = [r.text for r in ET.parse(template).getroot().iter("txt-record")]
+        assert "dial_proto=v2" in records
+        assert "dial_api=v1" in records
+
+    def test_dial_proto_constant_is_v2(self):
+        assert m.DIAL_PROTO_VERSION == "v2"
 
     def test_playing_service_omits_id_when_absent(self, tmp_path):
         svc_dir = tmp_path / "avahi"
@@ -1135,6 +1181,25 @@ class TestApplianceService:
         assert "dial_api=v1" in content
         assert "dial_status=v1" in content
         assert "repeat=v1" in content
+
+    def test_appliance_service_advertises_dial_proto_v2(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir),              patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            assert m._write_appliance_service(args) == 0
+
+        records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
+        assert "dial_proto=v2" in records
+        assert "dial_api=v1" in records
+        assert "dial_status=v1" in records
+        assert "id=" + args.id in records
+        assert not any(r.startswith("dial_api=") and r != "dial_api=v1" for r in records)
 
     def test_write_appliance_service_control_off_writes_off(self, tmp_path):
         svc_dir = tmp_path / "avahi"

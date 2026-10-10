@@ -22,6 +22,7 @@ Deleted when the last capture stops.
 |---|---|---|
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
+| `dial_proto` | `v2` | The appliance speaks the 0.7 dialect (see below). Absent on older appliances |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
@@ -33,6 +34,14 @@ instance (pre-dial support) and skips it.
 
 `dial_status=v1` is independent of `dial_api=v1`. An older appliance may support
 `dial_api=v1` without supporting `dial_status=v1`.
+
+`dial_proto` names the protocol dialect and is separate from `dial_api`, which stays `v1` so
+that older dials keep tracking and controlling the appliance. `dial_proto=v2` means the
+appliance sends typed refusals (`412` with `dial_not_authorized` and `appliance_id`) to a dial
+that itself advertises `dial_proto=v2`, reports `muted` in its status and volume replies, and
+carries `id` on the playing record. A dial that does not advertise `dial_proto=v2`, and a dial
+the appliance has not seen, gets the older bare `403 {}`. A consumer that sees no `dial_proto`
+treats the appliance as speaking the older dialect; an old dial ignores the key.
 
 `id` lets a dial correlate this appliance across an `ip:port` change (a DHCP lease renewal,
 a service re-register) without waiting for the next successful `POST /api/dial/status` -
@@ -73,6 +82,7 @@ currently playing - the repeat/replay picker's "idle focus".
 | `id` | 20 lowercase hex characters | This appliance's stable identity, same meaning as `id` on `_autostream-playing._tcp` |
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | Gates the sighting the same way as on `_autostream-playing._tcp` - an appliance without it is not tracked for the dial's roster |
+| `dial_proto` | `v2` | Same meaning as on `_autostream-playing._tcp` |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
 | `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |

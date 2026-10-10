@@ -119,7 +119,7 @@ class TestAvahiServiceFileIntegrity:
 
     def test_playing_service_txt_keys_present(self):
         txt = AVAHI_PLAYING_SVC.read_text(encoding="utf-8")
-        for key in ("version=", "dial_api=", "audio_status=", "dial_status="):
+        for key in ("version=", "dial_api=", "dial_proto=", "audio_status=", "dial_status="):
             assert key in txt, f"TXT key '{key}' missing from autostream-playing.service"
 
     def test_dial_service_file_exists(self):
