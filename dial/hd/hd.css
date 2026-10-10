@@ -329,17 +329,25 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .hd .eq-band { min-height: 0; min-width: 0; }
 .hd .eq-band-freq { margin: 0 0 6px; }
 .hd .eq-band-val { margin: 6px 0 0; min-width: 0; white-space: nowrap; }
+/* A band slider is an ordinary horizontal range turned a quarter turn inside a
+   box that takes the band's spare height, rather than a vertical writing mode,
+   which not every engine applies to a range input. The slider is as long as
+   the box is tall and 44px thick; the box is the size container that says so. */
+.hd .eq-band-box {
+    flex: 1 1 0; min-height: 0; width: 44px; position: relative; container-type: size;
+}
 .hd .eq-band-slider {
-    flex: 1 1 0; min-height: 0; width: 44px !important; height: auto !important;
+    position: absolute; left: 50%; top: 50%; width: 100cqh !important; height: 44px !important; margin: 0 !important;
+    writing-mode: horizontal-tb; direction: ltr; transform: translate(-50%, -50%) rotate(-90deg);
     -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; touch-action: none;
 }
 .hd .eq-band-slider::-webkit-slider-runnable-track {
-    width: 8px; border-radius: 999px;
-    background: linear-gradient(to top, var(--color-control-off) var(--lo, 50%), var(--color-accent) var(--lo, 50%),
+    height: 8px; border-radius: 999px;
+    background: linear-gradient(to right, var(--color-control-off) var(--lo, 50%), var(--color-accent) var(--lo, 50%),
         var(--color-accent) var(--hi, 50%), var(--color-control-off) var(--hi, 50%));
 }
 .hd .eq-band-slider::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 30px; height: 30px; margin-left: -11px; border-radius: 50%;
+    -webkit-appearance: none; width: 30px; height: 30px; margin-top: -11px; border-radius: 50%;
     background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 .hd .eq-band-slider:disabled { opacity: 0.4; cursor: default; }

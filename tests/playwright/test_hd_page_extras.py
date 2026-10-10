@@ -795,6 +795,60 @@ class TestEqPage:
         assert final >= 10
         expect(band(page, 3).locator(".eq-band-val")).to_have_text(f"+{final} dB")
 
+    def test_sliders_stand_upright_in_a_box_that_takes_the_height(self, page, hd):
+        open_page(page, hd)
+        open_eq(page)
+        for n in range(6):
+            box = band(page, n).locator(".eq-band-box").bounding_box()
+            slider = band(page, n).locator("input").bounding_box()
+            assert box["height"] > 150 and box["height"] > 3 * box["width"]
+            assert slider["height"] > slider["width"] * 3
+            assert abs(slider["height"] - box["height"]) <= 1 and abs(slider["width"] - 44) <= 1
+        style = page.evaluate(
+            """() => { const s = getComputedStyle(document.querySelector('#eq-bands input'));
+                      return [s.writingMode, s.direction]; }""")
+        assert style == ["horizontal-tb", "ltr"]
+
+    def test_dragging_up_raises_a_band_and_posts_its_gain(self, page, hd):
+        sent = watch_actions(page)
+        open_page(page, hd)
+        open_eq(page)
+        box = band(page, 1).locator("input").bounding_box()      # starts at 0 dB
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, y - box["height"] / 4, steps=6)
+        page.mouse.up()
+        page.wait_for_timeout(300)
+        final = only(sent, "eq")[-1][1]["gains"]["peq2"]
+        assert 3 <= final <= 9
+        expect(band(page, 1).locator(".eq-band-val")).to_have_text(f"+{final} dB")
+        assert page.evaluate("document.querySelector('#eq-bands .eq-band:nth-child(2) input').style.getPropertyValue('--lo')") \
+            == "50%"
+
+    @pytest.mark.parametrize("scenario_name", ["eq_six", "eq_two"])
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    def test_bands_labels_and_graph_never_overlap(self, page, hd, size, scenario_name):
+        hd.show(hs.SCENARIOS[scenario_name])
+        open_page(page, hd, size)
+        open_eq(page)
+        graph = page.locator("#eq-graph").bounding_box()
+        count = page.locator("#eq-bands .eq-band").count()
+        assert count == (6 if scenario_name == "eq_six" else 2)
+        previous_right = 0
+        for n in range(count):
+            freq = band(page, n).locator(".eq-band-freq").bounding_box()
+            box = band(page, n).locator(".eq-band-box").bounding_box()
+            val = band(page, n).locator(".eq-band-val").bounding_box()
+            assert freq["y"] + freq["height"] <= box["y"] + 1
+            assert box["y"] + box["height"] <= val["y"] + 1
+            left = min(freq["x"], box["x"], val["x"])
+            right = max(freq["x"] + freq["width"], box["x"] + box["width"], val["x"] + val["width"])
+            assert left >= previous_right - 1
+            previous_right = right
+            assert box["height"] > 100
+        assert previous_right <= graph["x"] + 1
+
     def test_the_curve_follows_the_sliders(self, page, hd):
         hd.show(eq_scenario(2))
         open_page(page, hd)
@@ -957,6 +1011,65 @@ class TestPullDown:
         page.mouse.move(417, 20, steps=6)
         page.mouse.up()
         expect(page.locator("#sheet")).to_be_hidden()
+
+    def test_a_drag_that_leaves_the_handle_still_opens_it(self, page, hd):
+        open_page(page, hd)
+        x, y = centre(page, "#handle")
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, 240, steps=10)          # well clear of the thin handle
+        page.mouse.up()
+        expect(page.locator("#sheet")).to_be_visible()
+        expect(page.locator("#handle")).to_have_attribute("aria-expanded", "true")
+
+    def test_a_drag_that_ends_in_a_cancel_settles_by_the_distance(self, page, hd):
+        def cancel_after(y_end, pointer_id=1):
+            page.evaluate(
+                """([y, id]) => document.dispatchEvent(new PointerEvent('pointercancel',
+                    {pointerId: id, clientY: y, bubbles: true}))""",
+                [y_end, pointer_id])
+
+        open_page(page, hd)
+        x, y = centre(page, "#handle")
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, 240, steps=10)
+        cancel_after(240)
+        page.mouse.up()
+        expect(page.locator("#sheet")).to_be_visible()
+        page.mouse.move(417, 150)
+        page.mouse.down()
+        page.mouse.move(417, 20, steps=6)
+        cancel_after(20)
+        page.mouse.up()
+        expect(page.locator("#sheet")).to_be_hidden()
+        x, y = centre(page, "#handle")             # a short drag cancelled does not open it
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, y + 25, steps=3)
+        cancel_after(y + 25)
+        page.mouse.up()
+        page.wait_for_timeout(400)
+        expect(page.locator("#sheet")).to_be_hidden()
+
+    def test_a_second_finger_cannot_steer_or_end_a_drag(self, page, hd):
+        def fire(kind, y, pointer_id):
+            page.evaluate(
+                """([kind, y, id]) => document.dispatchEvent(new PointerEvent(kind,
+                    {pointerId: id, clientY: y, bubbles: true}))""",
+                [kind, y, pointer_id])
+
+        open_page(page, hd)
+        x, y = centre(page, "#handle")
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, 240, steps=10)
+        fire("pointermove", 400, 77)               # another pointer: ignored
+        fire("pointerup", 400, 77)
+        expect(page.locator("#sheet")).to_have_class(re.compile("dragging"))
+        page.mouse.up()
+        expect(page.locator("#sheet")).not_to_have_class(re.compile("dragging"))
+        expect(page.locator("#sheet")).to_be_visible()
 
     def test_a_short_drag_does_not_open_it(self, page, hd):
         open_page(page, hd)

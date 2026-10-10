@@ -875,7 +875,7 @@
     function createBand() {
         const node = make("div", "eq-band");
         const freq = node.appendChild(make("span", "eq-band-freq"));
-        const slider = node.appendChild(make("input", "eq-band-slider"));
+        const slider = node.appendChild(make("div", "eq-band-box")).appendChild(make("input", "eq-band-slider"));
         slider.type = "range";
         slider.step = "1";
         const val = node.appendChild(make("span", "eq-band-val"));
@@ -1351,13 +1351,32 @@
     // A slider under a finger: the state leaves it alone, and a new drag to
     // the value the last one ended on is still sent.
     function trackDrag(slider, key) {
-        slider.addEventListener("pointerdown", () => {
+        slider.addEventListener("pointerdown", (event) => {
             dragging.add(key());
             delete lanes[key()];
+            followPointer(event, null, () => dragging.delete(key()));
         });
-        ["pointerup", "pointercancel"].forEach((type) => {
-            slider.addEventListener(type, () => dragging.delete(key()));
-        });
+    }
+
+    // Follows the pointer that began a drag from the document, so the drag
+    // survives the finger leaving the element it started on. Only that pointer
+    // counts (a second finger can neither steer nor end it), and a cancel ends
+    // it like a lift. move may be null; end gets the event that ended it.
+    function followPointer(start, move, end) {
+        const id = start.pointerId;
+        const onMove = (event) => {
+            if (event.pointerId === id && move) { move(event); }
+        };
+        const onEnd = (event) => {
+            if (event.pointerId !== id) { return; }
+            document.removeEventListener("pointermove", onMove);
+            document.removeEventListener("pointerup", onEnd);
+            document.removeEventListener("pointercancel", onEnd);
+            end(event);
+        };
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onEnd);
+        document.addEventListener("pointercancel", onEnd);
     }
 
     // ---- Actions from the page ------------------------------------------
@@ -1607,17 +1626,13 @@
             let dy = 0;
             let moved = false;
             els.sheet.classList.add("dragging");
-            target.setPointerCapture(event.pointerId);
             const move = (e) => {
                 dy = e.clientY - y0;
                 if (Math.abs(dy) > CONFIG.tapMovePx) { moved = true; }
                 const offset = startOpen ? Math.min(0, dy) : Math.max(-height, Math.min(0, dy - height));
                 els.sheet.style.transform = "translateY(" + offset + "px)";
             };
-            const up = () => {
-                target.removeEventListener("pointermove", move);
-                target.removeEventListener("pointerup", up);
-                target.removeEventListener("pointercancel", up);
+            followPointer(event, move, () => {
                 els.sheet.classList.remove("dragging");
                 els.sheet.style.transform = "";
                 if (!moved) {
@@ -1626,10 +1641,7 @@
                     const keep = height / CONFIG.dragCloseFraction;
                     setSheet(startOpen ? dy > -keep : dy > keep);
                 }
-            };
-            target.addEventListener("pointermove", move);
-            target.addEventListener("pointerup", up);
-            target.addEventListener("pointercancel", up);
+            });
         });
     }
     bindSheetDrag(els.handle, false);
