@@ -16,6 +16,7 @@
         activityGapMs: 5000,        // at most one panel activity report in this time
         infoMaxAgeMs: 10000,        // the dial details are fetched again after this
         tapMovePx: 6,               // a press that moves less than this is a tap
+        wakeGuardMs: 400,           // the shield lets go this long after the waking finger lifts, if no click came
         dragCloseFraction: 3,       // a pull-down moved more than 1/this of its height stays moved
         userScrollHoldMs: 3000,     // after the user scrolls a list, the page leaves it alone this long
         autoScrollSettleMs: 400,    // scroll events this soon after the page's own scroll are not the user's
@@ -715,6 +716,7 @@
         const settings = {
             brightness: settle("brightness", panel.brightness),
             sleepAfter: settle("sleep_after_s", panel.sleep_after_s),
+            // Any real backlight kind (sysfs or ddc) does the dimming itself.
             dim: panel.backlight === "none"
                 ? DIM_FLOOR + (1 - DIM_FLOOR) * settle("brightness", panel.brightness) / BRIGHTNESS_MAX : null
         };
@@ -1748,12 +1750,20 @@
         if (event.detail === 0) { setSheet(!ui.sheetOpen); }
     });
 
-    // A touch while the panel sleeps only wakes it.
+    // A touch while the panel sleeps only wakes it. The panel can be awake
+    // again before the finger lifts, and the click that ends the touch is
+    // aimed at whatever is then under it, so the shield goes on taking
+    // touches until that click has landed on it (or, for a touch that ends
+    // without one, a moment after the finger lifts).
+    const releaseShield = () => els.sleep.classList.remove("held");
     els.sleep.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         event.stopPropagation();
+        els.sleep.classList.add("held");
+        followPointer(event, null, () => setTimeout(releaseShield, CONFIG.wakeGuardMs));
         post("panel_wake", {});
     });
+    els.sleep.addEventListener("click", releaseShield);
 
     // Every other touch counts as activity for the panel's idle clock
     // (reported at most once in a while).

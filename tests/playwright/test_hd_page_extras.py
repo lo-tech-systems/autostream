@@ -1157,6 +1157,15 @@ class TestPullDown:
         assert page.evaluate("getComputedStyle(document.getElementById('app')).filter") == "none"
         expect(page.locator("#app")).not_to_have_class(re.compile("dimmed"))
 
+    def test_with_a_ddc_backlight_the_screen_is_not_dimmed(self, page, hd):
+        hd.show(dataclasses.replace(
+            hs.SCENARIOS["playing_artwork"], panel={**hs.PANEL_AWAKE, "backlight": "ddc", "brightness": 30}))
+        if hd.kind == "real":
+            post_settings(hd.url, {"brightness": 30})
+        open_page(page, hd)
+        assert page.evaluate("getComputedStyle(document.getElementById('app')).filter") == "none"
+        expect(page.locator("#app")).not_to_have_class(re.compile("dimmed"))
+
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
     def test_layout_at_each_size(self, page, hd, size):
         open_page(page, hd, size)
@@ -1495,6 +1504,15 @@ class TestSleepShield:
         box = shield.bounding_box()
         assert (box["x"], box["y"], box["width"], box["height"]) == (0, 0, 800, 480)
 
+    def test_a_ddc_panel_still_gets_the_black_shield_when_asleep(self, page, hd):
+        base = asleep_scenario()
+        hd.show(dataclasses.replace(base, panel={**base.panel, "backlight": "ddc"}))
+        open_page(page, hd)
+        expect(page.locator("#sleep")).to_have_class(re.compile("on"))
+        page.wait_for_timeout(700)
+        assert page.evaluate("getComputedStyle(document.getElementById('sleep')).opacity") == "1"
+        assert page.evaluate("getComputedStyle(document.getElementById('sleep')).backgroundColor") == "rgb(0, 0, 0)"
+
     def test_awake_has_no_shield(self, page, hd):
         open_page(page, hd)
         expect(page.locator("#sleep")).not_to_have_class(re.compile("on"))
@@ -1513,6 +1531,23 @@ class TestSleepShield:
         tap(page, "#mute")                                    # the second touch is a press
         page.wait_for_timeout(200)
         assert only(sent, "mute_toggle") == [("mute_toggle", {"appliance_id": LOUNGE})]
+
+    def test_the_shield_takes_touches_until_the_waking_finger_has_lifted(self, page, hd):
+        hd.show(asleep_scenario())
+        sent = watch_posts(page)
+        open_page(page, hd)
+        shield = page.locator("#sleep")
+        expect(shield).to_have_class(re.compile("on"))
+        takes_touches = "getComputedStyle(document.getElementById('sleep')).pointerEvents"
+        box = page.locator("#mute").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+        expect(shield).not_to_have_class(re.compile("on"))      # awake, finger still down
+        assert page.evaluate(takes_touches) == "auto"
+        page.mouse.up()
+        page.wait_for_function(takes_touches + " === 'none'")
+        assert sent == [("panel_wake", {})]
+        assert page.locator("#mute").get_attribute("aria-pressed") == "false"
 
     def test_the_shield_stays_until_the_state_says_awake(self, page, hd):
         hd.show(asleep_scenario())

@@ -420,6 +420,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
     transition: opacity 1200ms ease; display: grid; place-items: center;
 }
 .sleep.on { opacity: 1; pointer-events: auto; transition-duration: 600ms; }
+.sleep.held { pointer-events: auto; }
 .sleep span { color: #2a3a4a; font-size: 0.87em; }
 
 @media (prefers-reduced-motion: reduce) {
