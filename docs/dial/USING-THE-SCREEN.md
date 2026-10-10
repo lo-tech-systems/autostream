@@ -137,6 +137,13 @@ Other taps on this screen:
 - **Minus** and **plus** (bottom left and centre) step the volume down or
   up by the configured step size. Hold either down to repeat.
 
+The screen also follows changes made elsewhere. If you switch a speaker,
+change a volume, mute, turn repeat on or off, or adjust the equaliser on
+another dial or in the appliance's web page, this screen shows it within a
+second or so, and so does a new track, with its artist and artwork. A dial
+that misses the news, for example because it was out of reach for a moment,
+catches up within a few seconds on its own.
+
 ### Compact controls
 
 On a compact panel, the now-playing screen has no text at all, just

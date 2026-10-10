@@ -89,6 +89,13 @@ The screen has two sides. Everything is touch; there is no keyboard, and the
 mouse pointer is hidden on the dial's own screen (it stays visible when you
 open the same page from a laptop).
 
+The screen follows changes made elsewhere. If you switch a speaker, change a
+volume, mute, turn repeat on or off, or adjust the equaliser on another dial or
+in the appliance's web page, this screen shows it within a second or so, and so
+does a new track, with its artist and cover. If a dial misses the news, for
+example because it was out of reach for a moment, it catches up within a few
+seconds on its own.
+
 ### Appliances and speakers
 
 The left side lists the appliances the dial can see in its top third, with
