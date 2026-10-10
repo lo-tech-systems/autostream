@@ -90,7 +90,7 @@ from autostream_dials import (
     AUTH_AUTHORIZED,
     AUTH_UNAVAILABLE,
     dial_authorization,
-    is_dial_authorized,
+    dial_speaks_v2,
 )
 from autostream_core import (
     any_monitor_capturing,
@@ -866,8 +866,7 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
     if not isinstance(dial_id, str) or not dial_id:
         send_json(handler, 403, {})
         return
-    if not is_dial_authorized(dial_id):
-        send_json(handler, 403, {})
+    if _dial_auth_gate(handler, json_obj) is None:
         return
     if not isinstance(delta, int) or isinstance(delta, bool):
         send_json(handler, 200, {"ok": False, "error": "invalid_delta"})
@@ -1037,7 +1036,9 @@ def _dial_auth_gate(handler, json_obj: dict) -> str | None:
       400 {"ok": false, "error": "missing_dial_id"}        dial_id absent, empty or not a string
       200 {"ok": false, "error": "auth_unavailable"}       dials store unreadable (transient to the dial)
       412 {"ok": false, "error": "dial_not_authorized",
-           "appliance_id": <id or null>}                   definitive miss
+           "appliance_id": <id or null>}                   definitive miss, dial speaks v2
+      403 {}                                               definitive miss, any other dial
+                                                           (legacy or not currently sighted)
 
     Order matters: the shape check (400) runs before the store is ever read,
     so a malformed request never touches the file; the store-unavailable
@@ -1052,6 +1053,9 @@ def _dial_auth_gate(handler, json_obj: dict) -> str | None:
         send_json(handler, 200, {"ok": False, "error": "auth_unavailable"})
         return None
     if auth != AUTH_AUTHORIZED:
+        if not dial_speaks_v2(dial_id):
+            send_json(handler, 403, {})
+            return None
         send_json(handler, 412, {
             "ok": False,
             "error": "dial_not_authorized",
@@ -1471,8 +1475,7 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
     if not isinstance(dial_id, str) or not dial_id:
         send_json(handler, 403, {})
         return
-    if not is_dial_authorized(dial_id):
-        send_json(handler, 403, {})
+    if _dial_auth_gate(handler, json_obj) is None:
         return
 
     action = json_obj.get("action")

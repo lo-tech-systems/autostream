@@ -77,6 +77,7 @@ def _invoke_transport(
     transport_mock = MagicMock(return_value=transport_ack, side_effect=transport_side_effect)
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
+        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api.send_live_repeat_transport", transport_mock),
         patch("autostream_webui_api.get_repeat_status",
@@ -99,6 +100,7 @@ def _invoke_arm(
     legacy_mock = MagicMock(side_effect=AssertionError("must not call apply_repeat_arm_request"))
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
+        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api.set_live_repeat_armed_ack", arm_mock),
         patch("autostream_webui_api.apply_repeat_arm_request", legacy_mock),

@@ -274,7 +274,7 @@ class TestApplyMuteAction:
             return 200, {"ok": True, "muted": action == "mute"}
 
         with patch("autostream_webui_api.apply_mute_action", side_effect=fake_apply), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api.send_json"):
             api.send_dial_mute_post_json(
                 _handler(), MagicMock(), {"dial_id": "uid", "action": "mute"},
@@ -301,7 +301,7 @@ class TestVolumeDeltaWhileMuted:
             captured["body"] = body
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", return_value=_list_result(outputs)), \
              patch("autostream_webui_api.update_output", return_value=_update_result(update_ok)):
@@ -327,7 +327,7 @@ class TestVolumeDeltaWhileMuted:
         mute_state.begin_mute({"o1": 40})
         parsed = _parsed_config()
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", return_value=_list_result([_output("o1", 0)])), \
              patch("autostream_webui_api.update_output") as mock_update:
@@ -356,7 +356,7 @@ class TestVolumeDeltaWhileMuted:
             return _update_result(True)
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", return_value=_list_result([_output("o1", 0)])), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
@@ -381,7 +381,7 @@ class TestVolumeDeltaWhileMuted:
         parsed = _parsed_config()
         results = iter([_update_result(True), _update_result(False)])
         with patch("autostream_webui_api.send_json") as mock_send, \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_list_result([_output("o1", 40), _output("o2", 60)])), \

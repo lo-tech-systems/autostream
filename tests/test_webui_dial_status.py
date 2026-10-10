@@ -48,7 +48,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
+from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DialSighting
 from autostream_players import ListOutputsResult, OutputInfo, ActionResult
 from autostream_webui_api import (
     calculate_master_volume,
@@ -107,6 +107,7 @@ def _invoke(
     track_id_snapshot: TrackIdentificationSnapshot | None = None,
     repeat_status: dict | None = None,
     session_state: dict | None = None,
+    speaks_v2: bool = True,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_status_post_json and return (status, body, update_mock).
 
@@ -140,6 +141,7 @@ def _invoke(
 
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
+        patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_webui_api.list_outputs", return_value=list_result),
@@ -185,6 +187,54 @@ class TestAuthorization:
             "error": "dial_not_authorized",
             "appliance_id": TEST_APPLIANCE_ID,
         }
+
+    def test_unsighted_dial_gets_403_empty_body(self):
+        """An unauthorized dial that is not currently sighted is treated as
+        legacy: bare 403 with an empty JSON object."""
+        handler = _make_handler()
+        with (
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_NOT_AUTHORIZED),
+            patch("autostream_dials.get_dial_sighting", return_value=None),
+        ):
+            send_dial_status_post_json(handler, WebUIState(
+                config_path="dummy.json", state_path="dummy-state.json"), {"dial_id": DIAL_ID})
+        assert _response(handler) == (403, {})
+        assert handler.wfile.getvalue() == b"{}"
+
+    def test_sighted_v2_dial_gets_typed_412(self):
+        handler = _make_handler()
+        sighting = DialSighting(uuid=DIAL_ID, name="D", version="x", ip="10.0.0.9",
+                                port=7842, pin_recovery=False, dial_proto="v2")
+        with (
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_NOT_AUTHORIZED),
+            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+            patch("autostream_dials.get_dial_sighting", return_value=sighting),
+        ):
+            send_dial_status_post_json(handler, WebUIState(
+                config_path="dummy.json", state_path="dummy-state.json"), {"dial_id": DIAL_ID})
+        assert _response(handler) == (412, {
+            "ok": False, "error": "dial_not_authorized", "appliance_id": TEST_APPLIANCE_ID,
+        })
+
+    def test_sighted_legacy_dial_gets_403_empty_body(self):
+        handler = _make_handler()
+        sighting = DialSighting(uuid=DIAL_ID, name="D", version="x", ip="10.0.0.9",
+                                port=7842, pin_recovery=False)
+        with (
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_NOT_AUTHORIZED),
+            patch("autostream_dials.get_dial_sighting", return_value=sighting),
+        ):
+            send_dial_status_post_json(handler, WebUIState(
+                config_path="dummy.json", state_path="dummy-state.json"), {"dial_id": DIAL_ID})
+        assert _response(handler) == (403, {})
+        assert handler.wfile.getvalue() == b"{}"
+
+    def test_legacy_dial_still_gets_400_and_auth_unavailable_unchanged(self):
+        code, body, _ = _invoke({}, speaks_v2=False)
+        assert (code, body) == (400, {"ok": False, "error": "missing_dial_id"})
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, auth_state=AUTH_UNAVAILABLE,
+                                speaks_v2=False)
+        assert (code, body) == (200, {"ok": False, "error": "auth_unavailable"})
 
     def test_unauthorized_dial_id_appliance_id_null_when_identity_less(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID}, authorized=False, appliance_id=None)

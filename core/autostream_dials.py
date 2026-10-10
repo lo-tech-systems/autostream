@@ -31,6 +31,10 @@ DIALS_PATH = Path("/var/lib/autostream/dials.json")
 _DIALS_LOCK = threading.Lock()
 _SIGHTING_THROTTLE_SECS = 60
 
+# Protocol dialect a dial advertises as dial_proto in its TXT record. Kept
+# in step with the value the appliance advertises (autostream_admin).
+DIAL_PROTO_VERSION = "v2"
+
 # Printable ASCII only (0x20–0x7e); reject ; | which break TXT parsing.
 # Intentional policy duplication of the identical function in autostream_admin
 # (an extensionless privileged executable that cannot be imported).
@@ -212,6 +216,7 @@ class DialSighting:
     port: int
     pin_recovery: bool
     sdmon: bool = False   # dial_sdmon=v1 in the TXT record: the dial has the SD health endpoint
+    dial_proto: str = ""  # dial_proto value from the TXT record, verbatim; "" when absent
 
 
 def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
@@ -236,6 +241,7 @@ def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
         port=port,
         pin_recovery=(txt.get("pin_recovery") == "1"),
         sdmon=(txt.get("dial_sdmon") == "v1"),
+        dial_proto=txt.get("dial_proto", ""),
     )
     # Update last_seen / current_name in dials.json (throttled write, outside lock).
     update_dial_sighting(uuid, sighting.name)
@@ -254,6 +260,23 @@ def get_dial_sighting(uuid: str) -> DialSighting | None:
 
 def get_all_sightings() -> list[DialSighting]:
     return list(_browser.get_snapshot().values())
+
+
+def dial_speaks_v2(uuid: str) -> bool:
+    """True when the dial is currently sighted and advertises the current
+    protocol dialect.  An unsighted dial is treated as legacy."""
+    s = get_dial_sighting(uuid)
+    return s is not None and s.dial_proto == DIAL_PROTO_VERSION
+
+
+def sighting_needs_update(s: DialSighting) -> bool:
+    """True when the sighted dial does not advertise the current protocol dialect."""
+    return s.dial_proto != DIAL_PROTO_VERSION
+
+
+def dials_needing_update() -> list[DialSighting]:
+    """Currently sighted dials that do not advertise the current protocol dialect."""
+    return [s for s in get_all_sightings() if sighting_needs_update(s)]
 
 
 def start_dial_scanner(

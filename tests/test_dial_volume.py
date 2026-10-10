@@ -89,7 +89,7 @@ def _invoke(
             raise OSError("disk full")
         return parsed
 
-    with patch("autostream_webui_api.is_dial_authorized", return_value=authorized), \
+    with patch("autostream_webui_api.dial_authorization", return_value="authorized" if authorized else "not_authorized"), \
          patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot), \
          patch("autostream_webui_api.list_outputs", return_value=list_result), \
          patch("autostream_webui_api.update_output", update_mock):

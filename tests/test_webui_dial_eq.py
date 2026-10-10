@@ -92,6 +92,7 @@ def _invoke_read(
 
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
+        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
     ):
@@ -115,6 +116,7 @@ def _invoke_set(
 
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
+        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", return_value=parsed),
         patch("autostream_webui_api.apply_eq_fields", apply_mock),
@@ -355,7 +357,7 @@ class TestAvahiDialEq:
         text = admin_path.read_text(encoding="utf-8")
         idx = text.find("_write_appliance_service")
         assert idx != -1
-        fn_text = text[idx:idx + 1000]
+        fn_text = text[idx:idx + 1600]
         assert "dial_eq=v1" in fn_text
 
 

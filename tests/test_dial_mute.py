@@ -126,7 +126,7 @@ class TestDialMuteAuth:
             captured["body"] = body
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=authorized):
+             patch("autostream_webui_api.dial_authorization", return_value="authorized" if authorized else "not_authorized"):
             send_dial_mute_post_json(handler, MagicMock(), json_obj)
         return captured
 
@@ -172,7 +172,7 @@ class TestDialMuteActionValidation:
             captured["body"] = body
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True):
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"):
             send_dial_mute_post_json(MagicMock(), MagicMock(), json_obj)
         return captured
 
@@ -215,7 +215,7 @@ class TestDialMuteBackend:
         parsed = _make_parsed_config(volume_percent=default_vol)
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", return_value=list_result), \
              patch("autostream_webui_api.update_output", return_value=_make_update_result(update_ok)):
@@ -272,7 +272,7 @@ class TestDialMuteAction:
             return next(update_iter)
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
@@ -363,7 +363,7 @@ class TestDialMuteAction:
         parsed = _make_parsed_config(volume_percent=20)
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
@@ -396,7 +396,7 @@ class TestDialMuteAction:
         parsed = _make_parsed_config(volume_percent=35)
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
@@ -432,7 +432,7 @@ class TestDialMuteFailures:
             return _make_update_result(next(ok_iter))
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
@@ -511,7 +511,7 @@ class TestDialMuteFailures:
             captured.update({"code": code, "body": body})
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
@@ -555,7 +555,7 @@ class TestDialMuteFailures:
             captured.update({"code": code, "body": body})
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs",
                    return_value=_make_list_result(outputs)), \
@@ -624,7 +624,7 @@ class TestDialVolumeAndMuteEndToEnd:
             })
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.is_dial_authorized", return_value=True), \
+             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", side_effect=fake_list_outputs), \
              patch("autostream_webui_api.update_output", side_effect=fake_update):
