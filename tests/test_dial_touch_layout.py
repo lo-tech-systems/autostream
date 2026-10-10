@@ -31,6 +31,7 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_IDLE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     HALO_MAX_PX,
     LARGE_MIN_SHORT_SIDE_PX,
@@ -48,6 +49,7 @@ from dial_touch_layout import (  # noqa: E402
     list_layout_for,
     list_zone_at,
     metrics_for,
+    output_layout_for,
     repeat_layout_for,
     repeat_zone_at,
     scale_px,
@@ -68,7 +70,10 @@ PROFILE_SIZES = [
     (320, 240),  # ili9341_320x240 (duplicate size, both must work)
 ]
 
-ALL_ZONES = {TouchZone.DOTS, TouchZone.NAME, TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP}
+ALL_ZONES = {
+    TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
+    TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP,
+}
 
 
 class TestExactTiling:
@@ -167,10 +172,15 @@ class TestZoneAt:
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_divider_x_sits_in_the_gap(self, width, height):
+        """The main screen's own footer dividers (the three-way split) are
+        dead zones. layout.divider_x (the two-way split's midpoint, kept for
+        the repeat/detail screens) is no longer necessarily one of the main
+        screen's dead zones now that the footer is three-way."""
         layout = layout_for(width, height)
         y0, y1 = layout.bottom_band[1], layout.bottom_band[3]
-        for y in range(y0, y1):
-            assert zone_at(layout.divider_x, y, width, height) is None
+        for divider_x in layout.footer_dividers:
+            for y in range(y0, y1):
+                assert zone_at(divider_x, y, width, height) is None
 
 
 class TestZonesForCompleteness:
@@ -184,9 +194,10 @@ class TestZonesForCompleteness:
         layout = layout_for(width, height)
         assert zones[TouchZone.DOTS] == layout.dots
         assert zones[TouchZone.NAME] == layout.name
-        assert zones[TouchZone.MUTE] == layout.volume_cluster
-        assert zones[TouchZone.DOWN] == layout.down
-        assert zones[TouchZone.UP] == layout.up
+        assert zones[TouchZone.OUTPUTS] == layout.volume_cluster
+        assert zones[TouchZone.MUTE] == layout.footer_mute
+        assert zones[TouchZone.DOWN] == layout.footer_down
+        assert zones[TouchZone.UP] == layout.footer_up
 
 
 class TestBandLayout:
@@ -501,6 +512,7 @@ class TestZoneRectsOrder:
         assert [(e.zone, e.index) for e in entries] == [
             (TouchZone.DOTS, None),
             (TouchZone.NAME, None),
+            (TouchZone.OUTPUTS, None),
             (TouchZone.MUTE, None),
             (TouchZone.DOWN, None),
             (TouchZone.UP, None),
@@ -532,6 +544,16 @@ class TestZoneRectsOrder:
         entries = zone_rects_for(GEOMETRY_IDLE, 160, 128)
         assert [(e.zone, e.index) for e in entries] == [(TouchZone.IDLE_REPLAY, None)]
 
+    def test_output_order(self):
+        entries = zone_rects_for(GEOMETRY_OUTPUT, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.OUTPUT_BACK, None),
+            (TouchZone.NAME, None),
+            (TouchZone.OUTPUT_TOGGLE, None),
+            (TouchZone.OUTPUT_DOWN, None),
+            (TouchZone.OUTPUT_UP, None),
+        ]
+
 
 class TestZoneRectsMatchLayoutFields:
     """The table is a view, not a recomputation: every rect it carries must
@@ -543,9 +565,10 @@ class TestZoneRectsMatchLayoutFields:
         entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_MAIN, width, height)}
         assert entries[TouchZone.DOTS] == layout.dots
         assert entries[TouchZone.NAME] == layout.name
-        assert entries[TouchZone.MUTE] == layout.volume_cluster
-        assert entries[TouchZone.DOWN] == layout.down
-        assert entries[TouchZone.UP] == layout.up
+        assert entries[TouchZone.OUTPUTS] == layout.volume_cluster
+        assert entries[TouchZone.MUTE] == layout.footer_mute
+        assert entries[TouchZone.DOWN] == layout.footer_down
+        assert entries[TouchZone.UP] == layout.footer_up
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_list_rects_are_layout_fields(self, width, height):
@@ -575,6 +598,47 @@ class TestZoneRectsMatchLayoutFields:
         layout = idle_layout_for(width, height)
         entries = zone_rects_for(GEOMETRY_IDLE, width, height)
         assert entries[0].rect == layout.replay
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_output_rects_are_layout_fields(self, width, height):
+        layout = output_layout_for(width, height)
+        entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_OUTPUT, width, height)}
+        assert entries[TouchZone.OUTPUT_BACK] == layout.back
+        assert entries[TouchZone.NAME] == layout.name
+        assert entries[TouchZone.OUTPUT_TOGGLE] == layout.row
+        assert entries[TouchZone.OUTPUT_DOWN] == layout.down
+        assert entries[TouchZone.OUTPUT_UP] == layout.up
+
+
+class TestOutputLayout:
+    """OutputLayout is the tiered repeat layout's own geometry, relabelled
+    — every field must equal the layout it aliases, at every tier."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_fields_equal_the_layouts_they_alias(self, width, height):
+        main = layout_for(width, height)
+        repeat = repeat_layout_for(width, height)
+        output = output_layout_for(width, height)
+        assert output.back == main.dots
+        assert output.name == main.name
+        assert output.volume_cluster == main.volume_cluster
+        assert output.row == repeat.row
+        assert output.down == main.down
+        assert output.up == main.up
+        assert output.divider_x == main.divider_x
+        assert output.top_band == main.top_band
+        assert output.bottom_band == main.bottom_band
+
+    def test_pinned_geometry_at_320x240_rich(self):
+        metrics = metrics_for(320, 240, 0.1778)
+        output = output_layout_for(320, 240, metrics=metrics)
+        assert output.back == (6, 0, 66, 60)
+        assert output.name == (78, 0, 186, 60)
+        assert output.volume_cluster == (198, 0, 320, 54)
+        assert output.row == (6, 60, 314, 180)
+        assert output.down == (0, 186, 154, 240)
+        assert output.up == (166, 186, 320, 240)
+        assert output.divider_x == 160
 
 
 class TestListZoneAtExhaustive:
@@ -1173,7 +1237,8 @@ class TestAlbumLine:
         # table, exactly like the artist and title rects it sits beside.
         entries = zone_rects_for(GEOMETRY_MAIN, 640, 480, metrics=_LARGE_640x480)
         assert [e.zone for e in entries] == [
-            TouchZone.DOTS, TouchZone.NAME, TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP,
+            TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
+            TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP,
         ]
 
 

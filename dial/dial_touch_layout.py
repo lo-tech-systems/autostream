@@ -301,11 +301,17 @@ class TouchZone(str, Enum):
     SURFACES paragraph). Compares equal to its own string value, so callers
     may use TouchZone.MUTE or the literal "mute" interchangeably.
 
-    MUTE, DOWN, UP, NAME, DOTS: the main (now-playing) surface. DOTS opens
-    the repeat screen; it is carved from the left of the NAME zone.
-    LIST_BACK, LIST_DOWN, LIST_UP, LIST_ROW: the selector/picker surface.
+    OUTPUTS, MUTE, DOWN, UP, NAME, DOTS: the main (now-playing) surface.
+    DOTS opens the repeat screen; it is carved from the left of the NAME
+    zone. OUTPUTS is the top-right volume-cluster readout, opening the
+    outputs list; MUTE is the footer's own cell (see FOOTER_VOLUME_MUTE in
+    the compositor).
+    LIST_BACK, LIST_DOWN, LIST_UP, LIST_ROW: the selector/picker surface,
+    also reused by the outputs list.
     REPEAT_PLAY, REPEAT_START, REPEAT_STOP: the repeat screen's own
     surface (plus DOTS and NAME, reused there from the main surface).
+    OUTPUT_BACK, OUTPUT_TOGGLE, OUTPUT_UP, OUTPUT_DOWN: the per-output
+    detail surface (plus NAME, reused from the main surface).
     IDLE_REPLAY: the idle-screen surface (the whole panel below the top
     band, when the idle affordance is showing).
     """
@@ -323,6 +329,11 @@ class TouchZone(str, Enum):
     REPEAT_START = "repeat_start"
     REPEAT_STOP = "repeat_stop"
     IDLE_REPLAY = "idle_replay"
+    OUTPUTS = "outputs"
+    OUTPUT_BACK = "output_back"
+    OUTPUT_TOGGLE = "output_toggle"
+    OUTPUT_UP = "output_up"
+    OUTPUT_DOWN = "output_down"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -335,7 +346,8 @@ GEOMETRY_MAIN = "main"
 GEOMETRY_LIST = "list"
 GEOMETRY_REPEAT = "repeat"
 GEOMETRY_IDLE = "idle"
-GEOMETRIES = (GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE)
+GEOMETRY_OUTPUT = "output"
+GEOMETRIES = (GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE, GEOMETRY_OUTPUT)
 
 
 @dataclass(frozen=True)
@@ -370,9 +382,10 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
     return (
         ZoneRect(TouchZone.DOTS, layout.dots),
         ZoneRect(TouchZone.NAME, layout.name),
-        ZoneRect(TouchZone.MUTE, layout.volume_cluster),
-        ZoneRect(TouchZone.DOWN, layout.down),
-        ZoneRect(TouchZone.UP, layout.up),
+        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster),
+        ZoneRect(TouchZone.MUTE, layout.footer_mute),
+        ZoneRect(TouchZone.DOWN, layout.footer_down),
+        ZoneRect(TouchZone.UP, layout.footer_up),
     )
 
 
@@ -410,11 +423,23 @@ def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
     return (ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),)
 
 
+def _output_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    layout = output_layout_for(width, height, metrics=metrics)
+    return (
+        ZoneRect(TouchZone.OUTPUT_BACK, layout.back),
+        ZoneRect(TouchZone.NAME, layout.name),
+        ZoneRect(TouchZone.OUTPUT_TOGGLE, layout.row),
+        ZoneRect(TouchZone.OUTPUT_DOWN, layout.down),
+        ZoneRect(TouchZone.OUTPUT_UP, layout.up),
+    )
+
+
 _GEOMETRY_BUILDERS = {
     GEOMETRY_MAIN: _main_zone_rects,
     GEOMETRY_LIST: _list_zone_rects,
     GEOMETRY_REPEAT: _repeat_zone_rects,
     GEOMETRY_IDLE: _idle_zone_rects,
+    GEOMETRY_OUTPUT: _output_zone_rects,
 }
 
 
@@ -449,10 +474,18 @@ class OverlayLayout:
     artist: Rect          # centre-low text line, just above the bottom band (non-actuating)
     title: Rect           # track title line, directly above the artist line (non-actuating)
     volume_cluster: Rect  # glyph + number, right part of top band (== MUTE zone)
-    down: Rect            # bottom band, left half (== DOWN zone)
-    up: Rect              # bottom band, right half (== UP zone)
-    divider_x: int        # x of the vertical divider centre in the bottom band
+    down: Rect            # bottom band, left half (two-way; kept for the repeat/detail screens)
+    up: Rect              # bottom band, right half (two-way; kept for the repeat/detail screens)
+    divider_x: int        # x of the vertical divider centre in the bottom band (two-way split)
     album: Rect | None = None  # album line directly above the title (large tier only); None elsewhere, non-actuating
+    # Three-way main footer: minus (== DOWN zone), plus (== UP zone), mute
+    # (== MUTE zone) — left, middle and right thirds respectively. down/up/
+    # divider_x above keep their two-way values for the repeat and output
+    # detail screens, which still show only a minus/plus pair.
+    footer_down: Rect | None = None      # bottom band, left third (minus, == DOWN zone)
+    footer_up: Rect | None = None        # bottom band, middle third (plus, == UP zone)
+    footer_mute: Rect | None = None      # bottom band, right third (== MUTE zone)
+    footer_dividers: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -480,6 +513,52 @@ class RepeatLayout:
     divider_x: int
     top_band: Rect
     bottom_band: Rect
+
+
+@dataclass(frozen=True)
+class OutputLayout:
+    """Full per-output detail-page geometry for one panel size — the tiered
+    repeat layout's own geometry, relabelled: `back` is the header's left
+    chevron (== the OUTPUT_BACK zone, reusing the DOTS rect); `name` is the
+    appliance name (== the NAME zone, reused from the main surface);
+    `volume_cluster` is the header's speaker+digits readout, drawn but
+    never hit-tested here (display-only, like the repeat screen's own);
+    `row` is the full-width toggle row (== the OUTPUT_TOGGLE zone, the same
+    rectangle the repeat screen's enable row uses); `down`/`up` are the
+    two-way minus/plus rectangles (== the OUTPUT_DOWN/OUTPUT_UP zones,
+    identical to the main surface's own two-way `down`/`up` — no per-output
+    footer thirds, this page never mutes)."""
+
+    back: Rect
+    name: Rect
+    volume_cluster: Rect
+    row: Rect
+    down: Rect
+    up: Rect
+    divider_x: int
+    top_band: Rect
+    bottom_band: Rect
+
+
+def output_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> OutputLayout:
+    """Compute the per-output detail-page geometry for a *width* x *height*
+    panel — the tiered repeat layout's own toggle row and two-way minus/
+    plus, under the detail page's own field names."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    layout = layout_for(width, height, metrics=metrics)
+    repeat = repeat_layout_for(width, height, metrics=metrics)
+    return OutputLayout(
+        back=layout.dots,
+        name=layout.name,
+        volume_cluster=layout.volume_cluster,
+        row=repeat.row,
+        down=layout.down,
+        up=layout.up,
+        divider_x=layout.divider_x,
+        top_band=layout.top_band,
+        bottom_band=layout.bottom_band,
+    )
 
 
 @dataclass(frozen=True)
@@ -627,6 +706,15 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
     up: Rect = (ux0, by0, ux1, height)
     divider_x = (dx1 + ux0) // 2
 
+    # Three-way main footer: minus | plus | mute, left to right. Same band
+    # row (by0..height) and the same dead-zone margin rule as the two-way
+    # split above, just three equal thirds instead of two halves.
+    (fdx0, fdx1), (fux0, fux1), (fmx0, fmx1) = _split(width, m, [1, 1, 1])
+    footer_down: Rect = (fdx0, by0, fdx1, height)
+    footer_up: Rect = (fux0, by0, fux1, height)
+    footer_mute: Rect = (fmx0, by0, fmx1, height)
+    footer_dividers = ((fdx1 + fux0) // 2, (fux1 + fmx0) // 2)
+
     return OverlayLayout(
         top_band=top_band,
         bottom_band=bottom_band,
@@ -639,6 +727,10 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
         up=up,
         divider_x=divider_x,
         album=album,
+        footer_down=footer_down,
+        footer_up=footer_up,
+        footer_mute=footer_mute,
+        footer_dividers=footer_dividers,
     )
 
 

@@ -36,18 +36,24 @@ from dial_display_compositor import (  # noqa: E402
     BODY_NOW_PLAYING,
     BODY_REPEAT_LINE,
     BODY_REPEAT_ROW,
+    BODY_TOGGLE_ROW,
+    Body,
     DialDisplayCompositor,
     FOOTER_LABELS,
     FOOTER_LIST_BAR,
     FOOTER_LIST_RAIL,
     FOOTER_NONE,
     FOOTER_VOLUME,
+    FOOTER_VOLUME_MUTE,
     Frame,
     GLYPH_CHEVRON,
     GLYPH_CROSS,
+    GLYPH_MUTE,
     GLYPH_PLAY,
     GLYPH_TWO_DOTS,
+    Header,
     ListState,
+    OutputViewState,
     PLAY_GLYPH,
     OverlayState,
     RepeatViewState,
@@ -59,6 +65,7 @@ from dial_display_compositor import (  # noqa: E402
     _glyph_tile,
     _halo_layer,
     _load_font,
+    _now_playing_frame,
     _pad_px,
     _reset_font_cache,
     _reset_render_caches,
@@ -1342,11 +1349,14 @@ class TestComposeRepeatTopBand:
             with_volume.crop(layout.volume_cluster).getdata()
         )
 
-    def test_muted_glyph_differs_from_unmuted(self, compositor):
+    def test_header_readout_unslashed_regardless_of_muted(self, compositor):
+        """The header glyph is never slashed on any screen, the repeat
+        screen's display-only readout included -- mute has one home, the
+        footer's own glyph and wash (see the main-screen footer tests)."""
         layout = repeat_layout_for(160, 128)
         unmuted = compositor.compose_repeat(160, 128, _repeat_state(muted=False), rotate=False, bgr=False)
         muted = compositor.compose_repeat(160, 128, _repeat_state(muted=True), rotate=False, bgr=False)
-        assert list(unmuted.crop(layout.volume_cluster).getdata()) != list(
+        assert list(unmuted.crop(layout.volume_cluster).getdata()) == list(
             muted.crop(layout.volume_cluster).getdata()
         )
 
@@ -2057,10 +2067,10 @@ class TestPlayGlyphTile:
         _reset_render_caches()
 
     def test_every_glyph_kind_has_a_registered_painter(self):
-        from dial_display_compositor import GLYPH_ARM_DOT, _GLYPH_PAINTERS
+        from dial_display_compositor import GLYPH_ARM_DOT, GLYPH_MUTE, _GLYPH_PAINTERS
 
         assert set(_GLYPH_PAINTERS) == {
-            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS,
+            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):
@@ -2257,33 +2267,40 @@ class TestGlyphTileCacheAccounting:
         _reset_render_caches()
 
     def test_main_compose_with_dots_one_miss_then_one_hit(self):
+        """Two glyph-tile kinds are drawn on every main compose now: the
+        dots (when overlay.dots is True) and the footer's own mute cell
+        (drawn unconditionally by FOOTER_VOLUME_MUTE) -- one miss each on a
+        cold cache, one hit each once both tiles are memoised."""
         compositor = DialDisplayCompositor()
         img = Image.new("RGB", (160, 128), (200, 150, 100))
         overlay = OverlayState(visible=True, dots=True)
         compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
         info = _glyph_tile.cache_info()
-        assert info.misses == 1
+        assert info.misses == 2
         assert info.hits == 0
 
         compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
         info = _glyph_tile.cache_info()
-        assert info.misses == 1
-        assert info.hits == 1
+        assert info.misses == 2
+        assert info.hits == 2
 
     def test_a_second_profile_size_adds_a_miss(self):
-        # 160x128 and 320x240 round to different dots-glyph pixel sizes, so
-        # the second compose's tile key is genuinely new — a same-tier size
-        # that happens to round to the identical glyph box would (correctly)
-        # hit instead, which is why this picks two sizes confirmed to differ.
+        # 160x128 and 320x240 round to different dots/mute-glyph pixel
+        # sizes, so the second compose's tile keys are genuinely new — a
+        # same-tier size that happens to round to the identical glyph box
+        # would (correctly) hit instead, which is why this picks two sizes
+        # confirmed to differ. Two glyph kinds (dots, mute) means two new
+        # misses per distinct size — see test_main_compose_with_dots_one_
+        # miss_then_one_hit above.
         compositor = DialDisplayCompositor()
         overlay = OverlayState(visible=True, dots=True)
         img_a = Image.new("RGB", (160, 128), (200, 150, 100))
         img_b = Image.new("RGB", (320, 240), (200, 150, 100))
         compositor.compose(img_a, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
-        assert _glyph_tile.cache_info().misses == 1
+        assert _glyph_tile.cache_info().misses == 2
 
         compositor.compose(img_b, 320, 240, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
-        assert _glyph_tile.cache_info().misses == 2
+        assert _glyph_tile.cache_info().misses == 4
 
     def test_list_compose_chevrons_plus_one_per_distinct_marker(self):
         compositor = DialDisplayCompositor()
@@ -2585,6 +2602,11 @@ class TestLargeFontCaps:
         assert glyph_width(metrics) < glyph_width(uncapped_metrics)
 
     def test_speaker_icon_box_is_capped(self, compositor):
+        """The header's own readout glyph, drawn directly (not through the
+        glyph-tile cache) as the FIRST _draw_speaker_glyph call every main
+        compose makes -- the second call is the footer's own mute cell,
+        drawn through _glyph_tile() at that cell's (supersampled) size,
+        which has nothing to do with this cap."""
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
         with patch("dial_display_compositor._draw_speaker_glyph", wraps=_draw_speaker_glyph) as spy:
@@ -2592,7 +2614,7 @@ class TestLargeFontCaps:
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, volume=42), metrics=metrics,
             )
-        box = spy.call_args.args[1]
+        box = spy.call_args_list[0].args[1]
         assert box[2] - box[0] == metrics.icon == FONT_READOUT_MAX_PX
 
 
@@ -2677,3 +2699,302 @@ class TestLargeNeverRaises:
             overlay=OverlayState(visible=True, album=""), metrics=metrics,
         )
         assert list(with_album.crop(layout.album).getdata()) != list(baseline_blank.crop(layout.album).getdata())
+
+
+# ---------------------------------------------------------------------------
+# The main screen's three-way footer (FOOTER_VOLUME_MUTE): minus | plus |
+# mute, left to right, plus the persistent mute wash and GLYPH_MUTE itself.
+# ---------------------------------------------------------------------------
+
+def _has_near_white_pixel(region) -> bool:
+    """True if *region* contains a pixel close to the glyph colour
+    (255, 255, 255) — a cheap proxy for "a glyph stroke was drawn here"."""
+    return any(min(px) > 200 for px in region.getdata())
+
+
+class TestFooterVolumeMute:
+    @pytest.mark.parametrize(
+        "size,metrics",
+        [((160, 128), None), ((320, 240), _RICH_METRICS), ((640, 480), _LARGE_METRICS)],
+    )
+    def test_three_thirds_each_carry_glyph_content(self, compositor, size, metrics):
+        img = Image.new("RGB", size, (60, 60, 60))
+        result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        layout = layout_for(*size, metrics=metrics)
+        for rect in (layout.footer_down, layout.footer_up, layout.footer_mute):
+            assert _has_near_white_pixel(result.crop(rect))
+
+    def test_footer_kind_is_volume_mute_on_the_main_screen(self):
+        frame = _now_playing_frame(OverlayState(visible=True), 160, 128, metrics_for(160, 128))
+        assert frame.footer.kind == FOOTER_VOLUME_MUTE
+
+    @pytest.mark.parametrize(
+        "size,metrics",
+        [((160, 128), None), ((320, 240), _RICH_METRICS)],
+    )
+    def test_dividers_drawn_between_the_three_thirds(self, compositor, size, metrics):
+        from dial_display_compositor import _DIVIDER_RGB
+        img = Image.new("RGB", size, (60, 60, 60))
+        result = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        layout = layout_for(*size, metrics=metrics)
+        mid_y = (layout.bottom_band[1] + layout.bottom_band[3]) // 2
+        for x in layout.footer_dividers:
+            assert result.getpixel((x, mid_y)) == _DIVIDER_RGB
+
+    def test_thirds_sit_between_the_footer_dividers_in_order(self):
+        """Owner-chosen order: minus (DOWN) left, plus (UP) middle, mute
+        right — the reverse of a mute-in-the-middle layout."""
+        layout = layout_for(320, 240, metrics=_RICH_METRICS)
+        assert layout.footer_down[2] <= layout.footer_dividers[0]
+        assert layout.footer_up[0] >= layout.footer_dividers[0]
+        assert layout.footer_up[2] <= layout.footer_dividers[1]
+        assert layout.footer_mute[0] >= layout.footer_dividers[1]
+
+
+class TestPersistentMuteWash:
+    def test_muted_true_washes_the_right_third_brighter_than_dimmed(self, compositor):
+        size = (160, 128)
+        img = Image.new("RGB", size, (60, 60, 60))
+        layout = layout_for(*size)
+        unmuted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False),
+        )
+        muted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True),
+        )
+        # Sample a corner of the mute cell, away from the glyph itself, so
+        # the comparison isolates the wash rather than the glyph stroke.
+        x0, y0, x1, y1 = layout.footer_mute
+        corner = (x0 + 1, y1 - 2)
+        assert sum(muted.getpixel(corner)) > sum(unmuted.getpixel(corner))
+
+    def test_unmuted_mute_cell_corner_matches_the_plain_dimmed_band(self, compositor):
+        size = (160, 128)
+        img = Image.new("RGB", size, (60, 60, 60))
+        layout = layout_for(*size)
+        unmuted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False),
+        )
+        mute_corner = (layout.footer_mute[0] + 1, layout.footer_mute[3] - 2)
+        down_corner = (layout.footer_down[0] + 1, layout.footer_down[3] - 2)
+        assert unmuted.getpixel(mute_corner) == unmuted.getpixel(down_corner)
+
+    def test_pressed_mute_adds_a_wash_on_top_of_the_persistent_one(self, compositor):
+        size = (160, 128)
+        img = Image.new("RGB", size, (60, 60, 60))
+        layout = layout_for(*size)
+        muted_unpressed = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True),
+        )
+        muted_pressed = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True, pressed=TouchZone.MUTE),
+        )
+        corner = (layout.footer_mute[0] + 1, layout.footer_mute[3] - 2)
+        assert sum(muted_pressed.getpixel(corner)) > sum(muted_unpressed.getpixel(corner))
+
+    def test_wash_confined_to_the_mute_third(self, compositor):
+        size = (160, 128)
+        img = Image.new("RGB", size, (60, 60, 60))
+        layout = layout_for(*size)
+        unmuted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False),
+        )
+        muted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True),
+        )
+        for rect in (layout.footer_down, layout.footer_up):
+            assert list(unmuted.crop(rect).getdata()) == list(muted.crop(rect).getdata())
+
+
+class TestHeaderNeverSlashedRegardlessOfMuted:
+    def test_main_screen_header_unaffected_by_muted(self, compositor):
+        size = (160, 128)
+        img = Image.new("RGB", size, (60, 60, 60))
+        layout = layout_for(*size)
+        unmuted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=42, muted=False),
+        )
+        muted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, volume=42, muted=True),
+        )
+        assert list(unmuted.crop(layout.volume_cluster).getdata()) == list(
+            muted.crop(layout.volume_cluster).getdata()
+        )
+
+
+class TestGlyphMuteTile:
+    def test_tile_is_monochrome_with_opaque_pixels(self):
+        tile = _glyph_tile(GLYPH_MUTE, (), 32, 32, 4)
+        assert tile.size == (32, 32)
+        assert tile.mode == "RGBA"
+        pixels = tile.load()
+        opaque = [pixels[x, y] for x in range(32) for y in range(32) if pixels[x, y][3] > 0]
+        assert opaque, "expected at least one opaque pixel"
+        # Monochrome: every opaque pixel is the plain glyph colour, no shading.
+        assert all(px[:3] == (255, 255, 255) for px in opaque)
+
+    def test_tile_has_a_diagonal_slash_and_a_speaker_body(self):
+        """The mute glyph is the muted speaker: a body (opaque pixels in the
+        left half) plus a diagonal slash running corner to corner of the
+        glyph's own (inset) box — distinct from the unmuted variant's
+        sound-wave arcs, which never form a straight diagonal like this."""
+        w = h = 40
+        tile = _glyph_tile(GLYPH_MUTE, (), w, h, 4)
+        pixels = tile.load()
+        left_half_opaque = any(pixels[x, 20][3] > 0 for x in range(4, 16))
+        assert left_half_opaque
+
+        # The same box arithmetic _draw_mute_glyph uses, so this scans along
+        # the actual slash the glyph draws rather than a guessed position.
+        side = round(min(w, h) * 0.56)
+        cx, cy = w // 2, h // 2
+        half = side // 2
+        x0, y0 = cx - half, cy - half
+        on_diagonal_opaque = any(pixels[x0 + i, y0 + i][3] > 0 for i in range(side))
+        assert on_diagonal_opaque
+
+
+# ---------------------------------------------------------------------------
+# compose_output(): the per-output detail page.
+# ---------------------------------------------------------------------------
+
+def _output_state(**overrides) -> OutputViewState:
+    base = dict(name="Kitchen", output_name="Bedroom", selected=True, level=40, pressed=None)
+    base.update(overrides)
+    return OutputViewState(**base)
+
+
+class TestComposeOutput:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @pytest.mark.parametrize(
+        "size,metrics",
+        [((160, 128), None), ((320, 240), _RICH_METRICS), ((640, 480), _LARGE_METRICS)],
+    )
+    def test_returns_panel_sized_frame(self, compositor, size, metrics):
+        result = compositor.compose_output(
+            *size, _output_state(), rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.size == size
+
+    def test_back_chevron_drawn_where_the_dots_would_be(self, compositor):
+        layout = layout_for(160, 128)
+        with_back = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
+        no_dots = compositor.compose(
+            Image.new("RGB", (160, 128), (60, 60, 60)), 160, 128,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=False),
+        )
+        assert list(with_back.crop(layout.dots).getdata()) != list(no_dots.crop(layout.dots).getdata())
+
+    def test_output_name_drawn_in_the_toggle_row(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        named = compositor.compose_output(
+            160, 128, _output_state(output_name="Living Room"), rotate=False, bgr=False,
+        )
+        blank = compositor.compose_output(
+            160, 128, _output_state(output_name=""), rotate=False, bgr=False,
+        )
+        assert list(named.crop(layout.row).getdata()) != list(blank.crop(layout.row).getdata())
+
+    def test_dot_filled_iff_selected(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        pad = _pad_px(160, 128)
+        row = layout.row
+        dot_box = row[3] - row[1]
+        dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
+        selected = compositor.compose_output(
+            160, 128, _output_state(selected=True), rotate=False, bgr=False,
+        )
+        disabled = compositor.compose_output(
+            160, 128, _output_state(selected=False), rotate=False, bgr=False,
+        )
+        assert list(selected.crop(dot_rect).getdata()) != list(disabled.crop(dot_rect).getdata())
+
+    def test_minus_plus_footer_present_and_two_way(self, compositor):
+        layout = layout_for(160, 128)
+        unpressed = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
+        pressed_down = compositor.compose_output(
+            160, 128, _output_state(pressed=TouchZone.OUTPUT_DOWN), rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(layout.down).getdata()) != list(pressed_down.crop(layout.down).getdata())
+        assert list(unpressed.crop(layout.up).getdata()) == list(pressed_down.crop(layout.up).getdata())
+
+    def test_readout_digits_present_for_a_level_and_absent_for_none(self, compositor):
+        layout = layout_for(160, 128)
+        with_level = compositor.compose_output(
+            160, 128, _output_state(level=55), rotate=False, bgr=False,
+        )
+        no_level = compositor.compose_output(
+            160, 128, _output_state(level=None), rotate=False, bgr=False,
+        )
+        assert list(with_level.crop(layout.volume_cluster).getdata()) != list(
+            no_level.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_pressed_zone_resolves_against_geometry_output(self, compositor):
+        """A press reported for OUTPUT_TOGGLE (a zone that exists only on
+        GEOMETRY_OUTPUT, never GEOMETRY_MAIN) must wash the toggle row,
+        proving the pressed-rect lookup used GEOMETRY_OUTPUT rather than
+        falling back to a geometry with no such entry (which would wash
+        nothing at all — see _zone_rect degrading gracefully for an
+        unrecognised zone)."""
+        layout = repeat_layout_for(160, 128)
+        unpressed = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
+        pressed = compositor.compose_output(
+            160, 128, _output_state(pressed=TouchZone.OUTPUT_TOGGLE), rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(layout.row).getdata()) != list(pressed.crop(layout.row).getdata())
+
+    def test_never_raises_with_no_font(self, compositor):
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            result = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
+        assert result.size == (160, 128)
+
+
+# ---------------------------------------------------------------------------
+# BODY_TOGGLE_ROW / BODY_REPEAT_ROW: the shared renderer, byte-identical
+# for the repeat screen.
+# ---------------------------------------------------------------------------
+
+class TestBodyToggleRowByteIdentity:
+    def test_repeat_row_and_toggle_row_render_identically_for_the_same_label(self):
+        img_a = Image.new("RGB", (160, 128), (16, 16, 16))
+        img_b = Image.new("RGB", (160, 128), (16, 16, 16))
+        metrics = metrics_for(160, 128)
+        _BODY_RENDERERS[BODY_REPEAT_ROW](
+            img_a, metrics, Body(BODY_REPEAT_ROW, armed=True, label="Repeat Play"),
+        )
+        _BODY_RENDERERS[BODY_TOGGLE_ROW](
+            img_b, metrics, Body(BODY_TOGGLE_ROW, armed=True, label="Repeat Play"),
+        )
+        assert list(img_a.getdata()) == list(img_b.getdata())
+
+    def test_repeat_screen_still_draws_repeat_play_label(self):
+        """Regression guard: _repeat_frame must still pass the literal
+        label, not an empty one, now that the renderer reads body.label
+        instead of a hardcoded string."""
+        from dial_display_compositor import _repeat_frame
+        frame = _repeat_frame(_repeat_state(layout="enable", armed=False), 160, 128, metrics_for(160, 128))
+        assert frame.body.kind == BODY_REPEAT_ROW
+        assert frame.body.label == "Repeat Play"

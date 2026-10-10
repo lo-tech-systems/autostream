@@ -31,24 +31,29 @@ from dial_touch import (  # noqa: E402
     SURFACE_HELD,
     SURFACE_HIDDEN,
     SURFACE_IDLE,
+    SURFACE_OUTPUT,
+    SURFACE_OUTPUTS,
     SURFACE_PICKER,
     SURFACE_REPEAT,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
     TouchStateMachine,
+    _REPEATING_ZONES,
     _SINGLE_SHOT_ZONES,
     _ZONE_TAP_ZONES,
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
     GEOMETRY_MAIN,
+    GEOMETRY_OUTPUT,
     TouchZone,
     hit_test,
     layout_for,
     list_layout_for,
     list_zone_at,
     metrics_for,
+    output_layout_for,
     repeat_layout_for,
     zones_for,
 )
@@ -952,7 +957,7 @@ class TestDisplayConfigChanged:
 class TestSetGeometry:
     def test_stale_geometry_press_misses_and_new_geometry_press_hits(self):
         metrics_640 = metrics_for(640, 480, mm_per_px=0.0889, size_chosen=True)
-        up_640 = layout_for(640, 480, metrics_640).up
+        up_640 = layout_for(640, 480, metrics_640).footer_up
         up_xy_640 = ((up_640[0] + up_640[2]) // 2, (up_640[1] + up_640[3]) // 2)
 
         sm = TouchStateMachine(640, 480, metrics=metrics_640)
@@ -966,7 +971,7 @@ class TestSetGeometry:
         assert sm.pressed_zone is None
 
         base_metrics = metrics_for(160, 128)
-        up_160 = layout_for(160, 128, base_metrics).up
+        up_160 = layout_for(160, 128, base_metrics).footer_up
         up_xy_160 = ((up_160[0] + up_160[2]) // 2, (up_160[1] + up_160[3]) // 2)
         sm.on_filter_event(press_event(up_xy_160), now=0.1)
         assert sm.pressed_zone == TouchZone.UP
@@ -1394,6 +1399,10 @@ NAME_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.NAME])
 REPEAT_PLAY_XY = _rect_center(_REPEAT_LAYOUT.row)
 REPEAT_START_XY = _rect_center(_REPEAT_LAYOUT.start)
 REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
+# The repeat screen's own MUTE zone is the volume_cluster readout (top-right,
+# unchanged) — NOT the main surface's MUTE_XY, which now lands in the main
+# screen's own three-way footer cell instead.
+REPEAT_MUTE_XY = _rect_center(_REPEAT_LAYOUT.volume_cluster)
 IDLE_XY = (WIDTH // 2, HEIGHT - 1)
 
 
@@ -1418,7 +1427,7 @@ class TestNewSurfacesArmImmediately:
     def test_mute_toggles_on_the_repeat_surface(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_REPEAT, False, now=0.0)
-        actions = sm.on_filter_event(press_event(MUTE_XY), now=0.1)
+        actions = sm.on_filter_event(press_event(REPEAT_MUTE_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_MUTE_TOGGLE]
 
     def test_idle_replay_arms_immediately_without_reveal(self):
@@ -1749,7 +1758,9 @@ class TestRepeatCloseRevealWiring:
 
 class TestComplementRuleDerivation:
     def test_single_shot_zones_is_every_zone_except_up_and_down(self):
-        assert _SINGLE_SHOT_ZONES == frozenset(TouchZone) - {TouchZone.UP, TouchZone.DOWN}
+        assert _SINGLE_SHOT_ZONES == frozenset(TouchZone) - {
+            TouchZone.UP, TouchZone.DOWN, TouchZone.OUTPUT_UP, TouchZone.OUTPUT_DOWN,
+        }
 
     def test_zone_tap_zones_is_every_zone_except_up_down_and_mute(self):
         assert _ZONE_TAP_ZONES == frozenset(TouchZone) - {
@@ -1763,3 +1774,222 @@ class TestUnknownSurfaceFallsBackToMainGeometry:
         sm.set_surface("not-a-real-surface", False, now=0.0)
         actions = sm.on_filter_event(press_event(UP_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
+
+
+# ---------------------------------------------------------------------------
+# The outputs list and per-output detail surfaces: geometry mapping, the
+# OUTPUTS gate, OUTPUT_UP/OUTPUT_DOWN repeating as zone taps, and
+# OUTPUT_TOGGLE/OUTPUT_BACK as single-shot zone taps.
+# ---------------------------------------------------------------------------
+
+_OUTPUT_LAYOUT = output_layout_for(WIDTH, HEIGHT)
+OUTPUT_BACK_XY = _rect_center(_OUTPUT_LAYOUT.back)
+OUTPUT_TOGGLE_XY = _rect_center(_OUTPUT_LAYOUT.row)
+OUTPUT_DOWN_XY = _rect_center(_OUTPUT_LAYOUT.down)
+OUTPUT_UP_XY = _rect_center(_OUTPUT_LAYOUT.up)
+OUTPUTS_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.OUTPUTS])
+
+
+class TestOutputsSurfaceMapping:
+    def test_surface_outputs_maps_to_list_geometry(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUTS, False, now=0.0)
+        actions = sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_ROW
+        assert tap.index == 0
+
+    def test_surface_outputs_counts_as_visible_and_held(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUTS, False, now=0.0)
+        assert sm.overlay_visible is True
+        assert sm.held_visible is True
+
+    def test_surface_output_maps_to_geometry_output(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(OUTPUT_TOGGLE_XY), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUT_TOGGLE
+
+    def test_surface_output_counts_as_visible_and_held(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        assert sm.overlay_visible is True
+        assert sm.held_visible is True
+
+    def test_name_zone_reused_on_the_output_surface(self):
+        """NAME is reused from the main surface on the output detail page —
+        gated by the same _name_active flag."""
+        name_xy = _rect_center(_OUTPUT_LAYOUT.name)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, True, now=0.0)
+        actions = sm.on_filter_event(press_event(name_xy), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.NAME
+
+    def test_name_inactive_on_output_is_a_dead_zone(self):
+        name_xy = _rect_center(_OUTPUT_LAYOUT.name)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(name_xy), now=0.0)
+        assert actions == []
+
+
+class TestOutputZoneTaps:
+    def test_output_back_is_single_shot_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(OUTPUT_BACK_XY), now=0.0)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUT_BACK
+        assert sm.pressed_zone == TouchZone.OUTPUT_BACK
+        # Single-shot: the flash clears itself even if held.
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert actions == [TouchAction(ACTION_SET_PRESSED_ZONE, None)]
+        actions = sm.tick(now=FIRST_REPEAT_S + 1.0)
+        assert actions == []
+
+    def test_output_toggle_is_single_shot_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(OUTPUT_TOGGLE_XY), now=0.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUT_TOGGLE
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert actions == [TouchAction(ACTION_SET_PRESSED_ZONE, None)]
+        actions = sm.tick(now=FIRST_REPEAT_S + 1.0)
+        assert actions == []
+
+    def test_output_up_and_down_are_in_the_repeating_set(self):
+        assert TouchZone.OUTPUT_UP in _REPEATING_ZONES
+        assert TouchZone.OUTPUT_DOWN in _REPEATING_ZONES
+
+    def test_output_down_repeats_as_zone_taps(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(OUTPUT_DOWN_XY), now=0.0)
+        first_tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert first_tap.zone == TouchZone.OUTPUT_DOWN
+
+        # No repeat yet just before FIRST_REPEAT_S.
+        assert kinds(sm.tick(now=FIRST_REPEAT_S - 0.01)) == []
+        # A zone tap fires at FIRST_REPEAT_S, and again every
+        # REPEAT_INTERVAL_S after that, same cadence as UP/DOWN.
+        actions = sm.tick(now=FIRST_REPEAT_S)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUT_DOWN
+        actions = sm.tick(now=FIRST_REPEAT_S + REPEAT_INTERVAL_S)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUT_DOWN
+
+    def test_output_up_repeats_as_zone_taps(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        sm.on_filter_event(press_event(OUTPUT_UP_XY), now=0.0)
+        actions = sm.tick(now=FIRST_REPEAT_S)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUT_UP
+
+    def test_output_stepper_stays_lit_while_held_like_up_down(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
+        sm.on_filter_event(press_event(OUTPUT_DOWN_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.OUTPUT_DOWN
+        # Not cleared by the single-shot flash timer.
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert sm.pressed_zone == TouchZone.OUTPUT_DOWN
+        sm.on_filter_event(release_event(OUTPUT_DOWN_XY), now=0.5)
+        assert sm.pressed_zone is None
+
+
+class TestOutputsGate:
+    """The top-right OUTPUTS zone (main surface) is gated by
+    _outputs_active, the same discipline _dots_active/_name_active use."""
+
+    def test_outputs_inactive_is_a_dead_zone(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0, outputs_active=False)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
+        assert actions == []
+
+    def test_outputs_active_emits_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0, outputs_active=True)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUTS
+
+    def test_same_surface_call_updates_outputs_active(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0, outputs_active=False)
+        assert sm.set_surface(SURFACE_HIDDEN, False, now=0.0, outputs_active=True) == []
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+    def test_mute_is_still_a_fixed_action_zone_not_outputs(self):
+        """The footer's own MUTE cell is unaffected by the OUTPUTS gate —
+        it still fires the fixed mute-toggle action, never a zone tap."""
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(MUTE_XY), now=0.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_MUTE_TOGGLE]
+
+
+class TestTouchSurfaceFourTupleContract:
+    """_poll_surface() accepts the full 4-tuple (surface, name_active,
+    dots_active, outputs_active), on top of the existing 2- and 3-tuple
+    forms — see TestTouchSurfacePollingTupleContracts above for those."""
+
+    def test_four_tuple_carries_outputs_active_through(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: (SURFACE_HIDDEN, False, False, True),
+        )
+        source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+    def test_three_tuple_defaults_outputs_active_false(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: (SURFACE_HIDDEN, False, True),
+        )
+        source._poll_surface()
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
+        assert actions == []
+
+    def test_outputs_active_only_change_still_triggers_set_surface(self):
+        """A 4-tuple that differs only in its last element (no surface,
+        name_active or dots_active change) must still resync the state
+        machine — the same "chrome changed with no surface change" case
+        dots_active already handles for the main screen."""
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([
+            (SURFACE_HIDDEN, False, False, False),
+            (SURFACE_HIDDEN, False, False, True),
+        ])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+        )
+        source._poll_surface()
+        source._poll_surface()
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)

@@ -8,16 +8,25 @@ actually built. It has no threading, no hardware access, no persistent
 state, and no lock of its own; every call is independent of every other.
 
 Every screen (the now-playing overlay, the repeat screen, the appliance
-selector, the idle screen) is drawn by one pipeline, _compose_frame():
-background, then dims, then any row highlights, then a pressed-zone wash,
-then the header, then the body, then the footer, then rotate/BGR. What
-differs between screens is
+selector, the outputs list, the per-output detail page, the idle screen) is
+drawn by one pipeline, _compose_frame(): background, then dims, then any
+row highlights, then a pressed-zone wash, then the header, then the body,
+then the footer, then rotate/BGR. What differs between screens is
 only the data — a frozen Frame descriptor made of a background choice plus
-a Header/Body/Footer triple — never the drawing order. Each of the four
-public entry points (compose(), compose_list(), compose_repeat(),
+a Header/Body/Footer triple — never the drawing order. Each of the public
+entry points (compose(), compose_list(), compose_repeat(), compose_output(),
 compose_idle()) is a thin adapter that turns its own state snapshot
-(OverlayState, ListState, RepeatViewState, or nothing at all) into a Frame
-and hands it to the pipeline.
+(OverlayState, ListState, RepeatViewState, OutputViewState, or nothing at
+all) into a Frame and hands it to the pipeline. The outputs list reuses
+compose_list() outright (it is just another row list); only the detail
+page (compose_output()) is new.
+
+The main screen's own footer is three-way (FOOTER_VOLUME_MUTE: minus |
+plus | mute), not the two-way minus/plus (FOOTER_VOLUME) the repeat and
+per-output detail screens still use — mute moved off the header (which is
+never slashed on any screen any more) into its own footer cell, with a
+persistent wash while muted on top of which a genuine press adds its own
+momentary wash.
 
 Two kinds of base image reach compose():
   - Artwork: the manager hands over the RAW DECODED image plus the active
@@ -99,6 +108,7 @@ from dial_touch_layout import (
     FONT_READOUT_PX_AT_REFERENCE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     LayoutMetrics,
     OverlayLayout,
@@ -334,6 +344,36 @@ class RepeatViewState:
     pressed: "TouchZone | None" = None
 
 
+@dataclass(frozen=True)
+class OutputViewState:
+    """Immutable snapshot of what the per-output detail page should show —
+    the compose_output() counterpart to OverlayState/RepeatViewState. Built
+    by the display manager from its outputs-list state (dial_display.py) on
+    the repeat-screen compose path; this module has no idea what an
+    "output" is beyond a name, an on/off state and a level.
+
+    name: the appliance's display name, drawn in the NAME zone (reused from
+        the main surface) with the header's own back chevron in place of
+        the pager dots (see Header.back).
+    output_name: this output's own name — the toggle row's label.
+    selected: whether this output is currently enabled — the toggle row's
+        dot marker (solid when True, hollow when False, the same glyph the
+        repeat screen's "Repeat Play" row uses).
+    level: this output's own volume (0-100), or None when disabled (no
+        level to show) — drawn in the header's readout in place of the
+        master-volume digits the main/repeat screens show there. There is
+        no mute concept on this page (decision: disable covers it).
+    pressed: the TouchZone currently being pressed, or None. Mirrors
+        OverlayState.pressed/RepeatViewState.pressed.
+    """
+
+    name: str
+    output_name: str
+    selected: bool
+    level: "int | None" = None
+    pressed: "TouchZone | None" = None
+
+
 # Background sources for _new_frame(): where a frame's base image comes
 # from before anything is drawn on top of it.
 BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
@@ -344,13 +384,15 @@ BG_CHASSIS = "chassis"    # flat _LIST_BG_RGB fill, no caller image involved
 BODY_NONE = "none"
 BODY_NOW_PLAYING = "now_playing"   # title + artist lines with halo
 BODY_REPEAT_ROW = "repeat_row"     # "Repeat Play" label + arm dot
+BODY_TOGGLE_ROW = "toggle_row"     # a label + arm dot for any on/off row (repeat, per-output)
 BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
 BODY_LIST_ROWS = "list_rows"       # selector/picker rows
 
 # Footer kinds — the bottom band's content, dispatched through
 # _FOOTER_RENDERERS.
 FOOTER_NONE = "none"
-FOOTER_VOLUME = "volume"           # minus | plus glyphs + divider
+FOOTER_VOLUME = "volume"           # minus | plus glyphs + divider (two-way: repeat, per-output detail)
+FOOTER_VOLUME_MUTE = "volume_mute"  # minus | plus | mute glyphs + two dividers (main screen, three-way)
 FOOTER_LABELS = "labels"           # left | right centred labels + divider
 FOOTER_LIST_BAR = "list_bar"       # back | down | up chevrons
 FOOTER_LIST_RAIL = "list_rail"     # up chevron | cross | down chevron on the right rail
@@ -361,12 +403,17 @@ class Header:
     """The top band's content: appliance name, mute/volume readout, and the
     optional pager dots that switch between the main and repeat screens.
     dots_filled=None omits the dots entirely; 0 fills the left dot, 1 the
-    right one."""
+    right one. muted is carried for compatibility but no longer selects a
+    slashed readout anywhere -- mute has one home, the main screen's own
+    footer glyph and wash. back=True draws a left chevron into the dots
+    rect instead (the per-output detail page's own back control), taking
+    priority over dots_filled."""
 
     name: str = ""
     volume: int | None = None
     muted: bool | None = None
     dots_filled: int | None = None
+    back: bool = False
 
 
 @dataclass(frozen=True)
@@ -378,7 +425,8 @@ class Body:
     kind: str = BODY_NONE
     title: str = ""        # BODY_NOW_PLAYING
     artist: str = ""       # BODY_NOW_PLAYING
-    armed: bool = False    # BODY_REPEAT_ROW
+    armed: bool = False    # BODY_REPEAT_ROW / BODY_TOGGLE_ROW
+    label: str = ""        # BODY_REPEAT_ROW / BODY_TOGGLE_ROW — the row's own text
     line: str = ""         # BODY_REPEAT_LINE
     rows: tuple = ()       # BODY_LIST_ROWS — same row tuples ListState.rows carries
     album: str = ""        # BODY_NOW_PLAYING — drawn only where the layout has an album rect
@@ -522,6 +570,33 @@ class DialDisplayCompositor:
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
+    def compose_output(
+        self, width: int, height: int, state: OutputViewState, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """Build one display-ready frame for the per-output detail page.
+
+        A thin adapter like compose_repeat(): a dark chassis background (no
+        artwork here either, matching the appliance selector/replay picker
+        and the repeat screen's own enable layout), the shared top band
+        with a back chevron in place of the pager dots (Header.back) and
+        this output's own level in the readout in place of the master
+        volume, the toggle row (this output's own name plus its enable
+        dot, through the same renderer the repeat screen's "Repeat Play"
+        row uses), and the two-way minus/plus footer (FOOTER_VOLUME, the
+        same one the repeat screen's replaying layout uses) stepping this
+        output's own level. rotate/bgr are applied last, in the same order
+        every other compose*() call uses. Never raises: a font or glyph
+        failure degrades to a plainer frame, matching every other screen's
+        discipline. metrics: see compose().
+        """
+        if metrics is None:
+            metrics = metrics_for(width, height)
+        return _compose_frame(
+            None, width, height, _output_frame(state, width, height, metrics),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
     def compose_idle(
         self, base, width: int, height: int, *, rotate: bool, bgr: bool,
         metrics: LayoutMetrics | None = None,
@@ -636,12 +711,17 @@ def _draw_top_band_content(
     other draw-onto-frame helper here — text/glyphs always land on top of
     both. dots_rect=None (or dots_filled=None) omits the dots entirely —
     used when the caller's overlay snapshot says they should not be drawn.
+
+    *muted* is accepted for the caller's convenience but never reaches the
+    readout glyph: the header speaker is never slashed on any screen — mute
+    has one home, the main screen's own footer glyph and wash (see
+    FOOTER_VOLUME_MUTE). The unmuted variant is always drawn here.
     """
     name_font = _load_font(metrics.font_body)
     volume_font = _load_font(metrics.font_readout)
 
     draw = ImageDraw.Draw(frame)
-    _draw_volume_cluster(draw, volume_cluster_rect, volume, muted, volume_font, metrics)
+    _draw_volume_cluster(draw, volume_cluster_rect, volume, None, volume_font, metrics)
     pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
@@ -658,15 +738,19 @@ def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
     frame.paste(dimmed_region, rect[:2])
 
 
-def _draw_band_divider(draw: ImageDraw.ImageDraw, layout: OverlayLayout, metrics: LayoutMetrics) -> None:
-    """Draw a single white vertical divider line at layout.divider_x,
-    spanning the bottom band from its top edge to its last visible row —
-    the boundary between the DOWN and UP glyphs."""
+def _draw_band_divider(
+    draw: ImageDraw.ImageDraw, layout, metrics: LayoutMetrics, xs: "tuple[int, ...]",
+) -> None:
+    """Draw one or more white vertical divider lines, each spanning the
+    bottom band from its top edge to its last visible row — the boundary
+    between two adjacent footer controls. A two-way footer (repeat, the
+    per-output detail page) passes a single x; the main screen's three-way
+    footer passes both of its own."""
     line_width = metrics.divider_w
-    x = layout.divider_x
     y0 = layout.bottom_band[1]
     y1 = layout.bottom_band[3] - 1
-    draw.line([(x, y0), (x, y1)], fill=_DIVIDER_RGB, width=line_width)
+    for x in xs:
+        draw.line([(x, y0), (x, y1)], fill=_DIVIDER_RGB, width=line_width)
 
 
 def _draw_bottom_band(
@@ -685,7 +769,7 @@ def _draw_bottom_band(
     draw = ImageDraw.Draw(frame)
     draw_left(draw, left_rect)
     draw_right(draw, right_rect)
-    _draw_band_divider(draw, layout, metrics)
+    _draw_band_divider(draw, layout, metrics, (layout.divider_x,))
 
 
 def _draw_wash(image: Image.Image, rect: tuple[int, int, int, int], rgb, alpha: int) -> None:
@@ -857,7 +941,7 @@ def _draw_volume_cluster(
     metrics: LayoutMetrics,
 ) -> None:
     """Draw the volume readout inside *rect* (the top band's volume cluster,
-    == the MUTE zone): the speaker glyph, right aligned, and — when both a
+    == the OUTPUTS zone on the main screen): the speaker glyph, right aligned, and — when both a
     *volume* number and a usable *font* are available — the volume digits to
     its left. *metrics* carries the panel's scale-derived padding, icon-to-
     digits gap and icon size (not the rect's own size) — all read from the
@@ -979,6 +1063,7 @@ GLYPH_TWO_DOTS = "two_dots"            # params: (filled,)
 GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
+GLYPH_MUTE = "mute"                    # params: () — the main screen's footer mute cell
 
 
 @functools.lru_cache(maxsize=48)
@@ -1114,6 +1199,27 @@ def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     draw.line([(cx - r, cy + r), (cx + r, cy - r)], fill=_GLYPH_RGB, width=stroke)
 
 
+# Fraction of the footer cell's short side the mute glyph's own bounding box
+# occupies — generous, since this glyph is the cell's only content (no
+# digits beside it, unlike the header's volume_cluster readout).
+_MUTE_GLYPH_BOX_FRACTION = 0.56
+
+
+def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """The main screen's own footer mute glyph: the crossed speaker, drawn
+    via the same painter the header readout uses (_draw_speaker_glyph),
+    always in its muted variant — this cell IS the mute control, so there
+    is no unmuted state for it to distinguish. Rendered into a (w, h)
+    canvas — see _draw_glyph. Integer box arithmetic throughout: Pillow's
+    stroke widths must be ints, and _draw_speaker_glyph derives its own
+    stroke width from this box's size."""
+    side = round(min(w, h) * _MUTE_GLYPH_BOX_FRACTION)
+    cx, cy = w // 2, h // 2
+    half = side // 2
+    box = (cx - half, cy - half, cx - half + side, cy - half + side)
+    _draw_speaker_glyph(draw, box, muted=True)
+
+
 # Dispatch table for _glyph_tile()'s kinded paint step — built here, after
 # every painter above is defined, and looked up by name at call time so its
 # own position in the module relative to _glyph_tile()/_draw_glyph() (defined
@@ -1124,6 +1230,7 @@ _GLYPH_PAINTERS = {
     GLYPH_ARM_DOT: _draw_arm_dot,
     GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
+    GLYPH_MUTE: _draw_mute_glyph,
 }
 
 
@@ -1205,13 +1312,19 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
 def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetrics) -> None:
     _draw_top_band_content(
         img,
-        dots_rect=layout.dots if header.dots_filled is not None else None,
-        dots_filled=header.dots_filled,
+        dots_rect=layout.dots if (header.dots_filled is not None and not header.back) else None,
+        dots_filled=None if header.back else header.dots_filled,
         name_rect=layout.name, name_text=header.name,
         volume_cluster_rect=layout.volume_cluster,
         volume=header.volume, muted=header.muted,
         metrics=metrics,
     )
+    if header.back:
+        # The per-output detail page's own back control, drawn into the
+        # same rect the pager dots would otherwise occupy — the two are
+        # mutually exclusive (dots_filled is suppressed above whenever
+        # back is set).
+        _draw_glyph(img, layout.dots, GLYPH_CHEVRON, "left", True, supersample=metrics.supersample)
 
 
 def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -1227,7 +1340,10 @@ def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
     _draw_text_with_halo(img, layout.artist, body.artist, font, metrics)
 
 
-def _body_repeat_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+def _body_toggle_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """A label plus an on/off dot marker on the shared toggle-row rect —
+    the repeat screen's "Repeat Play" enable row and the per-output detail
+    page's own enable row are the same layout with a different label."""
     layout = repeat_layout_for(metrics.width, metrics.height, metrics=metrics)
     pad = metrics.pad
     row_font = _load_font(metrics.font_body)
@@ -1236,7 +1352,7 @@ def _body_repeat_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     dot_box = row[3] - row[1]
     dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
     label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
-    _draw_label(draw, label_rect, "Repeat Play", row_font, pad)
+    _draw_label(draw, label_rect, body.label, row_font, pad)
     _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, body.armed, supersample=metrics.supersample)
 
 
@@ -1303,7 +1419,8 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
 _BODY_RENDERERS = {
     BODY_NONE: _body_none,
     BODY_NOW_PLAYING: _body_now_playing,
-    BODY_REPEAT_ROW: _body_repeat_row,
+    BODY_REPEAT_ROW: _body_toggle_row,
+    BODY_TOGGLE_ROW: _body_toggle_row,
     BODY_REPEAT_LINE: _body_repeat_line,
     BODY_LIST_ROWS: _body_list_rows,
 }
@@ -1319,6 +1436,22 @@ def _footer_volume(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foo
         left_rect=layout.down, right_rect=layout.up,
         draw_left=_draw_minus_glyph, draw_right=_draw_plus_glyph,
     )
+
+
+def _footer_volume_mute(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
+    """The main screen's own three-way footer: minus | plus | mute, left to
+    right (the owner's chosen order — vol-/vol+ stay at today's thumb
+    positions, mute moves off the header into its own cell). The mute cell
+    always shows the crossed-speaker glyph (GLYPH_MUTE) — this control IS
+    the mute toggle, not a state readout — and carries the persistent wash
+    while muted (see _now_playing_frame's `highlights`), on top of which a
+    genuine press adds the momentary wash."""
+    draw = ImageDraw.Draw(img)
+    _draw_minus_glyph(draw, layout.footer_down)
+    _draw_plus_glyph(draw, layout.footer_up)
+    _draw_glyph(img, layout.footer_mute, GLYPH_MUTE, supersample=metrics.supersample)
+    draw = ImageDraw.Draw(img)  # _draw_glyph pastes into img; get a fresh Draw handle
+    _draw_band_divider(draw, layout, metrics, layout.footer_dividers)
 
 
 def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
@@ -1361,6 +1494,7 @@ def _footer_list_rail(img: Image.Image, layout, metrics: LayoutMetrics, footer: 
 _FOOTER_RENDERERS = {
     FOOTER_NONE: _footer_none,
     FOOTER_VOLUME: _footer_volume,
+    FOOTER_VOLUME_MUTE: _footer_volume_mute,
     FOOTER_LABELS: _footer_labels,
     FOOTER_LIST_BAR: _footer_list_bar,
     FOOTER_LIST_RAIL: _footer_list_rail,
@@ -1437,17 +1571,22 @@ def _main_pressed_rects(
 
 
 def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    layout = layout_for(width, height, metrics=metrics)
     return Frame(
         background=BG_BASE,
         dim_top=True,
         dim_bottom=True,
         pressed=_main_pressed_rects(overlay.pressed, width, height, metrics),
+        # The persistent mute wash: brighter than the dimmed footer band
+        # while muted, independent of any genuine touch — a tap still adds
+        # its own momentary wash on top (see _compose_frame's draw order).
+        highlights=(layout.footer_mute,) if overlay.muted else (),
         header=Header(
             name=overlay.name, volume=overlay.volume, muted=overlay.muted,
             dots_filled=0 if overlay.dots else None,
         ),
         body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist, album=overlay.album),
-        footer=Footer(FOOTER_VOLUME),
+        footer=Footer(FOOTER_VOLUME_MUTE),
     )
 
 
@@ -1475,7 +1614,7 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
             left_enabled=state.start_enabled, right_enabled=state.stop_enabled,
         )
     else:
-        body = Body(BODY_REPEAT_ROW, armed=state.armed)
+        body = Body(BODY_REPEAT_ROW, armed=state.armed, label="Repeat Play")
         footer = Footer(FOOTER_NONE)
     return Frame(
         background=BG_BASE if replaying else BG_CHASSIS,
@@ -1485,6 +1624,30 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
         header=Header(name=state.name, volume=state.volume, muted=state.muted, dots_filled=1),
         body=body,
         footer=footer,
+    )
+
+
+def _output_pressed_rects(
+    pressed: "TouchZone | None", width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
+    """The per-output detail page's pressed-rect lookup: a stale or
+    unrecognised zone (e.g. one that belongs to a different geometry)
+    washes nothing."""
+    rect = _zone_rect(GEOMETRY_OUTPUT, pressed, None, width, height, metrics)
+    return (rect,) if rect is not None else ()
+
+
+def _output_frame(state: "OutputViewState", width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    return Frame(
+        background=BG_CHASSIS,
+        dim_top=True,
+        dim_bottom=True,
+        pressed=_output_pressed_rects(state.pressed, width, height, metrics),
+        header=Header(
+            name=state.name, volume=state.level, muted=None, dots_filled=None, back=True,
+        ),
+        body=Body(BODY_TOGGLE_ROW, armed=state.selected, label=state.output_name),
+        footer=Footer(FOOTER_VOLUME),
     )
 
 
