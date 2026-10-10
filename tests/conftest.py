@@ -183,6 +183,15 @@ def _reset_dial_mdns():
 
 
 @pytest.fixture(autouse=True)
+def _reset_dial_auth():
+    """Clear the dial auth map's module singleton after each test."""
+    yield
+    m = _mod("dial_auth")
+    if m is not None:
+        m.auth_map.reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_dial_volume_fail_counts():
     """Clear dial volume sender failure counters after each test."""
     yield
