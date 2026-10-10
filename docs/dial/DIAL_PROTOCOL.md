@@ -19,12 +19,18 @@ Deleted when the last capture stops.
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
+| `id` | 20 lowercase hex characters | This appliance's stable identity, matching the `appliance_id` returned by `POST /api/dial/status` (see below). Omitted entirely for an identity-less appliance. |
 
 A consumer that sees neither `dial_api` nor `audio_status` treats the appliance as a legacy
 instance (pre-dial support) and skips it.
 
 `dial_status=v1` is independent of `dial_api=v1`. An older appliance may support
 `dial_api=v1` without supporting `dial_status=v1`.
+
+`id` lets a dial correlate this appliance across an `ip:port` change (a DHCP lease renewal,
+a service re-register) without waiting for the next successful `POST /api/dial/status` -
+the mDNS resolve alone is enough to know identity has not changed. A dial that has not been
+authorized against this appliance's UUID yet has nothing to correlate and ignores the field.
 
 Port: **80** (appliance HTTP server).
 
@@ -224,7 +230,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 
 **Success response (200) - no outputs selected:**
 ```json
-{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0}
+{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0, "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
 ```
 
 | Field | Type | Notes |
@@ -233,6 +239,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `master_volume` | int\|null | Rounded arithmetic mean of selected output volumes; `null` when none selected |
 | `selected_output_count` | int | Number of currently selected outputs |
 | `track_id` | object | Grouped now-playing/track-identification state for authorized dials (see below) |
+| `appliance_id` | string\|null | This appliance's stable identity (20 lowercase hex characters), or `null` for an identity-less appliance |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
 and `POST /api/dial/volume`.
@@ -286,12 +293,24 @@ identification state on the request path.
 |---|---|
 | `config_error` | Appliance configuration could not be loaded |
 | `backend_unavailable` | Audio backend (OwnTone) could not provide outputs |
+| `auth_unavailable` | The dial authorization store could not be read (transient - the dial does not demote a previously-authorized appliance on this response) |
 
-**Authorization failure: 403** (empty JSON object `{}`). Returned when `dial_id` is absent,
-empty, or not present in `dials.json`. Matches `POST /api/dial/volume` behavior.
+**Authorization failure: 400** `{"ok": false, "error": "missing_dial_id"}`. Returned when
+`dial_id` is absent, empty, or not a string. Checked before the dials store is ever read, so
+a malformed request never touches the file.
 
-This `403` is **not** intercepted by the main NGINX `error_page` directive (which only
-intercepts 404, 502, 503, and 504), so the dial client receives the original HTTP `403`.
+**Authorization failure: 412** `{"ok": false, "error": "dial_not_authorized", "appliance_id": "<id>"|null}`.
+Returned when `dial_id` is present but not authorized for this appliance (a definitive miss,
+distinct from the transient `auth_unavailable` case above). `appliance_id` lets the dial
+correlate the rejection with the appliance that issued it even if its `ip:port` has since
+been reused by a different appliance on the network.
+
+Unlike `POST /api/dial/volume` and `POST /api/dial/mute` (still `403`, see below), the status
+route never returns `403` - a caller is either authorized (`200`), a definitive miss (`412`),
+malformed (`400`), or the store is transiently unreadable (`200 auth_unavailable`).
+
+`412` is not intercepted by the main NGINX `error_page` directive (which only intercepts
+404, 502, 503, and 504), so the dial client receives the original HTTP `412`.
 
 ---
 
