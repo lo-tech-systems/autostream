@@ -191,6 +191,15 @@ _REPEAT_LOOP_GAP_S = 1.5
 # never touched by this.
 REPEAT_COUNTER_LATENCY_S = 2.0
 
+# A status re-sync can move the locally interpolated counter back by up to
+# the appliance's own status-cache age plus jitter: well under a second.
+# A step back smaller than this is a re-sync artefact, and the second
+# already painted is held until the clock catches up (which takes under a
+# second, since the clock gains at 1 s/s); a step back of at least this
+# much is a real position change (restart, loop wrap, a stalled source)
+# and is shown at once. See _repeat_counter_second().
+REPEAT_COUNTER_HOLD_S = 1.0
+
 # How long an artwork tap hides the top/bottom bands for — see
 # hide_controls(). Long enough to look at the artwork without the overlay
 # reappearing underneath, short enough that the controls are never truly
@@ -310,6 +319,18 @@ def _interpolate_repeat_position(rec, now: float) -> float:
         pos = pos % (dur + _REPEAT_LOOP_GAP_S)
         pos = min(pos, dur)
     return max(0.0, pos)
+
+
+def _repeat_counter_value(rec, now: float) -> float:
+    """The replaying counter's unfloored value at *now*: the interpolated
+    position less REPEAT_COUNTER_LATENCY_S. Deliberately not clamped: it
+    runs negative for the first couple of seconds after a (re)start or a
+    loop wrap, which lets the repaint deadline aim at the true moment the
+    counter reaches 0:01 rather than waking a second early. Readers that
+    need an integer go through DialDisplay._repeat_counter_second(), which
+    clamps. The one expression the tick, the deadline and the view builder
+    all share."""
+    return _interpolate_repeat_position(rec, now) - REPEAT_COUNTER_LATENCY_S
 
 
 # ---------------------------------------------------------------------------
@@ -984,6 +1005,18 @@ class DialDisplay:
         # surface applies. Never written or read by any other tier's own
         # touch_surface() branch.
         self._repeat_layout_shown: str = "enable"
+        # The integer second the replaying counter last painted, or None
+        # while no replaying line is on the panel (the screen just opened,
+        # the record left "replaying", or it went unavailable). This is the
+        # reference the counter advances against: a tick is due whenever
+        # the second the counter should read now differs from it, wherever
+        # within the second the wake landed, so a late wake or a status
+        # re-sync that moved the interpolated clock can never skip a
+        # second. Written only by the repaint thread under self._lock
+        # (_open_repeat_locked, _display_repeat_locked) and read only by
+        # the repaint thread's own tick/deadline/builder, so those reads
+        # need no lock.
+        self._repeat_painted_second: int | None = None
         # The replay picker's own rows/paging — refreshed every poll tick
         # regardless of whether it is open, mirroring self._selector.
         self._picker: PickerState | None = None
@@ -2872,6 +2905,10 @@ class DialDisplay:
         screen = self._build_repeat_screen_locked()
         if screen is None:
             return False
+        # A fresh open re-anchors the counter: the first replaying frame
+        # paints whatever second is current, never held against a value
+        # painted before the screen was last closed.
+        self._repeat_painted_second = None
         self._repeat_screen = screen
         self._screen = "repeat"
         return True
@@ -3023,19 +3060,46 @@ class DialDisplay:
             with self._lock:
                 self._close_secondary_locked()
 
+    def _repeat_counter_second(self, value: float) -> int:
+        """The integer second the replaying counter should read for the
+        unfloored counter value *value* (see _repeat_counter_value()),
+        given the second last painted. Normally floor(value), clamped at
+        zero. When a status re-sync has moved the interpolated clock back
+        below the painted second by less than REPEAT_COUNTER_HOLD_S, the
+        painted second is held instead, so the line never steps back or
+        repeats for a re-sync; a larger step back is a real change (a
+        restart, the loop wrap, a stalled source) and floor(value) is
+        returned so it shows at once. A hold is self-limiting: the clock
+        gains on the held value at one second per second, so it lasts
+        under REPEAT_COUNTER_HOLD_S. Pure: never writes the painted
+        second, which only _display_repeat_locked() commits. Repaint
+        thread only (reads that thread's own attribute).
+        """
+        current = max(0, math.floor(value))
+        painted = self._repeat_painted_second
+        if painted is None or current >= painted:
+            return current
+        if painted - value < REPEAT_COUNTER_HOLD_S:
+            return painted
+        return current
+
     def _tick_repeat_line(self) -> None:
-        """Recompose the repeat screen once its live Replaying position
-        reaches its next displayed second, so the line visibly counts up
-        between polls without skipping or repeating a value — called from
+        """Recompose the repeat screen whenever the replaying counter's
+        current second is not the one last painted, so the line counts up
+        between polls without skipping or repeating a value. Called from
         the repeat thread's own timeout branch (see _repaint_run), which
-        sizes its wait so this lands within a few ms of that boundary. A
-        housekeeping wake that lands mid-second (the wait capped at a
-        second when something else is scheduled sooner, or the plain
-        fallback timeout) is not due and must not force an off-boundary
-        repaint. No HTTP call: the interpolation is purely local (see
-        _interpolate_repeat_position()) and the next poll always corrects
-        any drift. A no-op while asleep or when the repeat screen is not
-        the one on screen.
+        sizes its wait to land just after the next second boundary; but
+        due-ness is decided against the painted second, never against
+        where within the second this wake landed, so a late wake, a status
+        re-sync that moved the interpolated clock, or a signal repaint that
+        straddled the boundary all still paint the second actually owed.
+        A housekeeping wake that lands with the painted second still
+        current (the wait capped at a second when something else is
+        scheduled sooner, or the plain fallback timeout) is not due and
+        must not force an off-boundary repaint. No HTTP call: the
+        interpolation is purely local (see _interpolate_repeat_position())
+        and the next poll always corrects any drift. A no-op while asleep
+        or when the repeat screen is not the one on screen.
         """
         if self._screen != "repeat":
             return
@@ -3046,18 +3110,14 @@ class DialDisplay:
         rec = repeat_store.get(screen.appliance_id, now)
         if rec is None or rec.state != "replaying":
             return
-        shown = max(0.0, _interpolate_repeat_position(rec, now) - REPEAT_COUNTER_LATENCY_S)
-        remaining = math.floor(shown) + 1.0 - shown
-        # remaining is close to 1.0 right after crossing an integer second
-        # and close to 0.0 just before the next one — due only in the
-        # former case, within the same small scheduling tolerance
-        # _next_repaint_deadline() pads its own deadline by.
-        if remaining >= 1.0 - 0.015:
+        value = _repeat_counter_value(rec, now)
+        if self._repeat_counter_second(value) != self._repeat_painted_second:
             self._overlay_signal.set()
 
     def _next_repaint_deadline(self) -> "float | None":
         """The earliest monotonic time something on screen must change on
-        its own: the replaying counter's next integer boundary, the end
+        its own: the replaying counter's next second (now, when a paint is
+        already owed, see _tick_repeat_line()), the end
         of a controls-hide window (see hide_controls()), or the offline
         flash's next half-period boundary. None when nothing
         is scheduled — the caller then falls back to its own housekeeping
@@ -3070,8 +3130,21 @@ class DialDisplay:
             now = time.monotonic()
             rec = repeat_store.get(self._repeat_screen.appliance_id, now)
             if rec is not None and rec.state == "replaying":
-                shown = max(0.0, _interpolate_repeat_position(rec, now) - REPEAT_COUNTER_LATENCY_S)
-                deadlines.append(now + (math.floor(shown) + 1.0 - shown) + 0.005)
+                value = _repeat_counter_value(rec, now)
+                painted = self._repeat_painted_second
+                if self._repeat_counter_second(value) != painted:
+                    # A paint is already owed (nothing painted yet, or the
+                    # second moved under a signal repaint or a re-sync):
+                    # wake at once rather than at the next boundary.
+                    deadlines.append(now)
+                else:
+                    # The moment the counter first passes the painted
+                    # second, plus the same small scheduling pad the other
+                    # deadlines use. While a re-sync hold is on (value
+                    # below painted) this is over a second out and the
+                    # caller's own one-second cap trims it; the tick then
+                    # simply finds itself not due and reschedules.
+                    deadlines.append(now + (painted + 1.0 - value) + 0.005)
         if self._controls_hidden_until > time.monotonic():
             deadlines.append(self._controls_hidden_until + 0.005)
         if self._controls_shown_until > time.monotonic() and self._compact_tier():
@@ -3475,21 +3548,22 @@ class DialDisplay:
                 muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state == "replaying":
-            pos = _interpolate_repeat_position(rec, now)
-            # The counter reads this far behind the true position — see
-            # REPEAT_COUNTER_LATENCY_S — clamped at zero so a fresh
-            # (re)start reads "0:00" for the first couple of seconds
-            # instead of a small negative-turned-huge wrapped value.
-            pos = max(0.0, pos - REPEAT_COUNTER_LATENCY_S)
-            # Floored, not rounded: the displayed second must not advance
-            # until the full second has elapsed, or an off-boundary repaint
-            # (see _next_repaint_deadline) could show a value that then
-            # appears to jump back down a moment later.
-            line = f"{format_mmss(math.floor(pos))} / {format_mmss(rec.duration_seconds)}"
+            # The counter reads REPEAT_COUNTER_LATENCY_S behind the true
+            # position, floored (never rounded, so the displayed second
+            # cannot advance before the full second has elapsed), clamped
+            # at zero so a fresh (re)start reads "0:00" for the first
+            # couple of seconds, and resolved against the second last
+            # painted so a status re-sync that moved the clock back a
+            # little never makes the line step back or repeat. All of that
+            # is _repeat_counter_second(); the frame carries the integer
+            # it drew so _display_repeat_locked() can commit it.
+            second = self._repeat_counter_second(_repeat_counter_value(rec, now))
+            line = f"{format_mmss(second)} / {format_mmss(rec.duration_seconds)}"
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=True, stop_pressed=False,
                 muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
+                counter_second=second,
             )
         # fading_out: the line freezes at the last observed position (no
         # interpolation — the fade is a fixed-length event, not a running
@@ -3514,7 +3588,10 @@ class DialDisplay:
         builder). Caller holds self._lock. Stamps self._repeat_layout_shown
         from the freshly built view so touch_surface() can report the
         compact tier's own replay_surface exactly while this layout is the
-        one actually on screen."""
+        one actually on screen, and commits the view's counter_second as
+        self._repeat_painted_second, the reference the counter's tick
+        advances against (None for any layout without a running counter,
+        so the next replaying frame re-anchors)."""
         view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
         self._repeat_layout_shown = view.layout
         metrics = self._metrics_locked()
@@ -3524,6 +3601,11 @@ class DialDisplay:
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
             controls=controls,
         ))
+        # Committed whether or not the push succeeded: a write failure is
+        # already recorded and the next second's tick repaints the whole
+        # line anyway, whereas retrying the same second on every wake
+        # against a failing panel would spin.
+        self._repeat_painted_second = view.counter_second
 
     def _shown_eq(self, state: "EqScreenState", control: str) -> "int | None":
         """The bass or treble value *control* should currently show: the
@@ -3932,7 +4014,11 @@ class DialDisplay:
             for record in enrich_targets(pending, self._dial_id):
                 target = next(t for t in pending if t.service_name == record["name"])
                 self._apply_status_to_auth(target, record)
-                self._apply_status_to_repeat(target.appliance_id, record, now)
+                # Stamped at apply time, not with the `now` taken before the
+                # fan-out: the fetch blocks for up to its own deadline, and a
+                # replay position stamped earlier than it was sampled would
+                # interpolate ahead of the truth by that much.
+                self._apply_status_to_repeat(target.appliance_id, record, time.monotonic())
         repeat_store.prune({r.appliance_id for r in roster})
 
     def on_repeat_result(self, kind: str, appliance_id: str, status: int | None, body) -> None:

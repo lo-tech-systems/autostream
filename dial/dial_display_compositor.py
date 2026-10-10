@@ -426,6 +426,10 @@ class RepeatViewState:
     eq_pages: whether a third page (the EQ page) exists for this screen's
         own appliance — draws three pager dots (the second one filled)
         instead of two. Mirrors OverlayState.eq_pages.
+    counter_second: the integer second `line` was built from, for the
+        "replaying" layout only (None otherwise). Data for the manager,
+        which records the second each pushed frame carries; never read by
+        any drawing code here, so the compositor stays stateless.
     """
 
     name: str
@@ -439,6 +443,7 @@ class RepeatViewState:
     volume: int | None = None
     pressed: "TouchZone | None" = None
     eq_pages: bool = False
+    counter_second: int | None = None
 
 
 @dataclass(frozen=True)

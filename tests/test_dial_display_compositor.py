@@ -11,6 +11,7 @@ and the appliance-selector chassis (compose_list()).
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -2372,6 +2373,18 @@ class TestMetricsByteEquivalence:
             metrics=metrics_for(width, height, mm),
         )
         assert list(plain.getdata()) == list(with_metrics.getdata())
+
+    def test_repeat_view_counter_second_defaults_to_none_and_is_not_drawn(self, compositor):
+        state = RepeatViewState(
+            name="Kitchen", layout="replaying", armed=True, line="0:12 / 3:45",
+            start_enabled=True, stop_enabled=True, stop_pressed=False,
+        )
+        assert state.counter_second is None
+        a = compositor.compose_repeat(160, 128, state, rotate=False, bgr=False)
+        b = compositor.compose_repeat(
+            160, 128, dataclasses.replace(state, counter_second=12), rotate=False, bgr=False,
+        )
+        assert a.tobytes() == b.tobytes()
 
     @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
     def test_compose_idle_unaffected_outside_the_info_badge(self, compositor, size, mm):

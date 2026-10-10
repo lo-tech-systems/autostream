@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import math
 import sys
 import threading
 import time
@@ -3197,6 +3198,59 @@ class TestRepeatStoreFeed:
         assert display._now_playing.service_name == "Playing"
         assert display._source_service_name == "Playing"
 
+    def test_reconcile_pass_stamps_observed_at_after_the_fetch_returns(self):
+        """The fan-out blocks for up to its own deadline; a record stamped
+        with the time before it started would interpolate ahead of the
+        truth by that much."""
+        import dial_repeat_store as drs
+        from dial_mdns import RosterEntry
+
+        aid_playing = "8" * 20
+        aid_idle = "9" * 20
+        t1 = _target(name="Playing", service_name="Playing", appliance_id=aid_playing, playing_since=1.0)
+
+        def get_roster():
+            return [
+                RosterEntry(
+                    appliance_id=aid_playing, service_name="Playing", name="Playing",
+                    ip=t1.ip, port=t1.port, playing=True, repeat_capable=False,
+                    dial_api=True, audio_status=True, dial_status=True, auth="unknown",
+                ),
+                RosterEntry(
+                    appliance_id=aid_idle, service_name="Idle", name="Idle",
+                    ip="10.0.0.9", port=9999, playing=False, repeat_capable=True,
+                ),
+            ]
+
+        display, fb, gt = _make_display(targets=[t1], get_roster=get_roster)
+        display.enable()
+        clock = _FakeClock(1000.0)
+        fan_out_s = 1.2
+
+        def fake_enrich(targets, dial_id):
+            clock.t += fan_out_s                     # the fetch takes this long
+            return [{
+                "name": "Idle", "status_error": None, "appliance_id": aid_idle,
+                "repeat": self._repeat_obj(
+                    state="replaying", armed=True,
+                    replay={"active": True, "position_seconds": 10.0, "duration_seconds": 30.0},
+                ),
+            }]
+
+        with patch("dial_display.time.monotonic", clock), \
+             patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(), appliance_id=aid_playing)), \
+             patch("dial_display.enrich_targets", side_effect=fake_enrich):
+            display._poll_once()
+
+        rec = drs.repeat_store.get(aid_idle, now=clock.t)
+        assert rec is not None
+        assert rec.observed_at == pytest.approx(clock.t)              # after the fan-out
+        assert rec.observed_at >= 1000.0 + fan_out_s
+        # Consequence: the interpolation reads the sampled position, not
+        # position plus the fan-out time.
+        assert dd._interpolate_repeat_position(rec, clock.t) == pytest.approx(10.0)
+
     def test_reconcile_pass_prunes_ids_not_in_the_roster(self):
         import dial_repeat_store as drs
         aid_gone = "6" * 20
@@ -5003,6 +5057,7 @@ class TestRepeatLineInterpolation:
         display.enable()
         self._open_repeat_screen_directly(display, aid)
         self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
+        display._repeat_painted_second = 3
         # shown(now) = position + elapsed - REPEAT_COUNTER_LATENCY_S
         #            = 5.0 + 1.002 - 2.0 = 4.002 -- just past the 4.0 boundary.
         display._overlay_signal.clear()
@@ -5016,7 +5071,8 @@ class TestRepeatLineInterpolation:
         display.enable()
         self._open_repeat_screen_directly(display, aid)
         self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
-        # shown(now) = 5.0 + 1.5 - 2.0 = 4.5 -- mid-second, not due.
+        display._repeat_painted_second = 4
+        # shown(now) = 5.0 + 1.5 - 2.0 = 4.5 -- mid-second, 4 already painted, not due.
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1001.5):
             display._tick_repeat_line()
@@ -5065,6 +5121,7 @@ class TestNextRepaintDeadline:
         # elapsed - REPEAT_COUNTER_LATENCY_S, with elapsed fixed at 1.0.
         position = shown + dd.REPEAT_COUNTER_LATENCY_S - 1.0
         self._seed(aid, position_seconds=position, observed_at=1000.0)
+        display._repeat_painted_second = math.floor(shown)
         now = 1001.0
         with patch("dial_display.time.monotonic", return_value=now):
             deadline = display._next_repaint_deadline()
@@ -5100,6 +5157,7 @@ class TestNextRepaintDeadline:
         display = self._opened(aid)
         # shown(1000.0) == 2.0 exactly -> repeat deadline is 1000.0 + 1.0 + 0.005.
         self._seed(aid, position_seconds=2.0 + dd.REPEAT_COUNTER_LATENCY_S, observed_at=1000.0)
+        display._repeat_painted_second = 2
         display._controls_hidden_until = 1000.3
         with patch("dial_display.time.monotonic", return_value=1000.0):
             deadline = display._next_repaint_deadline()
@@ -5128,6 +5186,282 @@ class TestRepeatCounterFloors:
             with display._lock:
                 view = display._build_repeat_view_locked(screen, 1000.0)
             assert view.line.startswith(expected + " / "), (position, view.line)
+
+
+class TestRepeatCounterPaintedReference:
+    """The replaying counter advances against the second last painted, not
+    against a precomputed boundary: a late wake, a status re-sync that
+    shifts the interpolated clock, or a signal repaint that straddles a
+    boundary must never skip or repeat a second, and a small backward
+    re-sync must never step the line back."""
+
+    AID = "21" * 10
+    DUR = 30.0
+
+    def _opened(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "repeat"
+            display._repeat_screen = dd.RepeatScreenState(
+                appliance_id=self.AID, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+            )
+        return display
+
+    def _seed(self, position, observed_at, state="replaying"):
+        import dial_repeat_store as drs
+        drs.repeat_store.update(self.AID, drs.RepeatRecord(
+            available=True, state=state, armed=True,
+            recording_seconds=self.DUR, position_seconds=position, duration_seconds=self.DUR,
+            observed_at=observed_at,
+        ))
+
+    def _resync(self, clock, shift):
+        """What a status poll does: install a fresh record stamped now whose
+        interpolated clock is `shift` seconds ahead (negative: behind) of
+        the current record's."""
+        import dial_repeat_store as drs
+        rec = drs.repeat_store.get(self.AID, clock.t)
+        self._seed(dd._interpolate_repeat_position(rec, clock.t) + shift, clock.t)
+
+    def _paint(self, display):
+        with display._lock:
+            display._repaint_current_locked()
+        return display._repeat_painted_second
+
+    def _line(self, display, clock):
+        with display._lock:
+            return display._build_repeat_view_locked(display._repeat_screen, clock.t).line
+
+    def _run(self, display, clock, seconds, *, late=0.0, before_tick=None):
+        """_repaint_run's own sequence, without threads: deadline, wake at
+        it (capped a second out, as the loop caps its wait), optional
+        interference, tick, paint if signalled. Returns the seconds
+        painted, in order."""
+        painted = []
+        end = clock.t + seconds
+        steps = 0
+        while clock.t < end:
+            steps += 1
+            assert steps < 10_000, "repaint loop did not converge"
+            deadline = display._next_repaint_deadline()
+            assert deadline is not None
+            clock.t = max(clock.t, min(deadline, clock.t + 1.0)) + late
+            if before_tick is not None:
+                before_tick(clock)
+            display._overlay_signal.clear()
+            display._tick_repeat_line()
+            if display._overlay_signal.is_set():
+                painted.append(self._paint(display))
+        return painted
+
+    @staticmethod
+    def _consecutive(seq):
+        return all(b == a + 1 for a, b in zip(seq, seq[1:]))
+
+    # -- the skip itself (forward re-sync between deadline and tick) --------
+
+    def test_forward_resync_between_deadline_and_tick_never_skips(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        # Shifts well past the 15 ms window the old boundary gate accepted;
+        # each lands after the wake was scheduled and before the tick runs,
+        # exactly where a background status poll lands in production.
+        shifts = iter([0.4, 0.3, 0.25, 0.12, 0.02, 0.45])
+
+        def poll_lands(clk):
+            s = next(shifts, None)
+            if s is not None:
+                self._resync(clk, +s)
+
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)      # counter reads 3
+            assert self._paint(display) == 3
+            painted = self._run(display, clock, 8.0, before_tick=poll_lands)
+        assert painted[0] == 4
+        assert self._consecutive(painted), painted
+        # Eight real seconds plus ~1.5 s of forward shift: at least 9 paints,
+        # none skipped, none repeated.
+        assert len(painted) >= 9
+
+    def test_late_wakes_never_skip(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            assert self._paint(display) == 3
+            painted = self._run(display, clock, 6.0, late=0.05)   # 50 ms late every wake
+        assert painted[:6] == [4, 5, 6, 7, 8, 9]
+
+    def test_signal_repaint_that_straddles_a_boundary_is_followed_at_once(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            clock.t = 1001.99                       # counter 4.99: a signal repaint paints 4
+            assert self._paint(display) == 4
+            clock.t = 1002.01                       # compose+transmit crossed the 5.0 boundary
+            assert display._next_repaint_deadline() == pytest.approx(1002.01)   # owed now
+            display._overlay_signal.clear()
+            display._tick_repeat_line()
+            assert display._overlay_signal.is_set()
+            assert self._paint(display) == 5
+            assert display._next_repaint_deadline() == pytest.approx(1002.01 + 0.99 + 0.005)
+
+    # -- backward guard ---------------------------------------------------
+
+    def test_small_backward_resync_holds_the_painted_second(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            assert self._paint(display) == 3
+            clock.t = 1000.1
+            self._resync(clock, -0.4)               # counter now 2.7, below the painted 3
+            display._overlay_signal.clear()
+            display._tick_repeat_line()
+            assert not display._overlay_signal.is_set()          # not due: hold
+            assert self._line(display, clock).startswith("0:03 / ")  # a signal repaint still reads 3
+            assert display._next_repaint_deadline() == pytest.approx(1000.1 + (4 - 2.7) + 0.005)
+            painted = self._run(display, clock, 3.0)
+        assert painted[:3] == [4, 5, 6]             # no 2, no second 3
+
+    def test_hold_is_bounded_by_the_hold_window(self):
+        """A hold can never freeze the counter: the interpolated clock
+        gains on the held value at 1 s/s, so the next second lands within
+        1 + REPEAT_COUNTER_HOLD_S of the re-sync."""
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            assert self._paint(display) == 3
+            clock.t = 1000.05
+            self._resync(clock, -(dd.REPEAT_COUNTER_HOLD_S - 0.05))   # just inside the hold window
+            t_hold = clock.t
+            # Counter 2.1 held at 3; 4 is owed at value 4.0, i.e. 1.9 s on.
+            # Run to just short of that so the loop exits on that paint.
+            painted = self._run(display, clock, 1.9)
+        assert painted == [4]
+        assert clock.t - t_hold <= 1.0 + dd.REPEAT_COUNTER_HOLD_S + 0.01
+
+    def test_restart_ack_re_anchors_to_zero(self):
+        import dial_repeat_store as drs
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=9.0, observed_at=1000.0)
+            assert self._paint(display) == 7
+            clock.t = 1000.3
+            drs.repeat_store.apply_ack(
+                self.AID, {"ok": True, "state": "replaying", "armed": True, "position_seconds": 0.0}, clock.t,
+            )
+            assert display._next_repaint_deadline() == pytest.approx(clock.t)   # owed now
+            display._overlay_signal.clear()
+            display._tick_repeat_line()
+            assert display._overlay_signal.is_set()
+            assert self._paint(display) == 0
+            assert self._line(display, clock).startswith("0:00 / ")
+
+    def test_loop_wrap_re_anchors_to_zero_then_counts_up(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=29.5, observed_at=1000.0)    # counter 27.5; wraps at raw 31.5
+            assert self._paint(display) == 27
+            painted = self._run(display, clock, 6.0)
+        # 28 (the clamp at duration - latency), then the wrap to 0, then up.
+        assert painted[:3] == [28, 0, 1], painted
+        assert self._consecutive(painted[1:])
+
+    def test_large_backward_resync_is_shown_not_held(self):
+        """A stalled source: every poll reports the same position, so each
+        re-sync steps the clock back by a whole poll interval. That is a
+        real change and must show; the guard only absorbs sub-second
+        re-sync noise."""
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            assert self._paint(display) == 3
+            painted = self._run(display, clock, 4.5)      # paints 4..8, last at 1005.005
+            assert painted[-1] == 8
+            self._seed(position=5.0, observed_at=clock.t)   # the poll: position unchanged
+            display._overlay_signal.clear()
+            display._tick_repeat_line()
+            assert display._overlay_signal.is_set()
+            assert self._paint(display) == 3
+
+    # -- reset / re-anchor points -----------------------------------------
+
+    def test_opening_the_screen_resets_the_reference(self):
+        aid = "22" * 10
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            # Counter value 2.5 at the open; a stale painted 3 would be held
+            # by the guard if the open did not reset it.
+            _poll_focused_with_repeat(
+                display, fb, aid,
+                _repeat_obj(state="replaying", armed=True,
+                            replay={"active": True, "position_seconds": 4.5, "duration_seconds": 30.0}),
+            )
+            display._repeat_painted_second = 3
+            display.toggle_repeat_screen()
+            with display._lock:
+                display._repaint_current_locked()
+        assert display._screen == "repeat"
+        assert display._repeat_painted_second == 2
+
+    def test_leaving_replaying_resets_and_a_return_re_anchors(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            assert self._paint(display) == 3
+            self._seed(position=0.0, observed_at=1000.0, state="hold")
+            assert self._paint(display) is None
+            assert self._line(display, clock).startswith("0:00 / ")
+            # Back to replaying with the counter at 2.5: paints 2, not a held 3.
+            self._seed(position=4.5, observed_at=1000.0)
+            assert self._paint(display) == 2
+
+    def test_unavailable_record_resets(self):
+        import dial_repeat_store as drs
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            assert self._paint(display) == 3
+            drs.repeat_store.update(self.AID, None)
+            assert self._paint(display) is None
+            assert display._repeat_layout_shown == "enable"
+
+    def test_builder_never_writes_the_reference(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)
+            display._repeat_painted_second = 3
+            clock.t = 1000.1
+            self._resync(clock, -0.4)
+            view_line = self._line(display, clock)
+        assert view_line.startswith("0:03 / ")
+        assert display._repeat_painted_second == 3
+
+    # -- the deadline ---------------------------------------------------------
+
+    def test_deadline_targets_the_painted_seconds_successor(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=5.0, observed_at=1000.0)       # counter 3.0
+            assert display._next_repaint_deadline() == pytest.approx(1000.0)   # nothing painted: owed
+            assert self._paint(display) == 3
+            assert display._next_repaint_deadline() == pytest.approx(1001.005)
+            clock.t = 1000.4
+            assert display._next_repaint_deadline() == pytest.approx(1001.005)
 
 
 # ---------------------------------------------------------------------------
