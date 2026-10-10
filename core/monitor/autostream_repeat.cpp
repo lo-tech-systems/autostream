@@ -2557,6 +2557,12 @@ void ReplayEngine::request_seek(double position_seconds)
     // once per slice batch. Legal only while a session is active
     // (Replaying); RepeatController::request_seek() never calls this from
     // any other state.
+    //
+    // A seek deliberately does not advance _track_change_seq. The
+    // coordinator re-arms track identification itself when it accepts the
+    // seek ack, immediately and for every caller; bumping the counter here
+    // would only be read on its next poll and would re-arm a second time
+    // for the same seek.
     _seek_request_seconds.store(position_seconds, std::memory_order_release);
 }
 
