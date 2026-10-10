@@ -1,0 +1,37 @@
+# Draws one image, chosen by mode, scaled to fit the screen without
+# upscaling and centred. No text, progress or callbacks: the images carry
+# the words, so nothing depends on the label plugin or fonts.
+
+mode = Plymouth.GetMode();
+if (mode == "shutdown" || mode == "reboot")
+    image_name = "shutting-down.png";
+else
+    image_name = "starting.png";
+
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+Window.SetBackgroundTopColor(0.055, 0.157, 0.255);
+Window.SetBackgroundBottomColor(0.055, 0.157, 0.255);
+
+splash_image = Image(image_name);
+image_width = splash_image.GetWidth();
+image_height = splash_image.GetHeight();
+
+scale = 1;
+if (image_width > screen_width || image_height > screen_height) {
+    scale_x = screen_width / image_width;
+    scale_y = screen_height / image_height;
+    if (scale_x < scale_y)
+        scale = scale_x;
+    else
+        scale = scale_y;
+}
+scaled_width = image_width * scale;
+scaled_height = image_height * scale;
+if (scale != 1)
+    splash_image = splash_image.Scale(scaled_width, scaled_height);
+
+splash_sprite = Sprite(splash_image);
+splash_sprite.SetX((screen_width - scaled_width) / 2);
+splash_sprite.SetY((screen_height - scaled_height) / 2);
+splash_sprite.SetZ(10000);

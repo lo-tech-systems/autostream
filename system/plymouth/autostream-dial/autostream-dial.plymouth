@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=autostream-dial
+Description=autostream dial boot and shutdown splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/autostream-dial
+ScriptFile=/usr/share/plymouth/themes/autostream-dial/autostream-dial.script
