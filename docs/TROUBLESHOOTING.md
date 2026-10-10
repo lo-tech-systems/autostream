@@ -986,8 +986,11 @@ whether the Web UI is reachable.
    `/var/log/owntone.log`.
 
    **autostream-dial** serves this same page at the same paths
-   (`/offline/`, `/offline/download-logs`). Its ZIP only contains dial and
-   Wi-Fi-watcher logs (`dial-*.log`, `autostream_wifi_watcher.log`), since
+   (`/offline/`, `/offline/download-logs`). The dial has no Web UI of its
+   own, so opening the dial's address (`http://<dial-hostname>.local/` or its
+   IP address) shows these recovery tools too, with a note that the dial is
+   running normally and is managed from your autostream appliance. Its ZIP
+   only contains dial and Wi-Fi-watcher logs (`dial-*.log`, `autostream_wifi_watcher.log`), since
    OwnTone doesn't run on a dial device. The dial's factory-reset holding
    page also references the `autostream-dial_XXXX` hotspot name, not
    `autostream_XXXX`.
