@@ -293,6 +293,52 @@ class TestVolumeStep:
         send.assert_not_called()
 
 
+class TestVolumeSet:
+    def test_queues_the_difference_from_what_is_shown(self):
+        core = _core()
+        core.set_field("source_service_name", "Kitchen")
+        with patch("dial_core.shown_volume", return_value=40) as shown, \
+                patch("dial_core.enqueue_delta") as send:
+            assert core.volume_set(55) == ActionResult(True)
+            assert core.volume_set(10) == ActionResult(True)
+        shown.assert_called_with("Kitchen")
+        assert [c[0] for c in send.call_args_list] == [(15,), (-30,)]
+
+    def test_the_level_shown_already_queues_nothing(self):
+        core = _core()
+        with patch("dial_core.shown_volume", return_value=40), patch("dial_core.enqueue_delta") as send:
+            assert core.volume_set(40) == ActionResult(True)
+        send.assert_not_called()
+
+    def test_nothing_observed_yet_is_refused(self):
+        core = _core()
+        with patch("dial_core.shown_volume", return_value=None), patch("dial_core.enqueue_delta") as send:
+            assert core.volume_set(30) == ActionResult(False, "wrong_state")
+        send.assert_not_called()
+
+    @pytest.mark.parametrize("level", [-1, 101, 5.5, "9", True, None])
+    def test_a_level_outside_zero_to_one_hundred_is_refused(self, level):
+        core = _core()
+        with patch("dial_core.shown_volume", return_value=40), patch("dial_core.enqueue_delta") as send:
+            assert core.volume_set(level) == ActionResult(False, "wrong_state")
+        send.assert_not_called()
+
+    def test_an_id_must_be_the_focused_appliance(self):
+        core = _core(_entry(), _entry(BID))
+        core.set_focus(AID)
+        with patch("dial_core.shown_volume", return_value=40), patch("dial_core.enqueue_delta") as send:
+            assert core.volume_set(50, BID) == ActionResult(False, "not_focused")
+            send.assert_not_called()
+            assert core.volume_set(50, AID) == ActionResult(True)
+        send.assert_called_once_with(10)
+
+    def test_an_id_with_nothing_focused_is_refused(self):
+        core = _core()
+        with patch("dial_core.shown_volume", return_value=40), patch("dial_core.enqueue_delta") as send:
+            assert core.volume_set(50, AID) == ActionResult(False, "not_focused")
+        send.assert_not_called()
+
+
 class TestMuteToggle:
     def test_scope_current_flips_what_the_followed_appliance_reported(self):
         core = _core()

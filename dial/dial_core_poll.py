@@ -171,6 +171,7 @@ def first_checks(
 @dataclass
 class WalkResult:
     records: dict = field(default_factory=dict)         # service_name -> good status record
+    errors: dict = field(default_factory=dict)          # service_name -> status_error of a failed fetch
     status_sent_at: dict = field(default_factory=dict)  # service_name -> monotonic send time
     visited: set = field(default_factory=set)           # service names asked (or answered by a first check)
     selection: Selection = field(default_factory=Selection)
@@ -239,6 +240,8 @@ def walk(
         record = None if status_error else result
         if record is not None:
             out.records[target.service_name] = record
+        else:
+            out.errors[target.service_name] = str(status_error)
         # A pinned target is shown regardless of whether it has
         # identified artwork — never fall through to another
         # appliance's artwork while a focus or a binding pins one.

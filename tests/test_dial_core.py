@@ -1191,6 +1191,35 @@ class TestEq:
             assert core.step_eq(AID, "bass", 1) == ActionResult(False, "unauthorized")
         send.assert_not_called()
 
+    def test_reset_sets_every_band_to_zero_on_a_six_band_state(self):
+        core = self._watching(_Clock(1000.0), version=2)
+        core.on_eq_result("fetch", AID, 200, self._six_band_body(peq3=4.0, peq6=-2.0))
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.reset_eq(AID).accepted
+        assert send.call_args[0][1] == {f"peq{n}": 0 for n in range(1, 7)}
+        pairs = dict(core.eq_override()[0])
+        assert pairs["peq3"] == 0 and pairs["peq6"] == 0
+
+    def test_reset_sets_bass_and_treble_to_zero_on_a_capability_one_state(self):
+        core = self._watching(_Clock(1000.0), version=1)
+        core.on_eq_result("fetch", AID, 200, _eq_body(3, -2))
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.reset_eq(AID).accepted
+        assert send.call_args[0][1] == {"bass": 0, "treble": 0}
+        assert dict(core.eq_override()[0]) == {"bass": 0, "treble": 0}
+
+    def test_reset_refusals_name_their_reason(self):
+        with patch("dial_core._enqueue_eq_set") as send:
+            core = self._watching()
+            assert core.reset_eq(BID) == ActionResult(False, "unknown_appliance")
+            core.watch_eq(AID, "spi", False)
+            assert core.reset_eq(AID) == ActionResult(False, "not_polling")
+            core.set_roster([_entry(dial_eq=False)])
+            assert core.reset_eq(AID) == ActionResult(False, "no_capability")
+            core.set_roster([_entry(dial_eq=True, auth=AUTH_UNAUTHORIZED)])
+            assert core.reset_eq(AID) == ActionResult(False, "unauthorized")
+        send.assert_not_called()
+
     def test_fetch_now_asks_whatever_the_interest(self):
         core = _io_core()
         with patch("dial_core._enqueue_eq_fetch") as eq_fetch, patch("dial_core.enqueue_fetch") as out_fetch:

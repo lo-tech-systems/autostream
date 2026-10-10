@@ -176,13 +176,14 @@ class _CoreState:
     wifi_down_streak: int               # consecutive down link readings; reset by a connected or ignored one
     sd_low: bool                        # the SD health incident latch (with hysteresis)
     appliance_warnings: dict            # appliance id -> its validated, attributed warnings
+    statuses: dict                      # appliance id -> (status_error, master_volume, muted) from the last tick
 
 
 # Held in the state for the core's own use, never published as such.
 _PRIVATE_FIELDS = (
     "roster", "repeats", "outputs_optimistic", "eq_optimistic",
     "outputs_refresh_at", "outputs_watch", "eq_watch",
-    "wifi_down_streak", "sd_low", "appliance_warnings",
+    "wifi_down_streak", "sd_low", "appliance_warnings", "statuses",
 )
 
 _SNAPSHOT_FIELDS = tuple(
@@ -290,6 +291,7 @@ def _initial_state(dial_id: str) -> _CoreState:
         wifi_down_streak=0,
         sd_low=False,
         appliance_warnings={},
+        statuses={},
     )
 
 
@@ -374,6 +376,7 @@ class DialCore:
         self._reconcile_due = True          # the first tick reconciles
         self._prev_playing_ids: set[str] = set()
         self._focus_cleared = False
+        self._tick_statuses: dict = {}
         self._idle_focus_found = False
         self._effects: list = []
         # What the dial says about itself: read again on the housekeeping
@@ -473,6 +476,7 @@ class DialCore:
         repeats: "dict | object" = _UNSET,
         visible_playing: "tuple | object" = _UNSET,
         tick: "TickContext | None | object" = _UNSET,
+        statuses: "dict | object" = _UNSET,
     ) -> CoreSnapshot:
         """Publish the end of one poll tick. Fields passed are stored as
         given; fields left out keep the value the writers (the poll's own
@@ -482,7 +486,9 @@ class DialCore:
         now-playing. *repeats* (appliance id to repeat record) refreshes
         the per-appliance repeat state. A *tick* ends a poll tick: the
         snapshot carries it and a tick count one higher, which is what tells
-        a view the tick is over."""
+        a view the tick is over. *statuses* (appliance id to (status_error,
+        master_volume, muted)) is what this tick read from each appliance it
+        asked; an appliance it did not ask shows none of the three."""
         def mutate(state: _CoreState) -> None:
             state.polling = polling
             if visible_playing is not _UNSET:
@@ -507,6 +513,9 @@ class DialCore:
                     state.focus = dataclasses.replace(state.focus, idle_focus=idle)
             if repeats is not _UNSET:
                 state.repeats = repeats
+            if statuses is not _UNSET:
+                state.statuses = statuses
+            if repeats is not _UNSET or statuses is not _UNSET:
                 state.appliances = self._derive_appliances_locked(state)
         return self._publish(mutate)
 
@@ -1030,6 +1039,22 @@ class DialCore:
             appliance_id, {band_id: max(low, min(high, (0 if shown is None else shown) + delta))},
         )
 
+    def reset_eq(self, appliance_id: str) -> ActionResult:
+        """Set every band the appliance's EQ has to zero in one request: the
+        six bands on capability 2, bass and treble on capability 1. Refused
+        as set_eq refuses."""
+        refusal = self._refusal(appliance_id, "dial_eq")
+        if refusal is not None:
+            return refusal
+        held = self._snapshot.eq
+        if held is None or held.appliance_id != appliance_id:
+            return ActionResult(False, "not_polling")
+        if held.capability_version < 2:
+            band_ids = _EQ_BAND_IDS
+        else:
+            band_ids = tuple(b.id for b in held.bands if b.id not in _EQ_BAND_IDS)
+        return self.set_eq(appliance_id, {band_id: 0 for band_id in band_ids})
+
     # ---- worker results ----------------------------------------------------
 
     def on_outputs_result(self, kind: str, appliance_id: str, status, body, request=None) -> bool:
@@ -1236,6 +1261,7 @@ class DialCore:
             self._sync_warnings_locked(state)
         return appliance_states(
             state.roster, state.repeats, state.appliance_warnings, self._capabilities,
+            state.statuses,
         )
 
     def _sync_warnings_locked(self, state: _CoreState) -> bool:
@@ -1469,7 +1495,7 @@ class DialCore:
                 held.pop(appliance_id, None)
             state.appliance_warnings = held
             state.appliances = appliance_states(
-                state.roster, state.repeats, held, self._capabilities,
+                state.roster, state.repeats, held, self._capabilities, state.statuses,
             )
             self._sync_warnings_locked(state)
         self._publish(mutate)
@@ -1578,6 +1604,24 @@ class DialCore:
         if refusal is not None:
             return refusal
         enqueue_delta(delta)
+        return ActionResult(True)
+
+    def volume_set(self, level: int, appliance_id: str | None = None) -> ActionResult:
+        """Move the master volume to *level* (0..100) by queueing the
+        difference from what is shown now, which is how the volume worker
+        already takes its changes. Refused when nothing has been observed
+        yet, or for a level outside the range. With an id, refused unless
+        that is the appliance the dial is following."""
+        refusal = self._not_focused(appliance_id)
+        if refusal is not None:
+            return refusal
+        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 100:
+            return ActionResult(False, "wrong_state")
+        shown = shown_volume(self.current_source_service_name())
+        if shown is None:
+            return ActionResult(False, "wrong_state")
+        if level != shown:
+            enqueue_delta(level - shown)
         return ActionResult(True)
 
     def mute_toggle(self, appliance_id: str | None = None) -> ActionResult:
@@ -1940,6 +1984,7 @@ class DialCore:
         previous_idle_affordance = state.idle_affordance
         self._focus_cleared = False
         self._idle_focus_found = False
+        self._tick_statuses = {}
         polling = self._polling
         if polling:
             visible_ids = self._poll_tick()
@@ -1955,7 +2000,32 @@ class DialCore:
             previous_reporting_id, previous_now_playing, previous_idle_affordance,
             self._focus_cleared, self._idle_focus_found,
         )
-        self.publish_tick(polling=polling, repeats=repeats, visible_playing=visible_ids, tick=tick)
+        by_service = self._tick_statuses
+        statuses = {
+            r.appliance_id: by_service[r.service_name]
+            for r in self._state.roster
+            if getattr(r, "appliance_id", "") and getattr(r, "service_name", "") in by_service
+        }
+        self.publish_tick(
+            polling=polling, repeats=repeats, visible_playing=visible_ids, tick=tick,
+            statuses=statuses,
+        )
+
+    def _note_status(self, service_name: str, result: dict) -> None:
+        """Remember what a status fetch this tick said about *service_name*:
+        its error (None when it answered), and its master volume and mute
+        flag when it did."""
+        error = result.get("status_error")
+        if error:
+            self._tick_statuses[service_name] = (str(error), None, None)
+            return
+        volume = result.get("master_volume")
+        muted = result.get("muted")
+        self._tick_statuses[service_name] = (
+            None,
+            volume if isinstance(volume, int) and not isinstance(volume, bool) else None,
+            muted if isinstance(muted, bool) else None,
+        )
 
     def _clear_polled_fields(self) -> tuple:
         """What a tick does while polling is off: nothing is reported."""
@@ -2072,6 +2142,8 @@ class DialCore:
             visible = [
                 t for t in visible if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED
             ]
+        for service_name, (_sent_at, checked) in first_checks.items():
+            self._note_status(service_name, checked)
         self._prev_playing_ids = playing_ids
         # Any visible playing target counts as activity for a view, including
         # status-erroring ones: the mDNS presence alone means audio is
@@ -2140,6 +2212,7 @@ class DialCore:
 
             if idle_focus is not None:
                 result = self._fetch_idle_focus(idle_focus)
+                self._note_status(idle_focus.service_name, result)
                 if result.get("status_error") == "unauthorized":
                     self._clear_poll_focus("appliance now unauthorized")
                     idle_focus = None   # fall through to the plain idle screen below
@@ -2197,6 +2270,7 @@ class DialCore:
             # visited entry stops the reconcile pass below re-probing it.
             status_sent_at[idle_focus.service_name] = self._clock()
             result = self._fetch_idle_focus(idle_focus)
+            self._note_status(idle_focus.service_name, result)
             visited.add(idle_focus.service_name)
             if result.get("status_error") == "unauthorized":
                 self._clear_poll_focus("appliance now unauthorized")
@@ -2245,6 +2319,10 @@ class DialCore:
                 fetch=io.fetch_status, now_fn=self._clock, on_revoke=on_revoke,
             )
             records.update(walked.records)
+            for service_name, error in walked.errors.items():
+                self._tick_statuses[service_name] = (error, None, None)
+            for service_name, record in walked.records.items():
+                self._note_status(service_name, record)
             status_sent_at.update(walked.status_sent_at)
             visited |= walked.visited
             selection = walked.selection

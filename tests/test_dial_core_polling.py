@@ -41,6 +41,83 @@ def _make_eq_display(dial_eq=True, auth="unknown", appliance_id="a" * 20):
 
 
 # ---------------------------------------------------------------------------
+# Per-appliance status fields in the snapshot
+# ---------------------------------------------------------------------------
+
+class TestApplianceStatusFields:
+    def _two(self):
+        t1 = _target(name="First", service_name="First", appliance_id="1" * 20, playing_since=1.0)
+        t2 = _target(name="Second", service_name="Second", appliance_id="2" * 20, playing_since=2.0)
+        return make_display(targets=[t1, t2])
+
+    def _by_id(self, display):
+        return {a.appliance_id: a for a in display.core.snapshot().appliances}
+
+    def test_a_good_reply_folds_volume_and_mute_and_no_error(self):
+        display, fb, gt = self._two()
+        display.enable()
+        result = _status_result(track_id=_track_id(), muted=True)
+        with patch("dial_display.fetch_target_status", return_value=result):
+            display._poll_once()
+        first = self._by_id(display)["1" * 20]
+        assert (first.status_error, first.master_volume, first.muted) == (None, 50, True)
+
+    def test_a_failed_fetch_records_the_error(self):
+        display, fb, gt = self._two()
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(status_error="timeout")):
+            display._poll_once()
+        first = self._by_id(display)["1" * 20]
+        assert first.status_error == "timeout"
+        assert first.master_volume is None and first.muted is None
+
+    def test_an_appliance_not_asked_this_tick_shows_none(self):
+        display, fb, gt = self._two()
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id())) as fetch:
+            display._poll_once()
+        # The walk stops at the first target that identifies a track.
+        assert fetch.call_count == 1
+        asked = [a for a in self._by_id(display).values() if a.master_volume is not None]
+        silent = [a for a in self._by_id(display).values() if a.master_volume is None]
+        assert len(asked) == 1 and len(silent) == 1
+        assert (silent[0].status_error, silent[0].muted) == (None, None)
+
+    def test_the_next_tick_replaces_the_last_ones_readings(self):
+        display, fb, gt = self._two()
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(status_error="timeout")):
+            display._poll_once()
+        assert any(a.status_error == "timeout" for a in self._by_id(display).values())
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+        assert all(a.status_error is None for a in self._by_id(display).values())
+
+    def test_the_readings_survive_a_roster_change_between_ticks(self):
+        display, fb, gt = self._two()
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(), muted=True)):
+            display._poll_once()
+        display.core.set_roster(display.core.roster() + [_roster_entry(name="Third", appliance_id="3" * 20)])
+        assert any(a.muted is True for a in self._by_id(display).values())
+
+    def test_publish_tick_takes_the_statuses_it_is_given(self):
+        display, fb, gt = make_display(targets=[])
+        display.core.set_roster([_roster_entry(name="First", appliance_id="1" * 20)])
+        display.core.publish_tick(polling=True, statuses={"1" * 20: ("boom", None, None)})
+        assert self._by_id(display)["1" * 20].status_error == "boom"
+        display.core.publish_tick(polling=True)
+        assert self._by_id(display)["1" * 20].status_error == "boom"
+        display.core.publish_tick(polling=True, statuses={})
+        assert self._by_id(display)["1" * 20].status_error is None
+
+
+# ---------------------------------------------------------------------------
 # Auth application during the sequential poll walk
 # ---------------------------------------------------------------------------
 

@@ -747,18 +747,21 @@ def webui_address(ip: str, port: int) -> tuple[str, str, int]:
 
 def appliance_states(
     roster: Iterable, repeats: dict | None = None, appliance_warnings: dict | None = None,
-    capabilities: dict | None = None,
+    capabilities: dict | None = None, statuses: dict | None = None,
 ) -> tuple:
     """One ApplianceState per roster entry, in roster order. *repeats* maps
     an appliance id to its repeat record, *appliance_warnings* to its
-    validated warnings. *capabilities* maps an appliance id to its
+    validated warnings, *statuses* to the (status_error, master_volume,
+    muted) the last poll tick read from it. *capabilities* maps an appliance id to its
     Capabilities as already read through the switch point, for a caller that
     holds a lock the registry's must not be taken under (an id missing from
     it reads from the entry's mDNS flags); without it each entry is read
     through the switch point here. Entries are read defensively:
-    anything an entry does not carry takes its neutral value. Fields fed by
-    the status poll (error, volume, mute) are not known here and stay None."""
+    anything an entry does not carry takes its neutral value. An appliance
+    the last tick did not ask has no entry in *statuses*, and its error,
+    volume and mute stay None."""
     repeats = repeats or {}
+    statuses = statuses or {}
     appliance_warnings = appliance_warnings or {}
     out = []
     for r in roster:
@@ -771,6 +774,7 @@ def appliance_states(
         else:
             caps = capabilities.get(appliance_id) or txt_capabilities(r)
         scheme, host, web_port = webui_address(ip, port)
+        status_error, master_volume, muted = statuses.get(appliance_id, (None, None, None))
         out.append(ApplianceState(
             appliance_id=appliance_id,
             service_name=service_name,
@@ -787,9 +791,9 @@ def appliance_states(
             dial_proto_version=getattr(r, "dial_proto_version", 0),
             dial_eq_version=caps.eq_version,
             dial_outputs_version=caps.outputs_version,
-            status_error=None,
-            master_volume=None,
-            muted=None,
+            status_error=status_error,
+            master_volume=master_volume,
+            muted=muted,
             repeat=repeats.get(appliance_id),
             webui_scheme=scheme,
             webui_host=host,
