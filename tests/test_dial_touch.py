@@ -2425,7 +2425,7 @@ class _Sleep:
         return self.asleep
 
 
-_ALL_SURFACES = sorted(_GEOMETRY_FOR_SURFACE) + [SURFACE_HIDDEN, SURFACE_HELD]
+_ALL_SURFACES = sorted(_GEOMETRY_FOR_SURFACE)
 _PROBE_XY = [(WIDTH // 2, HEIGHT // 2), UP_XY, DOWN_XY, MUTE_XY, (5, 5), (WIDTH - 5, HEIGHT - 5), (WIDTH - 5, 5)]
 
 

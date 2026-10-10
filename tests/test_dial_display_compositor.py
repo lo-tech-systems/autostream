@@ -172,10 +172,9 @@ PROFILE_SIZES = [
     (160, 128),  # st7735s_160x128
     (128, 128),  # st7735s_128x128
     (240, 240),  # st7789_240x240
-    (320, 240),  # st7789_320x240
-    (320, 240),  # ili9341_320x240 (duplicate size, both must work)
+    (320, 240),  # st7789_320x240, ili9341_320x240 (same size)
 ]
-_CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
+_CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778]
 # Densities chosen to resolve to base at every panel size — proves the
 # metrics-threading seam changed no base pixel. A (size, mm) pair that
 # resolves to a richer content tier is a deliberate geometry change instead

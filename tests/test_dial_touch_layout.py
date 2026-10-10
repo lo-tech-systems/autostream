@@ -84,16 +84,14 @@ from dial_touch_layout import (  # noqa: E402
     zones_for,
 )
 
-# The profile sizes from dial_display_profiles.DISPLAY_PROFILES. Two
-# profiles (st7789_320x240, ili9341_320x240) share 320x240 — kept as
-# separate parametrize entries anyway since the point is "every profile
-# size behaves correctly", duplicate value included on purpose.
+# The distinct profile sizes from dial_display_profiles.DISPLAY_PROFILES.
+# Two profiles (st7789_320x240, ili9341_320x240) share 320x240; the layout
+# depends only on the size, so it is listed once.
 PROFILE_SIZES = [
     (160, 128),  # st7735s_160x128
     (128, 128),  # st7735s_128x128
     (240, 240),  # st7789_240x240
-    (320, 240),  # st7789_320x240
-    (320, 240),  # ili9341_320x240 (duplicate size, both must work)
+    (320, 240),  # st7789_320x240, ili9341_320x240
 ]
 
 ALL_ZONES = {
@@ -1132,15 +1130,15 @@ class TestMetricsForReferenceEquivalence:
 
 
 # Confirmed mm_per_px per PROFILE_SIZES entry, in order — see the density
-# table in the profiles module's design notes. The two 320x240 entries
-# (indices 3 and 4) are confirmed but resolve to the rich content tier (the
-# panel's short side clears RICH_MIN_SHORT_SIDE_PX and its quarter-height
-# band is physically tall enough to escape the touch_short veto) — see
-# TestRichAndLargeGeometry for their pins. Indices 1 and 2 (128x128,
+# table in the profiles module's design notes. The 320x240 entry (index 3,
+# shared by both 320x240 profiles) is confirmed but resolves to the rich
+# content tier (the panel's short side clears RICH_MIN_SHORT_SIDE_PX and its
+# quarter-height band is physically tall enough to escape the touch_short
+# veto) — see TestRichAndLargeGeometry for its pins. Indices 1 and 2 (128x128,
 # 240x240) are physically small enough to resolve to the compact tier at
 # this density instead — see _COMPACT_RESOLVING_CASES below. Only the first
 # entry stays base.
-_CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
+_CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778]
 _BASE_RESOLVING_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))[:1]
 _COMPACT_RESOLVING_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))[1:3]
 
@@ -1305,16 +1303,15 @@ class TestScalePxConsolidation:
         assert scale_px(10, width, height, 0) == _blur_radius_for(width, height)
 
 
-# (size, mm_per_px, expected content_tier) for six confirmed profiles: the
-# five shipped sizes plus one representative large panel. The two 320x240
-# entries resolve rich (the band cap does not bite at that density); the
-# 128x128 and 240x240 entries are physically small enough (25.9mm, 23.4mm
-# short side) to resolve to the compact tier ahead of any pixel-tier check.
+# (size, mm_per_px, expected content_tier) for five confirmed sizes: the
+# four shipped sizes plus one representative large panel. The 320x240 entry
+# (both 320x240 profiles) resolves rich (the band cap does not bite at that
+# density); the 128x128 and 240x240 entries are physically small enough
+# (25.9mm, 23.4mm short side) to resolve to the compact tier ahead of any pixel-tier check.
 _CONFIRMED_TIERS = [
     ((160, 128), 0.2231, CONTENT_BASE),
     ((128, 128), 0.2021, CONTENT_COMPACT),
     ((240, 240), 0.0973, CONTENT_COMPACT),
-    ((320, 240), 0.1778, CONTENT_RICH),
     ((320, 240), 0.1778, CONTENT_RICH),
     ((640, 480), 0.127, CONTENT_LARGE),
 ]
@@ -1328,7 +1325,6 @@ _CONFIRMED_PANEL_TABLE = [
     ((160, 128), 0.2231, CONTENT_BASE, 32, 3, 32, 36, False, SUPERSAMPLE_DEFAULT),
     ((128, 128), 0.2021, CONTENT_COMPACT, 32, 2, 32, 40, False, SUPERSAMPLE_DEFAULT),
     ((240, 240), 0.0973, CONTENT_COMPACT, 60, 2, 60, 83, False, SUPERSAMPLE_DEFAULT),
-    ((320, 240), 0.1778, CONTENT_RICH, 48, 5, 48, 45, True, SUPERSAMPLE_DEFAULT),
     ((320, 240), 0.1778, CONTENT_RICH, 48, 5, 48, 45, True, SUPERSAMPLE_DEFAULT),
     ((640, 480), 0.127, CONTENT_LARGE, 95, 5, 96, 63, True, SUPERSAMPLE_LARGE),
 ]
