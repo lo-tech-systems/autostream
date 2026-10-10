@@ -941,6 +941,7 @@ class TestScreenSettingsGet:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
@@ -949,7 +950,7 @@ class TestScreenSettingsGet:
         assert "artwork_url" not in json.dumps(result["data"])
         supported = result["data"]["supported"]
         assert supported, "supported profile list must not be empty"
-        assert all(set(p.keys()) == {"key", "text"} for p in supported)
+        assert all(set(p.keys()) == {"key", "text", "default_inches"} for p in supported)
         supported_touch = result["data"]["supported_touch"]
         assert supported_touch, "supported_touch controller list must not be empty"
         assert all(set(c.keys()) == {"key", "text"} for c in supported_touch)
@@ -973,6 +974,7 @@ class TestScreenSettingsGet:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -990,6 +992,7 @@ class TestScreenSettingsGet:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -1008,6 +1011,7 @@ class TestScreenSettingsGet:
             "screen_type": "st7789_240x240", "bgr": True,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
 
     def test_get_reflects_touch_type(self):
@@ -1026,6 +1030,7 @@ class TestScreenSettingsGet:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": "xpt2046",
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
 
     def test_runtime_touch_type_reports_running_controller(self):
@@ -1100,6 +1105,7 @@ class TestScreenSettingsGet:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": True,
+            "screen_size_inches": None,
         }
 
 
@@ -1116,6 +1122,7 @@ class TestScreenSettingsPost:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -1129,6 +1136,7 @@ class TestScreenSettingsPost:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -1143,6 +1151,7 @@ class TestScreenSettingsPost:
             "screen_type": "st7789_240x240", "bgr": True,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
@@ -1158,6 +1167,7 @@ class TestScreenSettingsPost:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": "ft6206",
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
 
@@ -1172,6 +1182,7 @@ class TestScreenSettingsPost:
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": True,
+            "screen_size_inches": None,
         }
         assert r["save_calls"][0].display.always_show_controls is True
 
@@ -1298,6 +1309,76 @@ class TestScreenSettingsPost:
                           setup_server=server)
         assert r["status"] == 200
         assert server._display_status.get_status()["fitted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Screen-size setting (physical diagonal, inches) — same save/echo path as
+# the other screen fields; applies live (no restart), so it never sets
+# restart_required.
+# ---------------------------------------------------------------------------
+
+class TestScreenSizeInchesSetting:
+    def test_get_default_inches_present_per_supported_entry(self):
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        supported = result["data"]["supported"]
+        for entry in supported:
+            assert isinstance(entry["default_inches"], (int, float))
+            assert entry["default_inches"] > 0
+
+    def test_get_reflects_override_when_set(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, screen_size_inches=3.5))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"]["screen_size_inches"] == 3.5
+
+    def test_post_persists_and_echoes_size(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_size_inches": 2.8}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["screen_size_inches"] == 2.8
+        assert r["save_calls"][0].display.screen_size_inches == 2.8
+
+    def test_post_null_persists_and_echoes_none(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, screen_size_inches=2.8))
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_size_inches": None}},
+            cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["screen_size_inches"] is None
+        assert r["save_calls"][0].display.screen_size_inches is None
+
+    def test_size_only_change_returns_restart_required_false(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_size_inches": 3.5}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["restart_required"] is False
+        assert "restarting" not in r["data"]
+
+    def test_post_out_of_range_size_returns_invalid_screen_settings(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_size_inches": 25}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -454,6 +454,7 @@ class TestDisplaySettings:
             "screen_type": dc.DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": dc.DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -494,6 +495,7 @@ class TestDisplaySettings:
             "screen_type": dc.DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": dc.DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
+            "screen_size_inches": None,
         }
 
 
@@ -730,6 +732,128 @@ class TestAlwaysShowControlsSetting:
         assert cfg.display.always_show_controls is True
 
 
+# ---------------------------------------------------------------------------
+# Screen-size setting (physical diagonal, inches) — colocated with the other
+# screen fields, same save path and validation path as the settings above.
+# None means "use the selected profile's own built-in default".
+# ---------------------------------------------------------------------------
+
+class TestScreenSizeInchesSetting:
+    def test_default_is_none(self):
+        assert DialDisplayConfig().screen_size_inches is None
+
+    def test_missing_display_defaults_none(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches is None
+
+    def test_hw_display_value_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "screen_size_inches": 2.8})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches == 2.8
+
+    def test_mutable_settings_override_hw(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "screen_size_inches": 1.8})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_size_inches": 3.5})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches == 3.5
+
+    def test_save_persists_float(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, screen_size_inches=2.8))
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"]["screen_size_inches"] == 2.8
+
+    def test_save_persists_none_as_null(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, screen_size_inches=None))
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"]["screen_size_inches"] is None
+
+    def test_save_and_reload_round_trip(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            cfg = DialConfig(
+                uuid="hw-uuid-1234",
+                display=DialDisplayConfig(fitted=True, screen_size_inches=3.5),
+            )
+            save_config(cfg)
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+        assert reloaded.display.screen_size_inches == 3.5
+
+    def test_missing_key_migration_resolves_to_profile_default(self, tmp_path):
+        """A settings file written before this field existed has no key at
+        all -- must resolve to None (falling through to the selected
+        profile's own default), never raise, and never coerce to a stray
+        value."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_type": "ili9341_320x240"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches is None
+
+        from dial_display_profiles import effective_diagonal_inches, get_profile
+
+        profile = get_profile(cfg.display.screen_type)
+        assert effective_diagonal_inches(profile, cfg.display.screen_size_inches) == 2.8
+
+    def test_corrupt_string_value_falls_back_to_none(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_size_inches": "2.8"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches is None
+
+    def test_corrupt_bool_value_falls_back_to_none(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_size_inches": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches is None
+
+    def test_corrupt_out_of_range_value_falls_back_to_none(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "screen_size_inches": 25})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.screen_size_inches is None
+
+
 class TestValidateScreenSettings:
     def test_valid_true_accepted(self):
         result = validate_screen_settings({"fitted": True})
@@ -860,6 +984,47 @@ class TestValidateScreenSettings:
             "bgr": False, "touch_type": dc.DEFAULT_TOUCH_KEY,
         })
         assert result.always_show_controls is False
+
+    def test_screen_size_inches_absent_defaults_none(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result.screen_size_inches is None
+
+    def test_screen_size_inches_null_accepted(self):
+        result = validate_screen_settings({"fitted": True, "screen_size_inches": None})
+        assert result.screen_size_inches is None
+
+    def test_screen_size_inches_float_accepted(self):
+        result = validate_screen_settings({"fitted": True, "screen_size_inches": 2.8})
+        assert result.screen_size_inches == 2.8
+
+    def test_screen_size_inches_int_accepted_and_becomes_float(self):
+        result = validate_screen_settings({"fitted": True, "screen_size_inches": 3})
+        assert result.screen_size_inches == 3.0
+        assert isinstance(result.screen_size_inches, float)
+
+    def test_screen_size_inches_bool_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "screen_size_inches": True})
+
+    def test_screen_size_inches_string_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "screen_size_inches": "2.8"})
+
+    def test_screen_size_inches_below_range_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "screen_size_inches": 0.1})
+
+    def test_screen_size_inches_above_range_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "screen_size_inches": 25})
+
+    def test_screen_size_inches_boundary_values_accepted(self):
+        assert validate_screen_settings(
+            {"fitted": True, "screen_size_inches": 0.5}
+        ).screen_size_inches == 0.5
+        assert validate_screen_settings(
+            {"fitted": True, "screen_size_inches": 20}
+        ).screen_size_inches == 20.0
 
 
 class TestRunningMarkerPath:

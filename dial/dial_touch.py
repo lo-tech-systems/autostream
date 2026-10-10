@@ -108,6 +108,7 @@ from dial_touch_layout import (
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
+    LayoutMetrics,
     TouchZone,
     hit_test,
 )
@@ -197,9 +198,15 @@ class TouchStateMachine:
     """Pure press-session policy. No thread, no clock reads — every method
     takes an explicit *now*, so tests drive it deterministically."""
 
-    def __init__(self, width: int, height: int) -> None:
+    def __init__(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> None:
         self._width = width
         self._height = height
+        # Frozen at construction from the profile and the configured screen
+        # size (see dial_main._build_touch_source) — None means metrics_for
+        # (width, height), today's density-unaware hit-testing. A live size
+        # change therefore leaves this stale until the next restart; not
+        # acted on in this stage regardless.
+        self._metrics = metrics
         self._phase = _PHASE_IDLE
         self._overlay_visible = False
         self._contact_down = False
@@ -513,7 +520,7 @@ class TouchStateMachine:
 
     def _arm(self, x: int, y: int, now: float) -> list[TouchAction]:
         geometry = _GEOMETRY_FOR_SURFACE.get(self._surface, GEOMETRY_MAIN)
-        hit = hit_test(geometry, x, y, self._width, self._height)
+        hit = hit_test(geometry, x, y, self._width, self._height, metrics=self._metrics)
         zone, index = (hit.zone, hit.index) if hit is not None else (None, None)
         # DOTS/NAME are gated by their own "is it currently tappable" flag —
         # meaningful on the main and repeat geometries only; applying the

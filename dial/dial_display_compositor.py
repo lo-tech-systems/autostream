@@ -92,15 +92,20 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
+    FONT_BODY_PX_AT_REFERENCE,
+    FONT_READOUT_PX_AT_REFERENCE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
+    LayoutMetrics,
     OverlayLayout,
     Rect,
     TouchZone,
     layout_for,
     list_layout_for,
+    metrics_for,
     repeat_layout_for,
+    scale_px,
     zone_rects_for,
 )
 
@@ -136,35 +141,18 @@ _PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
 # the dimmed backdrop rather than blending into it.
 _DIVIDER_RGB = (255, 255, 255)
 
-# Divider-line width scales with the panel's short side using the same
-# reference axis dial_touch_layout._dead_zone_margin uses (128px short side
-# -> 1px line), rounded and floored at 1px. This keeps the line reading as a
-# thin hairline at the shipped 160x128 profile while thickening modestly
-# (2px) on 320x240/240x240 profiles rather than looking lost against a
-# bigger panel.
-_DIVIDER_REFERENCE_SHORT_SIDE = 128
-
 # DejaVu Sans, installed by the dial installer via fonts-dejavu-core (see
 # installer/dial/helpers.sh install_image_packages()).
 DEJAVU_SANS_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-# Text/padding sizes at the 160x128 reference, scaled by the panel's short
-# side (the same axis dial_touch_layout._dead_zone_margin and
-# dial_display_image._blur_radius_for use), floored so a tiny panel still
-# gets legible text.
-_ARTIST_FONT_PX_AT_REFERENCE = 13
-_VOLUME_FONT_PX_AT_REFERENCE = 15
-_PAD_PX_AT_REFERENCE = 4
-_ICON_GAP_PX_AT_REFERENCE = 3
-_FONT_REFERENCE_SHORT_SIDE = 128
+# Text/padding/divider/halo sizes, all read from LayoutMetrics — one scale
+# rule (dial_touch_layout.scale_px), computed once per compose. These two
+# are kept as module constants (aliases of the layout module's reference
+# tuples) purely because tests import them by name; every other reference
+# size lives only in dial_touch_layout now.
+_ARTIST_FONT_PX_AT_REFERENCE = FONT_BODY_PX_AT_REFERENCE[0]
+_VOLUME_FONT_PX_AT_REFERENCE = FONT_READOUT_PX_AT_REFERENCE[0]
 
-# Halo (soft dark glow behind text drawn over artwork — see the module
-# docstring and _draw_text_with_halo()). The stroke gives the glyph outline
-# its dark "ink"; the blur then softens that outline into a glow rather than
-# a hard silhouette. Both scale with the panel's short side, the same
-# reference axis every other overlay dimension uses.
-_HALO_STROKE_PX_AT_REFERENCE = 2
-_HALO_BLUR_RADIUS_AT_REFERENCE = 2
 _HALO_RGBA = (0, 0, 0, 255)
 
 # Selector chassis (compose_list) — a dark background distinct from any
@@ -424,6 +412,7 @@ class DialDisplayCompositor:
         bgr: bool,
         is_artwork: bool,
         overlay=None,
+        metrics: LayoutMetrics | None = None,
     ):
         """Build one display-ready frame from *base*.
 
@@ -439,21 +428,32 @@ class DialDisplayCompositor:
         overlay: an OverlayState, or None. None or visible=False is a strict
             no-op (existing behaviour, byte-identical). When visible, drawn
             in compose-space before rotate/bgr — see module docstring.
+        metrics: a LayoutMetrics, or None meaning metrics_for(width, height)
+            — today's geometry, density-unaware. Feeds the artwork blur
+            radius and every overlay scale quantity.
         """
         if base is None:
             return base
 
+        if metrics is None:
+            metrics = metrics_for(width, height)
+
         image = base
         if is_artwork:
-            image = transform_artwork_for_panel(image, width, height)
+            image = transform_artwork_for_panel(image, width, height, blur_radius=metrics.blur_radius)
 
         if overlay is None or not overlay.visible:
             return _finish(image, rotate, bgr)
 
         frame = _now_playing_frame(overlay, image.width, image.height)
-        return _compose_frame(image, image.width, image.height, frame, rotate=rotate, bgr=bgr)
+        return _compose_frame(
+            image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
+        )
 
-    def compose_list(self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool):
+    def compose_list(
+        self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
         """Build one display-ready frame for the appliance-selector screen.
 
         Always starts from a flat dark background (_LIST_BG_RGB) — there is
@@ -468,12 +468,16 @@ class DialDisplayCompositor:
         dial_touch.py's selector-surface hit-test — the single source of
         truth for where each row and bar zone sits. Never raises: a font or
         glyph failure degrades to a plainer row, matching compose()'s own
-        text-failure discipline.
+        text-failure discipline. metrics: see compose().
         """
-        return _compose_frame(None, width, height, _list_frame(state, width, height), rotate=rotate, bgr=bgr)
+        return _compose_frame(
+            None, width, height, _list_frame(state, width, height),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
 
     def compose_repeat(
         self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool, base=None,
+        metrics: LayoutMetrics | None = None,
     ):
         """Build one display-ready frame for the repeat screen.
 
@@ -488,11 +492,18 @@ class DialDisplayCompositor:
         Restart/Stop labels and the centred position line drawn on top.
         rotate/bgr are applied last, in the same order compose() uses.
         Never raises: a font, glyph or base-image failure degrades to a
-        plainer frame, matching compose()'s own discipline.
+        plainer frame, matching compose()'s own discipline. metrics: see
+        compose().
         """
-        return _compose_frame(base, width, height, _repeat_frame(state, width, height), rotate=rotate, bgr=bgr)
+        return _compose_frame(
+            base, width, height, _repeat_frame(state, width, height),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
 
-    def compose_idle(self, base, width: int, height: int, *, rotate: bool, bgr: bool):
+    def compose_idle(
+        self, base, width: int, height: int, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
         """Build one display-ready frame for the idle screen: just *base* —
         the logo the manager chose (the plain disc, or the replay-available
         arrows-on-disc logo when a held recording can be replayed) — with no
@@ -500,10 +511,10 @@ class DialDisplayCompositor:
         nothing on this screen to control. *base* is assumed already
         panel-sized (the manager's own logo load). rotate/bgr are applied
         last, in the same order compose() uses. Never raises beyond a None
-        passthrough."""
+        passthrough. metrics: see compose()."""
         if base is None:
             return base
-        return _compose_frame(base, width, height, Frame(BG_BASE), rotate=rotate, bgr=bgr)
+        return _compose_frame(base, width, height, Frame(BG_BASE), rotate=rotate, bgr=bgr, metrics=metrics)
 
 
 def format_mmss(seconds: float) -> str:
@@ -518,17 +529,16 @@ def format_mmss(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def _scaled_px(reference_px: int, width: int, height: int, floor: int) -> int:
-    """Scale *reference_px* (defined at the 160x128 reference, short side
-    128) to *width* x *height* by the panel's short side, floored at
-    *floor* so a tiny panel never loses legible text/padding entirely."""
-    return max(floor, round(min(width, height) * reference_px / _FONT_REFERENCE_SHORT_SIDE))
+# Test-facing shims: the compositor used to compute these itself; now every
+# size-dependent number comes from a LayoutMetrics (dial_touch_layout), and
+# these two names delegate to it so the existing imports keep working.
+_scaled_px = scale_px
 
 
 def _pad_px(width: int, height: int) -> int:
     """Padding (px) between a band's edge and the text/glyph drawn inside
-    it, scaled from the 160x128 reference."""
-    return _scaled_px(_PAD_PX_AT_REFERENCE, width, height, 2)
+    it — metrics_for(width, height).pad."""
+    return metrics_for(width, height).pad
 
 
 @functools.lru_cache(maxsize=16)
@@ -585,8 +595,7 @@ def _draw_top_band_content(
     volume_cluster_rect,
     volume: int | None,
     muted: bool | None,
-    width: int,
-    height: int,
+    metrics: LayoutMetrics,
 ) -> None:
     """Draw the top band's pager dots, appliance name and mute/volume
     readout into *frame* in place — the piece of the top band shared by the
@@ -601,14 +610,12 @@ def _draw_top_band_content(
     both. dots_rect=None (or dots_filled=None) omits the dots entirely —
     used when the caller's overlay snapshot says they should not be drawn.
     """
-    name_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
-    volume_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
-    name_font = _load_font(name_px)
-    volume_font = _load_font(volume_px)
+    name_font = _load_font(metrics.font_body)
+    volume_font = _load_font(metrics.font_readout)
 
     draw = ImageDraw.Draw(frame)
-    _draw_volume_cluster(draw, volume_cluster_rect, volume, muted, volume_font, width, height)
-    pad = _pad_px(width, height)
+    _draw_volume_cluster(draw, volume_cluster_rect, volume, muted, volume_font, metrics)
+    pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
         _draw_glyph_supersampled(
@@ -626,17 +633,11 @@ def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
     frame.paste(dimmed_region, rect[:2])
 
 
-def _divider_line_width(width: int, height: int) -> int:
-    """Divider line width in pixels, scaled from a 1px-at-128-short-side
-    reference — see _DIVIDER_REFERENCE_SHORT_SIDE. Floored at 1px."""
-    return max(1, round(min(width, height) / _DIVIDER_REFERENCE_SHORT_SIDE))
-
-
-def _draw_band_divider(draw: ImageDraw.ImageDraw, layout: OverlayLayout, width: int, height: int) -> None:
+def _draw_band_divider(draw: ImageDraw.ImageDraw, layout: OverlayLayout, metrics: LayoutMetrics) -> None:
     """Draw a single white vertical divider line at layout.divider_x,
     spanning the bottom band from its top edge to its last visible row —
     the boundary between the DOWN and UP glyphs."""
-    line_width = _divider_line_width(width, height)
+    line_width = metrics.divider_w
     x = layout.divider_x
     y0 = layout.bottom_band[1]
     y1 = layout.bottom_band[3] - 1
@@ -644,7 +645,7 @@ def _draw_band_divider(draw: ImageDraw.ImageDraw, layout: OverlayLayout, width: 
 
 
 def _draw_bottom_band(
-    frame: Image.Image, layout, width: int, height: int, *,
+    frame: Image.Image, layout, metrics: LayoutMetrics, *,
     left_rect, right_rect, draw_left, draw_right,
 ) -> None:
     """Draw the bottom band's two controls with the white divider between
@@ -659,7 +660,7 @@ def _draw_bottom_band(
     draw = ImageDraw.Draw(frame)
     draw_left(draw, left_rect)
     draw_right(draw, right_rect)
-    _draw_band_divider(draw, layout, width, height)
+    _draw_band_divider(draw, layout, metrics)
 
 
 def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -813,24 +814,22 @@ def _draw_volume_cluster(
     volume: int | None,
     muted: bool | None,
     font,
-    width: int,
-    height: int,
+    metrics: LayoutMetrics,
 ) -> None:
     """Draw the volume readout inside *rect* (the top band's volume cluster,
     == the MUTE zone): the speaker glyph, right aligned, and — when both a
     *volume* number and a usable *font* are available — the volume digits to
-    its left. *width*/*height* are the panel dimensions (not the rect's own
-    size): padding, the icon-to-digits gap and the icon's own size all scale
-    from the panel's short side, the same reference axis every other overlay
-    dimension uses.
+    its left. *metrics* carries the panel's scale-derived padding, icon-to-
+    digits gap and icon size (not the rect's own size) — all read from the
+    same reference axis every other overlay dimension uses.
 
     volume=None or font=None draws the glyph alone, right aligned — always
     safe, since _load_font() never raises and this function never assumes a
     font is present.
     """
-    pad = _pad_px(width, height)
-    gap = _scaled_px(_ICON_GAP_PX_AT_REFERENCE, width, height, 2)
-    icon = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
+    pad = metrics.pad
+    gap = metrics.icon_gap
+    icon = metrics.icon
     cy = (rect[1] + rect[3]) // 2
 
     x_icon = rect[2] - pad - icon
@@ -848,21 +847,12 @@ def _draw_volume_cluster(
     _draw_speaker_glyph(draw, icon_box, muted)
 
 
-def _halo_stroke_px(width: int, height: int) -> int:
-    return _scaled_px(_HALO_STROKE_PX_AT_REFERENCE, width, height, 1)
-
-
-def _halo_blur_radius(width: int, height: int) -> int:
-    return _scaled_px(_HALO_BLUR_RADIUS_AT_REFERENCE, width, height, 1)
-
-
 def _draw_text_with_halo(
     frame: Image.Image,
     rect: tuple[int, int, int, int],
     text: str,
     font,
-    width: int,
-    height: int,
+    metrics: LayoutMetrics,
     *,
     align: str = "left",
 ) -> None:
@@ -886,7 +876,7 @@ def _draw_text_with_halo(
         return
 
     draw = ImageDraw.Draw(frame)
-    pad = _pad_px(width, height)
+    pad = metrics.pad
     max_w = rect[2] - rect[0] - pad
     if max_w <= 0:
         return
@@ -910,8 +900,8 @@ def _draw_text_with_halo(
     rect_w, rect_h = rect[2] - rect[0], rect[3] - rect[1]
     if rect_w > 0 and rect_h > 0:
         try:
-            stroke = _halo_stroke_px(width, height)
-            radius = _halo_blur_radius(width, height)
+            stroke = metrics.halo_stroke
+            radius = metrics.halo_blur
             local_xy = (xy[0] - rect[0], xy[1] - rect[1])
             halo_layer = Image.new("RGBA", (rect_w, rect_h), (0, 0, 0, 0))
             ImageDraw.Draw(halo_layer).text(
@@ -1110,7 +1100,7 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
     return img
 
 
-def _draw_header(img: Image.Image, layout, header: Header, width: int, height: int) -> None:
+def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetrics) -> None:
     _draw_top_band_content(
         img,
         dots_rect=layout.dots if header.dots_filled is not None else None,
@@ -1118,25 +1108,25 @@ def _draw_header(img: Image.Image, layout, header: Header, width: int, height: i
         name_rect=layout.name, name_text=header.name,
         volume_cluster_rect=layout.volume_cluster,
         volume=header.volume, muted=header.muted,
-        width=width, height=height,
+        metrics=metrics,
     )
 
 
-def _body_none(img: Image.Image, width: int, height: int, body: Body) -> None:
+def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     pass
 
 
-def _body_now_playing(img: Image.Image, width: int, height: int, body: Body) -> None:
-    layout = layout_for(width, height)
-    font = _load_font(_scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8))
-    _draw_text_with_halo(img, layout.title, body.title, font, width, height)
-    _draw_text_with_halo(img, layout.artist, body.artist, font, width, height)
+def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+    font = _load_font(metrics.font_body)
+    _draw_text_with_halo(img, layout.title, body.title, font, metrics)
+    _draw_text_with_halo(img, layout.artist, body.artist, font, metrics)
 
 
-def _body_repeat_row(img: Image.Image, width: int, height: int, body: Body) -> None:
-    layout = repeat_layout_for(width, height)
-    pad = _pad_px(width, height)
-    row_font = _load_font(_scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8))
+def _body_repeat_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    layout = repeat_layout_for(metrics.width, metrics.height, metrics=metrics)
+    pad = metrics.pad
+    row_font = _load_font(metrics.font_body)
     draw = ImageDraw.Draw(img)
     row = layout.row
     dot_box = row[3] - row[1]
@@ -1146,17 +1136,17 @@ def _body_repeat_row(img: Image.Image, width: int, height: int, body: Body) -> N
     _draw_glyph_supersampled(img, dot_rect, lambda d, w, h: _draw_arm_dot(d, w, h, body.armed))
 
 
-def _body_repeat_line(img: Image.Image, width: int, height: int, body: Body) -> None:
-    layout = repeat_layout_for(width, height)
-    font = _load_font(_scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9))
-    _draw_text_with_halo(img, layout.line, body.line, font, width, height, align="center")
+def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    layout = repeat_layout_for(metrics.width, metrics.height, metrics=metrics)
+    font = _load_font(metrics.font_readout)
+    _draw_text_with_halo(img, layout.line, body.line, font, metrics, align="center")
 
 
-def _body_list_rows(img: Image.Image, width: int, height: int, body: Body) -> None:
-    layout = list_layout_for(width, height)
+def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
     draw = ImageDraw.Draw(img)
-    row_font = _load_font(_scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8))
-    pad = _pad_px(width, height)
+    row_font = _load_font(metrics.font_body)
+    pad = metrics.pad
 
     for i, (x0, y0, x1, y1) in enumerate(layout.rows):
         draw.line([(x0, y1 - 1), (x1 - 1, y1 - 1)], fill=_LIST_SEPARATOR_RGB, width=1)
@@ -1220,32 +1210,32 @@ _BODY_RENDERERS = {
 }
 
 
-def _footer_none(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
+def _footer_none(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     pass
 
 
-def _footer_volume(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
+def _footer_volume(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     _draw_bottom_band(
-        img, layout, width, height,
+        img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
         draw_left=_draw_minus_glyph, draw_right=_draw_plus_glyph,
     )
 
 
-def _footer_labels(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
-    font = _load_font(_scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9))
+def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
+    font = _load_font(metrics.font_readout)
     left_color = _GLYPH_RGB if footer.left_enabled else _DIMMED_GLYPH_RGB
     right_color = _GLYPH_RGB if footer.right_enabled else _DIMMED_GLYPH_RGB
     _draw_bottom_band(
-        img, layout, width, height,
+        img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
         draw_left=lambda d, r: _draw_label_centered(d, r, footer.left_text, font, color=left_color),
         draw_right=lambda d, r: _draw_label_centered(d, r, footer.right_text, font, color=right_color),
     )
 
 
-def _footer_list_bar(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
-    ll = list_layout_for(width, height)
+def _footer_list_bar(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
+    ll = list_layout_for(metrics.width, metrics.height, metrics=metrics)
     _draw_glyph_supersampled(img, ll.back, lambda d, w, h: _draw_chevron(d, w, h, "left", True))
     _draw_glyph_supersampled(img, ll.down, lambda d, w, h: _draw_chevron(d, w, h, "down", footer.has_next))
     _draw_glyph_supersampled(img, ll.up, lambda d, w, h: _draw_chevron(d, w, h, "up", footer.has_prev))
@@ -1259,12 +1249,16 @@ _FOOTER_RENDERERS = {
 }
 
 
-def _compose_frame(base, width: int, height: int, frame: Frame, *, rotate: bool, bgr: bool) -> Image.Image:
+def _compose_frame(
+    base, width: int, height: int, frame: Frame, *, rotate: bool, bgr: bool,
+    metrics: LayoutMetrics | None = None,
+) -> Image.Image:
     """The one pipeline every screen frame is built from: background, dims,
     pressed wash, header, body, footer, then rotate/BGR. *frame* carries
     everything screen-specific; the geometry itself always comes from
     layout_for() (plus list_layout_for()/repeat_layout_for() inside the
-    renderers that need them) — never computed here.
+    renderers that need them) — never computed here. *metrics*=None means
+    metrics_for(width, height) — today's geometry, density-unaware.
 
     Dimming happens before the pressed wash so a highlighted zone still
     reads brighter than its dimmed surroundings, matching the dimmed band
@@ -1275,8 +1269,10 @@ def _compose_frame(base, width: int, height: int, frame: Frame, *, rotate: bool,
     simply skips that one element), and an unrecognised body/footer kind is
     a programming error that should raise rather than be swallowed.
     """
+    if metrics is None:
+        metrics = metrics_for(width, height)
     img = _new_frame(base, width, height, frame.background)
-    layout = layout_for(width, height)
+    layout = layout_for(width, height, metrics=metrics)
     if frame.dim_top:
         _dim_rect(img, layout.top_band)
     if frame.dim_bottom:
@@ -1284,9 +1280,9 @@ def _compose_frame(base, width: int, height: int, frame: Frame, *, rotate: bool,
     for rect in frame.pressed:
         _draw_pressed_highlight(img, rect)
     if frame.header is not None:
-        _draw_header(img, layout, frame.header, width, height)
-    _BODY_RENDERERS[frame.body.kind](img, width, height, frame.body)
-    _FOOTER_RENDERERS[frame.footer.kind](img, layout, width, height, frame.footer)
+        _draw_header(img, layout, frame.header, metrics)
+    _BODY_RENDERERS[frame.body.kind](img, metrics, frame.body)
+    _FOOTER_RENDERERS[frame.footer.kind](img, layout, metrics, frame.footer)
     return _finish(img, rotate, bgr)
 
 

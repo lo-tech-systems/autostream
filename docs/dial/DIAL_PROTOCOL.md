@@ -669,14 +669,15 @@ values from this endpoint.
     "rotate": false,
     "screen_type": "st7735s_160x128",
     "bgr": false,
-    "touch_type": "none"
+    "touch_type": "none",
+    "screen_size_inches": null
   },
   "supported": [
-    {"key": "st7735s_160x128", "text": "ST7735S (128x160)"},
-    {"key": "st7735s_128x128", "text": "ST7735S (128x128)"},
-    {"key": "st7789_240x240", "text": "ST7789 (240x240)"},
-    {"key": "st7789_320x240", "text": "ST7789 (240x320)"},
-    {"key": "ili9341_320x240", "text": "ILI9341 (320x240)"}
+    {"key": "st7735s_160x128", "text": "ST7735S (128x160)", "default_inches": 1.8},
+    {"key": "st7735s_128x128", "text": "ST7735S (128x128)", "default_inches": 1.44},
+    {"key": "st7789_240x240", "text": "ST7789 (240x240)", "default_inches": 1.3},
+    {"key": "st7789_320x240", "text": "ST7789 (240x320)", "default_inches": 2.8},
+    {"key": "ili9341_320x240", "text": "ILI9341 (320x240)", "default_inches": 2.8}
   ],
   "supported_touch": [
     {"key": "none", "text": "None"},
@@ -708,7 +709,8 @@ values from this endpoint.
 | `screen.screen_type` | string | Persisted display profile key. Optional, defaults to the dial's default profile |
 | `screen.bgr` | bool | Persisted colour-order swap setting. Optional, defaults to `false` |
 | `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright - see **Validation** under `POST /screen/settings` below |
-| `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text"}, ...]` - see **Supported profiles** below |
+| `screen.screen_size_inches` | number\|null | Persisted physical screen diagonal, in inches. `null` means "use the selected profile's own built-in default" (see `default_inches` under **Supported profiles** below). Optional, defaults to `null` |
+| `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
 | `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
@@ -729,10 +731,13 @@ Never returns secrets or provider artwork URLs.
 **Supported profiles.** `supported` is the catalogue of display profiles this dial
 firmware knows how to drive. `key` is the opaque value a client sends back in
 `screen.screen_type` to select that profile; `text` is a display label for presenting the
-choice to a user. **Both `key` and `text` are opaque to clients** - clients must not parse
-either string for meaning (e.g. extracting dimensions from the label), and must render
-only what the dial itself published in `supported`. Sorting the list by `text` for
-presentation is fine; inferring structure from its contents is not.
+choice to a user. `default_inches` is the profile's own built-in physical screen size, in
+inches - the value a client should pre-fill a screen-size control with before the user
+overrides it. **`key` and `text` are opaque to clients** - clients must not parse either
+string for meaning (e.g. extracting dimensions from the label), and must render only what
+the dial itself published in `supported`. `default_inches` is the one exception: it is a
+plain number, not an opaque string, and is meant to be read directly. Sorting the list by
+`text` for presentation is fine; inferring structure from `key`/`text` themselves is not.
 
 **Configured vs. active.** `screen.screen_type`/`screen.bgr` are the persisted
 configuration; `runtime.screen_type`/`runtime.bgr` are what the display manager currently
@@ -882,6 +887,9 @@ capability gate** above: gate on `supported_touch`, not on `supported`.
 - `touch_type` is optional and defaults to `"none"` when omitted; when present it must be a
   string naming a controller key present in `supported_touch`. An unknown value is rejected
   outright, the same as `screen_type`.
+- `screen_size_inches` is optional and defaults to `null` when omitted (meaning "use the
+  selected profile's own default"); when present it must be a JSON number (not a boolean)
+  between `0.5` and `20`, or JSON `null`. Anything else is rejected outright.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
   support them - see the capability gates above) returns HTTP `400`:

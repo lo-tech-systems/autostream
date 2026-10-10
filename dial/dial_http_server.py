@@ -526,6 +526,7 @@ class DialHTTPServer:
                             'bgr':         cfg.display.bgr,
                             'touch_type':  cfg.display.touch_type,
                             'always_show_controls': cfg.display.always_show_controls,
+                            'screen_size_inches': cfg.display.screen_size_inches,
                         },
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
@@ -895,6 +896,7 @@ class DialHTTPServer:
                             'bgr':         cfg.display.bgr,
                             'touch_type':  cfg.display.touch_type,
                             'always_show_controls': cfg.display.always_show_controls,
+                            'screen_size_inches': cfg.display.screen_size_inches,
                         },
                         'runtime': runtime,
                     })
@@ -912,9 +914,10 @@ class DialHTTPServer:
 
                 logging.info(
                     "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
-                    "touch_type=%s always_show_controls=%s",
+                    "touch_type=%s always_show_controls=%s screen_size_inches=%s",
                     new_display.fitted, new_display.rotate, new_display.screen_type,
                     new_display.bgr, new_display.touch_type, new_display.always_show_controls,
+                    new_display.screen_size_inches,
                 )
                 runtime['touch_type'] = dial_server._touch_runtime
                 # fitted/rotate/bgr/screen_type all apply live. touch_type
@@ -939,6 +942,7 @@ class DialHTTPServer:
                         'bgr':         new_cfg.display.bgr,
                         'touch_type':  new_cfg.display.touch_type,
                         'always_show_controls': new_cfg.display.always_show_controls,
+                        'screen_size_inches': new_cfg.display.screen_size_inches,
                     },
                     'runtime':          runtime,
                     'restart_required': touch_type_changed,

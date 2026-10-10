@@ -31,7 +31,10 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+
+MM_PER_INCH = 25.4
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,13 @@ class DisplayProfile:
     touch_invert_x: bool = False
     touch_invert_y: bool = False
     baudrate: int = 16_000_000
+    # Diagonal of the glass this profile is most commonly sold as, in
+    # inches. The default for the screen-size setting; a user can override
+    # it because the same controller and resolution ship in several sizes.
+    # The dataclass default of 1.8 exists only so a profile added without a
+    # size still resolves to something rather than failing — every entry in
+    # the table below sets it explicitly.
+    default_diagonal_inches: float = 1.8
     # RESERVED for a future touch panel: controller tag + bus type. Not
     # constructed or read anywhere yet — see the module docstring doctrine.
     touch: object = None
@@ -112,6 +122,7 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         rotation=0,
         rotation_mechanism="init_table",
         baudrate=16_000_000,
+        default_diagonal_inches=1.8,
     ),
     # Untested on hardware — nominal values for a 128x128 ST7735S variant.
     "st7735s_128x128": DisplayProfile(
@@ -125,6 +136,7 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         rotation=0,
         rotation_mechanism="init_table",
         baudrate=16_000_000,
+        default_diagonal_inches=1.44,
     ),
     # Untested on hardware — nominal values. Many 240x240 ST7789 boards are
     # built on 240x320 GRAM and need y_offset=80 to reach the visible area;
@@ -140,6 +152,7 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         rotation=0,
         rotation_mechanism="sw_per_frame",
         baudrate=32_000_000,
+        default_diagonal_inches=1.3,
     ),
     # Untested on hardware — nominal values for a 240x320 ST7789 panel used
     # in its 320x240 landscape orientation.
@@ -154,6 +167,7 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         rotation=0,
         rotation_mechanism="sw_per_frame",
         baudrate=32_000_000,
+        default_diagonal_inches=2.8,
     ),
     # The panel is natively portrait: the pinned library hardcodes
     # MADCTL=0x48 (MX|BGR, no row/column exchange) in its init table and
@@ -185,6 +199,7 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         touch_invert_x=True,
         touch_invert_y=True,
         baudrate=32_000_000,
+        default_diagonal_inches=2.8,
     ),
 }
 
@@ -205,8 +220,28 @@ def get_profile(key: str) -> DisplayProfile:
 
 
 def list_profiles() -> list[dict]:
-    """Return the published catalogue as [{"key", "text"}, ...] for the API."""
-    return [{"key": p.key, "text": p.label} for p in DISPLAY_PROFILES.values()]
+    """Return the published catalogue as [{"key", "text", "default_inches"},
+    ...] for the API. default_inches is the built-in screen-size default for
+    that profile — a new explicit field, not a parse of key/text, so the
+    protocol's opacity rule for key/text is unchanged."""
+    return [
+        {"key": p.key, "text": p.label, "default_inches": p.default_diagonal_inches}
+        for p in DISPLAY_PROFILES.values()
+    ]
+
+
+def mm_per_px_for(profile: DisplayProfile, diagonal_inches: float) -> float:
+    """Physical pixel pitch for *profile* glass of *diagonal_inches*:
+    diagonal_mm / diagonal_px, with diagonal_px = hypot(width, height).
+    Square pixels are assumed, as every panel in the table has."""
+    diagonal_mm = diagonal_inches * MM_PER_INCH
+    return diagonal_mm / math.hypot(profile.width, profile.height)
+
+
+def effective_diagonal_inches(profile: DisplayProfile, override: float | None) -> float:
+    """The diagonal size in effect for *profile*: *override* when a user has
+    set one, else the profile's own built-in default."""
+    return override if override is not None else profile.default_diagonal_inches
 
 
 def backend_name_for(profile: DisplayProfile) -> str:

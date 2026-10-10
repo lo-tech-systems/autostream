@@ -306,8 +306,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     existed.
     """
     from dial_display_compositor import OverlayState
-    from dial_display_profiles import get_profile
+    from dial_display_profiles import effective_diagonal_inches, get_profile, mm_per_px_for
     from dial_touch import TouchEventSource, TouchStateMachine
+    from dial_touch_layout import metrics_for
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
@@ -351,7 +352,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         invert_x=profile.touch_invert_x != rotated,
         invert_y=profile.touch_invert_y != rotated,
     )
-    state_machine = TouchStateMachine(profile.width, profile.height)
+    mm_per_px = mm_per_px_for(profile, effective_diagonal_inches(profile, cfg.display.screen_size_inches))
+    touch_metrics = metrics_for(profile.width, profile.height, mm_per_px=mm_per_px)
+    state_machine = TouchStateMachine(profile.width, profile.height, metrics=touch_metrics)
 
     def on_reveal_overlay() -> None:
         _confirm_presence()

@@ -62,10 +62,28 @@ from dial_touch_layout import (  # noqa: E402
     TouchZone,
     layout_for,
     list_layout_for,
+    metrics_for,
     repeat_layout_for,
     zone_rects_for,
     zones_for,
 )
+
+# The profile sizes from dial_display_profiles.DISPLAY_PROFILES, and their
+# confirmed mm_per_px (see the profiles module's design notes) — mirrors
+# test_dial_touch_layout.py's own PROFILE_SIZES/confirmed-density pairing.
+PROFILE_SIZES = [
+    (160, 128),  # st7735s_160x128
+    (128, 128),  # st7735s_128x128
+    (240, 240),  # st7789_240x240
+    (320, 240),  # st7789_320x240
+    (320, 240),  # ili9341_320x240 (duplicate size, both must work)
+]
+_CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
+# Densities chosen to resolve to compact/large respectively.
+_OUT_OF_TIER_MM_PER_PX = [0.05, 0.5]
+_METRICS_EQUIVALENCE_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)) + [
+    (size, mm) for size in PROFILE_SIZES for mm in _OUT_OF_TIER_MM_PER_PX
+]
 
 
 def _marked_image(size=(4, 4)):
@@ -171,8 +189,8 @@ class TestArtworkPath:
         sentinel = Image.new("RGB", (7, 7))
         calls = []
 
-        def fake_transform(image, width, height):
-            calls.append((image, width, height))
+        def fake_transform(image, width, height, blur_radius=None):
+            calls.append((image, width, height, blur_radius))
             return sentinel
 
         with patch("dial_display_compositor.transform_artwork_for_panel", fake_transform):
@@ -180,7 +198,10 @@ class TestArtworkPath:
                 raw, 160, 128,
                 rotate=False, bgr=False, is_artwork=True,
             )
-        assert calls == [(raw, 160, 128)]
+        # blur_radius is metrics.blur_radius for a metrics-less call —
+        # metrics_for(160, 128).blur_radius, the same number
+        # _blur_radius_for(160, 128) has always returned.
+        assert calls == [(raw, 160, 128, 10)]
         assert result is sentinel
 
 
@@ -1447,3 +1468,92 @@ class TestComposeFramePipeline:
         base = Image.new("RGB", size, (1, 2, 3))
         result = _compose_frame(base, *size, Frame(BG_BASE), rotate=False, bgr=False)
         assert result is not base
+
+
+# ---------------------------------------------------------------------------
+# Physical-size metrics: passing a LayoutMetrics (any density, including one
+# that resolves to compact or large) must never change a single output byte
+# in this stage — tier is reported, never consumed. metrics=None and a
+# metrics_for(w, h) built from an unrelated density must render identically.
+# ---------------------------------------------------------------------------
+
+class TestMetricsByteEquivalence:
+    @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
+    def test_compose_main_overlay_unaffected(self, compositor, size, mm):
+        width, height = size
+        base = _marked_image(size=(width, height))
+        overlay = OverlayState(
+            visible=True, muted=False, artist="Artist", title="Title", volume=42, name="Kitchen",
+        )
+        plain = compositor.compose(
+            base, width, height, rotate=False, bgr=False, is_artwork=False, overlay=overlay,
+        )
+        with_metrics = compositor.compose(
+            base, width, height, rotate=False, bgr=False, is_artwork=False, overlay=overlay,
+            metrics=metrics_for(width, height, mm),
+        )
+        assert list(plain.getdata()) == list(with_metrics.getdata())
+
+    @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
+    def test_compose_list_unaffected(self, compositor, size, mm):
+        width, height = size
+        state = ListState(rows=(("CD Player", True), ("Kitchen", False)), has_prev=True, has_next=True)
+        plain = compositor.compose_list(width, height, state, rotate=False, bgr=False)
+        with_metrics = compositor.compose_list(
+            width, height, state, rotate=False, bgr=False, metrics=metrics_for(width, height, mm),
+        )
+        assert list(plain.getdata()) == list(with_metrics.getdata())
+
+    @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
+    def test_compose_repeat_enable_layout_unaffected(self, compositor, size, mm):
+        width, height = size
+        state = RepeatViewState(
+            name="Kitchen", layout="enable", armed=True, line="",
+            start_enabled=False, stop_enabled=False, stop_pressed=False,
+        )
+        plain = compositor.compose_repeat(width, height, state, rotate=False, bgr=False)
+        with_metrics = compositor.compose_repeat(
+            width, height, state, rotate=False, bgr=False, metrics=metrics_for(width, height, mm),
+        )
+        assert list(plain.getdata()) == list(with_metrics.getdata())
+
+    @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
+    def test_compose_repeat_replaying_layout_unaffected(self, compositor, size, mm):
+        width, height = size
+        base = _marked_image(size=(width, height))
+        state = RepeatViewState(
+            name="Kitchen", layout="replaying", armed=True, line="0:12 / 3:45",
+            start_enabled=True, stop_enabled=True, stop_pressed=False,
+        )
+        plain = compositor.compose_repeat(width, height, state, rotate=False, bgr=False, base=base)
+        with_metrics = compositor.compose_repeat(
+            width, height, state, rotate=False, bgr=False, base=base,
+            metrics=metrics_for(width, height, mm),
+        )
+        assert list(plain.getdata()) == list(with_metrics.getdata())
+
+    @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
+    def test_compose_idle_unaffected(self, compositor, size, mm):
+        width, height = size
+        base = _marked_image(size=(width, height))
+        plain = compositor.compose_idle(base, width, height, rotate=False, bgr=False)
+        with_metrics = compositor.compose_idle(
+            base, width, height, rotate=False, bgr=False, metrics=metrics_for(width, height, mm),
+        )
+        assert list(plain.getdata()) == list(with_metrics.getdata())
+
+
+class TestShimsEqualMetricsFields:
+    """_pad_px and _scaled_px are test-facing shims now delegating to
+    dial_touch_layout — check they still agree with the metrics fields they
+    stand in for, at every profile size."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_pad_px_equals_metrics_pad(self, width, height):
+        assert _pad_px(width, height) == metrics_for(width, height).pad
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_scaled_px_equals_metrics_font_body(self, width, height):
+        m = metrics_for(width, height)
+        assert _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8) == m.font_body
+        assert _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9) == m.font_readout

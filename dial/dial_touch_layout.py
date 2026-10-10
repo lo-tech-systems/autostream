@@ -100,6 +100,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from math import ceil
 
 # Top and bottom bands each take this fraction of the panel height.
 BAND_DIVISOR = 4
@@ -108,11 +109,125 @@ BAND_DIVISOR = 4
 CLUSTER_WIDTH_NUMERATOR = 2
 CLUSTER_WIDTH_DENOMINATOR = 5
 
-# Dead-zone margin (pixels either side of a boundary) at the reference
-# 160x128 profile. See module docstring for the scaling rule applied by
-# _dead_zone_margin() for other panel sizes.
-_REFERENCE_MARGIN_PX = 3
-_REFERENCE_SHORT_SIDE = 128
+# ---------------------------------------------------------------------------
+# Physical-size metrics: one scale rule, and one LayoutMetrics bundle every
+# size-dependent number in the dial is read from. Physical size (mm_per_px)
+# is optional — every caller that omits it gets exactly today's geometry,
+# unaware of density (see metrics_for()'s tier fallback below).
+# ---------------------------------------------------------------------------
+
+REFERENCE_SHORT_SIDE = 128  # the 160x128 reference panel's short side
+
+
+def scale_px(reference_px: int, width: int, height: int, floor: int) -> int:
+    """Scale a pixel quantity defined at the 160x128 reference by the
+    panel's short side, floored. The one rule every size-dependent pixel
+    count in the dial derives from."""
+    return max(floor, round(min(width, height) * reference_px / REFERENCE_SHORT_SIDE))
+
+
+# Size tiers, reported by metrics_for() from the physical (mm) height of a
+# quarter-height band. Purely informational in this stage — nothing reads
+# `tier` to change rendering or geometry yet.
+TIER_COMPACT = "compact"
+TIER_REGULAR = "regular"
+TIER_LARGE = "large"
+_TIERS = (TIER_COMPACT, TIER_REGULAR, TIER_LARGE)
+
+TOUCH_MIN_MM = 8.0           # fingertip floor, resistive and capacitive alike
+COMPACT_BELOW_BAND_MM = 6.0  # a quarter-height band shorter than this cannot hold a floor-sized control
+LARGE_ABOVE_BAND_MM = 11.0   # a quarter-height band taller than this is wasting height on chrome
+
+# Reference pixel quantities at 160x128 (short side 128) and their floors —
+# (reference_px, floor) pairs fed to scale_px() by metrics_for() below.
+MARGIN_PX_AT_REFERENCE = (3, 1)
+DIVIDER_PX_AT_REFERENCE = (1, 1)
+BLUR_RADIUS_AT_REFERENCE = (10, 0)
+FONT_BODY_PX_AT_REFERENCE = (13, 8)
+FONT_READOUT_PX_AT_REFERENCE = (15, 9)
+PAD_PX_AT_REFERENCE = (4, 2)
+ICON_GAP_PX_AT_REFERENCE = (3, 2)
+HALO_STROKE_PX_AT_REFERENCE = (2, 1)
+HALO_BLUR_PX_AT_REFERENCE = (2, 1)
+
+
+@dataclass(frozen=True)
+class LayoutMetrics:
+    """Every size-dependent number the overlay/list/repeat/idle layouts and
+    the compositor need, computed once per compose from a panel size and
+    (optionally) its physical density. Passing metrics=None anywhere one of
+    these is accepted is exactly equivalent to metrics_for(width, height) —
+    today's regular-tier, density-unaware geometry."""
+
+    width: int
+    height: int
+    mm_per_px: float | None      # None: physical size unknown (tests, bare callers)
+    tier: str                    # reported only in this stage; no consumer branches on it yet
+    band_mm: float | None        # (height // 4) * mm_per_px, the tier input
+    touch_min_px: int | None     # ceil(TOUCH_MIN_MM / mm_per_px)
+    margin: int                  # dead-zone margin
+    band_h: int                  # header/footer height
+    row_h: int                   # list row height
+    rows_per_page: int
+    divider_w: int
+    blur_radius: int             # artwork backdrop blur
+    font_body: int               # name, artist/title, list rows, repeat row label
+    font_readout: int            # volume digits, repeat line, Restart/Stop
+    icon: int                    # speaker glyph box (same reference as font_readout)
+    pad: int
+    icon_gap: int
+    halo_stroke: int
+    halo_blur: int
+
+
+def metrics_for(
+    width: int, height: int, mm_per_px: float | None = None, tier_override: str | None = None,
+) -> LayoutMetrics:
+    """Compute every size-dependent quantity for a *width* x *height* panel.
+
+    mm_per_px=None (the default) means "physical size unknown" — every field
+    is computed exactly as it always was, and tier reads "regular". Passing
+    a real mm_per_px derives band_mm/touch_min_px/tier from it, but the
+    pixel geometry itself (margin, bands, fonts, ...) is unaffected — this
+    stage reports density, it does not act on it.
+
+    tier_override, when given, must be one of TIER_COMPACT/TIER_REGULAR/
+    TIER_LARGE and is returned as-is instead of the mm_per_px-derived tier —
+    a hook for a future settings override; nothing supplies it yet.
+    """
+    if tier_override is not None and tier_override not in _TIERS:
+        raise ValueError(f"tier_override must be one of {_TIERS} or None, got {tier_override!r}")
+    band_h = height // BAND_DIVISOR
+    band_mm = band_h * mm_per_px if mm_per_px is not None else None
+    if tier_override is not None:
+        tier = tier_override
+    elif band_mm is None:
+        tier = TIER_REGULAR
+    elif band_mm < COMPACT_BELOW_BAND_MM:
+        tier = TIER_COMPACT
+    elif band_mm > LARGE_ABOVE_BAND_MM:
+        tier = TIER_LARGE
+    else:
+        tier = TIER_REGULAR
+    touch_min_px = ceil(TOUCH_MIN_MM / mm_per_px) if mm_per_px else None
+    # Regular-tier quantities. The compact and large branches are a later
+    # stage; until then every tier resolves to these.
+    row_h = band_h
+    return LayoutMetrics(
+        width=width, height=height, mm_per_px=mm_per_px, tier=tier,
+        band_mm=band_mm, touch_min_px=touch_min_px,
+        margin=scale_px(MARGIN_PX_AT_REFERENCE[0], width, height, MARGIN_PX_AT_REFERENCE[1]),
+        band_h=band_h, row_h=row_h, rows_per_page=(height - band_h) // row_h,
+        divider_w=scale_px(DIVIDER_PX_AT_REFERENCE[0], width, height, DIVIDER_PX_AT_REFERENCE[1]),
+        blur_radius=scale_px(BLUR_RADIUS_AT_REFERENCE[0], width, height, BLUR_RADIUS_AT_REFERENCE[1]),
+        font_body=scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1]),
+        font_readout=scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1]),
+        icon=scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1]),
+        pad=scale_px(PAD_PX_AT_REFERENCE[0], width, height, PAD_PX_AT_REFERENCE[1]),
+        icon_gap=scale_px(ICON_GAP_PX_AT_REFERENCE[0], width, height, ICON_GAP_PX_AT_REFERENCE[1]),
+        halo_stroke=scale_px(HALO_STROKE_PX_AT_REFERENCE[0], width, height, HALO_STROKE_PX_AT_REFERENCE[1]),
+        halo_blur=scale_px(HALO_BLUR_PX_AT_REFERENCE[0], width, height, HALO_BLUR_PX_AT_REFERENCE[1]),
+    )
 
 
 class TouchZone(str, Enum):
@@ -170,19 +285,22 @@ class ZoneRect:
     index: int | None = None
 
 
-def zone_rects_for(geometry: str, width: int, height: int) -> tuple[ZoneRect, ...]:
+def zone_rects_for(
+    geometry: str, width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[ZoneRect, ...]:
     """The ordered, tappable rectangles of *geometry* at this panel size —
     the single source both the hit-tests below and the compositor's
     pressed-zone wash read, so the two can never disagree about where a
     boundary sits. Order is hit-test order. Every rect here is a field of
     one of the *Layout dataclasses below; this function adds no geometry
-    arithmetic of its own, only a view over them. Raises KeyError for an
+    arithmetic of its own, only a view over them. metrics=None means
+    metrics_for(width, height) — today's geometry. Raises KeyError for an
     unknown geometry (a programming error, never a runtime input)."""
-    return _GEOMETRY_BUILDERS[geometry](width, height)
+    return _GEOMETRY_BUILDERS[geometry](width, height, metrics)
 
 
-def _main_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
-    layout = layout_for(width, height)
+def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    layout = layout_for(width, height, metrics=metrics)
     return (
         ZoneRect(TouchZone.DOTS, layout.dots),
         ZoneRect(TouchZone.NAME, layout.name),
@@ -192,8 +310,8 @@ def _main_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
     )
 
 
-def _list_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
-    layout = list_layout_for(width, height)
+def _list_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    layout = list_layout_for(width, height, metrics=metrics)
     return tuple(
         ZoneRect(TouchZone.LIST_ROW, rect, i) for i, rect in enumerate(layout.rows)
     ) + (
@@ -203,8 +321,8 @@ def _list_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
     )
 
 
-def _repeat_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
-    layout = repeat_layout_for(width, height)
+def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    layout = repeat_layout_for(width, height, metrics=metrics)
     return (
         ZoneRect(TouchZone.DOTS, layout.dots),
         ZoneRect(TouchZone.NAME, layout.name),
@@ -215,8 +333,8 @@ def _repeat_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
     )
 
 
-def _idle_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
-    layout = idle_layout_for(width, height)
+def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    layout = idle_layout_for(width, height, metrics=metrics)
     return (ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),)
 
 
@@ -228,11 +346,13 @@ _GEOMETRY_BUILDERS = {
 }
 
 
-def hit_test(geometry: str, x: int, y: int, width: int, height: int) -> "ZoneRect | None":
+def hit_test(
+    geometry: str, x: int, y: int, width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> "ZoneRect | None":
     """The first table entry of *geometry* containing compose-space point
     (x, y), or None in a dead zone or outside the panel. The one hit-test
     loop every per-geometry wrapper below is built from."""
-    for entry in zone_rects_for(geometry, width, height):
+    for entry in zone_rects_for(geometry, width, height, metrics=metrics):
         x0, y0, x1, y1 = entry.rect
         if x0 <= x < x1 and y0 <= y < y1:
             return entry
@@ -325,8 +445,11 @@ def _dead_zone_margin(width: int, height: int) -> int:
     (160x128, 320x240) or "tall-ish" (128x128, 240x240) shaped. Returns
     exactly 3 at 160x128, by construction. Floored at 1px so degenerately
     tiny panels never lose their dead zones entirely.
+
+    A thin test-facing shim over metrics_for(width, height).margin — kept
+    under its historical name since tests import it directly.
     """
-    return max(1, round(min(width, height) * _REFERENCE_MARGIN_PX / _REFERENCE_SHORT_SIDE))
+    return metrics_for(width, height).margin
 
 
 def _split(total: int, margin: int, weights: list[int]) -> list[tuple[int, int]]:
@@ -360,11 +483,12 @@ def _split(total: int, margin: int, weights: list[int]) -> list[tuple[int, int]]
     return bands
 
 
-def layout_for(width: int, height: int) -> OverlayLayout:
+def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> OverlayLayout:
     """Compute the full overlay geometry for a *width* x *height* panel.
 
-    m = _dead_zone_margin(width, height). Bands are a plain floor-divide of
-    the panel height (no dead-zone gap of their own — the artwork above and
+    m and band_h come from *metrics* (metrics_for(width, height) when None
+    is passed — today's geometry). Bands are a plain floor-divide of the
+    panel height (no dead-zone gap of their own — the artwork above and
     below them is the "gap"); the name/cluster split and the down/up split
     each carry the usual dead-zone margins. The artist line sits centre-low,
     directly above the bottom band, with no dead-zone gap of its own (it
@@ -372,8 +496,10 @@ def layout_for(width: int, height: int) -> OverlayLayout:
     docstring for the exact arithmetic and the pinned 160x128 reference
     numbers.
     """
-    m = _dead_zone_margin(width, height)
-    band_h = height // BAND_DIVISOR
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    m = metrics.margin
+    band_h = metrics.band_h
     top_band: Rect = (0, 0, width, band_h)
     bottom_band: Rect = (0, height - band_h, width, height)
 
@@ -440,7 +566,7 @@ def zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     return hit.zone if hit is not None else None
 
 
-def list_layout_for(width: int, height: int) -> ListLayout:
+def list_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListLayout:
     """Compute the full selector-screen geometry for a *width* x *height*
     panel: rows_per_page rows tiling [0, height - bar_h), full width, plus a
     bottom bar split three ways (back|down|up) with the usual dead-zone
@@ -448,10 +574,12 @@ def list_layout_for(width: int, height: int) -> ListLayout:
     shipped profile), which is what makes rows_per_page exactly 3 on every
     profile listed in dial_display_profiles.py.
     """
-    m = _dead_zone_margin(width, height)
-    bar_h = height // BAND_DIVISOR
-    row_h = bar_h
-    rows_per_page = (height - bar_h) // row_h
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    m = metrics.margin
+    bar_h = metrics.band_h
+    row_h = metrics.row_h
+    rows_per_page = metrics.rows_per_page
     rows = tuple((0, i * row_h, width, (i + 1) * row_h) for i in range(rows_per_page))
 
     (bx0, bx1), (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1, 1])
@@ -476,7 +604,7 @@ def list_zone_at(x: int, y: int, width: int, height: int) -> tuple[TouchZone, in
     return (hit.zone, hit.index) if hit is not None else None
 
 
-def repeat_layout_for(width: int, height: int) -> RepeatLayout:
+def repeat_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> RepeatLayout:
     """Compute the repeat-screen geometry for a *width* x *height* panel.
     `row` is a full-width strip of height 2*band_h (64px at the reference
     160x128 profile), centred vertically between the top and bottom bands
@@ -484,9 +612,11 @@ def repeat_layout_for(width: int, height: int) -> RepeatLayout:
     and the replaying layout's position line always tile the panel with
     no gap against either band.
     """
-    layout = layout_for(width, height)
-    m = _dead_zone_margin(width, height)
-    band_h = height // BAND_DIVISOR
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    layout = layout_for(width, height, metrics=metrics)
+    m = metrics.margin
+    band_h = metrics.band_h
     side = band_h * 2
     cy = height // 2
     row: Rect = (m, cy - side // 2, width - m, cy + side // 2)
@@ -517,11 +647,11 @@ def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     return hit.zone if hit is not None else None
 
 
-def idle_layout_for(width: int, height: int) -> IdleLayout:
+def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> IdleLayout:
     """Compute the idle-screen geometry: the affordance line is the same
     centre-low rectangle the main surface's (non-actuating) artist line
     occupies; replay is the whole panel below the top band."""
-    layout = layout_for(width, height)
+    layout = layout_for(width, height, metrics=metrics)
     return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height))
 
 

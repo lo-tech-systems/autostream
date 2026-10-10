@@ -21,11 +21,17 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 from dial_touch_layout import (  # noqa: E402
+    COMPACT_BELOW_BAND_MM,
     GEOMETRIES,
     GEOMETRY_IDLE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
+    LARGE_ABOVE_BAND_MM,
+    TIER_COMPACT,
+    TIER_LARGE,
+    TIER_REGULAR,
+    TOUCH_MIN_MM,
     TouchZone,
     _dead_zone_margin,
     hit_test,
@@ -34,8 +40,10 @@ from dial_touch_layout import (  # noqa: E402
     layout_for,
     list_layout_for,
     list_zone_at,
+    metrics_for,
     repeat_layout_for,
     repeat_zone_at,
+    scale_px,
     zone_at,
     zone_rects_for,
     zones_for,
@@ -616,6 +624,192 @@ class TestIdleLayoutReplayField:
     def test_replay_is_the_panel_below_the_top_band(self, width, height):
         idle = idle_layout_for(width, height)
         assert idle.replay == (0, height // 4, width, height)
+
+
+# ---------------------------------------------------------------------------
+# Physical-size metrics: metrics_for()/LayoutMetrics/scale_px. Regular-tier
+# equivalence is the permanent regression guard for this feature — every
+# shipped profile must render byte-identically regardless of physical size,
+# since nothing consumes `tier` yet.
+# ---------------------------------------------------------------------------
+
+# (reference_px, floor) pairs metrics_for() derives its scale fields from —
+# see the module's *_PX_AT_REFERENCE tuples.
+_METRICS_SCALE_FIELDS = [
+    ("margin", 3, 1),
+    ("divider_w", 1, 1),
+    ("blur_radius", 10, 0),
+    ("font_body", 13, 8),
+    ("font_readout", 15, 9),
+    ("icon", 15, 9),
+    ("pad", 4, 2),
+    ("icon_gap", 3, 2),
+    ("halo_stroke", 2, 1),
+    ("halo_blur", 2, 1),
+]
+
+
+class TestMetricsForReferenceEquivalence:
+    """metrics_for(w, h) with no mm_per_px must reproduce today's numbers
+    exactly — the one-line inline reference expressions here are stable
+    enough to keep as a permanent pin (unlike a rendered-bytes reference)."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_scale_fields_match_inline_reference_formula(self, width, height):
+        m = metrics_for(width, height)
+        for field, ref, floor in _METRICS_SCALE_FIELDS:
+            expected = max(floor, round(min(width, height) * ref / 128))
+            assert getattr(m, field) == expected, field
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_band_row_and_paging_fields(self, width, height):
+        m = metrics_for(width, height)
+        assert m.band_h == height // 4
+        assert m.row_h == m.band_h
+        assert m.rows_per_page == 3
+
+
+# Confirmed mm_per_px per PROFILE_SIZES entry, in order — see the density
+# table in the profiles module's design notes.
+_CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
+# Densities chosen to resolve to compact/large respectively, proving tier is
+# reported-only: geometry must stay regular-tier regardless.
+_OUT_OF_TIER_MM_PER_PX = [0.05, 0.5]
+
+
+class TestDensityHasNoEffectOnGeometry:
+    """Passing a real mm_per_px must never change a single pixel of layout
+    or hit-test geometry in this stage — only metrics_for()'s own reported
+    fields (band_mm, tier, touch_min_px) are density-dependent."""
+
+    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    def test_layout_for_unaffected(self, size, mm):
+        width, height = size
+        assert layout_for(width, height) == layout_for(
+            width, height, metrics=metrics_for(width, height, mm)
+        )
+
+    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    def test_list_layout_for_unaffected(self, size, mm):
+        width, height = size
+        assert list_layout_for(width, height) == list_layout_for(
+            width, height, metrics=metrics_for(width, height, mm)
+        )
+
+    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    def test_repeat_layout_for_unaffected(self, size, mm):
+        width, height = size
+        assert repeat_layout_for(width, height) == repeat_layout_for(
+            width, height, metrics=metrics_for(width, height, mm)
+        )
+
+    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    def test_idle_layout_for_unaffected(self, size, mm):
+        width, height = size
+        assert idle_layout_for(width, height) == idle_layout_for(
+            width, height, metrics=metrics_for(width, height, mm)
+        )
+
+    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    def test_zone_rects_for_unaffected(self, size, mm):
+        width, height = size
+        metrics = metrics_for(width, height, mm)
+        for geometry in GEOMETRIES:
+            assert zone_rects_for(geometry, width, height) == zone_rects_for(
+                geometry, width, height, metrics=metrics
+            )
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    @pytest.mark.parametrize("mm", _OUT_OF_TIER_MM_PER_PX)
+    def test_out_of_tier_density_still_leaves_geometry_unchanged(self, width, height, mm):
+        metrics = metrics_for(width, height, mm)
+        assert metrics.tier != TIER_REGULAR
+        assert layout_for(width, height, metrics=metrics) == layout_for(width, height)
+        assert list_layout_for(width, height, metrics=metrics) == list_layout_for(width, height)
+        assert repeat_layout_for(width, height, metrics=metrics) == repeat_layout_for(width, height)
+        assert idle_layout_for(width, height, metrics=metrics) == idle_layout_for(width, height)
+
+
+class TestScalePxConsolidation:
+    """The three duplicated (reference_px, width, height, floor) scale
+    formulas are now all dial_touch_layout.scale_px — check they still
+    agree everywhere, not just at the reference size."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_scale_px_matches_dead_zone_margin(self, width, height):
+        assert scale_px(3, width, height, 1) == _dead_zone_margin(width, height)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_scale_px_matches_compositor_scaled_px(self, width, height):
+        pytest.importorskip("PIL.Image", reason="Pillow not installed")
+        from dial_display_compositor import _scaled_px
+
+        for ref, floor in [(13, 8), (15, 9), (4, 2), (3, 2), (2, 1)]:
+            assert scale_px(ref, width, height, floor) == _scaled_px(ref, width, height, floor)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_scale_px_matches_image_blur_radius(self, width, height):
+        pytest.importorskip("PIL.Image", reason="Pillow not installed")
+        from dial_display_image import _blur_radius_for
+
+        assert scale_px(10, width, height, 0) == _blur_radius_for(width, height)
+
+
+# (size, mm_per_px, expected tier) for the five confirmed profiles, in
+# PROFILE_SIZES order — the 1.3 inch 240x240 is the one honestly compact.
+_CONFIRMED_TIERS = [
+    ((160, 128), 0.2231, TIER_REGULAR),
+    ((128, 128), 0.2021, TIER_REGULAR),
+    ((240, 240), 0.0973, TIER_COMPACT),
+    ((320, 240), 0.1778, TIER_REGULAR),
+    ((320, 240), 0.1778, TIER_REGULAR),
+]
+
+
+class TestTierReporting:
+    @pytest.mark.parametrize("size,mm,expected_tier", _CONFIRMED_TIERS)
+    def test_confirmed_profiles_report_expected_tier(self, size, mm, expected_tier):
+        width, height = size
+        assert metrics_for(width, height, mm).tier == expected_tier
+
+    def test_mm_per_px_none_gives_regular(self):
+        assert metrics_for(160, 128).tier == TIER_REGULAR
+        assert metrics_for(240, 240).tier == TIER_REGULAR
+
+    def test_tier_override_is_returned_as_given(self):
+        assert metrics_for(160, 128, tier_override=TIER_COMPACT).tier == TIER_COMPACT
+        assert metrics_for(160, 128, tier_override=TIER_LARGE).tier == TIER_LARGE
+        # An override wins even against a density that would otherwise
+        # resolve differently.
+        assert metrics_for(160, 128, mm_per_px=0.0973, tier_override=TIER_LARGE).tier == TIER_LARGE
+
+    def test_invalid_tier_override_raises(self):
+        with pytest.raises(ValueError):
+            metrics_for(160, 128, tier_override="huge")
+
+    def test_touch_min_px_matches_confirmed_table(self):
+        from math import ceil
+
+        for size, mm, _ in _CONFIRMED_TIERS:
+            width, height = size
+            assert metrics_for(width, height, mm).touch_min_px == ceil(TOUCH_MIN_MM / mm)
+
+    def test_touch_min_px_none_when_density_unknown(self):
+        assert metrics_for(160, 128).touch_min_px is None
+
+    def test_boundary_at_exactly_compact_threshold_is_regular(self):
+        # band_mm == COMPACT_BELOW_BAND_MM exactly must NOT read compact —
+        # the comparison is strict '<'.
+        band_h = 128 // 4
+        mm = COMPACT_BELOW_BAND_MM / band_h
+        assert metrics_for(160, 128, mm).tier == TIER_REGULAR
+
+    def test_boundary_at_exactly_large_threshold_is_regular(self):
+        # band_mm == LARGE_ABOVE_BAND_MM exactly must NOT read large — the
+        # comparison is strict '>'.
+        band_h = 128 // 4
+        mm = LARGE_ABOVE_BAND_MM / band_h
+        assert metrics_for(160, 128, mm).tier == TIER_REGULAR
 
 
 # ---------------------------------------------------------------------------

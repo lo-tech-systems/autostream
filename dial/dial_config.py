@@ -83,6 +83,12 @@ class DialDisplayConfig:
     bgr: bool = False
     touch_type: str = DEFAULT_TOUCH_KEY
     always_show_controls: bool = False
+    # Screen diagonal in inches, or None to use the selected profile's own
+    # built-in default (dial_display_profiles.DisplayProfile.
+    # default_diagonal_inches). A user override, since the same controller
+    # and resolution ship in several physical sizes. See
+    # dial_display_profiles.effective_diagonal_inches().
+    screen_size_inches: float | None = None
 
 
 @dataclass
@@ -126,12 +132,18 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     what keeps an old appliance's whole-object POST (which never sends the
     field at all) from 400ing, and a new appliance never sends it to a dial
     whose GET response did not advertise it in the first place.
+    `screen_size_inches` is optional (defaults to None, meaning "use the
+    selected profile's own default"); if present it must be a JSON number
+    (int or float, not bool) between 0.5 and 20 inches, or JSON null — a
+    range wide enough for every SPI panel plausibly wired to this dial while
+    still catching an obvious typo.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
     unknown = set(obj.keys()) - {
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
+        "screen_size_inches",
     }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
@@ -159,9 +171,21 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     always_show_controls = obj.get("always_show_controls", False)
     if not isinstance(always_show_controls, bool):
         raise InvalidScreenSettings("screen.always_show_controls must be a boolean")
+    screen_size_inches = obj.get("screen_size_inches")
+    if screen_size_inches is not None:
+        if (
+            isinstance(screen_size_inches, bool)
+            or not isinstance(screen_size_inches, (int, float))
+            or not (0.5 <= screen_size_inches <= 20.0)
+        ):
+            raise InvalidScreenSettings(
+                "screen.screen_size_inches must be a number between 0.5 and 20, or null"
+            )
+        screen_size_inches = float(screen_size_inches)
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
         touch_type=touch_type, always_show_controls=always_show_controls,
+        screen_size_inches=screen_size_inches,
     )
 
 
@@ -201,6 +225,28 @@ def _resolve_persisted_touch_type(value: object) -> str:
             value, DEFAULT_TOUCH_KEY,
         )
     return DEFAULT_TOUCH_KEY
+
+
+def _resolve_persisted_screen_size(value: object) -> float | None:
+    """Resolve a persisted screen_size_inches value, falling back to None
+    (meaning "use the selected profile's own default") with a warning log
+    for anything unusable, rather than raising.
+
+    Mirrors _resolve_persisted_screen_type/_resolve_persisted_touch_type: a
+    corrupt or stale settings file must not brick the dial at startup — only
+    the strict API-facing validate_screen_settings() is allowed to reject an
+    out-of-range value outright. Missing or JSON null both silently mean
+    None — that is the ordinary "never overridden" state, not corruption.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not (0.5 <= value <= 20.0):
+        logging.warning(
+            "dial config: unusable persisted screen_size_inches %r — falling back to the "
+            "profile default", value,
+        )
+        return None
+    return float(value)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -247,6 +293,7 @@ def load_config() -> DialConfig:
             bgr=bool(hw_display.get('bgr', False)),
             touch_type=_resolve_persisted_touch_type(hw_display.get('touch_type')),
             always_show_controls=bool(hw_display.get('always_show_controls', False)),
+            screen_size_inches=_resolve_persisted_screen_size(hw_display.get('screen_size_inches')),
         )
 
     if SETTINGS_PATH.exists():
@@ -271,6 +318,9 @@ def load_config() -> DialConfig:
                 ),
                 always_show_controls=bool(
                     s_display.get('always_show_controls', cfg.display.always_show_controls)
+                ),
+                screen_size_inches=_resolve_persisted_screen_size(
+                    s_display.get('screen_size_inches', cfg.display.screen_size_inches)
                 ),
             )
 
@@ -309,6 +359,7 @@ def save_config(cfg: DialConfig) -> None:
             'bgr':         cfg.display.bgr,
             'touch_type':  cfg.display.touch_type,
             'always_show_controls': cfg.display.always_show_controls,
+            'screen_size_inches': cfg.display.screen_size_inches,
         },
     }
     with _save_lock:

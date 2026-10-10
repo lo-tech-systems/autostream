@@ -1495,6 +1495,92 @@ class TestDialCardHtmlStructure:
         assert "ev.target.classList.contains('dial-screen-fitted')" in body
         assert "ev.target.classList.contains('dial-screen-touch')" in body
 
+    # ── Screen settings (Screen Size number input) ─────────────────────────────
+
+    def test_screen_size_input_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'class="dial-screen-size"' in result
+        assert 'type="number"' in result
+        assert 'step="0.1"' in result
+        assert 'min="0.5"' in result
+        assert 'max="20"' in result
+
+    def test_screen_size_row_after_type_row_before_touch_row(self):
+        """The size row must live directly after the screen-type row (and
+        before the touch row), per the setup card's field order."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        type_idx = result.find("dial-screen-type-row")
+        size_idx = result.find("dial-screen-size-row")
+        touch_idx = result.find("dial-screen-touch-row")
+        assert type_idx >= 0 and size_idx >= 0 and touch_idx >= 0
+        assert type_idx < size_idx < touch_idx
+
+    def test_screen_size_row_hidden_by_default(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        size_row_idx = result.find("dial-screen-size-row")
+        assert size_row_idx >= 0
+        size_row_tag = result[size_row_idx - 10:size_row_idx + 100]
+        assert "display:none" in size_row_tag
+
+    def test_screen_size_row_carries_shared_dim_class(self):
+        src = _setup_page_src()
+        assert "dial-screen-size-row dial-screen-ctl-row" in src
+
+    def test_dial_load_screen_settings_sets_size_caps_and_default_inches(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "j.screen.screen_size_inches !== undefined" in body
+        assert "card.dataset.sizeCaps = '1'" in body
+        assert "delete card.dataset.sizeCaps" in body
+        assert "o.dataset.defaultInches = opt.default_inches" in body
+
+    def test_screen_size_save_body_gated_by_size_caps(self):
+        """The save body must include screen_size_inches only when the
+        sizeCaps gate flag is set -- an old dial 400s on an unknown field."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.sizeCaps === '1'" in body
+        assert "screen.screen_size_inches = " in body
+
+    def test_screen_size_save_sends_null_when_equal_to_default(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "parsedSize === defaultInches" in body
+        assert "? null : parsedSize" in body
+
+    def test_dial_sync_screen_controls_enabled_gates_size_input(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialSyncScreenControlsEnabled(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn]
+        assert "if (sizeEl) sizeEl.disabled = off;" in body
+
+    def test_init_dials_card_moves_size_to_new_type_default_on_type_change(self):
+        """A screen-type change must move the size input to the new type's
+        default when the user never overrode it."""
+        src = _setup_page_src()
+        fn_idx = src.find("function _initDialsCard()")
+        assert fn_idx >= 0
+        next_fn = src.find("\n      </script>", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "ev.target.classList.contains('dial-screen-type')" in body
+        assert "ev.target.dataset.prevDefault" in body
+        assert "newTypeOpt.dataset.defaultInches" in body
+
     # ── General config (Mute all playing devices toggle) ───────────────────────
 
     def test_mute_all_toggle_present_in_card(self):

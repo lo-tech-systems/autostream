@@ -685,6 +685,11 @@ def _dial_card_html(
                     <span>Screen Type:</span>
                     <select class="dial-screen-type" data-dial-action="save-screen" disabled></select>
                   </div>
+                  <div class="dial-screen-size-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Screen Size (inches):</span>
+                    <input type="number" class="dial-screen-size" step="0.1" min="0.5" max="20"
+                           data-dial-action="save-screen" disabled style="width:5rem;">
+                  </div>
                   <div class="dial-screen-touch-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Touch Panel:</span>
                     <select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>
@@ -3747,12 +3752,14 @@ def send_setup_page(
           var rotateEl = card.querySelector('.dial-screen-rotate');
           var bgrEl = card.querySelector('.dial-screen-bgr');
           var typeEl = card.querySelector('.dial-screen-type');
+          var sizeEl = card.querySelector('.dial-screen-size');
           var touchEl = card.querySelector('.dial-screen-touch');
           if (!fittedEl || !rotateEl) return;
           var off = fittedEl.disabled || !fittedEl.checked;
           rotateEl.disabled = off;
           if (bgrEl) bgrEl.disabled = off;
           if (typeEl) typeEl.disabled = off;
+          if (sizeEl) sizeEl.disabled = off;
           if (touchEl) touchEl.disabled = off;
           // Dim the rows too — a disabled input still renders its label text
           // at full contrast, which reads as available when it is not.
@@ -4197,9 +4204,11 @@ def send_setup_page(
             var rotateEl = card.querySelector('.dial-screen-rotate');
             var bgrEl = card.querySelector('.dial-screen-bgr');
             var typeEl = card.querySelector('.dial-screen-type');
+            var sizeEl = card.querySelector('.dial-screen-size');
             var touchEl = card.querySelector('.dial-screen-touch');
             var bgrRow = card.querySelector('.dial-screen-bgr-row');
             var typeRow = card.querySelector('.dial-screen-type-row');
+            var sizeRow = card.querySelector('.dial-screen-size-row');
             var touchRow = card.querySelector('.dial-screen-touch-row');
             if (fittedEl && j.screen && j.screen.fitted != null) {{
               fittedEl.checked = !!j.screen.fitted;
@@ -4221,9 +4230,16 @@ def send_setup_page(
                   var o = document.createElement('option');
                   o.value = opt.key;
                   o.textContent = opt.text;
+                  o.dataset.defaultInches = opt.default_inches;
                   typeEl.appendChild(o);
                 }});
                 if (j.screen && j.screen.screen_type != null) typeEl.value = j.screen.screen_type;
+                // Tracks the currently-selected option's own default, so a
+                // later type change (see the save-screen dispatch) can tell
+                // whether the size input still holds "the old default" (and
+                // should move to the new one) or a genuine user override.
+                var loadedTypeOpt = typeEl.selectedOptions[0];
+                if (loadedTypeOpt) typeEl.dataset.prevDefault = loadedTypeOpt.dataset.defaultInches;
               }}
               if (bgrEl && j.screen) bgrEl.checked = !!j.screen.bgr;
               if (bgrRow) bgrRow.style.display = 'flex';
@@ -4272,6 +4288,28 @@ def send_setup_page(
               delete card.dataset.controlsCaps;
               if (ctlRow) ctlRow.style.display = 'none';
             }}
+            // `screen_size_inches` is a FOURTH, independent capability gate
+            // -- same reasoning as always_show_controls above: a dial can
+            // support screen profiles, touch and the controls toggle while
+            // still predating this field, and must never receive it in the
+            // save body until its own GET has advertised it. Pre-filled
+            // from the override when the dial has one, else the selected
+            // type's own built-in default (set on each <option> above).
+            if (j.screen && j.screen.screen_size_inches !== undefined) {{
+              card.dataset.sizeCaps = '1';
+              if (sizeEl) {{
+                var sizeTypeOpt = typeEl ? typeEl.selectedOptions[0] : null;
+                if (typeof j.screen.screen_size_inches === 'number') {{
+                  sizeEl.value = j.screen.screen_size_inches;
+                }} else if (sizeTypeOpt) {{
+                  sizeEl.value = sizeTypeOpt.dataset.defaultInches;
+                }}
+              }}
+              if (sizeRow) sizeRow.style.display = 'flex';
+            }} else {{
+              delete card.dataset.sizeCaps;
+              if (sizeRow) sizeRow.style.display = 'none';
+            }}
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
@@ -4318,6 +4356,21 @@ def send_setup_page(
             var ctlEl = card.querySelector('.dial-screen-always-controls');
             screen.always_show_controls = ctlEl ? ctlEl.checked : false;
           }}
+          // Independent capability gate, same reasoning as touchCaps/
+          // controlsCaps above. Sends null (use the selected type's own
+          // default) when the typed value equals that default, an empty
+          // input, or is not a number -- otherwise the typed float. This
+          // keeps the table authoritative for a dial that never deviated.
+          if (card.dataset.sizeCaps === '1') {{
+            var sizeEl = card.querySelector('.dial-screen-size');
+            var selectedTypeOpt = typeEl ? typeEl.selectedOptions[0] : null;
+            var defaultInches = selectedTypeOpt ? parseFloat(selectedTypeOpt.dataset.defaultInches) : NaN;
+            var rawSize = sizeEl ? sizeEl.value : '';
+            var parsedSize = parseFloat(rawSize);
+            screen.screen_size_inches = (
+              rawSize === '' || isNaN(parsedSize) || parsedSize === defaultInches
+            ) ? null : parsedSize;
+          }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
@@ -4329,7 +4382,8 @@ def send_setup_page(
           // the checkboxes, so remember what to restore it to on failure.
           var prevValue = null;
           if (changedEl) {{
-            prevValue = (changedEl.tagName === 'SELECT') ? changedEl.value : changedEl.checked;
+            prevValue = (changedEl.tagName === 'SELECT' || changedEl.type === 'number')
+              ? changedEl.value : changedEl.checked;
           }}
           try {{
             var result = await _dialPost('/api/dial/screen/settings', body);
@@ -4349,7 +4403,7 @@ def send_setup_page(
               // Revert only the control the user changed — the others
               // still hold their pre-save values.
               if (changedEl) {{
-                if (changedEl.tagName === 'SELECT') changedEl.value = prevValue;
+                if (changedEl.tagName === 'SELECT' || changedEl.type === 'number') changedEl.value = prevValue;
                 else changedEl.checked = prevValue;
               }}
               dialSyncScreenControlsEnabled(card);
@@ -4357,7 +4411,7 @@ def send_setup_page(
           }} catch(e) {{
             dialMsg(card, 'Network error', false);
             if (changedEl) {{
-              if (changedEl.tagName === 'SELECT') changedEl.value = prevValue;
+              if (changedEl.tagName === 'SELECT' || changedEl.type === 'number') changedEl.value = prevValue;
               else changedEl.checked = prevValue;
             }}
             dialSyncScreenControlsEnabled(card);
@@ -4837,6 +4891,22 @@ def send_setup_page(
               if (action === 'save-screen') {{
                 if (ev.target.classList.contains('dial-screen-fitted')
                     || ev.target.classList.contains('dial-screen-touch')) dialSyncScreenControlsEnabled(card);
+                if (ev.target.classList.contains('dial-screen-type')) {{
+                  // Move the size input to the new type's own default unless
+                  // the user already overrode it (its value no longer
+                  // matches the PREVIOUS type's default) -- see
+                  // dialLoadScreenSettings's prevDefault tracking.
+                  var sizeInput = card.querySelector('.dial-screen-size');
+                  var newTypeOpt = ev.target.selectedOptions[0];
+                  if (card.dataset.sizeCaps === '1' && sizeInput && newTypeOpt) {{
+                    var prevDefault = parseFloat(ev.target.dataset.prevDefault);
+                    var currentSize = parseFloat(sizeInput.value);
+                    if (sizeInput.value === '' || currentSize === prevDefault) {{
+                      sizeInput.value = newTypeOpt.dataset.defaultInches;
+                    }}
+                  }}
+                  if (newTypeOpt) ev.target.dataset.prevDefault = newTypeOpt.dataset.defaultInches;
+                }}
                 dialSaveScreenSettings(card, ev.target);
               }}
             }});

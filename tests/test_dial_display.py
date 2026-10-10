@@ -33,9 +33,14 @@ for _p in (_DIAL, _CORE):
 import dial_auth
 from dial_config import DialDisplayConfig
 from dial_display_compositor import OverlayState
-from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
+from dial_display_profiles import (
+    DEFAULT_PROFILE_KEY,
+    effective_diagonal_inches,
+    get_profile,
+    mm_per_px_for,
+)
 from dial_mdns import PlayingTarget
-from dial_touch_layout import TouchZone, list_layout_for
+from dial_touch_layout import TouchZone, list_layout_for, metrics_for
 import dial_display as dd
 from dial_display import (
     SELECTOR_TIMEOUT_SECONDS,
@@ -163,7 +168,7 @@ def _roster_from_targets(targets) -> list:
 
 def _make_display(
     fitted=True, rotate=False, bgr=False, screen_type=DEFAULT_PROFILE_KEY,
-    always_show_controls=False,
+    always_show_controls=False, screen_size_inches=None,
     targets=None, backend=None,
     get_targets=None,
     get_roster=None,
@@ -171,7 +176,7 @@ def _make_display(
 ) -> tuple[DialDisplay, FakeBackend, MagicMock]:
     cfg = DialDisplayConfig(
         fitted=fitted, rotate=rotate, bgr=bgr, screen_type=screen_type,
-        always_show_controls=always_show_controls,
+        always_show_controls=always_show_controls, screen_size_inches=screen_size_inches,
     )
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
@@ -882,6 +887,90 @@ class TestUpdateConfig:
         status = display.update_config(DialDisplayConfig(fitted=False))
         assert fb.closed is True
         assert status["showing"] == "noop"
+
+
+# ---------------------------------------------------------------------------
+# Screen-size setting (physical diagonal) — mm_per_px derivation and its
+# plumbing into _metrics_locked() / redisplay-on-change. Density has no
+# effect on rendered bytes in this stage (see test_dial_display_compositor.py
+# for that invariant); these tests cover the manager's own bookkeeping.
+# ---------------------------------------------------------------------------
+
+class TestScreenSizeSetting:
+    def test_init_derives_mm_per_px_from_profile_default(self):
+        display, fb, gt = _make_display(fitted=False, screen_type=DEFAULT_PROFILE_KEY)
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        expected = mm_per_px_for(profile, profile.default_diagonal_inches)
+        assert display._mm_per_px == pytest.approx(expected)
+
+    def test_init_derives_mm_per_px_from_override(self):
+        display, fb, gt = _make_display(fitted=False, screen_size_inches=3.5)
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        expected = mm_per_px_for(profile, 3.5)
+        assert display._mm_per_px == pytest.approx(expected)
+
+    def test_update_config_size_only_change_redisplays_synchronously(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], fitted=True)
+        display.enable()
+
+        fake_image = _marked_image(size=(fb.width, fb.height))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        fb.displayed.clear()
+
+        # A size-only change must take effect synchronously via
+        # update_config — not via the 6s poll loop — same as rotate/bgr.
+        with patch.object(display, "_poll_once") as mock_poll:
+            status = display.update_config(DialDisplayConfig(fitted=True, screen_size_inches=3.5))
+        mock_poll.assert_not_called()
+        assert status["fitted"] is True
+        assert len(fb.displayed) == 1
+
+    def test_update_config_updates_mm_per_px(self):
+        display, fb, gt = _make_display(fitted=True)
+        display.enable()
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        before = display._mm_per_px
+        display.update_config(DialDisplayConfig(fitted=True, screen_size_inches=3.5))
+        after = display._mm_per_px
+        assert after != before
+        assert after == pytest.approx(mm_per_px_for(profile, 3.5))
+
+    def test_screen_type_change_updates_mm_per_px_to_new_profile_default(self):
+        fb_old = FakeBackend()
+        fb_old.width, fb_old.height = 160, 128
+        fb_new = FakeBackend()
+        fb_new.width, fb_new.height = 240, 240
+
+        def builder(screen_type):
+            return (lambda: fb_new) if screen_type == "st7789_240x240" else (lambda: fb_old)
+
+        display, _, gt = _make_display(
+            fitted=True, screen_type="st7735s_160x128", backend=fb_old,
+            backend_factory_builder=builder,
+        )
+        display.enable()
+        display.update_config(DialDisplayConfig(fitted=True, screen_type="st7789_240x240"))
+
+        new_profile = get_profile("st7789_240x240")
+        expected = mm_per_px_for(new_profile, new_profile.default_diagonal_inches)
+        assert display._mm_per_px == pytest.approx(expected)
+
+    def test_metrics_locked_reflects_backend_dims_and_density(self):
+        display, fb, gt = _make_display(fitted=True, screen_size_inches=2.8)
+        display.enable()
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+        expected_mm = mm_per_px_for(profile, 2.8)
+        with display._lock:
+            m = display._metrics_locked()
+        assert m.width == fb.width
+        assert m.height == fb.height
+        assert m.mm_per_px == pytest.approx(expected_mm)
+        assert m == metrics_for(fb.width, fb.height, mm_per_px=expected_mm)
 
 
 # ---------------------------------------------------------------------------

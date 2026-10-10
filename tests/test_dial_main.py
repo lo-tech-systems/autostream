@@ -522,7 +522,7 @@ class TestDialFinalCleanup:
         import dial_main as dm
 
         cfg = _make_cfg()
-        cfg.display = MagicMock(fitted=False)
+        cfg.display = MagicMock(fitted=False, screen_size_inches=None)
         mock_http = MagicMock()
         mock_http._server = MagicMock()
         mock_control = MagicMock()
@@ -574,7 +574,7 @@ class TestDialFinalCleanup:
         from dial_mdns import PlayingTarget
 
         cfg = _make_cfg()
-        cfg.display = MagicMock(fitted=False)
+        cfg.display = MagicMock(fitted=False, screen_size_inches=None)
         mock_http = MagicMock()
         mock_http._server = MagicMock()
         mock_control = MagicMock()
@@ -1088,7 +1088,7 @@ class TestEndToEndDisplaySelection:
         import dial_display as dd
         import dial_mdns as dm_mdns
 
-        cfg_display = MagicMock(fitted=fitted)
+        cfg_display = MagicMock(fitted=fitted, screen_size_inches=None)
         display = dd.DialDisplay(
             config=cfg_display,
             get_display_targets=dm_mdns.get_display_targets,

@@ -108,6 +108,68 @@ class TestDefaultProfile:
 
 
 # ---------------------------------------------------------------------------
+# Physical-size defaults and derivation
+# ---------------------------------------------------------------------------
+
+_EXPECTED_DEFAULT_INCHES = {
+    "st7735s_160x128": 1.8,
+    "st7735s_128x128": 1.44,
+    "st7789_240x240": 1.3,
+    "st7789_320x240": 2.8,
+    "ili9341_320x240": 2.8,
+}
+
+# mm_per_px_for(profile, profile.default_diagonal_inches), computed by hand
+# from diagonal_mm / hypot(width, height).
+_EXPECTED_MM_PER_PX = {
+    "st7735s_160x128": 0.2231,
+    "st7735s_128x128": 0.2021,
+    "st7789_240x240": 0.0973,
+    "st7789_320x240": 0.1778,
+    "ili9341_320x240": 0.1778,
+}
+
+
+class TestPhysicalSizeDefaults:
+    def test_every_profile_sets_a_positive_default(self):
+        for profile in ddp.DISPLAY_PROFILES.values():
+            assert profile.default_diagonal_inches > 0
+
+    def test_confirmed_default_diagonals(self):
+        for key, inches in _EXPECTED_DEFAULT_INCHES.items():
+            assert ddp.DISPLAY_PROFILES[key].default_diagonal_inches == inches
+
+    def test_mm_per_px_for_matches_confirmed_table(self):
+        for key, expected in _EXPECTED_MM_PER_PX.items():
+            profile = ddp.DISPLAY_PROFILES[key]
+            actual = ddp.mm_per_px_for(profile, profile.default_diagonal_inches)
+            assert actual == pytest.approx(expected, abs=1e-4)
+
+    def test_mm_per_px_for_scales_with_diagonal(self):
+        profile = ddp.get_profile(ddp.DEFAULT_PROFILE_KEY)
+        small = ddp.mm_per_px_for(profile, 1.0)
+        large = ddp.mm_per_px_for(profile, 2.0)
+        assert large == pytest.approx(small * 2, rel=1e-9)
+
+    def test_effective_diagonal_inches_without_override_uses_profile_default(self):
+        profile = ddp.get_profile(ddp.DEFAULT_PROFILE_KEY)
+        assert ddp.effective_diagonal_inches(profile, None) == profile.default_diagonal_inches
+
+    def test_effective_diagonal_inches_with_override_uses_override(self):
+        profile = ddp.get_profile(ddp.DEFAULT_PROFILE_KEY)
+        assert ddp.effective_diagonal_inches(profile, 3.5) == 3.5
+
+    def test_list_profiles_entries_carry_default_inches(self):
+        by_key = {entry["key"]: entry for entry in ddp.list_profiles()}
+        for key, inches in _EXPECTED_DEFAULT_INCHES.items():
+            assert by_key[key]["default_inches"] == inches
+
+    def test_list_profiles_entry_shape(self):
+        for entry in ddp.list_profiles():
+            assert set(entry.keys()) == {"key", "text", "default_inches"}
+
+
+# ---------------------------------------------------------------------------
 # No hardware import, ever
 # ---------------------------------------------------------------------------
 

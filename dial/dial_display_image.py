@@ -16,6 +16,7 @@ import warnings
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
+from dial_touch_layout import scale_px
 
 # MAX_IMAGE_PIXELS is a PIL process-wide global. This is the dial's only PIL
 # user, so applying the limit here at import time is safe and also protects
@@ -65,9 +66,10 @@ def _blur_radius_for(width: int, height: int) -> int:
     or the long side keeps the ratio stable across both the "wide" and
     "tall" profile shapes in the table. Returns exactly 10 at 160x128 —
     min(160, 128) * 10 / 128 == 10 — so today's shipped panel is bit-for-bit
-    unchanged.
+    unchanged. A thin wrapper over dial_touch_layout.scale_px() — the one
+    scale rule every size-dependent pixel count in the dial shares.
     """
-    return round(min(width, height) * 10 / PANEL_HEIGHT)
+    return scale_px(10, width, height, 0)
 
 
 # Kept as a module constant for existing callers/tests — equal to

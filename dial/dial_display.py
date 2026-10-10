@@ -63,14 +63,16 @@ from dial_display_image import (
 from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
     UnknownDisplayProfileError,
+    effective_diagonal_inches,
     get_profile,
+    mm_per_px_for,
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
-from dial_touch_layout import TouchZone, list_layout_for
+from dial_touch_layout import LayoutMetrics, TouchZone, list_layout_for, metrics_for
 from dial_volume import (
     is_muted,
     note_master_volume_positive,
@@ -310,8 +312,8 @@ class PickerState:
 # picker, which page the same way over different row types)
 # ---------------------------------------------------------------------------
 
-def _rows_per_page_for(width: int, height: int) -> int:
-    return list_layout_for(width, height).rows_per_page
+def _rows_per_page_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> int:
+    return list_layout_for(width, height, metrics=metrics).rows_per_page
 
 
 def _clamp_page(page: int, row_count: int, rows_per_page: int) -> int:
@@ -419,6 +421,12 @@ class DialDisplay:
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
+        # Physical pixel pitch (mm/px) for the configured screen_type and
+        # its effective size (override or profile default) — a float
+        # written only under self._lock (here and in update_config) and
+        # read under the lock at compose time via _metrics_locked(). No
+        # touch-thread access.
+        self._mm_per_px = _mm_per_px_for_config(config)
         self._get_display_targets = get_display_targets
         # Merged playing+idle roster, injected like get_display_targets
         # above (default dial_mdns.get_roster, for tests). Read only by the
@@ -706,6 +714,7 @@ class DialDisplay:
         with self._lock:
             old_config = self._config
             self._config = config
+            self._mm_per_px = _mm_per_px_for_config(config)
             screen_type_changed = old_config.screen_type != config.screen_type
             if screen_type_changed:
                 # Rebuild unconditionally, NOT only when fitted: a screen_type
@@ -741,6 +750,7 @@ class DialDisplay:
                             old_config.rotate != config.rotate
                             or old_config.bgr != config.bgr
                             or old_config.always_show_controls != config.always_show_controls
+                            or old_config.screen_size_inches != config.screen_size_inches
                         )
                     )
                     if redisplay_changed and self._backend_open:
@@ -1134,6 +1144,14 @@ class DialDisplay:
             return backend.width, backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
+    def _metrics_locked(self) -> LayoutMetrics:
+        """The active panel's LayoutMetrics — physical size (self._mm_per_px)
+        plus the open backend's (or the default profile's) dimensions.
+        Caller holds self._lock; computed once per compose, a handful of
+        multiplications, nothing per pixel."""
+        width, height = self._active_panel_dims()
+        return metrics_for(width, height, mm_per_px=self._mm_per_px)
+
     def _push_frame_locked(self, compose) -> None:
         """Compose one frame and push it to the backend, recording a write
         failure the same way for every screen. *compose* is a zero-argument
@@ -1181,14 +1199,15 @@ class DialDisplay:
         if not (self._backend_open and self._backend is not None):
             return
         self._current_base_image = image
-        width, height = self._active_panel_dims()
+        metrics = self._metrics_locked()
         overlay = self._effective_overlay_locked(self._overlay_snapshot)
         self._push_frame_locked(lambda: self._compositor.compose(
-            image, width, height,
+            image, metrics.width, metrics.height,
             rotate=self._config.rotate,
             bgr=self._config.bgr,
             is_artwork=False,
             overlay=overlay,
+            metrics=metrics,
         ))
 
     def _effective_overlay_locked(self, snapshot: OverlayState) -> OverlayState:
@@ -1844,24 +1863,24 @@ class DialDisplay:
             self._idle_affordance = affordance
             self._overlay_signal.set()
 
-    def _build_list_state_locked(self, width: int, height: int) -> ListState:
+    def _build_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
         """Build the compositor's ListState for the appliance selector's
         CURRENT page. Caller holds self._lock; runs on the repeat thread
         only. pressed comes from the unified pressed channel (self._pressed)
         — the same one every other screen feeds from."""
         return _list_state_for(
-            self._selector, _rows_per_page_for(width, height), "No devices", _selector_list_row,
-            pressed=self._pressed,
+            self._selector, _rows_per_page_for(width, height, metrics=metrics), "No devices",
+            _selector_list_row, pressed=self._pressed,
         )
 
-    def _build_picker_list_state_locked(self, width: int, height: int) -> ListState:
+    def _build_picker_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
         """Build the compositor's ListState for the replay picker's CURRENT
         page — the PickerState counterpart to _build_list_state_locked().
         Each row's secondary slot carries the buffer length, formatted
         "m:ss". pressed comes from the same unified pressed channel."""
         return _list_state_for(
-            self._picker, _rows_per_page_for(width, height), "Nothing to replay", _picker_list_row,
-            pressed=self._pressed,
+            self._picker, _rows_per_page_for(width, height, metrics=metrics), "Nothing to replay",
+            _picker_list_row, pressed=self._pressed,
         )
 
     def _display_list_locked(self) -> None:
@@ -1870,14 +1889,14 @@ class DialDisplay:
         so self._current_base_image survives a list visit unchanged and the
         frame never picks up the main now-playing overlay. Caller holds
         self._lock; the backend-open check is _repaint_current_locked's."""
-        width, height = self._active_panel_dims()
+        metrics = self._metrics_locked()
         if self._screen == "picker":
-            list_state = self._build_picker_list_state_locked(width, height)
+            list_state = self._build_picker_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         else:
-            list_state = self._build_list_state_locked(width, height)
+            list_state = self._build_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         self._push_frame_locked(lambda: self._compositor.compose_list(
-            width, height, list_state,
-            rotate=self._config.rotate, bgr=self._config.bgr,
+            metrics.width, metrics.height, list_state,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
     def _build_repeat_view_locked(self, screen: "RepeatScreenState | None", now: float) -> RepeatViewState:
@@ -1963,10 +1982,10 @@ class DialDisplay:
         position counter; the enable layout ignores it. Caller holds
         self._lock."""
         view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
-        width, height = self._active_panel_dims()
+        metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_repeat(
-            width, height, view, base=self._current_base_image,
-            rotate=self._config.rotate, bgr=self._config.bgr,
+            metrics.width, metrics.height, view, base=self._current_base_image,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
     def _display_idle_locked(self) -> None:
@@ -1984,11 +2003,11 @@ class DialDisplay:
             return
         if self._current_base_image is None:
             return
-        width, height = self._active_panel_dims()
-        base = load_logo(self._replay_logo_path, width, height) or self._current_base_image
+        metrics = self._metrics_locked()
+        base = load_logo(self._replay_logo_path, metrics.width, metrics.height) or self._current_base_image
         self._push_frame_locked(lambda: self._compositor.compose_idle(
-            base, width, height,
-            rotate=self._config.rotate, bgr=self._config.bgr,
+            base, metrics.width, metrics.height,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
     # ---- polling loop ----------------------------------------------------
@@ -2581,6 +2600,18 @@ class DialDisplay:
         logging.info("dial display: artwork replaced (%s)", url_key)
         if was_showing == "logo":
             logging.info("dial display: showing artwork")
+
+
+def _mm_per_px_for_config(config) -> float:
+    """Physical pixel pitch for *config*'s screen_type/screen_size_inches,
+    falling back to the default profile if the key is unresolvable — the
+    same fallback _adafruit_backend_factory_for_screen_type uses. Physical
+    size only; carries no opinion about tier or rendering."""
+    try:
+        profile = get_profile(config.screen_type)
+    except UnknownDisplayProfileError:
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+    return mm_per_px_for(profile, effective_diagonal_inches(profile, config.screen_size_inches))
 
 
 def _adafruit_backend_factory_for_screen_type(screen_type: str):
