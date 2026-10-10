@@ -2242,15 +2242,15 @@ class TestComposeSdHealth:
             compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=None),
                                         rotate=False, bgr=False)
         texts = [call.args[2] for call in mock_draw.call_args_list]
-        assert "Replace it soon" in texts
-        assert not any("% left" in t for t in texts)
+        assert "Replace Soon" in texts
+        assert not any("%:" in t for t in texts)
 
     def test_percent_fills_the_body_line(self, compositor):
         with patch("dial_display_compositor._draw_label_centered") as mock_draw:
             compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=12),
                                         rotate=False, bgr=False)
         texts = [call.args[2] for call in mock_draw.call_args_list]
-        assert "12% left, replace soon" in texts
+        assert "12%: Replace Soon" in texts
 
     def test_never_raises_without_a_font(self, compositor):
         with patch("dial_display_compositor._load_font", return_value=None):
@@ -2303,7 +2303,7 @@ class TestComposeWarning:
                                               rotate=False, bgr=False, metrics=metrics)
         generic = compositor.compose_warning(
             base, width, height,
-            WarningView(title="microSD Health", message="15% left, replace soon", buttons=("Dismiss",),
+            WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Dismiss",),
                         geometry=GEOMETRY_SDHEALTH, pressed=pressed),
             rotate=False, bgr=False, metrics=metrics,
         )

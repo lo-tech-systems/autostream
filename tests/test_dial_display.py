@@ -9292,7 +9292,7 @@ class TestSdHealthStateMachine:
         ) as mock_compose:
             with display._lock:
                 display._display_warning_locked()
-        assert mock_compose.call_args.args[3].message == "17% left, replace soon"
+        assert mock_compose.call_args.args[3].message == "17%: Replace Soon"
         assert mock_compose.call_args.args[3].buttons == ("Dismiss",)
 
     def test_dismiss_then_wake_does_not_reshow(self):

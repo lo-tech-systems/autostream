@@ -268,8 +268,8 @@ NOWIFI_RESTART_TEXT = "Restart"
 # The SD card warning's fixed strings: a title at readout size and a body
 # line at body size (the percent is filled in), over one Dismiss cell.
 SDHEALTH_TITLE_TEXT = "microSD Health"
-SDHEALTH_BODY_TEXT = "{percent}% left, replace soon"
-SDHEALTH_BODY_TEXT_NO_PERCENT = "Replace it soon"
+SDHEALTH_BODY_TEXT = "{percent}%: Replace Soon"
+SDHEALTH_BODY_TEXT_NO_PERCENT = "Replace Soon"
 SDHEALTH_DISMISS_TEXT = "Dismiss"
 RESTARTING_TEXT = "Restarting..."
 STARTING_TEXT = "Starting..."
