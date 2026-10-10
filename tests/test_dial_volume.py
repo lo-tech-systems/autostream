@@ -188,7 +188,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 60}
+        assert body == {"ok": True, "volume": 60, "muted": False}
         update_mock.assert_called_once_with(
             BASE_URL, "spk", volume_percent=60, timeout=3
         )
@@ -203,7 +203,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out_a, out_b),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 60}
+        assert body == {"ok": True, "volume": 60, "muted": False}
         calls = update_mock.call_args_list
         assert len(calls) == 2
         assert call(BASE_URL, "spk_a", volume_percent=72, timeout=3) in calls
@@ -219,7 +219,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out_a, out_b),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 30}
+        assert body == {"ok": True, "volume": 30, "muted": False}
         calls = update_mock.call_args_list
         assert call(BASE_URL, "spk_a", volume_percent=30, timeout=3) in calls
         assert call(BASE_URL, "spk_b", volume_percent=30, timeout=3) in calls
@@ -232,7 +232,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 100}
+        assert body == {"ok": True, "volume": 100, "muted": False}
 
     def test_delta_clamped_to_minus_100(self):
         out = _output("spk", 50)
@@ -241,7 +241,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 0}
+        assert body == {"ok": True, "volume": 0, "muted": False}
 
     def test_new_master_clamped_to_100(self):
         out = _output("spk", 95)
@@ -250,7 +250,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 100}
+        assert body == {"ok": True, "volume": 100, "muted": False}
 
     def test_new_master_clamped_to_0(self):
         out = _output("spk", 5)
@@ -259,7 +259,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(out),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 0}
+        assert body == {"ok": True, "volume": 0, "muted": False}
 
     def test_unselected_output_excluded_from_fan_out(self):
         active = _output("active", 50, selected=True)
@@ -269,7 +269,7 @@ class TestDialVolumeFanOut:
             list_result=_ok_list(active, inactive),
         )
         assert code == 200
-        assert body == {"ok": True, "volume": 60}
+        assert body == {"ok": True, "volume": 60, "muted": False}
         ids_updated = {c.args[1] for c in update_mock.call_args_list}
         assert ids_updated == {"active"}
 

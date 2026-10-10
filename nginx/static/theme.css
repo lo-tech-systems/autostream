@@ -686,6 +686,22 @@ button[type=submit]:active {
 .np-volume-wrap.master-volume-inactive {
   opacity: 0.5;
 }
+.master-mute-btn {
+  background: none;
+  border: 0;
+  padding: 0.2rem;
+  cursor: pointer;
+  color: var(--color-status-danger);
+  display: inline-flex;
+  align-items: center;
+}
+.master-mute-btn svg {
+  width: 20px;
+  height: 20px;
+}
+.np-volume-wrap.is-muted input[type=range] {
+  opacity: 0.6;
+}
 
 /* Repeat button (home page top controls row) -- small pill-btn styled like
    the appliance-selector button; blue accent outline when armed/replaying,

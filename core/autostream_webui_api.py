@@ -25,6 +25,8 @@ Contents:
   - send_dial_mute_post_json     -- POST /api/dial/mute
   - send_dial_outputs_post_json  -- POST /api/dial/outputs
   - send_dial_outputs_set_post_json -- POST /api/dial/outputs/set
+  - apply_mute_action            -- shared mute/restore core (dial + WebUI)
+  - send_mute_post_json          -- POST /api/mute (WebUI master-volume icon)
 """
 
 from __future__ import annotations
@@ -39,7 +41,10 @@ import sys
 import threading
 import time
 
+from types import SimpleNamespace
 from typing import Optional
+
+import autostream_mute_state as mute_state
 
 from autostream_bluetooth_client import (
     BLUETOOTH_CAPTURE_DEVICE,
@@ -368,7 +373,7 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
     if not home.get("ok"):
         send_json(handler, 500, {"ok": False, "error": home.get("error", ""), "outputs": []})
         return
-    send_json(handler, 200, {"ok": True, "outputs": home["outputs"]})
+    send_json(handler, 200, {"ok": True, "outputs": home["outputs"], "muted": home["muted"]})
 
 
 # -----------------------------------------------------------------------------
@@ -813,15 +818,38 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
 
 _volume_lock = threading.Lock()
 
-# Mute state — protected by _volume_lock
-_mute_snapshot: dict[str, int] = {}   # output_id → pre-mute volume_percent
+
+def _master_of(outputs) -> Optional[int]:
+    """calculate_master_volume()'s master figure alone, over *outputs* --
+    a small convenience for the muted branches below, which build a
+    throwaway output list just to get one number out of it."""
+    master, _ = calculate_master_volume(outputs)
+    return master
+
+
+def _with_volume(output, volume_percent: int) -> SimpleNamespace:
+    """A throwaway stand-in for *output* with volume_percent overridden --
+    used to feed calculate_master_volume()/intended-level reporting a
+    figure without mutating the (possibly frozen) real output object and
+    without requiring it to be any particular dataclass type."""
+    return SimpleNamespace(
+        id=output.id, selected=getattr(output, "selected", True), volume_percent=volume_percent,
+    )
 
 
 def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/volume — UUID-auth only (no session/CSRF required).
 
     Applies a volume delta to all selected OwnTone outputs proportionally.
-    Returns {"ok": true, "volume": <new_master>} on success.
+    Returns {"ok": true, "volume": <new_master>, "muted": false} on success.
+
+    This is the only master-volume delta endpoint (the WebUI's master slider
+    writes absolute per-output volumes instead), so the mute-aware rule lives
+    here for every stepper client: while the appliance is muted, a
+    non-positive delta is a no-op (there is no lower level than silent to
+    step to) that reports the level the outputs will return to and
+    muted:true; a positive delta is a plain restore to the remembered levels
+    -- no step is added on top of it -- and reports muted:false.
     """
     dial_id = json_obj.get("dial_id", "")
     delta = json_obj.get("delta")
@@ -837,11 +865,10 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
         return
     delta = max(-100, min(100, delta))
 
-    global _mute_snapshot
-
     try:
         parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url
+        default_vol = parsed.owntone.volume_percent
     except Exception as e:
         logging.warning("dial volume: config load failed: %s", e)
         send_json(handler, 200, {"ok": False, "error": "config_error"})
@@ -856,6 +883,24 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
         if not selected:
             send_json(handler, 200, {"ok": False, "error": "no_active_outputs"})
             return
+
+        if mute_state.is_muted():
+            if delta <= 0:
+                # Volume down while muted: nothing to write; stay muted and
+                # report the level the outputs will return to, not their
+                # actual (silent) volume.
+                intended = [
+                    _with_volume(o, mute_state.intended_level(o.id, o.volume_percent))
+                    for o in selected
+                ]
+                send_json(handler, 200, {"ok": True, "volume": _master_of(intended), "muted": True})
+                return
+            # Volume up while muted: a plain restore, no step added on top.
+            status, body, restored = _restore_locked(base_url, default_vol, selected)
+            body["volume"] = _master_of(restored) if body.get("ok") else None
+            send_json(handler, status, body)
+            return
+
         current_master = round(sum(o.volume_percent for o in selected) / len(selected))
         new_master = max(0, min(100, current_master + delta))
         failed = 0
@@ -867,20 +912,14 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
             if not r.ok:
                 logging.warning("update_output %s: %s", output.id, r.error)
                 failed += 1
-            else:
-                # A manual delta invalidates any remembered pre-mute level for
-                # this output: the volume it would "restore" to is no longer
-                # what the user last set it to. Only drop it on success -- a
-                # failed update left the volume (and the snapshot) unchanged.
-                _mute_snapshot.pop(output.id, None)
 
     if failed == len(selected):
         send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
         return
     if failed:
-        send_json(handler, 200, {"ok": True, "volume": new_master, "partial": True})
+        send_json(handler, 200, {"ok": True, "volume": new_master, "partial": True, "muted": False})
         return
-    send_json(handler, 200, {"ok": True, "volume": new_master})
+    send_json(handler, 200, {"ok": True, "volume": new_master, "muted": False})
 
 
 def calculate_master_volume(outputs) -> tuple:
@@ -889,15 +928,14 @@ def calculate_master_volume(outputs) -> tuple:
     For each selected output, volume_percent is converted to int and clamped to
     0..100.  Returns (ceil(sum/count), count), or (None, 0) when none selected.
 
-    Rounds UP, deliberately. Consumers treat a reported 0 as "muted", and with
-    non-negative volumes ceil(mean) == 0 exactly when every selected output is
-    0 — which is the same condition send_dial_mute_post_json() itself uses to
-    decide whether the next mute press mutes or restores. Rounding to nearest
-    broke that equivalence: outputs of [0, 0, 1] average to 0.33 and reported
-    0, so a dial showed "muted" while the appliance still considered itself
-    unmuted, and the next press muted the remaining output instead of
-    restoring — the control appeared dead. Rounding up costs at most one
-    percentage point in the displayed level and makes the two agree exactly.
+    Rounds UP, deliberately, so a genuinely mixed but mostly-audible selection
+    never displays a hair below its true level. Mute is no longer inferred
+    from a reported 0 -- the appliance carries an explicit muted flag instead
+    (see autostream_mute_state.py) -- but the home page's master control still
+    reads this figure directly, so the same rounding-up choice is kept for its
+    sake: rounding to nearest could report one output's exact 0 as the whole
+    selection's master when the others are only barely above it, which reads
+    worse than costing at most one percentage point the other way.
 
     Note this is NOT the same rounding as send_dial_volume_post_json()'s own
     current_master, which stays round-to-nearest on purpose: it feeds the
@@ -1046,7 +1084,15 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
         return
 
-    master_volume, selected_output_count = calculate_master_volume(result.outputs)
+    muted = mute_state.is_muted()
+    reported_outputs = (
+        [
+            _with_volume(o, mute_state.intended_level(o.id, o.volume_percent))
+            for o in result.outputs
+        ]
+        if muted else result.outputs
+    )
+    master_volume, selected_output_count = calculate_master_volume(reported_outputs)
     response = {
         "ok": True,
         "playing": playing,
@@ -1054,6 +1100,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "selected_output_count": selected_output_count,
         "track_id": _dial_track_id_dict(),
         "appliance_id": get_appliance_id(),
+        "muted": muted,
     }
     repeat = _dial_repeat_object()
     if repeat is not None:
@@ -1242,19 +1289,121 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
     send_json(handler, 200, result)
 
 
+def _restore_locked(base_url: str, default_vol: int, selected: list) -> tuple[int, dict, list]:
+    """The "restore" half of the mute/restore core, factored out so the
+    volume-delta handler's "volume up while muted" branch (section above)
+    can share it: called with `_volume_lock` already held and *selected*
+    (this appliance's currently-selected outputs) already listed, so it does
+    no locking or listing of its own.
+
+    Per-output decision, forgetting every remembered level as it goes (there
+    is no persisted history to fall back on -- see autostream_mute_state.end_mute()):
+      - Remembered:               restore to the remembered level.
+      - Not remembered, vol=0:    restore to the configured default (an
+                                   output selected while muted, or the
+                                   process restarted since the mute).
+      - Not remembered, vol>0:    already audible -- leave it alone.
+
+    Returns (status, body, outputs) where body is the {"ok", "muted"[,
+    "partial"]} shape both callers send as-is (the volume-delta handler adds
+    its own "volume" key on top), and outputs is *selected* with each
+    output's volume_percent updated to reflect what this call just did, for
+    a caller that wants to compute a master figure from it without another
+    OwnTone round trip.
+    """
+    levels = mute_state.end_mute()
+    result_outputs = list(selected)
+    succeeded = 0
+    failed = 0
+    any_attempted = False
+    for i, o in enumerate(selected):
+        if o.id in levels:
+            restore_vol = levels[o.id]
+        elif o.volume_percent == 0:
+            restore_vol = default_vol
+        else:
+            continue  # already audible, nothing remembered: leave it alone
+        any_attempted = True
+        r = update_output(base_url, o.id, volume_percent=restore_vol, timeout=3)
+        if r.ok:
+            succeeded += 1
+            result_outputs[i] = _with_volume(o, restore_vol)
+        else:
+            failed += 1
+            logging.warning("restore: update_output %s: %s", o.id, r.error)
+
+    if not any_attempted:
+        return 200, {"ok": True, "muted": False}, result_outputs
+    if not succeeded:
+        return 200, {"ok": False, "error": "all_outputs_failed"}, result_outputs
+    if failed:
+        return 200, {"ok": True, "muted": False, "partial": True}, result_outputs
+    return 200, {"ok": True, "muted": False}, result_outputs
+
+
+def apply_mute_action(state: WebUIState, action: str) -> tuple[int, dict]:
+    """Apply an explicit "mute" or "restore" action across all selected
+    OwnTone outputs, and return the (status, body) to send.
+
+    Shared by the dial's POST /api/dial/mute (after its own 403 checks and
+    action validation) and the WebUI's POST /api/mute, so every client that
+    can request a mute/restore gets identical behaviour. The action is
+    dictated by the caller -- this never infers mute from output volumes
+    locally (alignment zeroes volumes for its own reasons, and a user can
+    drag a slider to 0; neither of those is a mute). Both actions are
+    idempotent: "mute" on an already-silent selection and "restore" on an
+    already-audible one succeed as no-ops.
+    """
+    try:
+        parsed = _config_snapshot(state)
+        base_url = parsed.owntone.base_url
+        default_vol = parsed.owntone.volume_percent
+    except Exception as e:
+        logging.warning("mute: config load failed: %s", e)
+        return 200, {"ok": False, "error": "config_error"}
+
+    with _volume_lock:
+        result = list_outputs(base_url, timeout=3)
+        if not result.ok:
+            return 200, {"ok": False, "error": "backend_unavailable"}
+        selected = [o for o in result.outputs if o.selected]
+        if not selected:
+            return 200, {"ok": False, "error": "no_active_outputs"}
+
+        if action == "mute":
+            targets = [o for o in selected if o.volume_percent > 0]
+            mute_state.begin_mute({o.id: o.volume_percent for o in targets})
+            if not targets:
+                return 200, {"ok": True, "muted": True}
+
+            succeeded = 0
+            failed = 0
+            for o in targets:
+                r = update_output(base_url, o.id, volume_percent=0, timeout=3)
+                if r.ok:
+                    succeeded += 1
+                else:
+                    failed += 1
+                    logging.warning("mute: update_output %s: %s", o.id, r.error)
+
+            if not succeeded:
+                return 200, {"ok": False, "error": "all_outputs_failed"}
+            if failed:
+                return 200, {"ok": True, "muted": True, "partial": True}
+            return 200, {"ok": True, "muted": True}
+
+        # restore
+        status, body, _outputs = _restore_locked(base_url, default_vol, selected)
+        return status, body
+
+
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/mute — UUID-auth only (no session/CSRF required).
 
-    Applies an explicit mute/restore action across all selected OwnTone
-    outputs.  The action is dictated by the caller (the dial owns the single
-    fleet-wide toggle decision) — this endpoint performs it and never infers
-    it locally.  A snapshot of pre-mute volumes is kept so that the restore
-    action can return each output to its original level.  Both actions are
-    idempotent: "mute" on an already-silent selection and "restore" on an
-    already-audible one are no-ops.
+    Validates authorization and the requested action, then runs the shared
+    mute/restore core (apply_mute_action) also used by the WebUI's
+    POST /api/mute -- see its docstring for the actual behaviour.
     """
-    global _mute_snapshot
-
     dial_id = json_obj.get("dial_id", "")
     if not isinstance(dial_id, str) or not dial_id:
         send_json(handler, 403, {})
@@ -1268,99 +1417,29 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
         send_json(handler, 400, {"ok": False, "error": "invalid_action"})
         return
 
+    status, body = apply_mute_action(state, action)
+    send_json(handler, status, body)
+
+
+def send_mute_post_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/mute — browser session route (CSRF-protected).
+
+    Request body: {"action": "mute"|"restore"}. Runs the identical
+    mute/restore core (apply_mute_action) the dial's POST /api/dial/mute
+    uses, so the WebUI's master-volume icon and the dial's mute button
+    always agree about what "muted" means.
+    """
     try:
-        parsed = _config_snapshot(state)
-        base_url = parsed.owntone.base_url
-        default_vol = parsed.owntone.volume_percent
-    except Exception as e:
-        logging.warning("dial mute: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        payload = json.loads(body or "{}")
+    except Exception:
+        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
-
-    with _volume_lock:
-        result = list_outputs(base_url, timeout=3)
-        if not result.ok:
-            send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
-            return
-        selected = [o for o in result.outputs if o.selected]
-        if not selected:
-            send_json(handler, 200, {"ok": False, "error": "no_active_outputs"})
-            return
-
-        if action == "mute":
-            targets = [o for o in selected if o.volume_percent > 0]
-            if not targets:
-                send_json(handler, 200, {"ok": True, "muted": True})
-                return
-
-            for o in targets:
-                if o.id not in _mute_snapshot:
-                    _mute_snapshot[o.id] = o.volume_percent
-
-            succeeded = 0
-            failed = 0
-            for o in targets:
-                r = update_output(base_url, o.id, volume_percent=0, timeout=3)
-                if r.ok:
-                    succeeded += 1
-                else:
-                    failed += 1
-                    logging.warning("mute: update_output %s: %s", o.id, r.error)
-
-            if not succeeded:
-                send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
-                return
-
-            if failed:
-                send_json(handler, 200, {"ok": True, "muted": True, "partial": True})
-                return
-
-            send_json(handler, 200, {"ok": True, "muted": True})
-
-        else:  # restore
-            # Per-output decision:
-            #  - In snapshot:            restore to the stored pre-mute volume.
-            #  - Not in snapshot, vol=0: restore to default (new output selected while
-            #                            muted, or state after a process restart where
-            #                            the snapshot was lost).
-            #  - Not in snapshot, vol>0: already successfully restored in a prior
-            #                            partial attempt — skip to avoid overwriting the
-            #                            correct volume with the wrong default.
-            succeeded = 0
-            failed = 0
-            any_attempted = False
-            for o in selected:
-                if o.id in _mute_snapshot:
-                    restore_vol = _mute_snapshot[o.id]
-                elif o.volume_percent == 0:
-                    restore_vol = default_vol
-                else:
-                    continue  # non-zero, not in snapshot: already restored — skip
-                any_attempted = True
-                r = update_output(base_url, o.id, volume_percent=restore_vol, timeout=3)
-                if r.ok:
-                    _mute_snapshot.pop(o.id, None)
-                    succeeded += 1
-                else:
-                    failed += 1
-                    logging.warning("restore: update_output %s: %s", o.id, r.error)
-
-            if not any_attempted:
-                # All selected outputs are already at non-zero; nothing left to do.
-                _mute_snapshot.clear()
-                send_json(handler, 200, {"ok": True, "muted": False})
-                return
-
-            if not succeeded:
-                send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
-                return
-
-            if failed:
-                send_json(handler, 200, {"ok": True, "muted": False, "partial": True})
-                return
-
-            _mute_snapshot.clear()
-            send_json(handler, 200, {"ok": True, "muted": False})
+    action = payload.get("action") if isinstance(payload, dict) else None
+    if action not in ("mute", "restore"):
+        send_json(handler, 400, {"ok": False, "error": "invalid_action"})
+        return
+    status, response_body = apply_mute_action(state, action)
+    send_json(handler, status, response_body)
 
 
 # ---------------------------------------------------------------------------

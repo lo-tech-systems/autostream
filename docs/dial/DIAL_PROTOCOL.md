@@ -104,17 +104,31 @@ required.
 
 **Success response (200):**
 ```json
-{"ok": true, "volume": 59}
+{"ok": true, "volume": 59, "muted": false}
 ```
 
-`volume` is the new master volume level (0-100) after applying the delta.
+`volume` is the new master volume level (0-100) after applying the delta. `muted` reports
+whether the appliance holds a mute after this request - see the mute-aware behavior below.
 
 **Partial success (200):**
 ```json
-{"ok": true, "volume": 59, "partial": true}
+{"ok": true, "volume": 59, "partial": true, "muted": false}
 ```
 
 Some outputs updated successfully; others failed. Not all outputs failed.
+
+**Muted behavior:** the appliance owns its own mute state (see `POST /api/dial/mute` below),
+and this is the only endpoint that steps the master volume, so the mute-aware rule lives here
+for every stepper client. While the appliance holds a mute, a non-positive `delta` is a no-op
+that reports the level the outputs will return to on restore (never 0):
+
+```json
+{"ok": true, "volume": 59, "muted": true}
+```
+
+A positive `delta` while muted is instead a plain restore to the remembered pre-mute levels -
+no step is added on top of it - and the response reports `muted: false`, exactly like an
+explicit `POST /api/dial/mute {"action": "restore"}`.
 
 **Failure responses (200 body, not HTTP error):**
 
@@ -136,14 +150,33 @@ UUID-in-body auth. Must be routed **before** `validate_csrf()` - no session or C
 required. Same authorization check as `POST /api/dial/volume`.
 
 Applies an **explicit** mute or restore action across all currently selected OwnTone
-outputs. The appliance never infers the action from its own volumes - the dial owns the
-single fleet-wide toggle decision and states it, so every appliance in a fleet performs the
-same action regardless of the level it happens to be sitting at. A snapshot of pre-mute
-volumes is kept so the restore action can return each output to its original level.
+outputs. The appliance owns its own mute state (process memory, not persisted - see below)
+and never infers the action from its own output volumes - alignment zeroes volumes for its
+own reasons, and a user can drag a slider to 0, and neither of those is a mute. The caller
+(the dial, or the WebUI's own master-volume icon through the equivalent browser-session
+route) states the absolute action that flips whatever this appliance last reported, so every
+appliance in a fleet performs the same action regardless of the level it happens to be
+sitting at. The remembered pre-mute levels are kept only in the appliance's own memory, so
+the restore action can return each output to the level it was at (or the level most recently
+set for it while muted, if a client adjusted a slider or enabled an output in the meantime -
+see `master_volume` below and the per-output docs).
 
 Both actions are idempotent: `"mute"` on an already-silent selection and `"restore"` on an
 already-audible one succeed as no-ops. A command lost to a timeout therefore self-corrects
 on the next press rather than leaving that appliance inverted.
+
+**No persistence.** The mute flag and remembered levels live only in the appliance's process
+memory. A restarted appliance always comes back unmuted, with whatever raw volumes OwnTone
+itself kept - `master_volume` then reports 0 for a selection that was muted before the
+restart, `muted` reports `false`, and a mute press mutes an already-silent selection (a
+no-op) while the next restore falls back to the configured default volume for any output at
+0 with nothing remembered. This is expected behavior, not a fault.
+
+**Outputs touched while muted.** An output enabled, or whose volume is changed, while the
+appliance is muted stays silent: its requested level becomes what the restore action brings
+it to, rather than being applied immediately. This applies uniformly across `POST
+/api/output` (the browser), `POST /api/dial/outputs/set` (the dial) and federation - muted
+means silent regardless of which client last touched an output.
 
 **Request body:**
 ```json
@@ -216,6 +249,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
   "playing": true,
   "master_volume": 59,
   "selected_output_count": 2,
+  "muted": false,
   "track_id": {
     "enabled": true,
     "state": "identified",
@@ -243,7 +277,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 
 **Success response (200) - no outputs selected:**
 ```json
-{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0, "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
+{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0, "muted": false, "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
 ```
 
 | Field | Type | Notes |
@@ -251,12 +285,15 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `playing` | bool | `true` if any capture is currently active |
 | `master_volume` | int\|null | Rounded arithmetic mean of selected output volumes; `null` when none selected |
 | `selected_output_count` | int | Number of currently selected outputs |
+| `muted` | bool | `true` while the appliance holds a mute. While `true`, `master_volume` reports the level the outputs will return to on restore, never 0 - see `POST /api/dial/mute` |
 | `track_id` | object | Grouped now-playing/track-identification state for authorized dials (see below) |
 | `repeat` | object | Repeat-recording/replay state (see below). Omitted entirely when the daemon has never reported it (older monitor binary, or no poll yet) |
 | `appliance_id` | string\|null | This appliance's stable identity (20 lowercase hex characters), or `null` for an identity-less appliance |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
-and `POST /api/dial/volume`.
+and `POST /api/dial/volume`; `muted` is an explicit flag the appliance sets and clears from
+mute/restore actions, never inferred from `master_volume` being 0 (a client can drag every
+output to 0 without that being a mute).
 
 This `track_id` extension is part of the pre-public dial v1 contract - it is added to the
 existing `dial_status=v1` response without a new mDNS capability indicator, during the
@@ -285,6 +322,7 @@ artwork URL. This includes the `disabled` example below, and `waiting_for_audio`
   "playing": true,
   "master_volume": 59,
   "selected_output_count": 2,
+  "muted": false,
   "track_id": {
     "enabled": false,
     "state": "disabled",
@@ -1079,6 +1117,18 @@ implicit toggle to an explicit instruction. Strictly this is a schema break unde
 below, but it was taken without a `v2` bump: the endpoint had no deployed dial firmware
 relying on the old body, and there is no mDNS indicator that could have distinguished the
 two forms anyway. A dial predating the change sends no `action` and receives 400.
+
+The `muted` field on `POST /api/dial/status` and `POST /api/dial/volume`'s response is a
+later, purely additive change: the appliance moved from an implicit "master_volume 0 means
+muted" convention to an explicit flag, kept in process memory (see `POST /api/dial/mute`
+above). No version bump - a dial built before this change simply never reads the field, and
+falls back to inferring mute from a reported 0, which is wrong for as long as the appliance
+holds a mute (it now reports the pre-mute level, not 0) but self-corrects the moment either
+side sends an explicit mute/restore action or the appliance stops being muted. A dial built
+after this change talking to an appliance that predates it just never sees the field and
+shows no lit glyph, which volume/mute presses still work through regardless (they are
+explicit actions, not inferred from what the glyph shows). Appliances are expected to deploy
+ahead of dials for this reason.
 
 Breaking changes (new `v2`):
 - Any change to request/response schema that removes or renames required fields.

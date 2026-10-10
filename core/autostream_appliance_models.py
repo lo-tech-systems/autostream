@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Optional
 
+import autostream_mute_state as mute_state
 from autostream_config import (
     CONFIG_IO_LOCK,
     load_config,
@@ -188,6 +189,13 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
     Applies hidden-output filtering, puts the configured default first, then
     alphabetical order.  Returns dicts with keys: id, name, selected, volume,
     is_default, needs_auth_key, requires_auth, pin_pending.
+
+    "volume" is the INTENDED level (autostream_mute_state.intended_level):
+    while the appliance is muted this is the level the output will return to
+    on restore, not its actual (silenced) OwnTone volume -- so every consumer
+    of this list (the WebUI's per-output sliders and client-side master
+    average, the dial's outputs list and detail page) shows the same number
+    regardless of the mute.
     """
     default_output_name = parsed.owntone.output_name
     hidden = {
@@ -210,7 +218,7 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
             "id": out_id,
             "name": name,
             "selected": selected,
-            "volume": vol,
+            "volume": mute_state.intended_level(out_id, vol),
             "is_default": (name == default_output_name),
             "needs_auth_key": bool(out.needs_auth_key),
             "requires_auth": bool(out.requires_auth),
@@ -257,6 +265,7 @@ def build_home_state(
             "input_levels": [],
             "warnings": {"stylus": "", "belt": "", "bearing": ""},
             "outputs": [],
+            "muted": mute_state.is_muted(),
             "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
             "track_identification": disabled_snapshot().to_public_dict(),
             **_session_and_repeat_fields(),
@@ -337,6 +346,7 @@ def build_home_state(
             "bearing": playback.bearing_banner_text or "",
         },
         "outputs": outputs,
+        "muted": mute_state.is_muted(),
         "vu_delay_ms": int(vu_delay_ms),
         "track_identification": ti_dict,
         **_session_and_repeat_fields(),
@@ -699,6 +709,15 @@ def apply_output_mutation(
                 logging.debug("apply_output_mutation: usage check failed for %s", name_to_check)
 
         volume = max(0, min(100, int(body.get("volume", 50))))
+
+        if locally_selected and mute_state.remember_level(out_id_text, volume):
+            # A volume-only change on an output that is already selected,
+            # while the appliance is muted: the level it will return to on
+            # restore moves, but the output itself must stay silent, so the
+            # OwnTone write is skipped entirely -- muted keeps meaning
+            # silent no matter which client last moved a slider.
+            return {"ok": True, "id": out_id_text}
+
         update_result = update_output(
             owntone_base_url,
             out_id_text,
@@ -730,6 +749,19 @@ def apply_output_mutation(
                 "pin_invalid": False,
             }
         _update_cached_selected(owntone_base_url, out_id_text, True)
+        if not locally_selected and mute_state.remember_level(out_id_text, volume):
+            # Enabling an output while muted: it just joined the session at
+            # its requested volume, but a mute in effect means silent, so it
+            # is immediately silenced too. Its requested level is what the
+            # restore action brings it to (see autostream_mute_state.py). A
+            # failure here is logged and leaves the output audible --
+            # fail-open, and this function never raises.
+            silence_result = update_output(owntone_base_url, out_id_text, volume_percent=0, timeout=3)
+            if not silence_result.ok:
+                logging.warning(
+                    "apply_output_mutation: could not silence newly-enabled output %s under mute: %s",
+                    out_id_text, silence_result.message,
+                )
         if is_user_initiated:
             # User enabled an output: any prior "chose silence" latch no
             # longer applies to the current output selection.
@@ -747,6 +779,7 @@ def apply_output_mutation(
         _invalidate_output_info_cache(owntone_base_url)
         return {"ok": False, "id": out_id_text, "error": disable_result.message}
     _update_cached_selected(owntone_base_url, out_id_text, False)
+    mute_state.forget_output(out_id_text)
     if is_user_initiated:
         # User disabled an output. If that was the last selected output,
         # latch the resulting zero-output state as user-chosen so the

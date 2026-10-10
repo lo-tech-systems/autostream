@@ -674,6 +674,30 @@ HOME_CARDS_SCRIPT = """
     sl.disabled=inactive;
     if(String(sl.value)!==String(val)) sl.value=String(val);
   }
+  function updateMasterMuteCard(muted){
+    var card=document.getElementById('master-volume-card');
+    var btn=document.getElementById('master_mute_btn');
+    if(!card||!btn) return;
+    var m=!!muted;
+    card.classList.toggle('is-muted',m);
+    btn.hidden=!m;
+  }
+  async function unmuteMaster(){
+    var btn=document.getElementById('master_mute_btn');
+    if(btn) btn.disabled=true;
+    try{
+      var r=await fetch(window.__MUTE_URL||'/api/mute',{
+        method:'POST',
+        credentials:'same-origin',
+        headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
+        body:JSON.stringify({action:'restore'})
+      });
+      var j=null;
+      try{ j=await r.json(); }catch(e){ j=null; }
+      if(j&&j.ok) updateMasterMuteCard(!!j.muted);
+    }catch(e){}
+    finally{ if(btn) btn.disabled=false; }
+  }
   function onMasterVolumeDragStart(){
     var sl=document.getElementById('master_vol_slider');
     if(!sl||sl.disabled) return;
@@ -1679,6 +1703,20 @@ ICON_BLUETOOTH = (
     ' fill="none" stroke="var(--color-accent)" stroke-width="7"'
     ' stroke-linecap="round" stroke-linejoin="round">'
     '<path d="M9 74 L119 184 L64 239 L64 19 L119 74 L9 184"/>'
+    '</svg>'
+)
+
+# The master volume card's mute icon: a speaker body/cone with a diagonal
+# slash through it, matching the figure the dial's own footer glyph draws
+# (see dial_display_compositor._draw_speaker_glyph(muted=True)) so the two
+# UIs show the same symbol. currentColor so it follows the button's own
+# color (see .master-mute-btn in theme.css) rather than carrying its own.
+ICON_SPEAKER_MUTED = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+    ' fill="none" stroke="currentColor" stroke-width="2"'
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M3 9v6h4l5 5V4L7 9H3z" fill="currentColor" stroke="none"/>'
+    '<path d="M2 2l20 20"/>'
     '</svg>'
 )
 

@@ -32,6 +32,15 @@ for _p in (_core, _dial):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import autostream_mute_state as mute_state
+
+
+def _snapshot() -> dict:
+    """Test-only introspection of what the mute state module currently
+    remembers, mirroring the old dict-based ``api._mute_snapshot`` this
+    test file used to poke directly."""
+    return dict(mute_state._remembered)
+
 
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
@@ -107,7 +116,7 @@ class TestDialMuteAuth:
     def _call(self, json_obj, authorized=True):
         from autostream_webui_api import send_dial_mute_post_json
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
 
         handler = MagicMock()
         captured = {}
@@ -152,7 +161,7 @@ class TestDialMuteActionValidation:
 
     def _call(self, json_obj):
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
 
         from autostream_webui_api import send_dial_mute_post_json
 
@@ -193,7 +202,7 @@ class TestDialMuteBackend:
 
     def _call_with_mocks(self, list_result, update_ok=True, default_vol=20, action="mute"):
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
 
         from autostream_webui_api import send_dial_mute_post_json
 
@@ -214,7 +223,7 @@ class TestDialMuteBackend:
                 MagicMock(), MagicMock(), {"dial_id": "valid-uuid", "action": action}
             )
 
-        return captured, api._mute_snapshot.copy()
+        return captured, _snapshot()
 
     def test_backend_unavailable_returns_ok_false(self):
         result, _ = self._call_with_mocks(_make_list_result([], ok=False))
@@ -239,9 +248,9 @@ class TestDialMuteAction:
     def _call(self, outputs, action, initial_snapshot=None,
               update_results=None, default_vol=20):
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
         if initial_snapshot:
-            api._mute_snapshot.update(initial_snapshot)
+            mute_state.begin_mute(initial_snapshot)
 
         from autostream_webui_api import send_dial_mute_post_json
 
@@ -273,7 +282,7 @@ class TestDialMuteAction:
             )
 
         import autostream_webui_api as api2
-        return captured, api2._mute_snapshot.copy()
+        return captured, _snapshot()
 
     def test_mute_when_audible_output_present(self):
         outputs = [_make_output("o1", 50)]
@@ -342,8 +351,8 @@ class TestDialMuteAction:
         update_calls = []
 
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
-        api._mute_snapshot["o1"] = 70
+        mute_state.reset_for_tests()
+        mute_state.begin_mute({"o1": 70})
 
         from autostream_webui_api import send_dial_mute_post_json
 
@@ -376,7 +385,7 @@ class TestDialMuteAction:
         update_calls = []
 
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
 
         from autostream_webui_api import send_dial_mute_post_json
 
@@ -404,9 +413,9 @@ class TestDialMuteFailures:
 
     def _call(self, outputs, action, update_ok_sequence, initial_snapshot=None):
         import autostream_webui_api as api
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
         if initial_snapshot:
-            api._mute_snapshot.update(initial_snapshot)
+            mute_state.begin_mute(initial_snapshot)
 
         from autostream_webui_api import send_dial_mute_post_json
 
@@ -433,7 +442,7 @@ class TestDialMuteFailures:
             )
 
         import autostream_webui_api as api2
-        return captured, api2._mute_snapshot.copy()
+        return captured, _snapshot()
 
     def test_mute_all_fail_returns_all_outputs_failed(self):
         outputs = [_make_output("o1", 50), _make_output("o2", 30)]
@@ -457,7 +466,14 @@ class TestDialMuteFailures:
         assert result["body"]["ok"] is False
         assert result["body"]["error"] == "all_outputs_failed"
 
-    def test_restore_partial_fail_retains_snapshot_entries(self):
+    def test_restore_partial_fail_clears_the_remembered_levels_anyway(self):
+        """The mute state module forgets every remembered level as soon as a
+        restore is attempted, regardless of which individual writes then
+        succeed or fail (autostream_mute_state.end_mute() -- there is no
+        persisted history to fall back on for a later retry). This is a
+        deliberate simplification versus the old dict-snapshot behaviour,
+        which kept a failed output's entry around for a future retry to
+        pick up."""
         outputs = [_make_output("o1", 0), _make_output("o2", 0)]
         result, snapshot = self._call(
             outputs, "restore", [True, False],
@@ -466,38 +482,30 @@ class TestDialMuteFailures:
         assert result["body"]["ok"] is True
         assert result["body"]["muted"] is False
         assert result["body"].get("partial") is True
-        # o1 succeeded so removed, o2 failed so retained
-        assert "o1" not in snapshot
-        assert "o2" in snapshot
+        assert snapshot == {}
 
-    def test_restore_retry_skips_already_restored_outputs(self):
-        """A retry after partial restore must not overwrite already-restored volumes.
-
-        Sequence:
-          Request 1: o1 (snapshot=50) restored successfully → popped from snapshot.
-                     o2 (snapshot=30) fails → remains in snapshot.
-          Request 2 (retry, explicit "restore" again): list_outputs shows o1 at 50
-                     (live, non-zero from its restore), o2 still at 0.  Only o2 must
-                     be touched.
-        """
-        import autostream_webui_api as api
+    def test_restore_retry_after_partial_failure_falls_back_to_default(self):
+        """A second restore call after a partial failure has nothing
+        remembered for the output that failed (see the test above), so it
+        falls back to the configured default volume for it -- the same
+        three-way rule an unremembered zero-volume output always gets, not
+        the value that failed to apply the first time."""
         from autostream_webui_api import send_dial_mute_post_json
 
-        api._mute_snapshot.clear()
-        api._mute_snapshot.update({"o2": 30})  # o1 already gone (restored to 50)
+        mute_state.reset_for_tests()
 
-        # o1 is at 50 because it was successfully restored in the previous request.
-        # o2 is still at 0 because the restore failed and is pending retry.
+        # o1 was restored successfully by an earlier request and is now
+        # non-zero; o2's write failed and it is still at 0, with nothing
+        # remembered for it any more (the state module already forgot it).
         outputs = [_make_output("o1", 50), _make_output("o2", 0)]
         update_calls = []
-        ok_iter = iter([True])  # only o2 will be tried; it succeeds
 
         def fake_update(base_url, output_id, volume_percent, timeout):
-            update_calls.append(output_id)
-            return _make_update_result(next(ok_iter))
+            update_calls.append((output_id, volume_percent))
+            return _make_update_result(True)
 
         captured = {}
-        parsed = _make_parsed_config()
+        parsed = _make_parsed_config(volume_percent=35)
 
         def fake_send_json(h, code, body):
             captured.update({"code": code, "body": body})
@@ -512,9 +520,10 @@ class TestDialMuteFailures:
                 MagicMock(), MagicMock(), {"dial_id": "uid", "action": "restore"}
             )
 
-        assert update_calls == ["o2"], (
-            f"Retry must only restore o2 (not o1 which is non-zero/already restored); "
-            f"got {update_calls}"
+        assert update_calls == [("o2", 35)], (
+            f"Retry must only restore o2 (o1 is already non-zero), to the "
+            f"configured default since nothing is remembered for it any "
+            f"more; got {update_calls}"
         )
         assert captured["body"]["ok"] is True
         assert captured["body"].get("muted") is False
@@ -529,8 +538,8 @@ class TestDialMuteFailures:
         import autostream_webui_api as api
         from autostream_webui_api import send_dial_mute_post_json
 
-        api._mute_snapshot.clear()
-        api._mute_snapshot.update({"o1": 50, "o2": 30})
+        mute_state.reset_for_tests()
+        mute_state.begin_mute({"o1": 50, "o2": 30})
 
         outputs = [_make_output("o1", 0), _make_output("o2", 0), _make_output("o3", 0)]
         update_calls = []
@@ -564,13 +573,14 @@ class TestDialMuteFailures:
         assert captured["body"].get("muted") is False
 
 
-class TestDialVolumeInvalidatesMuteSnapshot:
-    """Regression: a manual volume delta must invalidate any stale pre-mute
-    snapshot entry for the outputs it touches (bug: a delta applied while
-    muted -- which unmutes via the current_master==0 special case -- left
-    the old _mute_snapshot entry in place, so a later mute/unmute cycle
-    silently discarded the delta and restored the stale pre-mute level).
-    """
+class TestDialVolumeAndMuteEndToEnd:
+    """Integration coverage across the two host endpoints together: a
+    volume-up press while muted is a restore (not a raw delta apply -- see
+    apply_mute_action/send_dial_volume_post_json), and an explicit
+    mute/restore cycle with no intervening volume press still round-trips
+    the exact pre-mute level. Drives the real handlers end to end rather
+    than calling autostream_mute_state directly, so a wiring mistake
+    between the two endpoints would show up here."""
 
     def _run(self, live, actions):
         """Run a sequence of ("mute", <action>) / ("delta", n) steps against
@@ -594,7 +604,7 @@ class TestDialVolumeInvalidatesMuteSnapshot:
             send_dial_volume_post_json,
         )
 
-        api._mute_snapshot.clear()
+        mute_state.reset_for_tests()
 
         def fake_list_outputs(base_url, timeout=None):
             return _make_list_result(list(live.values()))
@@ -610,7 +620,7 @@ class TestDialVolumeInvalidatesMuteSnapshot:
             steps.append({
                 "response": body,
                 "volumes": {oid: o.volume_percent for oid, o in live.items()},
-                "snapshot": dict(api._mute_snapshot),
+                "snapshot": _snapshot(),
             })
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
@@ -630,44 +640,40 @@ class TestDialVolumeInvalidatesMuteSnapshot:
 
         return steps
 
-    def test_delta_after_mute_survives_a_second_mute_unmute_cycle(self):
-        """mute (40->0, snapshot={o1:40}) -> delta +2 (0->2, must drop the
-        stale snapshot entry) -> mute (2->0, re-snapshots the *current* 2,
-        not the stale 40) -> restore (must restore 2, not 40)."""
+    def test_volume_up_press_while_muted_restores_with_no_step(self):
+        """mute (40->0, remembers {o1:40}) -> a volume-up delta while muted
+        is a plain restore, not a raw delta apply: o1 returns to exactly 40,
+        not 40+2, and the appliance reports unmuted."""
         live = {"o1": _make_output("o1", 40)}
 
         steps = self._run(live, [
             ("mute", "mute"),
             ("delta", 2),
-            ("mute", "mute"),
-            ("mute", "restore"),
         ])
 
-        # After step 1 (mute): snapshotted at 40, output silenced.
         assert steps[0]["response"]["muted"] is True
         assert steps[0]["volumes"]["o1"] == 0
         assert steps[0]["snapshot"] == {"o1": 40}
 
-        # After step 2 (delta +2 while muted): the current_master==0 special
-        # case applies the delta directly, and the stale snapshot entry for
-        # o1 must be gone -- a manual volume change invalidates the
-        # remembered pre-mute level.
         assert steps[1]["response"]["ok"] is True
-        assert steps[1]["response"]["volume"] == 2
-        assert steps[1]["volumes"]["o1"] == 2
-        assert "o1" not in steps[1]["snapshot"]
+        assert steps[1]["response"]["muted"] is False
+        assert steps[1]["response"]["volume"] == 40
+        assert steps[1]["volumes"]["o1"] == 40
+        assert steps[1]["snapshot"] == {}
 
-        # After step 3 (mute again): o1 is re-snapshotted at its *current*
-        # volume (2), not the discarded 40.
-        assert steps[2]["response"]["muted"] is True
-        assert steps[2]["snapshot"] == {"o1": 2}
-        assert steps[2]["volumes"]["o1"] == 0
+    def test_volume_down_press_while_muted_is_a_pure_noop(self):
+        """A volume-down delta while muted writes nothing and stays muted,
+        still reporting the level the output will return to."""
+        live = {"o1": _make_output("o1", 40)}
 
-        # After step 4 (explicit restore): must return to the post-delta
-        # value (2), NOT the stale pre-mute value (40).
-        assert steps[3]["response"]["muted"] is False
-        assert steps[3]["volumes"]["o1"] == 2
-        assert steps[3]["snapshot"] == {}
+        steps = self._run(live, [
+            ("mute", "mute"),
+            ("delta", -2),
+        ])
+
+        assert steps[1]["response"] == {"ok": True, "volume": 40, "muted": True}
+        assert steps[1]["volumes"]["o1"] == 0  # untouched -- still silent
+        assert steps[1]["snapshot"] == {"o1": 40}
 
     def test_plain_mute_then_restore_still_restores_original_volume(self):
         """Sanity check that the fix above has not broken the feature the
@@ -696,7 +702,7 @@ class TestDialVolumeInvalidatesMuteSnapshot:
 class TestDialVolumeQueue:
     """Unit tests for the typed event queue and coalescing.
 
-    Mute events now carry the resulting absolute belief (a bool) instead of
+    Mute events carry the resulting absolute action (a bool) rather than
     being a bare toggle marker, and a run of adjacent mute events collapses
     to the LAST one rather than cancelling in pairs — see
     dial_volume._coalesce() and its module docstring.
@@ -714,17 +720,25 @@ class TestDialVolumeQueue:
         item = self._mod._queue.get_nowait()
         assert item == ("delta", 5)
 
-    def test_enqueue_mute_puts_mute_event_with_resulting_belief(self):
-        # Belief starts False (unmuted); one press flips it to True.
-        new_belief = self._mod.enqueue_mute()
-        assert new_belief is True
+    def test_enqueue_mute_flips_the_reported_state_it_is_given(self):
+        new_state = self._mod.enqueue_mute(False)  # caller believes unmuted
+        assert new_state is True
         item = self._mod._queue.get_nowait()
         assert item == ("mute", True)
 
-    def test_enqueue_mute_returns_belief_and_flips_on_each_call(self):
-        assert self._mod.enqueue_mute() is True
-        assert self._mod.enqueue_mute() is False
-        assert self._mod.enqueue_mute() is True
+    def test_enqueue_mute_flips_a_reported_muted_state_to_restore(self):
+        new_state = self._mod.enqueue_mute(True)  # caller believes muted
+        assert new_state is False
+        item = self._mod._queue.get_nowait()
+        assert item == ("mute", False)
+
+    def test_enqueue_mute_echoes_into_the_observation_store(self):
+        """The dial persists nothing, but a press must still repaint the
+        glyph on the same frame — the echo lives in the mute observation
+        store, not any local belief."""
+        self._mod.observe_mute_state("svc", False)
+        self._mod.enqueue_mute(False)
+        assert self._mod.shown_muted("svc") is True
 
     def test_coalesce_single_delta(self):
         batch = self._mod._coalesce(("delta", 3))
@@ -851,9 +865,9 @@ class TestDialMainButtonCallback:
     def test_button_callback_calls_enqueue_mute(self):
         mute_calls = []
 
-        def fake_enqueue_mute():
-            mute_calls.append(True)
-            return True
+        def fake_enqueue_mute(currently_muted):
+            mute_calls.append(currently_muted)
+            return not currently_muted
 
         # Capture the on_press callback passed to setup_button
         captured_callback = []
@@ -891,10 +905,10 @@ class TestDialMainButtonCallback:
 
         # Direct test: create on_press closure the same way dial_main does
         def on_press():
-            fake_enqueue_mute()
+            fake_enqueue_mute(False)
 
         on_press()
-        assert mute_calls == [True]
+        assert mute_calls == [False]
 
 
 # ---------------------------------------------------------------------------

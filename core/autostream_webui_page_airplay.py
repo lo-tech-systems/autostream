@@ -35,6 +35,7 @@ from autostream_webui_assets import (
     HOME_CARDS_SCRIPT,
     ICON_BLUETOOTH,
     ICON_LINE_LEVEL,
+    ICON_SPEAKER_MUTED,
     ICON_TURNTABLE,
     INFO_MODAL_HTML,
     INFO_MODAL_SCRIPT,
@@ -85,6 +86,7 @@ function renderHomeState(data){
   renderNowPlayingCard(data);
   updateRepeatButton(data);
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
+  updateMasterMuteCard(!!data.muted);
   if(Array.isArray(data.outputs)){
     var outputs=data.outputs;
     if(outputs.length===0){
@@ -499,6 +501,7 @@ def send_airplay_page(
             // treating this as a confirmed empty outputs list.
             return;
           }}
+          updateMasterMuteCard(!!j.muted);
           if (typeof maybePromptForPin === 'function') {{
             try {{ maybePromptForPin(j.outputs); }} catch (e) {{}}
           }}
@@ -627,6 +630,9 @@ def send_airplay_page(
         f'<div class="np-volume-wrap{" master-volume-inactive" if master_inactive else ""}"'
         f' id="master-volume-card">'
         f'<div class="slider-header"><span>Master Volume</span></div>'
+        f'<button type="button" class="master-mute-btn" id="master_mute_btn" hidden'
+        f' aria-label="Unmute" title="Muted - tap to unmute" onclick="unmuteMaster()">'
+        f'{ICON_SPEAKER_MUTED}</button>'
         + slider_html(
             id="master_vol_slider",
             value=initial_master,
@@ -868,6 +874,9 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'</div>'
         f'<div class="np-volume-wrap master-volume-inactive" id="master-volume-card" hidden>'
         f'<div class="slider-header"><span>Master Volume</span></div>'
+        f'<button type="button" class="master-mute-btn" id="master_mute_btn" hidden disabled'
+        f' aria-label="Unmute" title="Muted - tap to unmute" onclick="unmuteMaster()">'
+        f'{ICON_SPEAKER_MUTED}</button>'
         + slider_html(
             id="master_vol_slider",
             value=preset_volume,
