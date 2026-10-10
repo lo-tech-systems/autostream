@@ -140,6 +140,24 @@ class TestActionTable:
         assert json.loads(data) == {"ok": True}
         assert core.calls == [(method, args, kwargs)]
 
+    def test_an_accepted_reply_carries_the_token_the_core_gave(self, server, core):
+        core.set_result("restart_replay", ActionResult(True, token=12.5))
+        response, data = act(server, "replay_restart", {"appliance_id": L})
+        assert response.status == 200
+        reply = json.loads(data)
+        assert reply == {"ok": True, "token": 12.5}
+        assert isinstance(reply["token"], float)
+
+    def test_an_accepted_reply_with_no_token_has_no_token_key(self, server, core):
+        response, data = act(server, "replay_restart", {"appliance_id": L})
+        assert json.loads(data) == {"ok": True}
+
+    def test_a_refusal_carries_no_token(self, server, core):
+        core.set_result("restart_replay", ActionResult(False, "wrong_state", token=12.5))
+        response, data = act(server, "replay_restart", {"appliance_id": L})
+        assert response.status == 409
+        assert "token" not in json.loads(data)
+
     def test_the_table_names_exactly_the_documented_actions(self):
         assert set(hda.ACTIONS) == {
             "focus", "output", "eq", "eq_reset", "replay_start", "replay_restart",

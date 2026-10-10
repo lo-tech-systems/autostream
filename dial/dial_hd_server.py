@@ -646,7 +646,10 @@ class HdServer:
             return
         result = call(self._ctx, args)
         if result.accepted:
-            handler.send_json(200, {"ok": True})
+            reply = {"ok": True}
+            if result.token is not None:
+                reply["token"] = result.token
+            handler.send_json(200, reply)
             return
         reason = result.reason or "wrong_state"
         handler.send_json(

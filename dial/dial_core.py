@@ -247,9 +247,11 @@ class SourceEffects:
 @dataclass(frozen=True)
 class RepeatEffect:
     """A repeat transport result as queued for a view: the appliance it was
-    for and what it meant (see `RepeatOutcome`)."""
+    for, what it meant (see `RepeatOutcome`) and the token of the request it
+    answered (0.0 when the reply carried none)."""
     appliance_id: str
     outcome: RepeatOutcome
+    token: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -257,12 +259,21 @@ class OutputsEffect:
     """An output request's outcome as queued for a view: the appliance and
     output it was for, its kind ("output_set" or "output_pin"), whether it was
     "accepted" or "rejected" and, when rejected, the reply id (see
-    `dial_core_poll.reply_error_id`)."""
+    `dial_core_poll.reply_error_id`) and the token of the request it
+    resolved."""
     appliance_id: str
     output_id: str
     kind: str
     outcome: str
     error: str | None
+    token: float = 0.0
+
+
+def _token_of(request) -> float | None:
+    """The token a worker handed back with its reply, or None when it did
+    not (such a reply resolves nothing)."""
+    token = request.get("token") if isinstance(request, dict) else None
+    return token if isinstance(token, (int, float)) and not isinstance(token, bool) else None
 
 
 def _initial_state(dial_id: str) -> _CoreState:
@@ -1004,7 +1015,7 @@ class DialCore:
         override = (
             output_id, shown_selected, row.volume if volume is None else volume, self._clock(),
         )
-        begin = self._begin_request(
+        begin, token = self._begin_request(
             "outputs_request", appliance_id, "output_set" if pin is None else "output_pin",
             output_id=output_id,
         )
@@ -1016,8 +1027,9 @@ class DialCore:
         enqueue_set(
             _OutputsTarget(appliance_id, entry.ip, entry.port), output_id,
             selected=shown_selected, volume=volume, pin=pin, pin_capable=bool(pin_entry and pin_ready),
+            token=token,
         )
-        return ActionResult(True)
+        return ActionResult(True, token=token)
 
     def step_output_volume(self, appliance_id: str, output_id: str, delta: int) -> ActionResult:
         """Set an output's level to the level shown plus *delta*, clamped to
@@ -1116,7 +1128,7 @@ class DialCore:
         an appliance other than the one held, or one that is malformed or
         failed, changes nothing. True when the rows were replaced."""
         if kind == "set":
-            return self._fold_set_result(appliance_id, status, body)
+            return self._fold_set_result(appliance_id, status, body, _token_of(request))
         if kind != "fetch":
             return False
         rows = dial_core_poll.parse_outputs_body(status, body)
@@ -1134,14 +1146,15 @@ class DialCore:
                 state.outputs_optimistic = None
         return self._changed(mutate)
 
-    def _fold_set_result(self, appliance_id: str, status, body) -> bool:
-        """Resolve the pending output request for *appliance_id* from a set
+    def _fold_set_result(self, appliance_id: str, status, body, token: float | None) -> bool:
+        """Resolve the pending output request that carries *token* from a set
         reply: accepted on a 200 with ok true, else rejected with the reply
         id (and, for a rate limit, the seconds asked for). A rejection drops
         the pending tap in the same publish, so the switch rolls back at
-        once; the outcome is queued as an `OutputsEffect`. A reply with no
-        pending request (or one for another appliance) changes nothing.
-        True when a request was resolved."""
+        once; the outcome is queued as an `OutputsEffect`. A reply whose
+        token is not the pending request's (one answering a request since
+        replaced, or carrying none) changes nothing. True when a request
+        was resolved."""
         error = dial_core_poll.reply_error_id(status, body)
         outcome = "accepted" if error is None else "rejected"
         wait = dial_core_poll.reply_retry_after(body) if error == "rate_limited" else 0
@@ -1152,12 +1165,13 @@ class DialCore:
             if rejected and tap is not None and tap[0] == held.output_id:
                 state.outputs_optimistic = None
         resolved = self._resolve_request(
-            "outputs_request", appliance_id, outcome, error, self._clock(), wait, also=drop_tap,
+            "outputs_request", appliance_id, token, outcome, error, self._clock(), wait,
+            also=drop_tap,
         )
         if resolved is None:
             return False
         self._queue_effects(OutputsEffect(
-            appliance_id, resolved.output_id or "", resolved.kind, outcome, error,
+            appliance_id, resolved.output_id or "", resolved.kind, outcome, error, token,
         ))
         return True
 
@@ -1188,25 +1202,29 @@ class DialCore:
 
     # ---- transport -----------------------------------------------------------
 
-    def begin_transport(self, appliance_id: str, kind: str) -> None:
+    def begin_transport(self, appliance_id: str, kind: str) -> float:
         """Record that a request of *kind* ("seek", "stop" or "arm") has been
         sent to *appliance_id*; it stays pending until the worker reports
-        the outcome and is replaced by the next request."""
-        self._publish(self._begin_request("transport", appliance_id, kind))
+        the outcome and is replaced by the next request. Returns its token."""
+        mutate, token = self._begin_request("transport", appliance_id, kind)
+        self._publish(mutate)
+        return token
 
     def _begin_request(
         self, lane: str, appliance_id: str, kind: str, *, output_id: str | None = None,
-    ) -> Callable[[_CoreState], None]:
+    ) -> tuple[Callable[[_CoreState], None], float]:
         """The mutate function that records a pending request of *kind* on
         *lane* ("transport" or "outputs_request"), so a caller can fold it
-        into a publish of its own. The next request on the lane replaces it."""
+        into a publish of its own, and the request's token: the monotonic
+        time it began, which the worker hands back with the reply. The next
+        request on the lane replaces it."""
         now = self._clock()
 
         def mutate(state: _CoreState) -> None:
             setattr(state, lane, TransportRequest(
                 appliance_id, kind, now, "pending", now, None, output_id,
             ))
-        return mutate
+        return mutate, now
 
     def _repeat_refusal(self, appliance_id: str, states: tuple) -> ActionResult | None:
         """Why a replay or repeat request cannot go to *appliance_id*, or
@@ -1223,11 +1241,12 @@ class DialCore:
             return ActionResult(False, "wrong_state")
         return None
 
-    def _send_transport(self, appliance_id: str, action: str) -> None:
+    def _send_transport(self, appliance_id: str, action: str) -> ActionResult:
         """Record the request as pending and hand it to the repeat worker."""
         entry = _roster_entry(self._state.roster, appliance_id)
-        self.begin_transport(appliance_id, action)
-        enqueue_transport(_RepeatTarget(appliance_id, entry.ip, entry.port), action, 0.0)
+        token = self.begin_transport(appliance_id, action)
+        enqueue_transport(_RepeatTarget(appliance_id, entry.ip, entry.port), action, 0.0, token)
+        return ActionResult(True, token=token)
 
     def start_replay(self, appliance_id: str) -> ActionResult:
         """Start the appliance's held recording from the beginning. The
@@ -1243,8 +1262,7 @@ class DialCore:
             appliance_id, entry.service_name, self._clock() + FOCUS_PENDING_GRACE_S,
         )
         self._poll_wake.set()
-        self._send_transport(appliance_id, "seek")
-        return ActionResult(True)
+        return self._send_transport(appliance_id, "seek")
 
     def restart_replay(self, appliance_id: str) -> ActionResult:
         """Seek a running replay back to its start, or start one from Hold.
@@ -1253,8 +1271,7 @@ class DialCore:
         refusal = self._repeat_refusal(appliance_id, ("replaying", "hold"))
         if refusal is not None:
             return refusal
-        self._send_transport(appliance_id, "seek")
-        return ActionResult(True)
+        return self._send_transport(appliance_id, "seek")
 
     def stop_replay(self, appliance_id: str) -> ActionResult:
         """Stop a running replay (it fades out and lands in Hold, disarmed).
@@ -1264,8 +1281,7 @@ class DialCore:
         refusal = self._repeat_refusal(appliance_id, ("replaying",))
         if refusal is not None:
             return refusal
-        self._send_transport(appliance_id, "stop")
-        return ActionResult(True)
+        return self._send_transport(appliance_id, "stop")
 
     def set_repeat_armed(self, appliance_id: str, armed: bool) -> ActionResult:
         """Arm or disarm the appliance's repeat daemon. Refused unless the
@@ -1275,28 +1291,32 @@ class DialCore:
         if refusal is not None:
             return refusal
         entry = _roster_entry(self._state.roster, appliance_id)
-        self.begin_transport(appliance_id, "arm")
-        enqueue_arm(_RepeatTarget(appliance_id, entry.ip, entry.port), bool(armed))
-        return ActionResult(True)
+        token = self.begin_transport(appliance_id, "arm")
+        enqueue_arm(_RepeatTarget(appliance_id, entry.ip, entry.port), bool(armed), token)
+        return ActionResult(True, token=token)
 
     def _resolve_transport(
-        self, appliance_id: str, outcome: str, error: str | None, now: float,
+        self, appliance_id: str, token: float | None, outcome: str, error: str | None, now: float,
     ) -> TransportRequest | None:
-        return self._resolve_request("transport", appliance_id, outcome, error, now)
+        return self._resolve_request("transport", appliance_id, token, outcome, error, now)
 
     def _resolve_request(
-        self, lane: str, appliance_id: str, outcome: str, error: str | None, now: float,
-        retry_after_s: int = 0, also: Callable[[_CoreState, TransportRequest], object] | None = None,
+        self, lane: str, appliance_id: str, token: float | None, outcome: str, error: str | None,
+        now: float, retry_after_s: int = 0,
+        also: Callable[[_CoreState, TransportRequest], object] | None = None,
     ) -> TransportRequest | None:
-        """Move the pending request on *lane* for *appliance_id* to *outcome*;
-        the request as it was, or None when there was none pending. *also*,
+        """Move the pending request on *lane* that carries *token* to
+        *outcome*; the request as it was, or None when the lane holds no
+        pending request with that token (a reply to a request since replaced
+        matches nothing). *appliance_id* is for the caller's effect; the
+        token alone selects. *also*,
         when given, runs in the same publish with the request as it was, for
         a change that must land in the same snapshot."""
         pending = []
 
         def mutate(state: _CoreState) -> "bool | None":
             held = getattr(state, lane)
-            if held is None or held.appliance_id != appliance_id or held.state != "pending":
+            if held is None or token is None or held.requested_at != token or held.state != "pending":
                 return False
             pending.append(held)
             setattr(state, lane, dataclasses.replace(
@@ -1308,36 +1328,40 @@ class DialCore:
         return pending[0] if pending else None
 
     def on_repeat_result(
-        self, kind: str, appliance_id: str, status: int | None, body,
+        self, kind: str, appliance_id: str, status: int | None, body, request=None,
     ) -> RepeatOutcome:
         """Fold a repeat transport result (any request kind). An ok:true ack
         folds into the repeat store, opens the accepted-replay window when
         it says the appliance is replaying and the dial follows it, and
-        marks the pending request accepted. Every other outcome (a 412, a
+        marks the pending request that carries the reply's token accepted
+        (a reply with another token, or none, resolves no request). Every other outcome (a 412, a
         200 with ok false, or no usable response) marks it rejected with the
         daemon's error string, only nudges the auth map's due-ness, clears
         the stored record when the daemon says the buffer is gone or a live
         source is back, and drops a pending focus on that appliance. What it
         meant is queued for a view as a `RepeatEffect` and returned. Takes
         no lock beyond the core's own, for in-memory work."""
-        outcome = self._fold_repeat_result(appliance_id, status, body)
-        self._queue_effects(RepeatEffect(appliance_id, outcome))
+        token = _token_of(request)
+        outcome = self._fold_repeat_result(appliance_id, status, body, token)
+        self._queue_effects(RepeatEffect(appliance_id, outcome, 0.0 if token is None else token))
         return outcome
 
-    def _fold_repeat_result(self, appliance_id: str, status: int | None, body) -> RepeatOutcome:
+    def _fold_repeat_result(
+        self, appliance_id: str, status: int | None, body, token: float | None,
+    ) -> RepeatOutcome:
         now = self._clock()
         if status == 200 and isinstance(body, dict) and body.get("ok"):
             repeat_store.apply_ack(appliance_id, body, now)
             accepted = body.get("state") == "replaying" and self.accept_replay(
                 appliance_id, now + ACCEPTED_REPLAY_GRACE_S,
             )
-            request = self._resolve_transport(appliance_id, "accepted", None, now)
+            request = self._resolve_transport(appliance_id, token, "accepted", None, now)
             return RepeatOutcome(True, accepted, request is not None and request.kind == "stop")
         auth_map.force_due(appliance_id)
         error = body.get("error") if isinstance(body, dict) else None
         if not isinstance(error, str):
             error = "unreachable" if status is None else f"http_{status}"
-        self._resolve_transport(appliance_id, "rejected", error, now)
+        self._resolve_transport(appliance_id, token, "rejected", error, now)
         if status == 412 or (status == 200 and isinstance(body, dict)):
             if error in ("source_active", "no_recording"):
                 repeat_store.clear(appliance_id)

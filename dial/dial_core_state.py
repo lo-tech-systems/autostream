@@ -278,9 +278,12 @@ def awaiting_pin(request, now: float) -> bool:
 class ActionResult:
     """The outcome of a request made of the core: accepted means the request
     was taken (a state change made or a send enqueued), not that the
-    appliance agreed. A refusal carries one of a closed set of reasons."""
+    appliance agreed. A refusal carries one of a closed set of reasons. A
+    request that was queued for a worker also carries its token, which the
+    worker hands back with the reply so the reply resolves that request."""
     accepted: bool
     reason: str | None = None
+    token: float | None = None
 
 
 @dataclass(frozen=True)

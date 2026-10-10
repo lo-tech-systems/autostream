@@ -81,6 +81,7 @@ from dial_test_support import (
     on_outputs_result,
     on_repeat_result,
     on_sd_health_view,
+    pending_token,
     run_warning_action,
     seed_eq,
     seed_outputs,
@@ -5787,16 +5788,17 @@ class TestRepeatScreenTouchEntries:
         with patch("dial_core.enqueue_arm") as mock_arm:
             display.repeat_toggle_tap()
         mock_arm.assert_called_once()
-        target, armed = mock_arm.call_args[0]
+        target, armed, token = mock_arm.call_args[0]
         assert target.appliance_id == aid
         assert armed is True
+        assert token == display.core.snapshot().transport.requested_at
 
     def test_toggle_tap_disarms_when_already_armed(self):
         display, aid = self._opened(state="recording", armed=True)
         with patch("dial_core.enqueue_arm") as mock_arm:
             display.repeat_toggle_tap()
         mock_arm.assert_called_once()
-        _, armed = mock_arm.call_args[0]
+        _, armed, _token = mock_arm.call_args[0]
         assert armed is False
 
     def test_toggle_tap_ignored_while_replaying(self):
@@ -5810,7 +5812,7 @@ class TestRepeatScreenTouchEntries:
         with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_start_tap()
         mock_transport.assert_called_once()
-        target, action, position = mock_transport.call_args[0]
+        target, action, position, token = mock_transport.call_args[0]
         assert target.appliance_id == aid
         assert action == "seek"
         assert position == 0.0
@@ -5832,7 +5834,7 @@ class TestRepeatScreenTouchEntries:
         with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_stop_tap()
         mock_transport.assert_called_once()
-        target, action, position = mock_transport.call_args[0]
+        target, action, position, token = mock_transport.call_args[0]
         assert target.appliance_id == aid
         assert action == "stop"
 
@@ -6908,7 +6910,7 @@ class TestPickerPick:
         with patch("dial_core.enqueue_transport") as mock_transport:
             display.picker_pick(0)
         mock_transport.assert_called_once()
-        target, action, position = mock_transport.call_args[0]
+        target, action, position, token = mock_transport.call_args[0]
         assert target.appliance_id == "a" * 20
         assert action == "seek"
         assert position == 0.0
@@ -8494,7 +8496,7 @@ class TestCompactPickerPick:
 
         with patch("dial_core.enqueue_transport") as mock_transport:
             display.picker_pick(1)
-        target, action, position = mock_transport.call_args[0]
+        target, action, position, token = mock_transport.call_args[0]
         assert target.appliance_id == "b" * 20
         assert action == "seek"
         assert position == 0.0
@@ -11197,7 +11199,10 @@ class TestRepeatResultsHandedStraightToTheCore:
         with patch("dial_core.enqueue_transport"):
             display.repeat_stop_tap()
 
-        display._core.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold"})
+        display._core.on_repeat_result(
+            "transport", aid, 200, {"ok": True, "state": "hold"},
+            {"token": pending_token(display, "transport")},
+        )
         assert display._screen_request is None
         display._apply_pending_snapshot()
         assert display._screen_request == "main"
@@ -11292,8 +11297,9 @@ class TestPairInAutostreamPage:
 
     def _refuse(self, display, body):
         with patch("dial_core.enqueue_set"):
-            assert display.core.set_output(self.AID, "1", selected=True).accepted
-        display.core.on_outputs_result("set", self.AID, 200, body)
+            result = display.core.set_output(self.AID, "1", selected=True)
+        assert result.accepted
+        display.core.on_outputs_result("set", self.AID, 200, body, {"token": result.token})
         self._fold(display)
 
     def test_pairing_hint_text(self):

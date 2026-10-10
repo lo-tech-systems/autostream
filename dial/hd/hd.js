@@ -1378,8 +1378,8 @@
 
     // Every request that changes something goes through here. A refusal or a
     // failure shows briefly (unless *quiet*) and puts the controls named in
-    // *keys* back to what the state says. The promise says whether it went
-    // through.
+    // *keys* back to what the state says. The promise gives the reply (an
+    // object, so truthy) when it went through and false when it did not.
     function post(action, body, keys, quiet) {
         const abort = new AbortController();
         const timer = setTimeout(() => abort.abort(), CONFIG.requestTimeoutMs);
@@ -1397,7 +1397,7 @@
                 rollBack(keys);
                 return false;
             }
-            return true;
+            return reply;
         })).catch((error) => {
             console.warn("action " + action + " failed: " + error);
             if (!quiet) { toast(OFFLINE_REFUSAL); }
@@ -1556,15 +1556,19 @@
             };
             render();
         }
-        post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() }).then((went) => {
-            if (!went && ui.press) {
+        post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() }).then((reply) => {
+            if (!ui.press) { return; }
+            if (!reply) {
                 ui.press = null;
                 render();
+            } else if (typeof reply.token === "number") {
+                ui.press.requestedAt = reply.token;
             }
         });
     }
 
-    // The press's own request is the first new seek the state shows for it.
+    // A reply that carried no token leaves the press's own request to be the
+    // first new seek the state shows for it.
     function adoptPress(state) {
         const p = ui.press;
         const t = state.transport;

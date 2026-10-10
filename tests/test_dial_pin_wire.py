@@ -98,17 +98,18 @@ class TestTheDialReadsTheRoutesReplies:
     def test_the_core_resolves_its_request_from_the_routes_reply(self, result, error_id, wait):
         _code, body, _m, _mode = _invoke_set(
             {"dial_id": DIAL_ID, "id": "1", "selected": True}, mutation_result=result)
-        core = _core_with_a_pending_request()
-        assert core.on_outputs_result("set", AID, 200, body)
+        core, token = _core_with_a_pending_request()
+        assert core.on_outputs_result("set", AID, 200, body, {"token": token})
         held = core.snapshot().outputs_request
         assert (held.state, held.error, held.retry_after_s) == ("rejected", error_id, wait)
         assert core.snapshot().outputs.optimistic is None
-        assert core.take_effects() == [OutputsEffect(AID, "1", "output_set", "rejected", error_id)]
+        assert core.take_effects() == [
+            OutputsEffect(AID, "1", "output_set", "rejected", error_id, token)]
 
     def test_the_core_accepts_the_routes_ok_reply(self):
         _code, body, _m, _mode = _invoke_set({"dial_id": DIAL_ID, "id": "1", "selected": True})
-        core = _core_with_a_pending_request()
-        assert core.on_outputs_result("set", AID, 200, body)
+        core, token = _core_with_a_pending_request()
+        assert core.on_outputs_result("set", AID, 200, body, {"token": token})
         assert core.snapshot().outputs_request.state == "accepted"
 
 
@@ -126,8 +127,9 @@ def _core_with_a_pending_request():
     core.on_outputs_result("fetch", AID, 200, {"ok": True, "outputs": [
         {"id": "1", "name": "Den", "selected": False, "volume": 0}]})
     with patch("dial_core.enqueue_set"):
-        assert core.set_output(AID, "1", selected=True).accepted
-    return core
+        result = core.set_output(AID, "1", selected=True)
+    assert result.accepted
+    return core, result.token
 
 
 class TestTheDialReadsTheList:

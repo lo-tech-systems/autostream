@@ -171,12 +171,14 @@ class TestQueuedWorkerEffects:
         }, time.monotonic()))
         try:
             with patch("dial_core.enqueue_transport"):
-                core.stop_replay(AID)
-            outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"})
+                token = core.stop_replay(AID).token
+            outcome = core.on_repeat_result(
+                "transport", AID, 200, {"ok": True, "state": "hold"}, {"token": token},
+            )
         finally:
             drs.repeat_store.clear(AID)
         assert outcome.stop_acked is True
-        assert core.take_effects() == [RepeatEffect(AID, outcome)]
+        assert core.take_effects() == [RepeatEffect(AID, outcome, token)]
 
     def test_a_queue_nobody_drains_keeps_the_newest(self):
         core = _core()

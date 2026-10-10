@@ -377,9 +377,13 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._apply_pending_snapshot()
     elif kind == "outputs_set_result":
         # ("outputs_set_result", appliance_id, status, body) -- the reply to
-        # a set the outputs worker sent, fed to the same callback.
+        # a set the outputs worker sent, fed to the same callback with the
+        # token of the request it answers, as the worker hands it back.
         _, aid, status, body = step
-        d.core.on_outputs_result("set", aid, status, body, {})
+        held = d.core.snapshot().outputs_request
+        d.core.on_outputs_result(
+            "set", aid, status, body, {"token": None if held is None else held.requested_at},
+        )
         d._apply_pending_snapshot()
     elif kind == "tick_outputs_refresh":
         d._tick_outputs_refresh()

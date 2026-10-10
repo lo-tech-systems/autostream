@@ -289,19 +289,19 @@ class TestEnqueue:
 
     def test_enqueue_set_puts_kind_target_and_body(self):
         target = _target()
-        enqueue_set(target, "1", selected=True, volume=55)
+        enqueue_set(target, "1", selected=True, volume=55, token=3.5)
         kind, put_target, payload = do._queue.get_nowait()
         assert kind == "set"
         assert put_target is target
-        assert payload == {"id": "1", "selected": True, "volume": 55}
+        assert payload == {"id": "1", "selected": True, "volume": 55, "token": 3.5}
 
     def test_enqueue_set_omits_volume_when_none(self):
-        enqueue_set(_target(), "1", selected=False, volume=None)
+        enqueue_set(_target(), "1", selected=False, volume=None, token=1.0)
         _, _, payload = do._queue.get_nowait()
-        assert payload == {"id": "1", "selected": False}
+        assert payload == {"id": "1", "selected": False, "token": 1.0}
 
     def test_enqueue_set_coerces_selected_and_volume(self):
-        enqueue_set(_target(), "1", selected=1, volume="42")
+        enqueue_set(_target(), "1", selected=1, volume="42", token=1.0)
         _, _, payload = do._queue.get_nowait()
         assert payload["selected"] is True
         assert payload["volume"] == 42
@@ -333,21 +333,22 @@ class TestEnqueue:
 
     def test_enqueue_set_adds_op_pin_and_pin_capable_only_when_given(self):
         target = _target()
-        enqueue_set(target, "1", selected=True, volume=None, pin="1234", pin_capable=True)
+        enqueue_set(target, "1", selected=True, volume=None, token=2.0, pin="1234", pin_capable=True)
         assert do._queue.get_nowait()[2] == {
-            "id": "1", "selected": True, "op": "pin", "pin": "1234", "pin_capable": True}
-        enqueue_set(target, "1", selected=True, volume=None, pin_capable=True)
-        assert do._queue.get_nowait()[2] == {"id": "1", "selected": True, "pin_capable": True}
-        enqueue_set(target, "1", selected=True, volume=None, pin="1234")
+            "id": "1", "selected": True, "token": 2.0, "op": "pin", "pin": "1234", "pin_capable": True}
+        enqueue_set(target, "1", selected=True, volume=None, token=2.0, pin_capable=True)
         assert do._queue.get_nowait()[2] == {
-            "id": "1", "selected": True, "op": "pin", "pin": "1234"}
-        enqueue_set(target, "1", selected=True, volume=None)
-        assert do._queue.get_nowait()[2] == {"id": "1", "selected": True}
+            "id": "1", "selected": True, "token": 2.0, "pin_capable": True}
+        enqueue_set(target, "1", selected=True, volume=None, token=2.0, pin="1234")
+        assert do._queue.get_nowait()[2] == {
+            "id": "1", "selected": True, "token": 2.0, "op": "pin", "pin": "1234"}
+        enqueue_set(target, "1", selected=True, volume=None, token=2.0)
+        assert do._queue.get_nowait()[2] == {"id": "1", "selected": True, "token": 2.0}
 
     def test_set_is_never_coalesced(self):
         target = _target()
-        enqueue_set(target, "1", selected=True, volume=10)
-        enqueue_set(target, "1", selected=True, volume=20)
+        enqueue_set(target, "1", selected=True, volume=10, token=1.0)
+        enqueue_set(target, "1", selected=True, volume=20, token=2.0)
         assert do._queue.qsize() == 2
 
 
@@ -393,7 +394,7 @@ class TestWorker:
         target = _target(appliance_id="c" * 20)
         with patcher:
             start_outputs_worker(cfg, on_result=on_result)
-            enqueue_set(target, "1", selected=True, volume=None)
+            enqueue_set(target, "1", selected=True, volume=None, token=1.0)
             assert done.wait(timeout=2.0)
             # The follow-up fetch is enqueued synchronously as part of
             # handling the "set" result, before the worker loops back for
@@ -412,7 +413,9 @@ class TestWorker:
             raise RuntimeError("callback boom")
 
         with patch.object(do, "_queue") as q:
-            enqueue_set(_target(appliance_id="g" * 20), "1", selected=True, volume=None, pin="4829")
+            enqueue_set(
+                _target(appliance_id="g" * 20), "1", selected=True, volume=None, token=7.5, pin="4829",
+            )
         item = q.put.call_args[0][0]
         patcher, instances = _mock_conn({"ok": False, "pin_invalid": True})
         with caplog.at_level("DEBUG"), patcher:
@@ -428,6 +431,31 @@ class TestWorker:
         assert json.loads(sent.request_called_with["body"])["pin"] == "4829"
         set_request = next(r for k, r in seen if k == "set")
         assert "pin" not in set_request and set_request["op"] == "pin"
+        assert set_request["token"] == 7.5
+
+    def test_the_token_is_stripped_before_the_wire_and_given_to_the_callback(self):
+        seen = []
+
+        def on_result(kind, appliance_id, status, body, request):
+            seen.append((kind, request))
+
+        with patch.object(do, "_queue") as q:
+            enqueue_set(_target(appliance_id="h" * 20), "1", selected=True, volume=30, token=4.25)
+        item = q.put.call_args[0][0]
+        patcher, instances = _mock_conn({"ok": True})
+        with patcher:
+            saved = do._cfg, do._on_result
+            do._cfg, do._on_result = MagicMock(uuid="dial-uuid"), on_result
+            try:
+                _run_worker_once([item])
+            finally:
+                do._cfg, do._on_result = saved
+        sent = next(i for i in instances if i.request_called_with["url"].endswith("/set"))
+        wire = json.loads(sent.request_called_with["body"])
+        assert "token" not in wire
+        assert wire["volume"] == 30
+        assert next(r for k, r in seen if k == "set") == {
+            "id": "1", "selected": True, "volume": 30, "token": 4.25}
 
     def test_worker_survives_a_raising_callback_and_keeps_processing(self):
         """A raising on_result for one item must not stop the worker from

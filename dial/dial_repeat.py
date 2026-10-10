@@ -39,6 +39,9 @@ REPEAT_SEND_TIMEOUT_S = 2.0
 # worker thread reading an unbounded body.
 _MAX_RESPONSE_BYTES = 64 * 1024
 
+# Keys a queued body carries for the dial's own use and never sends.
+_NOT_SENT = ("token",)
+
 _TRANSPORT_PATH = "/api/dial/repeat"
 _ARM_PATH = "/api/dial/repeat/arm"
 
@@ -63,7 +66,7 @@ def start_repeat_worker(cfg, *, on_result=None) -> None:
     """Store shared state and start the background worker thread.
 
     on_result, when supplied, is called as on_result(kind, appliance_id,
-    http_status, body) after every send completes — wired to
+    http_status, body, request_body) after every send completes — wired to
     DialCore.on_repeat_result by dial_main.py. A raising callback is
     swallowed by the worker loop, never allowed to kill the thread.
     """
@@ -73,19 +76,23 @@ def start_repeat_worker(cfg, *, on_result=None) -> None:
     threading.Thread(target=_worker, daemon=True, name="repeat-worker").start()
 
 
-def enqueue_transport(target: "_RepeatTarget", action: str, position_seconds: float) -> None:
+def enqueue_transport(
+    target: "_RepeatTarget", action: str, position_seconds: float, token: float,
+) -> None:
     """Enqueue a Start ("seek", 0.0) or Stop ("stop") transport request for
     *target*. Returns immediately — no I/O, no lock beyond the queue's
-    own. Called from the touch thread."""
+    own. Called from the touch thread. The *token* names this request: it
+    is kept with the queued body and handed back with the result, never
+    sent."""
     _queue.put(("transport", target, {
-        "action": action, "position_seconds": float(position_seconds),
+        "action": action, "position_seconds": float(position_seconds), "token": token,
     }))
 
 
-def enqueue_arm(target: "_RepeatTarget", armed: bool) -> None:
+def enqueue_arm(target: "_RepeatTarget", armed: bool, token: float) -> None:
     """Enqueue an arm/disarm request for *target*. Returns immediately —
     same discipline as enqueue_transport(). Called from the touch thread."""
-    _queue.put(("arm", target, {"armed": bool(armed)}))
+    _queue.put(("arm", target, {"armed": bool(armed), "token": token}))
 
 
 def _send_one(path: str, target: "_RepeatTarget", body: dict) -> "tuple[int | None, dict | None]":
@@ -102,7 +109,7 @@ def _send_one(path: str, target: "_RepeatTarget", body: dict) -> "tuple[int | No
     try:
         conn = http.client.HTTPConnection(target.ip, target.port, timeout=REPEAT_SEND_TIMEOUT_S)
         try:
-            payload = dict(body)
+            payload = {k: v for k, v in body.items() if k not in _NOT_SENT}
             payload["dial_id"] = _cfg.uuid if _cfg is not None else ""
             data = json.dumps(payload).encode("utf-8")
             conn.request(
@@ -133,6 +140,6 @@ def _worker() -> None:
         status, body = _send_one(path, target, payload)
         if _on_result is not None:
             try:
-                _on_result(kind, target.appliance_id, status, body)
+                _on_result(kind, target.appliance_id, status, body, payload)
             except Exception:
                 logging.debug("dial repeat: on_result callback raised", exc_info=True)

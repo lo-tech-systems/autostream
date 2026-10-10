@@ -376,7 +376,7 @@ class MockServer:
             lead = self._leads.get(name)
             if lead:
                 self.set_scenario(lead, keep_changes=True)
-            handler.send_json(200, {"ok": True})
+            handler.send_json(200, {"ok": True, "token": time.monotonic()})
         elif path == "/api/v1/settings":
             body = handler.read_body()
             if body is None:

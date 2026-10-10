@@ -241,15 +241,28 @@ def on_sd_health_view(display, view) -> None:
     display._drain_effects()
 
 
-def on_repeat_result(display, kind, appliance_id, status, body) -> None:
-    """A repeat-transport worker result, handed to the core."""
-    display.core.on_repeat_result(kind, appliance_id, status, body)
+def pending_token(display, lane) -> "float | None":
+    """The token of the latest request on *lane* ("transport" or
+    "outputs_request"), which a worker would hand back with its reply."""
+    held = getattr(display.core.snapshot(), lane)
+    return None if held is None else held.requested_at
+
+
+def on_repeat_result(display, kind, appliance_id, status, body, request=None) -> None:
+    """A repeat-transport worker result, handed to the core. Without a
+    *request* it answers the latest transport request."""
+    if request is None:
+        request = {"token": pending_token(display, "transport")}
+    display.core.on_repeat_result(kind, appliance_id, status, body, request)
     display._drain_effects()
 
 
 def on_outputs_result(display, kind, appliance_id, status, body, request=None) -> None:
     """An outputs worker result, handed to the core; the view then follows
-    the snapshot it changed."""
+    the snapshot it changed. A set result without a *request* answers the
+    latest output request."""
+    if request is None and kind == "set":
+        request = {"token": pending_token(display, "outputs_request")}
     display.core.on_outputs_result(kind, appliance_id, status, body, request)
     fold(display)
 

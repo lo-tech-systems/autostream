@@ -177,6 +177,26 @@ class TestStartButtonHeld:
         expect(rewind).to_have_attribute(BUSY, "false")
         expect(rewind).to_be_enabled()
 
+    def test_it_follows_the_token_the_reply_carries(self, page, hd):
+        seen = start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
+        rewind = replay_button(page, REWIND)
+        page.wait_for_timeout(200)
+        assert seen == [{"appliance_id": LOUNGE}]
+        shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
+        expect(rewind).to_have_attribute(BUSY, "true")
+        shown(page, hd, "T2", replay_state("T2", transport=seek("accepted", changed=NOW + 2)))
+        expect(rewind).to_have_attribute(BUSY, "true")
+        shown(page, hd, "T3", replay_state(
+            "T3", transport=seek("accepted", changed=NOW + 2), observed=NOW + 2.5, position=0.0))
+        expect(rewind).to_have_attribute(BUSY, "false")
+
+    def test_a_newer_request_is_not_taken_for_the_one_the_reply_named(self, page, hd):
+        start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
+        page.wait_for_timeout(200)
+        # The first state the page sees shows another seek: not this press's.
+        shown(page, hd, "T1", replay_state("T1", transport=seek("pending", requested=NOW + 5)))
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
+
     def test_it_stays_held_through_states_that_say_nothing_new(self, page, hd):
         start_held(page, hd)
         for n in range(1, 4):

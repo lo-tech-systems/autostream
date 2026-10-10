@@ -50,6 +50,11 @@ OUTPUTS_SET_TIMEOUT_S = 10.0
 # body.
 _MAX_RESPONSE_BYTES = 64 * 1024
 
+# Keys a queued body carries that are never sent (the dial's own request
+# token) and keys the result callback is never told (the PIN).
+_NOT_SENT = ("token",)
+_NOT_REPORTED = ("pin",)
+
 _FETCH_PATH = "/api/dial/outputs"
 _SET_PATH = "/api/dial/outputs/set"
 
@@ -108,7 +113,7 @@ def enqueue_fetch(target: "_OutputsTarget") -> None:
 
 def enqueue_set(
     target: "_OutputsTarget", output_id: str, *, selected: bool, volume: "int | None",
-    pin: "str | None" = None, pin_capable: bool = False,
+    token: float, pin: "str | None" = None, pin_capable: bool = False,
 ) -> None:
     """Enqueue an enable/disable/volume change for *output_id* on *target*.
     Returns immediately — same discipline as enqueue_fetch(). Called from
@@ -117,8 +122,9 @@ def enqueue_set(
     own configured default on an enable. A *pin* makes it a PIN submission
     (the appliance pairs the speaker and, with selected true, enables it);
     *pin_capable* tells the appliance this sender can answer a request for
-    a PIN. The body is never logged."""
-    body: dict = {"id": output_id, "selected": bool(selected)}
+    a PIN. The *token* names this request: it is kept with the queued body and
+    handed back with the result, never sent. The body is never logged."""
+    body: dict = {"id": output_id, "selected": bool(selected), "token": token}
     if volume is not None:
         body["volume"] = int(volume)
     if pin is not None:
@@ -143,7 +149,7 @@ def _send_one(
     try:
         conn = http.client.HTTPConnection(target.ip, target.port, timeout=timeout)
         try:
-            payload = dict(body)
+            payload = {k: v for k, v in body.items() if k not in _NOT_SENT}
             payload["dial_id"] = _cfg.uuid if _cfg is not None else ""
             data = json.dumps(payload).encode("utf-8")
             conn.request(
@@ -177,8 +183,8 @@ def _worker() -> None:
         else:
             path, timeout = _SET_PATH, OUTPUTS_SET_TIMEOUT_S
         status, body = _send_one(path, target, payload, timeout)
-        # The callback is told what was asked, never the PIN.
-        request = {k: v for k, v in payload.items() if k != "pin"}
+        # The callback is told what was asked (and under which token), never the PIN.
+        request = {k: v for k, v in payload.items() if k not in _NOT_REPORTED}
         if _on_result is not None:
             try:
                 _on_result(kind, target.appliance_id, status, body, request)

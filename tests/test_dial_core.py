@@ -771,7 +771,7 @@ class TestArtworkBytes:
 from unittest.mock import patch  # noqa: E402
 
 import dial_capabilities  # noqa: E402
-from dial_core import OutputsEffect, RepeatOutcome  # noqa: E402
+from dial_core import OutputsEffect, RepeatEffect, RepeatOutcome  # noqa: E402
 from dial_core_state import ActionResult, EqBand, OutputRow, TransportRequest  # noqa: E402
 
 
@@ -897,6 +897,25 @@ def _loaded_outputs(clock=None, v2=False):
     return core
 
 
+def _set_reply(core, appliance_id, status, body):
+    """A set reply as the outputs worker hands it over: it carries the token
+    of the latest output request (None when there is none)."""
+    held = core.snapshot().outputs_request
+    return core.on_outputs_result(
+        "set", appliance_id, status, body, {"token": None if held is None else held.requested_at},
+    )
+
+
+def _transport_reply(core, appliance_id, status, body):
+    """A transport reply as the repeat worker hands it over: it carries the
+    token of the latest transport request (None when there is none)."""
+    held = core.snapshot().transport
+    return core.on_repeat_result(
+        "transport", appliance_id, status, body,
+        {"token": None if held is None else held.requested_at},
+    )
+
+
 class TestOutputsResult:
     def _watching(self, clock=None):
         core = _io_core(clock)
@@ -927,7 +946,7 @@ class TestOutputsResult:
 
     def test_a_set_reply_never_replaces_the_rows(self):
         core = self._watching()
-        core.on_outputs_result("set", AID, 200, _outputs_body(*_ROWS))
+        _set_reply(core, AID, 200, _outputs_body(*_ROWS))
         assert core.snapshot().outputs.rows == ()
 
     def _sent(self, clock=None, v2=False):
@@ -942,7 +961,7 @@ class TestOutputsResult:
         pending = core.snapshot().outputs_request
         assert (pending.kind, pending.state, pending.output_id) == ("output_set", "pending", "2")
         clock.t = 1002.0
-        assert core.on_outputs_result("set", AID, 200, {"ok": True, "id": "2"})
+        assert _set_reply(core, AID, 200, {"ok": True, "id": "2"})
         done = core.snapshot().outputs_request
         assert (done.state, done.error, done.changed_at, done.requested_at) == ("accepted", None, 1002.0, 1000.0)
         assert core.outputs_override() == ("2", True, 0, 1000.0)    # kept until a fetch reads it back
@@ -951,7 +970,7 @@ class TestOutputsResult:
         core = self._sent()
         seen = []
         core.subscribe(lambda: seen.append(core.snapshot()))
-        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "output_in_use", "owner": "Den"})
+        _set_reply(core, AID, 200, {"ok": False, "error": "output_in_use", "owner": "Den"})
         snap = core.snapshot()
         assert snap.outputs.optimistic is None and core.outputs_override() is None
         assert (snap.outputs_request.state, snap.outputs_request.error) == ("rejected", "output_in_use")
@@ -961,62 +980,128 @@ class TestOutputsResult:
     def test_a_refusal_leaves_a_tap_for_another_output_alone(self):
         core = self._sent()
         core.set_outputs_override(("1", False, 40, 1000.0))
-        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "encoder_capacity"})
+        _set_reply(core, AID, 200, {"ok": False, "error": "encoder_capacity"})
         assert core.outputs_override() == ("1", False, 40, 1000.0)
 
     def test_a_set_reply_with_nothing_pending_changes_nothing(self):
         core = _loaded_outputs()
         seq = core.snapshot().seq
-        assert not core.on_outputs_result("set", AID, 200, {"ok": False, "error": "x"})
+        assert not core.on_outputs_result("set", AID, 200, {"ok": False, "error": "x"}, {"token": 1000.0})
         assert core.snapshot().seq == seq and core.take_effects() == []
         core = self._sent()
-        core.on_outputs_result("set", AID, 200, {"ok": True})
+        _set_reply(core, AID, 200, {"ok": True})
         seq = core.snapshot().seq
         core.take_effects()
-        assert not core.on_outputs_result("set", AID, 200, {"ok": False, "error": "late"})
+        assert not _set_reply(core, AID, 200, {"ok": False, "error": "late"})
         assert core.snapshot().seq == seq and core.snapshot().outputs_request.state == "accepted"
+
+    def _two_sets(self):
+        """Two sets queued before either replies: the tokens of the first
+        (replaced) and the second (pending)."""
+        clock = _Clock(1000.0)
+        core = _loaded_outputs(clock)
+        with patch("dial_core.enqueue_set"):
+            first = core.set_output(AID, "2", selected=True).token
+            clock.t = 1001.0
+            second = core.set_output(AID, "1", selected=False).token
+        core.take_effects()
+        return core, first, second
+
+    def test_a_late_reply_for_a_replaced_request_changes_nothing(self):
+        core, first, second = self._two_sets()
+        seq = core.snapshot().seq
+        assert first != second
+        assert not core.on_outputs_result("set", AID, 200, {"ok": False, "error": "output_in_use"}, {"token": first})
+        held = core.snapshot().outputs_request
+        assert (held.output_id, held.state) == ("1", "pending")
+        assert core.snapshot().seq == seq and core.take_effects() == []
+        assert core.outputs_override()[:2] == ("1", False)
+
+    def test_the_newer_requests_own_reply_still_resolves_it(self):
+        core, first, second = self._two_sets()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "output_in_use"}, {"token": first})
+        assert core.on_outputs_result("set", AID, 200, {"ok": True}, {"token": second})
+        held = core.snapshot().outputs_request
+        assert (held.output_id, held.state, held.error) == ("1", "accepted", None)
+        assert core.take_effects() == [OutputsEffect(AID, "1", "output_set", "accepted", None, second)]
+
+    def test_a_reply_with_the_wrong_token_is_dropped(self):
+        core = self._sent()
+        seq = core.snapshot().seq
+        assert not core.on_outputs_result("set", AID, 200, {"ok": True}, {"token": 5555.0})
+        assert core.snapshot().seq == seq and core.snapshot().outputs_request.state == "pending"
+        assert core.take_effects() == []
+
+    @pytest.mark.parametrize("request_body", [None, {}, {"token": None}, {"token": "1000.0"}, {"token": True}])
+    def test_a_reply_with_no_token_is_dropped(self, request_body):
+        core = self._sent()
+        seq = core.snapshot().seq
+        assert not core.on_outputs_result("set", AID, 200, {"ok": True}, request_body)
+        assert core.snapshot().seq == seq and core.snapshot().outputs_request.state == "pending"
+        assert core.take_effects() == []
+
+    def test_a_pin_outcome_cannot_land_on_a_later_request(self):
+        clock = _Clock(1000.0)
+        core = _loaded_outputs(clock, v2=True)
+        with patch("dial_core.enqueue_set"):
+            pin_token = core.set_output(AID, "2", pin="1234").token
+            clock.t = 1001.0
+            core.set_output(AID, "1", selected=True)
+        core.take_effects()
+        assert not core.on_outputs_result(
+            "set", AID, 200, {"ok": False, "pin_invalid": True}, {"id": "2", "op": "pin", "token": pin_token},
+        )
+        held = core.snapshot().outputs_request
+        assert (held.output_id, held.kind, held.state) == ("1", "output_set", "pending")
+        assert not cs.awaiting_pin(held, 1001.5)
+        assert core.take_effects() == []
 
     def test_a_set_reply_for_another_appliance_is_dropped(self):
         core = self._sent()
         seq = core.snapshot().seq
-        assert not core.on_outputs_result("set", BID, 200, {"ok": False, "error": "x"})
+        assert not core.on_outputs_result(
+            "set", BID, 200, {"ok": False, "error": "x"}, {"token": 4321.0},
+        )
         assert core.snapshot().seq == seq and core.snapshot().outputs_request.state == "pending"
 
     def test_the_effect_names_output_kind_outcome_and_error(self):
         core = self._sent()
         core.take_effects()
-        core.on_outputs_result("set", AID, 200, {"ok": False, "pin_required": True, "error": "Output requires PIN"})
-        assert core.take_effects() == [OutputsEffect(AID, "2", "output_set", "rejected", "pin_required")]
+        token = core.snapshot().outputs_request.requested_at
+        _set_reply(core, AID, 200, {"ok": False, "pin_required": True, "error": "Output requires PIN"})
+        assert core.take_effects() == [
+            OutputsEffect(AID, "2", "output_set", "rejected", "pin_required", token)]
         core = self._sent()
         core.take_effects()
-        core.on_outputs_result("set", AID, 200, {"ok": True})
-        assert core.take_effects() == [OutputsEffect(AID, "2", "output_set", "accepted", None)]
+        token = core.snapshot().outputs_request.requested_at
+        _set_reply(core, AID, 200, {"ok": True})
+        assert core.take_effects() == [OutputsEffect(AID, "2", "output_set", "accepted", None, token)]
 
     def test_a_lost_reply_is_unreachable(self):
         core = self._sent()
-        core.on_outputs_result("set", AID, None, None)
+        _set_reply(core, AID, None, None)
         held = core.snapshot().outputs_request
         assert (held.state, held.error) == ("rejected", "unreachable")
         assert core.outputs_override() is None
 
     def test_a_rate_limited_reply_carries_the_wait_on_the_request(self):
         core = self._sent()
-        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": 42})
+        _set_reply(core, AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": 42})
         held = core.snapshot().outputs_request
         assert (held.error, held.retry_after_s) == ("rate_limited", 42)
 
     @pytest.mark.parametrize("wait", [True, "5", 7.9, -3, None, [3], {"a": 1}])
     def test_a_hostile_wait_reads_as_zero(self, wait):
         core = self._sent()
-        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": wait})
+        _set_reply(core, AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": wait})
         assert core.snapshot().outputs_request.retry_after_s == 0
 
     def test_a_huge_wait_is_capped_and_only_a_rate_limit_carries_one(self):
         core = self._sent()
-        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": 10 ** 9})
+        _set_reply(core, AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": 10 ** 9})
         assert core.snapshot().outputs_request.retry_after_s == 3600
         core = self._sent()
-        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "config_error", "retry_after_s": 30})
+        _set_reply(core, AID, 200, {"ok": False, "error": "config_error", "retry_after_s": 30})
         assert core.snapshot().outputs_request.retry_after_s == 0
 
     @pytest.mark.parametrize("body", [
@@ -1025,7 +1110,7 @@ class TestOutputsResult:
     ])
     def test_a_hostile_reply_is_a_backend_error(self, body):
         core = self._sent()
-        core.on_outputs_result("set", AID, 200, body)
+        _set_reply(core, AID, 200, body)
         held = core.snapshot().outputs_request
         assert (held.state, held.error) == ("rejected", "backend_error")
         assert core.outputs_override() is None
@@ -1076,12 +1161,13 @@ class TestSetOutput:
         core = self._loaded(clock)
         with patch("dial_core.enqueue_set") as send:
             result = core.set_output(AID, "2", selected=True)
-        assert result == ActionResult(True)
+        assert result == ActionResult(True, token=1000.0)
         assert core.snapshot().outputs.optimistic == ("2", True, 0, 1000.0)
         target, output_id = send.call_args[0]
         assert (target.appliance_id, target.ip, output_id) == (AID, "192.0.2.10", "2")
         assert send.call_args[1] == {
-            "selected": True, "volume": None, "pin": None, "pin_capable": False}
+            "selected": True, "volume": None, "pin": None, "pin_capable": False, "token": 1000.0}
+        assert core.snapshot().outputs_request.requested_at == 1000.0
 
     def test_a_level_is_sent_and_shown(self):
         core = self._loaded(_Clock(1000.0))
@@ -1089,7 +1175,7 @@ class TestSetOutput:
             core.set_output(AID, "1", selected=True, volume=55)
         assert core.outputs_override() == ("1", True, 55, 1000.0)
         assert send.call_args[1] == {
-            "selected": True, "volume": 55, "pin": None, "pin_capable": False}
+            "selected": True, "volume": 55, "pin": None, "pin_capable": False, "token": 1000.0}
 
     def test_the_step_clamps_and_starts_from_the_tap_shown(self):
         core = self._loaded(_Clock(1000.0))
@@ -1145,9 +1231,9 @@ class TestSetOutputPin:
         core = self._core()
         with patch("dial_core.enqueue_set") as send:
             result = core.set_output(AID, "2", selected=None, pin="1234")
-        assert result == ActionResult(True)
+        assert result == ActionResult(True, token=1000.0)
         assert send.call_args[1] == {
-            "selected": True, "volume": None, "pin": "1234", "pin_capable": False}
+            "selected": True, "volume": None, "pin": "1234", "pin_capable": False, "token": 1000.0}
         assert core.outputs_override() == ("2", True, 0, 1000.0)
         assert core.snapshot().outputs_request.kind == "output_pin"
 
@@ -1216,9 +1302,11 @@ class TestSetOutputPin:
         snaps = []
         core.subscribe(lambda: snaps.append(core.snapshot()))
         with patch("dial_core.enqueue_set"):
-            core.set_output(AID, "2", pin="4829")
-        core.on_outputs_result("set", AID, 200, {"ok": False, "pin_invalid": True, "error": "Wrong PIN 4829"},
-                               {"id": "2", "op": "pin", "pin": "4829"})
+            token = core.set_output(AID, "2", pin="4829").token
+        core.on_outputs_result(
+            "set", AID, 200, {"ok": False, "pin_invalid": True, "error": "Wrong PIN 4829"},
+            {"id": "2", "op": "pin", "pin": "4829", "token": token},
+        )
         snaps.append(core.snapshot())
         for snap in snaps:
             assert "4829" not in repr(snap)
@@ -1230,7 +1318,7 @@ class TestSetOutputPin:
         with caplog.at_level(logging.DEBUG):
             with patch("dial_core.enqueue_set"):
                 core.set_output(AID, "2", pin="4829")
-            core.on_outputs_result("set", AID, 200, {"ok": False, "pin_invalid": True})
+            _set_reply(core, AID, 200, {"ok": False, "pin_invalid": True})
             core.set_output(AID, "2", pin="abc4829")
         assert "4829" not in caplog.text
 
@@ -1248,7 +1336,7 @@ class TestSetOutputPin:
         with patch("dial_core.enqueue_set"):
             core.set_output(AID, "2", pin="1234")
         assert cs.awaiting_pin(core.snapshot().outputs_request, 1001.0)
-        core.on_outputs_result("set", AID, 200, {"ok": False, "pin_invalid": True})
+        _set_reply(core, AID, 200, {"ok": False, "pin_invalid": True})
         assert cs.awaiting_pin(core.snapshot().outputs_request, 1001.0)
         assert not cs.awaiting_pin(core.snapshot().outputs_request, 1000.0 + cs.PIN_WINDOW_S + 1)
 
@@ -1256,7 +1344,7 @@ class TestSetOutputPin:
         core = self._core()
         with patch("dial_core.enqueue_set"):
             core.set_output(AID, "2", pin="1234")
-        core.on_outputs_result("set", AID, None, None)
+        _set_reply(core, AID, None, None)
         assert core.snapshot().outputs_request.error == "unreachable"
         assert cs.awaiting_pin(core.snapshot().outputs_request, 1001.0)
 
@@ -1512,7 +1600,7 @@ class TestTransport:
         _store.update(AID, _record("hold"))
         core.begin_transport(AID, "seek")
         clock.t = 1001.0
-        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "replaying"})
+        outcome = _transport_reply(core, AID, 200, {"ok": True, "state": "replaying"})
         assert outcome == RepeatOutcome(True, False, False)
         assert core.snapshot().transport == TransportRequest(AID, "seek", 1000.0, "accepted", 1001.0, None)
 
@@ -1520,22 +1608,82 @@ class TestTransport:
         core = self._core()
         _store.update(AID, _record("replaying"))
         core.begin_transport(AID, "stop")
-        first = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"})
-        again = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"})
+        first = _transport_reply(core, AID, 200, {"ok": True, "state": "hold"})
+        again = _transport_reply(core, AID, 200, {"ok": True, "state": "hold"})
         assert first.stop_acked is True and again.stop_acked is False
+
+    def test_a_late_ack_for_a_replaced_request_changes_nothing(self, _store):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        _store.update(AID, _record("replaying"))
+        seek = core.begin_transport(AID, "seek")
+        clock.t = 1001.0
+        stop = core.begin_transport(AID, "stop")
+        outcome = core.on_repeat_result(
+            "transport", AID, 200, {"ok": True, "state": "hold"}, {"token": seek},
+        )
+        assert outcome.stop_acked is False
+        held = core.snapshot().transport
+        assert (held.kind, held.state, held.requested_at) == ("stop", "pending", stop)
+
+    def test_the_stops_own_ack_still_resolves_it_after_a_late_seek_ack(self, _store):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        _store.update(AID, _record("replaying"))
+        seek = core.begin_transport(AID, "seek")
+        clock.t = 1001.0
+        stop = core.begin_transport(AID, "stop")
+        core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"}, {"token": seek})
+        outcome = core.on_repeat_result(
+            "transport", AID, 200, {"ok": True, "state": "hold"}, {"token": stop},
+        )
+        assert outcome.stop_acked is True
+        assert core.snapshot().transport.state == "accepted"
+        assert core.take_effects()[-1] == RepeatEffect(AID, outcome, stop)
+
+    def test_a_late_rejection_does_not_reject_the_newer_request(self):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        seek = core.begin_transport(AID, "seek")
+        clock.t = 1001.0
+        core.begin_transport(AID, "arm")
+        core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "fading_out"}, {"token": seek})
+        held = core.snapshot().transport
+        assert (held.kind, held.state, held.error) == ("arm", "pending", None)
+
+    @pytest.mark.parametrize("request_body", [None, {}, {"token": None}, {"token": 9999.0}])
+    def test_a_reply_with_a_wrong_or_missing_token_resolves_nothing(self, request_body):
+        core = self._core()
+        core.begin_transport(AID, "seek")
+        pending = core.snapshot().transport
+        core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"}, request_body)
+        assert core.snapshot().transport == pending
+
+    def test_a_reply_with_nothing_pending_resolves_nothing(self):
+        core = self._core()
+        core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"}, {"token": 1000.0})
+        assert core.snapshot().transport is None
+
+    def test_the_effect_carries_the_token(self):
+        core = self._core()
+        token = core.begin_transport(AID, "seek")
+        outcome = core.on_repeat_result(
+            "transport", AID, 412, {"ok": False, "error": "x"}, {"token": token},
+        )
+        assert core.take_effects() == [RepeatEffect(AID, outcome, token)]
 
     def test_a_seek_ack_is_not_a_stop_ack(self, _store):
         core = self._core()
         _store.update(AID, _record("hold"))
         core.begin_transport(AID, "seek")
-        assert core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"}).stop_acked is False
+        assert _transport_reply(core, AID, 200, {"ok": True, "state": "hold"}).stop_acked is False
 
     def test_a_rejection_carries_the_daemon_error(self):
         clock = _Clock(1000.0)
         core = self._core(clock)
         core.begin_transport(AID, "seek")
         clock.t = 1002.0
-        outcome = core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "fading_out"})
+        outcome = _transport_reply(core, AID, 412, {"ok": False, "error": "fading_out"})
         assert outcome == RepeatOutcome(False, False, False)
         assert core.snapshot().transport == TransportRequest(
             AID, "seek", 1000.0, "rejected", 1002.0, "fading_out",
@@ -1544,24 +1692,24 @@ class TestTransport:
     def test_a_transient_failure_is_rejected_with_a_generic_error(self):
         core = self._core()
         core.begin_transport(AID, "arm")
-        core.on_repeat_result("arm", AID, None, None)
+        _transport_reply(core, AID, None, None)
         assert core.snapshot().transport.state == "rejected"
         assert core.snapshot().transport.error == "unreachable"
         core.begin_transport(AID, "arm")
-        core.on_repeat_result("arm", AID, 503, None)
+        _transport_reply(core, AID, 503, None)
         assert core.snapshot().transport.error == "http_503"
 
     def test_a_result_for_another_appliance_leaves_the_request_alone(self):
         core = self._core()
         core.begin_transport(AID, "seek")
-        core.on_repeat_result("transport", BID, 412, {"ok": False, "error": "x"})
+        core.on_repeat_result("transport", BID, 412, {"ok": False, "error": "x"}, {"token": 4321.0})
         assert core.snapshot().transport.state == "pending"
 
     def test_the_next_request_replaces_a_settled_one(self):
         clock = _Clock(1000.0)
         core = self._core(clock)
         core.begin_transport(AID, "seek")
-        core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "x"})
+        _transport_reply(core, AID, 412, {"ok": False, "error": "x"})
         clock.t = 1005.0
         core.begin_transport(AID, "stop")
         assert core.snapshot().transport == TransportRequest(AID, "stop", 1005.0, "pending", 1005.0, None)
@@ -1571,14 +1719,14 @@ class TestTransport:
         core = self._core(clock)
         core.set_focus(AID)
         _store.update(AID, _record("hold"))
-        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "replaying"})
+        outcome = _transport_reply(core, AID, 200, {"ok": True, "state": "replaying"})
         assert outcome.replay_accepted is True
         assert core.snapshot().focus.accepted_replay == (AID, 1020.0)
 
     def test_an_ack_for_another_appliance_opens_no_window(self, _store):
         core = self._core()
         core.set_focus(BID)
-        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "replaying"})
+        outcome = _transport_reply(core, AID, 200, {"ok": True, "state": "replaying"})
         assert outcome.replay_accepted is False
         assert core.snapshot().focus.accepted_replay is None
 
@@ -1586,7 +1734,7 @@ class TestTransport:
         core = self._core()
         _store.update(AID, _record("hold"))
         core.set_focus_pending(AID, "Kitchen", 1010.0)
-        core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "no_recording"})
+        _transport_reply(core, AID, 412, {"ok": False, "error": "no_recording"})
         assert core.snapshot().focus.pending is None and core.manual_focus_id() is None
         record = _store.get(AID, 1.0)
         assert record is None or not record.available
@@ -1596,7 +1744,7 @@ class TestTransport:
         seen = []
         with patch("dial_core.auth_map") as amap:
             amap.force_due.side_effect = lambda *a: seen.append(core._lock.locked())
-            core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "x"})
+            _transport_reply(core, AID, 412, {"ok": False, "error": "x"})
         assert seen == [False]
 
 

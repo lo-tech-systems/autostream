@@ -100,16 +100,17 @@ class TestStartReplay:
         core = _core(clock=clock)
         _record("hold")
         with patch("dial_core.enqueue_transport") as send:
-            assert core.start_replay(AID) == ActionResult(True)
+            assert core.start_replay(AID) == ActionResult(True, token=1000.0)
         snap = core.snapshot()
         assert snap.focus.manual_id == AID
         assert snap.focus.pending == (AID, "Kitchen", 1000.0 + FOCUS_PENDING_GRACE_S)
         assert (snap.transport.appliance_id, snap.transport.kind, snap.transport.state) == (
             AID, "seek", "pending",
         )
-        target, action, position = send.call_args[0]
+        target, action, position, token = send.call_args[0]
         assert (target.appliance_id, target.ip, target.port) == (AID, "192.0.2.10", 80)
-        assert (action, position) == ("seek", 0.0)
+        assert (action, position, token) == ("seek", 0.0, 1000.0)
+        assert snap.transport.requested_at == token
         assert core._poll_wake.is_set()
 
     def test_a_running_replay_restarts(self):
@@ -123,8 +124,10 @@ class TestStartReplay:
         core = _core()
         _record("hold")
         with patch("dial_core.enqueue_transport"):
-            core.start_replay(AID)
-        core.on_repeat_result("transport", AID, 200, {"ok": False, "error": "source_active"})
+            token = core.start_replay(AID).token
+        core.on_repeat_result(
+            "transport", AID, 200, {"ok": False, "error": "source_active"}, {"token": token},
+        )
         snap = core.snapshot()
         assert snap.focus.manual_id is None and snap.focus.pending is None
         assert snap.transport.state == "rejected"
@@ -173,10 +176,12 @@ class TestRestartReplay:
         core = _core()
         _record(state)
         with patch("dial_core.enqueue_transport") as send:
-            assert core.restart_replay(AID) == ActionResult(True)
-        target, action, position = send.call_args[0]
+            result = core.restart_replay(AID)
+        target, action, position, token = send.call_args[0]
         assert (target.appliance_id, action, position) == (AID, "seek", 0.0)
+        assert result == ActionResult(True, token=token)
         snap = core.snapshot()
+        assert snap.transport.requested_at == token
         assert snap.transport.kind == "seek" and snap.transport.state == "pending"
         assert snap.focus.manual_id is None and snap.focus.pending is None
 
@@ -199,12 +204,15 @@ class TestStopReplay:
         core = _core()
         _record("replaying")
         with patch("dial_core.enqueue_transport") as send:
-            assert core.stop_replay(AID) == ActionResult(True)
-        target, action, position = send.call_args[0]
+            result = core.stop_replay(AID)
+        target, action, position, token = send.call_args[0]
         assert (target.appliance_id, action, position) == (AID, "stop", 0.0)
+        assert result == ActionResult(True, token=token)
         assert core.snapshot().transport.kind == "stop"
         # its own ok ack settles it and is told apart from a seek's
-        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"})
+        outcome = core.on_repeat_result(
+            "transport", AID, 200, {"ok": True, "state": "hold"}, {"token": token},
+        )
         assert outcome.stop_acked is True
         assert core.snapshot().transport.state == "accepted"
 
@@ -235,9 +243,11 @@ class TestSetRepeatArmed:
         core = _core()
         _record(state)
         with patch("dial_core.enqueue_arm") as send:
-            assert core.set_repeat_armed(AID, armed) == ActionResult(True)
-        target, sent = send.call_args[0]
+            result = core.set_repeat_armed(AID, armed)
+        target, sent, token = send.call_args[0]
         assert (target.appliance_id, target.ip, target.port, sent) == (AID, "192.0.2.10", 80, armed)
+        assert result == ActionResult(True, token=token)
+        assert core.snapshot().transport.requested_at == token
         assert core.snapshot().transport.kind == "arm"
         assert core.snapshot().transport.state == "pending"
 

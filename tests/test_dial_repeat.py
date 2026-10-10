@@ -229,28 +229,28 @@ class TestSendOneOutcomes:
 class TestEnqueue:
     def test_enqueue_transport_puts_kind_target_and_payload(self):
         target = _target()
-        enqueue_transport(target, "seek", 12.5)
+        enqueue_transport(target, "seek", 12.5, 3.5)
         kind, put_target, payload = dr._queue.get_nowait()
         assert kind == "transport"
         assert put_target is target
-        assert payload == {"action": "seek", "position_seconds": 12.5}
+        assert payload == {"action": "seek", "position_seconds": 12.5, "token": 3.5}
 
     def test_enqueue_transport_coerces_position_to_float(self):
-        enqueue_transport(_target(), "stop", 0)
+        enqueue_transport(_target(), "stop", 0, 1.0)
         _, _, payload = dr._queue.get_nowait()
         assert payload["position_seconds"] == 0.0
         assert isinstance(payload["position_seconds"], float)
 
     def test_enqueue_arm_puts_kind_target_and_payload(self):
         target = _target()
-        enqueue_arm(target, True)
+        enqueue_arm(target, True, 3.5)
         kind, put_target, payload = dr._queue.get_nowait()
         assert kind == "arm"
         assert put_target is target
-        assert payload == {"armed": True}
+        assert payload == {"armed": True, "token": 3.5}
 
     def test_enqueue_arm_coerces_to_bool(self):
-        enqueue_arm(_target(), 1)
+        enqueue_arm(_target(), 1, 1.0)
         _, _, payload = dr._queue.get_nowait()
         assert payload["armed"] is True
 
@@ -265,29 +265,50 @@ class TestWorker:
         results = []
         done = threading.Event()
 
-        def on_result(kind, appliance_id, status, body):
-            results.append((kind, appliance_id, status, body))
+        def on_result(kind, appliance_id, status, body, request):
+            results.append((kind, appliance_id, status, body, request))
             done.set()
 
         patcher, _ = _mock_conn({"ok": True, "state": "replaying", "armed": True, "position_seconds": 0.0})
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_repeat_worker(cfg, on_result=on_result)
-            enqueue_transport(_target(appliance_id="b" * 20), "seek", 0.0)
+            enqueue_transport(_target(appliance_id="b" * 20), "seek", 0.0, 6.25)
             assert done.wait(timeout=2.0)
 
         assert len(results) == 1
-        kind, appliance_id, status, body = results[0]
+        kind, appliance_id, status, body, request = results[0]
         assert kind == "transport"
         assert appliance_id == "b" * 20
         assert status == 200
         assert body["ok"] is True
+        assert request == {"action": "seek", "position_seconds": 0.0, "token": 6.25}
+
+    def test_the_token_is_stripped_before_the_wire_and_given_to_the_callback(self):
+        results = []
+        done = threading.Event()
+
+        def on_result(kind, appliance_id, status, body, request):
+            results.append((kind, request))
+            done.set()
+
+        patcher, instances = _mock_conn({"ok": True, "state": "hold", "armed": True, "position_seconds": 0.0})
+        cfg = MagicMock(uuid="dial-uuid")
+        with patcher:
+            start_repeat_worker(cfg, on_result=on_result)
+            enqueue_arm(_target(appliance_id="g" * 20), True, 8.75)
+            assert done.wait(timeout=2.0)
+
+        wire = json.loads(instances[0].request_called_with["body"])
+        assert "token" not in wire
+        assert wire["armed"] is True
+        assert results == [("arm", {"armed": True, "token": 8.75})]
 
     def test_worker_calls_on_result_for_arm(self):
         results = []
         done = threading.Event()
 
-        def on_result(kind, appliance_id, status, body):
+        def on_result(kind, appliance_id, status, body, request):
             results.append(kind)
             done.set()
 
@@ -295,7 +316,7 @@ class TestWorker:
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_repeat_worker(cfg, on_result=on_result)
-            enqueue_arm(_target(appliance_id="c" * 20), True)
+            enqueue_arm(_target(appliance_id="c" * 20), True, 1.0)
             assert done.wait(timeout=2.0)
 
         assert results == ["arm"]
@@ -304,7 +325,7 @@ class TestWorker:
         calls = []
         second_done = threading.Event()
 
-        def on_result(kind, appliance_id, status, body):
+        def on_result(kind, appliance_id, status, body, request):
             calls.append(appliance_id)
             if len(calls) == 2:
                 second_done.set()
@@ -315,8 +336,8 @@ class TestWorker:
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_repeat_worker(cfg, on_result=on_result)
-            enqueue_transport(_target(appliance_id="d" * 20), "stop", 0.0)
-            enqueue_transport(_target(appliance_id="e" * 20), "stop", 0.0)
+            enqueue_transport(_target(appliance_id="d" * 20), "stop", 0.0, 1.0)
+            enqueue_transport(_target(appliance_id="e" * 20), "stop", 0.0, 2.0)
             assert second_done.wait(timeout=2.0)
 
         assert calls == ["d" * 20, "e" * 20]
@@ -328,7 +349,7 @@ class TestWorker:
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_repeat_worker(cfg, on_result=None)
-            enqueue_transport(_target(appliance_id="f" * 20), "stop", 0.0)
+            enqueue_transport(_target(appliance_id="f" * 20), "stop", 0.0, 1.0)
             # No synchronisation point without a callback — just give the
             # worker a moment and confirm the queue drains.
             deadline = time.monotonic() + 2.0
