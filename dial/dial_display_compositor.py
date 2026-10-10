@@ -60,6 +60,12 @@ black fill is swap-symmetric so that is harmless; clear()'s background
 colour is not — an accepted cosmetic exception, limited to the fallback
 background and never artwork.
 
+The artwork-tap reveal is a paint parameter too: compose(reveal_progress=p)
+slides the finished top band up and bottom band down by p of their height
+and fades the inter-band text at 1 - p, with p = 0 exactly the ordinary
+frame and p = 1 exactly the no-overlay frame. The manager owns the clock;
+this module never knows a frame is part of an animation.
+
 Text rendering (artist name, volume number) never raises: every draw or
 measure call goes through _draw_text_safe()/_text_size(), which swallow any
 Pillow/font exception and report failure to the caller instead. The worst
@@ -676,6 +682,7 @@ class DialDisplayCompositor:
         is_artwork: bool,
         overlay=None,
         metrics: LayoutMetrics | None = None,
+        reveal_progress: float = 0.0,
     ):
         """Build one display-ready frame from *base*.
 
@@ -694,6 +701,16 @@ class DialDisplayCompositor:
         metrics: a LayoutMetrics, or None meaning metrics_for(width, height)
             — today's geometry, density-unaware. Feeds the artwork blur
             radius and every overlay scale quantity.
+        reveal_progress: how far the artwork-tap reveal has run, 0.0 (the
+            bands in place: exactly the frame drawn before this parameter
+            existed) to 1.0 (the bands gone: exactly the no-overlay frame).
+            In between, the top band is slid up and the bottom band down by
+            that fraction of their height and the album/title/artist lines
+            fade with it (see _reveal_frame). A paint parameter like the
+            idle screen's flash phase: the manager owns the clock. Ignored
+            on the compact tier, which has no bands to slide, and whenever
+            the overlay is not drawn at all. Values outside 0..1 (or NaN)
+            clamp to the nearer endpoint.
         """
         if base is None:
             return base
@@ -708,14 +725,25 @@ class DialDisplayCompositor:
         if overlay is None or not overlay.visible:
             return _finish(image, rotate, bgr)
 
-        frame = (
-            _compact_controls_frame(overlay, image.width, image.height, metrics)
-            if metrics.content_tier == CONTENT_COMPACT
-            else _now_playing_frame(overlay, image.width, image.height, metrics)
+        if metrics.content_tier == CONTENT_COMPACT:
+            frame = _compact_controls_frame(overlay, image.width, image.height, metrics)
+            return _compose_frame(
+                image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
+            )
+        if reveal_progress >= 1.0:
+            # The bands have left the panel: the same frame a hidden overlay
+            # produces, through the same call.
+            return _finish(image, rotate, bgr)
+        frame = _now_playing_frame(overlay, image.width, image.height, metrics)
+        if not reveal_progress > 0.0:
+            return _compose_frame(
+                image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
+            )
+        shown = _compose_frame(
+            image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics,
         )
-        return _compose_frame(
-            image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
-        )
+        layout = layout_for(image.width, image.height, metrics=metrics)
+        return _finish(_reveal_frame(image, shown, reveal_progress, layout), rotate, bgr)
 
     def compose_list(
         self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool,
@@ -1912,6 +1940,38 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
     if bgr:
         img = Image.merge("RGB", img.split()[::-1])
     return img
+
+
+def _reveal_frame(base, shown: Image.Image, progress: float, layout: OverlayLayout) -> Image.Image:
+    """One frame of the artwork-tap reveal, in compose space (before
+    rotate/BGR). *shown* is the fully drawn now-playing frame and *base*
+    the undimmed base image it was drawn over; *progress* is strictly
+    between 0 and 1. The inter-band strip (the album/title/artist lines,
+    plus any wash on the artwork zone) is blended between its bare and
+    drawn versions at 1 - progress, so the text fades; then the top band's
+    rows are pasted back round(progress * band height) higher and the
+    bottom band's the same amount lower, so each band's content slides off
+    its panel edge as one piece and the artwork shows through the rows it
+    has left. The two bands and the strip tile the panel, so this
+    reproduces *shown* at 0 and the bare base at 1; compose() short-
+    circuits both endpoints anyway rather than relying on that. Pure: a
+    fresh image is built from *base* (never the caller's object) and
+    *shown* is only read."""
+    width, height = shown.size
+    out = _new_frame(base, width, height, BG_BASE)
+    strip = layout.artwork
+    if strip[2] > strip[0] and strip[3] > strip[1]:
+        faded = Image.blend(out.crop(strip), shown.crop(strip), 1.0 - progress)
+        out.paste(faded, (strip[0], strip[1]))
+    x0, top_y0, x1, top_y1 = layout.top_band
+    dy = round(progress * (top_y1 - top_y0))
+    if dy < top_y1 - top_y0:
+        out.paste(shown.crop((x0, top_y0 + dy, x1, top_y1)), (x0, top_y0))
+    x0, bot_y0, x1, bot_y1 = layout.bottom_band
+    dy = round(progress * (bot_y1 - bot_y0))
+    if dy < bot_y1 - bot_y0:
+        out.paste(shown.crop((x0, bot_y0, x1, bot_y1 - dy)), (x0, bot_y0 + dy))
+    return out
 
 
 def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetrics) -> None:

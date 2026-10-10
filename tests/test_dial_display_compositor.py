@@ -368,6 +368,13 @@ class TestStatelessness:
             Image.new("RGB", (300, 300)), 160, 128,
             rotate=False, bgr=False, is_artwork=True,
         )
+        compositor.compose(
+            Image.new("RGB", (_RICH_METRICS.width, _RICH_METRICS.height), (80, 80, 80)),
+            _RICH_METRICS.width, _RICH_METRICS.height,
+            rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", name="Kitchen"),
+            metrics=_RICH_METRICS, reveal_progress=0.5,
+        )
         after = dict(vars(compositor))
         assert before == after == {}
 
@@ -5194,3 +5201,185 @@ class TestComposeEq:
         assert _eq_pressed_rects(TouchZone.EQ_TREBLE_DOWN, 320, 240, _RICH_METRICS) == (layout.treble.down,)
         assert _eq_pressed_rects(None, 320, 240, _RICH_METRICS) == ()
         assert _eq_pressed_rects(TouchZone.OUTPUT_UP, 320, 240, _RICH_METRICS) == ()
+
+
+# ---------------------------------------------------------------------------
+# The artwork-tap reveal: compose(reveal_progress=p) slides the finished
+# top/bottom bands off the panel and fades the inter-band text as p runs
+# from 0 (bands in place, the ordinary frame) to 1 (bands gone, the
+# no-overlay frame). Pinned on both the rich and large tiers, which are the
+# only ones the manager ever animates; the compact tier ignores the
+# parameter entirely.
+# ---------------------------------------------------------------------------
+
+
+def _reveal_base_image(metrics):
+    """A mid-grey-to-white vertical gradient, tall enough for a fade to be
+    provable (a flat dark image cannot show a blend changing anything)."""
+    grad = Image.linear_gradient("L").resize((metrics.width, metrics.height))
+    return grad.convert("RGB")
+
+
+def _reveal_overlay():
+    return OverlayState(
+        visible=True, artist="Artist", title="Title", album="Album", name="Kitchen",
+        volume=50, dots=True, muted=True,
+    )
+
+
+class TestRevealProgress:
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("rotate,bgr", [(False, False), (True, False), (False, True), (True, True)])
+    def test_zero_progress_is_byte_identical_to_shown(self, compositor, metrics, rotate, bgr):
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        shown = compositor.compose(
+            base, metrics.width, metrics.height, rotate=rotate, bgr=bgr, is_artwork=False,
+            overlay=overlay, metrics=metrics,
+        )
+        zero = compositor.compose(
+            base, metrics.width, metrics.height, rotate=rotate, bgr=bgr, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.0,
+        )
+        assert list(zero.getdata()) == list(shown.getdata())
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("progress", [-0.5, float("nan")])
+    def test_negative_and_nan_progress_are_drawn_as_shown(self, compositor, metrics, progress):
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        shown = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics,
+        )
+        out = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=progress,
+        )
+        assert list(out.getdata()) == list(shown.getdata())
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("rotate,bgr", [(False, False), (True, False), (False, True), (True, True)])
+    @pytest.mark.parametrize("progress", [1.0, 1.5])
+    def test_full_progress_is_byte_identical_to_hidden(self, compositor, metrics, rotate, bgr, progress):
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        bare = compositor.compose(
+            base, metrics.width, metrics.height, rotate=rotate, bgr=bgr, is_artwork=False,
+            overlay=None, metrics=metrics,
+        )
+        out = compositor.compose(
+            base, metrics.width, metrics.height, rotate=rotate, bgr=bgr, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=progress,
+        )
+        assert list(out.getdata()) == list(bare.getdata())
+        if not rotate and not bgr:
+            direct = compositor.compose(
+                base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=overlay, metrics=metrics, reveal_progress=progress,
+            )
+            assert direct is base
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("p", [0.25, 0.5, 0.8])
+    def test_intermediate_progress_slides_bands_and_fades_text(self, compositor, metrics, p):
+        w, h = metrics.width, metrics.height
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        shown = compositor.compose(
+            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=overlay, metrics=metrics,
+        )
+        bare = compositor.compose(
+            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=None, metrics=metrics,
+        )
+        out = compositor.compose(
+            base, w, h, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=p,
+        )
+        layout = layout_for(w, h, metrics=metrics)
+        band_h = layout.top_band[3]
+        dy = round(p * band_h)
+
+        assert list(out.crop((0, 0, w, band_h - dy)).getdata()) == list(
+            shown.crop((0, dy, w, band_h)).getdata()
+        )
+        assert list(out.crop((0, band_h - dy, w, band_h)).getdata()) == list(
+            bare.crop((0, band_h - dy, w, band_h)).getdata()
+        )
+        assert list(out.crop((0, h - band_h + dy, w, h)).getdata()) == list(
+            shown.crop((0, h - band_h, w, h - dy)).getdata()
+        )
+        assert list(out.crop((0, h - band_h, w, h - band_h + dy)).getdata()) == list(
+            bare.crop((0, h - band_h, w, h - band_h + dy)).getdata()
+        )
+        expected_strip = Image.blend(
+            bare.crop(layout.artwork), shown.crop(layout.artwork), 1.0 - p,
+        )
+        assert list(out.crop(layout.artwork).getdata()) == list(expected_strip.getdata())
+        assert _diff_bbox(out.crop(layout.title), shown.crop(layout.title)) is not None
+        assert _diff_bbox(out.crop(layout.title), bare.crop(layout.title)) is not None
+
+    def test_progress_is_ignored_on_compact(self, compositor):
+        metrics = _COMPACT_240
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        zero = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.0,
+        )
+        half = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.5,
+        )
+        assert list(zero.getdata()) == list(half.getdata())
+
+    def test_rotate_and_bgr_apply_after_the_slide(self, compositor):
+        metrics = _RICH_METRICS
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        plain = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.5,
+        )
+        transformed = compositor.compose(
+            base, metrics.width, metrics.height, rotate=True, bgr=True, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.5,
+        )
+        expected = plain.transpose(Image.ROTATE_180)
+        expected = Image.merge("RGB", expected.split()[::-1])
+        assert list(transformed.getdata()) == list(expected.getdata())
+
+    def test_base_image_is_not_mutated(self, compositor):
+        metrics = _RICH_METRICS
+        base = _reveal_base_image(metrics)
+        before = base.tobytes()
+        compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=_reveal_overlay(), metrics=metrics, reveal_progress=0.5,
+        )
+        assert base.tobytes() == before
+
+    def test_same_inputs_same_output(self, compositor):
+        metrics = _RICH_METRICS
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        first = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.37,
+        )
+        second = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=overlay, metrics=metrics, reveal_progress=0.37,
+        )
+        assert list(first.getdata()) == list(second.getdata())
+
+    def test_statelessness(self, compositor):
+        metrics = _RICH_METRICS
+        base = _reveal_base_image(metrics)
+        before = dict(vars(compositor))
+        compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=_reveal_overlay(), metrics=metrics, reveal_progress=0.5,
+        )
+        after = dict(vars(compositor))
+        assert before == after == {}
