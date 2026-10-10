@@ -290,7 +290,15 @@ def send_airplay_page(
             _np_active_level = input_levels[0]
 
     _np_is_playing = any(lv.get("is_above_threshold") for lv in input_levels)
-    _np_snap = playback_snapshot.inputs.get(_np_active_idx + 1)
+    # The level's own input number picks the snapshot; a level with none
+    # (older appliance) falls back to its list position.
+    _np_level_index = _np_active_level.get("index")
+    _np_input_num = (
+        _np_level_index
+        if isinstance(_np_level_index, int) and not isinstance(_np_level_index, bool)
+        else _np_active_idx + 1
+    )
+    _np_snap = playback_snapshot.inputs.get(_np_input_num)
     _np_is_turntable = bool(_np_snap.is_turntable) if _np_snap else False
     _np_is_bluetooth = bool(_np_snap.is_bluetooth) if _np_snap else False
     _np_input_type = (
@@ -307,7 +315,7 @@ def send_airplay_page(
         else "cd" if _np_input_type == "cd"
         else "line"
     )
-    _np_label = str(_np_active_level.get("label", f"Input {_np_active_idx + 1}"))
+    _np_label = str(_np_active_level.get("label", f"Input {_np_input_num}"))
     _np_type_label = (
         input_type_label(_np_input_type) if _np_input_type
         else {

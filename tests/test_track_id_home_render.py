@@ -70,7 +70,7 @@ def _make_playback_snapshot():
     return snap
 
 
-def _render_airplay_page(ti_snapshot=None, playback_snapshot=None) -> str:
+def _render_airplay_page(ti_snapshot=None, playback_snapshot=None, levels=None) -> str:
     """Invoke send_airplay_page() with all external deps mocked and return HTML."""
     if ti_snapshot is None:
         ti_snapshot = disabled_snapshot()
@@ -97,7 +97,7 @@ def _render_airplay_page(ti_snapshot=None, playback_snapshot=None) -> str:
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=levels or []),
         patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
@@ -363,6 +363,14 @@ def _playback_snapshot_with_input(*, is_turntable=False, is_bluetooth=False, inp
     return snap
 
 
+def _playback_snapshot_turntable_and_cd():
+    snap = _make_playback_snapshot()
+    first = MagicMock(is_turntable=True, is_bluetooth=False, input_type="turntable")
+    second = MagicMock(is_turntable=False, is_bluetooth=False, input_type="cd")
+    snap.inputs = {1: first, 2: second}
+    return snap
+
+
 @_skip
 class TestNowPlayingIconKind:
     def test_bluetooth_input_uses_bluetooth_icon_and_key(self):
@@ -451,3 +459,28 @@ class TestNowPlayingIconKind:
 class TestRemoteHomeCdIcon:
     def test_remote_home_emits_cd_icon_for_js(self):
         assert "window.__ICON_CD=" in _render_remote_home()
+
+
+@_skip
+class TestNowPlayingInputJoin:
+    def test_level_with_input_number_picks_that_inputs_snapshot(self):
+        level = {"index": 2, "label": "Input 2", "dbfs": -30.0,
+                 "detected_hz": 0.0, "is_above_threshold": True}
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(),
+            playback_snapshot=_playback_snapshot_turntable_and_cd(),
+            levels=[level],
+        )
+        assert 'data-np-icon-key="svg:cd"' in html
+        assert "Input 2 · CD" in html
+
+    def test_level_without_input_number_joins_by_position(self):
+        level = {"label": "Input 1", "dbfs": -30.0,
+                 "detected_hz": 0.0, "is_above_threshold": True}
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(),
+            playback_snapshot=_playback_snapshot_turntable_and_cd(),
+            levels=[level],
+        )
+        assert 'data-np-icon-key="svg:turntable"' in html
+        assert "Input 1 · Turntable" in html

@@ -94,6 +94,7 @@ _OUTPUTS: list = []
 _REPLIES: list = []
 _POSTS: list = []
 _POLLS: list = []
+_STATUS: dict = {}
 
 
 def _row(**extra) -> dict:
@@ -120,6 +121,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/owntone/outputs_state"):
             _POLLS.append(1)
             self._send(json.dumps({"ok": True, "outputs": _OUTPUTS}).encode(), "application/json")
+        elif self.path.startswith("/api/status") and _STATUS:
+            self._send(json.dumps(_STATUS).encode(), "application/json")
         elif self.path.startswith("/api/"):
             self._send(b'{"ok": true}', "application/json")
         else:
@@ -299,3 +302,30 @@ class TestHomePinDialog:
         # The open prompt holds back the card render, so there is no card to wait for.
         _open_home(page, home_url, [_row(pin_pending=True, pin_claim="")], [], cards=False)
         expect(page.locator("#pinModal")).to_have_class("modal-overlay show")
+
+
+def _input_snapshot(input_type: str, label: str) -> dict:
+    return {"is_turntable": input_type == "turntable", "is_bluetooth": False,
+            "input_type": input_type, "type_label": label}
+
+
+@_requires_browser
+class TestHomeNowPlayingCard:
+    def test_the_card_reads_the_snapshot_of_the_levels_own_input_number(
+        self, page: "Page", home_url: str
+    ):
+        _STATUS.update({
+            "ok": True,
+            "input_levels": [{"index": 2, "label": "Input 2", "dbfs": -30.0,
+                              "detected_hz": 0, "is_above_threshold": True}],
+            "playback": {"inputs": {"1": _input_snapshot("turntable", "Turntable"),
+                                    "2": _input_snapshot("cd", "CD")}},
+            "track_identification": {"enabled": False},
+            "session": {"active": True, "source": "live"},
+        })
+        try:
+            _open_home(page, home_url, [], [], cards=False)
+            expect(page.locator("#np-name")).to_have_text("Input 2 · CD")
+            expect(page.locator("#np-icon")).to_have_attribute("data-np-icon-key", "svg:cd")
+        finally:
+            _STATUS.clear()

@@ -1119,8 +1119,14 @@ HOME_CARDS_SCRIPT = """
         ? Number(recording.origin_input) : null;
       if (originInput !== null) {
         var originIdx = originInput - 1;
-        activeLevel = levels[originIdx] || {
-          label: 'Input ' + originInput, dbfs: -90, detected_hz: 0, is_above_threshold: false,
+        // Match the origin input's level by its input number; levels from
+        // an older appliance carry none, so those match by position.
+        var originLevel = null;
+        for (var j = 0; j < levels.length; j++) {
+          if (levels[j] && Number(levels[j].index) === originInput) { originLevel = levels[j]; break; }
+        }
+        activeLevel = originLevel || levels[originIdx] || {
+          index: originInput, label: 'Input ' + originInput, dbfs: -90, detected_hz: 0, is_above_threshold: false,
         };
         activeIdx = originIdx;
         usingReplayOrigin = true;
@@ -1128,7 +1134,11 @@ HOME_CARDS_SCRIPT = """
     }
     if (!activeLevel && levels.length > 0) { activeLevel = levels[0]; activeIdx = 0; }
     if (!activeLevel) return;
-    var inputSnap = inputs[String(activeIdx + 1)] || {};
+    // The level's own input number picks the snapshot; a level with none
+    // (older appliance) falls back to its list position.
+    var inputNum = (typeof activeLevel.index === 'number' && Number.isFinite(activeLevel.index))
+      ? activeLevel.index : activeIdx + 1;
+    var inputSnap = inputs[String(inputNum)] || {};
     var isTurntable = !!inputSnap.is_turntable;
     var isBluetooth = !!inputSnap.is_bluetooth;
     var inputType = String(inputSnap.input_type || '');
@@ -1148,7 +1158,7 @@ HOME_CARDS_SCRIPT = """
     var typeLabelByKind = { turntable: 'Turntable', bluetooth: 'Bluetooth', cd: 'CD', line: 'Line Level' };
     var inputPrefix = typeLabel || iconLabelByKind[iconKind];
     var inputTypeText = typeLabel || typeLabelByKind[iconKind];
-    var label = String(activeLevel.label || ('Input ' + (activeIdx + 1)));
+    var label = String(activeLevel.label || ('Input ' + inputNum));
     var signalParts = [];
     if (window.__SHOW_INPUT_DETAIL) {
       var hz = Number(activeLevel.detected_hz || 0);
