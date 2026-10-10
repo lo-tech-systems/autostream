@@ -7,46 +7,58 @@ pixel work once a base image is in hand — it is the single place a frame is
 actually built. It has no threading, no hardware access, no persistent
 state, and no lock of its own; every call is independent of every other.
 
+Every screen (the now-playing overlay, the repeat screen, the appliance
+selector, the idle screen) is drawn by one pipeline, _compose_frame():
+background, then dims, then a pressed-zone wash, then the header, then the
+body, then the footer, then rotate/BGR. What differs between screens is
+only the data — a frozen Frame descriptor made of a background choice plus
+a Header/Body/Footer triple — never the drawing order. Each of the four
+public entry points (compose(), compose_list(), compose_repeat(),
+compose_idle()) is a thin adapter that turns its own state snapshot
+(OverlayState, ListState, RepeatViewState, or nothing at all) into a Frame
+and hands it to the pipeline.
+
 Two kinds of base image reach compose():
   - Artwork: the manager hands over the RAW DECODED image plus the active
     panel (width, height) and sets is_artwork=True. compose() calls
-    transform_artwork_for_panel() itself — a "finished frame" is by
-    definition already panel-fitted, so that call belongs here rather than
-    in the manager.
+    transform_artwork_for_panel() itself, ahead of the pipeline — a
+    "finished frame" is by definition already panel-fitted, so that call
+    belongs here rather than in the manager.
   - Logo: the manager calls load_logo(...) itself (file I/O, and the
     failure-to-sentinel branch is manager policy) and passes the resulting
     already-panel-sized image with is_artwork=False — compose() then just
-    runs it through the transforms below unchanged.
+    runs it through the pipeline (or, with no visible overlay, straight
+    through the rotate/BGR tail) unchanged.
 
-After the base is panel-sized, compose() applies, in order:
-  1. overlay — the now-playing controls overlay (dimmed top/bottom bands,
-     artist name, speaker glyph + master-volume readout, minus/plus glyphs
-     and a divider line), drawn when OverlayState.visible is true. The
-     touch session is what makes it visible; overlay=None (the default) or
-     an OverlayState with visible=False are both a strict no-op, pixel for
-     pixel, which is what a dial with no touch panel always sees.
-  2. rotate (180 degrees, when configured)
-  3. BGR channel swap (when configured)
+overlay=None (the default) or an OverlayState with visible=False never
+enters the pipeline at all: compose() returns the panel-fitted base with
+only rotate/BGR applied, a strict no-op, pixel for pixel, which is what a
+dial with no touch panel always sees. This also keeps the manager's
+pre-rotate artwork cache exact: a call with no overlay and no rotate/bgr
+returns the very same image object it was given.
 
-The overlay is drawn BEFORE rotate/bgr so its geometry lives in the same
-compose-space coordinates as dial_touch_layout.layout_for()/zones_for() —
-the same module the touch session hit-tests against — rather than in
-panel/rotated space.
-
-This is the same rotate-then-BGR logic and ordering that previously lived in
-dial_display.py's _apply_frame_transform, moved here unchanged. As before,
-this seam is bypassed by the backend-internal clear()/sleep() fills, which
-paint directly against the backend rather than going through the manager's
-_display_locked()/compose() path. sleep()'s black fill is swap-symmetric so
-that is harmless; clear()'s background colour is not — an accepted cosmetic
-exception, limited to the fallback background and never artwork.
+A visible overlay, the repeat screen and the selector chassis are all drawn
+in compose-space — the same (width, height) coordinates
+dial_touch_layout.layout_for()/list_layout_for()/repeat_layout_for()
+describe, and the same ones the touch session hit-tests against — before
+rotate/BGR. This is the same rotate-then-BGR logic and ordering that
+previously lived in dial_display.py's _apply_frame_transform, moved here
+unchanged. As before, this seam is bypassed by the backend-internal
+clear()/sleep() fills, which paint directly against the backend rather than
+going through the manager's _display_locked()/compose() path. sleep()'s
+black fill is swap-symmetric so that is harmless; clear()'s background
+colour is not — an accepted cosmetic exception, limited to the fallback
+background and never artwork.
 
 Text rendering (artist name, volume number) never raises: every draw or
 measure call goes through _draw_text_safe()/_text_size(), which swallow any
 Pillow/font exception and report failure to the caller instead. The worst
-case for a text failure is an overlay with the glyphs but no text — never an
-exception escaping compose(). See _load_font() for the font fallback chain
-this same discipline extends to.
+case for a text failure is a frame with the glyphs but no text — never an
+exception escaping the pipeline. See _load_font() for the font fallback
+chain this same discipline extends to. The pipeline itself adds no blanket
+exception handling: every helper it calls already degrades gracefully on
+its own, and an unrecognised Body/Footer kind is a programming error, left
+to raise rather than be hidden.
 
 The artist and title lines (centre-low) are drawn over arbitrary album art,
 so they go through _draw_text_with_halo() rather than a plain draw.text():
@@ -54,20 +66,19 @@ a soft, Gaussian-blurred dark glow is composited behind the text before the
 text itself is drawn, so it stays legible whether the artwork behind it is
 light or dark. The appliance name (top-left) sits over the dimmed top band
 instead, which gives it enough contrast on its own, so it is drawn plain.
-The halo is drawn per element, confined to that element's own rectangle — never as a
-whole-frame effect — the same discipline _draw_glyph_supersampled() applies
-to the selector chassis's check mark and chevrons (rendered at a higher
-resolution and downsampled with LANCZOS, so small diagonal strokes read
-smoothly rather than aliasing).
+The halo is drawn per element, confined to that element's own rectangle —
+never as a whole-frame effect — the same discipline _draw_glyph_supersampled()
+applies to the selector chassis's check mark and chevrons (rendered at a
+higher resolution and downsampled with LANCZOS, so small diagonal strokes
+read smoothly rather than aliasing).
 
-compose_list() is the second top-level entry point this module offers,
-alongside compose(): it builds the appliance-selector screen (a dark
-chassis with up to three rows and a back|down|up bar) from a ListState
-snapshot, sharing dial_touch_layout.list_layout_for()'s geometry with
-dial_touch.py's selector-surface hit-test — the same single-source-of-truth
-discipline compose()'s overlay geometry already follows. Like compose(), it
-applies rotate/BGR last and never raises: a font or glyph failure degrades
-to a plainer row, never an exception.
+compose_list() builds the appliance-selector screen (a dark chassis with up
+to three rows and a back|down|up bar) from a ListState snapshot, sharing
+dial_touch_layout.list_layout_for()'s geometry with dial_touch.py's
+selector-surface hit-test — the same single-source-of-truth discipline the
+overlay's own geometry follows. Like compose(), it applies rotate/BGR last
+and never raises: a font or glyph failure degrades to a plainer row, never
+an exception.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -82,6 +93,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
     OverlayLayout,
+    Rect,
     TouchZone,
     layout_for,
     list_layout_for,
@@ -315,6 +327,83 @@ class RepeatViewState:
     pressed: "TouchZone | None" = None
 
 
+# Background sources for _new_frame(): where a frame's base image comes
+# from before anything is drawn on top of it.
+BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
+BG_CHASSIS = "chassis"    # flat _LIST_BG_RGB fill, no caller image involved
+
+# Body kinds — the screen-specific content between the top and bottom
+# bands, dispatched through _BODY_RENDERERS.
+BODY_NONE = "none"
+BODY_NOW_PLAYING = "now_playing"   # title + artist lines with halo
+BODY_REPEAT_ROW = "repeat_row"     # "Repeat Play" label + arm dot
+BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
+BODY_LIST_ROWS = "list_rows"       # selector/picker rows
+
+# Footer kinds — the bottom band's content, dispatched through
+# _FOOTER_RENDERERS.
+FOOTER_NONE = "none"
+FOOTER_VOLUME = "volume"           # minus | plus glyphs + divider
+FOOTER_LABELS = "labels"           # left | right centred labels + divider
+FOOTER_LIST_BAR = "list_bar"       # back | down | up chevrons
+
+
+@dataclass(frozen=True)
+class Header:
+    """The top band's content: appliance name, mute/volume readout, and the
+    optional pager dots that switch between the main and repeat screens.
+    dots_filled=None omits the dots entirely; 0 fills the left dot, 1 the
+    right one."""
+
+    name: str = ""
+    volume: int | None = None
+    muted: bool | None = None
+    dots_filled: int | None = None
+
+
+@dataclass(frozen=True)
+class Body:
+    """The screen-specific content drawn between the top and bottom bands.
+    Which fields are meaningful is decided entirely by `kind` — see the
+    BODY_* constants and _BODY_RENDERERS."""
+
+    kind: str = BODY_NONE
+    title: str = ""        # BODY_NOW_PLAYING
+    artist: str = ""       # BODY_NOW_PLAYING
+    armed: bool = False    # BODY_REPEAT_ROW
+    line: str = ""         # BODY_REPEAT_LINE
+    rows: tuple = ()       # BODY_LIST_ROWS — same row tuples ListState.rows carries
+
+
+@dataclass(frozen=True)
+class Footer:
+    """The bottom band's content. Which fields are meaningful is decided
+    entirely by `kind` — see the FOOTER_* constants and _FOOTER_RENDERERS."""
+
+    kind: str = FOOTER_NONE
+    left_text: str = ""            # FOOTER_LABELS
+    right_text: str = ""           # FOOTER_LABELS
+    left_enabled: bool = True      # FOOTER_LABELS: full brightness vs dimmed
+    right_enabled: bool = True
+    has_prev: bool = False         # FOOTER_LIST_BAR: lights the up chevron
+    has_next: bool = False         # FOOTER_LIST_BAR: lights the down chevron
+
+
+@dataclass(frozen=True)
+class Frame:
+    """One screen's full content, independent of panel size — everything
+    _compose_frame() needs to draw it once the chrome geometry is resolved
+    from layout_for()/list_layout_for()/repeat_layout_for()."""
+
+    background: str
+    dim_top: bool = False
+    dim_bottom: bool = False
+    pressed: tuple[Rect, ...] = ()   # rects to wash, in the order they should be drawn
+    header: Header | None = None
+    body: Body = Body()
+    footer: Footer = Footer()
+
+
 class DialDisplayCompositor:
     """Stateless frame composer — holds no attributes that change between
     calls, so a single instance can safely be shared/reused by the manager.
@@ -353,14 +442,11 @@ class DialDisplayCompositor:
         if is_artwork:
             image = transform_artwork_for_panel(image, width, height)
 
-        if overlay is not None and overlay.visible:
-            image = _draw_overlay(image, image.width, image.height, overlay)
+        if overlay is None or not overlay.visible:
+            return _finish(image, rotate, bgr)
 
-        if rotate:
-            image = image.transpose(Image.ROTATE_180)
-        if bgr:
-            image = Image.merge("RGB", image.split()[::-1])
-        return image
+        frame = _now_playing_frame(overlay, image.width, image.height)
+        return _compose_frame(image, image.width, image.height, frame, rotate=rotate, bgr=bgr)
 
     def compose_list(self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool):
         """Build one display-ready frame for the appliance-selector screen.
@@ -379,13 +465,7 @@ class DialDisplayCompositor:
         glyph failure degrades to a plainer row, matching compose()'s own
         text-failure discipline.
         """
-        frame = _draw_list(width, height, state)
-
-        if rotate:
-            frame = frame.transpose(Image.ROTATE_180)
-        if bgr:
-            frame = Image.merge("RGB", frame.split()[::-1])
-        return frame
+        return _compose_frame(None, width, height, _list_frame(state, width, height), rotate=rotate, bgr=bgr)
 
     def compose_repeat(
         self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool, base=None,
@@ -405,13 +485,7 @@ class DialDisplayCompositor:
         Never raises: a font, glyph or base-image failure degrades to a
         plainer frame, matching compose()'s own discipline.
         """
-        frame = _draw_repeat(width, height, state, base)
-
-        if rotate:
-            frame = frame.transpose(Image.ROTATE_180)
-        if bgr:
-            frame = Image.merge("RGB", frame.split()[::-1])
-        return frame
+        return _compose_frame(base, width, height, _repeat_frame(state, width, height), rotate=rotate, bgr=bgr)
 
     def compose_idle(self, base, width: int, height: int, *, rotate: bool, bgr: bool):
         """Build one display-ready frame for the idle screen: just *base* —
@@ -424,12 +498,7 @@ class DialDisplayCompositor:
         passthrough."""
         if base is None:
             return base
-        image = base.convert("RGB")
-        if rotate:
-            image = image.transpose(Image.ROTATE_180)
-        if bgr:
-            image = Image.merge("RGB", image.split()[::-1])
-        return image
+        return _compose_frame(base, width, height, Frame(BG_BASE), rotate=rotate, bgr=bgr)
 
 
 def format_mmss(seconds: float) -> str:
@@ -515,12 +584,11 @@ def _draw_top_band_content(
     height: int,
 ) -> None:
     """Draw the top band's pager dots, appliance name and mute/volume
-    readout into *frame* in place — the piece of the top band shared
-    verbatim by the main screen's now-playing overlay (_draw_overlay) and
-    the repeat screen's own top band (_draw_repeat). The name is drawn
-    plain: it always sits over the dimmed top band, which gives it enough
-    contrast without the soft halo the artist/title lines need over
-    undimmed album art.
+    readout into *frame* in place — the piece of the top band shared by the
+    main screen's now-playing overlay and the repeat screen's own top band.
+    The name is drawn plain: it always sits over the dimmed top band, which
+    gives it enough contrast without the soft halo the artist/title lines
+    need over undimmed album art.
 
     Caller is responsible for dimming the band (and drawing any
     pressed-zone highlight) before calling this, same discipline as every
@@ -541,57 +609,6 @@ def _draw_top_band_content(
         _draw_glyph_supersampled(
             frame, dots_rect, lambda d, w, h: _draw_two_dots(d, w, h, filled=dots_filled),
         )
-
-
-def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayState) -> Image.Image:
-    """Return a new frame: *image* with its top/bottom bands dimmed, the
-    appliance name, artist line, volume readout, minus/plus glyphs and a
-    divider line drawn on top, plus an optional pressed-zone highlight.
-    Sized from dial_touch_layout.layout_for()/zones_for() so this works at
-    every profile size.
-    """
-    layout = layout_for(width, height)
-    zones = zones_for(width, height)
-
-    frame = image.convert("RGB")
-    _dim_rect(frame, layout.top_band)
-    _dim_rect(frame, layout.bottom_band)
-
-    draw = ImageDraw.Draw(frame)
-    if overlay.pressed is not None and overlay.pressed in zones:
-        rect = zones[overlay.pressed]
-        _draw_pressed_highlight(frame, rect)
-        # Re-create the draw handle bound to the (possibly RGBA-composited)
-        # image so subsequent glyph/text strokes land on the highlighted
-        # frame.
-        draw = ImageDraw.Draw(frame)
-
-    # The name (top-left) is drawn plain (no halo), matching the repeat
-    # screen's own top band — it sits over the dimmed top band, which already
-    # gives it contrast. The dots (also part of the top band) share this
-    # same helper with the repeat screen — see _draw_top_band_content().
-    _draw_top_band_content(
-        frame,
-        dots_rect=layout.dots if overlay.dots else None,
-        dots_filled=0 if overlay.dots else None,
-        name_rect=layout.name, name_text=overlay.name,
-        volume_cluster_rect=layout.volume_cluster, volume=overlay.volume, muted=overlay.muted,
-        width=width, height=height,
-    )
-
-    # The artist/title lines are main-screen-only (the repeat screen has no
-    # equivalent), so they stay here rather than in the shared helper. Both
-    # are drawn over arbitrary album art too, so both get the same halo.
-    artist_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
-    artist_font = _load_font(artist_px)
-    _draw_text_with_halo(frame, layout.title, overlay.title, artist_font, width, height)
-    _draw_text_with_halo(frame, layout.artist, overlay.artist, artist_font, width, height)
-    _draw_bottom_band(
-        frame, layout, width, height,
-        left_rect=layout.down, right_rect=layout.up,
-        draw_left=_draw_minus_glyph, draw_right=_draw_plus_glyph,
-    )
-    return frame
 
 
 def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -1061,120 +1078,86 @@ def _draw_label_centered(
     _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
 
 
-def _draw_repeat(width: int, height: int, state: RepeatViewState, base=None) -> Image.Image:
-    """Render the repeat-screen chassis (compose-space, pre rotate/BGR) —
-    see DialDisplayCompositor.compose_repeat()."""
-    layout = repeat_layout_for(width, height)
-
-    frame = None
-    if state.layout == "replaying" and base is not None:
+def _new_frame(base, width: int, height: int, background: str) -> Image.Image:
+    """Return a fresh (width, height) RGB image to draw a frame into — never
+    the caller's own object, so the caller's base image is never mutated by
+    what happens next. background == BG_BASE tries to use *base* (a copy of
+    it, resized if it is not already panel-sized); anything else, or a base
+    that turns out to be unusable, falls back to the flat chassis fill."""
+    if background == BG_BASE and base is not None:
         try:
-            candidate = base.convert("RGB")
-            if candidate.size != (width, height):
-                candidate = candidate.resize((width, height))
-            frame = candidate
+            img = base.convert("RGB")
+            if img.size != (width, height):
+                img = img.resize((width, height))
+            return img
         except Exception:
-            frame = None  # degrade to the flat chassis background below
-    if frame is None:
-        frame = Image.new("RGB", (width, height), _LIST_BG_RGB)
+            pass
+    return Image.new("RGB", (width, height), _LIST_BG_RGB)
 
-    # The top band is dimmed on both layouts — the enable layout's flat
-    # chassis background is already dark, so this is cosmetically a no-op
-    # there, but it means the shared top-band content (see
-    # _draw_top_band_content) never needs to know which layout it is
-    # drawn over. The bottom band is only ever occupied in "replaying".
-    _dim_rect(frame, layout.top_band)
-    if state.layout == "replaying":
-        _dim_rect(frame, layout.bottom_band)
 
-    draw = ImageDraw.Draw(frame)
-    zones = {
-        TouchZone.DOTS: layout.dots,
-        TouchZone.NAME: layout.name,
-        TouchZone.REPEAT_PLAY: layout.row,
-        TouchZone.REPEAT_START: layout.start,
-        TouchZone.REPEAT_STOP: layout.stop,
-    }
-    if state.pressed is not None and state.pressed in zones:
-        _draw_pressed_highlight(frame, zones[state.pressed])
-        draw = ImageDraw.Draw(frame)
-    if state.layout == "replaying" and state.stop_pressed:
-        _draw_pressed_highlight(frame, layout.stop)
-        draw = ImageDraw.Draw(frame)
+def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
+    """Apply the rotate-then-BGR tail every screen shares, in that order.
+    Returns *img* itself, unchanged, when neither flag is set."""
+    if rotate:
+        img = img.transpose(Image.ROTATE_180)
+    if bgr:
+        img = Image.merge("RGB", img.split()[::-1])
+    return img
 
-    pad = _pad_px(width, height)
-    row_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
-    line_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
-    row_font = _load_font(row_px)
-    line_font = _load_font(line_px)
 
-    # The dots draw the RIGHT dot filled (this is the second of the two
-    # screens) and are never omitted here — see _draw_top_band_content.
+def _draw_header(img: Image.Image, layout, header: Header, width: int, height: int) -> None:
     _draw_top_band_content(
-        frame,
-        dots_rect=layout.dots, dots_filled=1,
-        name_rect=layout.name, name_text=state.name,
-        volume_cluster_rect=layout.volume_cluster, volume=state.volume, muted=state.muted,
+        img,
+        dots_rect=layout.dots if header.dots_filled is not None else None,
+        dots_filled=header.dots_filled,
+        name_rect=layout.name, name_text=header.name,
+        volume_cluster_rect=layout.volume_cluster,
+        volume=header.volume, muted=header.muted,
         width=width, height=height,
     )
-    draw = ImageDraw.Draw(frame)
-
-    if state.layout == "enable":
-        row = layout.row
-        dot_box = row[3] - row[1]
-        dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
-        label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
-        _draw_label(draw, label_rect, "Repeat Play", row_font, pad)
-        _draw_glyph_supersampled(frame, dot_rect, lambda d, w, h: _draw_arm_dot(d, w, h, state.armed))
-    else:
-        start_color = _GLYPH_RGB if state.start_enabled else _DIMMED_GLYPH_RGB
-        stop_color = _GLYPH_RGB if state.stop_enabled else _DIMMED_GLYPH_RGB
-        _draw_bottom_band(
-            frame, layout, width, height,
-            left_rect=layout.start, right_rect=layout.stop,
-            draw_left=lambda d, r: _draw_label_centered(d, r, "Restart", line_font, color=start_color),
-            draw_right=lambda d, r: _draw_label_centered(d, r, "Stop", line_font, color=stop_color),
-        )
-        _draw_text_with_halo(frame, layout.line, state.line, line_font, width, height, align="center")
-
-    return frame
 
 
-def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
-    """Render the appliance-selector chassis (compose-space, pre rotate/BGR)
-    — see DialDisplayCompositor.compose_list()."""
+def _body_none(img: Image.Image, width: int, height: int, body: Body) -> None:
+    pass
+
+
+def _body_now_playing(img: Image.Image, width: int, height: int, body: Body) -> None:
+    layout = layout_for(width, height)
+    font = _load_font(_scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8))
+    _draw_text_with_halo(img, layout.title, body.title, font, width, height)
+    _draw_text_with_halo(img, layout.artist, body.artist, font, width, height)
+
+
+def _body_repeat_row(img: Image.Image, width: int, height: int, body: Body) -> None:
+    layout = repeat_layout_for(width, height)
+    pad = _pad_px(width, height)
+    row_font = _load_font(_scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8))
+    draw = ImageDraw.Draw(img)
+    row = layout.row
+    dot_box = row[3] - row[1]
+    dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
+    label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
+    _draw_label(draw, label_rect, "Repeat Play", row_font, pad)
+    _draw_glyph_supersampled(img, dot_rect, lambda d, w, h: _draw_arm_dot(d, w, h, body.armed))
+
+
+def _body_repeat_line(img: Image.Image, width: int, height: int, body: Body) -> None:
+    layout = repeat_layout_for(width, height)
+    font = _load_font(_scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9))
+    _draw_text_with_halo(img, layout.line, body.line, font, width, height, align="center")
+
+
+def _body_list_rows(img: Image.Image, width: int, height: int, body: Body) -> None:
     layout = list_layout_for(width, height)
-    frame = Image.new("RGB", (width, height), _LIST_BG_RGB)
-    draw = ImageDraw.Draw(frame)
-
-    def _pressed_rect(pressed):
-        if pressed is None:
-            return None
-        zone, index = pressed
-        if zone == TouchZone.LIST_ROW:
-            if index is not None and 0 <= index < len(layout.rows):
-                return layout.rows[index]
-            return None
-        return {
-            TouchZone.LIST_BACK: layout.back,
-            TouchZone.LIST_DOWN: layout.down,
-            TouchZone.LIST_UP: layout.up,
-        }.get(zone)
-
-    pressed_rect = _pressed_rect(state.pressed)
-    if pressed_rect is not None:
-        _draw_pressed_highlight(frame, pressed_rect)
-        draw = ImageDraw.Draw(frame)
-
-    row_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
-    row_font = _load_font(row_px)
+    draw = ImageDraw.Draw(img)
+    row_font = _load_font(_scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8))
     pad = _pad_px(width, height)
 
     for i, (x0, y0, x1, y1) in enumerate(layout.rows):
         draw.line([(x0, y1 - 1), (x1 - 1, y1 - 1)], fill=_LIST_SEPARATOR_RGB, width=1)
-        if i >= len(state.rows):
+        if i >= len(body.rows):
             continue
-        row = state.rows[i]
+        row = body.rows[i]
         label, checked = row[0], row[1]
         secondary = row[2] if len(row) > 2 else ""
         is_loop = secondary is LOOP_GLYPH
@@ -1185,23 +1168,23 @@ def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
         # glyph (if any), then the selected dot (if any), then free-text
         # secondary (e.g. a buffer length) just left of whatever glyph
         # space is reserved. A plain 2-tuple row (secondary == "") takes
-        # exactly the pre-existing "checked reserves one box" path below,
-        # byte-identical to before this field existed.
+        # exactly the "checked reserves one box" path below, byte-identical
+        # to before the secondary slot existed.
         right_edge = x1 - pad
         if is_loop:
             loop_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph_supersampled(frame, loop_rect, _draw_loop_glyph)
-            draw = ImageDraw.Draw(frame)
+            _draw_glyph_supersampled(img, loop_rect, _draw_loop_glyph)
+            draw = ImageDraw.Draw(img)
             right_edge -= check_box
             if checked:
                 check_rect = (right_edge - check_box, y0, right_edge, y1)
-                _draw_glyph_supersampled(frame, check_rect, _draw_selected_dot)
-                draw = ImageDraw.Draw(frame)
+                _draw_glyph_supersampled(img, check_rect, _draw_selected_dot)
+                draw = ImageDraw.Draw(img)
                 right_edge -= check_box
         elif checked:
             check_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph_supersampled(frame, check_rect, _draw_selected_dot)
-            draw = ImageDraw.Draw(frame)
+            _draw_glyph_supersampled(img, check_rect, _draw_selected_dot)
+            draw = ImageDraw.Draw(img)
             right_edge -= check_box
 
         if isinstance(secondary, str) and secondary and row_font is not None:
@@ -1222,9 +1205,181 @@ def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
                     left, top, _, _ = bbox
                     _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font)
 
-    _dim_rect(frame, layout.bar)
-    draw = ImageDraw.Draw(frame)
-    _draw_glyph_supersampled(frame, layout.back, lambda d, w, h: _draw_chevron(d, w, h, "left", True))
-    _draw_glyph_supersampled(frame, layout.down, lambda d, w, h: _draw_chevron(d, w, h, "down", state.has_next))
-    _draw_glyph_supersampled(frame, layout.up, lambda d, w, h: _draw_chevron(d, w, h, "up", state.has_prev))
-    return frame
+
+_BODY_RENDERERS = {
+    BODY_NONE: _body_none,
+    BODY_NOW_PLAYING: _body_now_playing,
+    BODY_REPEAT_ROW: _body_repeat_row,
+    BODY_REPEAT_LINE: _body_repeat_line,
+    BODY_LIST_ROWS: _body_list_rows,
+}
+
+
+def _footer_none(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
+    pass
+
+
+def _footer_volume(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
+    _draw_bottom_band(
+        img, layout, width, height,
+        left_rect=layout.down, right_rect=layout.up,
+        draw_left=_draw_minus_glyph, draw_right=_draw_plus_glyph,
+    )
+
+
+def _footer_labels(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
+    font = _load_font(_scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9))
+    left_color = _GLYPH_RGB if footer.left_enabled else _DIMMED_GLYPH_RGB
+    right_color = _GLYPH_RGB if footer.right_enabled else _DIMMED_GLYPH_RGB
+    _draw_bottom_band(
+        img, layout, width, height,
+        left_rect=layout.down, right_rect=layout.up,
+        draw_left=lambda d, r: _draw_label_centered(d, r, footer.left_text, font, color=left_color),
+        draw_right=lambda d, r: _draw_label_centered(d, r, footer.right_text, font, color=right_color),
+    )
+
+
+def _footer_list_bar(img: Image.Image, layout, width: int, height: int, footer: Footer) -> None:
+    ll = list_layout_for(width, height)
+    _draw_glyph_supersampled(img, ll.back, lambda d, w, h: _draw_chevron(d, w, h, "left", True))
+    _draw_glyph_supersampled(img, ll.down, lambda d, w, h: _draw_chevron(d, w, h, "down", footer.has_next))
+    _draw_glyph_supersampled(img, ll.up, lambda d, w, h: _draw_chevron(d, w, h, "up", footer.has_prev))
+
+
+_FOOTER_RENDERERS = {
+    FOOTER_NONE: _footer_none,
+    FOOTER_VOLUME: _footer_volume,
+    FOOTER_LABELS: _footer_labels,
+    FOOTER_LIST_BAR: _footer_list_bar,
+}
+
+
+def _compose_frame(base, width: int, height: int, frame: Frame, *, rotate: bool, bgr: bool) -> Image.Image:
+    """The one pipeline every screen frame is built from: background, dims,
+    pressed wash, header, body, footer, then rotate/BGR. *frame* carries
+    everything screen-specific; the geometry itself always comes from
+    layout_for() (plus list_layout_for()/repeat_layout_for() inside the
+    renderers that need them) — never computed here.
+
+    Dimming happens before the pressed wash so a highlighted zone still
+    reads brighter than its dimmed surroundings, matching the dimmed band
+    it sits on; the wash happens before any content so text/glyphs always
+    land on top of it. Body and footer never overlap, so their relative
+    order does not matter. No blanket exception handling here: every draw
+    helper already degrades on its own (a missing font or a Pillow failure
+    simply skips that one element), and an unrecognised body/footer kind is
+    a programming error that should raise rather than be swallowed.
+    """
+    img = _new_frame(base, width, height, frame.background)
+    layout = layout_for(width, height)
+    if frame.dim_top:
+        _dim_rect(img, layout.top_band)
+    if frame.dim_bottom:
+        _dim_rect(img, layout.bottom_band)
+    for rect in frame.pressed:
+        _draw_pressed_highlight(img, rect)
+    if frame.header is not None:
+        _draw_header(img, layout, frame.header, width, height)
+    _BODY_RENDERERS[frame.body.kind](img, width, height, frame.body)
+    _FOOTER_RENDERERS[frame.footer.kind](img, layout, width, height, frame.footer)
+    return _finish(img, rotate, bgr)
+
+
+def _main_pressed_rects(pressed: "TouchZone | None", width: int, height: int) -> tuple[Rect, ...]:
+    """The now-playing screen's pressed-rect lookup: a stale or unrecognised
+    zone (e.g. one that belongs to a different surface) washes nothing."""
+    if pressed is None:
+        return ()
+    zones = zones_for(width, height)
+    if pressed in zones:
+        return (zones[pressed],)
+    return ()
+
+
+def _now_playing_frame(overlay: OverlayState, width: int, height: int) -> Frame:
+    return Frame(
+        background=BG_BASE,
+        dim_top=True,
+        dim_bottom=True,
+        pressed=_main_pressed_rects(overlay.pressed, width, height),
+        header=Header(
+            name=overlay.name, volume=overlay.volume, muted=overlay.muted,
+            dots_filled=0 if overlay.dots else None,
+        ),
+        body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist),
+        footer=Footer(FOOTER_VOLUME),
+    )
+
+
+def _repeat_pressed_rects(state: RepeatViewState, width: int, height: int) -> tuple[Rect, ...]:
+    """The repeat screen's pressed-rect lookup: a genuine touch first, then
+    the fade-out-in-flight Stop wash layered on top of it when replaying —
+    same order the two highlights are drawn in today."""
+    layout = repeat_layout_for(width, height)
+    zones = {
+        TouchZone.DOTS: layout.dots,
+        TouchZone.NAME: layout.name,
+        TouchZone.REPEAT_PLAY: layout.row,
+        TouchZone.REPEAT_START: layout.start,
+        TouchZone.REPEAT_STOP: layout.stop,
+    }
+    rects = []
+    if state.pressed is not None and state.pressed in zones:
+        rects.append(zones[state.pressed])
+    if state.layout == "replaying" and state.stop_pressed:
+        rects.append(layout.stop)
+    return tuple(rects)
+
+
+def _repeat_frame(state: RepeatViewState, width: int, height: int) -> Frame:
+    replaying = state.layout == "replaying"
+    if replaying:
+        body = Body(BODY_REPEAT_LINE, line=state.line)
+        footer = Footer(
+            FOOTER_LABELS, left_text="Restart", right_text="Stop",
+            left_enabled=state.start_enabled, right_enabled=state.stop_enabled,
+        )
+    else:
+        body = Body(BODY_REPEAT_ROW, armed=state.armed)
+        footer = Footer(FOOTER_NONE)
+    return Frame(
+        background=BG_BASE if replaying else BG_CHASSIS,
+        dim_top=True,
+        dim_bottom=replaying,
+        pressed=_repeat_pressed_rects(state, width, height),
+        header=Header(name=state.name, volume=state.volume, muted=state.muted, dots_filled=1),
+        body=body,
+        footer=footer,
+    )
+
+
+def _list_pressed_rects(state: ListState, width: int, height: int) -> tuple[Rect, ...]:
+    """The selector screen's pressed-rect lookup: a stale LIST_ROW index
+    (the roster shrank between paint and tap) washes nothing rather than
+    raising."""
+    if state.pressed is None:
+        return ()
+    layout = list_layout_for(width, height)
+    zone, index = state.pressed
+    if zone == TouchZone.LIST_ROW:
+        if index is not None and 0 <= index < len(layout.rows):
+            return (layout.rows[index],)
+        return ()
+    rect = {
+        TouchZone.LIST_BACK: layout.back,
+        TouchZone.LIST_DOWN: layout.down,
+        TouchZone.LIST_UP: layout.up,
+    }.get(zone)
+    return (rect,) if rect is not None else ()
+
+
+def _list_frame(state: ListState, width: int, height: int) -> Frame:
+    return Frame(
+        background=BG_CHASSIS,
+        dim_top=False,
+        dim_bottom=True,
+        pressed=_list_pressed_rects(state, width, height),
+        header=None,
+        body=Body(BODY_LIST_ROWS, rows=state.rows),
+        footer=Footer(FOOTER_LIST_BAR, has_prev=state.has_prev, has_next=state.has_next),
+    )

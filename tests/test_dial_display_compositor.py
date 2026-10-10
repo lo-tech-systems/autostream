@@ -29,11 +29,25 @@ for _p in (_DIAL, _CORE):
 from dial_display_compositor import (  # noqa: E402
     _ARTIST_FONT_PX_AT_REFERENCE,
     _VOLUME_FONT_PX_AT_REFERENCE,
+    BG_BASE,
+    BODY_LIST_ROWS,
+    BODY_NONE,
+    BODY_NOW_PLAYING,
+    BODY_REPEAT_LINE,
+    BODY_REPEAT_ROW,
     DialDisplayCompositor,
+    FOOTER_LABELS,
+    FOOTER_LIST_BAR,
+    FOOTER_NONE,
+    FOOTER_VOLUME,
+    Frame,
     ListState,
     LOOP_GLYPH,
     OverlayState,
     RepeatViewState,
+    _BODY_RENDERERS,
+    _FOOTER_RENDERERS,
+    _compose_frame,
     _pad_px,
     _reset_font_cache,
     _scaled_px,
@@ -998,7 +1012,7 @@ def _repeat_state(**overrides) -> RepeatViewState:
 
 def _repeat_dot_rect(layout, width=160, height=128):
     """The enable layout's "Repeat Play" row dot marker rect — mirrors the
-    geometry _draw_repeat() itself computes."""
+    geometry _body_repeat_row() itself computes."""
     pad = _pad_px(width, height)
     row = layout.row
     dot_box = row[3] - row[1]
@@ -1312,3 +1326,66 @@ class TestOverlayDots:
         result = compositor.compose(base, 160, 128, rotate=False, bgr=False, is_artwork=False,
                                      overlay=OverlayState(visible=False, dots=True))
         assert list(result.getdata()) == list(base.getdata())
+
+
+# ---------------------------------------------------------------------------
+# _compose_frame — the shared pipeline every screen frame is built from:
+# background, dims, pressed wash, header, body, footer, then rotate/BGR.
+# Exercised directly here (rather than only through the four public
+# entry points above) so the dispatch tables and the pipeline's own
+# invariants are pinned independently of any one screen's adapter.
+# ---------------------------------------------------------------------------
+
+class TestComposeFramePipeline:
+    def test_every_body_kind_has_a_renderer(self):
+        for kind in (BODY_NONE, BODY_NOW_PLAYING, BODY_REPEAT_ROW, BODY_REPEAT_LINE, BODY_LIST_ROWS):
+            assert kind in _BODY_RENDERERS
+
+    def test_every_footer_kind_has_a_renderer(self):
+        for kind in (FOOTER_NONE, FOOTER_VOLUME, FOOTER_LABELS, FOOTER_LIST_BAR):
+            assert kind in _FOOTER_RENDERERS
+
+    def test_default_frame_renders_the_base_unchanged(self):
+        size = (160, 128)
+        base = Image.new("RGB", size, (12, 34, 56))
+        result = _compose_frame(base, *size, Frame(BG_BASE), rotate=False, bgr=False)
+        assert list(result.getdata()) == list(base.getdata())
+
+    def test_pressed_rects_wash_exactly_those_rects_and_nothing_else(self):
+        size = (160, 128)
+        base = Image.new("RGB", size, (200, 150, 100))
+        rect_a = (10, 10, 30, 30)
+        rect_b = (50, 60, 70, 90)
+        unpressed = _compose_frame(base, *size, Frame(BG_BASE), rotate=False, bgr=False)
+        pressed = _compose_frame(
+            base, *size, Frame(BG_BASE, pressed=(rect_a, rect_b)), rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(rect_a).getdata()) != list(pressed.crop(rect_a).getdata())
+        assert list(unpressed.crop(rect_b).getdata()) != list(pressed.crop(rect_b).getdata())
+        outside = (100, 100, 120, 120)
+        assert list(unpressed.crop(outside).getdata()) == list(pressed.crop(outside).getdata())
+
+    def test_rotate_applied_before_bgr(self):
+        size = (4, 4)
+        base = _marked_image(size)
+        result = _compose_frame(base, *size, Frame(BG_BASE), rotate=True, bgr=True)
+        expected = base.transpose(Image.ROTATE_180)
+        expected = Image.merge("RGB", expected.split()[::-1])
+        assert list(result.getdata()) == list(expected.getdata())
+
+    def test_new_frame_does_not_mutate_the_caller_base(self):
+        size = (160, 128)
+        base = Image.new("RGB", size, (12, 34, 56))
+        before = base.tobytes()
+        _compose_frame(
+            base, *size,
+            Frame(BG_BASE, dim_top=True, dim_bottom=True, pressed=((0, 0, 10, 10),)),
+            rotate=False, bgr=False,
+        )
+        assert base.tobytes() == before
+
+    def test_new_frame_returns_a_distinct_object_from_the_base(self):
+        size = (160, 128)
+        base = Image.new("RGB", size, (1, 2, 3))
+        result = _compose_frame(base, *size, Frame(BG_BASE), rotate=False, bgr=False)
+        assert result is not base
