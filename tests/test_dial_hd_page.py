@@ -12,6 +12,13 @@ REPO_ROOT = Path(__file__).parent.parent
 HD = REPO_ROOT / "dial" / "hd"
 THEME = REPO_ROOT / "nginx" / "static" / "theme.css"
 
+# The page's script files: the entry and the modules it imports.
+PAGE_SCRIPTS = sorted(HD.glob("hd*.js"))
+
+
+def page_source() -> str:
+    return "\n".join(p.read_text(encoding="utf-8") for p in PAGE_SCRIPTS)
+
 MARKUP_SINKS = ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function")
 
 
@@ -63,13 +70,13 @@ def test_index_uses_the_dark_theme():
 
 
 def test_script_never_builds_markup_from_text():
-    source = (HD / "hd.js").read_text(encoding="utf-8")
+    source = page_source()
     for sink in MARKUP_SINKS:
         assert sink not in source, sink
 
 
 def test_script_posts_actions_through_one_helper():
-    source = (HD / "hd.js").read_text(encoding="utf-8")
+    source = page_source()
     assert source.count("fetch(") == 2          # the state check and post()
     assert source.count('"X-Requested-With": "autostream-hd"') == 1
     assert source.count("/api/v1/actions/") == 1
@@ -92,7 +99,7 @@ def test_every_request_the_script_makes_names_a_real_route():
             sys.path.insert(0, str(path))
     from dial_hd_actions import ACTIONS
 
-    source = (HD / "hd.js").read_text(encoding="utf-8")
+    source = page_source()
     sent = (
         set(re.findall(r'post\("([a-z_]+)"', source))
         | set(re.findall(r'sendDrag\([^,]+, "([a-z_]+)"', source))
@@ -111,7 +118,7 @@ def test_every_request_the_script_makes_names_a_real_route():
 
 
 def test_script_draws_the_response_curve_from_the_appliances_filters():
-    source = (HD / "hd.js").read_text(encoding="utf-8")
+    source = page_source()
     # The bass and treble sliders of a two-band appliance move these bands.
     assert re.search(r'bass: \[\["peq1", 1\], \["peq2", 1\]\]', source)
     assert re.search(r'treble: \[\["peq6", 1\], \["peq5", 0\.5\]\]', source)
@@ -132,7 +139,7 @@ def test_the_keypad_card_is_static_markup_the_script_only_fills_in():
 
 
 def test_the_script_keeps_the_pin_out_of_logs_storage_and_the_address():
-    source = (HD / "hd.js").read_text(encoding="utf-8")
+    source = page_source()
     for sink in ("localStorage", "sessionStorage", "indexedDB", "document.cookie", "location.hash", "history."):
         assert sink not in source, sink
     assert source.count("console.") == source.count("console.warn(")

@@ -69,6 +69,7 @@ _JS = "text/javascript; charset=utf-8"
 STATIC_FILES = {
     "hd.css": (_CSS, STATIC_ROOT / "hd.css"),
     "hd.js": (_JS, STATIC_ROOT / "hd.js"),
+    "hd-tables.js": (_JS, STATIC_ROOT / "hd-tables.js"),
     "login.js": (_JS, STATIC_ROOT / "login.js"),
     "theme.css": (_CSS, THEME_PATH),
     "logo.png": ("image/png", LOGO_PATH),

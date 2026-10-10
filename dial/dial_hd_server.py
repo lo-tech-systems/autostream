@@ -110,6 +110,7 @@ _PNG = "image/png"
 STATIC_FILES = {
     "hd.css": _CSS,
     "hd.js": _JS,
+    "hd-tables.js": _JS,
     "login.js": _JS,
     "theme.css": _CSS,
     "logo.png": _PNG,

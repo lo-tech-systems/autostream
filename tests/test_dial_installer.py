@@ -1530,8 +1530,8 @@ class TestHdPageDeployment:
         script = f"set -euo pipefail\nDEPLOY={REPO_ROOT}\n{fn}\ninstall_code_tree {dest}\n"
         result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
-        for name in ("index.html", "hd.css", "hd.js"):
-            assert (dest / "hd" / name).read_bytes() == (REPO_ROOT / "dial" / "hd" / name).read_bytes()
+        for path in sorted((REPO_ROOT / "dial" / "hd").iterdir()):
+            assert (dest / "hd" / path.name).read_bytes() == path.read_bytes()
         assert (dest / "hd" / "theme.css").read_bytes() == (
             REPO_ROOT / "nginx" / "static" / "theme.css").read_bytes()
         assert (dest / "dial_hd_server.py").is_file()

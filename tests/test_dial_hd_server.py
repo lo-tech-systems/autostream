@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -242,9 +243,19 @@ class TestStaticFiles:
     def test_the_shipped_page_files_exist_and_the_index_loads_only_static_files(self):
         root = hds.HD_STATIC_ROOT
         index = (root / "index.html").read_text(encoding="utf-8")
+        for name in hds.STATIC_FILES:
+            if name not in ("theme.css", "logo.png"):
+                assert (root / name).is_file()
         for name in ("hd.css", "hd.js"):
-            assert (root / name).is_file()
             assert f"/static/{name}" in index
+
+    def test_every_module_the_page_imports_is_a_served_static_file(self):
+        root = hds.HD_STATIC_ROOT
+        source = "\n".join(p.read_text(encoding="utf-8") for p in sorted(root.glob("hd*.js")))
+        imported = re.findall(r'from "\./([a-z-]+\.js)"', source)
+        assert imported
+        for name in imported:
+            assert name in hds.STATIC_FILES
 
 
 # ---- request checks --------------------------------------------------------

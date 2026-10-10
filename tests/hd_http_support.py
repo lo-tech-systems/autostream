@@ -86,6 +86,7 @@ def write_static(root: Path) -> Path:
     (root / "index.html").write_bytes(b"<!doctype html><title>t</title>")
     (root / "hd.css").write_bytes(b"body{}")
     (root / "hd.js").write_bytes(b"(function(){})();")
+    (root / "hd-tables.js").write_bytes(b"export const x = 1;")
     (root / "theme.css").write_bytes(b":root{}")
     for name in ("login.html", "login.js"):
         (root / name).write_bytes((REPO_ROOT / "dial" / "hd" / name).read_bytes())
