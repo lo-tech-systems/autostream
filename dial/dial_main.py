@@ -315,7 +315,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     existed.
     """
     from dial_display_compositor import OverlayState
-    from dial_display_profiles import effective_diagonal_inches, get_profile, mm_per_px_for
+    from dial_display_profiles import get_profile, layout_context_for
     from dial_touch import TouchEventSource, TouchStateMachine
     from dial_touch_layout import metrics_for
     from dial_touch_controllers import get_controller
@@ -335,6 +335,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
 
     controller = get_controller(cfg.display.touch_type)
     profile = get_profile(cfg.display.screen_type)
+    layout = layout_context_for(cfg.display)
     driver = open_driver(controller.driver_tag)
     # ft6206 (capacitive) leaves z_threshold unset — it reports already-
     # "touching" samples with no meaningful analog pressure, so the
@@ -350,8 +351,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     # 180 degrees means; it composes with the profile's own axis mapping.
     rotated = bool(cfg.display.rotate)
     touch_filter = TouchFilter(
-        profile.width,
-        profile.height,
+        layout.logical_width,
+        layout.logical_height,
         z_threshold=z_threshold,
         raw_x_min=controller.raw_x_min,
         raw_x_max=controller.raw_x_max,
@@ -360,10 +361,13 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         swap_xy=profile.touch_swap_xy,
         invert_x=profile.touch_invert_x != rotated,
         invert_y=profile.touch_invert_y != rotated,
+        physical_size=layout.physical_size,
     )
-    mm_per_px = mm_per_px_for(profile, effective_diagonal_inches(profile, cfg.display.screen_size_inches))
-    touch_metrics = metrics_for(profile.width, profile.height, mm_per_px=mm_per_px)
-    state_machine = TouchStateMachine(profile.width, profile.height, metrics=touch_metrics)
+    touch_metrics = metrics_for(
+        layout.logical_width, layout.logical_height,
+        mm_per_px=layout.mm_per_px, size_chosen=layout.size_chosen,
+    )
+    state_machine = TouchStateMachine(layout.logical_width, layout.logical_height, metrics=touch_metrics)
 
     def on_reveal_overlay() -> None:
         _confirm_presence()
@@ -478,9 +482,10 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     # the axis mapping is the first thing to check when presses land in the
     # wrong place.
     logging.info(
-        "dial touch: %s ready on %dx%d (raw x %s-%s y %s-%s, swap_xy=%s, "
+        "dial touch: %s ready on %dx%d logical on %dx%d (raw x %s-%s y %s-%s, swap_xy=%s, "
         "invert x=%s y=%s, rotate=%s)",
-        controller.key, profile.width, profile.height,
+        controller.key, layout.logical_width, layout.logical_height,
+        profile.width, profile.height,
         controller.raw_x_min, controller.raw_x_max,
         controller.raw_y_min, controller.raw_y_max,
         profile.touch_swap_xy,

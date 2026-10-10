@@ -305,3 +305,82 @@ class TestZoneLatch:
         f = make_filter()
         _, events = press_to_confirmed(f, MUTE_XY, 0.0)
         assert events[0].zone == TouchZone.MUTE
+
+
+# ---------------------------------------------------------------------------
+# Physical-size remap — a layout-size setting composes/hit-tests at a
+# LOGICAL size distinct from the panel's own pixel grid; readings are
+# scaled the other way. See TouchFilter's physical_size parameter and
+# set_logical_size().
+# ---------------------------------------------------------------------------
+
+class TestPhysicalSizeRemap:
+    def test_resistive_remap_scales_to_the_logical_size(self):
+        f = TouchFilter(
+            640, 480, raw_x_min=0, raw_x_max=4095, raw_y_min=0, raw_y_max=4095,
+            physical_size=(320, 240),
+        )
+        _, events = press_to_confirmed(f, (2048, 2048), 0.0)
+        assert (events[0].x, events[0].y) == (320, 240)
+
+        f2 = TouchFilter(
+            640, 480, raw_x_min=0, raw_x_max=4095, raw_y_min=0, raw_y_max=4095,
+            physical_size=(320, 240),
+        )
+        _, events2 = press_to_confirmed(f2, (4095, 4095), 0.0)
+        assert (events2[0].x, events2[0].y) == (639, 479)
+
+    def test_resistive_remap_is_unaffected_by_physical_size(self):
+        """Resistive readings never need physical_size: they normalise
+        against the raw span and scale straight to width x height, which
+        IS the logical size — a filter built with physical_size=(width,
+        height) is byte-identical to one built without the keyword."""
+        with_phys = TouchFilter(
+            320, 240, raw_x_min=0, raw_x_max=4095, raw_y_min=0, raw_y_max=4095,
+            physical_size=(320, 240),
+        )
+        without_phys = TouchFilter(
+            320, 240, raw_x_min=0, raw_x_max=4095, raw_y_min=0, raw_y_max=4095,
+        )
+        _, events_with = press_to_confirmed(with_phys, (2048, 2048), 0.0)
+        _, events_without = press_to_confirmed(without_phys, (2048, 2048), 0.0)
+        assert (events_with[0].x, events_with[0].y) == (160, 120)
+        assert (events_without[0].x, events_without[0].y) == (160, 120)
+
+    def test_capacitive_remap_scales_physical_reading_to_logical(self):
+        f = TouchFilter(640, 480, physical_size=(320, 240))
+        _, events = press_to_confirmed(f, (160, 120), 0.0)
+        assert (events[0].x, events[0].y) == (320, 240)
+
+    def test_capacitive_remap_stays_inside_logical_bounds(self):
+        f = TouchFilter(640, 480, physical_size=(320, 240))
+        _, events = press_to_confirmed(f, (319, 239), 0.0)
+        assert (events[0].x, events[0].y) == (638, 478)
+
+    def test_capacitive_no_physical_size_passes_through_unchanged(self):
+        f = TouchFilter(640, 480)
+        _, events = press_to_confirmed(f, (160, 120), 0.0)
+        assert (events[0].x, events[0].y) == (160, 120)
+
+    def test_capacitive_physical_size_equal_to_logical_passes_through(self):
+        f = TouchFilter(640, 480, physical_size=(640, 480))
+        _, events = press_to_confirmed(f, (160, 120), 0.0)
+        assert (events[0].x, events[0].y) == (160, 120)
+
+
+class TestSetLogicalSize:
+    def test_changes_only_the_mapping_not_the_phase(self):
+        f = TouchFilter(640, 480, physical_size=(320, 240))
+        now, events = press_to_confirmed(f, (160, 120), 0.0)
+        assert (events[0].x, events[0].y) == (320, 240)
+
+        # Mid-lifecycle: change the mapping without ending the press —
+        # the phase (still HELD) is untouched, only the scale changes.
+        f.set_logical_size(160, 128, physical_size=(320, 240))
+        t = now + FIRST_REPEAT_S
+        events = f.feed((160, 120, Z_HIGH), t)
+        assert len(events) == 1
+        assert events[0].type == TouchEventType.REPEAT
+        # (160, 120) physical against the NEW 160x128 logical size (a 2x
+        # scale factor on each axis) -> (80, 64).
+        assert (events[0].x, events[0].y) == (80, 64)

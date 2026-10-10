@@ -121,9 +121,16 @@ class TouchFilter:
         swap_xy: bool = False,
         invert_x: bool = False,
         invert_y: bool = False,
+        physical_size: tuple[int, int] | None = None,
     ) -> None:
         self._width = width
         self._height = height
+        # The panel's own pixel size, when readings arrive already in panel
+        # pixels (capacitive controllers). None or equal to (width, height)
+        # means no scaling. Resistive readings never need it: they are
+        # normalised against the raw span and scaled straight to width x
+        # height, which is the logical size — see _to_panel_xy() below.
+        self._physical_size = physical_size
         self._z_threshold = z_threshold
         self._median_n = median_n
         self._raw_x_min = raw_x_min
@@ -165,6 +172,16 @@ class TouchFilter:
         self._invert_x = invert_x
         self._invert_y = invert_y
 
+    def set_logical_size(
+        self, width: int, height: int, *, physical_size: tuple[int, int] | None = None,
+    ) -> None:
+        """Update the size readings are scaled to, in place — the layout
+        size changed under a live touch stack. Like set_axis_transform(),
+        only the mapping changes; the caller ends the in-flight press."""
+        self._width = width
+        self._height = height
+        self._physical_size = physical_size
+
     def _to_panel_xy(self, rx: int, ry: int) -> tuple[int, int]:
         """Map one raw controller reading to compose-space pixels.
 
@@ -183,7 +200,12 @@ class TouchFilter:
         and must still land in the nearest zone.
         """
         if not self._scales:
-            return rx, ry
+            phys = self._physical_size
+            if phys is None or phys == (self._width, self._height):
+                return rx, ry
+            px = int(rx * self._width / phys[0])
+            py = int(ry * self._height / phys[1])
+            return max(0, min(self._width - 1, px)), max(0, min(self._height - 1, py))
 
         nx = (rx - self._raw_x_min) / (self._raw_x_max - self._raw_x_min)
         ny = (ry - self._raw_y_min) / (self._raw_y_max - self._raw_y_min)

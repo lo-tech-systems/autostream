@@ -1898,6 +1898,69 @@ class TestBuildTouchSourceWiring:
 
 
 # ---------------------------------------------------------------------------
+# _build_touch_source() building the filter/state machine at the configured
+# layout size — layout_context_for(cfg.display) is the single source both
+# are built from.
+# ---------------------------------------------------------------------------
+
+class TestBuildTouchSourceLayoutWiring:
+    def _built_with_layout(self, screen_type, screen_size_inches, layout_size):
+        import dial_main as dm
+        from dial_config import DialDisplayConfig
+
+        cfg = MagicMock()
+        cfg.display = DialDisplayConfig(
+            fitted=True, touch_type="xpt2046", screen_type=screen_type,
+            screen_size_inches=screen_size_inches, layout_size=layout_size,
+        )
+        cfg.step_percent = 3
+        display = MagicMock()
+        display.noncomposited_generation = MagicMock(return_value=0)
+
+        captured = {}
+
+        def fake_touch_filter(*args, **kwargs):
+            captured["filter_args"] = args
+            captured["filter_kwargs"] = kwargs
+            return MagicMock()
+
+        def fake_state_machine(*args, **kwargs):
+            captured["machine_args"] = args
+            captured["machine_kwargs"] = kwargs
+            return MagicMock()
+
+        with patch("dial_touch_drivers.open_driver"), \
+             patch("dial_touch_filter.TouchFilter", side_effect=fake_touch_filter), \
+             patch("dial_touch.TouchStateMachine", side_effect=fake_state_machine), \
+             patch("dial_touch.TouchEventSource"):
+            dm._build_touch_source(cfg, display)
+        return captured
+
+    def test_large_layout_size_builds_at_logical_with_physical_scaling(self):
+        captured = self._built_with_layout("ili9341_320x240", 2.8, "large")
+        assert captured["filter_args"][:2] == (640, 480)
+        assert captured["filter_kwargs"]["physical_size"] == (320, 240)
+        assert captured["machine_args"][:2] == (640, 480)
+        assert captured["machine_kwargs"]["metrics"].content_tier == "large"
+
+    def test_none_layout_size_matches_todays_construction(self):
+        from dial_display_profiles import effective_diagonal_inches, get_profile, mm_per_px_for
+        from dial_touch_layout import metrics_for
+
+        captured = self._built_with_layout("ili9341_320x240", 2.8, None)
+        profile = get_profile("ili9341_320x240")
+        assert captured["filter_args"][:2] == (profile.width, profile.height)
+        # None path: physical_size equals the logical size, the short-circuit
+        # (no-op scaling) case in TouchFilter._to_panel_xy().
+        assert captured["filter_kwargs"]["physical_size"] == (profile.width, profile.height)
+        expected_metrics = metrics_for(
+            profile.width, profile.height,
+            mm_per_px=mm_per_px_for(profile, effective_diagonal_inches(profile, 2.8)),
+        )
+        assert captured["machine_kwargs"]["metrics"] == expected_metrics
+
+
+# ---------------------------------------------------------------------------
 # _build_volume_targets_fn(): zero-arg resolver for the volume worker — the
 # display's artwork source when it has one and it is still present in the
 # target list, else the oldest playing target (select_volume_target's

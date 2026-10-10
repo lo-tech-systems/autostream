@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from dial_config import InvalidScreenSettings, PIN_RESET_PATH, _read_env_file, validate_screen_settings
-from dial_display_profiles import DEFAULT_PROFILE_KEY, list_profiles
+from dial_display_profiles import DEFAULT_PROFILE_KEY, layout_context_for, list_profiles
 from dial_touch_controllers import list_controllers
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
@@ -845,10 +845,10 @@ class DialHTTPServer:
                 if dial_server._touch_source is not None:
                     try:
                         dial_server._touch_source.display_config_changed(
-                            new_display.rotate
+                            new_display.rotate, layout=layout_context_for(new_display),
                         )
                     except Exception as e:
-                        logging.warning("dial touch: axis remap failed (%s)", e)
+                        logging.warning("dial touch: remap failed (%s)", e)
                 # A failed live apply while fitted is requested surfaces as
                 # last_error == "backend_open_failed" (set by DialDisplay's
                 # degrade-to-noop path — see dial_display.py _enable_locked);

@@ -111,6 +111,7 @@ from dial_touch_layout import (
     LayoutMetrics,
     TouchZone,
     hit_test,
+    metrics_for,
 )
 
 # Overlay auto-dismisses this long after the last contact sample / release /
@@ -201,11 +202,11 @@ class TouchStateMachine:
     def __init__(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> None:
         self._width = width
         self._height = height
-        # Frozen at construction from the profile and the configured screen
-        # size (see dial_main._build_touch_source) — None means metrics_for
-        # (width, height), today's density-unaware hit-testing. A live size
-        # change therefore leaves this stale until the next restart; not
-        # acted on in this stage regardless.
+        # Set at construction from the profile/layout size in force at
+        # startup (see dial_main._build_touch_source) — None means
+        # metrics_for(width, height), today's density-unaware hit-testing.
+        # A live geometry change replaces all three together — see
+        # set_geometry() below.
         self._metrics = metrics
         self._phase = _PHASE_IDLE
         self._overlay_visible = False
@@ -413,6 +414,15 @@ class TouchStateMachine:
             actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
         actions.extend(self.set_held_visible(surface != SURFACE_HIDDEN, now))
         return actions
+
+    def set_geometry(self, width: int, height: int, metrics) -> None:
+        """Replace the hit-test size and metrics together — a live layout
+        change. Plain attribute writes from the HTTP thread, read on the
+        touch thread; the caller delivers the synthetic release that drops
+        any press sampled against the old geometry."""
+        self._width = width
+        self._height = height
+        self._metrics = metrics
 
     def force_overlay_visible(self, now: float) -> list[TouchAction]:
         """Force the overlay into the same visible state a fresh touch-down
@@ -701,7 +711,7 @@ class TouchEventSource:
         dispatches any resulting actions."""
         self._dispatch(self._state_machine.overlay_live(self._clock()))
 
-    def display_config_changed(self, rotate: bool) -> None:
+    def display_config_changed(self, rotate: bool, *, layout=None) -> None:
         """Apply a live screen-settings change that affects touch mapping.
 
         A 180-degree rotate is applied to the frame in software, so the
@@ -709,6 +719,12 @@ class TouchEventSource:
         diagonally opposite the button the user is looking at. The profile's
         own axis signs describe the UNROTATED panel, so rotate is XOR'd in,
         exactly as dial_main does when first building the filter.
+
+        *layout*, when given, is a dial_display_profiles.LayoutContext: the
+        filter is re-scaled to its logical size and the state machine
+        re-geometried to it (with metrics for that size) before the
+        synthetic release below, so a press straddling the change is
+        dropped exactly as a rotate drops it.
 
         Also delivers the synthetic release that config_changed() does: the
         finger cannot carry a press across a remap, because the zone it was
@@ -721,6 +737,17 @@ class TouchEventSource:
                 swap_xy=swap,
                 invert_x=base_invert_x != rotate,
                 invert_y=base_invert_y != rotate,
+            )
+        if layout is not None:
+            resize = getattr(self._filter, "set_logical_size", None)
+            if resize is not None:
+                resize(layout.logical_width, layout.logical_height, physical_size=layout.physical_size)
+            self._state_machine.set_geometry(
+                layout.logical_width, layout.logical_height,
+                metrics_for(
+                    layout.logical_width, layout.logical_height,
+                    mm_per_px=layout.mm_per_px, size_chosen=layout.size_chosen,
+                ),
             )
         self.config_changed()
 

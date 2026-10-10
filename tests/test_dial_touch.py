@@ -42,9 +42,13 @@ from dial_touch import (  # noqa: E402
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
+    GEOMETRY_MAIN,
     TouchZone,
+    hit_test,
+    layout_for,
     list_layout_for,
     list_zone_at,
+    metrics_for,
     repeat_layout_for,
     zones_for,
 )
@@ -938,6 +942,153 @@ class TestDisplayConfigChanged:
         assert touch_filter.calls == []  # transform left untouched
         # The synthetic release is still delivered regardless.
         assert sm.pressed_zone is None
+
+
+# ---------------------------------------------------------------------------
+# set_geometry() — a live layout-size change replaces the hit-test size and
+# metrics together.
+# ---------------------------------------------------------------------------
+
+class TestSetGeometry:
+    def test_stale_geometry_press_misses_and_new_geometry_press_hits(self):
+        metrics_640 = metrics_for(640, 480, mm_per_px=0.0889, size_chosen=True)
+        up_640 = layout_for(640, 480, metrics_640).up
+        up_xy_640 = ((up_640[0] + up_640[2]) // 2, (up_640[1] + up_640[3]) // 2)
+
+        sm = TouchStateMachine(640, 480, metrics=metrics_640)
+        sm.set_geometry(160, 128, metrics_for(160, 128))
+        sm._overlay_visible = True
+
+        # The old (640x480) UP centre no longer means anything against the
+        # new 160x128 geometry — it lands outside the panel or in a dead
+        # zone, either way nothing arms.
+        sm.on_filter_event(press_event(up_xy_640), now=0.0)
+        assert sm.pressed_zone is None
+
+        base_metrics = metrics_for(160, 128)
+        up_160 = layout_for(160, 128, base_metrics).up
+        up_xy_160 = ((up_160[0] + up_160[2]) // 2, (up_160[1] + up_160[3]) // 2)
+        sm.on_filter_event(press_event(up_xy_160), now=0.1)
+        assert sm.pressed_zone == TouchZone.UP
+
+
+# ---------------------------------------------------------------------------
+# A physical touch reading, scaled from the panel's physical pixel size to
+# the logical size a layout-size setting composes/hit-tests in, must land on
+# the same logical zone a press expressed directly in logical coordinates
+# does — geometry single source, end to end.
+# ---------------------------------------------------------------------------
+
+class TestPhysicalToLogicalRoundTrip:
+    def test_physical_tap_maps_to_the_same_logical_hit(self):
+        from dial_touch_filter import TouchFilter as _RealTouchFilter
+
+        metrics = metrics_for(640, 480, mm_per_px=0.0889, size_chosen=True)
+        down = layout_for(640, 480, metrics).down
+        cx = (down[0] + down[2]) // 2
+        cy = (down[1] + down[3]) // 2
+
+        sm = TouchStateMachine(640, 480, metrics=metrics)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event((cx, cy)), now=0.0)
+        assert sm.pressed_zone == TouchZone.DOWN
+
+        # The physical panel is half the logical size on each axis (320x240
+        # under 640x480 logical) — the physical point (cx // 2, cy // 2)
+        # through the capacitive remap must land back in the same logical
+        # zone (an odd centre coordinate can round to an adjacent pixel
+        # under integer halving, so the zone is what round-trips exactly,
+        # not necessarily the single pixel).
+        f = _RealTouchFilter(640, 480, physical_size=(320, 240))
+        mapped = f._to_panel_xy(cx // 2, cy // 2)
+        hit = hit_test(GEOMETRY_MAIN, mapped[0], mapped[1], 640, 480, metrics=metrics)
+        assert hit is not None and hit.zone == TouchZone.DOWN
+
+
+# ---------------------------------------------------------------------------
+# display_config_changed(rotate, layout=...) — the live layout-size remap:
+# axis transform, then the filter's logical size, then the machine's
+# geometry, then the synthetic release, in that order.
+# ---------------------------------------------------------------------------
+
+class FakeGeometryFilter:
+    """Spy filter exposing both set_axis_transform() and set_logical_size(),
+    recording the order display_config_changed() calls them in."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def set_axis_transform(self, *, swap_xy, invert_x, invert_y):
+        self.calls.append("axis")
+
+    def set_logical_size(self, width, height, *, physical_size=None):
+        self.calls.append("size")
+
+
+class FakeGeometryMachine:
+    """Spy state machine recording set_geometry()/on_filter_event() order —
+    stands in for TouchStateMachine so display_config_changed()'s dispatch
+    order can be pinned without a real hit-test."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def set_geometry(self, width, height, metrics):
+        self.calls.append("geometry")
+
+    def on_filter_event(self, event, now):
+        self.calls.append("release")
+        return []
+
+
+class TestDisplayConfigChangedWithLayout:
+    def test_order_is_axis_then_size_then_geometry_then_release(self):
+        from dial_display_profiles import LayoutContext
+
+        driver = FakeDriver()
+        touch_filter = FakeGeometryFilter()
+        sm = FakeGeometryMachine()
+        source = TouchEventSource(
+            driver, touch_filter, sm, clock=lambda: 1.0, axis_signs=(False, False, False),
+        )
+        ctx = LayoutContext(
+            logical_width=640, logical_height=480, physical_width=320, physical_height=240,
+            mm_per_px=0.0889, size_chosen=True,
+        )
+        source.display_config_changed(False, layout=ctx)
+        assert touch_filter.calls == ["axis", "size"]
+        assert sm.calls == ["geometry", "release"]
+
+    def test_no_layout_keeps_existing_three_tests_unchanged(self):
+        """display_config_changed() without layout= must behave exactly as
+        it did before this keyword existed (see TestDisplayConfigChanged
+        above) — this is a direct pin of that claim against the spy."""
+        driver = FakeDriver()
+        touch_filter = FakeGeometryFilter()
+        sm = FakeGeometryMachine()
+        source = TouchEventSource(
+            driver, touch_filter, sm, clock=lambda: 1.0, axis_signs=(False, False, False),
+        )
+        source.display_config_changed(False)
+        assert touch_filter.calls == ["axis"]  # set_logical_size never called
+        assert sm.calls == ["release"]  # set_geometry never called
+
+    def test_filter_lacking_set_logical_size_is_skipped_silently(self):
+        from dial_display_profiles import LayoutContext
+
+        driver = FakeDriver()
+        touch_filter = FakeAxisFilter()  # no set_logical_size on this spy
+        sm = FakeGeometryMachine()
+        source = TouchEventSource(
+            driver, touch_filter, sm, clock=lambda: 1.0, axis_signs=(False, False, False),
+        )
+        ctx = LayoutContext(
+            logical_width=320, logical_height=240, physical_width=160, physical_height=128,
+            mm_per_px=0.1143, size_chosen=True,
+        )
+        source.display_config_changed(False, layout=ctx)  # must not raise
+        assert touch_filter.calls == [(False, False, False)]
+        assert sm.calls == ["geometry", "release"]
 
 
 # ---------------------------------------------------------------------------
