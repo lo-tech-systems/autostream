@@ -47,6 +47,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 import autostream_mute_state as mute_state
+import autostream_start_buffer_cache as start_buffer_cache
 
 from autostream_bluetooth_client import (
     BLUETOOTH_CAPTURE_DEVICE,
@@ -1021,11 +1022,13 @@ def _derive_repeat_state(rs: dict) -> str:
     return "idle"
 
 
-def _dial_repeat_object() -> dict | None:
+def _dial_repeat_object(base_url: str | None = None) -> dict | None:
     """The dial protocol's "repeat" object for POST /api/dial/status, or
     None when the daemon block is unavailable (older monitor binary, or no
-    poll yet). Every field but state and available is a passthrough of the
-    cached daemon block (get_repeat_status())."""
+    poll yet). Every field but state, available and latency_ms is a
+    passthrough of the cached daemon block (get_repeat_status()).
+    latency_ms is the audio start buffer, read from a cache so this never
+    waits on OwnTone."""
     rs = get_repeat_status()
     if not isinstance(rs, dict):
         return None
@@ -1044,6 +1047,7 @@ def _dial_repeat_object() -> dict | None:
             "position_seconds": float(rep.get("position_seconds") or 0.0),
             "duration_seconds": float(rep.get("duration_seconds") or 0.0),
         },
+        "latency_ms": start_buffer_cache.current_ms(base_url),
     }
 
 
@@ -1134,7 +1138,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "appliance_id": get_appliance_id(),
         "muted": muted,
     }
-    repeat = _dial_repeat_object()
+    repeat = _dial_repeat_object(base_url)
     if repeat is not None:
         response["repeat"] = repeat
     send_json(handler, 200, response)
@@ -3235,7 +3239,16 @@ def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> Non
             round(int(raw) / SETTING_START_BUFFER_MS_STEP) * SETTING_START_BUFFER_MS_STEP,
         ),
     )
-    _send_owntone_native_setting_json(handler, state, SETTING_START_BUFFER_MS, value)
+    ok, restart_needed, error = _push_owntone_native_setting(
+        state, SETTING_START_BUFFER_MS, value,
+    )
+    if not ok:
+        send_json(handler, 200, {"ok": False, "error": error or "OwnTone API error"})
+        return
+    # The dial status path serves the buffer from this cache; refresh it now so
+    # a change reaches the dial on its next poll.
+    start_buffer_cache.note_saved(value)
+    send_json(handler, 200, {"ok": True, "restart_required": restart_needed})
 
 
 def send_owntone_user_agent_json(handler, state: WebUIState, body: str) -> None:

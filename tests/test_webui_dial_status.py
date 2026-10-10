@@ -71,6 +71,17 @@ TEST_APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"  # 20 lowercase hex-shaped chars
 # Helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_owntone_start_buffer_reads():
+    """The status path may kick a background start-buffer refresh; keep it
+    off the network and start each test from an empty cache."""
+    import autostream_start_buffer_cache as cache
+    cache.reset()
+    with patch.object(cache, "_fetch", return_value=None):
+        yield
+    cache.reset()
+
+
 def _make_handler() -> MagicMock:
     h = MagicMock()
     h.wfile = io.BytesIO()
@@ -520,6 +531,7 @@ class TestRepeatField:
                 "position_seconds": 5.0,
                 "duration_seconds": 42.0,
             },
+            "latency_ms": 2250,
         }
 
     def test_repeat_absent_when_get_repeat_status_is_none(self):

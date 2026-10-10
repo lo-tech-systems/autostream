@@ -442,6 +442,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
     "armed": false,
     "held": true,
     "recording_seconds": 342.0,
+    "latency_ms": 2250,
     "replay": {
       "active": false,
       "position_seconds": 0.0,
@@ -532,6 +533,12 @@ track from before the seek.
 | `held` | bool | `true` exactly when `state` is `hold` - a retained recording with nothing currently playing |
 | `recording_seconds` | number | Length of the retained/in-progress recording, in seconds |
 | `replay` | object | `active` (bool, `true` through `fading_out`), `position_seconds` (number), `duration_seconds` (number, stale when not replaying) |
+| `latency_ms` | int | The appliance's audio start buffer in milliseconds: how far the audio a listener hears trails `replay.position_seconds`. A dial that shows a replay timer subtracts it so the timer matches what is heard. Optional: a dial that does not receive it assumes 2000 ms (2.0 s), and ignores a value that is not a number between 0 and 10000 |
+
+`latency_ms` is read from a cached copy of the appliance's start buffer setting, so a status
+request never waits on the audio backend. A change made in the web interface shows on the
+next status poll; a change made any other way can take up to about a minute to appear.
+Appliances that predate the field simply omit it.
 
 `state == "hold"` is the "not currently playing" signal for the replay picker - not the
 top-level `playing` flag above, which reflects the unified session tracker and is `true`
