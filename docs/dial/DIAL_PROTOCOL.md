@@ -862,6 +862,21 @@ assessment against a fixed 6 mm control-band floor, and `layout.size_chosen` rec
 whether a deliberate layout-size choice overrides the automatic fallback to the smallest
 tier. `layout.resampled` means the composed frame is scaled to the panel before it is sent.
 
+### `GET /screen/image`
+
+Returns the frame currently on the panel, as a person standing at the dial would see it
+(rotation and colour-order settings already applied), at the panel's own pixel size.
+
+**Response (`200`):** `image/png` body, `Cache-Control: no-store`.
+
+**Response (`404`)**, when nothing is currently shown (never enabled, cleared, or asleep):
+```json
+{"ok": false, "error": "no_frame"}
+```
+
+No PIN or token required — a read of what is already visible in the room, the same
+convention as `GET /screen/settings` and the other read-only endpoints above.
+
 ### `POST /screen/settings`
 
 Accepts the **complete** normalized screen settings object - this endpoint does not apply
@@ -1041,23 +1056,6 @@ written to disk, and is persisted only if the apply succeeded:
   change can never fail to "apply" in this sense, since it does nothing live at all; it is
   always persisted, and its effect is deferred to the next restart - see `restart_required`
   above).
-
----
-
-### `GET /screen/image`
-
-Returns the frame currently on the panel, as a person standing at the dial would see it
-(rotation and colour-order settings already applied), at the panel's own pixel size.
-
-**Response (`200`):** `image/png` body, `Cache-Control: no-store`.
-
-**Response (`404`)**, when nothing is currently shown (never enabled, cleared, or asleep):
-```json
-{"ok": false, "error": "no_frame"}
-```
-
-No PIN or token required — a read of what is already visible in the room, the same
-convention as `GET /screen/settings` and the other read-only endpoints above.
 
 ---
 

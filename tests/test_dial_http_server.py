@@ -1410,6 +1410,12 @@ class TestScreenImageGet:
         assert r["status"] == 404
         assert r["data"] == {"ok": False, "error": "no_frame"}
 
+    def test_documented_in_dial_protocol(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "GET /screen/image" in text
+        assert "no_frame" in text
+
 
 class TestSendBytesHeaders:
     """Exercises the real _send_bytes() implementation directly (not the
