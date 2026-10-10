@@ -60,30 +60,30 @@ class TestMaintenanceRows:
         (w,) = _maintenance(_snap(1, stylus_overdue=True, stylus_warning=True))
         assert w == dw.DialWarning(
             "stylus_in1", "critical", "Input 1 stylus",
-            "Needs changing now. Reset the counter in Service.", "day")
+            "Change now", "day")
 
     def test_stylus_due_soon_states_hours(self):
         (w,) = _maintenance(_snap(2, stylus_warning=True, stylus_remaining_hours=7.5))
         assert w == dw.DialWarning(
             "stylus_in2", "warning", "Input 2 stylus",
-            "Needs changing soon (7.5 h remaining).", "week")
+            "Change soon, 7.5 h left", "week")
 
     def test_stylus_due_soon_without_hours(self):
         (w,) = _maintenance(_snap(1, stylus_warning=True, stylus_remaining_hours=None))
-        assert w.message == "Needs changing soon."
+        assert w.message == "Change soon"
 
     @pytest.mark.parametrize("item,suffix", [("belt", "drive belt"), ("bearing", "main bearing")])
     def test_belt_and_bearing_overdue(self, item, suffix):
         (w,) = _maintenance(_snap(1, **{f"{item}_overdue": True}))
         assert w == dw.DialWarning(
             f"{item}_in1", "critical", f"Input 1 {suffix}",
-            "Needs attention now. Reset the counter in Service.", "day")
+            "Service now", "day")
 
     @pytest.mark.parametrize("item,suffix", [("belt", "drive belt"), ("bearing", "main bearing")])
     def test_belt_and_bearing_due_soon(self, item, suffix):
         (w,) = _maintenance(_snap(2, **{f"{item}_warning": True}))
         assert w == dw.DialWarning(
-            f"{item}_in2", "warning", f"Input 2 {suffix}", "Service due soon.", "week")
+            f"{item}_in2", "warning", f"Input 2 {suffix}", "Service soon", "week")
 
     def test_overdue_wins_over_warning_for_the_same_item(self):
         (w,) = _maintenance(_snap(1, belt_overdue=True, belt_warning=True))
@@ -186,7 +186,7 @@ class TestPsu:
         (w,) = self._psu(0x1)
         assert w == dw.DialWarning(
             "psu", "critical", "Power supply",
-            "Undervoltage detected. Replace the PSU or cable.", "day")
+            "Low voltage now", "day")
 
     def test_undervoltage_now_wins_over_history(self):
         (w,) = self._psu(0x10001)
@@ -196,7 +196,7 @@ class TestPsu:
         (w,) = self._psu(0x10000)
         assert w == dw.DialWarning(
             "psu", "warning", "Power supply",
-            "Undervoltage was detected earlier. Check the PSU and cable.", "week")
+            "Low voltage seen earlier", "week")
 
     def test_history_is_reported_every_time(self):
         assert self._psu(0x10000) == self._psu(0x10000) != []

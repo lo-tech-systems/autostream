@@ -779,7 +779,7 @@ and learns nothing about the appliance's maintenance state.
   "appliance_id": "a1b2c3d4e5f6a7b8c9d0",
   "warnings": [
     {"id": "stylus_in1", "severity": "warning", "title": "Input 1 stylus",
-     "message": "Needs changing soon (7.5 h remaining).", "dismissal": "week"}
+     "message": "Change soon, 7.5 h left", "dismissal": "week"}
   ]
 }
 ```
@@ -801,14 +801,14 @@ The warnings this appliance produces:
 
 | `id` | `severity` | Title | Message | When |
 |---|---|---|---|---|
-| `stylus_in<n>` | `critical` | `<input> stylus` | Needs changing now. Reset the counter in Service. | The stylus life is used up |
-| `stylus_in<n>` | `warning` | `<input> stylus` | Needs changing soon (`<h>` h remaining). | The stylus is near the end of its life |
-| `belt_in<n>` | `critical` | `<input> drive belt` | Needs attention now. Reset the counter in Service. | The belt's hours or age limit is passed |
-| `belt_in<n>` | `warning` | `<input> drive belt` | Service due soon. | The belt is near a limit |
-| `bearing_in<n>` | `critical` | `<input> main bearing` | Needs attention now. Reset the counter in Service. | The bearing's hours or age limit is passed |
-| `bearing_in<n>` | `warning` | `<input> main bearing` | Service due soon. | The bearing is near a limit |
-| `psu` | `critical` | `Power supply` | Undervoltage detected. Replace the PSU or cable. | Undervoltage is happening now |
-| `psu` | `warning` | `Power supply` | Undervoltage was detected earlier. Check the PSU and cable. | Undervoltage was seen since boot |
+| `stylus_in<n>` | `critical` | `<input> stylus` | Change now | The stylus life is used up |
+| `stylus_in<n>` | `warning` | `<input> stylus` | Change soon, `<h>` h left | The stylus is near the end of its life |
+| `belt_in<n>` | `critical` | `<input> drive belt` | Service now | The belt's hours or age limit is passed |
+| `belt_in<n>` | `warning` | `<input> drive belt` | Service soon | The belt is near a limit |
+| `bearing_in<n>` | `critical` | `<input> main bearing` | Service now | The bearing's hours or age limit is passed |
+| `bearing_in<n>` | `warning` | `<input> main bearing` | Service soon | The bearing is near a limit |
+| `psu` | `critical` | `Power supply` | Low voltage now | Undervoltage is happening now |
+| `psu` | `warning` | `Power supply` | Low voltage seen earlier | Undervoltage was seen since boot |
 
 Wear warnings appear only for enabled inputs with the item's life tracking turned on.
 Resetting a counter in the appliance's Service page clears its warning.

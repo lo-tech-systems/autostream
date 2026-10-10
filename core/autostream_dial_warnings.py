@@ -101,12 +101,13 @@ def _title(label, suffix: str) -> str:
 # Providers
 # ---------------------------------------------------------------------------
 
-# snapshot item key, title suffix, message when overdue (the due-soon message
-# differs for the stylus, which states the hours left)
+# snapshot item key, title suffix, message when overdue, message when due
+# soon (the stylus adds the hours left). Kept short: a dial's warning card
+# shows about one line of message.
 _MAINTENANCE_ITEMS = (
-    ("stylus", "stylus", "Needs changing now. Reset the counter in Service."),
-    ("belt", "drive belt", "Needs attention now. Reset the counter in Service."),
-    ("bearing", "main bearing", "Needs attention now. Reset the counter in Service."),
+    ("stylus", "stylus", "Change now", "Change soon"),
+    ("belt", "drive belt", "Service now", "Service soon"),
+    ("bearing", "main bearing", "Service now", "Service soon"),
 )
 
 
@@ -131,7 +132,7 @@ def _maintenance_warnings() -> list[DialWarning]:
     overdue: list[DialWarning] = []
     due: list[DialWarning] = []
     for index, snap in sorted(snapshot.inputs.items()):
-        for item, suffix, overdue_text in _MAINTENANCE_ITEMS:
+        for item, suffix, overdue_text, due_text in _MAINTENANCE_ITEMS:
             state = _item_state(snap, item)
             if state is None:
                 continue
@@ -141,14 +142,9 @@ def _maintenance_warnings() -> list[DialWarning]:
                 overdue.append(DialWarning(
                     warning_id, SEVERITY_CRITICAL, title, overdue_text, DISMISS_DAY))
                 continue
-            if item == "stylus":
-                hours = snap.stylus_remaining_hours
-                message = (
-                    f"Needs changing soon ({hours:.1f} h remaining)."
-                    if hours is not None else "Needs changing soon."
-                )
-            else:
-                message = "Service due soon."
+            message = due_text
+            if item == "stylus" and snap.stylus_remaining_hours is not None:
+                message = f"{due_text}, {snap.stylus_remaining_hours:.1f} h left"
             due.append(DialWarning(warning_id, SEVERITY_WARNING, title, message, DISMISS_WEEK))
     return overdue + due
 
@@ -163,11 +159,11 @@ def _psu_warnings() -> list[DialWarning]:
     if current & 0x1:
         return [DialWarning(
             "psu", SEVERITY_CRITICAL, "Power supply",
-            "Undervoltage detected. Replace the PSU or cable.", DISMISS_DAY)]
+            "Low voltage now", DISMISS_DAY)]
     if historic & 0x1:
         return [DialWarning(
             "psu", SEVERITY_WARNING, "Power supply",
-            "Undervoltage was detected earlier. Check the PSU and cable.", DISMISS_WEEK)]
+            "Low voltage seen earlier", DISMISS_WEEK)]
     return []
 
 
