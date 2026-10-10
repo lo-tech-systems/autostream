@@ -1411,7 +1411,8 @@ def _write_playing_service(args) -> int:
     <txt-record>version={_html.escape(args.version)}</txt-record>
     <txt-record>dial_api=v1</txt-record>
     <txt-record>audio_status=v1</txt-record>
-    <txt-record>dial_status=v1</txt-record>{id_record}
+    <txt-record>dial_status=v1</txt-record>
+    <txt-record>dial_outputs=v1</txt-record>{id_record}
   </service>
 </service-group>
 """
@@ -1455,6 +1456,7 @@ def _write_appliance_service(args) -> int:
     <txt-record>control={control}</txt-record>
     <txt-record>dial_api=v1</txt-record>
     <txt-record>dial_status=v1</txt-record>
+    <txt-record>dial_outputs=v1</txt-record>
     <txt-record>repeat=v1</txt-record>
   </service>
 </service-group>

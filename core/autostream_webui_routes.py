@@ -1447,6 +1447,26 @@ register(
     )
 )
 
+register(
+    Route(
+        path="/api/dial/outputs",
+        methods=("POST",),
+        handler="_route_post_dial_outputs",
+        scheme="dial",
+        comment="Non-object JSON body -> 400.",
+    )
+)
+
+register(
+    Route(
+        path="/api/dial/outputs/set",
+        methods=("POST",),
+        handler="_route_post_dial_outputs_set",
+        scheme="dial",
+        comment="Non-object JSON body -> 400.",
+    )
+)
+
 # --- Loopback-aware fast paths ----------------------------------------------
 
 register(

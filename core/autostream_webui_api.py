@@ -23,6 +23,8 @@ Contents:
   - send_dial_volume_post_json   -- POST /api/dial/volume
   - send_dial_status_post_json   -- POST /api/dial/status
   - send_dial_mute_post_json     -- POST /api/dial/mute
+  - send_dial_outputs_post_json  -- POST /api/dial/outputs
+  - send_dial_outputs_set_post_json -- POST /api/dial/outputs/set
 """
 
 from __future__ import annotations
@@ -120,6 +122,7 @@ from autostream_appliance_models import (
     apply_output_mutation,
     build_equaliser_state,
     build_home_state,
+    build_output_list,
     sanitize_output_body,
 )
 from autostream_player_service import (
@@ -1158,6 +1161,85 @@ def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -
         return
     ack = set_live_repeat_armed_ack(armed)
     _send_dial_repeat_ack(handler, ack)
+
+
+def _dial_outputs_list(parsed) -> Optional[list]:
+    """The Home page's output list, as the dial sees it: the same three
+    functions the Home page itself uses for its output list (hidden-output
+    filtering and default-first ordering, then remote-occupancy annotation),
+    trimmed to the fields the dial needs. None when OwnTone is unreachable.
+    """
+    result = list_outputs(parsed.owntone.base_url, timeout=1.0)
+    if not result.ok:
+        return None
+    outputs = build_output_list(parsed, list(result.outputs))
+    from autostream_output_usage import annotate_outputs
+    return [
+        {
+            "id": o["id"], "name": o["name"], "selected": o["selected"],
+            "volume": o["volume"], "remote_in_use": bool(o.get("remote_in_use")),
+        }
+        for o in annotate_outputs(outputs)
+    ]
+
+
+def send_dial_outputs_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/outputs — UUID-auth; the focused appliance's outputs
+    for the dial, with outputs in use by another autostream instance hidden.
+    """
+    if _dial_auth_gate(handler, json_obj) is None:
+        return
+    try:
+        parsed = _config_snapshot(state)
+    except Exception as e:
+        logging.warning("dial outputs: config load failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+    outputs = _dial_outputs_list(parsed)
+    if outputs is None:
+        send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+        return
+    send_json(handler, 200, {"ok": True, "outputs": outputs, "appliance_id": get_appliance_id()})
+
+
+def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/outputs/set — UUID-auth; enable, disable or set the
+    volume of one output through the same mutation the browser uses.
+
+    Enabling without an explicit volume applies the configured default
+    volume, exactly as the setup page does; a volume change on an already-
+    enabled output and a disable pass through untouched. Rejections
+    (output already in use elsewhere, a PIN required, encoder capacity)
+    are returned as-is -- the dial has no dialog surface and reconciles by
+    refetching the list.
+    """
+    if _dial_auth_gate(handler, json_obj) is None:
+        return
+    body = {k: json_obj.get(k) for k in ("id", "selected", "volume") if k in json_obj}
+    sanitized, err = sanitize_output_body(body)
+    if err is not None:
+        send_json(handler, 400, {"ok": False, "error": err})
+        return
+    try:
+        parsed = _config_snapshot(state)
+        base_url = parsed.owntone.base_url.rstrip("/")
+        out_id = sanitized["id"]
+        offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
+        offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
+        from autostream_player_service import config_airplay_mode_to_backend
+        mode = config_airplay_mode_to_backend(
+            parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE))
+        if sanitized.get("selected") and "volume" not in json_obj:
+            sanitized["volume"] = max(0, min(100, int(parsed.owntone.volume_percent)))
+    except Exception as e:
+        logging.warning("dial outputs: config load failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+    result = apply_output_mutation(
+        base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
+    )
+    result["appliance_id"] = get_appliance_id()
+    send_json(handler, 200, result)
 
 
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:

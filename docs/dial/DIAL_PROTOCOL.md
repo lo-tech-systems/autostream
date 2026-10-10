@@ -19,6 +19,7 @@ Deleted when the last capture stops.
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
+| `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
 | `id` | 20 lowercase hex characters | This appliance's stable identity, matching the `appliance_id` returned by `POST /api/dial/status` (see below). Omitted entirely for an identity-less appliance. |
 
 A consumer that sees neither `dial_api` nor `audio_status` treats the appliance as a legacy
@@ -406,6 +407,56 @@ effect until the recording lands in `hold`).
 |---|---|
 | `invalid_armed` (`400`) | `armed` is missing or not a boolean |
 | `backend_unavailable` | The daemon is unreachable, or returned an error this appliance version does not recognise |
+
+### `POST /api/dial/outputs`
+
+UUID-in-body auth via the same `_dial_auth_gate` guard as `POST /api/dial/status`:
+`400 missing_dial_id`, `412 dial_not_authorized`, `200 auth_unavailable`. Returns the
+appliance's own output list -- the same filtering and remote-occupancy annotation the
+setup page's output list uses. An output currently in use by another autostream instance
+is left out entirely.
+
+**Request body:**
+```json
+{"dial_id": "<id>"}
+```
+
+**Success response (200):**
+```json
+{"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "outputs": [
+  {"id": "1", "name": "Living Room", "selected": true, "volume": 42, "remote_in_use": false}
+]}
+```
+
+| `error` | Meaning |
+|---|---|
+| `backend_unavailable` | OwnTone is unreachable or returned a failure |
+| `config_error` | The appliance configuration could not be loaded |
+
+### `POST /api/dial/outputs/set`
+
+UUID-in-body auth via the same `_dial_auth_gate` guard. Enables, disables or changes the
+volume of one output through the same mutation the setup page uses. Enabling without an
+explicit `volume` applies the configured default volume; a volume change on an
+already-enabled output and a disable pass through untouched.
+
+**Request body:**
+```json
+{"dial_id": "<id>", "id": "1", "selected": true, "volume": 60}
+```
+
+`volume` is optional on an enable (the configured default applies); it is ignored on a
+disable.
+
+**Responses:** the underlying mutation's own result plus `appliance_id` -- `{"ok": true,
+"id": "1"}` on success, or an `ok:false` dict carrying one of `output_in_use`,
+`pin_required`, `encoder_capacity`, or a backend error message. The dial does not
+special-case any of these; it refetches `POST /api/dial/outputs` and shows the truth.
+
+| `error` (`400`) | Meaning |
+|---|---|
+| `missing_output_id` | `id` is missing or empty |
+| `invalid_request_body` | `selected` is missing or not a boolean (the dial never sends `op`) |
 
 ---
 
@@ -1000,6 +1051,7 @@ written to disk, and is persisted only if the apply succeeded:
 | `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
+| `dial_outputs=v1` | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
 UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API
