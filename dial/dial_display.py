@@ -5424,12 +5424,18 @@ class DialDisplay:
         selected_album = ""
         records: dict[str, dict] = {}
         visited: set[str] = set()
+        # Monotonic time each mute-feeding status request was sent, so the
+        # mute observation below can tell a stale reply from a fresh one. A
+        # service never fetched this tick counts as sent at 0.0: still a poll
+        # observation, never newer than anything a reply has settled.
+        status_sent_at: dict[str, float] = {}
 
         if idle_focus is not None:
             # One pinned status fetch in place of the whole walk: an idle
             # focus has no artwork of its own, so selected_url/artist/title
             # stay empty, but its auth/repeat state is refreshed and its
             # visited entry stops the reconcile pass below re-probing it.
+            status_sent_at[idle_focus.service_name] = time.monotonic()
             result = fetch_target_status(idle_focus, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
             visited.add(idle_focus.service_name)
             self._apply_status_to_auth(idle_focus, result)
@@ -5488,6 +5494,7 @@ class DialDisplay:
                         break
                     continue
 
+                status_sent_at[target.service_name] = time.monotonic()
                 result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
                 visited.add(target.service_name)
                 self._apply_status_to_auth(target, result)
@@ -5579,8 +5586,13 @@ class DialDisplay:
         for walked_name, walked_record in records.items():
             if walked_name == reporting_name:
                 continue  # the explicit call just below covers this one
-            observe_mute_state(walked_name, walked_record.get("muted"))
-        observe_mute_state(reporting_name, record.get("muted") if record else None)
+            observe_mute_state(
+                walked_name, walked_record.get("muted"), requested_at=status_sent_at.get(walked_name, 0.0),
+            )
+        observe_mute_state(
+            reporting_name, record.get("muted") if record else None,
+            requested_at=status_sent_at.get(reporting_name, 0.0),
+        )
         forget_mute_states_except({t.service_name for t in targets})
         if isinstance(master_volume, int) and not isinstance(master_volume, bool):
             observe_master_volume(reporting_name, master_volume)

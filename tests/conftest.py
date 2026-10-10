@@ -285,3 +285,15 @@ def _reset_dial_repeat_worker():
         m._queue = _queue_mod.SimpleQueue()
         m._cfg = None
         m._on_result = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_dial_mute_observation_store():
+    """Clear the dial volume module's mute observation store (entries,
+    settled times and in-flight marks) after each test, so a mark or settled
+    time left by one test can never make a later test's poll observation
+    get ignored."""
+    yield
+    m = _mod("dial_volume")
+    if m is not None:
+        m.observe_mute_state(None, None)

@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.error
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -449,7 +449,7 @@ class TestMuteObservationFromStatusPoll:
                    return_value=_status_result(track_id=None, muted=True)), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, True)
+        mock_observe.assert_called_once_with(t.service_name, True, requested_at=ANY)
 
     def test_unmuted_field_observed_as_false(self):
         t = _target()
@@ -459,7 +459,7 @@ class TestMuteObservationFromStatusPoll:
                    return_value=_status_result(track_id=None, muted=False)), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, False)
+        mock_observe.assert_called_once_with(t.service_name, False, requested_at=ANY)
 
     def test_status_error_response_observes_none(self):
         """A status_error response is never stored in the poll's `records`
@@ -473,7 +473,7 @@ class TestMuteObservationFromStatusPoll:
                    return_value=_status_result(status_error="timeout")), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, None)
+        mock_observe.assert_called_once_with(t.service_name, None, requested_at=ANY)
 
     def test_muted_on_every_walked_target_is_observed(self):
         """Two targets, neither identified: the walk visits both before
@@ -491,8 +491,8 @@ class TestMuteObservationFromStatusPoll:
         with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_any_call("older", False)
-        mock_observe.assert_any_call("newer", True)
+        mock_observe.assert_any_call("older", False, requested_at=ANY)
+        mock_observe.assert_any_call("newer", True, requested_at=ANY)
         assert mock_observe.call_count == 2
 
     def test_fallback_reporting_target_is_oldest_when_nothing_identified(self):
@@ -541,6 +541,44 @@ class TestMuteObservationFromStatusPoll:
             assert dv.shown_muted(t.service_name) is True
         finally:
             dv.observe_mute_state(None, None)
+
+    def test_failed_status_fetch_does_not_flip_a_known_mute_to_unmuted(self):
+        """A poll whose status fetch failed records unknown; against the real
+        store that must leave a previously confirmed mute showing."""
+        import dial_volume as dv
+        dv.observe_mute_state(None, None)
+        try:
+            t = _target()
+            display, fb, gt = _make_display(targets=[t])
+            display.enable()
+            with patch("dial_display.fetch_target_status",
+                       return_value=_status_result(track_id=None, muted=True)):
+                display._poll_once()
+            assert dv.shown_muted(t.service_name) is True
+            with patch("dial_display.fetch_target_status",
+                       return_value=_status_result(status_error="timeout")):
+                display._poll_once()
+            assert dv.shown_muted(t.service_name) is True
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_requested_at_is_the_time_the_status_request_was_sent(self):
+        """The observation carries the monotonic time taken just before the
+        fetch, not a time taken after it returned."""
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        clock = {"now": 100.0}
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            clock["now"] = 105.0      # the reply arrives later
+            return _status_result(track_id=None, muted=True)
+
+        with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
+             patch("dial_display.time.monotonic", side_effect=lambda: clock["now"]), \
+             patch("dial_display.observe_mute_state") as mock_observe:
+            display._poll_once()
+        mock_observe.assert_called_once_with(t.service_name, True, requested_at=100.0)
 
 
 # ---------------------------------------------------------------------------

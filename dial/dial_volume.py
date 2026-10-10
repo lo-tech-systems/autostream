@@ -73,6 +73,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Tuple, Union
@@ -151,6 +152,27 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 # between, so this can only go stale if an unrelated observation (another
 # thread's poll tick or fan-out response) lands in that brief window — the
 # same narrow, accepted race the single-slot store always had.
+#
+# A poll must never overwrite a state a mute reply or press has already
+# established, so poll observations are filtered (see observe_mute_state()).
+# Each poll observation carries requested_at, the monotonic time its status
+# request was SENT; replies and echoes carry none and always apply. Per
+# service the store keeps:
+#   _mute_settled_at  the time from which poll observations are trusted. A
+#                     mute or volume reply carrying a bool sets it to the
+#                     RECEIVE time (the reply reflects state established
+#                     before the appliance answered, so any status request
+#                     sent after the receive must agree); enqueue_mute()'s
+#                     echo sets it to the press time. A poll observation
+#                     requested earlier is ignored.
+#   _mute_inflight    when a mute request for the service was pressed or
+#                     dispatched, until its reply is recorded or its send
+#                     fails. While fresh, poll observations are ignored. It
+#                     expires after MUTE_INFLIGHT_EXPIRY_SECONDS (above the
+#                     worker's send timeout), so a lost request can never
+#                     freeze the state.
+# A poll's unknown (non-bool) value never overwrites a known bool, so a
+# failed or timed-out status fetch cannot flip a confirmed mute to unmuted.
 # ---------------------------------------------------------------------------
 
 _readout_lock = threading.Lock()     # leaf lock, never held across I/O
@@ -160,6 +182,10 @@ _readout_pending = 0                 # deltas enqueued since the base
 
 _observed_muted: dict[str, bool | None] = {}     # per-service last-reported mute flag
 _last_observed_mute_service: str | None = None   # most recently observed service
+_mute_settled_at: dict[str, float] = {}          # per-service: poll observations trusted from here
+_mute_inflight: dict[str, float] = {}            # per-service: monotonic time a mute request began
+
+MUTE_INFLIGHT_EXPIRY_SECONDS = 3.0   # above the 0.4s send timeout and the 0.6s join
 
 
 def observe_master_volume(service_name: str | None, volume: int | None) -> None:
@@ -203,21 +229,57 @@ def shown_volume(service_name: str | None) -> int | None:
         return max(0, min(100, _readout_base + _readout_pending))
 
 
-def observe_mute_state(service_name: str | None, muted) -> None:
+def observe_mute_state(service_name: str | None, muted, requested_at: float | None = None) -> None:
     """Record the mute flag an appliance reported (a status poll, a mute
     response or a volume response) for *service_name*, in that service's own
     entry. service_name None clears every entry (nothing is playing any
     more — the dial-wide reset, not a per-target one). Anything that is not
     a plain bool is treated the same as unknown (None), exactly like
-    dial_target_status's own parsing of the field."""
+    dial_target_status's own parsing of the field.
+
+    requested_at is the monotonic time a status poll's request was sent; it
+    marks the call as a poll observation, which is ignored while a mute
+    request for the service is in flight, when it was requested before the
+    service's settled time, or when it is unknown and a bool is already
+    known. A call without requested_at is a reply and always applies; a
+    bool reply also settles the service at its receive time."""
     global _last_observed_mute_service
+    now = time.monotonic()
     with _readout_lock:
         if service_name is None:
             _observed_muted.clear()
+            _mute_settled_at.clear()
+            _mute_inflight.clear()
             _last_observed_mute_service = None
             return
-        _observed_muted[service_name] = muted if isinstance(muted, bool) else None
+        is_bool = isinstance(muted, bool)
+        if requested_at is not None:
+            began = _mute_inflight.get(service_name)
+            if began is not None:
+                if now - began < MUTE_INFLIGHT_EXPIRY_SECONDS:
+                    return
+                del _mute_inflight[service_name]
+            settled = _mute_settled_at.get(service_name)
+            if settled is not None and requested_at < settled:
+                return
+            if not is_bool and isinstance(_observed_muted.get(service_name), bool):
+                return
+        elif is_bool:
+            _mute_settled_at[service_name] = now
+        _observed_muted[service_name] = muted if is_bool else None
         _last_observed_mute_service = service_name
+
+
+def _mark_mute_inflight(service_name: str) -> None:
+    """Note that a mute request for *service_name* is now outstanding."""
+    with _readout_lock:
+        _mute_inflight[service_name] = time.monotonic()
+
+
+def _clear_mute_inflight(service_name: str) -> None:
+    """The mute request for *service_name* has been answered or has failed."""
+    with _readout_lock:
+        _mute_inflight.pop(service_name, None)
 
 
 def shown_muted(service_name: str | None) -> bool:
@@ -241,6 +303,10 @@ def forget_mute_states_except(service_names) -> None:
         for name in list(_observed_muted.keys()):
             if name not in keep:
                 del _observed_muted[name]
+        for store in (_mute_settled_at, _mute_inflight):
+            for name in list(store.keys()):
+                if name not in keep:
+                    del store[name]
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +384,13 @@ def enqueue_mute(currently_muted: bool) -> bool:
     but nothing here depends on that).
     """
     new_state = not currently_muted
+    now = time.monotonic()
     with _readout_lock:
-        if _last_observed_mute_service is not None:
-            _observed_muted[_last_observed_mute_service] = new_state
+        name = _last_observed_mute_service
+        if name is not None:
+            _observed_muted[name] = new_state
+            _mute_settled_at[name] = now
+            _mute_inflight[name] = now
     _queue.put(("mute", new_state))
     return new_state
 
@@ -486,7 +556,9 @@ def _dispatch_mute_all(targets: list, uuid: str) -> None:
     muted = any(flag is not True for flag in flags)
     for t in targets:
         # Optimistic echo, same as enqueue_mute()'s — overwritten by each
-        # target's own response in _fan_out_mute() just below.
+        # target's own response in _fan_out_mute() just below. Marked in
+        # flight first so a poll cannot slip in between and undo it.
+        _mark_mute_inflight(t.service_name)
         observe_mute_state(t.service_name, muted)
     _fan_out_mute(targets, uuid, muted)
 
@@ -576,6 +648,10 @@ def _send_one_mute(target, uuid: str, muted: bool) -> None:
             _log_mute_failure(target.ip, "HTTP %d", e.code)
     except Exception as e:
         _log_mute_failure(target.ip, "%s", e)
+    finally:
+        # Answered or failed, the request is no longer outstanding: the
+        # reply (if any) has been recorded above, so polls resume.
+        _clear_mute_inflight(target.service_name)
 
 
 def _log_volume_failure(ip: str, fmt: str, *args) -> None:
