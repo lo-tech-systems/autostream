@@ -158,6 +158,7 @@ def start_held(page, hd, *, answer_with=None, status=200):
     return seen
 
 
+@pytest.mark.engines
 class TestStartButtonHeld:
     def test_it_is_held_from_the_press_until_the_replay_starts_and_then_let_go(self, page, hd):
         seen = start_held(page, hd)

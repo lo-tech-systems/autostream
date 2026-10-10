@@ -559,6 +559,7 @@ def running_at_five_minutes(page, hd):
     return timer_seconds(page)
 
 
+@pytest.mark.engines
 class TestStop:
     def test_pressing_stop_freezes_the_timer_and_greys_the_controls_at_once(self, page, hd):
         seen = answer_stop(page)
@@ -758,6 +759,7 @@ def zero_y(page) -> float:
     return 10 + (h - 32) / 2
 
 
+@pytest.mark.engines
 class TestEqPage:
     def test_six_bands_labelled_by_frequency_beside_the_graph(self, page, hd):
         open_page(page, hd)
@@ -1004,6 +1006,7 @@ def open_sheet(page):
     page.wait_for_function("() => document.getElementById('sheet').getBoundingClientRect().top === 0")
 
 
+@pytest.mark.engines
 class TestPullDown:
     @pytest.fixture(autouse=True)
     def restore_settings(self, hd):
@@ -1532,6 +1535,7 @@ def asleep_scenario(name="playing_artwork"):
     return dataclasses.replace(base, panel={**base.panel, "asleep": True})
 
 
+@pytest.mark.engines
 class TestSleepShield:
     def test_asleep_draws_a_black_shield(self, page, hd):
         hd.show(asleep_scenario())
@@ -1823,6 +1827,7 @@ def page_text_and_markup(page) -> str:
     return page.evaluate("document.documentElement.outerHTML + document.body.innerText")
 
 
+@pytest.mark.engines
 class TestSpeakerPin:
     def test_a_pin_required_outcome_opens_the_keypad_for_that_speaker(self, page, hd):
         hd.show(hs.SCENARIOS["pin_required"])

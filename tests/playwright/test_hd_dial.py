@@ -8,7 +8,9 @@ Two servers back the page, both on 127.0.0.1 with a free port:
            against
 
 The page is opened at the HD panel's size (800x480) with touch on, in
-headless Chromium. Without Playwright or its pytest plugin the tests skip.
+headless Chromium. `--browser webkit` also runs the pointer-driven classes
+(marked `engines`) under WebKit, where it is installed and launches. Without
+Playwright or its pytest plugin the tests skip.
 
 Requirements:
   pip install pytest-playwright && playwright install chromium
