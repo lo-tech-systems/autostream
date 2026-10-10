@@ -21,11 +21,11 @@ import dial_hd_actions as hda
 import dial_hd_server as hds
 import hd_scenarios as hs
 from dial_core_state import ActionResult
-from hd_fake_core import FakeCore
 from hd_http_support import (
     HEADER, close_management_server, error_of, management_server, post, raw, request,
     write_static,
 )
+from hd_preview import HdPreview
 
 L = hs.LOUNGE
 
@@ -55,16 +55,30 @@ class Clock:
         return self.now
 
 
-@pytest.fixture
-def core():
-    return FakeCore(hs.SCENARIOS["playing_artwork"].snapshot)
+@pytest.fixture(scope="module")
+def preview(tmp_path_factory):
+    """One server for the module, put back as new before each test. A test
+    that needs a differently built server makes its own with make_server."""
+    shared = HdPreview(static_root=write_static(tmp_path_factory.mktemp("hd")))
+    shared.start()
+    yield shared
+    shared.stop()
 
 
 @pytest.fixture
-def management():
-    server = management_server()
-    yield server
-    close_management_server(server)
+def fresh(preview):
+    preview.restore()
+    return preview
+
+
+@pytest.fixture
+def core(fresh):
+    return fresh.core
+
+
+@pytest.fixture
+def management(fresh):
+    return fresh.management
 
 
 @pytest.fixture
@@ -88,8 +102,8 @@ def make_server(core, management, tmp_path):
 
 
 @pytest.fixture
-def server(make_server):
-    return make_server()
+def server(fresh):
+    return fresh.server
 
 
 def act(server, name, body=None, **kwargs):
@@ -402,19 +416,28 @@ class TestActionRequestHardening:
         assert again.status == 200
 
 
+DOCUMENTED_REASON_STATUS = {
+    "unknown_appliance": 404, "unauthorized": 403, "no_capability": 409,
+    "wrong_state": 409, "not_polling": 409, "no_record": 409, "not_focused": 409,
+}
+
+
 class TestRefusalMapping:
-    @pytest.mark.parametrize("reason,status", sorted(hds.REASON_STATUS.items()))
-    def test_every_listed_reason_maps_to_its_status(self, server, core, reason, status):
-        core.set_result("mute_toggle", ActionResult(False, reason))
-        response, data = act(server, "mute_toggle", {"appliance_id": L})
-        assert response.status == status
-        assert json.loads(data) == {"ok": False, "error": reason}
+    def test_every_listed_reason_maps_to_its_status(self, server, core):
+        # The expected statuses are written out above, not read from the table
+        # under test; a reason the table lists but the documentation does not
+        # is reported too.
+        wrong = []
+        for reason in sorted(set(DOCUMENTED_REASON_STATUS) | set(hds.REASON_STATUS)):
+            core.set_result("mute_toggle", ActionResult(False, reason))
+            response, data = act(server, "mute_toggle", {"appliance_id": L})
+            want = DOCUMENTED_REASON_STATUS.get(reason)
+            if response.status != want or json.loads(data) != {"ok": False, "error": reason}:
+                wrong.append((reason, want, response.status, data))
+        assert not wrong, f"(reason, wanted status, got status, body): {wrong}"
 
     def test_the_mapping_table_is_the_documented_one(self):
-        assert hds.REASON_STATUS == {
-            "unknown_appliance": 404, "unauthorized": 403, "no_capability": 409,
-            "wrong_state": 409, "not_polling": 409, "no_record": 409, "not_focused": 409,
-        }
+        assert hds.REASON_STATUS == DOCUMENTED_REASON_STATUS
 
     def test_an_unlisted_reason_is_409(self, server, core):
         core.set_result("mute_toggle", ActionResult(False, "something_new"))
@@ -428,14 +451,14 @@ class TestRefusalMapping:
         assert response.status == 409
         assert error_of(data) == "wrong_state"
 
-    @pytest.mark.parametrize("name,body,method", [
-        (n, b, m) for n, b, m, _a, _k in VALID
-    ])
-    def test_every_action_maps_a_refusal(self, server, core, name, body, method):
-        core.set_result(method, ActionResult(False, "unknown_appliance"))
-        response, data = act(server, name, body)
-        assert response.status == 404
-        assert error_of(data) == "unknown_appliance"
+    def test_every_action_maps_a_refusal(self, server, core):
+        wrong = []
+        for name, body, method, _args, _kwargs in VALID:
+            core.set_result(method, ActionResult(False, "unknown_appliance"))
+            response, data = act(server, name, body)
+            if response.status != 404 or error_of(data) != "unknown_appliance":
+                wrong.append((name, body, response.status, data))
+        assert not wrong, f"(action, body, status, reply) not a 404 unknown_appliance: {wrong}"
 
 
 class TestDialRestart:

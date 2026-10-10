@@ -10,6 +10,7 @@ The settings route persists the config, so start() keeps that off the disk.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,7 +24,9 @@ import dial_hd_server as hds
 import hd_scenarios
 from dial_hd_events import ChangeHub
 from hd_fake_core import FakeCore
-from hd_http_support import close_management_server, management_server
+from hd_http_support import (
+    close_management_server, management_baseline, management_server, restore_management,
+)
 
 DEFAULT_SCENARIO = "playing_artwork"
 # Pages closed without a clean goodbye are noticed within a second, but tests
@@ -72,24 +75,27 @@ class HdPreview:
     core, server, hub, panel, management, muted and dial_clock (one-item
     lists the server reads) and url."""
 
-    def __init__(self, port: int = 0) -> None:
+    def __init__(self, port: int = 0, *, pin: str = "", dev_port: "int | None" = None, static_root=None) -> None:
         self.muted = [False]
         # The dial's clock reading for the next state; show() sets it from the scenario.
         self.dial_clock = [hd_scenarios.NOW]
         self.core = FakeCore(hd_scenarios.SCENARIOS[DEFAULT_SCENARIO].snapshot)
-        self.management = management_server()
+        self.management = management_server(pin=pin)
         self.hub = ChangeHub(self.core)
         self.panel = FakePanel(self.hub.publish)
         self.management.add_cfg_listener(lambda cfg: self.hub.publish())
         self.server = hds.HdServer(
             SimpleNamespace(), self.core, http_server=self.management, hub=self.hub, port=port,
-            panel=self.panel, info_fn=lambda: FakePanel.INFO_ROWS,
+            panel=self.panel, info_fn=lambda: FakePanel.INFO_ROWS, dev_port=dev_port,
+            **({} if static_root is None else {"static_root": static_root}),
             muted_fn=lambda service: self.muted[0],
             # The scenarios carry fixed readings, so the server reads fixed clocks.
             clock=lambda: self.dial_clock[0], wall_clock=lambda: hd_scenarios.WALL_NOW,
         )
         self.url = f"http://127.0.0.1:{self.server.port}"
         self._first_screen = {k: v for k, v in self.management.screen_report().items() if k != "surface"}
+        self._first_clock = self.dial_clock[0]
+        self._first_management = management_baseline(self.management)
         self._saver = patch("dial_config.save_config", lambda cfg: None)
         self._saved_cap = hds.SSE_MAX_CLIENTS
 
@@ -121,6 +127,25 @@ class HdPreview:
         assert status == 200 and reply.get("ok"), reply
         self.core.reset()
         self.panel.calls.clear()
+
+    def restore(self) -> None:
+        """Put the whole stack back as start() left it, for tests that share
+        one server and may change anything: the development listener and its
+        sessions, the info cache, the event-stream clients, the management
+        server's config, listeners, recovery window and replaced methods, the
+        clock and mute reading, then what reset() puts back."""
+        server = self.server
+        server.set_dev_access(False)
+        server._last_pin = None
+        server._info_cache = None
+        deadline = time.monotonic() + 5
+        while server.client_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.client_count() == 0, "an event stream from the last test is still open"
+        restore_management(self.management, self._first_management)
+        self.dial_clock[0] = self._first_clock
+        self.muted[0] = False
+        self.reset()
 
     def show(self, scenario) -> None:
         """Make *scenario* the state the dial reports now."""

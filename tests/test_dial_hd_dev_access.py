@@ -22,23 +22,28 @@ import dial_hd_events as hde
 import dial_hd_server as hds
 import dial_http_server as dhs
 import hd_scenarios as hs
-from dial_hd_events import ChangeHub
-from hd_fake_core import FakeCore
 from hd_http_support import (
-    HEADER, close_management_server, error_of, management_server, post, raw, request,
-    write_static,
+    HEADER, error_of, post, raw, request, write_static,
 )
+from hd_preview import HdPreview
 
 PIN = "2468"
 L = hs.LOUNGE
 
 
-class Clock:
-    def __init__(self):
-        self.now = 5000.0
+class PreviewClock:
+    """The shared server's clock, set and read by tests as `.now`."""
 
-    def __call__(self):
-        return self.now
+    def __init__(self, preview):
+        self._preview = preview
+
+    @property
+    def now(self):
+        return self._preview.dial_clock[0]
+
+    @now.setter
+    def now(self, value):
+        self._preview.dial_clock[0] = value
 
 
 def wait_until(predicate, timeout=3.0, step=0.01):
@@ -57,41 +62,53 @@ def fresh_limiter():
     dhs._pin_attempts.clear()
 
 
-@pytest.fixture
-def core():
-    return FakeCore(hs.SCENARIOS["playing_artwork"].snapshot)
+@pytest.fixture(scope="module")
+def preview(tmp_path_factory):
+    """One server for the module, put back as new before each test. A test
+    that stops the server or builds it differently makes its own."""
+    patch = pytest.MonkeyPatch()
+    patch.setattr(hde, "SSE_HEARTBEAT_S", 0.2)
+    shared = HdPreview(pin=PIN, dev_port=0, static_root=write_static(tmp_path_factory.mktemp("hd")))
+    shared.start()
+    yield shared
+    shared.stop()
+    patch.undo()
 
 
 @pytest.fixture
-def management():
-    server = management_server(pin=PIN)
-    yield server
-    close_management_server(server)
-
-
-@pytest.fixture
-def clock():
-    return Clock()
-
-
-@pytest.fixture
-def stack(monkeypatch, core, management, clock, tmp_path):
-    monkeypatch.setattr(hde, "SSE_HEARTBEAT_S", 0.2)
-    hub = ChangeHub(core)
-    server = hds.HdServer(
-        SimpleNamespace(), core, http_server=management, hub=hub, port=0, dev_port=0,
-        static_root=write_static(tmp_path / "hd"), muted_fn=lambda s: False, clock=clock,
+def stack(preview):
+    preview.restore()
+    return SimpleNamespace(
+        server=preview.server, hub=preview.hub, core=preview.core, management=preview.management,
+        clock=PreviewClock(preview),
     )
-    hub.start()
-    server.start()
-    yield SimpleNamespace(server=server, hub=hub, core=core, management=management, clock=clock)
-    server.stop()
-    hub.stop()
+
+
+@pytest.fixture
+def core(stack):
+    return stack.core
+
+
+@pytest.fixture
+def management(stack):
+    return stack.management
 
 
 @pytest.fixture
 def server(stack):
     return stack.server
+
+
+@pytest.fixture
+def own_server(core, management, tmp_path):
+    """A server of this test's own, for one that is stopped inside the test."""
+    server = hds.HdServer(
+        SimpleNamespace(), core, http_server=management, port=0, dev_port=0,
+        static_root=write_static(tmp_path / "own"), muted_fn=lambda s: False,
+    )
+    server.start()
+    yield server
+    server.stop()
 
 
 @pytest.fixture
@@ -233,10 +250,10 @@ class TestEnablingAndDisabling:
         server.set_dev_access(True)
         assert api(server, "/api/v1/state", cookie)[0].status == 401
 
-    def test_stopping_the_server_closes_it(self, server):
-        server.set_dev_access(True)
-        port = server.dev_port
-        server.stop()
+    def test_stopping_the_server_closes_it(self, own_server):
+        own_server.set_dev_access(True)
+        port = own_server.dev_port
+        own_server.stop()
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1)
 

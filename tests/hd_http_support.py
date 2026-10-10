@@ -4,6 +4,7 @@ sender, a real management server (never started, port 0) to stand behind the
 HD server, and the static files a server needs."""
 from __future__ import annotations
 
+import copy
 import http.client
 import json
 import os
@@ -78,6 +79,32 @@ def management_server(pin: str = "", **kwargs):
 
 def close_management_server(server) -> None:
     server._server.server_close()
+
+
+def management_baseline(server) -> dict:
+    """What a management server holds as built, to put back with
+    restore_management() after a test that shares it."""
+    return {
+        "attrs": dict(vars(server)),
+        "cfg": copy.deepcopy(server._cfg),
+        "window": dict(vars(server._recovery_window)),
+    }
+
+
+def restore_management(server, baseline: dict) -> None:
+    """Put a management server back as management_baseline() found it: the
+    config (also when a test swapped or edited it), the listeners, the
+    recovery window and any method or attribute a test replaced or added."""
+    window = server._recovery_window
+    window.complete()
+    vars(window).clear()
+    vars(window).update(baseline["window"])
+    attrs = vars(server)
+    for name in [n for n in attrs if n not in baseline["attrs"]]:
+        del attrs[name]
+    attrs.update(baseline["attrs"])
+    server._cfg = copy.deepcopy(baseline["cfg"])
+    server._display_status.update_config(server._cfg.display)
 
 
 def write_static(root: Path) -> Path:

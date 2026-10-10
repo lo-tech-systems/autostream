@@ -91,16 +91,21 @@ class FakeCore:
 
     def reset(self) -> None:
         """Forget what a test did: the calls, the canned answers, the call hook,
-        the watches and every warning registered since the start."""
+        any action method it replaced, the watches, every warning registered
+        since the start and which warnings are active or dismissed."""
         self.calls.clear()
         self.results.clear()
         self.default_result = ActionResult(True)
         self.reboot_result = self.shutdown_result = True
         self.on_call = None
         self.watches.clear()
+        for method in ACTION_METHODS:
+            setattr(self, method, self._action(method))
         for descriptor in self.warnings.descriptors():
             if descriptor.id not in self._first_warnings:
                 self.warnings.unregister(descriptor.id)
+            else:
+                self.warnings.clear(descriptor.id)
 
     # ---- the core's request methods --------------------------------------
 
