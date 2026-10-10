@@ -240,7 +240,7 @@ class TestSaveConfigMutableFieldsOnly:
 
         assert set(data.keys()) == {
             "step_percent", "name", "pin", "auto_update", "update_channel",
-            "sd_health_monitoring", "display",
+            "sd_health_monitoring", "hd_dev_access", "display",
         }
         assert "uuid" not in data
         assert "clk_gpio" not in data
@@ -621,6 +621,8 @@ class TestDisplaySettings:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -666,6 +668,8 @@ class TestDisplaySettings:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
         }
 
 
@@ -1502,3 +1506,133 @@ class TestSaveConfigAtomic:
             dc.SETTINGS_PATH = orig
 
         assert not any(tmp_path.glob("*.tmp")), "Temp file must be cleaned up after error"
+
+
+class TestSleepAfterAndBrightness:
+    def test_defaults(self):
+        d = DialDisplayConfig()
+        assert (d.sleep_after_s, d.brightness) == (300, 80)
+        assert dc.SLEEP_AFTER_CHOICES_S == (0, 60, 300, 900)
+        assert (dc.BRIGHTNESS_MIN, dc.BRIGHTNESS_MAX, dc.BRIGHTNESS_DEFAULT) == (5, 100, 80)
+
+    @pytest.mark.parametrize("value", [0, 60, 300, 900])
+    def test_sleep_after_valid_values_accepted(self, value):
+        result = validate_screen_settings({"fitted": True, "sleep_after_s": value})
+        assert result.sleep_after_s == value
+
+    @pytest.mark.parametrize("value", [1, 30, 301, -60, "300", 300.0, True, False, None, [60]])
+    def test_sleep_after_invalid_values_rejected(self, value):
+        with pytest.raises(InvalidScreenSettings, match="sleep_after_s"):
+            validate_screen_settings({"fitted": True, "sleep_after_s": value})
+
+    @pytest.mark.parametrize("value", [5, 6, 50, 80, 99, 100])
+    def test_brightness_valid_values_accepted(self, value):
+        result = validate_screen_settings({"fitted": True, "brightness": value})
+        assert result.brightness == value
+
+    @pytest.mark.parametrize("value", [0, 4, 101, -1, "80", 80.0, 80.5, True, False, None])
+    def test_brightness_invalid_values_rejected(self, value):
+        with pytest.raises(InvalidScreenSettings, match="brightness"):
+            validate_screen_settings({"fitted": True, "brightness": value})
+
+    def test_omitted_defaults_in_the_validator(self):
+        result = validate_screen_settings({"fitted": True})
+        assert (result.sleep_after_s, result.brightness) == (300, 80)
+
+    def test_missing_display_defaults(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert (cfg.display.sleep_after_s, cfg.display.brightness) == (300, 80)
+
+    def test_mutable_settings_override_hw(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "sleep_after_s": 60, "brightness": 40})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "sleep_after_s": 900, "brightness": 90})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert (cfg.display.sleep_after_s, cfg.display.brightness) == (900, 90)
+
+    def test_settings_without_the_keys_keep_the_hw_values(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "sleep_after_s": 60, "brightness": 40})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert (cfg.display.sleep_after_s, cfg.display.brightness) == (60, 40)
+
+    @pytest.mark.parametrize("sleep_after,brightness", [
+        (7, 0), (True, True), ("60", "50"), (300.0, 80.0), (-1, 101),
+    ])
+    def test_unusable_persisted_values_fall_back_to_defaults(
+        self, tmp_path, sleep_after, brightness,
+    ):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={
+            "fitted": True, "sleep_after_s": sleep_after, "brightness": brightness,
+        })
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert (cfg.display.sleep_after_s, cfg.display.brightness) == (300, 80)
+
+    def test_save_and_reload_round_trip(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            cfg = DialConfig(
+                uuid="hw-uuid-1234",
+                display=DialDisplayConfig(fitted=True, sleep_after_s=900, brightness=35),
+            )
+            save_config(cfg)
+            data = json.loads(s.read_text())
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+        assert data["display"]["sleep_after_s"] == 900
+        assert data["display"]["brightness"] == 35
+        assert (reloaded.display.sleep_after_s, reloaded.display.brightness) == (900, 35)
+
+    def test_hd_kiosk_is_a_valid_screen_type(self):
+        result = validate_screen_settings({"fitted": True, "screen_type": "hd_kiosk"})
+        assert result.screen_type == "hd_kiosk"
+
+
+class TestHdDevAccess:
+    def test_default_is_off(self):
+        assert DialConfig().hd_dev_access is False
+
+    def test_missing_key_loads_false(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s)
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.hd_dev_access is False
+
+    def test_save_and_reload_round_trip(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            save_config(DialConfig(uuid="hw-uuid-1234", hd_dev_access=True))
+            data = json.loads(s.read_text())
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+        assert data["hd_dev_access"] is True
+        assert reloaded.hd_dev_access is True

@@ -96,6 +96,11 @@ class DisplayProfile:
     # size still resolves to something rather than failing — every entry in
     # the table below sets it explicitly.
     default_diagonal_inches: float = 1.8
+    # Where the dial's screen lives: "spi" is a panel the dial drives itself
+    # (every profile with a real driver_tag); "kiosk" is a browser on an HD
+    # display that the dial only serves a page to, so the dial builds no SPI
+    # view for it. The width and height of a kiosk profile are nominal.
+    surface: str = "spi"
     # RESERVED for a future touch panel: controller tag + bus type. Not
     # constructed or read anywhere yet — see the module docstring doctrine.
     touch: object = None
@@ -201,6 +206,18 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         baudrate=32_000_000,
         default_diagonal_inches=2.8,
     ),
+    # Headless HD surface: a kiosk browser shows the page the dial serves.
+    # Nothing here reaches an SPI backend; driver_tag "none" has no driver
+    # module, so opening it through one degrades to noop like any unknown tag.
+    "hd_kiosk": DisplayProfile(
+        key="hd_kiosk",
+        label="HD touchscreen (HDMI or DSI, kiosk browser)",
+        driver_tag="none",
+        width=800,
+        height=480,
+        surface="kiosk",
+        default_diagonal_inches=5.0,
+    ),
 }
 
 DEFAULT_PROFILE_KEY = "st7735s_160x128"
@@ -217,6 +234,15 @@ def get_profile(key: str) -> DisplayProfile:
         return DISPLAY_PROFILES[key]
     except KeyError:
         raise UnknownDisplayProfileError(key) from None
+
+
+def get_profile_or_default(key: str) -> DisplayProfile:
+    """Look up a profile by key, falling back to the default profile for an
+    unknown key, as the other resolvers here do."""
+    try:
+        return get_profile(key)
+    except UnknownDisplayProfileError:
+        return get_profile(DEFAULT_PROFILE_KEY)
 
 
 def list_profiles() -> list[dict]:

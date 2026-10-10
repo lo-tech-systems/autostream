@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_config
+from dial_display_profiles import get_profile_or_default
 from dial_control import DialControlServer
 from dial_core import create_dial_core
 from dial_http_server import (
@@ -361,6 +362,22 @@ def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_p
             return [t for t in get_all_targets() if t.auth != "unauthorized" and t.appliance_id]
         return volume_targets_fn()
     return resolve
+
+
+def _build_display(cfg, core):
+    """The display manager for the configured profile. A kiosk-surface profile
+    (a browser on an HD panel) has no SPI view, so the headless stand-in runs
+    the core for it. Otherwise the SPI display stack is imported lazily so a
+    Pillow/display-stack import failure (e.g. an incomplete apt install)
+    degrades to the same stand-in rather than taking the service down."""
+    if get_profile_or_default(cfg.display.screen_type).surface == "kiosk":
+        return _HeadlessDisplay(core, cfg.display)
+    try:
+        from dial_display import create_dial_display
+        return create_dial_display(cfg, core)
+    except ImportError as e:
+        logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
+        return _HeadlessDisplay(core, cfg.display)
 
 
 def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, core=None):
@@ -733,12 +750,7 @@ def main() -> None:
     # failure (e.g. an incomplete apt install) degrades to a screenless
     # display, with the core still polling, rather than taking down the
     # whole service — volume control must not depend on Pillow.
-    try:
-        from dial_display import create_dial_display
-        display = create_dial_display(cfg, core)
-    except ImportError as e:
-        logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
-        display = _HeadlessDisplay(core, cfg.display)
+    display = _build_display(cfg, core)
     # The boot splash: opens the manager's one backend and paints
     # "Starting..." now, before any display thread exists; display.start()
     # below reuses that open and the first poll replaces the splash.
@@ -941,6 +953,9 @@ def main() -> None:
             inputs.append("button")
         if touch_source is not None:
             inputs.append("touch:" + touch_runtime)
+        # An HD page can confirm presence itself.
+        if get_profile_or_default(cfg.display.screen_type).surface == "kiosk":
+            inputs.append("touch:hd")
         core.set_inputs(inputs)
         http_server.set_can_confirm_presence(bool(inputs))
 

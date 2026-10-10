@@ -49,6 +49,8 @@ class TestProfileTableIntegrity:
 
     def test_driver_tag_known(self):
         for profile in ddp.DISPLAY_PROFILES.values():
+            if profile.surface == "kiosk":
+                continue
             assert profile.driver_tag in _KNOWN_DRIVER_TAGS
 
     def test_default_profile_key_present(self):
@@ -59,6 +61,8 @@ class TestProfileTableIntegrity:
         order — the logical/compose dims, not necessarily the datasheet
         label's orientation."""
         for profile in ddp.DISPLAY_PROFILES.values():
+            if profile.surface == "kiosk":
+                continue
             assert profile.key.endswith(f"{profile.width}x{profile.height}")
 
     def test_get_profile_returns_the_table_entry(self):
@@ -367,3 +371,35 @@ class TestMetricsAtOfferedLayoutContexts:
         assert metrics.row_h == row_h
         assert metrics.touch_min_px == touch_min_px
         assert metrics.touch_short == touch_short
+
+
+class TestSurface:
+    def test_every_existing_profile_is_spi(self):
+        for key, profile in ddp.DISPLAY_PROFILES.items():
+            if key != "hd_kiosk":
+                assert profile.surface == "spi"
+
+    def test_default_surface_is_spi(self):
+        profile = ddp.DisplayProfile(
+            key="k", label="l", driver_tag="st7735s", width=1, height=1,
+        )
+        assert profile.surface == "spi"
+
+    def test_hd_kiosk_row(self):
+        profile = ddp.get_profile("hd_kiosk")
+        assert profile.surface == "kiosk"
+        assert profile.driver_tag == "none"
+        assert (profile.width, profile.height) == (800, 480)
+        assert profile.default_diagonal_inches == 5.0
+
+    def test_hd_kiosk_is_listed_in_the_catalogue(self):
+        assert "hd_kiosk" in {entry["key"] for entry in ddp.list_profiles()}
+
+    def test_get_profile_or_default(self):
+        assert ddp.get_profile_or_default("hd_kiosk").surface == "kiosk"
+        assert ddp.get_profile_or_default("nope").key == ddp.DEFAULT_PROFILE_KEY
+        assert ddp.get_profile_or_default(None).key == ddp.DEFAULT_PROFILE_KEY
+
+    def test_no_spi_driver_module_exists_for_the_kiosk_tag(self):
+        import dial_display_adafruit as dda
+        assert ddp.get_profile("hd_kiosk").driver_tag not in dda._DRIVER_MODULES

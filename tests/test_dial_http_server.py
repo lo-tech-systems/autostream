@@ -78,6 +78,13 @@ class FakeDialServer:
     def update_cfg(self, new_cfg: DialConfig) -> None:
         self._cfg = new_cfg
 
+    @property
+    def display_config(self):
+        return self._cfg.display
+
+    def screen_report(self, display=None) -> dict:
+        return dhs.DialHTTPServer.screen_report(self, display)
+
     def _on_announce(self, add: bool) -> None:
         self._announce_calls.append(add)
 
@@ -950,6 +957,9 @@ class TestScreenSettingsGet:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
@@ -987,6 +997,9 @@ class TestScreenSettingsGet:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -1009,6 +1022,9 @@ class TestScreenSettingsGet:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -1032,6 +1048,9 @@ class TestScreenSettingsGet:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
 
     def test_get_reflects_touch_type(self):
@@ -1055,6 +1074,9 @@ class TestScreenSettingsGet:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
 
     def test_runtime_touch_type_reports_running_controller(self):
@@ -1134,6 +1156,9 @@ class TestScreenSettingsGet:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
 
     def test_get_layout_sizes_matches_the_active_profiles_options(self):
@@ -1229,6 +1254,9 @@ class TestScreenSettingsPost:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -1247,6 +1275,9 @@ class TestScreenSettingsPost:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -1266,6 +1297,9 @@ class TestScreenSettingsPost:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
@@ -1286,6 +1320,9 @@ class TestScreenSettingsPost:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
 
@@ -1305,6 +1342,9 @@ class TestScreenSettingsPost:
             "volume_scope": "current",
             "mute_scope": "current",
             "poll_interval_s": 6,
+            "sleep_after_s": 300,
+            "brightness": 80,
+            "surface": "spi",
         }
         assert r["save_calls"][0].display.always_show_controls is True
 
@@ -1934,6 +1974,14 @@ class TestPollIntervalSetting:
         assert r["status"] == 200
         assert r["data"]["screen"]["poll_interval_s"] == 2
         assert r["save_calls"][0].display.poll_interval_s == 2
+
+    def test_post_of_a_get_screen_object_with_surface_is_accepted(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "poll_interval_s": 3, "surface": "spi"}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["poll_interval_s"] == 3
 
     def test_post_omitted_keeps_the_configured_interval(self):
         # The appliance's screen form never sends the key, so its saves must
@@ -3185,3 +3233,220 @@ class TestWarningsChangedRoute:
         h.send_error = lambda code, *_: result.update(status=code)
         h.do_POST()
         assert result["status"] == 413
+
+
+class TestSleepAfterAndBrightnessSettings:
+    def _get(self, cfg=None):
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        return result
+
+    def test_get_reflects_the_configured_values(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, sleep_after_s=900, brightness=35))
+        screen = self._get(cfg)["data"]["screen"]
+        assert (screen["sleep_after_s"], screen["brightness"]) == (900, 35)
+
+    def test_get_defaults(self):
+        screen = self._get()["data"]["screen"]
+        assert (screen["sleep_after_s"], screen["brightness"]) == (300, 80)
+
+    def test_post_persists_and_appears_in_response(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "sleep_after_s": 60, "brightness": 20}},
+        )
+        assert r["status"] == 200
+        screen = r["data"]["screen"]
+        assert (screen["sleep_after_s"], screen["brightness"]) == (60, 20)
+        saved = r["save_calls"][0].display
+        assert (saved.sleep_after_s, saved.brightness) == (60, 20)
+
+    def test_post_omitted_keeps_the_configured_values(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, sleep_after_s=900, brightness=35))
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg)
+        assert r["status"] == 200
+        screen = r["data"]["screen"]
+        assert (screen["sleep_after_s"], screen["brightness"]) == (900, 35)
+        saved = r["save_calls"][0].display
+        assert (saved.sleep_after_s, saved.brightness) == (900, 35)
+
+    def test_post_omitted_on_a_default_dial_stays_default(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        screen = r["data"]["screen"]
+        assert (screen["sleep_after_s"], screen["brightness"]) == (300, 80)
+
+    @pytest.mark.parametrize("key,value", [
+        ("sleep_after_s", 45), ("sleep_after_s", "60"), ("sleep_after_s", True),
+        ("brightness", 0), ("brightness", 101), ("brightness", 50.5), ("brightness", None),
+    ])
+    def test_post_invalid_values_rejected(self, key, value):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True, key: value}})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
+
+
+def _bare_server(cfg=None) -> DialHTTPServer:
+    server = DialHTTPServer.__new__(DialHTTPServer)
+    server._cfg = cfg or DialConfig(uuid="x")
+    server._cfg_lock = threading.Lock()
+    return server
+
+
+class TestScreenReport:
+    def test_spi_profile_reports_spi(self):
+        assert _bare_server().screen_report()["surface"] == "spi"
+
+    def test_kiosk_profile_reports_kiosk(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(screen_type="hd_kiosk"))
+        assert _bare_server(cfg).screen_report()["surface"] == "kiosk"
+
+    def test_unknown_profile_reports_the_default_surface(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(screen_type="gone"))
+        assert _bare_server(cfg).screen_report()["surface"] == "spi"
+
+    def test_key_set_is_the_documented_one(self):
+        assert set(_bare_server().screen_report()) == {
+            "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
+            "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
+            "poll_interval_s", "sleep_after_s", "brightness", "surface",
+        }
+
+    def test_explicit_display_is_reported_instead_of_the_current_one(self):
+        report = _bare_server().screen_report(DialDisplayConfig(fitted=True, brightness=10))
+        assert (report["fitted"], report["brightness"]) == (True, 10)
+
+    def test_post_reply_carries_the_report_of_the_saved_display(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["data"]["screen"] == r["server"].screen_report(r["save_calls"][0].display)
+
+
+class TestConfigListeners:
+    def test_display_config_property(self):
+        server = _bare_server()
+        assert server.display_config is server._cfg.display
+
+    def test_listener_fires_once_per_update_with_the_new_config(self):
+        server = _bare_server()
+        seen = []
+        server.add_cfg_listener(seen.append)
+        new_cfg = DialConfig(uuid="y")
+        server.update_cfg(new_cfg)
+        assert seen == [new_cfg]
+        assert server._cfg is new_cfg
+
+    def test_listener_runs_after_the_swap_and_outside_the_lock(self):
+        server = _bare_server()
+        observed = []
+
+        def listener(cfg):
+            # Taking the lock would deadlock if update_cfg still held it.
+            with server._cfg_lock:
+                observed.append(server._cfg is cfg)
+
+        server.add_cfg_listener(listener)
+        server.update_cfg(DialConfig(uuid="y"))
+        assert observed == [True]
+
+    def test_a_raising_listener_is_contained_and_others_still_run(self):
+        server = _bare_server()
+        seen = []
+
+        def boom(cfg):
+            raise RuntimeError("listener failure")
+
+        server.add_cfg_listener(boom)
+        server.add_cfg_listener(seen.append)
+        new_cfg = DialConfig(uuid="y")
+        server.update_cfg(new_cfg)
+        assert seen == [new_cfg]
+
+    def test_listeners_are_per_server(self):
+        a, b = _bare_server(), _bare_server()
+        seen = []
+        a.add_cfg_listener(seen.append)
+        b.update_cfg(DialConfig(uuid="y"))
+        assert seen == []
+
+
+class TestHdDevAccessConfigure:
+    def test_get_reports_it_off_by_default(self):
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/configure"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["hd_dev_access"] is False
+
+    def test_enable_without_a_pin_is_refused(self):
+        r = _call_handler("/configure", body={"hd_dev_access": True})
+        assert r["status"] == 400
+        assert r["data"] == {"ok": False, "error": "pin_required"}
+        assert r["save_calls"] == []
+
+    def test_enable_with_a_pin_requires_the_current_pin(self):
+        cfg = DialConfig(uuid="x", pin="1234")
+        r = _call_handler("/configure", body={"hd_dev_access": True}, cfg=cfg)
+        assert r["status"] == 403
+        assert r["data"]["error"] == "wrong_pin"
+        assert r["save_calls"] == []
+
+    def test_enable_with_the_right_pin_persists(self):
+        cfg = DialConfig(uuid="x", pin="1234")
+        r = _call_handler(
+            "/configure", body={"hd_dev_access": True, "current_pin": "1234"}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["save_calls"][0].hd_dev_access is True
+
+    def test_enable_together_with_a_new_pin_is_accepted(self):
+        r = _call_handler("/configure", body={"hd_dev_access": True, "new_pin": "4321"})
+        assert r["status"] == 200
+        saved = r["save_calls"][0]
+        assert (saved.hd_dev_access, saved.pin) == (True, "4321")
+
+    def test_non_bool_is_rejected(self):
+        cfg = DialConfig(uuid="x", pin="1234")
+        r = _call_handler(
+            "/configure", body={"hd_dev_access": 1, "current_pin": "1234"}, cfg=cfg,
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_hd_dev_access"
+
+    def test_disable_requires_the_pin_too(self):
+        cfg = DialConfig(uuid="x", pin="1234", hd_dev_access=True)
+        r = _call_handler("/configure", body={"hd_dev_access": False}, cfg=cfg)
+        assert r["status"] == 403
+
+    def test_disable_with_the_pin_persists(self):
+        cfg = DialConfig(uuid="x", pin="1234", hd_dev_access=True)
+        r = _call_handler(
+            "/configure", body={"hd_dev_access": False, "current_pin": "1234"}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["save_calls"][0].hd_dev_access is False
+
+    def test_clearing_the_pin_switches_the_dev_listener_off(self):
+        cfg = DialConfig(uuid="x", pin="1234", hd_dev_access=True)
+        r = _call_handler(
+            "/configure", body={"new_pin": "", "current_pin": "1234"}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["save_calls"][0].hd_dev_access is False
+
+    def test_other_configure_posts_leave_it_alone(self):
+        cfg = DialConfig(uuid="x", pin="1234", hd_dev_access=True)
+        r = _call_handler(
+            "/configure", body={"step_percent": 3, "current_pin": "1234"}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["save_calls"][0].hd_dev_access is True

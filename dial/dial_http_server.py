@@ -411,6 +411,10 @@ class NoOpDisplayStatusProvider:
 # ---- HTTP server ------------------------------------------------------------
 
 class DialHTTPServer:
+    # Callables run with the new config after every update_cfg swap; replaced,
+    # never mutated, so a server built without __init__ still has the default.
+    _cfg_listeners: tuple = ()
+
     def __init__(self, cfg, display_status_provider=None, get_rostered_ips=None) -> None:
         self._cfg             = cfg
         self._cfg_lock        = threading.Lock()
@@ -464,10 +468,49 @@ class DialHTTPServer:
         with self._cfg_lock:
             return effective_scope(self._cfg.display, self._cfg.display.mute_scope)
 
+    @property
+    def display_config(self):
+        with self._cfg_lock:
+            return self._cfg.display
+
+    def add_cfg_listener(self, callback) -> None:
+        """Register *callback*(new_cfg), run after every update_cfg swap."""
+        self._cfg_listeners = (*self._cfg_listeners, callback)
+
     def update_cfg(self, cfg) -> None:
-        """Replace live config after save_config() succeeds in POST /configure."""
+        """Replace live config after save_config() succeeds in POST /configure.
+
+        Listeners run after the swap, outside the config lock, and a raising
+        listener never reaches the caller or stops the others."""
         with self._cfg_lock:
             self._cfg = cfg
+        for callback in list(self._cfg_listeners):
+            try:
+                callback(cfg)
+            except Exception as e:
+                logging.warning("config listener raised: %s", e)
+
+    def screen_report(self, display=None) -> dict:
+        """The `screen` object the screen-settings replies carry: *display*
+        (a DialDisplayConfig), or the current one when omitted."""
+        if display is None:
+            display = self.display_config
+        return {
+            'fitted':      display.fitted,
+            'rotate':      display.rotate,
+            'screen_type': display.screen_type,
+            'bgr':         display.bgr,
+            'touch_type':  display.touch_type,
+            'always_show_controls': display.always_show_controls,
+            'screen_size_inches': display.screen_size_inches,
+            'layout_size': display.layout_size,
+            'volume_scope': display.volume_scope,
+            'mute_scope': display.mute_scope,
+            'poll_interval_s': display.poll_interval_s,
+            'sleep_after_s': display.sleep_after_s,
+            'brightness': display.brightness,
+            'surface': _profile_for(display).surface,
+        }
 
     def begin_recovery_window(self) -> None:
         self._recovery_window.open()
@@ -703,6 +746,7 @@ class DialHTTPServer:
                         'auto_update':          cfg.auto_update,
                         'update_channel':       cfg.update_channel,
                         'can_confirm_presence': dial_server._can_confirm_presence,
+                        'hd_dev_access':        cfg.hd_dev_access,
                     })
 
                 elif self.path == '/recovery_status':
@@ -738,19 +782,7 @@ class DialHTTPServer:
                     runtime['touch_type'] = dial_server._touch_runtime
                     self._send_json(200, {
                         'ok':             True,
-                        'screen':         {
-                            'fitted':      cfg.display.fitted,
-                            'rotate':      cfg.display.rotate,
-                            'screen_type': cfg.display.screen_type,
-                            'bgr':         cfg.display.bgr,
-                            'touch_type':  cfg.display.touch_type,
-                            'always_show_controls': cfg.display.always_show_controls,
-                            'screen_size_inches': cfg.display.screen_size_inches,
-                            'layout_size': cfg.display.layout_size,
-                            'volume_scope': cfg.display.volume_scope,
-                            'mute_scope': cfg.display.mute_scope,
-                            'poll_interval_s': cfg.display.poll_interval_s,
-                        },
+                        'screen':         dial_server.screen_report(cfg.display),
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
                         'layout_sizes':   layout_size_options(_profile_for(cfg.display)),
@@ -905,7 +937,7 @@ class DialHTTPServer:
                     cfg = dial_server._cfg
                 new_cfg = copy.copy(cfg)
 
-                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel'))
+                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel', 'hd_dev_access'))
 
                 # PIN auth
                 if cfg.pin and changing_protected:
@@ -985,6 +1017,20 @@ class DialHTTPServer:
                     else:
                         self._send_json(400, {'ok': False, 'error': 'invalid_new_pin'})
                         return
+
+                if 'hd_dev_access' in obj:
+                    v = obj['hd_dev_access']
+                    if not isinstance(v, bool):
+                        self._send_json(400, {'ok': False, 'error': 'invalid_hd_dev_access'})
+                        return
+                    new_cfg.hd_dev_access = v
+                # The development listener authenticates with the PIN, so it
+                # cannot be switched on without one and does not outlive it.
+                if new_cfg.hd_dev_access and not new_cfg.pin:
+                    if 'hd_dev_access' in obj:
+                        self._send_json(400, {'ok': False, 'error': 'pin_required'})
+                        return
+                    new_cfg.hd_dev_access = False
 
                 # ---- Persist ----
                 from dial_config import save_config
@@ -1067,11 +1113,17 @@ class DialHTTPServer:
                     _pin_clear_attempts(ip)
 
                 screen = obj.get('screen')
-                if isinstance(screen, dict) and 'poll_interval_s' not in screen:
-                    # The appliance's screen form never sends this key, so a
-                    # save from it keeps the configured interval rather than
-                    # resetting it to the default.
-                    screen = {**screen, 'poll_interval_s': cfg.display.poll_interval_s}
+                if isinstance(screen, dict):
+                    # The appliance's screen form never sends these keys, so a
+                    # save from it keeps the configured values rather than
+                    # resetting them to the defaults.
+                    for key in ('poll_interval_s', 'sleep_after_s', 'brightness'):
+                        if key not in screen:
+                            screen = {**screen, key: getattr(cfg.display, key)}
+                    # surface is reported from the profile, never set: drop it
+                    # so a GET object posted back with one field changed is
+                    # accepted.
+                    screen = {k: v for k, v in screen.items() if k != 'surface'}
                 try:
                     new_display = validate_screen_settings(screen)
                 except InvalidScreenSettings:
@@ -1144,19 +1196,7 @@ class DialHTTPServer:
                     self._send_json(200, {
                         'ok':      False,
                         'error':   'screen_apply_failed',
-                        'screen':  {
-                            'fitted':      cfg.display.fitted,
-                            'rotate':      cfg.display.rotate,
-                            'screen_type': cfg.display.screen_type,
-                            'bgr':         cfg.display.bgr,
-                            'touch_type':  cfg.display.touch_type,
-                            'always_show_controls': cfg.display.always_show_controls,
-                            'screen_size_inches': cfg.display.screen_size_inches,
-                            'layout_size': cfg.display.layout_size,
-                            'volume_scope': cfg.display.volume_scope,
-                            'mute_scope': cfg.display.mute_scope,
-                            'poll_interval_s': cfg.display.poll_interval_s,
-                        },
+                        'screen':  dial_server.screen_report(cfg.display),
                         'layout_sizes': layout_size_options(_profile_for(cfg.display)),
                         'layout': _layout_report_for(cfg.display),
                         'scope': _scope_report_for(cfg.display),
@@ -1177,11 +1217,12 @@ class DialHTTPServer:
                 logging.info(
                     "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
                     "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s "
-                    "poll_interval_s=%s",
+                    "poll_interval_s=%s sleep_after_s=%s brightness=%s",
                     new_display.fitted, new_display.rotate, new_display.screen_type,
                     new_display.bgr, new_display.touch_type, new_display.always_show_controls,
                     new_display.screen_size_inches, new_display.layout_size,
-                    new_display.poll_interval_s,
+                    new_display.poll_interval_s, new_display.sleep_after_s,
+                    new_display.brightness,
                 )
                 runtime['touch_type'] = dial_server._touch_runtime
                 # fitted/rotate/bgr/screen_type all apply live. touch_type
@@ -1199,19 +1240,7 @@ class DialHTTPServer:
                 restarting = touch_type_changed and dial_server._touch_restart_allowed()
                 response = {
                     'ok':               True,
-                    'screen':           {
-                        'fitted':      new_cfg.display.fitted,
-                        'rotate':      new_cfg.display.rotate,
-                        'screen_type': new_cfg.display.screen_type,
-                        'bgr':         new_cfg.display.bgr,
-                        'touch_type':  new_cfg.display.touch_type,
-                        'always_show_controls': new_cfg.display.always_show_controls,
-                        'screen_size_inches': new_cfg.display.screen_size_inches,
-                        'layout_size': new_cfg.display.layout_size,
-                        'volume_scope': new_cfg.display.volume_scope,
-                        'mute_scope': new_cfg.display.mute_scope,
-                        'poll_interval_s': new_cfg.display.poll_interval_s,
-                    },
+                    'screen':           dial_server.screen_report(new_cfg.display),
                     'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
                     'layout':           _layout_report_for(new_cfg.display),
                     'scope':            _scope_report_for(new_cfg.display),

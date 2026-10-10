@@ -892,7 +892,12 @@ under section 4 for why.
 ### `POST /configure`
 
 All fields optional. PIN required to change `name`, `step_percent`, `new_pin`,
-`auto_update`, or `update_channel` if a PIN is set.
+`auto_update`, `update_channel`, or `hd_dev_access` if a PIN is set.
+
+`hd_dev_access` is a strict JSON boolean (anything else is `400 invalid_hd_dev_access`).
+It switches on the development listener of the HD page, which authenticates with the PIN,
+so it cannot be enabled while no PIN is set: that request is `400 pin_required`. Posting
+`new_pin` with an empty string, which clears the PIN, also switches it off.
 
 PIN recovery completion: include `"pin_recovery": true` with `"new_pin"` to complete recovery
 without knowing the current PIN (window must be active and volume confirmed).
@@ -909,13 +914,14 @@ Returns current dial settings.
 
 **Response:**
 ```json
-{"step_percent": 2, "pin_set": true, "name": "My Dial", "version": "1.0.0", "auto_update": false, "update_channel": "stable", "can_confirm_presence": true}
+{"step_percent": 2, "pin_set": true, "name": "My Dial", "version": "1.0.0", "auto_update": false, "update_channel": "stable", "can_confirm_presence": true, "hd_dev_access": false}
 ```
 
 | Field | Type | Notes |
 |---|---|---|
 | `update_channel` | string | `"stable"` or `"dev"`. `stable` considers only full GitHub releases; `dev` considers the most recent release including pre-releases. PIN-gated when set via `POST /configure` (same protection as `name`, `step_percent`, `auto_update`). |
 | `can_confirm_presence` | bool | Runtime truth, not config: `true` only if this dial actually constructed at least one input capable of confirming presence for PIN recovery - a working rotary encoder, a working button, or a running touch stack. `false` covers every other case, including a configured touch panel whose driver failed to construct at startup. Set once at startup after input construction finishes; a dial polled before that finishes reports `false`. |
+| `hd_dev_access` | bool | Whether the HD page is also served on a LAN development listener. Off by default. PIN-gated when set via `POST /configure`, and refused while no PIN is set. An old dial does not send the field; read its absence as `false`. |
 
 ### `GET /recovery_status`
 
@@ -1217,14 +1223,18 @@ values from this endpoint.
     "layout_size": null,
     "volume_scope": "current",
     "mute_scope": "current",
-    "poll_interval_s": 6
+    "poll_interval_s": 6,
+    "sleep_after_s": 300,
+    "brightness": 80,
+    "surface": "spi"
   },
   "supported": [
     {"key": "st7735s_160x128", "text": "ST7735S (128x160)", "default_inches": 1.8},
     {"key": "st7735s_128x128", "text": "ST7735S (128x128)", "default_inches": 1.44},
     {"key": "st7789_240x240", "text": "ST7789 (240x240)", "default_inches": 1.3},
     {"key": "st7789_320x240", "text": "ST7789 (240x320)", "default_inches": 2.8},
-    {"key": "ili9341_320x240", "text": "ILI9341 (320x240)", "default_inches": 2.8}
+    {"key": "ili9341_320x240", "text": "ILI9341 (320x240)", "default_inches": 2.8},
+    {"key": "hd_kiosk", "text": "HD touchscreen (HDMI or DSI, kiosk browser)", "default_inches": 5.0}
   ],
   "supported_touch": [
     {"key": "none", "text": "None"},
@@ -1282,6 +1292,9 @@ values from this endpoint.
 | `screen.volume_scope` | string | Which appliances a volume twist addresses while `screen.fitted` is true: `"current"` (the bound appliance) or `"all"` (every playing appliance). Optional, defaults to `"current"`. See **Scope capability gate** and **Broadcast scope** below |
 | `screen.mute_scope` | string | The same choice for a mute push. Optional, defaults to `"current"` |
 | `screen.poll_interval_s` | integer | How often the dial polls the appliances for their state, in whole seconds, from `2` to `6` inclusive. A lower value reacts sooner to a new track or a start/stop, at the cost of more traffic. Optional: omitted keeps the current value (`6` by default). Applies live. No capability gate |
+| `screen.sleep_after_s` | integer | Idle seconds before an HD screen sleeps: one of `0` (never), `60`, `300` or `900`. Optional: omitted keeps the current value (`300` by default). Applies live. Only a dial whose `screen.surface` is `"kiosk"` acts on it; every dial stores and reports it. No capability gate |
+| `screen.brightness` | integer | Backlight percentage of an HD screen while awake, from `5` to `100` inclusive. Optional: omitted keeps the current value (`80` by default). Applies live. Only a dial whose `screen.surface` is `"kiosk"` acts on it; every dial stores and reports it. No capability gate |
+| `screen.surface` | string | Where this dial's screen lives, derived from the selected profile: `"spi"` for a panel the dial drives itself, `"kiosk"` for an HD screen that shows a page the dial serves (profile `hd_kiosk`). Report only: a `screen` object sent with it, such as one fetched and posted back with a field changed, is accepted and the value is ignored. A kiosk dial has no frame, so `GET /screen/image` answers `404` and `runtime.backend` is `noop`. An old dial does not send the field; read its absence as `"spi"` |
 | `scope.volume`, `scope.mute` | string | The EFFECTIVE values: the stored `screen.volume_scope`/`screen.mute_scope` while `screen.fitted` is true, otherwise always `"all"` - a dial with no screen (or one too small to select an appliance) cannot choose which appliance to address. Informational only; a client never sends either back |
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
 | `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
@@ -1440,7 +1453,10 @@ restart was actually fired for it:
     "layout_size": null,
     "volume_scope": "current",
     "mute_scope": "current",
-    "poll_interval_s": 6
+    "poll_interval_s": 6,
+    "sleep_after_s": 300,
+    "brightness": 80,
+    "surface": "spi"
   },
   "layout_sizes": [],
   "layout": {
@@ -1582,6 +1598,17 @@ newly-saved `screen`, and the `screen_apply_failed` path reflects the still-pers
   boolean, float or string) from `2` to `6` inclusive. Anything else is rejected
   outright. It has no capability gate, and an appliance screen save (which never sends
   it) leaves a configured interval unchanged.
+- `sleep_after_s` is optional; when omitted, the dial keeps its current value (`300` on a
+  dial that has never been set). When present it must be a JSON integer equal to `0`,
+  `60`, `300` or `900`. Anything else is rejected outright. It has no capability gate,
+  and an appliance screen save (which never sends it) leaves a configured value
+  unchanged.
+- `brightness` is optional; when omitted, the dial keeps its current value (`80` on a dial
+  that has never been set). When present it must be a JSON integer (not a boolean, float
+  or string) from `5` to `100` inclusive. Anything else is rejected outright. It has no
+  capability gate, and an appliance screen save leaves a configured value unchanged.
+- `surface` is report only and is not accepted: it is an unknown field in a posted
+  `screen` object.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
   support them - see the capability gates above) returns HTTP `400`:
@@ -1621,7 +1648,7 @@ written to disk, and is persisted only if the apply succeeded:
     "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false,
     "touch_type": "none", "always_show_controls": false, "screen_size_inches": null,
     "layout_size": null, "volume_scope": "current", "mute_scope": "current",
-    "poll_interval_s": 6
+    "poll_interval_s": 6, "sleep_after_s": 300, "brightness": 80, "surface": "spi"
   },
   "layout_sizes": [ "..." ],
   "layout": { "...": "..." },

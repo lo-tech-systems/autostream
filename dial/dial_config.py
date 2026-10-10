@@ -76,6 +76,15 @@ POLL_INTERVAL_MIN_S = 2
 POLL_INTERVAL_MAX_S = 6
 POLL_INTERVAL_DEFAULT_S = 6
 
+# Seconds of idleness before an HD panel sleeps (0 = never), and the panel
+# brightness percentage while awake. Only an HD (kiosk) surface acts on them;
+# they are stored and reported for every surface.
+SLEEP_AFTER_CHOICES_S = (0, 60, 300, 900)
+SLEEP_AFTER_DEFAULT_S = 300
+BRIGHTNESS_MIN = 5
+BRIGHTNESS_MAX = 100
+BRIGHTNESS_DEFAULT = 80
+
 
 @dataclass
 class DialDisplayConfig:
@@ -126,6 +135,10 @@ class DialDisplayConfig:
     mute_scope: str = SCOPE_CURRENT
     # Seconds between poll ticks, POLL_INTERVAL_MIN_S..POLL_INTERVAL_MAX_S.
     poll_interval_s: int = POLL_INTERVAL_DEFAULT_S
+    # HD surface only: idle seconds before the panel sleeps (one of
+    # SLEEP_AFTER_CHOICES_S, 0 = never) and the awake brightness percentage.
+    sleep_after_s: int = SLEEP_AFTER_DEFAULT_S
+    brightness: int = BRIGHTNESS_DEFAULT
 
     @property
     def effective_volume_scope(self) -> str:
@@ -163,6 +176,9 @@ class DialConfig:
     # own after a hung probe. Reported alongside the live state so the card
     # can show "requested but off" without guessing.
     sd_health_monitoring: bool = False
+    # Whether the HD page is also served on a LAN listener for development.
+    # Off by default; only settable through the PIN-gated /configure.
+    hd_dev_access: bool = False
     display:        DialDisplayConfig = field(default_factory=DialDisplayConfig)
 
 
@@ -208,6 +224,10 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     `poll_interval_s` is optional (defaults to POLL_INTERVAL_DEFAULT_S); if
     present it must be a JSON integer (not a bool, float or string) from
     POLL_INTERVAL_MIN_S to POLL_INTERVAL_MAX_S inclusive.
+    `sleep_after_s` is optional (defaults to SLEEP_AFTER_DEFAULT_S); if present
+    it must be a JSON integer equal to one of SLEEP_AFTER_CHOICES_S.
+    `brightness` is optional (defaults to BRIGHTNESS_DEFAULT); if present it
+    must be a JSON integer from BRIGHTNESS_MIN to BRIGHTNESS_MAX inclusive.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
@@ -215,7 +235,7 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     unknown = set(obj.keys()) - {
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
         "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
-        "poll_interval_s",
+        "poll_interval_s", "sleep_after_s", "brightness",
     }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
@@ -280,12 +300,32 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
             f"screen.poll_interval_s must be a whole number of seconds from "
             f"{POLL_INTERVAL_MIN_S} to {POLL_INTERVAL_MAX_S}"
         )
+    sleep_after_s = obj.get("sleep_after_s", SLEEP_AFTER_DEFAULT_S)
+    if (
+        isinstance(sleep_after_s, bool)
+        or not isinstance(sleep_after_s, int)
+        or sleep_after_s not in SLEEP_AFTER_CHOICES_S
+    ):
+        raise InvalidScreenSettings(
+            f"screen.sleep_after_s must be one of {list(SLEEP_AFTER_CHOICES_S)}"
+        )
+    brightness = obj.get("brightness", BRIGHTNESS_DEFAULT)
+    if (
+        isinstance(brightness, bool)
+        or not isinstance(brightness, int)
+        or not (BRIGHTNESS_MIN <= brightness <= BRIGHTNESS_MAX)
+    ):
+        raise InvalidScreenSettings(
+            f"screen.brightness must be a whole number from "
+            f"{BRIGHTNESS_MIN} to {BRIGHTNESS_MAX}"
+        )
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
         touch_type=touch_type, always_show_controls=always_show_controls,
         screen_size_inches=screen_size_inches, layout_size=layout_size,
         volume_scope=volume_scope, mute_scope=mute_scope,
         poll_interval_s=poll_interval_s,
+        sleep_after_s=sleep_after_s, brightness=brightness,
     )
 
 
@@ -422,6 +462,42 @@ def _resolve_persisted_poll_interval(value: object) -> int:
     return POLL_INTERVAL_DEFAULT_S
 
 
+def _resolve_persisted_sleep_after(value: object) -> int:
+    """Resolve a persisted sleep_after_s value, falling back to
+    SLEEP_AFTER_DEFAULT_S with a warning log for anything unusable, rather
+    than raising. Missing (None) silently means the default."""
+    if value is None:
+        return SLEEP_AFTER_DEFAULT_S
+    if (
+        not isinstance(value, bool) and isinstance(value, int)
+        and value in SLEEP_AFTER_CHOICES_S
+    ):
+        return value
+    logging.warning(
+        "dial config: unusable persisted sleep_after_s %r — falling back to %d",
+        value, SLEEP_AFTER_DEFAULT_S,
+    )
+    return SLEEP_AFTER_DEFAULT_S
+
+
+def _resolve_persisted_brightness(value: object) -> int:
+    """Resolve a persisted brightness value, falling back to
+    BRIGHTNESS_DEFAULT with a warning log for anything unusable, rather than
+    raising. Missing (None) silently means the default."""
+    if value is None:
+        return BRIGHTNESS_DEFAULT
+    if (
+        not isinstance(value, bool) and isinstance(value, int)
+        and BRIGHTNESS_MIN <= value <= BRIGHTNESS_MAX
+    ):
+        return value
+    logging.warning(
+        "dial config: unusable persisted brightness %r — falling back to %d",
+        value, BRIGHTNESS_DEFAULT,
+    )
+    return BRIGHTNESS_DEFAULT
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE env file without executing it."""
     data: dict[str, str] = {}
@@ -472,6 +548,8 @@ def load_config() -> DialConfig:
             volume_scope=_resolve_persisted_scope(hw_display.get('volume_scope')),
             mute_scope=_resolve_persisted_scope(hw_display.get('mute_scope')),
             poll_interval_s=_resolve_persisted_poll_interval(hw_display.get('poll_interval_s')),
+            sleep_after_s=_resolve_persisted_sleep_after(hw_display.get('sleep_after_s')),
+            brightness=_resolve_persisted_brightness(hw_display.get('brightness')),
         )
 
     if SETTINGS_PATH.exists():
@@ -482,6 +560,7 @@ def load_config() -> DialConfig:
         cfg.auto_update    = s.get('auto_update',    cfg.auto_update)
         cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
         cfg.sd_health_monitoring = bool(s.get('sd_health_monitoring', False))
+        cfg.hd_dev_access  = bool(s.get('hd_dev_access', False))
         # A persisted mute_all_playing (retired — see DialDisplayConfig's
         # mute_scope) is migrated onto mute_scope ONCE below, only when the
         # settings file has no display.mute_scope key yet; the legacy key
@@ -522,6 +601,12 @@ def load_config() -> DialConfig:
                 poll_interval_s=_resolve_persisted_poll_interval(
                     s_display.get('poll_interval_s', cfg.display.poll_interval_s)
                 ),
+                sleep_after_s=_resolve_persisted_sleep_after(
+                    s_display.get('sleep_after_s', cfg.display.sleep_after_s)
+                ),
+                brightness=_resolve_persisted_brightness(
+                    s_display.get('brightness', cfg.display.brightness)
+                ),
             )
         elif legacy_mute_all_playing:
             # No display block at all in this settings file, but the legacy
@@ -557,6 +642,7 @@ def save_config(cfg: DialConfig) -> None:
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
         'sd_health_monitoring': cfg.sd_health_monitoring,
+        'hd_dev_access':  cfg.hd_dev_access,
         'display':        {
             'fitted':      cfg.display.fitted,
             'rotate':      cfg.display.rotate,
@@ -569,6 +655,8 @@ def save_config(cfg: DialConfig) -> None:
             'volume_scope': cfg.display.volume_scope,
             'mute_scope': cfg.display.mute_scope,
             'poll_interval_s': cfg.display.poll_interval_s,
+            'sleep_after_s': cfg.display.sleep_after_s,
+            'brightness': cfg.display.brightness,
         },
     }
     with _save_lock:

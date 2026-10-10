@@ -28,7 +28,7 @@ def _make_cfg():
     return cfg
 
 
-def _run_core_wiring(fitted=True, display_import_fails=False):
+def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None):
     """Run main() against a real core (and, unless the display stack is made
     to fail, a real DialDisplay), recording the order things start and stop
     in and what each worker callback was wired to."""
@@ -38,6 +38,8 @@ def _run_core_wiring(fitted=True, display_import_fails=False):
     cfg = _make_cfg()
     cfg.display.fitted = fitted
     cfg.display.poll_interval_s = 4
+    if screen_type is not None:
+        cfg.display.screen_type = screen_type
     mock_http = MagicMock()
     mock_http._server = MagicMock()
     mock_http.get_runtime_status.return_value = {"name": "Kitchen Dial"}
@@ -182,6 +184,68 @@ class TestHeadlessWiring:
     def test_a_screenless_headless_dial_does_not_poll(self):
         captured = _run_core_wiring(fitted=False, display_import_fails=True)
         assert captured["core"].snapshot().polling is False
+
+
+class TestKioskSurfaceWiring:
+    def test_a_kiosk_profile_never_builds_the_spi_display(self):
+        captured = _run_core_wiring(fitted=True, screen_type="hd_kiosk")
+        assert "display built" not in captured["order"]
+
+    def test_a_fitted_kiosk_dial_polls_at_its_configured_interval(self):
+        captured = _run_core_wiring(fitted=True, screen_type="hd_kiosk")
+        assert captured["core"].snapshot().polling is True
+        assert captured["core"]._poll_interval == 4
+
+    def test_an_unfitted_kiosk_dial_does_not_poll(self):
+        captured = _run_core_wiring(fitted=False, screen_type="hd_kiosk")
+        assert captured["core"].snapshot().polling is False
+
+    def test_a_kiosk_dial_lists_the_page_as_an_input_and_can_confirm_presence(self):
+        captured = _run_core_wiring(fitted=True, screen_type="hd_kiosk")
+        assert captured["core"].snapshot().dial.inputs == ("touch:hd",)
+        captured["http"].set_can_confirm_presence.assert_called_once_with(True)
+
+    def test_a_kiosk_dial_starts_no_touch_source(self):
+        import dial_main as dm
+        with patch.object(dm, "_build_touch_source") as build:
+            _run_core_wiring(fitted=True, screen_type="hd_kiosk")
+        build.assert_not_called()
+
+    def test_an_spi_profile_is_unchanged(self):
+        captured = _run_core_wiring(fitted=True, screen_type="st7735s_160x128")
+        assert "display built" in captured["order"]
+        assert captured["core"].snapshot().dial.inputs == ()
+
+
+class TestBuildDisplay:
+    def _cfg(self, screen_type):
+        cfg = MagicMock()
+        cfg.display.screen_type = screen_type
+        cfg.display.fitted = True
+        cfg.display.poll_interval_s = 3
+        return cfg
+
+    def test_kiosk_surface_returns_the_stand_in(self):
+        import dial_main as dm
+        core = MagicMock()
+        with patch("dial_display.create_dial_display") as create:
+            display = dm._build_display(self._cfg("hd_kiosk"), core)
+        create.assert_not_called()
+        assert isinstance(display, dm._HeadlessDisplay)
+        core.set_polling.assert_called_with(True)
+        core.set_poll_interval.assert_called_with(3)
+
+    def test_spi_surface_uses_the_display_factory(self):
+        import dial_main as dm
+        with patch("dial_display.create_dial_display") as create:
+            display = dm._build_display(self._cfg("st7735s_160x128"), MagicMock())
+        assert display is create.return_value
+
+    def test_spi_surface_falls_back_to_the_stand_in_on_import_failure(self):
+        import dial_main as dm
+        with patch("dial_display.create_dial_display", side_effect=ImportError("no Pillow")):
+            display = dm._build_display(self._cfg("st7735s_160x128"), MagicMock())
+        assert isinstance(display, dm._HeadlessDisplay)
 
 
 class TestBuildInputs:
