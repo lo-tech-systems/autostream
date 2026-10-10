@@ -1,9 +1,10 @@
 # /etc/systemd/system/autostream_dial_kiosk.service
 #
-# Full-screen browser for an HD dial: cage (a single-window Wayland
-# compositor) runs Chromium on the page the dial serves on the loopback
-# interface. The unit only runs where the installer wrote the marker file
-# below, so it stays inert on an SPI dial even if it were enabled.
+# Full-screen browser for an HD dial: cog (the WPE WebKit launcher) draws the
+# page the dial serves on the loopback interface straight to the display,
+# with no compositor in between. The unit only runs where the installer wrote
+# the marker file below, so it stays inert on an SPI dial even if it were
+# enabled.
 #
 # This file is part of autostream dial.
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -29,7 +30,13 @@ SyslogIdentifier=autostream-dial-kiosk
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 # Wait for the page's server so the browser never paints a connection error.
 ExecStartPre=/bin/sh -c 'until curl -fsS http://127.0.0.1:7843/api/v1/state >/dev/null; do sleep 1; done'
-ExecStart=/usr/bin/cage -- /usr/bin/chromium --kiosk --ozone-platform=wayland --noerrdialogs --disable-infobars --disable-pinch --overscroll-history-navigation=0 --no-first-run --disable-features=TranslateUI,MediaRouter --disable-session-crashed-bubble --disable-background-networking --disable-component-update --disable-sync --disable-extensions --no-default-browser-check --renderer-process-limit=1 --user-data-dir=/var/lib/autostream-kiosk/chromium http://127.0.0.1:7843/
+# --platform=drm draws to the display directly; the user's video, input and
+# render groups give it the GPU and the touch panel. The GLES renderer is
+# required: the default DRM renderer draws a scrambled picture on a Pi 5.
+# --bg-color=black stops a white flash before the page paints, and
+# --webprocess-failure=restart brings the page back if its web process dies.
+# No pointer is drawn, which suits a touch panel.
+ExecStart=/usr/bin/cog --platform=drm --platform-params=renderer=gles --bg-color=black --webprocess-failure=restart http://127.0.0.1:7843/
 Restart=always
 RestartSec=3
 

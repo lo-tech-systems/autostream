@@ -399,10 +399,40 @@ PYEOF
 }
 
 install_kiosk_packages() {
-    # cage is a single-window Wayland compositor, chromium the browser it
-    # runs. seatd gives cage a seat when logind is not handing it one.
-    apt_step apt-get install -y --no-install-recommends \
-        cage chromium fonts-dejavu-core seatd
+    # cog is the WPE WebKit launcher that draws the page straight to the
+    # display (it pulls in the WebKit libraries); libgles2 is the GL library
+    # its GLES renderer loads. Installed with the package manager's default
+    # recommends, as it was proven.
+    apt_step apt-get install -y cog libgles2 fonts-dejavu-core
+}
+
+retire_chromium_kiosk() {
+    # An HD dial installed before the kiosk moved to cog: remove the old
+    # browser's profile, the packages that existed only for it and the
+    # device-local trial drop-in some dials carry. Everything is guarded and
+    # non-fatal, and a dial that never had them is left alone, so it is safe on
+    # every run. The packages are purged, so no policy files are left behind.
+    local root pkg status dropin
+    local -a old=()
+    root="$(_fs_root)"
+    rm -rf "${root}${KIOSK_HOME}/chromium"
+    for pkg in chromium chromium-common chromium-sandbox cage; do
+        status="$(dpkg-query -W -f='${db:Status-Status}' "${pkg}" 2>/dev/null || true)"
+        case "${status}" in
+            ""|not-installed) ;;
+            *) old+=("${pkg}") ;;
+        esac
+    done
+    if (( ${#old[@]} > 0 )); then
+        apt_step apt-get purge -y "${old[@]}" \
+            || echo "WARNING: could not remove ${old[*]}; remove them manually" >&2
+    fi
+    dropin="${root}/etc/systemd/system/${KIOSK_UNIT}.d/cog-trial.conf"
+    if [[ -e "${dropin}" ]]; then
+        rm -f "${dropin}"
+        rmdir "${dropin%/*}" 2>/dev/null || true
+        systemctl daemon-reload || true
+    fi
 }
 
 create_kiosk_user() {
@@ -1012,7 +1042,7 @@ WARNING:
 A full activity log will be written to ~/autostream_dial_install.log
 =============================================================================
 EOF
-    [[ "${HD:-false}" == true ]] && echo "HD dial: also installs the kiosk browser and its service."
+    [[ "${HD:-false}" == true ]] && echo "HD dial: also installs the kiosk browser (cog) and its service."
 
     if has_tty; then
         local ans

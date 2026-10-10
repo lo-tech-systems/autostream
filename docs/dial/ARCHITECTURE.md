@@ -94,7 +94,8 @@ view attached, only the newest `EFFECTS_BACKLOG_MAX` entries are kept.
 ## The HD page is a second view
 
 An HD dial draws nothing itself. The dial serves a web page, and a kiosk
-browser on the same board shows it (see [HD-DIAL.md](HD-DIAL.md)). That page is
+browser (WPE WebKit, started by `cog` straight on the display) on the same
+board shows it (see [HD-DIAL.md](HD-DIAL.md)). That page is
 a second view of the core, alongside the SPI view. It reads snapshots through a
 loopback API and calls core actions. It never takes effects, and it holds no
 appliance state of its own beyond a short-lived optimistic value for a control

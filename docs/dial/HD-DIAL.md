@@ -5,7 +5,9 @@ small SPI panel. It runs the same dial software as every other dial, so it
 follows the same appliances, uses the same authorization and takes the same
 updates. The difference is the screen: instead of drawing small frames to an
 SPI display, the dial serves a web page to a kiosk browser on the same
-board, and that browser fills the touchscreen.
+board, and that browser fills the touchscreen. The browser is WPE WebKit,
+started by its `cog` launcher, which draws straight to the display with no
+desktop or compositor in between.
 
 **This is a preview.** The software is written and tested against a mock
 dial and a browser, but it has not yet been run on real HD dial hardware.
@@ -14,11 +16,11 @@ work, not what we have confirmed. If you try one, please report what you see.
 
 ## What you need
 
-- A Raspberry Pi with enough memory to run a browser. A Pi 4 or Pi 5 is the
-  expectation. A board with 1 GB of RAM or more is recommended. The kiosk has
-  been started on a Pi 3 Model A+ (512 MB), where it runs but is short of
-  memory and leans on swap. A Pi Zero 2 W (the board used for the small SPI
-  dial) has the same 512 MB and is not a target.
+- A Raspberry Pi with a GPU that the KMS graphics driver supports: a Pi 3,
+  Pi 4 or Pi 5. The kiosk is light. The browser and its two helper processes
+  use about 140 MiB on a Pi 3 Model A+, so even a 512 MB board is enough. A Pi
+  Zero 2 W (the board used for the small SPI dial) has the same memory but
+  is not a target.
 - A touchscreen of about 5 inches or larger, connected by HDMI (with USB
   touch) or by the Pi's DSI connector. The page is designed at 800x480 and
   scales up to larger panels such as 1024x600 and 1280x800. It is landscape
@@ -44,8 +46,8 @@ Run the dial installer with the `--hd` flag on a fresh install:
 
 On top of the normal dial install this:
 
-- installs the kiosk browser (`cage`, a minimal Wayland compositor, and
-  Chromium) and a font package;
+- installs the kiosk browser (`cog`, with the WebKit libraries it needs, and
+  `libgles2`) and a font package;
 - creates an account of its own for the browser, so the browser runs apart
   from the dial's state files;
 - enables the graphics driver (`vc4-kms-v3d`) in the Pi's boot
@@ -74,7 +76,12 @@ in the boot configuration; the installer leaves that to you, as the right
 line depends on the panel.
 
 An update does not need the flag. It reads the screen type the dial already
-uses and keeps the kiosk set up. An existing SPI dial can be turned into an
+uses and keeps the kiosk set up. An HD dial installed before the kiosk moved to
+`cog` is moved over by its next update: the new kiosk unit and `cog` are
+installed, and just before the dial restarts the update removes the old
+browser's profile, the `chromium` and `cage` packages and a leftover
+`cog-trial.conf` drop-in for the kiosk unit if there is one. Packages that
+were pulled in only to support them stay until you run `sudo apt autoremove`. An existing SPI dial can be turned into an
 HD dial by choosing **HD touchscreen** under **Screen Type** on the appliance's
 Setup page, but the kiosk browser is only installed by a fresh `--hd` install,
 so that choice alone shows nothing.
@@ -320,14 +327,19 @@ kiosk has not painted its page yet, or has failed to start. Check
 **The page says it is reconnecting.** The browser is running but the dial
 service is not answering. Restart `autostream_dial` and read its log.
 
-**The browser shows a graphics error or is very slow.** Check that the
-installer's boot changes took effect (they need a reboot) and that the board
-has enough memory (1 GB or more is recommended). On a Pi 3 the browser
-falls back to software rendering, which works but is slower.
+**The screen shows a graphics error or is very slow.** Check that the
+installer's boot changes took effect (they need a reboot): `dtoverlay=vc4-kms-v3d`
+should be in the boot configuration and `ls /dev/dri` should list a `card`
+device. The browser's own output, including any error it prints, is in the
+kiosk's log (`journalctl -u autostream_dial_kiosk`). The kiosk always starts
+`cog` with its GLES renderer, so the scrambled picture that its default
+renderer draws on a Pi 5 cannot appear; if you see one, check that the unit
+in `/etc/systemd/system/autostream_dial_kiosk.service` has not been edited.
 
 **Touch does nothing, or hits the wrong place.** The browser reads the
 touchscreen directly, so check the panel's own USB or DSI touch connection and
-that the kiosk's account is in the `input` group.
+that the kiosk's account is in the `input`, `video` and `render` groups
+(`id autostream-kiosk`; a change of group needs the kiosk restarted).
 
 **Brightness does nothing on an HDMI panel, or the panel never switches off.**
 The dial can only control an HDMI panel that answers DDC/CI. Check that the

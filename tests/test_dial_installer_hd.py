@@ -116,9 +116,13 @@ class TestInstallerFlag:
 class TestKioskPackages:
     def test_packages_and_apt_step(self):
         body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_kiosk_packages")
-        assert "apt_step apt-get install -y --no-install-recommends" in body
-        for pkg in ("cage", "chromium", "fonts-dejavu-core", "seatd"):
-            assert re.search(rf"\b{re.escape(pkg)}\b", body), pkg
+        assert "apt_step apt-get install -y cog libgles2 fonts-dejavu-core" in body
+
+    def test_the_old_browser_and_compositor_are_not_installed(self):
+        body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_kiosk_packages")
+        install = body.split("apt_step", 1)[1]
+        for pkg in ("chromium", "cage", "seatd"):
+            assert not re.search(rf"\b{pkg}\b", install), pkg
 
     def test_kiosk_packages_are_installed_nowhere_else(self):
         helpers = HELPERS.read_text(encoding="utf-8")
@@ -126,6 +130,7 @@ class TestKioskPackages:
                      "install_display_hardware_packages", "install_venv_build_packages"):
             body = _function_body(helpers, name)
             assert "chromium" not in body and "cage" not in body and "seatd" not in body, name
+            assert "cog" not in body.split(), name
 
 
 # ---------------------------------------------------------------------------
@@ -133,19 +138,20 @@ class TestKioskPackages:
 # ---------------------------------------------------------------------------
 
 class TestKioskUnit:
-    def test_exec_start_runs_cage_with_the_kiosk_flags(self):
+    def test_exec_start_runs_cog_on_the_drm_platform(self):
         cmd = _unit_value("ExecStart")
-        assert cmd.startswith("/usr/bin/cage -- /usr/bin/chromium ")
-        for flag in ("--kiosk", "--ozone-platform=wayland", "--noerrdialogs", "--disable-infobars",
-                     "--disable-pinch", "--overscroll-history-navigation=0",
-                     "--no-first-run", "--disable-features=TranslateUI,MediaRouter",
-                     "--disable-session-crashed-bubble", "--disable-background-networking",
-                     "--disable-component-update", "--disable-sync", "--disable-extensions",
-                     "--no-default-browser-check", "--renderer-process-limit=1",
-                     "--user-data-dir=/var/lib/autostream-kiosk/chromium"):
-            assert flag in cmd.split(), flag
-        for flag in ("--ignore-gpu-blocklist", "--enable-gpu-rasterization"):
-            assert flag not in cmd, flag
+        assert cmd == ("/usr/bin/cog --platform=drm --platform-params=renderer=gles "
+                       "--bg-color=black --webprocess-failure=restart http://127.0.0.1:7843/")
+
+    def test_the_gles_renderer_is_always_selected(self):
+        assert "--platform-params=renderer=gles" in _unit_value("ExecStart").split()
+
+    def test_no_compositor_pointer_or_untested_tuning(self):
+        text = KIOSK_UNIT.read_text(encoding="utf-8")
+        for word in ("chromium", "Chromium", "cage", "--kiosk", "ozone", "wayland", "Wayland"):
+            assert word not in text, word
+        assert "COG_PLATFORM_DRM_CURSOR" not in text
+        assert "MemoryMax" not in text
 
     def test_the_only_url_is_the_loopback_page(self):
         cmd = _unit_value("ExecStart")
@@ -168,8 +174,9 @@ class TestKioskUnit:
         pre = _unit_value("ExecStartPre")
         assert "http://127.0.0.1:7843/api/v1/state" in pre
 
-    def test_profile_lives_under_the_kiosk_home(self):
-        assert "--user-data-dir=/var/lib/autostream-kiosk/chromium" in _unit_value("ExecStart")
+    def test_no_profile_directory_is_named(self):
+        assert "user-data-dir" not in _unit_value("ExecStart")
+        assert "/var/lib/autostream-kiosk" not in KIOSK_UNIT.read_text(encoding="utf-8")
 
     def test_installed_to_the_systemd_directory_and_enabled_by_multi_user_target(self):
         assert _unit_value("WantedBy") == "multi-user.target"
@@ -233,6 +240,18 @@ class TestUninstaller:
         assert "userdel autostream-kiosk" in text
         assert "rm -rf /var/lib/autostream-kiosk" in text
         assert text.index("autostream_dial_kiosk") < text.index("systemctl daemon-reload")
+
+    def test_removes_the_trial_drop_in_and_its_empty_directory(self):
+        text = UNINSTALLER.read_text(encoding="utf-8")
+        assert "rm -f /etc/systemd/system/autostream_dial_kiosk.service.d/cog-trial.conf" in text
+        assert "rmdir /etc/systemd/system/autostream_dial_kiosk.service.d" in text
+        assert text.index("cog-trial.conf") < text.index("systemctl daemon-reload")
+
+    def test_no_browser_package_is_purged_and_the_profile_goes_with_the_home(self):
+        text = UNINSTALLER.read_text(encoding="utf-8")
+        assert not re.search(r"apt(-get)? (purge|remove)", text)
+        assert "chromium" not in text
+        assert "rm -rf /var/lib/autostream-kiosk" in text
 
     def test_the_marker_goes_with_the_state_directory(self):
         text = UNINSTALLER.read_text(encoding="utf-8")
@@ -530,6 +549,108 @@ class TestHdConfigAndAccount:
         assert not [c for c in env.calls() if c.startswith("useradd")]
 
 
+DPKG_QUERY = ('#!/bin/bash\n'
+              'f="$DPKG_DB/${@: -1}"\n'
+              '[[ -f "$f" ]] && { cat "$f"; exit 0; }\n'
+              'exit 1\n')
+
+
+def _dpkg(env: Env, **status: str) -> None:
+    """Fake dpkg-query: a package is installed in the state given, else unknown."""
+    db = env.tmp / "dpkg"
+    db.mkdir(exist_ok=True)
+    for name, value in status.items():
+        (db / name.replace("_", "-")).write_text(value, encoding="utf-8")
+    env.fake("dpkg-query", DPKG_QUERY)
+    env.fake("apt-get", RECORDER)
+
+
+def _retire(env: Env):
+    return env.run("retire_chromium_kiosk", DPKG_DB=(env.tmp / "dpkg").as_posix())
+
+
+@bash_capable
+class TestRetireChromiumKiosk:
+    PROFILE = "var/lib/autostream-kiosk/chromium/Default/Preferences"
+    DROPIN = "etc/systemd/system/autostream_dial_kiosk.service.d/cog-trial.conf"
+
+    def test_an_old_hd_dial_loses_its_profile_packages_and_drop_in(self, tmp_path):
+        env = Env(tmp_path)
+        _dpkg(env, chromium="installed", chromium_common="installed",
+              chromium_sandbox="installed", cage="installed")
+        profile = env.put(self.PROFILE)
+        keep = env.put("var/lib/autostream-kiosk/.cache/cog/state")
+        dropin = env.put(self.DROPIN)
+        r = _retire(env)
+        assert r.returncode == 0, r.stderr
+        assert not (env.root / "var/lib/autostream-kiosk/chromium").exists()
+        assert not profile.exists()
+        assert keep.exists()
+        assert not dropin.exists()
+        assert not dropin.parent.exists()
+        assert env.calls() == [
+            "apt-get purge -y chromium chromium-common chromium-sandbox cage",
+            "systemctl daemon-reload"]
+
+    def test_only_installed_packages_are_named(self, tmp_path):
+        env = Env(tmp_path)
+        _dpkg(env, chromium="installed", cage="config-files")
+        r = _retire(env)
+        assert r.returncode == 0, r.stderr
+        assert env.calls() == ["apt-get purge -y chromium cage"]
+
+    def test_a_dial_that_never_had_them_is_left_alone(self, tmp_path):
+        env = Env(tmp_path)
+        _dpkg(env)
+        r = _retire(env)
+        assert r.returncode == 0, r.stderr
+        assert env.calls() == []
+
+    def test_a_failed_purge_warns_and_does_not_fail(self, tmp_path):
+        env = Env(tmp_path)
+        _dpkg(env, chromium="installed")
+        env.fake("apt-get", '#!/bin/bash\necho "apt-get $*" >> "$TRACE"\nexit 1\n')
+        r = _retire(env)
+        assert r.returncode == 0, r.stderr
+        assert "WARNING: could not remove chromium" in r.stderr
+        assert env.calls() == ["apt-get purge -y chromium"]
+
+    def test_a_drop_in_directory_holding_other_files_is_kept(self, tmp_path):
+        env = Env(tmp_path)
+        _dpkg(env)
+        env.put(self.DROPIN)
+        other = env.put("etc/systemd/system/autostream_dial_kiosk.service.d/local.conf")
+        r = _retire(env)
+        assert r.returncode == 0, r.stderr
+        assert other.exists()
+        assert not (other.parent / "cog-trial.conf").exists()
+
+    def test_running_it_again_changes_nothing_more(self, tmp_path):
+        env = Env(tmp_path)
+        _dpkg(env, cage="installed")
+        env.put(self.PROFILE)
+        assert _retire(env).returncode == 0
+        (env.tmp / "dpkg" / "cage").unlink()
+        env.trace.write_text("", encoding="utf-8")
+        r = _retire(env)
+        assert r.returncode == 0, r.stderr
+        assert env.calls() == []
+
+    def test_the_installer_runs_it_on_an_hd_dial_only_after_the_unit_is_deployed(self):
+        text = INSTALLER.read_text(encoding="utf-8")
+        assert text.count("retire_chromium_kiosk") == 2
+        assert text.count("if $HD; then retire_chromium_kiosk; fi") == 2
+        assert text.index("deploy_kiosk_unit") < text.index("retire_chromium_kiosk")
+        assert text.index("write_update_swap") < text.index("retire_chromium_kiosk")
+        assert text.index("retire_chromium_kiosk") < text.index("schedule_update_reboot")
+
+    def test_the_helper_checks_before_purging_and_tolerates_failure(self):
+        body = _function_body(HELPERS.read_text(encoding="utf-8"), "retire_chromium_kiosk")
+        assert "dpkg-query" in body
+        purge = body.split("apt_step apt-get purge", 1)[1].split("fi\n", 1)[0]
+        assert "|| echo \"WARNING" in purge
+
+
 @bash_capable
 class TestDetectHdInstall:
     def _detect(self, env: Env, hw=None, settings=None, marker=False):
@@ -689,7 +810,9 @@ class TestInstallerDryRun:
             assert names.count(name) == 1, name
         assert "retire_hd_kiosk" not in names
         assert "detect_hd_install" not in names
+        assert names.count("retire_chromium_kiosk") == 1
         at = names.index
+        assert at("deploy_kiosk_unit") < at("retire_chromium_kiosk")
         assert at("install_kiosk_packages") < at("create_kiosk_user") < at("phase python")
         assert at("install_display_hardware_packages") < at("install_kiosk_packages")
         assert at("enable_i2c") < at("configure_hd_boot")
@@ -702,6 +825,7 @@ class TestInstallerDryRun:
         names = _names(calls)
         for name in HD_ONLY:
             assert name not in names, name
+        assert "retire_chromium_kiosk" not in names
         assert "detect_hd_install" not in names
         assert names.count("retire_hd_kiosk") == 1
         assert not [c for c in calls if re.search(r"kiosk|udev|backlight|vc4|gpu_mem", c)
@@ -712,7 +836,7 @@ class TestInstallerDryRun:
         (tmp_path / "hd").mkdir()
         _r1, spi = _dry_run(tmp_path / "spi", update=False)
         _r2, hd = _dry_run(tmp_path / "hd", update=False, hd_flag=True)
-        assert [n for n in _names(hd) if n not in HD_ONLY] == [
+        assert [n for n in _names(hd) if n not in HD_ONLY + ("retire_chromium_kiosk",)] == [
             n for n in _names(spi) if n != "retire_hd_kiosk"]
 
     def test_spi_update_runs_no_hd_step(self, tmp_path):
@@ -723,6 +847,7 @@ class TestInstallerDryRun:
             assert name not in names, name
         assert names.count("detect_hd_install") == 1
         assert names.count("retire_hd_kiosk") == 1
+        assert "retire_chromium_kiosk" not in names
 
     def test_hd_update_keeps_the_kiosk_without_rewriting_the_profile(self, tmp_path):
         r, calls = _dry_run(tmp_path, update=True, detects_hd=True)
@@ -737,6 +862,8 @@ class TestInstallerDryRun:
         assert at("detect_hd_install") < at("backup_owned_files") < at("stage_code_tree")
         assert at("detect_hd_install") < at("system_upgrade") < at("install_kiosk_packages")
         assert at("deploy_kiosk_unit") < at("write_update_swap")
+        assert names.count("retire_chromium_kiosk") == 1
+        assert at("write_update_swap") < at("retire_chromium_kiosk") < at("schedule_update_reboot")
         assert [n for n in names if n != "rm"][-1] == "schedule_update_reboot"
 
     def test_the_hd_flag_is_ignored_on_an_update(self, tmp_path):
@@ -745,3 +872,4 @@ class TestInstallerDryRun:
         names = _names(calls)
         for name in HD_ONLY:
             assert name not in names, name
+        assert "retire_chromium_kiosk" not in names
