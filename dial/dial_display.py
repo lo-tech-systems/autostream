@@ -55,6 +55,7 @@ from dial_display_compositor import (
     PLAY_GLYPH,
     DialDisplayCompositor,
     ListState,
+    OutputViewState,
     OverlayState,
     RepeatViewState,
     format_mmss,
@@ -72,7 +73,7 @@ from dial_display_profiles import (
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
-from dial_outputs import _OutputsTarget, enqueue_fetch
+from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
@@ -175,7 +176,7 @@ class ScreenPolicy:
     nothing to show for it)."""
     name: str
     state_attr: str | None            # the manager attribute holding this screen's state, or None (main)
-    surface: tuple[str, bool, bool] | None   # (surface, name_active, dots_active) for touch, or None: computed (main)
+    surface: tuple[str, bool, bool, bool] | None  # (surface, name_active, dots_active, outputs_active) for touch, or None: computed (main)
     open: object                      # unbound DialDisplay method (self) -> bool
     paint: object                     # unbound DialDisplay method (self) -> None, or None: main's own paint path
     paged: bool                       # a paged list: page requests apply, rows are sliced per page
@@ -186,6 +187,7 @@ class ScreenPolicy:
     close_reveals_overlay: bool       # a DOTS toggle-close arms the one-shot main-overlay reveal
     closes_on_focus_clear: bool       # a manual-focus clear pops it
     back_to: str                      # the screen a back/close request returns to
+    bound_to_appliance: bool = False  # closed by the poll when its appliance stops being focused/reporting
 
 
 # Pillow renamed these resample enums in recent versions; fall back for
@@ -452,6 +454,15 @@ def _selector_list_row(row: SelectorRow) -> tuple:
 
 def _picker_list_row(row: PickerRow) -> tuple:
     return (row.label, False, format_mmss(row.seconds))
+
+
+def _output_list_row(row: "OutputRow") -> tuple:
+    """One outputs-list row: the level rides in the same secondary-text
+    slot the picker uses for durations, right-aligned by the existing row
+    renderer; a disabled output shows nothing on the right. No row is ever
+    "current" (no wash) and none carries the play marker — the outputs
+    list has no notion of either."""
+    return (row.name, False, str(row.volume) if row.selected else "")
 
 
 def _parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
@@ -1089,12 +1100,18 @@ class DialDisplay:
             and self._screen == "main"
         )
 
-    def touch_surface(self) -> tuple[str, bool, bool]:
-        """(surface, name_active, dots_active) for dial_touch.
-        TouchStateMachine.set_surface() — see that module's SURFACES
-        paragraph. Polled once per loop iteration by TouchEventSource; a
-        plain-attribute read discipline, same as persistent_overlay_shown()
-        and noncomposited_generation().
+    def touch_surface(self) -> tuple[str, bool, bool, bool]:
+        """(surface, name_active, dots_active, outputs_active) for
+        dial_touch.TouchStateMachine.set_surface() — see that module's
+        SURFACES paragraph. Polled once per loop iteration by
+        TouchEventSource; a plain-attribute read discipline, same as
+        persistent_overlay_shown() and noncomposited_generation().
+
+        outputs_active is true whenever the currently focused/reporting
+        appliance advertises dial_outputs — see _poll_once, which computes
+        it into self._outputs_available every tick via
+        _update_outputs_available(). False whenever nothing controllable
+        is shown (there is no appliance for the top-right zone to act on).
 
         name_active is true whenever there is a controllable appliance
         currently shown (self._now_playing is not None) — unconditional:
@@ -1122,12 +1139,13 @@ class DialDisplay:
         if policy.surface is not None:
             return policy.surface
         if self._now_playing is None:
-            return ("idle" if self._idle_affordance else "hidden", False, False)
+            return ("idle" if self._idle_affordance else "hidden", False, False, False)
         name_active = True
         dots_active = self._dots_active
+        outputs_active = self._outputs_available
         if self.persistent_overlay_shown():
-            return ("held", name_active, dots_active)
-        return ("hidden", name_active, dots_active)
+            return ("held", name_active, dots_active, outputs_active)
+        return ("hidden", name_active, dots_active, outputs_active)
 
     def request_repaint(self) -> None:
         """Ask the repaint thread to recompose the current base against the
@@ -1703,10 +1721,12 @@ class DialDisplay:
     def list_row_tap(self, index: int) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW
         tap): routes to whichever list-chassis screen is actually open —
-        the appliance selector (selector_pick) or the replay picker
-        (picker_pick)."""
+        the appliance selector (selector_pick), the replay picker
+        (picker_pick) or the outputs list (outputs_row_tap)."""
         if self._screen == "picker":
             self.picker_pick(index)
+        elif self._screen == "outputs":
+            self.outputs_row_tap(index)
         else:
             self.selector_pick(index)
 
@@ -1879,18 +1899,130 @@ class DialDisplay:
                 enqueue_transport(_RepeatTarget(row.appliance_id, row.ip, row.port), "seek", 0.0)
         self.close_list()
 
+    def _outputs_target_lockfree(self):
+        """The roster entry the outputs screens act on: the focused/
+        reporting appliance when it advertises dial_outputs and is not
+        confirmed unauthorized; else None. Plain reads, like
+        focus_volume_target()."""
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        if not appliance_id:
+            return None
+        for r in self._last_roster:
+            if r.appliance_id == appliance_id:
+                return r if (r.dial_outputs and r.auth != AUTH_UNAUTHORIZED) else None
+        return None
+
+    def open_outputs(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for an OUTPUTS
+        tap): request the outputs list and ask the worker for a fresh one
+        straight away, so the first frame after opening is at most one
+        round trip away. Lock-free, like open_selector(); refuses (no
+        request at all) when there is no focused/reporting appliance
+        advertising the capability."""
+        entry = self._outputs_target_lockfree()
+        if entry is None:
+            return
+        enqueue_fetch(_OutputsTarget(entry.appliance_id, entry.ip, entry.port))
+        self._screen_request = "outputs"
+        self._overlay_signal.set()
+
+    def outputs_row_tap(self, index: int) -> None:
+        """Touch-thread entry (a LIST_ROW tap while the outputs list is
+        open): remember the tapped row's output id and request the detail
+        page. A stale index (the row vanished between paint and tap) is
+        treated as back, same as selector_pick()/picker_pick()."""
+        state = self._outputs
+        if state is not None and state.rows:
+            page_rows = self._current_page_rows(state)
+            if 0 <= index < len(page_rows):
+                self._output_open_id = page_rows[index].id
+                self._screen_request = "output"
+                self._overlay_signal.set()
+                return
+        self.close_list()
+
+    def _detail_row_lockfree(self) -> "OutputRow | None":
+        """The output the detail page is open for, read from the last
+        fetched outputs snapshot (not the optimistic override — see
+        output_toggle_tap()/output_volume_tap()). Plain reads, same
+        discipline as _outputs_target_lockfree()."""
+        detail, state = self._output_detail, self._outputs
+        if detail is None or state is None:
+            return None
+        return next((r for r in state.rows if r.id == detail.output_id), None)
+
+    def _shown_output_level(self, row: "OutputRow") -> "int | None":
+        """The volume *row* should currently show to a touch-thread caller
+        stepping it further: the pending optimistic override's volume when
+        it names this row and says selected; else row.volume when
+        row.selected; else None (disabled — no level to step). Plain reads;
+        safe lock-free (this is a touch-thread helper) or under self._lock
+        (the paint-time callers reach the same value their own way — see
+        _build_outputs_list_state_locked/_build_output_view_locked)."""
+        override = self._outputs_optimistic
+        if override is not None and override[0] == row.id and override[1]:
+            return override[2]
+        return row.volume if row.selected else None
+
+    def output_toggle_tap(self) -> None:
+        """Touch-thread entry (OUTPUT_TOGGLE): enable this output at the
+        appliance's own configured default volume (the dial sends no
+        volume; see send_dial_outputs_set_post_json), or disable it,
+        through the outputs worker. Shows the change at once via an
+        optimistic override, reconciled by the worker's own fetch-after-
+        set the moment the appliance's real answer lands."""
+        row = self._detail_row_lockfree()
+        state = self._outputs
+        if row is None or state is None:
+            return
+        selected = not row.selected
+        self._outputs_optimistic = (row.id, selected, row.volume, time.monotonic())
+        enqueue_set(
+            _OutputsTarget(state.appliance_id, state.ip, state.port), row.id,
+            selected=selected, volume=None,
+        )
+        self._overlay_signal.set()
+
+    def output_volume_tap(self, delta: int) -> None:
+        """Touch-thread entry (OUTPUT_UP/OUTPUT_DOWN, repeating): absolute
+        volume = clamp(shown level + delta) for this output only — the
+        appliance has no per-output delta API, only an absolute
+        apply_output_mutation. A disabled output ignores the steppers (no
+        level to step from)."""
+        row = self._detail_row_lockfree()
+        state = self._outputs
+        if row is None or state is None:
+            return
+        shown = self._shown_output_level(row)
+        if shown is None:
+            return
+        new = max(0, min(100, shown + delta))
+        self._outputs_optimistic = (row.id, True, new, time.monotonic())
+        enqueue_set(
+            _OutputsTarget(state.appliance_id, state.ip, state.port), row.id,
+            selected=True, volume=new,
+        )
+        self._overlay_signal.set()
+
     def _close_secondary_locked(self) -> None:
         """Pop to the main screen from any secondary screen — the
-        appliance list, the repeat screen, or the replay picker. Caller
-        holds self._lock. Called from the repeat thread's own request-
-        folding, from sleep/disable/swap (so a later wake/reopen never
-        resumes on a stale secondary screen), from the poll thread when the
-        focused appliance changes while the repeat screen is open, and is
-        what a stale selector_pick()/picker_pick() index falls back to."""
+        appliance list, the repeat screen, the replay picker, the outputs
+        list or the per-output detail page. Caller holds self._lock.
+        Called from the repeat thread's own request-folding, from
+        sleep/disable/swap (so a later wake/reopen never resumes on a
+        stale secondary screen), from the poll thread when the focused
+        appliance changes while a bound screen is open, and is what a
+        stale selector_pick()/picker_pick()/outputs_row_tap() index falls
+        back to.
+
+        Every screen's own state_attr is cleared here, from the policy
+        table itself, so a screen added to the table is popped by this
+        loop without a further edit — see ScreenPolicy.state_attr."""
         self._screen = "main"
-        self._selector = None
-        self._repeat_screen = None
-        self._picker = None
+        for policy in SCREEN_POLICIES.values():
+            if policy.state_attr is not None:
+                setattr(self, policy.state_attr, None)
+        self._output_open_id = None
         self._pressed = None
         self._overlay_signal.set()
 
@@ -1950,6 +2082,42 @@ class DialDisplay:
             return False
         self._repeat_screen = screen
         self._screen = "repeat"
+        return True
+
+    def _open_outputs_locked(self) -> bool:
+        """The outputs row's opener: refuse when there is no focused/
+        reporting appliance advertising the capability (see
+        _outputs_target_lockfree()); otherwise open, keeping the last
+        fetched rows when re-opening for the SAME appliance (so a quick
+        close/reopen does not flash back to "Loading"), resetting them for
+        a different one."""
+        entry = self._outputs_target_lockfree()
+        if entry is None:
+            return False
+        prev = self._outputs
+        keep = prev is not None and prev.appliance_id == entry.appliance_id
+        self._outputs = OutputsState(
+            appliance_id=entry.appliance_id, service_name=entry.service_name,
+            ip=entry.ip, port=entry.port,
+            rows=prev.rows if keep else (), page=0, opened_at=time.monotonic(),
+            loaded=keep and prev.loaded,
+        )
+        self._screen = "outputs"
+        return True
+
+    def _open_output_locked(self) -> bool:
+        """The per-output detail row's opener: refuse when the outputs
+        list is not open or the touch-chosen row id (self._output_open_id,
+        set by outputs_row_tap()) is no longer in its rows — either way the
+        current screen (the outputs list) stays showing."""
+        state, output_id = self._outputs, self._output_open_id
+        self._output_open_id = None
+        if state is None or output_id is None or not any(r.id == output_id for r in state.rows):
+            return False
+        self._output_detail = OutputDetailState(
+            appliance_id=state.appliance_id, output_id=output_id, opened_at=time.monotonic(),
+        )
+        self._screen = "output"
         return True
 
     def _apply_screen_requests_locked(self) -> None:
@@ -2155,6 +2323,71 @@ class DialDisplay:
             _picker_list_row, pressed=self._pressed,
         )
 
+    def _row_with_optimistic_locked(self, row: "OutputRow") -> "OutputRow":
+        """*row* with the pending optimistic override folded in when it
+        names this row — paint-time only, never written back to
+        self._outputs. Shared by the outputs list and the per-output
+        detail view, so a toggle/volume step reads the same on both the
+        instant it lands."""
+        override = self._outputs_optimistic
+        if override is not None and override[0] == row.id:
+            return dataclasses.replace(row, selected=override[1], volume=override[2])
+        return row
+
+    def _build_outputs_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
+        """Build the compositor's ListState for the outputs list's CURRENT
+        page. "Loading" while the first fetch has not landed yet (see
+        OutputsState.loaded), "No outputs" once it has and there is
+        nothing to show. The optimistic override is applied to the row
+        list before it is turned into row tuples, so the same tap that set
+        it reads back immediately without waiting for the worker's
+        reconciling fetch."""
+        state = self._outputs
+        placeholder = "Loading" if (state is None or not state.loaded) else "No outputs"
+        if state is not None and state.rows:
+            state = dataclasses.replace(
+                state, rows=tuple(self._row_with_optimistic_locked(r) for r in state.rows),
+            )
+        return _list_state_for(
+            state, _rows_per_page_for(width, height, metrics=metrics), placeholder,
+            _output_list_row, pressed=self._pressed,
+        )
+
+    def _build_output_view_locked(self, now: float) -> "OutputViewState":
+        """Build the compositor's OutputViewState for the currently open
+        per-output detail page, reading the output's row fresh from
+        self._outputs (through the optimistic override) at every paint —
+        see OutputDetailState's own docstring. A detail whose row has
+        disappeared (a race before on_outputs_result's fold requests the
+        outputs list back) draws a disabled placeholder rather than
+        raising; the fold is what actually navigates away."""
+        detail, state = self._output_detail, self._outputs
+        name = appliance_display_name(state.service_name) if state is not None else ""
+        pressed = self._pressed[0] if self._pressed is not None else None
+        row = None
+        if detail is not None and state is not None:
+            row = next((r for r in state.rows if r.id == detail.output_id), None)
+        if row is None:
+            return OutputViewState(name=name, output_name="", selected=False, level=None, pressed=pressed)
+        row = self._row_with_optimistic_locked(row)
+        level = row.volume if row.selected else None
+        return OutputViewState(
+            name=name, output_name=row.name, selected=row.selected, level=level, pressed=pressed,
+        )
+
+    def _display_output_locked(self) -> None:
+        """Compose and push the per-output detail page frame — the
+        compose_output() counterpart to _display_repeat_locked(). Bypasses
+        _display_locked() entirely: this screen has its own dark-chassis
+        compose path, like the appliance selector/replay picker/outputs
+        list. Caller holds self._lock."""
+        view = self._build_output_view_locked(time.monotonic())
+        metrics = self._metrics_locked()
+        self._push_frame_locked(lambda: self._compositor.compose_output(
+            metrics.width, metrics.height, view,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+
     def _display_list_locked(self) -> None:
         """Compose and push whichever list-chassis screen is open (the
         appliance selector or the replay picker). Bypasses _display_locked()
@@ -2164,6 +2397,8 @@ class DialDisplay:
         metrics = self._metrics_locked()
         if self._screen == "picker":
             list_state = self._build_picker_list_state_locked(metrics.width, metrics.height, metrics=metrics)
+        elif self._screen == "outputs":
+            list_state = self._build_outputs_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         else:
             list_state = self._build_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         self._push_frame_locked(lambda: self._compositor.compose_list(
@@ -2561,6 +2796,24 @@ class DialDisplay:
             entry is not None and entry.dial_outputs and entry.auth != AUTH_UNAUTHORIZED
         )
 
+    def _close_bound_screen_if_unfocused(self) -> None:
+        """Poll thread: pop whichever screen is showing if its own policy
+        says it is bound to an appliance (the outputs list, the per-output
+        detail page) and that appliance is no longer the focused/reporting
+        one this tick — an auto-pick change, a focus clear, or nothing
+        playing/focused at all. self._screen and the bound state_attr are
+        read lock-free here, the same "a stale read costs at most one
+        harmless extra tick" discipline _check_secondary_timeout() uses;
+        the close itself is re-checked and applied under self._lock."""
+        policy = _policy(self._screen)
+        if not policy.bound_to_appliance:
+            return
+        state = getattr(self, policy.state_attr)
+        current_id = self._manual_focus_id or self._reporting_appliance_id
+        if state is not None and state.appliance_id != current_id:
+            with self._lock:
+                self._close_secondary_locked()
+
     def _poll_once(self) -> None:
         with self._lock:
             fitted = self._config.fitted
@@ -2770,6 +3023,7 @@ class DialDisplay:
                     self._update_dots_active(now)
                     self._update_outputs_available()
 
+            self._close_bound_screen_if_unfocused()
             self.show_logo()
             return
 
@@ -2884,6 +3138,7 @@ class DialDisplay:
         self._reporting_appliance_id = reporting_id
         self._update_dots_active(time.monotonic())
         self._update_outputs_available()
+        self._close_bound_screen_if_unfocused()
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
         # Free reconciliation for the dial mute belief (dial_volume.py),
@@ -3027,27 +3282,44 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "selector": ScreenPolicy(
-        name="selector", state_attr="_selector", surface=("selector", False, False),
+        name="selector", state_attr="_selector", surface=("selector", False, False, False),
         open=DialDisplay._open_selector_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "picker": ScreenPolicy(
-        name="picker", state_attr="_picker", surface=("picker", False, False),
+        name="picker", state_attr="_picker", surface=("picker", False, False, False),
         open=DialDisplay._open_picker_locked, paint=DialDisplay._display_list_locked, paged=True,
-        # touch_extends_timeout is False here — today's actual behaviour,
-        # kept exactly as it is rather than "fixed" to match the selector's.
-        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=False,
+        # touch activity extends every list screen's clock — picker now
+        # matches the selector/outputs lists rather than keeping its own
+        # older (never-extends) behaviour.
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "repeat": ScreenPolicy(
-        name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True),
+        name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True, False),
         open=DialDisplay._open_repeat_locked, paint=DialDisplay._display_repeat_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
         close_reveals_overlay=True, closes_on_focus_clear=True, back_to="main",
+    ),
+    "outputs": ScreenPolicy(
+        name="outputs", state_attr="_outputs", surface=("outputs", False, False, False),
+        open=DialDisplay._open_outputs_locked, paint=DialDisplay._display_list_locked, paged=True,
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=True, back_to="main",
+        bound_to_appliance=True,
+    ),
+    "output": ScreenPolicy(
+        name="output", state_attr="_output_detail", surface=("output", True, False, False),
+        open=DialDisplay._open_output_locked, paint=DialDisplay._display_output_locked, paged=False,
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=True, back_to="outputs",
+        bound_to_appliance=True,
     ),
 }
 

@@ -43,6 +43,11 @@ from dial_touch_layout import TouchZone
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces.json"
+# A frozen copy of GOLDEN_PATH taken immediately before the outputs feature's
+# screens/rows/steps were added — see TestPreOutputsScenariosUnchanged below,
+# which proves every pre-existing scripted scenario's recorded fields are
+# unchanged by this feature (new keys aside).
+PRE_OUTPUTS_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_outputs.json"
 
 # Set to True locally to regenerate the golden fixture after a *deliberate*,
 # reviewed change. Must be False in committed code.
@@ -102,20 +107,24 @@ class FakeBackend:
 
 def _target(
     name: str, appliance_id: str, auth: str = "authorized", playing_since: float = 1.0,
+    dial_outputs: bool = False,
 ) -> PlayingTarget:
     return PlayingTarget(
         ip="192.168.1.10", port=80, name=name,
-        dial_api=True, audio_status=True, dial_status=True,
+        dial_api=True, audio_status=True, dial_status=True, dial_outputs=dial_outputs,
         service_name=name, playing_since=playing_since,
         appliance_id=appliance_id, auth=auth,
     )
 
 
-def _idle_row(name: str, appliance_id: str, auth: str = "authorized", repeat_capable: bool = False) -> RosterEntry:
+def _idle_row(
+    name: str, appliance_id: str, auth: str = "authorized", repeat_capable: bool = False,
+    dial_outputs: bool = False,
+) -> RosterEntry:
     return RosterEntry(
         appliance_id=appliance_id, service_name=name, name=name,
         ip="192.168.1.20", port=80, playing=False, repeat_capable=repeat_capable,
-        dial_api=True, audio_status=True, dial_status=True, auth=auth,
+        dial_api=True, audio_status=True, dial_status=True, dial_outputs=dial_outputs, auth=auth,
     )
 
 
@@ -124,7 +133,7 @@ def _roster_row_for_target(t: PlayingTarget) -> RosterEntry:
         appliance_id=t.appliance_id, service_name=t.service_name, name=t.name,
         ip=t.ip, port=t.port, playing=True, repeat_capable=False,
         dial_api=t.dial_api, audio_status=t.audio_status, dial_status=t.dial_status,
-        auth=t.auth,
+        dial_outputs=t.dial_outputs, auth=t.auth,
     )
 
 
@@ -147,6 +156,19 @@ def _repeat_obj(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def _outputs_body(rows) -> dict:
+    """rows: an iterable of (id, name, selected, volume, remote_in_use)
+    tuples -- the shape POST /api/dial/outputs returns, fed straight to
+    on_outputs_result() via the "outputs_result" step."""
+    return {
+        "ok": True,
+        "outputs": [
+            {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": r}
+            for (i, n, s, v, r) in rows
+        ],
+    }
 
 
 def _aid(tag: str) -> str:
@@ -267,6 +289,22 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._last_roster = []
     elif kind == "update_config":
         d.update_config(dataclasses.replace(d._config, **step[1]))
+    elif kind == "open_outputs":
+        d.open_outputs()
+    elif kind == "outputs_row_tap":
+        d.outputs_row_tap(step[1])
+    elif kind == "output_toggle_tap":
+        d.output_toggle_tap()
+    elif kind == "output_volume_tap":
+        d.output_volume_tap(step[1])
+    elif kind == "outputs_result":
+        # ("outputs_result", appliance_id, status, body) -- feeds the
+        # outputs worker's on_outputs_result callback directly, the same
+        # shape the worker itself calls it with after a fetch.
+        _, aid, status, body = step
+        d.on_outputs_result("fetch", aid, status, body, {})
+    elif kind == "tick_outputs_refresh":
+        d._tick_outputs_refresh()
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -293,6 +331,18 @@ def _snapshot(ctx: _Ctx) -> dict:
     ctx.frame_offset = len(ctx.fb.displayed)
     surface = d.touch_surface()
 
+    outputs = d._outputs
+    outputs_repr = None if outputs is None else {
+        "appliance_id": outputs.appliance_id, "page": outputs.page,
+        "opened_at": outputs.opened_at, "loaded": outputs.loaded,
+        "rows": [[r.id, r.name, r.selected, r.volume] for r in outputs.rows],
+    }
+    detail = d._output_detail
+    detail_repr = None if detail is None else {
+        "appliance_id": detail.appliance_id, "output_id": detail.output_id,
+        "opened_at": detail.opened_at,
+    }
+
     return {
         "screen": d._screen,
         "screen_request": d._screen_request,
@@ -300,6 +350,9 @@ def _snapshot(ctx: _Ctx) -> dict:
         "selector": _list_state(d._selector),
         "picker": _list_state(d._picker),
         "repeat_appliance_id": d._repeat_screen.appliance_id if d._repeat_screen is not None else None,
+        "outputs": outputs_repr,
+        "output_detail": detail_repr,
+        "outputs_optimistic": list(d._outputs_optimistic) if d._outputs_optimistic is not None else None,
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
@@ -307,7 +360,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "focus_pending": d._focus_pending is not None,
         "display_sleeping": d._display_sleeping,
         "idle_started": d._idle_started_at is not None,
-        "touch_surface": [surface[0], surface[1], surface[2]],
+        "touch_surface": [surface[0], surface[1], surface[2], surface[3]],
         "persistent_overlay_shown": d.persistent_overlay_shown(),
         "repeat_close_reveal": d.consume_repeat_close_reveal(),
         "frame_count": len(frames),
@@ -489,15 +542,18 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("check_timeout",),
     ])
 
-    # Touch activity does NOT restart the picker's timeout clock (today's
-    # value — see the picker row's touch_extends_timeout field).
-    add("picker_touch_does_not_restart_timeout", [
+    # Touch activity restarts the picker's timeout clock, the same as the
+    # selector's own — see the picker row's touch_extends_timeout field
+    # (flipped to True: touch now extends every list screen's clock).
+    add("picker_touch_restarts_timeout", [
         ("targets", []),
         ("open_picker",),
         ("repaint",),
         ("advance", 17.0),
         ("notify_touch_activity",),
         ("repaint",),
+        ("advance", SELECTOR_TIMEOUT_SECONDS - 1),
+        ("check_timeout",),
         ("advance", 2.0),
         ("check_timeout",),
     ])
@@ -723,6 +779,235 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("poll",),
     ])
 
+    # --- Outputs list / per-output detail (dial_outputs=v1) -----------------
+
+    # The OUTPUTS zone is inert for an appliance that does not advertise the
+    # capability: open_outputs() makes no request at all.
+    aid = _aid("o1")
+    t = _target("O1", aid, dial_outputs=False)
+    add("outputs_open_refused_without_capability", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+    ])
+
+    # Opening shows "Loading" until the first fetch result lands, then the
+    # fetched rows.
+    aid = _aid("o2")
+    t = _target("O2", aid, dial_outputs=True)
+    add("outputs_open_loading_then_loaded", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([
+            ("1", "Bedroom", True, 40, False), ("2", "Kitchen", False, 0, False),
+        ])),
+        ("repaint",),
+    ])
+
+    # A LIST_ROW tap on the outputs list opens the per-output detail page;
+    # its own back control returns to the outputs list (back_to="outputs"),
+    # not main.
+    aid = _aid("o3")
+    t = _target("O3", aid, dial_outputs=True)
+    add("outputs_row_tap_opens_detail_then_back_to_outputs", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("close_list",),
+        ("repaint",),
+    ])
+
+    # A stale row index (the row vanished between paint and tap) is treated
+    # as back to main, same as a stale selector/picker index.
+    aid = _aid("o4")
+    t = _target("O4", aid, dial_outputs=True)
+    add("outputs_row_tap_stale_index_back_to_main", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 9),
+        ("repaint",),
+    ])
+
+    # A toggle tap sets an optimistic override at once, shown before the
+    # worker's own reconciling fetch would ever land (none is driven here —
+    # this scenario only exercises the manager-side state the tap sets).
+    aid = _aid("o5")
+    t = _target("O5", aid, dial_outputs=True)
+    add("output_toggle_tap_sets_optimistic_override", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", False, 0, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("output_toggle_tap",),
+        ("repaint",),
+    ])
+
+    # A volume step also sets an optimistic override, clamped to [0, 100].
+    aid = _aid("o6")
+    t = _target("O6", aid, dial_outputs=True)
+    add("output_volume_tap_steps_and_clamps", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 95, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("output_volume_tap", 10),
+        ("repaint",),
+        ("output_volume_tap", 10),
+        ("repaint",),
+    ])
+
+    # A volume step on a disabled output is ignored (no level to step from).
+    aid = _aid("o7")
+    t = _target("O7", aid, dial_outputs=True)
+    add("output_volume_tap_ignored_when_disabled", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", False, 0, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("output_volume_tap", 10),
+        ("repaint",),
+    ])
+
+    # An output that goes remote-in-use (or is removed) while its detail
+    # page is open is dropped from the next fetch; the fold requests the
+    # outputs list back.
+    aid = _aid("o8")
+    t = _target("O8", aid, dial_outputs=True)
+    add("output_detail_row_vanishes_falls_back_to_list", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", False, 0, True)])),
+        ("repaint",),
+    ])
+
+    # The outputs list closes to main when the focused/reporting appliance
+    # changes to a different one — the screen is bound to the appliance it
+    # was opened for (ScreenPolicy.bound_to_appliance).
+    aid_a, aid_b = _aid("o9a"), _aid("o9b")
+    ta = _target("O9A", aid_a, dial_outputs=True, playing_since=1.0)
+    tb = _target("O9B", aid_b, dial_outputs=True, playing_since=2.0)
+    add("outputs_closes_when_reporting_appliance_changes", [
+        ("targets", [ta]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid_a, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("targets", [tb]),
+        ("poll",),
+    ])
+
+    # An idle focus resolving to the SAME appliance the outputs list is
+    # bound to keeps it open (IDLE_KEEP, and the bound-appliance check
+    # agrees since the focus id is unchanged).
+    aid = _aid("o10")
+    t = _target("O10", aid, dial_outputs=True)
+    add("outputs_stays_open_with_matching_idle_focus", [
+        ("targets", [t]),
+        ("poll",),
+        ("set_manual_focus", aid),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("targets", []),
+        ("roster", [_idle_row("O10", aid, dial_outputs=True)]),
+        ("poll",),
+    ])
+
+    # The per-output detail page closes to main (not back to the outputs
+    # list) after its own inactivity timeout — the timeout rule always
+    # returns to main; back_to governs only an explicit back tap.
+    aid = _aid("o11")
+    t = _target("O11", aid, dial_outputs=True)
+    add("output_detail_timeout_closes_to_main", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("advance", SELECTOR_TIMEOUT_SECONDS + 1),
+        ("check_timeout",),
+    ])
+
+    # Sleep pops the outputs list, same as every other secondary screen.
+    aid = _aid("o12")
+    t = _target("O12", aid, dial_outputs=True)
+    add("sleep_pops_outputs_list", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("sleep_locked",),
+    ])
+
+    # A malformed/unreachable fetch result is transient: the last good
+    # snapshot stays on screen rather than reverting to "Loading".
+    aid = _aid("o13")
+    t = _target("O13", aid, dial_outputs=True)
+    add("outputs_fetch_failure_keeps_last_snapshot", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("outputs_result", aid, 500, None),
+        ("repaint",),
+    ])
+
+    # A late fetch result for an appliance the screen has since moved on
+    # from (a different one now bound) is dropped.
+    aid_a, aid_b = _aid("o14a"), _aid("o14b")
+    ta = _target("O14A", aid_a, dial_outputs=True, playing_since=1.0)
+    add("outputs_late_result_for_previous_appliance_dropped", [
+        ("targets", [ta]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid_a, 200, _outputs_body([("1", "Bedroom", True, 40, False)])),
+        ("repaint",),
+        ("targets", []),
+        ("poll",),
+        ("outputs_result", aid_a, 200, _outputs_body([("1", "Bedroom", False, 0, False)])),
+        ("repaint",),
+    ])
+
     return scenarios
 
 
@@ -735,6 +1020,8 @@ _ZONES = [
     TouchZone.UP, TouchZone.DOWN, TouchZone.NAME, TouchZone.DOTS, TouchZone.MUTE,
     TouchZone.LIST_ROW, TouchZone.LIST_BACK, TouchZone.LIST_UP, TouchZone.LIST_DOWN,
     TouchZone.REPEAT_PLAY, TouchZone.REPEAT_START, TouchZone.REPEAT_STOP, TouchZone.IDLE_REPLAY,
+    TouchZone.OUTPUTS, TouchZone.OUTPUT_BACK, TouchZone.OUTPUT_TOGGLE,
+    TouchZone.OUTPUT_UP, TouchZone.OUTPUT_DOWN,
 ]
 _ADVANCES = [1.0, 17.0, 19.0, 900.0]
 _REPEAT_STATES = ["idle", "recording", "pending", "hold", "replaying", "fading_out"]
@@ -746,14 +1033,19 @@ _ACTION_KINDS = (
     + ["list_row_tap"] * 2 + ["set_manual_focus"] * 2 + ["notify_touch_activity"] * 2
     + ["set_pressed"] * 3 + ["poll"] * 6 + ["repaint"] * 6 + ["check_timeout"] * 2
     + ["tick_repeat_line"] * 2 + ["update_config"] * 2 + ["advance"] * 6
+    + ["open_outputs"] * 2 + ["outputs_row_tap"] * 2 + ["output_toggle_tap"] * 2
+    + ["output_volume_tap"] * 2 + ["outputs_result"] * 3 + ["tick_outputs_refresh"] * 2
 )
 
 
 def _random_walk_steps(seed: int, n_steps: int, tag: str) -> list[tuple]:
     rng = random.Random(seed)
     aids = [_aid(f"{tag}_{i}") for i in range(3)]
-    targets_full = [_target(f"{tag.upper()}{i}", aids[i], playing_since=float(i)) for i in range(3)]
-    idle_row = _idle_row(f"{tag}Idle", _aid(f"{tag}_idle"), repeat_capable=True)
+    targets_full = [
+        _target(f"{tag.upper()}{i}", aids[i], playing_since=float(i), dial_outputs=True)
+        for i in range(3)
+    ]
+    idle_row = _idle_row(f"{tag}Idle", _aid(f"{tag}_idle"), repeat_capable=True, dial_outputs=True)
 
     steps: list[tuple] = [("targets", list(targets_full))]
     for _ in range(n_steps):
@@ -801,10 +1093,26 @@ def _random_walk_steps(seed: int, n_steps: int, tag: str) -> list[tuple]:
                 steps.append(("update_config", {"fitted": True}))
         elif kind == "advance":
             steps.append(("advance", rng.choice(_ADVANCES)))
+        elif kind == "outputs_row_tap":
+            steps.append(("outputs_row_tap", rng.randint(0, 4)))
+        elif kind == "output_volume_tap":
+            steps.append(("output_volume_tap", rng.choice([-10, -1, 1, 10])))
+        elif kind == "outputs_result":
+            aid = rng.choice(aids)
+            if rng.random() < 0.15:
+                steps.append(("outputs_result", aid, 500, None))
+            else:
+                n_rows = rng.randint(0, 3)
+                rows = [
+                    (str(i), f"Output{i}", rng.random() < 0.5, rng.randint(0, 100), rng.random() < 0.2)
+                    for i in range(n_rows)
+                ]
+                steps.append(("outputs_result", aid, 200, _outputs_body(rows)))
         else:
             # open_selector / open_picker / toggle_repeat / close_list /
             # notify_touch_activity / poll / repaint / check_timeout /
-            # tick_repeat_line — no arguments.
+            # tick_repeat_line / open_outputs / output_toggle_tap /
+            # tick_outputs_refresh — no arguments.
             steps.append((kind,))
     return steps
 
@@ -843,3 +1151,76 @@ class TestScreenTraceCorpus:
             "this must stay byte-identical across a dial-only refactor of "
             "how the manager decides screen behaviour."
         )
+
+
+# ---------------------------------------------------------------------------
+# Proof that adding the outputs list/detail screens did not change any
+# pre-existing scenario's own recorded behaviour: strip the fields the new
+# feature adds (the "outputs"/"output_detail"/"outputs_optimistic" keys and
+# the touch_surface tuple's fourth element) from the CURRENT golden and
+# compare what remains against a frozen copy of the golden taken immediately
+# before this feature's screens/rows/steps existed.
+#
+# Two scenarios are deliberately excluded from the strict comparison, both
+# for reasons unrelated to the outputs feature itself:
+#   - "picker_touch_does_not_restart_timeout" was renamed to
+#     "picker_touch_restarts_timeout" and its own recorded values legitimately
+#     changed -- it exists specifically to pin the picker row's
+#     touch_extends_timeout field, which this same change flips from False to
+#     True (a deliberate, reviewed product decision, not a regression).
+#   - every "random_walk_*" scenario's step sequence itself changed (the
+#     random-walk action-kind list gained new entries, which reshuffles what
+#     every later rng.choice() draws for a given seed) -- these are
+#     regenerated from scratch by design (see the module docstring's
+#     "regenerate after a deliberate change" note), not compared field by
+#     field against the old ones.
+# ---------------------------------------------------------------------------
+
+_RENAMED_SCENARIOS = {
+    "picker_touch_does_not_restart_timeout": "picker_touch_restarts_timeout",
+}
+
+
+def _strip_new_fields(step: dict) -> dict:
+    """*step*'s snapshot dict with every field the outputs feature added
+    removed, so what remains is exactly the shape the pre-outputs golden
+    recorded."""
+    stripped = dict(step)
+    stripped.pop("outputs", None)
+    stripped.pop("output_detail", None)
+    stripped.pop("outputs_optimistic", None)
+    if "touch_surface" in stripped:
+        stripped["touch_surface"] = stripped["touch_surface"][:3]
+    return stripped
+
+
+class TestPreOutputsScenariosUnchanged:
+    def test_every_pre_existing_scripted_scenario_is_unchanged(self):
+        old = json.loads(PRE_OUTPUTS_GOLDEN_PATH.read_text(encoding="utf-8"))
+        new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+
+        checked = 0
+        for name, old_trace in old.items():
+            if name.startswith("random_walk_"):
+                continue
+            if name in _RENAMED_SCENARIOS:
+                continue
+            assert name in new, f"scenario {name!r} present in the pre-outputs golden is missing from the current one"
+            new_trace = new[name]
+            assert len(new_trace) == len(old_trace), f"{name!r}: step count changed"
+            for i, (old_step, new_step) in enumerate(zip(old_trace, new_trace)):
+                assert _strip_new_fields(new_step) == old_step, (
+                    f"{name!r} step {i}: a pre-existing scenario's recorded "
+                    f"fields changed beyond the new outputs/output_detail/"
+                    f"outputs_optimistic keys and the touch_surface tuple's "
+                    f"new fourth element"
+                )
+            checked += 1
+        # Sanity: this must actually have exercised a meaningful number of
+        # scenarios, not silently compared zero because of a path/name typo.
+        assert checked >= 20
+
+    def test_renamed_picker_scenario_present_under_its_new_name(self):
+        new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+        assert "picker_touch_restarts_timeout" in new
+        assert "picker_touch_does_not_restart_timeout" not in new

@@ -427,12 +427,14 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     def on_zone_tap(zone, index) -> None:
         # NAME opens the appliance selector (from either the main or the
         # repeat screen); the LIST_* zones act on whichever list-chassis
-        # screen (selector or picker) is open; DOTS opens/closes the repeat
-        # screen (closing it also reveals the main screen's volume overlay
-        # on return — see display.toggle_repeat_screen()); REPEAT_* act on
-        # the repeat screen; IDLE_REPLAY opens the replay picker — see
-        # dial_touch.py's SURFACES paragraph for how a press ever reaches
-        # one of these zones in the first place.
+        # screen (selector, picker or outputs) is open; DOTS opens/closes
+        # the repeat screen (closing it also reveals the main screen's
+        # volume overlay on return — see display.toggle_repeat_screen());
+        # REPEAT_* act on the repeat screen; IDLE_REPLAY opens the replay
+        # picker; OUTPUTS opens the outputs list; OUTPUT_* act on the
+        # per-output detail page — see dial_touch.py's SURFACES paragraph
+        # for how a press ever reaches one of these zones in the first
+        # place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
@@ -455,6 +457,18 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
             display.repeat_stop_tap()
         elif zone == TouchZone.IDLE_REPLAY:
             display.open_picker()
+        elif zone == TouchZone.OUTPUTS:
+            display.open_outputs()
+        elif zone == TouchZone.OUTPUT_BACK:
+            display.close_list()
+        elif zone == TouchZone.OUTPUT_TOGGLE:
+            display.output_toggle_tap()
+        elif zone == TouchZone.OUTPUT_UP:
+            step = step_percent() if step_percent is not None else cfg.step_percent
+            display.output_volume_tap(+step)
+        elif zone == TouchZone.OUTPUT_DOWN:
+            step = step_percent() if step_percent is not None else cfg.step_percent
+            display.output_volume_tap(-step)
 
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,

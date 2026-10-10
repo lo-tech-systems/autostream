@@ -1876,6 +1876,51 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_REPLAY, None)
             display.open_picker.assert_called_once()
 
+    def test_on_zone_tap_outputs_opens_the_outputs_list(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUTS, None)
+            display.open_outputs.assert_called_once()
+
+    def test_on_zone_tap_output_back_closes_the_list_screen(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_BACK, None)
+            display.close_list.assert_called_once()
+
+    def test_on_zone_tap_output_toggle_taps_the_output(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_TOGGLE, None)
+            display.output_toggle_tap.assert_called_once()
+
+    def test_on_zone_tap_output_up_steps_by_step_percent(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_UP, None)
+            display.output_volume_tap.assert_called_once_with(3)
+
+    def test_on_zone_tap_output_down_steps_by_negative_step_percent(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_DOWN, None)
+            display.output_volume_tap.assert_called_once_with(-3)
+
+    def test_on_zone_tap_output_up_uses_live_step_percent_callable(self):
+        from dial_touch_layout import TouchZone
+
+        live_step = {"value": 7}
+        with self._built(step_percent=lambda: live_step["value"]) as (
+            cfg, display, result, captured, *_,
+        ):
+            captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUT_UP, None)
+            display.output_volume_tap.assert_called_once_with(7)
+
     def test_set_pressed_zone_repeat_play_records_the_zone(self):
         from dial_touch_layout import TouchZone
 

@@ -3592,27 +3592,27 @@ class TestTouchSurface:
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
-        assert display.touch_surface() == ("selector", False, False)
+        assert display.touch_surface() == ("selector", False, False, False)
 
     def test_hidden_with_name_active_when_something_is_playing(self):
         t = _target()
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         _poll_with_artwork(display, fb)
-        assert display.touch_surface() == ("hidden", True, False)
+        assert display.touch_surface() == ("hidden", True, False, False)
 
     def test_held_with_name_active(self):
         t = _target()
         display, fb, gt = _make_display(targets=[t], always_show_controls=True)
         display.enable()
         _poll_with_artwork(display, fb)
-        assert display.touch_surface() == ("held", True, False)
+        assert display.touch_surface() == ("held", True, False, False)
 
     def test_hidden_with_name_inactive_when_nothing_playing(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         display._poll_once()
-        assert display.touch_surface() == ("hidden", False, False)
+        assert display.touch_surface() == ("hidden", False, False, False)
 
     def test_idle_when_affordance_drawn(self):
         display, fb, gt = _make_display(targets=[])
@@ -3620,7 +3620,7 @@ class TestTouchSurface:
         display._poll_once()
         with display._lock:
             display._idle_affordance = True
-        assert display.touch_surface() == ("idle", False, False)
+        assert display.touch_surface() == ("idle", False, False, False)
 
     def test_hidden_not_idle_when_nothing_playing_and_no_affordance(self):
         display, fb, gt = _make_display(targets=[])
@@ -3642,14 +3642,14 @@ class TestTouchSurface:
         ))
         with display._lock:
             display._screen = "repeat"
-        assert display.touch_surface() == ("repeat", True, True)
+        assert display.touch_surface() == ("repeat", True, True, False)
 
     def test_picker_while_open(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         with display._lock:
             display._screen = "picker"
-        assert display.touch_surface() == ("picker", False, False)
+        assert display.touch_surface() == ("picker", False, False, False)
 
     def test_dots_active_reflects_fresh_available_record(self):
         aid = "2" * 20
@@ -3666,7 +3666,7 @@ class TestTouchSurface:
         with patch("dial_display.fetch_target_status", return_value=result):
             display._poll_once()
         assert display._dots_active is True
-        surface, name_active, dots_active = display.touch_surface()
+        surface, name_active, dots_active, outputs_active = display.touch_surface()
         assert dots_active is True
 
     def test_dots_inactive_when_record_unavailable(self):
@@ -3687,7 +3687,7 @@ class TestTouchSurface:
         display, fb, gt = _make_display(targets=[], roster=[idle_entry])
         display.enable()
         display._poll_once()
-        assert display.touch_surface() == ("hidden", False, False)
+        assert display.touch_surface() == ("hidden", False, False, False)
 
     def test_idle_affordance_still_drawn_with_an_idle_roster_entry(self):
         idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
@@ -3696,7 +3696,7 @@ class TestTouchSurface:
         display._poll_once()
         with display._lock:
             display._idle_affordance = True
-        assert display.touch_surface() == ("idle", False, False)
+        assert display.touch_surface() == ("idle", False, False, False)
 
     def test_hidden_with_name_active_once_an_idle_focus_is_set(self):
         aid = "9" * 19 + "2"
@@ -3708,7 +3708,7 @@ class TestTouchSurface:
         with patch("dial_display.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
             display._poll_once()
-        assert display.touch_surface() == ("hidden", True, False)
+        assert display.touch_surface() == ("hidden", True, False, False)
 
     def test_held_with_name_active_once_an_idle_focus_is_set_and_always_show(self):
         aid = "9" * 19 + "3"
@@ -3720,7 +3720,7 @@ class TestTouchSurface:
         with patch("dial_display.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
             display._poll_once()
-        assert display.touch_surface() == ("held", True, False)
+        assert display.touch_surface() == ("held", True, False, False)
 
 
 class TestOverlayNameField:
@@ -3752,7 +3752,7 @@ class TestOverlayNameField:
         display.enable()
         _poll_with_artwork(display, fb)
         assert len(display._selector.rows) == 1
-        assert display.touch_surface() == ("hidden", True, False)
+        assert display.touch_surface() == ("hidden", True, False, False)
 
 
 # ---------------------------------------------------------------------------
@@ -5171,14 +5171,314 @@ class TestRefreshIdleAffordance:
 
 
 # ---------------------------------------------------------------------------
+# The outputs list and per-output detail screens: openers, touch-thread
+# entries, and paint builders. Lifecycle/poll interactions (bound-appliance
+# close, idle focus, timeouts) are covered by the trace corpus instead.
+# ---------------------------------------------------------------------------
+
+def _make_outputs_display(dial_outputs=True, auth="unknown", appliance_id="a" * 20):
+    display, fb, gt = _make_display(targets=[])
+    display._reporting_appliance_id = appliance_id
+    display._last_roster = [_roster_entry(
+        appliance_id=appliance_id, auth=auth, dial_outputs=dial_outputs,
+    )]
+    return display
+
+
+class TestOutputsOpener:
+    def test_refuses_with_no_focus_or_reporting_id(self):
+        display, fb, gt = _make_display(targets=[])
+        assert display._open_outputs_locked() is False
+        assert display._outputs is None
+
+    def test_refuses_without_dial_outputs_capability(self):
+        display = _make_outputs_display(dial_outputs=False)
+        assert display._open_outputs_locked() is False
+        assert display._outputs is None
+
+    def test_refuses_when_unauthorized(self):
+        display = _make_outputs_display(auth="unauthorized")
+        assert display._open_outputs_locked() is False
+
+    def test_opens_for_an_authorized_capable_appliance(self):
+        display = _make_outputs_display()
+        assert display._open_outputs_locked() is True
+        assert display._screen == "outputs"
+        assert display._outputs.appliance_id == "a" * 20
+        assert display._outputs.rows == ()
+        assert display._outputs.loaded is False
+
+    def test_keeps_rows_on_reopen_for_the_same_appliance(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        rows = (dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),)
+        display._outputs = dataclasses.replace(display._outputs, rows=rows, loaded=True)
+        display._screen = "main"
+        display._open_outputs_locked()
+        assert display._outputs.rows == rows
+        assert display._outputs.loaded is True
+
+    def test_resets_rows_for_a_different_appliance(self):
+        display = _make_outputs_display(appliance_id="a" * 20)
+        display._open_outputs_locked()
+        rows = (dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),)
+        display._outputs = dataclasses.replace(display._outputs, rows=rows, loaded=True)
+        display._screen = "main"
+        display._reporting_appliance_id = "b" * 20
+        display._last_roster = [_roster_entry(appliance_id="b" * 20, dial_outputs=True)]
+        display._open_outputs_locked()
+        assert display._outputs.appliance_id == "b" * 20
+        assert display._outputs.rows == ()
+        assert display._outputs.loaded is False
+
+
+class TestOutputDetailOpener:
+    def test_refuses_without_a_chosen_id(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._outputs = dataclasses.replace(
+            display._outputs,
+            rows=(dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),),
+        )
+        display._output_open_id = None
+        assert display._open_output_locked() is False
+        assert display._output_detail is None
+
+    def test_refuses_when_id_not_in_rows(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._outputs = dataclasses.replace(
+            display._outputs,
+            rows=(dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),),
+        )
+        display._output_open_id = "not-a-row"
+        assert display._open_output_locked() is False
+        assert display._output_detail is None
+        # Consumed either way, refused or not.
+        assert display._output_open_id is None
+
+    def test_opens_for_a_valid_id(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._outputs = dataclasses.replace(
+            display._outputs,
+            rows=(dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),),
+        )
+        display._output_open_id = "1"
+        assert display._open_output_locked() is True
+        assert display._screen == "output"
+        assert display._output_detail.output_id == "1"
+        assert display._output_detail.appliance_id == display._outputs.appliance_id
+        assert display._output_open_id is None
+
+    def test_refuses_with_no_outputs_state(self):
+        display, fb, gt = _make_display(targets=[])
+        display._output_open_id = "1"
+        assert display._open_output_locked() is False
+
+
+class TestOutputsTouchEntries:
+    def test_open_outputs_enqueues_fetch_and_requests_screen(self):
+        display = _make_outputs_display()
+        with patch("dial_display.enqueue_fetch") as mock_fetch:
+            display.open_outputs()
+        mock_fetch.assert_called_once()
+        target = mock_fetch.call_args[0][0]
+        assert target.appliance_id == "a" * 20
+        assert display._screen_request == "outputs"
+
+    def test_open_outputs_noop_without_capability(self):
+        display = _make_outputs_display(dial_outputs=False)
+        with patch("dial_display.enqueue_fetch") as mock_fetch:
+            display.open_outputs()
+        mock_fetch.assert_not_called()
+        assert display._screen_request is None
+
+    def test_outputs_row_tap_sets_open_id_and_requests_detail(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._outputs = dataclasses.replace(
+            display._outputs,
+            rows=(dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),),
+        )
+        display.outputs_row_tap(0)
+        assert display._output_open_id == "1"
+        assert display._screen_request == "output"
+
+    def test_outputs_row_tap_stale_index_closes_list(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._outputs = dataclasses.replace(
+            display._outputs,
+            rows=(dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),),
+        )
+        display.outputs_row_tap(9)
+        assert display._output_open_id is None
+        # close_list() requests back_to for whatever screen is showing.
+        assert display._screen_request == dd._policy(display._screen).back_to
+
+    def _opened_detail(self, selected=True, volume=40):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        row = dd.OutputRow(id="1", name="Bedroom", selected=selected, volume=volume)
+        display._outputs = dataclasses.replace(display._outputs, rows=(row,))
+        display._output_detail = dd.OutputDetailState(
+            appliance_id=display._outputs.appliance_id, output_id="1", opened_at=1000.0,
+        )
+        display._screen = "output"
+        return display
+
+    def test_output_toggle_tap_enqueues_and_sets_optimistic(self):
+        display = self._opened_detail(selected=False, volume=0)
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_toggle_tap()
+        mock_set.assert_called_once()
+        target, out_id = mock_set.call_args[0]
+        kwargs = mock_set.call_args[1]
+        assert out_id == "1"
+        assert kwargs["selected"] is True
+        assert kwargs["volume"] is None
+        assert display._outputs_optimistic[0] == "1"
+        assert display._outputs_optimistic[1] is True
+
+    def test_output_toggle_tap_disables(self):
+        display = self._opened_detail(selected=True, volume=40)
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_toggle_tap()
+        kwargs = mock_set.call_args[1]
+        assert kwargs["selected"] is False
+        assert display._outputs_optimistic[1] is False
+
+    def test_output_toggle_tap_noop_without_row(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._output_detail = dd.OutputDetailState(
+            appliance_id=display._outputs.appliance_id, output_id="missing", opened_at=1000.0,
+        )
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_toggle_tap()
+        mock_set.assert_not_called()
+
+    def test_output_volume_tap_steps_from_row_volume(self):
+        display = self._opened_detail(selected=True, volume=40)
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_volume_tap(+2)
+        kwargs = mock_set.call_args[1]
+        assert kwargs["selected"] is True
+        assert kwargs["volume"] == 42
+        assert display._outputs_optimistic[2] == 42
+
+    def test_output_volume_tap_steps_from_optimistic_value(self):
+        display = self._opened_detail(selected=True, volume=40)
+        display._outputs_optimistic = ("1", True, 42, 1000.0)
+        with patch("dial_display.enqueue_set"):
+            display.output_volume_tap(+2)
+        assert display._outputs_optimistic[2] == 44
+
+    def test_output_volume_tap_ignored_when_disabled(self):
+        display = self._opened_detail(selected=False, volume=0)
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_volume_tap(+2)
+        mock_set.assert_not_called()
+        assert display._outputs_optimistic is None
+
+    def test_output_volume_tap_clamps_at_100(self):
+        display = self._opened_detail(selected=True, volume=99)
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_volume_tap(+10)
+        assert mock_set.call_args[1]["volume"] == 100
+
+    def test_output_volume_tap_clamps_at_0(self):
+        display = self._opened_detail(selected=True, volume=1)
+        with patch("dial_display.enqueue_set") as mock_set:
+            display.output_volume_tap(-10)
+        assert mock_set.call_args[1]["volume"] == 0
+
+
+class TestOutputsPaintBuilders:
+    def test_list_row_enabled_shows_volume_right_aligned_slot(self):
+        assert dd._output_list_row(
+            dd.OutputRow(id="1", name="Bedroom", selected=True, volume=42),
+        ) == ("Bedroom", False, "42")
+
+    def test_list_row_disabled_shows_blank(self):
+        assert dd._output_list_row(
+            dd.OutputRow(id="1", name="Bedroom", selected=False, volume=0),
+        ) == ("Bedroom", False, "")
+
+    def test_loading_placeholder_before_first_fetch(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        with display._lock:
+            state = display._build_outputs_list_state_locked(160, 128)
+        assert state.rows == (("Loading", False),)
+
+    def test_no_outputs_placeholder_once_loaded_and_empty(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display._outputs = dataclasses.replace(display._outputs, loaded=True, rows=())
+        with display._lock:
+            state = display._build_outputs_list_state_locked(160, 128)
+        assert state.rows == (("No outputs", False),)
+
+    def test_optimistic_override_applied_before_row_tuples(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        row = dd.OutputRow(id="1", name="Bedroom", selected=False, volume=0)
+        display._outputs = dataclasses.replace(display._outputs, rows=(row,), loaded=True)
+        display._outputs_optimistic = ("1", True, 55, 1000.0)
+        with display._lock:
+            state = display._build_outputs_list_state_locked(160, 128)
+        assert state.rows == (("Bedroom", False, "55"),)
+        # Paint-time only: the manager's own row is never mutated.
+        assert display._outputs.rows[0].selected is False
+
+    def test_output_view_reads_level_through_the_override(self):
+        display = self._opened_with_row(selected=False, volume=0)
+        display._outputs_optimistic = ("1", True, 60, 1000.0)
+        with display._lock:
+            view = display._build_output_view_locked(1000.0)
+        assert view.selected is True
+        assert view.level == 60
+
+    def test_output_view_level_none_when_disabled(self):
+        display = self._opened_with_row(selected=False, volume=0)
+        with display._lock:
+            view = display._build_output_view_locked(1000.0)
+        assert view.selected is False
+        assert view.level is None
+
+    def test_output_view_falls_back_when_row_vanished(self):
+        display = self._opened_with_row(selected=True, volume=40)
+        display._outputs = dataclasses.replace(display._outputs, rows=())
+        with display._lock:
+            view = display._build_output_view_locked(1000.0)
+        assert view.selected is False
+        assert view.level is None
+        assert view.output_name == ""
+
+    def _opened_with_row(self, selected, volume):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        row = dd.OutputRow(id="1", name="Bedroom", selected=selected, volume=volume)
+        display._outputs = dataclasses.replace(display._outputs, rows=(row,), loaded=True)
+        display._output_detail = dd.OutputDetailState(
+            appliance_id=display._outputs.appliance_id, output_id="1", opened_at=1000.0,
+        )
+        return display
+
+
+# ---------------------------------------------------------------------------
 # The screen policy table itself: shape and cross-row consistency checks,
 # independent of any particular screen's behaviour (covered above and by
 # the trace corpus).
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_four_screens(self):
-        assert set(SCREEN_POLICIES) == {"main", "selector", "picker", "repeat"}
+    def test_table_has_exactly_the_six_screens(self):
+        assert set(SCREEN_POLICIES) == {
+            "main", "selector", "picker", "repeat", "outputs", "output",
+        }
 
     def test_state_attr_is_an_attribute_of_a_fresh_display(self):
         display, fb, gt = _make_display(targets=[])
@@ -5198,11 +5498,28 @@ class TestScreenPolicyTable:
         for policy in SCREEN_POLICIES.values():
             assert policy.back_to in SCREEN_POLICIES
 
-    def test_exactly_selector_and_picker_are_paged(self):
+    def test_exactly_selector_picker_and_outputs_are_paged(self):
         paged = {name for name, policy in SCREEN_POLICIES.items() if policy.paged}
-        assert paged == {"selector", "picker"}
+        assert paged == {"selector", "picker", "outputs"}
 
-    def test_picker_touch_extends_timeout_is_pinned_false(self):
-        # Today's actual value — see the row's own comment. Flip only as a
+    def test_picker_touch_extends_timeout_is_pinned_true(self):
+        # Touch activity extends every list screen's clock — the picker's
+        # own row now matches the selector/outputs lists rather than
+        # keeping its older (never-extends) behaviour. Flip only as a
         # deliberate, reviewed product decision with its own test.
-        assert SCREEN_POLICIES["picker"].touch_extends_timeout is False
+        assert SCREEN_POLICIES["picker"].touch_extends_timeout is True
+
+    def test_bound_to_appliance_is_exactly_outputs_and_output(self):
+        bound = {name for name, policy in SCREEN_POLICIES.items() if policy.bound_to_appliance}
+        assert bound == {"outputs", "output"}
+
+    def test_surface_is_a_four_tuple_or_none_for_every_row(self):
+        for policy in SCREEN_POLICIES.values():
+            assert policy.surface is None or len(policy.surface) == 4
+
+    def test_outputs_and_output_close_on_focus_clear(self):
+        assert SCREEN_POLICIES["outputs"].closes_on_focus_clear is True
+        assert SCREEN_POLICIES["output"].closes_on_focus_clear is True
+
+    def test_output_back_to_is_outputs_not_main(self):
+        assert SCREEN_POLICIES["output"].back_to == "outputs"
