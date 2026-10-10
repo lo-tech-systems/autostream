@@ -99,6 +99,17 @@ itself, unless you have just scrolled that list.
 - The appliance's default speaker carries a Default label, as on the appliance's
   Home page.
 - Speakers have their own on/off switch and volume slider.
+- Switching on a speaker that needs pairing (a new Apple TV, for example)
+  makes that device show a code, and a keypad card opens on the dial. Enter
+  the code and press OK; the card says Pairing while the appliance checks it,
+  and closes when the speaker is paired. The code needs at least four digits,
+  and the boxes grow if it is longer (up to eight). If the code is wrong the
+  card says so and you can try again. After several quick attempts it asks
+  you to wait a few seconds, counting down, and the keys stay greyed out until
+  it is time. Cancel closes the card, and so does leaving it alone for a
+  minute and a half. The appliance's Home page waits while the dial is doing
+  this. Against an older appliance the card instead says **Pair in Autostream**,
+  asking you to enter the code in that appliance's web UI.
 
 ### Now playing and volume
 

@@ -371,6 +371,43 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .card-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
 .card-buttons:empty { display: none; }
 
+/* The speaker PIN card: the text and boxes on the left, the keypad on the right */
+.card.kind-pin {
+    width: min(34em, 100%); display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 1.4em;
+    grid-template-areas: "title pad" "message pad" "boxes pad" "error pad" "buttons pad";
+    align-items: start; align-content: start;
+}
+.card.kind-pin .card-title { grid-area: title; }
+.card.kind-pin .card-message { grid-area: message; }
+.card.kind-pin #card-pin-boxes { grid-area: boxes; }
+.card.kind-pin #card-pin-error { grid-area: error; }
+.card.kind-pin .card-buttons { grid-area: buttons; justify-content: flex-start; margin-top: auto; align-self: end; }
+.card.kind-pin #card-pin-pad { grid-area: pad; align-self: start; }
+.card.kind-pin .card-source, .card.kind-pin .progress { display: none; }
+.pin-boxes { display: flex; gap: 10px; margin-top: 6px; }
+.pin-boxes[hidden], .pin-error[hidden], .pin-pad[hidden] { display: none; }
+.pin-box {
+    flex: 0 1 2.6em; min-width: 0; height: 3.1em; border-radius: 12px; display: grid; place-items: center;
+    font-size: 1.5em; font-weight: 700; font-variant-numeric: tabular-nums;
+    background: var(--color-surface); border: 1px solid var(--color-border-card); color: var(--color-text-strong);
+}
+.pin-box[hidden] { display: none; }
+.pin-boxes.dense { gap: 5px; }
+.pin-boxes.dense .pin-box { font-size: 1.2em; border-radius: 9px; }
+.pin-box.next { border-color: var(--color-accent); box-shadow: 0 0 0 2px rgba(80, 150, 220, 0.25); }
+.pin-error { color: var(--color-status-danger); font-size: 0.93em; min-height: 1.3em; }
+.pin-error.wait { color: var(--color-text-dim); }
+.pin-pad { display: grid; grid-template-columns: repeat(3, var(--row-h)); gap: 8px; }
+.pin-key {
+    width: var(--row-h); height: var(--row-h); padding: 0; border-radius: 14px; cursor: pointer;
+    font: inherit; font-size: 1.35em; font-weight: 600; display: grid; place-items: center;
+    border: 1px solid var(--color-border-card); background: var(--color-surface-raised); color: var(--color-text-strong);
+}
+.pin-key.ok { background: var(--color-accent); border-color: var(--color-accent); color: #fff; font-size: 1.05em; }
+.pin-key.ok.off { opacity: 0.4; }
+.pin-key.del { font-size: 1.1em; color: var(--color-text-secondary); }
+.pin-key:disabled { opacity: 0.4; cursor: default; }
+
 /* The sleeping panel: black, and the first touch only wakes it */
 .sleep {
     position: absolute; inset: 0; z-index: 11; background: #000; opacity: 0; pointer-events: none;

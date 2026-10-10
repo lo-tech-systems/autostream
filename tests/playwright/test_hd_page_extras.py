@@ -32,7 +32,7 @@ if _PLAYWRIGHT_INSTALLED:
     from playwright.sync_api import expect
 
 import hd_scenarios as hs  # noqa: E402
-from dial_core_state import EqBand, EqState, FocusState, NowPlaying  # noqa: E402
+from dial_core_state import EqBand, EqState, FocusState, NowPlaying, OutputsState  # noqa: E402
 
 LOUNGE, KITCHEN = hs.LOUNGE, hs.KITCHEN
 LOUNGE_STYLUS = f"appliance:{LOUNGE}:stylus_in1"
@@ -1653,3 +1653,340 @@ class TestStreamLifetime:
         assert settled(1)
         page.goto("about:blank")
         assert settled(0)
+
+
+# ---------------------------------------------------------------------------
+# The speaker PIN card
+# ---------------------------------------------------------------------------
+
+PIN_CARD = "#card.kind-pin"
+WRONG_PIN = "That PIN was not accepted. Try again."
+
+
+def pin_key(page, key):
+    return page.locator(f'#card-pin-pad button[data-key="{key}"]')
+
+
+def tap_keys(page, keys):
+    """A press on each key in turn (a digit, "del" or "ok" given as a list)."""
+    for key in (keys if isinstance(keys, (list, tuple)) else list(keys)):
+        tap(page, f'#card-pin-pad button[data-key="{key}"]')
+
+
+def shown_boxes(page) -> list:
+    """The text of each box on show, left to right."""
+    return page.locator("#card-pin-boxes .pin-box:visible").all_text_contents()
+
+
+def keys_disabled(page) -> dict:
+    return page.evaluate(
+        """() => Object.fromEntries(Array.from(document.querySelectorAll('#card-pin-pad button'))
+            .map(b => [b.dataset.key, b.disabled]))""")
+
+
+def pin_scenario(request, outputs_version=2, **changes):
+    """The Lounge playing with *request* on its Patio speaker."""
+    base = hs.SCENARIOS["pin_required"]
+    appliances = tuple(
+        dataclasses.replace(a, dial_outputs_version=outputs_version) for a in base.snapshot.appliances)
+    return base.with_snapshot(outputs_request=request, appliances=appliances, **changes)
+
+
+def page_text_and_markup(page) -> str:
+    return page.evaluate("document.documentElement.outerHTML + document.body.innerText")
+
+
+class TestSpeakerPin:
+    def test_a_pin_required_outcome_opens_the_keypad_for_that_speaker(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        expect(modal_card(page)).to_be_visible()
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
+        expect(page.locator("#card-message")).to_have_text("Enter the PIN shown on the screen of Patio.")
+        assert shown_boxes(page) == ["", "", "", ""]
+        expect(page.locator("#card-pin-boxes .pin-box").first).to_have_class(re.compile("next"))
+        assert page.locator("#card-pin-pad button").all_text_contents() == [
+            "1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "OK"]
+        expect(pin_key(page, "ok")).to_be_disabled()
+        expect(pin_key(page, "ok")).to_have_class(re.compile("off"))
+        assert page.locator("#card-buttons button").all_text_contents() == ["Cancel"]
+        expect(page.locator("#card-source")).to_be_hidden()
+        expect(page.locator("#card-progress")).to_be_hidden()
+        expect(page.locator("#card-pin-error")).to_have_text("")
+
+    def test_digits_fill_the_boxes_and_ok_arms_at_four(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        tap_keys(page, "27")
+        assert shown_boxes(page) == ["2", "7", "", ""]
+        expect(page.locator("#card-pin-boxes .pin-box").nth(2)).to_have_class(re.compile("next"))
+        expect(pin_key(page, "ok")).to_be_disabled()
+        tap_keys(page, "18")
+        assert shown_boxes(page) == ["2", "7", "1", "8"]
+        expect(pin_key(page, "ok")).to_be_enabled()
+        expect(pin_key(page, "ok")).not_to_have_class(re.compile("off"))
+        tap_keys(page, ["del"])
+        assert shown_boxes(page) == ["2", "7", "1", ""]
+        expect(pin_key(page, "ok")).to_be_disabled()
+        tap_keys(page, ["del", "del", "del"])
+        assert shown_boxes(page) == ["", "", "", ""]
+        expect(pin_key(page, "del")).to_be_disabled()
+
+    def test_the_boxes_grow_to_eight_and_no_further(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        tap_keys(page, "12345")
+        assert shown_boxes(page) == ["1", "2", "3", "4", "5"]
+        tap_keys(page, "678")
+        assert shown_boxes(page) == list("12345678")
+        disabled = keys_disabled(page)
+        assert all(disabled[str(d)] for d in range(10))
+        assert not disabled["ok"] and not disabled["del"]
+        tap_keys(page, "9")
+        assert shown_boxes(page) == list("12345678")
+        tap_keys(page, ["del"])
+        assert shown_boxes(page) == list("1234567")
+        assert not any(keys_disabled(page)[str(d)] for d in range(10))
+        tap_keys(page, ["del", "del", "del"])
+        assert shown_boxes(page) == ["1", "2", "3", "4"]
+
+    def test_ok_posts_the_pin_once_and_shows_busy(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        sent = watch_actions(page)
+        open_page(page, hd)
+        tap_keys(page, "4096")
+        tap_keys(page, ["ok", "ok"])
+        page.wait_for_timeout(200)
+        assert sent == [("output", {
+            "appliance_id": LOUNGE, "output_id": "o2", "selected": True, "pin": "4096"})]
+        assert shown_boxes(page) == ["", "", "", ""]
+        hd.show(hs.SCENARIOS["pin_busy"])
+        expect(page.locator("#card-message")).to_have_text("Pairing...")
+        disabled = keys_disabled(page)
+        assert all(disabled[k] for k in ("1", "5", "0", "ok", "del"))
+        expect(page.locator("#card-buttons button")).to_be_enabled()
+        assert [name for name, _ in sent] == ["output"]
+
+    def test_the_pin_is_not_kept_in_the_page_once_it_is_sent(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        tap_keys(page, "4096")
+        assert "".join(shown_boxes(page)) == "4096"
+        tap_keys(page, ["ok"])
+        page.wait_for_timeout(100)
+        assert "4096" not in page_text_and_markup(page)
+        hd.show(scenario("pin_busy", outputs_request=hs.pin_request("accepted", None, "output_pin")))
+        expect(modal_card(page)).to_be_hidden()
+        assert "4096" not in page_text_and_markup(page)
+        assert "4096" not in page.evaluate("JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])")
+
+    def test_cancel_clears_the_digits_from_the_page(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        tap_keys(page, "5821")
+        assert "".join(shown_boxes(page)) == "5821"
+        page.locator("#card-buttons button", has_text="Cancel").click()
+        expect(modal_card(page)).to_be_hidden()
+        assert "5821" not in page_text_and_markup(page)
+        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required", at=hs.NOW - 0.5)))
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        assert shown_boxes(page) == ["", "", "", ""]
+
+    def test_a_wrong_pin_clears_the_boxes_and_shows_the_error(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        tap_keys(page, "1111")
+        hd.show(hs.SCENARIOS["pin_invalid"])
+        expect(page.locator("#card-pin-error")).to_have_text(WRONG_PIN)
+        expect(page.locator("#card-pin-error")).not_to_have_class(re.compile("wait"))
+        assert shown_boxes(page) == ["", "", "", ""]
+        expect(pin_key(page, "ok")).to_be_disabled()
+        expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
+        tap_keys(page, "2222")
+        expect(pin_key(page, "ok")).to_be_enabled()
+        expect(page.locator("#card-pin-error")).to_have_text(WRONG_PIN)
+
+    def test_a_rate_limited_outcome_counts_down_with_the_keypad_disabled(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_rate_limited"])
+        page.clock.install()
+        sent = watch_actions(page)
+        open_page(page, hd)
+        freeze_clock(page)
+        error = page.locator("#card-pin-error")
+        expect(error).to_have_text(re.compile(r"^Wait [67] seconds before retry$"))
+        expect(error).to_have_class(re.compile("wait"))
+        left = int(error.inner_text().split()[1])
+        assert all(keys_disabled(page).values())
+        tap_keys(page, "1234")
+        assert shown_boxes(page) == ["", "", "", ""]
+        page.clock.run_for(1000)
+        expect(error).to_have_text(f"Wait {left - 1} seconds before retry")
+        # the same outcome arriving again does not restart the count
+        hd.show(hs.SCENARIOS["pin_rate_limited"])
+        page.clock.run_for(100)
+        expect(error).to_have_text(f"Wait {left - 1} seconds before retry")
+        page.clock.run_for((left - 1) * 1000 - 100)
+        expect(error).to_have_text("")
+        disabled = keys_disabled(page)
+        assert not any(disabled[str(d)] for d in range(10))
+        assert disabled["ok"] and disabled["del"]
+        tap_keys(page, "1234")
+        expect(pin_key(page, "ok")).to_be_enabled()
+        tap_keys(page, ["ok"])
+        page.wait_for_timeout(100)
+        assert [name for name, _ in sent] == ["output"]
+        assert sent[0][1]["pin"] == "1234"
+
+    def test_a_paired_outcome_closes_the_card_and_toasts(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_busy"])
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        hd.show(scenario("pin_busy", outputs_request=hs.pin_request("accepted", None, "output_pin")))
+        expect(modal_card(page)).to_be_hidden()
+        expect(page.locator("#toast")).to_have_text("Paired")
+
+    def test_cancel_closes_and_the_same_request_does_not_reopen(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        sent = watch_actions(page)
+        open_page(page, hd)
+        page.locator("#card-buttons button", has_text="Cancel").click()
+        expect(modal_card(page)).to_be_hidden()
+        hd.show(hs.SCENARIOS["pin_required"])
+        hd.show(hs.SCENARIOS["pin_invalid"])
+        page.wait_for_timeout(300)
+        expect(modal_card(page)).to_be_hidden()
+        assert sent == []
+        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required", at=hs.NOW - 0.5)))
+        expect(page.locator(PIN_CARD)).to_be_visible()
+
+    def test_the_window_running_out_closes_the_card(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        tap_keys(page, "12")
+        hd.show(hs.SCENARIOS["pin_expired"])
+        expect(modal_card(page)).to_be_hidden()
+        expect(page.locator("#toast")).not_to_have_text("Paired")
+        assert "12" not in "".join(page.locator("#card-pin-boxes .pin-box").all_text_contents())
+
+    def test_a_request_that_ran_out_before_the_page_opened_shows_no_card(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_expired"])
+        open_page(page, hd)
+        page.wait_for_timeout(200)
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_switching_appliance_closes_the_card(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        kitchen = hs.appliance(KITCHEN, "Kitchen", playing=True, master_volume=35, muted=False, outputs_version=2)
+        shown = hs.SCENARIOS["pin_required"]
+        hd.show(shown.with_snapshot(
+            appliances=(kitchen,) + shown.snapshot.appliances,
+            focus=FocusState(None, KITCHEN, None, KITCHEN, "Kitchen", None, False)))
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_a_version_one_appliance_shows_the_pair_in_autostream_card(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required_v1"])
+        sent = watch_actions(page)
+        open_page(page, hd)
+        expect(modal_card(page)).to_be_visible()
+        expect(page.locator("#card-title")).to_have_text("Pair in Autostream")
+        expect(page.locator("#card-message")).to_have_text("Enter the PIN in Lounge's web UI")
+        expect(page.locator("#card-pin-pad")).to_be_hidden()
+        expect(page.locator("#card-pin-boxes")).to_be_hidden()
+        assert page.locator("#card-buttons button").all_text_contents() == ["OK"]
+        page.locator("#card-buttons button").click()
+        expect(modal_card(page)).to_be_hidden()
+        hd.show(hs.SCENARIOS["pin_required_v1"])
+        page.wait_for_timeout(300)
+        expect(modal_card(page)).to_be_hidden()
+        assert sent == []
+
+    def test_the_presence_card_outranks_the_keypad_and_the_keypad_outranks_a_warning(self, page, hd):
+        hd.show(with_recovery(hs.SCENARIOS["pin_required"]))
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("Confirm you are at the dial")
+        expect(page.locator("#card-pin-pad")).to_be_hidden()
+        hd.show(hs.SCENARIOS["pin_required"].with_snapshot(
+            warnings=hs.warning_states({"sdhealth": 6}), due_warning_id="sdhealth"))
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
+        page.locator("#card-buttons button", has_text="Cancel").click()
+        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        expect(page.locator("#card-pin-pad")).to_be_hidden()
+
+    def test_the_speaker_card_is_unchanged_for_a_speaker_that_needs_pairing(self, page, hd):
+        rows_ = tuple(dataclasses.replace(r, needs_auth_key=True) if r.id == "o2" else r
+                      for r in hs.rows())
+        base = hs.SCENARIOS["playing_artwork"]
+        appliances = tuple(
+            dataclasses.replace(a, dial_outputs_version=2) for a in base.snapshot.appliances)
+        hd.show(base.with_snapshot(
+            appliances=appliances, outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1, None)))
+        sent = watch_actions(page)
+        open_page(page, hd)
+        patio = card(page, "Patio")
+        assert "Off" in patio.inner_text()
+        patio.locator(".output-toggle").click()
+        page.wait_for_timeout(150)
+        assert sent == [("output", {"appliance_id": LOUNGE, "output_id": "o2", "selected": True})]
+
+    @pytest.mark.parametrize("error,text", [
+        ("unreachable", "The appliance did not answer."),
+        ("output_in_use", "That speaker is in use by another appliance."),
+        ("encoder_capacity", "The appliance cannot encode another stream."),
+        ("backend_error", "The appliance could not do that."),
+        ("surprise", "That did not work."),
+    ])
+    def test_other_set_failures_show_their_text_and_keep_the_card(self, page, hd, error, text):
+        hd.show(pin_scenario(hs.pin_request("rejected", error, kind="output_pin")))
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-pin-error")).to_have_text(text)
+        tap_keys(page, "1234")
+        expect(pin_key(page, "ok")).to_be_enabled()
+
+    def test_text_in_a_speaker_name_stays_text(self, page, hd):
+        evil = "<img src=x onerror=alert(1)>"
+        rows_ = tuple(dataclasses.replace(r, name=evil) if r.id == "o2" else r for r in hs.rows())
+        hd.show(hs.SCENARIOS["pin_required"].with_snapshot(
+            outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1, None)))
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("Enter PIN for " + evil)
+        assert page.locator("#modal img").count() == 0
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    @pytest.mark.parametrize("name", ["pin_required", "pin_invalid", "pin_busy", "pin_rate_limited"])
+    def test_the_keypad_fits_with_finger_sized_keys(self, page, hd, name, size):
+        hd.show(hs.SCENARIOS[name])
+        open_page(page, hd, size)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        width, height = size
+        if name == "pin_required":
+            tap_keys(page, "12345678")
+        assert page.evaluate("[document.documentElement.scrollWidth, document.documentElement.scrollHeight]") \
+            == [width, height]
+        box = page.locator("#card").bounding_box()
+        assert box["x"] >= 0 and box["y"] >= 0
+        assert box["x"] + box["width"] <= width and box["y"] + box["height"] <= height
+        row_h = page.evaluate(
+            "parseFloat(getComputedStyle(document.getElementById('app')).getPropertyValue('--row-h'))")
+        assert row_h >= 56
+        for key in page.locator("#card-pin-pad button").all():
+            key_box = key.bounding_box()
+            assert key_box["width"] >= row_h - 1 and key_box["height"] >= row_h - 1
+            assert key_box["x"] >= box["x"] and key_box["x"] + key_box["width"] <= box["x"] + box["width"]
+            assert key_box["y"] >= box["y"] and key_box["y"] + key_box["height"] <= box["y"] + box["height"]
+        cancel = page.locator("#card-buttons button").bounding_box()
+        assert cancel["height"] >= 44
+        assert cancel["y"] + cancel["height"] <= box["y"] + box["height"]
+        boxes = page.locator("#card-pin-boxes").bounding_box()
+        pad = page.locator("#card-pin-pad").bounding_box()
+        assert boxes["x"] + boxes["width"] <= pad["x"]
+        assert cancel["x"] + cancel["width"] <= pad["x"]
+        for part in page.locator("#card-pin-boxes .pin-box:visible").all():
+            part_box = part.bounding_box()
+            assert part_box["x"] + part_box["width"] <= boxes["x"] + boxes["width"] + 1
+            assert part_box["width"] >= 20

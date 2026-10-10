@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 
-from dial_core_state import ActionResult
+from dial_core_state import PIN_RE, ActionResult
 from dial_warnings import ACTION_RESTART
 
 ACTION_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
@@ -56,6 +56,16 @@ def boolean(value):
 
 def opt_boolean(value):
     return None if value is None else boolean(value)
+
+
+def pin_text(value):
+    """A speaker PIN: absent, or four to eight ASCII digits. The text is never
+    echoed back, so a refusal names only the field."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not PIN_RE.match(value):
+        raise ValueError
+    return value
 
 
 def integer(low: int, high: int):
@@ -125,9 +135,11 @@ ACTIONS: "dict[str, tuple[dict, Callable[[Context, dict], ActionResult]]]" = {
     ),
     "output": (
         {"appliance_id": text, "output_id": text,
-         "selected": opt_boolean, "volume": opt_integer(0, 100)},
+         "selected": opt_boolean, "volume": opt_integer(0, 100), "pin": pin_text},
+        # The page can always show a keypad, so a PIN request may be raised.
         lambda c, a: c.core.set_output(
-            a["appliance_id"], a["output_id"], selected=a["selected"], volume=a["volume"]),
+            a["appliance_id"], a["output_id"], selected=a["selected"], volume=a["volume"],
+            pin=a["pin"], pin_entry=True),
     ),
     "eq": (
         {"appliance_id": text, "gains": gain_map(-24, 24)},

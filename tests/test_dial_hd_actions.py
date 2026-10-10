@@ -105,11 +105,15 @@ VALID = [
     ("focus", {"appliance_id": None}, "set_focus", (None,), {}),
     ("focus", {}, "set_focus", (None,), {}),
     ("output", {"appliance_id": L, "output_id": "7", "selected": True, "volume": 30},
-     "set_output", (L, "7"), {"selected": True, "volume": 30}),
+     "set_output", (L, "7"), {"selected": True, "volume": 30, "pin": None, "pin_entry": True}),
     ("output", {"appliance_id": L, "output_id": "7", "volume": 0},
-     "set_output", (L, "7"), {"selected": None, "volume": 0}),
+     "set_output", (L, "7"), {"selected": None, "volume": 0, "pin": None, "pin_entry": True}),
     ("output", {"appliance_id": L, "output_id": "7", "selected": False},
-     "set_output", (L, "7"), {"selected": False, "volume": None}),
+     "set_output", (L, "7"), {"selected": False, "volume": None, "pin": None, "pin_entry": True}),
+    ("output", {"appliance_id": L, "output_id": "7", "selected": True, "pin": "1234"},
+     "set_output", (L, "7"), {"selected": True, "volume": None, "pin": "1234", "pin_entry": True}),
+    ("output", {"appliance_id": L, "output_id": "7", "pin": "12345678"},
+     "set_output", (L, "7"), {"selected": None, "volume": None, "pin": "12345678", "pin_entry": True}),
     ("eq", {"appliance_id": L, "gains": GAINS}, "set_eq", (L, GAINS), {}),
     ("eq_reset", {"appliance_id": L}, "reset_eq", (L,), {}),
     ("replay_start", {"appliance_id": L}, "start_replay", (L,), {}),
@@ -163,6 +167,13 @@ class TestActionTable:
         ("output", {"appliance_id": L, "output_id": "7", "volume": 5.5}, "volume"),
         ("output", {"appliance_id": L, "output_id": "7", "volume": True}, "volume"),
         ("output", {"appliance_id": L, "output_id": "7", "volume": "30"}, "volume"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": "12"}, "pin"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": "123456789"}, "pin"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": "abcd"}, "pin"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": 1234}, "pin"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": "１２３４"}, "pin"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": "1234\n"}, "pin"),
+        ("output", {"appliance_id": L, "output_id": "7", "pin": True}, "pin"),
         ("eq", {"appliance_id": L}, "gains"),
         ("eq", {"appliance_id": L, "gains": {}}, "gains"),
         ("eq", {"appliance_id": L, "gains": []}, "gains"),
@@ -199,6 +210,16 @@ class TestActionTable:
         assert response.status == 400
         assert error_of(data) == f"invalid_{field}"
         assert core.calls == []
+
+    def test_a_refused_pin_is_never_echoed_or_logged(self, server, core, caplog):
+        caplog.set_level("DEBUG")
+        response, data = act(server, "output", {"appliance_id": L, "output_id": "7", "pin": "98x7"})
+        assert response.status == 400
+        assert "98x7" not in str(data)
+        response, data = act(server, "output", {"appliance_id": L, "output_id": "7", "pin": "98765"})
+        assert response.status == 200
+        assert "98765" not in str(data)
+        assert "98765" not in caplog.text and "98x7" not in caplog.text
 
     @pytest.mark.parametrize("name", sorted(hda.ACTIONS))
     def test_an_unknown_field_is_refused_for_every_action(self, server, core, name):

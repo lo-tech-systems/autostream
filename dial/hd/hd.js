@@ -24,7 +24,9 @@
         replayResyncS: 2,           // the replay clock jumps to the dial's position only when this far out
         replaySlewS: 10,            // a smaller difference is worked off over this long
         replayMaxSlew: 0.05,        // by running the clock at most this much fast or slow
-        replayTickLagMs: 15         // how soon after a whole second the timer is drawn again
+        replayTickLagMs: 15,        // how soon after a whole second the timer is drawn again
+        pinLength: 4,               // digits needed before OK is offered, and boxes always shown
+        pinMax: 8                   // the most digits the keypad takes
     };
 
     // The first rule that matches gives an appliance row its label.
@@ -48,6 +50,45 @@
     const FALLBACK_REFUSAL = "That did not work.";
     const OFFLINE_REFUSAL = "No connection to the dial.";
 
+    const PIN_TEXT = {
+        instruction: (name) => "Enter the PIN shown on the screen of " + name + ".",
+        busy: "Pairing...",
+        wrong: "That PIN was not accepted. Try again.",
+        wait: (n) => "Wait " + n + " seconds before retry",
+        paired: "Paired"
+    };
+    // What a rejected speaker request says on the keypad card; an outcome
+    // that is only the card's reason for being (the PIN is wanted, or the wait
+    // has its own line) says nothing here.
+    const SET_FAILURES = {
+        pin_invalid: PIN_TEXT.wrong,
+        invalid_pin: PIN_TEXT.wrong,
+        output_in_use: "That speaker is in use by another appliance.",
+        encoder_capacity: "The appliance cannot encode another stream.",
+        unreachable: "The appliance did not answer.",
+        backend_error: "The appliance could not do that.",
+        dial_not_authorized: "This dial is not authorised on that appliance."
+    };
+    const SILENT_PIN_OUTCOMES = new Set(["pin_required", "rate_limited"]);
+    // The first rule that matches gives the keypad card's line under the boxes:
+    // [applies, text, is a wait].
+    const PIN_LINE_RULES = [
+        [(r, waitLeft) => waitLeft > 0, (r, waitLeft) => PIN_TEXT.wait(waitLeft), true],
+        [(r) => r.state !== "rejected" || SILENT_PIN_OUTCOMES.has(r.error), () => "", false],
+        [() => true, (r) => SET_FAILURES[r.error] || FALLBACK_REFUSAL, false]
+    ];
+    // An appliance that cannot take a PIN from a dial is told to pair in its web UI.
+    const PAIR_ELSEWHERE = {
+        title: "Pair in Autostream",
+        message: (name) => "Enter the PIN in " + name + "'s web UI"
+    };
+    // Whether a keypad key is unusable, by key; a digit is the default.
+    const PIN_KEY_OFF = {
+        ok: (p) => !p.canSubmit,
+        del: (p) => p.busy || p.waiting || !p.digits.length
+    };
+    const PIN_KEY_OFF_DIGIT = (p) => p.busy || p.waiting || p.digits.length >= CONFIG.pinMax;
+
     const EMPTY_STATE = {
         started: false,
         focus: { appliance_id: null },
@@ -56,6 +97,7 @@
         artwork: null,
         volume: { appliance_id: null, level: null, muted: null },
         outputs: null,
+        outputs_request: null,
         eq: null,
         warnings: { due: null, cards: [] },
         panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", always_show_controls: false, kiosk: false },
@@ -217,8 +259,14 @@
         notice: null, viewing: null,
         touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0,
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
-        replayClock: null, stopHold: null, host: window.location.hostname
+        replayClock: null, stopHold: null, host: window.location.hostname,
+        // The keypad's own buffer (the digits live nowhere else), the request
+        // it was typed for, the request the person turned away, and the
+        // page-clock moment a rate-limit wait ends.
+        pin: { forKey: null, digits: "", dismissedAt: null, waitKey: null, waitUntil: 0 },
+        pinShown: false
     };
+    const PIN_IDLE = { forKey: null, digits: "", waitKey: null, waitUntil: 0 };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
 
@@ -472,13 +520,51 @@
             key: card.id, source: card.source || "", title: card.title, message: card.message,
             severity: card.severity, progress: typeof card.progress === "number" ? card.progress : null,
             buttons: card.buttons.map((b, i) => ({ id: i + ":" + b.action, label: b.label, act: b.action })),
-            closable: false, owner: owner
+            closable: false, owner: owner, kind: "notice"
+        };
+    }
+
+    // The keypad card (or, for an appliance that cannot take a PIN from a
+    // dial, the card saying where to enter it) while a speaker's PIN is
+    // wanted on the focused appliance and the person has not turned it away.
+    function derivePinCard(s, focus, local) {
+        const r = s.outputs_request;
+        if (!r || !focus || r.appliance_id !== focus.id || !r.awaiting_pin) { return null; }
+        if (local.pin.dismissedAt === r.requested_at) { return null; }
+        if (focus.capabilities.outputs < 2) {
+            return {
+                kind: "notice", key: "pair", source: focus.webui, title: PAIR_ELSEWHERE.title,
+                message: PAIR_ELSEWHERE.message(focus.name), severity: "info", progress: null,
+                closable: false, buttons: [{ id: "ok", label: "OK", act: "pin_cancel" }],
+                requestedAt: r.requested_at
+            };
+        }
+        const row = s.outputs && s.outputs.rows.find((x) => x.id === r.output_id);
+        const name = row ? row.name : "this speaker";
+        const key = r.requested_at + ":" + r.state + ":" + (r.error || "");
+        const digits = local.pin.forKey === key ? local.pin.digits : "";
+        const busy = r.state === "pending";
+        const limited = r.state === "rejected" && r.error === "rate_limited";
+        const waitLeft = limited && local.pin.waitKey === key
+            ? Math.max(0, Math.ceil((local.pin.waitUntil - local.now) / 1000)) : 0;
+        const line = PIN_LINE_RULES.find((rule) => rule[0](r, waitLeft));
+        return {
+            kind: "pin", key: "pin", source: "", severity: "info", progress: null, closable: false,
+            title: "Enter PIN for " + name,
+            message: busy ? PIN_TEXT.busy : PIN_TEXT.instruction(name),
+            buttons: [{ id: "cancel", label: "Cancel", act: "pin_cancel" }],
+            pin: {
+                key: key, digits: digits, busy: busy, error: line[1](r, waitLeft), errorIsWait: line[2], waiting: waitLeft > 0,
+                limited: limited && r.retry_after_s > 0,
+                canSubmit: !busy && waitLeft === 0 && digits.length >= CONFIG.pinLength,
+                requestedAt: r.requested_at, outputId: r.output_id, retryAfterS: r.retry_after_s
+            }
         };
     }
 
     // The one modal card to show, if any: the PIN recovery confirmation first,
-    // then the not-authorised notice, an appliance warning opened from its
-    // badge, then the warning the dial says is due.
+    // then a speaker's PIN, the not-authorised notice, an appliance warning
+    // opened from its badge, then the warning the dial says is due.
     function deriveModal(s, focus, local) {
         const cardsById = new Map(s.warnings.cards.map((c) => [c.id, c]));
         const owners = new Map();
@@ -490,15 +576,19 @@
                 key: "presence", source: "", title: "Confirm you are at the dial",
                 message: "The PIN is being recovered from the web UI. Confirm only if that is you.",
                 severity: "warning", progress: null, closable: false,
+                kind: "notice",
                 buttons: [{ id: "presence", label: "Confirm", act: "presence" }]
             };
         }
+        const pinCard = derivePinCard(s, focus, local);
+        if (pinCard) { return pinCard; }
         const unauthorised = s.appliances.find((a) => a.id === local.notice && a.auth !== "authorized");
         if (unauthorised) {
             return {
                 key: "notice", source: unauthorised.webui, title: "Not authorised",
                 message: "Allow this dial in " + unauthorised.name + "'s web UI (Setup, Dials)",
                 severity: "info", progress: null, closable: true,
+                kind: "notice",
                 buttons: [{ id: "ok", label: "OK", act: "close" }]
             };
         }
@@ -604,7 +694,7 @@
             modal: modal,
             controlsHidden: hideable && (local.forceHidden || idle),
             // Something on the page changes with the clock.
-            live: replay.ticking || (hideable && !local.forceHidden && !idle)
+            live: replay.ticking || !!(modal && modal.kind === "pin" && modal.pin.waiting) || (hideable && !local.forceHidden && !idle)
         };
     }
 
@@ -633,7 +723,8 @@
         eqBands: $("eq-bands"), eqGraph: $("eq-graph"), eqNote: $("eq-note"),
         modal: $("modal"), card: $("card"), cardTitle: $("card-title"), cardMessage: $("card-message"),
         cardSource: $("card-source"), cardProgress: $("card-progress"), cardBar: $("card-bar"),
-        cardButtons: $("card-buttons"), sleep: $("sleep")
+        cardButtons: $("card-buttons"), sleep: $("sleep"),
+        cardPinBoxes: $("card-pin-boxes"), cardPinError: $("card-pin-error"), cardPinPad: $("card-pin-pad")
     };
 
     function createApplianceRow() {
@@ -874,14 +965,48 @@
 
     function paintModal(card) {
         els.modal.hidden = !card;
-        if (!card) { return; }
-        els.card.className = "card sev-" + card.severity;
+        if (!card) { paintPin({ kind: "none" }); return; }
+        els.card.className = "card sev-" + card.severity + " kind-" + card.kind;
         setText(els.cardTitle, card.title);
         setText(els.cardMessage, card.message);
         paintNote(els.cardSource, card.source);
         els.cardProgress.hidden = card.progress === null;
         els.cardBar.style.setProperty("--fill", (card.progress || 0) + "%");
         syncList(els.cardButtons, card.buttons, createCardButton);
+        paintPin(card);
+    }
+
+    // The keypad: one box per digit (at least pinLength), the line under
+    // them, and each key's usable state.
+    function paintPin(card) {
+        const isPin = card.kind === "pin";
+        els.cardPinBoxes.hidden = !isPin;
+        els.cardPinError.hidden = !isPin;
+        els.cardPinPad.hidden = !isPin;
+        if (!isPin) {
+            // Nothing typed stays in the page once the keypad is not on show.
+            Array.from(els.cardPinBoxes.children).forEach((box) => setText(box, ""));
+            return;
+        }
+        const p = card.pin;
+        const shown = Math.max(CONFIG.pinLength, Math.min(CONFIG.pinMax, p.digits.length));
+        const open = !p.busy && !p.waiting && p.digits.length < shown;
+        els.cardPinBoxes.classList.toggle("dense", shown > CONFIG.pinLength);
+        els.cardPinBoxes.setAttribute("aria-label", p.digits.length < CONFIG.pinLength
+            ? p.digits.length + " of " + CONFIG.pinLength + " digits entered"
+            : p.digits.length + " digits entered");
+        Array.from(els.cardPinBoxes.children).forEach((box, i) => {
+            box.hidden = i >= shown;
+            setText(box, p.digits.charAt(i));
+            box.classList.toggle("next", open && i === p.digits.length);
+        });
+        setText(els.cardPinError, p.error);
+        els.cardPinError.classList.toggle("wait", p.errorIsWait);
+        Array.from(els.cardPinPad.children).forEach((key) => {
+            const off = (PIN_KEY_OFF[key.dataset.key] || PIN_KEY_OFF_DIGIT)(p);
+            key.disabled = off;
+            if (key.dataset.key === "ok") { key.classList.toggle("off", off); }
+        });
     }
 
     // The two scroll regions and the key each records its user scrolls under.
@@ -1014,6 +1139,13 @@
     function render() {
         const view = () => derive(ui.state || EMPTY_STATE, Object.assign({ now: Date.now() }, ui));
         ui.vm = view();
+        // A rate limit's wait runs on this page's clock from the first time
+        // it is drawn, so redraws and repeated states never restart it.
+        const asked = ui.vm.modal;
+        if (asked && asked.kind === "pin" && asked.pin.limited && ui.pin.waitKey !== asked.pin.key) {
+            ui.pin = Object.assign({}, ui.pin, { waitKey: asked.pin.key, waitUntil: Date.now() + asked.pin.retryAfterS * 1000 });
+            ui.vm = view();
+        }
         // Controls stay up while a page or card covers them, and for a full
         // while after it goes.
         const covered = !!ui.vm.modal || ui.vm.eq.open || ui.sheetOpen;
@@ -1029,6 +1161,14 @@
             ui.notice = null;
             ui.viewing = null;
         }
+        // The digits and the wait go with the card; what was turned away stays turned away.
+        const pinNow = !!ui.vm.modal && ui.vm.modal.kind === "pin";
+        if (!pinNow && (ui.pin.digits || ui.pin.forKey || ui.pin.waitKey)) {
+            ui.pin = Object.assign({}, ui.pin, PIN_IDLE);
+        }
+        const request = ui.state && ui.state.outputs_request;
+        if (ui.pinShown && !pinNow && request && request.state === "accepted") { toast(PIN_TEXT.paired); }
+        ui.pinShown = pinNow;
         paint(ui.vm);
         // A running replay is drawn again as its position reaches each
         // whole second, so the timer steps evenly whenever states arrive.
@@ -1384,6 +1524,11 @@
             ui.notice = null;
             ui.viewing = null;
             render();
+        },
+        pin_cancel: (card) => {
+            const at = card.kind === "pin" ? card.pin.requestedAt : card.requestedAt;
+            ui.pin = Object.assign({}, ui.pin, PIN_IDLE, { dismissedAt: at });
+            render();
         }
     };
 
@@ -1420,6 +1565,34 @@
     els.scrim.addEventListener("click", () => setSheet(false));
     els.modal.addEventListener("click", (event) => {
         if (event.target === els.modal && ui.vm && ui.vm.modal && ui.vm.modal.closable) { CARD_ACTIONS.close(); }
+    });
+
+    // The keypad edits the buffer; OK sends it once and empties it.
+    const PIN_EDITS = {
+        del: (digits) => digits.slice(0, -1)
+    };
+
+    function onPinKey(key) {
+        const card = ui.vm && ui.vm.modal;
+        if (!card || card.kind !== "pin" || card.pin.busy || card.pin.waiting) { return; }
+        const p = card.pin;
+        let digits = p.digits;
+        if (key === "ok") {
+            if (!p.canSubmit) { return; }
+            post("output", { appliance_id: focusId(), output_id: p.outputId, selected: true, pin: digits });
+            digits = "";
+        } else if (PIN_EDITS[key]) {
+            digits = PIN_EDITS[key](digits);
+        } else if (/^[0-9]$/.test(key) && digits.length < CONFIG.pinMax) {
+            digits += key;
+        }
+        ui.pin = Object.assign({}, ui.pin, { forKey: p.key, digits: digits });
+        render();
+    }
+
+    els.cardPinPad.addEventListener("click", (event) => {
+        const key = event.target.closest("button[data-key]");
+        if (key && !key.disabled) { onPinKey(key.dataset.key); }
     });
 
     // The pull-down: a tap on the handle toggles it, a drag follows the finger

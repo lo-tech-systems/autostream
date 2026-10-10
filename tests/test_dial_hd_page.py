@@ -117,3 +117,25 @@ def test_script_draws_the_response_curve_from_the_appliances_filters():
     assert re.search(r'treble: \[\["peq6", 1\], \["peq5", 0\.5\]\]', source)
     for kind in ("low_shelf", "high_shelf", "peak"):
         assert f'"{kind}"' in source
+
+
+def test_the_keypad_card_is_static_markup_the_script_only_fills_in():
+    html = (HD / "index.html").read_text(encoding="utf-8")
+    for element_id in ("card-pin-boxes", "card-pin-error", "card-pin-pad"):
+        assert html.count(f'id="{element_id}"') == 1, element_id
+    assert len(re.findall(r'class="pin-box"', html)) == 8
+    keys = re.findall(r'data-key="([a-z0-9]+)"', html)
+    assert keys == ["1", "2", "3", "4", "5", "6", "7", "8", "9", "del", "0", "ok"]
+    # Closed until a keypad card is shown.
+    for element_id in ("card-pin-boxes", "card-pin-error", "card-pin-pad"):
+        assert re.search(rf'id="{element_id}"[^>]*\bhidden\b', html), element_id
+
+
+def test_the_script_keeps_the_pin_out_of_logs_storage_and_the_address():
+    source = (HD / "hd.js").read_text(encoding="utf-8")
+    for sink in ("localStorage", "sessionStorage", "indexedDB", "document.cookie", "location.hash", "history."):
+        assert sink not in source, sink
+    assert source.count("console.") == source.count("console.warn(")
+    for line in source.splitlines():
+        if "console." in line:
+            assert "digits" not in line and "pin" not in line.lower(), line

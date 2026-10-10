@@ -371,7 +371,8 @@ class MockServer:
             if body is None:
                 return
             self._record(name, body)
-            self._log(f"action {name} {json.dumps(body)}")
+            shown = {k: v for k, v in body.items() if k != "pin"} if isinstance(body, dict) else body
+            self._log(f"action {name} {json.dumps(shown)}")
             lead = self._leads.get(name)
             if lead:
                 self.set_scenario(lead, keep_changes=True)
