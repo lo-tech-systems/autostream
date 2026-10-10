@@ -3819,7 +3819,7 @@ class DialDisplay:
         empty-target branch, _sleep_locked), not only the repeat thread,
         but every write is already under self._lock and each is a plain
         reference/str assignment — the same "a stale read costs at most
-        one harmless extra tick" discipline _sleeping_lockfree() documents.
+        one harmless extra tick" discipline.
         The actual close below is re-checked and applied under the lock
         regardless.
         """
@@ -5000,21 +5000,17 @@ class DialDisplay:
         while not self._stop_event.is_set():
             self._poll_wake.clear()
             try:
-                pushed = self._drain_push_probes()
-                if not self._sleeping_lockfree() or pushed == "woke":
-                    self._poll_once()
+                self._drain_push_probes()
+                # Polled asleep too: _poll_once wakes the panel when something
+                # this dial may use starts playing, and otherwise stays dark
+                # (no repaint) until then.
+                self._poll_once()
             except Exception:
                 logging.debug("dial display: poll iteration raised", exc_info=True)
             # Wait from the end of this loop so slow polls never accumulate
             # into a backlog. A push, a focus change or a wake sets
             # _poll_wake to run this loop again sooner.
             self._poll_wake.wait(DISPLAY_POLL_INTERVAL_SECONDS)
-
-    def _sleeping_lockfree(self) -> bool:
-        """Plain read of self._display_sleeping — the poll thread is the
-        only writer apart from the repaint thread's wake path, so a stale
-        read here costs at most one harmless extra tick."""
-        return self._display_sleeping
 
     def request_poll(self) -> None:
         """Ask the poll thread to run _poll_once now instead of waiting for
@@ -5024,7 +5020,7 @@ class DialDisplay:
     def notify_auth_changed(self, appliance_id: str) -> None:
         """Record that appliance_id's auth-changed push arrived (from the
         HTTP thread). Never probes here — only enqueues and wakes the poll
-        thread, which does the one permitted HTTP call while asleep."""
+        thread, which probes the appliance on its next tick (asleep or not)."""
         with self._push_lock:
             self._push_pending.add(appliance_id)
         auth_map.force_due(appliance_id)

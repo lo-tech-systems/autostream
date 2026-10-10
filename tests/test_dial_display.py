@@ -4808,9 +4808,8 @@ class TestPushProbes:
 
 
 class TestRunPollGating:
-    """_run()'s decision to call _poll_once() while asleep: only a push
-    probe that actually promoted an authorization (pushed == "woke") may run
-    the general poll while asleep — a plain probe or a revoke must not."""
+    """_run() polls every tick, asleep or not: _poll_once itself wakes the
+    panel for a playing target this dial may use and stays dark otherwise."""
 
     def _run_one_iteration(self, display):
         def once_wait(timeout=None):
@@ -4819,18 +4818,28 @@ class TestRunPollGating:
         with patch.object(display._poll_wake, "wait", side_effect=once_wait):
             display._run()
 
-    def test_skips_poll_once_while_asleep_and_not_woken_by_push(self):
+    def _asleep_display(self, clock):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
+        assert display.get_status()["display_sleeping"] is True
+        return display, fb, gt
+
+    def test_polls_while_asleep_after_a_plain_probe(self):
         display, fb, gt = _make_display(targets=[])
         display._display_sleeping = True
         with patch.object(display, "_drain_push_probes", return_value="probed"), \
              patch.object(display, "_poll_once") as mock_poll:
             self._run_one_iteration(display)
-        mock_poll.assert_not_called()
+        mock_poll.assert_called_once()
 
-    def test_calls_poll_once_when_push_probe_woke(self):
+    def test_polls_while_asleep_with_nothing_pending(self):
         display, fb, gt = _make_display(targets=[])
         display._display_sleeping = True
-        with patch.object(display, "_drain_push_probes", return_value="woke"), \
+        with patch.object(display, "_drain_push_probes", return_value=""), \
              patch.object(display, "_poll_once") as mock_poll:
             self._run_one_iteration(display)
         mock_poll.assert_called_once()
@@ -4842,6 +4851,55 @@ class TestRunPollGating:
              patch.object(display, "_poll_once") as mock_poll:
             self._run_one_iteration(display)
         mock_poll.assert_called_once()
+
+    @pytest.mark.parametrize("auth", ["unknown", "authorized"])
+    def test_asleep_dial_wakes_when_a_usable_target_starts_playing(self, auth):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        gt.return_value = [_target(auth=auth)]
+        with patch("dial_display.time.monotonic", clock), \
+             patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None)):
+            self._run_one_iteration(display)
+        assert fb.wake_calls == 1
+        assert display.get_status()["display_sleeping"] is False
+
+    def test_asleep_dial_stays_dark_for_a_confirmed_unauthorized_target(self):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        gt.return_value = [_target(auth="unauthorized")]
+        painted = len(fb.displayed)
+        with patch("dial_display.time.monotonic", clock), \
+             patch("dial_display.fetch_target_status") as mock_fetch:
+            self._run_one_iteration(display)
+        mock_fetch.assert_not_called()
+        assert fb.wake_calls == 0
+        assert len(fb.displayed) == painted
+        assert display.get_status()["display_sleeping"] is True
+
+    def test_asleep_dial_with_nothing_playing_stays_dark(self):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        painted = len(fb.displayed)
+        with patch("dial_display.time.monotonic", clock):
+            self._run_one_iteration(display)
+        assert fb.wake_calls == 0
+        assert len(fb.displayed) == painted
+        assert display.get_status()["display_sleeping"] is True
+
+    def test_asleep_dial_still_wakes_on_an_auth_push(self):
+        aid = "9" * 20
+        t = _target(appliance_id=aid)
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        display._last_roster = [t]
+        display.notify_auth_changed(aid)
+        with patch("dial_display.time.monotonic", clock), \
+             patch("dial_display.fetch_target_status",
+                   return_value=_status_result(appliance_id=aid, track_id=None)):
+            self._run_one_iteration(display)
+        assert fb.wake_calls == 1
+        assert display.get_status()["display_sleeping"] is False
 
 
 # ---------------------------------------------------------------------------
