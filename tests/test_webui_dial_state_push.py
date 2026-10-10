@@ -1,18 +1,28 @@
-"""Tests for the push worker's fan-out job: one push to every eligible dial.
+"""Tests for telling dials that state changed: the fan-out job and the hint.
 
 Covers:
-1.  Recipients: the authorised, sighted dials at protocol generation 3 or
-    above, less the exclusion, each posted once with the appliance id added
-    to the job's body.
+1.  Fan-out recipients: the authorised, sighted dials at protocol generation
+    3 or above, less the exclusion, each posted once with the appliance id
+    added to the job's body.
 2.  No retry, no sleep: a failed send is made once.
 3.  The per-dial backoff: a failed dial is skipped inside the window, tried
     last after it, cleared by a success, and forgotten after a minute.
 4.  The queue carries records: enqueue_fanout never touches the network,
     and the worker routes a named-dial job and a fan-out job differently.
+5.  The coalescer: the first change goes at once, later ones inside the
+    window go together when it ends, the exclusion is an intersection and
+    the emit callback runs outside the lock. Time and the timer are injected.
+6.  notify_state_changed: input checks, no raise, no I/O on the caller's
+    thread, and what the emit function hands the push worker.
+7.  The digests and the change watch the coordinator loop uses.
+8.  The protocol document describes the route.
 """
 from __future__ import annotations
 
+import http.client
+import socket
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,6 +32,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
+import autostream_dial_push as dp
 import autostream_webui_dials as wd
 from autostream_dials import DialSighting
 
@@ -241,3 +252,465 @@ class TestJobs:
         with patch.object(wd, "_post_push_body", return_value=True) as post:
             assert wd._post_push("ip", 7842, "/p", APPLIANCE_ID, 1.0) is True
         post.assert_called_once_with("ip", 7842, "/p", {"appliance_id": APPLIANCE_ID}, 1.0)
+
+
+class _Time:
+    """A clock the test moves by hand, and a timer it fires by hand."""
+
+    def __init__(self):
+        self.now = 100.0
+        self.scheduled = []
+        self.scheduled_at = 0.0
+
+    def clock(self):
+        return self.now
+
+    def schedule(self, delay, fn):
+        self.scheduled_at = self.now
+        self.scheduled.append((delay, fn))
+
+    def fire(self):
+        _delay, fn = self.scheduled.pop(0)
+        fn()
+
+
+def _coalescer(min_interval_s=0.3):
+    t = _Time()
+    emitted = []
+    c = dp.StateChangeCoalescer(
+        lambda kinds, names: emitted.append((kinds, names)),
+        clock=t.clock, schedule=t.schedule, min_interval_s=min_interval_s,
+    )
+    return c, t, emitted
+
+
+class TestCoalescer:
+    def test_the_first_change_is_emitted_at_once_with_its_exclusion(self):
+        c, t, emitted = _coalescer()
+        c.notify(("mute",), "d1")
+        assert emitted == [(frozenset({"mute"}), frozenset({"d1"}))]
+        assert t.scheduled == []
+
+    def test_a_second_change_inside_the_window_waits_for_its_end(self):
+        c, t, emitted = _coalescer()
+        c.notify(("mute",))
+        t.now += 0.1
+        c.notify(("volume",))
+        assert len(emitted) == 1
+        assert len(t.scheduled) == 1
+        assert abs(t.scheduled[0][0] - 0.2) < 1e-9
+
+    def test_a_third_change_schedules_nothing_more(self):
+        c, t, emitted = _coalescer()
+        c.notify(("mute",))
+        t.now += 0.1
+        c.notify(("volume",))
+        t.now += 0.1
+        c.notify(("outputs",))
+        assert len(t.scheduled) == 1
+        assert len(emitted) == 1
+
+    def test_the_flush_emits_the_merged_kinds_once(self):
+        c, t, emitted = _coalescer()
+        c.notify(("mute",))
+        t.now += 0.1
+        c.notify(("volume",))
+        t.now += 0.1
+        c.notify(("outputs", "volume"))
+        t.now += 0.1
+        t.fire()
+        assert emitted[1] == (frozenset({"volume", "outputs"}), frozenset())
+        assert len(emitted) == 2
+        c.flush()
+        assert len(emitted) == 2
+
+    def test_a_change_after_the_window_is_emitted_at_once(self):
+        c, t, emitted = _coalescer()
+        c.notify(("mute",))
+        t.now += 0.5
+        c.notify(("volume",))
+        assert [e[0] for e in emitted] == [frozenset({"mute"}), frozenset({"volume"})]
+        assert t.scheduled == []
+
+    def test_a_flush_restarts_the_window(self):
+        c, t, emitted = _coalescer()
+        c.notify(("mute",))
+        t.now += 0.1
+        c.notify(("volume",))
+        t.now += 0.2
+        t.fire()
+        t.now += 0.1
+        c.notify(("eq",))
+        assert len(emitted) == 2
+        assert len(t.scheduled) == 1
+        assert abs(t.scheduled[0][0] - 0.2) < 1e-9
+
+    def test_a_continuous_stream_is_emitted_about_three_times_a_second(self):
+        c, t, emitted = _coalescer()
+        end = t.now + 2.0
+        while t.now < end:
+            c.notify(("volume",))
+            t.now += 0.05
+            while t.scheduled and t.now >= t.scheduled_at + t.scheduled[0][0]:
+                t.fire()
+        assert 5 <= len(emitted) <= 8
+
+    def test_exclusion_is_the_intersection_of_what_was_merged(self):
+        for first, second, expected in (
+            ("A", "A", {"A"}),
+            ("A", "B", set()),
+            ("A", None, set()),
+            (None, "A", set()),
+        ):
+            c, t, emitted = _coalescer()
+            c.notify(("outputs",))
+            t.now += 0.1
+            c.notify(("mute",), first)
+            c.notify(("volume",), second)
+            t.now += 0.2
+            t.fire()
+            assert emitted[-1][1] == frozenset(expected), (first, second)
+
+    def test_a_flush_with_nothing_pending_emits_nothing(self):
+        c, _t, emitted = _coalescer()
+        c.flush()
+        assert emitted == []
+
+    def test_emit_runs_outside_the_lock(self):
+        t = _Time()
+        seen = []
+        holder = {}
+
+        def emit(kinds, names):
+            seen.append(kinds)
+            if len(seen) == 1:
+                holder["c"].notify(("volume",))
+
+        c = dp.StateChangeCoalescer(emit, clock=t.clock, schedule=t.schedule)
+        holder["c"] = c
+        done = threading.Event()
+
+        def run():
+            c.notify(("mute",))
+            done.set()
+
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        assert done.wait(2.0), "emit re-entered notify and deadlocked"
+        assert seen == [frozenset({"mute"})]
+        assert len(t.scheduled) == 1
+
+    def test_a_failing_schedule_lets_the_next_change_schedule_again(self):
+        t = _Time()
+        calls = []
+
+        def schedule(delay, fn):
+            calls.append(delay)
+            if len(calls) == 1:
+                raise RuntimeError("cannot start a thread")
+            t.schedule(delay, fn)
+
+        c = dp.StateChangeCoalescer(lambda k, n: None, clock=t.clock, schedule=schedule)
+        c.notify(("mute",))
+        t.now += 0.1
+        try:
+            c.notify(("volume",))
+        except RuntimeError:
+            pass
+        c.notify(("eq",))
+        assert len(calls) == 2
+
+
+class TestNotify:
+    def setup_method(self):
+        self._original = dp._coalescer
+
+    def teardown_method(self):
+        dp._coalescer = self._original
+
+    def test_a_change_reaches_the_coalescer_with_the_exclusion(self):
+        calls = []
+        dp._coalescer = SimpleNamespace(notify=lambda *a: calls.append(a))
+        dp.notify_state_changed("mute", "volume", except_dial="d1")
+        assert calls == [(("mute", "volume"), "d1")]
+
+    def test_an_unknown_kind_or_none_is_dropped_not_raised(self):
+        calls = []
+        dp._coalescer = SimpleNamespace(notify=lambda *a: calls.append(a))
+        dp.notify_state_changed()
+        dp.notify_state_changed("nonsense")
+        dp.notify_state_changed("mute", "nonsense")
+        assert calls == []
+
+    def test_an_empty_or_non_string_except_dial_reads_as_none(self):
+        calls = []
+        dp._coalescer = SimpleNamespace(notify=lambda *a: calls.append(a))
+        dp.notify_state_changed("mute", except_dial="")
+        dp.notify_state_changed("mute", except_dial=7)
+        dp.notify_state_changed("mute", except_dial=None)
+        assert [c[1] for c in calls] == [None, None, None]
+
+    def test_a_raising_coalescer_never_raises_out(self):
+        def boom(*_a):
+            raise RuntimeError("boom")
+
+        dp._coalescer = SimpleNamespace(notify=boom)
+        dp.notify_state_changed("mute")
+
+    def test_the_emit_function_queues_one_fan_out(self):
+        with patch.object(wd, "enqueue_fanout") as fanout:
+            dp._emit_hint(frozenset({"volume", "mute"}), frozenset({"d1"}))
+        fanout.assert_called_once_with(
+            "/state-changed", {"changed": ["mute", "volume"]},
+            min_generation=3, exclude=frozenset({"d1"}),
+        )
+
+    def test_a_failing_emit_function_is_contained(self):
+        with patch.object(wd, "enqueue_fanout", side_effect=RuntimeError("boom")):
+            dp._emit_hint(frozenset({"mute"}), frozenset())
+
+    def test_the_caller_does_no_network_or_file_work(self):
+        jobs = []
+
+        def refuse(*_a, **_k):
+            raise AssertionError("I/O on the caller's thread")
+
+        dp._coalescer = dp.StateChangeCoalescer(dp._emit_hint)
+        with (
+            patch.object(wd, "_enqueue", side_effect=jobs.append),
+            patch.object(socket, "socket", refuse),
+            patch.object(socket, "create_connection", refuse),
+            patch.object(http.client.HTTPConnection, "request", refuse),
+            patch("autostream_dials.parse_dial_entries", refuse),
+            patch.object(wd, "parse_dial_entries", refuse),
+        ):
+            dp.notify_state_changed("mute", except_dial="d1")
+        assert len(jobs) == 1
+        assert jobs[0].uuid is None
+        assert jobs[0].body == {"changed": ["mute"]}
+        assert jobs[0].exclude == frozenset({"d1"})
+        assert jobs[0].min_generation == 3
+
+    def test_an_unhashable_kind_is_dropped_not_raised(self):
+        calls = []
+        dp._coalescer = SimpleNamespace(notify=lambda *a: calls.append(a))
+        dp.notify_state_changed(["mute"])
+        assert calls == []
+
+    def test_the_default_timer_is_a_daemon_that_is_started(self):
+        with patch.object(dp.threading, "Timer") as timer:
+            dp._timer(0.2, print)
+        timer.assert_called_once_with(0.2, print)
+        assert timer.return_value.daemon is True
+        timer.return_value.start.assert_called_once_with()
+
+    def test_input_is_an_accepted_kind(self):
+        assert "input" in dp.CHANGE_KINDS
+
+
+def _snap(**over):
+    fields = dict(enabled=True, state="identified", title="T", artist="A",
+                  album="B", artwork_url="http://x/1", updated_at=1.0,
+                  last_attempt_at=2.0)
+    fields.update(over)
+    return SimpleNamespace(**fields)
+
+
+def _identified(title):
+    return _snap(title=title, artwork_url=f"http://x/{title}")
+
+
+def _analysing():
+    return _snap(state="analysing", title="", artist="", album="", artwork_url="")
+
+
+def _not_found():
+    return _snap(state="not_found", title="", artist="", album="", artwork_url="")
+
+
+def _waiting():
+    return _snap(state="waiting", title="", artist="", album="", artwork_url="")
+
+
+def _track_watch(snaps):
+    """A track watch that reads the given snapshots in turn."""
+    feed = iter(snaps)
+    return dp.ChangeWatch("track", lambda: dp.track_digest(next(feed)))
+
+
+class TestDigests:
+    def _block(self, **over):
+        rs = {
+            "enabled": True, "armed": True,
+            "recording": {"active": True, "seconds": 3.0},
+            "replay": {"active": False, "fading_out": False, "position_seconds": 0.0},
+        }
+        rs.update(over)
+        return rs
+
+    def test_repeat_digest_moves_on_what_a_dial_shows(self):
+        base = dp.repeat_digest(self._block())
+        for changed in (
+            self._block(armed=False),
+            self._block(enabled=False),
+            self._block(recording={"active": False, "seconds": 3.0}),
+            self._block(recording={"active": True, "seconds": 0}),
+            self._block(replay={"active": True, "fading_out": False}),
+            self._block(replay={"active": False, "fading_out": True}),
+        ):
+            assert dp.repeat_digest(changed) != base
+
+    def test_repeat_digest_ignores_positions_and_growing_seconds(self):
+        a = dp.repeat_digest(self._block())
+        b = dp.repeat_digest(self._block(recording={"active": True, "seconds": 4.0}))
+        c = dp.repeat_digest(self._block(
+            replay={"active": False, "fading_out": False, "position_seconds": 9.5}))
+        assert a == b == c
+
+    def test_repeat_digest_of_a_non_dict_is_empty(self):
+        assert dp.repeat_digest(None) == ()
+        assert dp.repeat_digest("x") == ()
+
+    def test_repeat_digest_tolerates_missing_blocks(self):
+        assert dp.repeat_digest({}) == (False, False, False, False, False, False)
+
+    def _snap(self, **over):
+        return _snap(**over)
+
+    def test_track_digest_moves_on_title_or_artwork(self):
+        base = dp.track_digest(self._snap())
+        assert dp.track_digest(self._snap(title="U")) != base
+        assert dp.track_digest(self._snap(artwork_url="http://x/2")) != base
+        assert dp.track_digest(self._snap(state="waiting")) != base
+
+    def test_track_digest_ignores_timestamps(self):
+        base = dp.track_digest(self._snap())
+        assert dp.track_digest(self._snap(updated_at=9.0, last_attempt_at=8.0)) == base
+
+    def test_track_digest_of_an_analysing_snapshot_is_no_reading(self):
+        assert dp.track_digest(self._snap(state="analysing", title="")) is None
+
+    def test_track_digest_of_nothing_is_not_identified(self):
+        assert dp.track_digest(None) == (False, False, "", "", "", "")
+
+    def test_track_digest_does_not_tell_unidentified_states_apart(self):
+        assert (dp.track_digest(self._snap(state="not_found", title="", artwork_url=""))
+                == dp.track_digest(self._snap(state="waiting", title="", artwork_url="")))
+
+    def test_artwork_that_is_not_http_is_left_out(self):
+        assert dp.track_digest(self._snap(artwork_url="file:///x.png"))[-1] == ""
+        assert dp.track_digest(self._snap(artwork_url=None))[-1] == ""
+        assert dp.track_digest(self._snap(artwork_url="https://x/1"))[-1] == "https://x/1"
+
+    def test_artwork_on_an_unidentified_snapshot_is_left_out(self):
+        digest = dp.track_digest(self._snap(state="not_found", artwork_url="http://x/1"))
+        assert digest[-1] == ""
+        assert digest[2:5] == ("", "", "")
+
+    def test_repeat_digest_is_never_none(self):
+        for value in (None, {}, [], "x", 3, self._block()):
+            assert dp.repeat_digest(value) is not None
+
+
+class TestChangeWatch:
+    def test_the_first_reading_is_silent(self):
+        with patch.object(dp, "notify_state_changed") as notify:
+            watch = dp.ChangeWatch("repeat", lambda: (1,))
+            assert watch.step() is False
+        notify.assert_not_called()
+
+    def test_a_change_notifies_once_with_its_kind(self):
+        values = iter([(1,), (2,), (2,)])
+        with patch.object(dp, "notify_state_changed") as notify:
+            watch = dp.ChangeWatch("track", lambda: next(values))
+            assert watch.step() is False
+            assert watch.step() is True
+            assert watch.step() is False
+        notify.assert_called_once_with("track")
+
+    def test_a_raising_digest_is_silent_and_keeps_the_last_value(self):
+        script = [(1,), RuntimeError("boom"), (1,), (2,)]
+
+        def digest():
+            item = script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with patch.object(dp, "notify_state_changed") as notify:
+            watch = dp.ChangeWatch("repeat", digest)
+            assert watch.step() is False
+            assert watch.step() is False
+            assert watch.step() is False
+            notify.assert_not_called()
+            assert watch.step() is True
+        notify.assert_called_once_with("repeat")
+
+    def test_a_recheck_of_the_same_track_notifies_nothing(self):
+        watch = _track_watch([_identified("A"), _analysing(), _identified("A")])
+        with patch.object(dp, "notify_state_changed") as notify:
+            for _ in range(3):
+                watch.step()
+        notify.assert_not_called()
+
+    def test_retrying_an_unidentified_track_notifies_nothing(self):
+        watch = _track_watch([_not_found(), _analysing(), _not_found(),
+                              _analysing(), _not_found()])
+        with patch.object(dp, "notify_state_changed") as notify:
+            for _ in range(5):
+                watch.step()
+        notify.assert_not_called()
+
+    def test_a_title_change_across_a_recheck_notifies_once(self):
+        watch = _track_watch([_identified("A"), _analysing(), _identified("B")])
+        with patch.object(dp, "notify_state_changed") as notify:
+            for _ in range(3):
+                watch.step()
+        notify.assert_called_once_with("track")
+
+    def test_a_track_change_through_waiting_notifies_twice(self):
+        watch = _track_watch([_identified("A"), _waiting(), _analysing(),
+                              _identified("B")])
+        with patch.object(dp, "notify_state_changed") as notify:
+            for _ in range(4):
+                watch.step()
+        assert notify.call_count == 2
+
+    def test_a_first_reading_in_flight_leaves_the_watch_unprimed(self):
+        watch = _track_watch([_analysing(), _identified("A"), _identified("B")])
+        with patch.object(dp, "notify_state_changed") as notify:
+            assert watch.step() is False
+            assert watch.step() is False
+            notify.assert_not_called()
+            assert watch.step() is True
+        notify.assert_called_once_with("track")
+
+    def test_a_session_event_notifies_session_and_steps_every_watch(self):
+        stepped = []
+        watches = [SimpleNamespace(step=(lambda i=i: stepped.append(i))) for i in range(2)]
+        with patch.object(dp, "notify_state_changed") as notify:
+            dp.hint_dials_after_cycle("session_started", watches)
+        notify.assert_called_once_with("session")
+        assert stepped == [0, 1]
+
+    def test_no_session_event_notifies_nothing_but_still_steps(self):
+        stepped = []
+        watch = SimpleNamespace(step=lambda: stepped.append(1))
+        with patch.object(dp, "notify_state_changed") as notify:
+            dp.hint_dials_after_cycle(None, (watch,))
+        notify.assert_not_called()
+        assert stepped == [1]
+
+
+class TestDoc:
+    def _text(self):
+        return (REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md").read_text(encoding="utf-8")
+
+    def test_the_route_and_every_sent_token_are_documented(self):
+        text = self._text()
+        assert "### `POST /state-changed`" in text
+        for kind in dp.CHANGE_KINDS - {"input"}:
+            assert f"| `{kind}` |" in text, kind
+
+    def test_the_capability_table_has_a_row_for_the_route(self):
+        assert "| (none) | the dial's `POST /state-changed` |" in self._text()

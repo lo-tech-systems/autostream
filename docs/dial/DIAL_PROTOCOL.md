@@ -103,7 +103,10 @@ What `v3` means, on a dial: it reads `GET /api/dial/capabilities` from an applia
 advertises `v3` and uses the reply in place of the TXT capability keys, shows the six-band EQ,
 fetches `POST /api/dial/warnings` from an appliance that reports `dial_warnings`, and accepts
 `POST /warnings-changed` (section 4). An appliance sends the warnings push only to a dial that
-advertises `v3`.
+advertises `v3`. From 0.7.0 a `v3` dial also accepts `POST /state-changed` (section 4), and a
+0.7.0 appliance sends it to every sighted, authorised `v3` dial. A dial built before 0.7.0
+answers 404, which the appliance treats as a failed send and backs off from; nothing else
+happens.
 
 What `v2` means:
 
@@ -1164,9 +1167,68 @@ after a maintenance counter is reset or a maintenance setting is saved in its Se
 When the set has changed it sends one push to each eligible dial. It sends at most one such
 push every 10 seconds: changes inside that window are held and sent once the window ends,
 describing the set as it is then, and a change that reverses inside the window sends nothing.
-Both kinds of push share one sender on the appliance, one request at a time, with a 1 second
-timeout and one retry after 2 seconds. A dial still fetches the list on its own schedule, so
+The authorization and warnings pushes share one sender on the appliance, one request at a time,
+with a 1 second timeout and one retry after 2 seconds. A dial still fetches the list on its own schedule, so
 a missed push delays an update and loses nothing.
+
+### `POST /state-changed`
+
+Advisory, appliance-initiated notification that something the dial shows may have changed on
+the appliance: a speaker, the volume, mute, repeat, the session or the identified track. It
+lets a dial follow a change made on another dial, in the appliance's web page or by the
+appliance itself within a fraction of a second, instead of at its next regular poll. It has
+the same lack of authentication and the same answers as `POST /auth-changed` above, and like
+the other two pushes it carries no state: the dial fetches the state itself, so it grants
+nothing and a lost, repeated or late push cannot leave a dial wrong.
+
+**Request body:**
+```json
+{"appliance_id": "a1b2c3d4e5f6a7b8c9d0", "changed": ["mute", "volume"]}
+```
+
+`changed` is a list of what changed. A dial treats an unknown token as some change, and an
+absent or empty list as any change.
+
+| Token | Sent when |
+|---|---|
+| `session` | A session started or ended, or its source changed |
+| `outputs` | A speaker was enabled, disabled or paired, or its level changed |
+| `volume` | The master volume changed through a dial's step |
+| `mute` | The appliance muted or restored |
+| `repeat` | Repeat was armed or disarmed, a replay started, was sought, stopped or ended, or the recording state changed |
+| `track` | The identified track (state, title, artist, album, artwork) changed |
+| `eq` | The equaliser changed |
+
+A further token, `input`, is reserved for a change to an input's type or label and is not sent
+yet.
+
+**Response:** always `202 {"ok": true}`, with the same `400` answers as `POST /auth-changed`.
+The source-address rule is the same: the push is acted on only when its source IP matches a
+sighting the dial currently has of that `appliance_id`.
+
+**Rate limiting.** This route has its own limit, apart from the other two push routes: at most
+one accepted push per source IP every 0.2 seconds, and per `appliance_id` every 0.2 seconds. A
+push outside the limit is still answered `202` but not acted on. The appliance already holds
+its own sending to a few a second, so the limit only guards against a sender that does not.
+
+**What the dial does.** It asks the appliance for its status at once, and refetches the
+speakers or the equaliser it is currently showing for that appliance when `changed` says they
+changed. Polls started by a push are paced to one every 0.4 seconds, so a burst of pushes
+costs the dial a few polls a second at most.
+
+**When it is sent.** The appliance sends a push after a change is committed, for each kind of
+change in the table above. The first change is sent at once. Further changes inside the next
+0.3 seconds are held and sent together, naming every kind that changed, when that window ends.
+A dial whose own volume or mute request made the change is left out, because its reply already
+carries the result; if another change in the same window did not come from that dial, it is
+told.
+
+**Delivery.** The push goes out on the same sender as the two pushes above, with a 1 second
+timeout and no retry. A dial that did not answer with a success is skipped for 5 seconds and
+tried last after that, so one unreachable dial does not delay the others. Nothing is sent to a
+dial the appliance has not seen advertise, or to one that is not authorised or does not
+advertise `dial_proto=v3` or later. A dial still polls on its own schedule, which repairs any
+push that is lost.
 
 ### `POST /update`
 
@@ -1821,6 +1883,7 @@ Responses:
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
 | `dial_warnings=v1` (JSON only) | `POST /api/dial/warnings`, and the dial's `POST /warnings-changed` | UUID-auth; appliance-authored warnings for the dial to show. Announced only by `GET /api/dial/capabilities` (version `1`), with no TXT key |
+| (none) | the dial's `POST /state-changed` | Sent from 0.7.0 to every sighted, authorised dial of `dial_proto=v3` or later; no capability key. Advisory: the dial fetches the state itself |
 | `dial_proto=v3` | `GET /api/dial/capabilities` | Advertised by appliances (both records) in place of `v2`; each generation includes the earlier ones. The endpoint is the authoritative capability list, with the versions in the table above. In it, `dial_eq` is `2` (six-band `bands` on the EQ routes) while the TXT key stays `dial_eq=v1` |
 | `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, whether a dial relies on `muted`, and the dial's handling of an appliance without an `id` on its playing record; see **Protocol dialect** in section 1. `dial_api=v1` and `dial_status=v1` are unchanged alongside it |
 
