@@ -942,6 +942,7 @@ class TestScreenSettingsGet:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
@@ -975,6 +976,7 @@ class TestScreenSettingsGet:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -993,6 +995,7 @@ class TestScreenSettingsGet:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -1012,6 +1015,7 @@ class TestScreenSettingsGet:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
 
     def test_get_reflects_touch_type(self):
@@ -1031,6 +1035,7 @@ class TestScreenSettingsGet:
             "touch_type": "xpt2046",
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
 
     def test_runtime_touch_type_reports_running_controller(self):
@@ -1106,7 +1111,38 @@ class TestScreenSettingsGet:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": True,
             "screen_size_inches": None,
+            "layout_size": None,
         }
+
+    def test_get_layout_sizes_matches_the_active_profiles_options(self):
+        from dial_display_profiles import get_profile, layout_size_options
+
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["layout_sizes"] == layout_size_options(get_profile(DEFAULT_PROFILE_KEY))
+
+    def test_get_layout_sizes_follows_the_configured_screen_type(self):
+        from dial_display_profiles import get_profile, layout_size_options
+
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, screen_type="st7789_240x240",
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        # A square panel offers no named size at all.
+        assert result["data"]["layout_sizes"] == layout_size_options(get_profile("st7789_240x240"))
+        assert result["data"]["layout_sizes"] == []
 
 
 class TestScreenSettingsPost:
@@ -1123,6 +1159,7 @@ class TestScreenSettingsPost:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -1137,6 +1174,7 @@ class TestScreenSettingsPost:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -1152,6 +1190,7 @@ class TestScreenSettingsPost:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
@@ -1168,6 +1207,7 @@ class TestScreenSettingsPost:
             "touch_type": "ft6206",
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
 
@@ -1183,6 +1223,7 @@ class TestScreenSettingsPost:
             "touch_type": DEFAULT_TOUCH_KEY,
             "always_show_controls": True,
             "screen_size_inches": None,
+            "layout_size": None,
         }
         assert r["save_calls"][0].display.always_show_controls is True
 
@@ -1309,6 +1350,68 @@ class TestScreenSettingsPost:
                           setup_server=server)
         assert r["status"] == 200
         assert server._display_status.get_status()["fitted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Layout-size setting — same save/echo path as the other screen fields;
+# applies live via the display manager AND remaps the touch stack, so it
+# never sets restart_required.
+# ---------------------------------------------------------------------------
+
+class TestLayoutSizeSetting:
+    def test_post_offered_size_persists_appears_and_remaps_touch(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
+        server = FakeDialServer(cfg)
+        orig_update_config = server._display_status.update_config
+        mock_update_config = MagicMock(side_effect=orig_update_config)
+        server._display_status.update_config = mock_update_config
+        server._touch_source = MagicMock()
+
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "layout_size": "large"}},
+            setup_server=server,
+        )
+
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert r["data"]["screen"]["layout_size"] == "large"
+        assert isinstance(r["data"]["layout_sizes"], list) and r["data"]["layout_sizes"]
+        assert r["data"]["restart_required"] is False
+        assert r["save_calls"][0].display.layout_size == "large"
+
+        mock_update_config.assert_called_once()
+        applied_display = mock_update_config.call_args[0][0]
+        assert applied_display.layout_size == "large"
+
+        server._touch_source.display_config_changed.assert_called_once()
+        args, kwargs = server._touch_source.display_config_changed.call_args
+        assert args == (False,)
+        assert kwargs["layout"].logical_size == (640, 480)
+
+    def test_post_size_not_offered_for_screen_type_is_rejected(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_240x240", "layout_size": "medium"}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+
+    def test_post_without_layout_size_key_persists_none(self):
+        """An older card's whole-object POST (no knowledge of this field at
+        all) keeps working — the field defaults to None."""
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["status"] == 200
+        assert r["data"]["screen"]["layout_size"] is None
+        assert r["save_calls"][0].display.layout_size is None
+
+    def test_get_and_post_layout_sizes_shape(self):
+        from dial_display_profiles import LAYOUT_SIZES
+
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        for entry in r["data"]["layout_sizes"]:
+            assert set(entry.keys()) == {"key", "text"}
+            assert entry["key"] in LAYOUT_SIZES
 
 
 # ---------------------------------------------------------------------------

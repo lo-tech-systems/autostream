@@ -24,7 +24,14 @@ from pathlib import Path
 from typing import Callable
 
 from dial_config import InvalidScreenSettings, PIN_RESET_PATH, _read_env_file, validate_screen_settings
-from dial_display_profiles import DEFAULT_PROFILE_KEY, layout_context_for, list_profiles
+from dial_display_profiles import (
+    DEFAULT_PROFILE_KEY,
+    UnknownDisplayProfileError,
+    get_profile,
+    layout_context_for,
+    layout_size_options,
+    list_profiles,
+)
 from dial_touch_controllers import list_controllers
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
@@ -49,6 +56,19 @@ def _load_version() -> str:
 
 
 VERSION = _load_version()
+
+# ---- Screen profile resolution -----------------------------------------------
+
+def _profile_for(display_cfg):
+    """Resolve *display_cfg*'s screen_type to a DisplayProfile, falling back
+    to the default profile for an unresolvable key — the same fallback
+    layout_context_for() and the display manager use, so the layout sizes
+    this reports always match what the display would actually offer."""
+    try:
+        return get_profile(display_cfg.screen_type)
+    except UnknownDisplayProfileError:
+        return get_profile(DEFAULT_PROFILE_KEY)
+
 
 # ---- Name validation --------------------------------------------------------
 
@@ -527,9 +547,11 @@ class DialHTTPServer:
                             'touch_type':  cfg.display.touch_type,
                             'always_show_controls': cfg.display.always_show_controls,
                             'screen_size_inches': cfg.display.screen_size_inches,
+                            'layout_size': cfg.display.layout_size,
                         },
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
+                        'layout_sizes':   layout_size_options(_profile_for(cfg.display)),
                         'runtime':        runtime,
                     })
 
@@ -897,7 +919,9 @@ class DialHTTPServer:
                             'touch_type':  cfg.display.touch_type,
                             'always_show_controls': cfg.display.always_show_controls,
                             'screen_size_inches': cfg.display.screen_size_inches,
+                            'layout_size': cfg.display.layout_size,
                         },
+                        'layout_sizes': layout_size_options(_profile_for(cfg.display)),
                         'runtime': runtime,
                     })
                     return
@@ -914,10 +938,10 @@ class DialHTTPServer:
 
                 logging.info(
                     "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
-                    "touch_type=%s always_show_controls=%s screen_size_inches=%s",
+                    "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s",
                     new_display.fitted, new_display.rotate, new_display.screen_type,
                     new_display.bgr, new_display.touch_type, new_display.always_show_controls,
-                    new_display.screen_size_inches,
+                    new_display.screen_size_inches, new_display.layout_size,
                 )
                 runtime['touch_type'] = dial_server._touch_runtime
                 # fitted/rotate/bgr/screen_type all apply live. touch_type
@@ -943,7 +967,9 @@ class DialHTTPServer:
                         'touch_type':  new_cfg.display.touch_type,
                         'always_show_controls': new_cfg.display.always_show_controls,
                         'screen_size_inches': new_cfg.display.screen_size_inches,
+                        'layout_size': new_cfg.display.layout_size,
                     },
+                    'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
                     'runtime':          runtime,
                     'restart_required': touch_type_changed,
                 }

@@ -1581,6 +1581,87 @@ class TestDialCardHtmlStructure:
         assert "ev.target.dataset.prevDefault" in body
         assert "newTypeOpt.dataset.defaultInches" in body
 
+    # ── Screen settings (Layout Size select) ────────────────────────────────
+
+    def test_screen_layout_select_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'class="dial-screen-layout"' in result
+
+    def test_screen_layout_row_after_size_row_before_touch_row(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        size_idx = result.find("dial-screen-size-row")
+        layout_idx = result.find("dial-screen-layout-row")
+        touch_idx = result.find("dial-screen-touch-row")
+        assert size_idx >= 0 and layout_idx >= 0 and touch_idx >= 0
+        assert size_idx < layout_idx < touch_idx
+
+    def test_screen_layout_row_hidden_by_default(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        row_idx = result.find("dial-screen-layout-row")
+        assert row_idx >= 0
+        row_tag = result[row_idx - 10:row_idx + 100]
+        assert "display:none" in row_tag
+
+    def test_dial_load_screen_settings_sets_layout_caps(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "Array.isArray(j.layout_sizes)" in body
+        assert "card.dataset.layoutCaps = '1'" in body
+        assert "delete card.dataset.layoutCaps" in body
+
+    def test_dial_fill_layout_sizes_native_option_first(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialFillLayoutSizes(card, list, selected)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialSaveScreenSettings", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "native.value = ''" in body
+        assert "native.textContent = 'Native'" in body
+
+    def test_screen_layout_save_body_gated_by_layout_caps(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.layoutCaps === '1'" in body
+        assert "screen.layout_size = " in body
+
+    def test_screen_layout_native_posts_null(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "layoutEl.value !== '') ? layoutEl.value : null" in body
+
+    def test_dial_sync_screen_controls_enabled_gates_layout_select(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialSyncScreenControlsEnabled(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn]
+        assert "if (layoutEl) layoutEl.disabled = off;" in body
+
+    def test_init_dials_card_resets_layout_to_native_on_type_change(self):
+        """A screen-type change must reset the layout select to Native
+        before saving -- the new type may not offer the previously
+        selected size, and posting one it does not offer would 400 the
+        whole save."""
+        src = _setup_page_src()
+        fn_idx = src.find("function _initDialsCard()")
+        assert fn_idx >= 0
+        next_fn = src.find("\n      </script>", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "layoutEl.value = ''" in body
+
     # ── General config (Mute all playing devices toggle) ───────────────────────
 
     def test_mute_all_toggle_present_in_card(self):

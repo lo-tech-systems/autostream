@@ -670,7 +670,8 @@ values from this endpoint.
     "screen_type": "st7735s_160x128",
     "bgr": false,
     "touch_type": "none",
-    "screen_size_inches": null
+    "screen_size_inches": null,
+    "layout_size": null
   },
   "supported": [
     {"key": "st7735s_160x128", "text": "ST7735S (128x160)", "default_inches": 1.8},
@@ -683,6 +684,11 @@ values from this endpoint.
     {"key": "none", "text": "None"},
     {"key": "xpt2046", "text": "Resistive (XPT2046/HR2046)"},
     {"key": "ft6206", "text": "Capacitive (FT6206/FT6236)"}
+  ],
+  "layout_sizes": [
+    {"key": "small", "text": "Small (160x128)"},
+    {"key": "medium", "text": "Medium (320x240)"},
+    {"key": "large", "text": "Large (640x480)"}
   ],
   "runtime": {
     "fitted": false,
@@ -710,8 +716,10 @@ values from this endpoint.
 | `screen.bgr` | bool | Persisted colour-order swap setting. Optional, defaults to `false` |
 | `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright - see **Validation** under `POST /screen/settings` below |
 | `screen.screen_size_inches` | number\|null | Persisted physical screen diagonal, in inches. `null` means "use the selected profile's own built-in default" (see `default_inches` under **Supported profiles** below). Optional, defaults to `null` |
+| `screen.layout_size` | string\|null | Persisted logical render size: the dial composes and hit-tests every screen at this size and resamples the finished frame to the panel. `null` means "use the panel's own resolution" - today's behaviour. When present, must be one of the keys in `layout_sizes` for the current `screen_type`. Optional, defaults to `null` |
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
 | `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
+| `layout_sizes` | array | The logical render sizes this dial can compose the *current* `screen_type` at, as `[{"key", "text"}, ...]` (e.g. `{"key": "medium", "text": "Medium (320x240)"}`). The panel's own native resolution is not listed here - a client represents it as `screen.layout_size: null`. **Its presence is the capability gate for this field** - see **Layout-size capability gate** below |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
 | `runtime.screen_type` | string | The **active** display profile key - see **Configured vs. active** below |
@@ -764,6 +772,16 @@ firmware that never advertised `supported_touch` hits the same strict field whit
 described under **Capability gate / compatibility** below, and rejects the **entire**
 request with `invalid_screen_settings` - including any otherwise-valid `fitted`/`rotate`
 changes bundled in the same request.
+
+**Layout-size capability gate.** `layout_sizes` is a **separate capability from
+`supported` and `supported_touch`**, gated the identical way: a client must not send
+`screen.layout_size` to a dial that did not advertise a `layout_sizes` array in this
+response (even an empty one - an empty array means the current `screen_type` offers no
+named size, e.g. a square panel, not that the capability is absent), and must not infer
+this capability from `supported`/`supported_touch`. `layout_sizes` reflects the
+**currently configured** `screen_type` - a client re-fetches or reads the array returned
+by `POST /screen/settings` after changing `screen_type`, rather than assuming the
+previous list still applies.
 
 ### `POST /screen/settings`
 
@@ -824,9 +842,10 @@ service by the time this response arrives; poll `GET /screen/settings` afterward
 `runtime.touch_type` reflect `"xpt2046"`.)
 
 `restart_required` reports whether **this specific POST** requires a dial service restart
-before it is fully applied. `fitted`, `rotate`, `screen_type`, and `bgr` all apply live -
-the dial starts, stops, or swaps the current display provider internally, with no restart
-needed for any of them. `touch_type` is the one exception: the touch stack (driver, filter,
+before it is fully applied. `fitted`, `rotate`, `screen_type`, `bgr`, and `layout_size`
+all apply live - the dial starts, stops, or swaps the current display provider internally,
+and re-scales the touch stack to match, with no restart needed for any of them. `touch_type`
+is the one exception: the touch stack (driver, filter,
 state machine) is built once at dial process startup from the persisted controller choice,
 so a `touch_type` change is saved immediately but has no live effect until the dial process
 restarts. `restart_required` is `true` exactly when the request changed `touch_type` from
@@ -874,6 +893,10 @@ This is the cross-version contract between clients and dial firmware:
 `touch_type` follows the identical rule as its **own, separate** capability - see **Touch
 capability gate** above: gate on `supported_touch`, not on `supported`.
 
+`layout_size` follows the identical rule as its **own, separate** capability - see
+**Layout-size capability gate** above: gate on `layout_sizes`, not on `supported` or
+`supported_touch`.
+
 **Validation:**
 
 - `fitted` must be a strict JSON boolean - `0`, `1`, `"true"`, and `"false"` are rejected.
@@ -890,6 +913,10 @@ capability gate** above: gate on `supported_touch`, not on `supported`.
 - `screen_size_inches` is optional and defaults to `null` when omitted (meaning "use the
   selected profile's own default"); when present it must be a JSON number (not a boolean)
   between `0.5` and `20`, or JSON `null`. Anything else is rejected outright.
+- `layout_size` is optional and defaults to `null` when omitted (meaning "use the panel's
+  own resolution"); when present it must be a string naming a key present in
+  `layout_sizes` for the posted `screen_type`, or JSON `null`. A key not offered for that
+  `screen_type` is rejected the same as an unrecognised one.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
   support them - see the capability gates above) returns HTTP `400`:

@@ -690,6 +690,10 @@ def _dial_card_html(
                     <input type="number" class="dial-screen-size" step="0.1" min="0.5" max="20"
                            data-dial-action="save-screen" disabled style="width:5rem;">
                   </div>
+                  <div class="dial-screen-layout-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Layout Size:</span>
+                    <select class="dial-screen-layout" data-dial-action="save-screen" disabled></select>
+                  </div>
                   <div class="dial-screen-touch-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Touch Panel:</span>
                     <select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>
@@ -3753,6 +3757,7 @@ def send_setup_page(
           var bgrEl = card.querySelector('.dial-screen-bgr');
           var typeEl = card.querySelector('.dial-screen-type');
           var sizeEl = card.querySelector('.dial-screen-size');
+          var layoutEl = card.querySelector('.dial-screen-layout');
           var touchEl = card.querySelector('.dial-screen-touch');
           if (!fittedEl || !rotateEl) return;
           var off = fittedEl.disabled || !fittedEl.checked;
@@ -3760,6 +3765,7 @@ def send_setup_page(
           if (bgrEl) bgrEl.disabled = off;
           if (typeEl) typeEl.disabled = off;
           if (sizeEl) sizeEl.disabled = off;
+          if (layoutEl) layoutEl.disabled = off;
           if (touchEl) touchEl.disabled = off;
           // Dim the rows too — a disabled input still renders its label text
           // at full contrast, which reads as available when it is not.
@@ -4310,11 +4316,49 @@ def send_setup_page(
               delete card.dataset.sizeCaps;
               if (sizeRow) sizeRow.style.display = 'none';
             }}
+            // `layout_sizes` is a FIFTH, independent capability gate -- same
+            // reasoning as sizeCaps above: a dial can support everything else
+            // above while still predating this field, and must never receive
+            // it in the save body until its own GET has advertised it. The
+            // fixed first option (value "", text "Native") represents the
+            // panel's own resolution -- the client sends that as JSON null.
+            var layoutRow = card.querySelector('.dial-screen-layout-row');
+            if (Array.isArray(j.layout_sizes)) {{
+              card.dataset.layoutCaps = '1';
+              dialFillLayoutSizes(card, j.layout_sizes, j.screen ? j.screen.layout_size : null);
+              if (layoutRow) layoutRow.style.display = 'flex';
+            }} else {{
+              delete card.dataset.layoutCaps;
+              if (layoutRow) layoutRow.style.display = 'none';
+            }}
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
             dialSyncScreenControlsEnabled(card);
           }} catch(e) {{}}
+        }}
+
+        // Fill the layout-size <select> with the fixed "Native" option
+        // (value "", meaning the panel's own resolution) followed by one
+        // option per entry in *list* ({{key, text}}), and select *selected*
+        // (or "" when it is null/undefined). Shared by dialLoadScreenSettings
+        // and the POST success path (a screen_type change can change which
+        // sizes are offered without a second GET).
+        function dialFillLayoutSizes(card, list, selected) {{
+          var layoutEl = card.querySelector('.dial-screen-layout');
+          if (!layoutEl) return;
+          layoutEl.innerHTML = '';
+          var native = document.createElement('option');
+          native.value = '';
+          native.textContent = 'Native';
+          layoutEl.appendChild(native);
+          list.forEach(function(opt) {{
+            var o = document.createElement('option');
+            o.value = opt.key;
+            o.textContent = opt.text;
+            layoutEl.appendChild(o);
+          }});
+          layoutEl.value = selected || '';
         }}
 
         async function dialSaveScreenSettings(card, changedEl) {{
@@ -4371,6 +4415,13 @@ def send_setup_page(
               rawSize === '' || isNaN(parsedSize) || parsedSize === defaultInches
             ) ? null : parsedSize;
           }}
+          // Independent capability gate, same reasoning as touchCaps/
+          // controlsCaps/sizeCaps above. The select's "" value (Native) is
+          // the panel's own resolution, sent as JSON null.
+          if (card.dataset.layoutCaps === '1') {{
+            var layoutEl = card.querySelector('.dial-screen-layout');
+            screen.layout_size = (layoutEl && layoutEl.value !== '') ? layoutEl.value : null;
+          }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
@@ -4394,6 +4445,12 @@ def send_setup_page(
                 // ordinary immediate-success path.
                 dialBeginTouchRestartPoll(card, screen.touch_type);
               }} else {{
+                if (result.body && Array.isArray(result.body.layout_sizes)) {{
+                  dialFillLayoutSizes(
+                    card, result.body.layout_sizes,
+                    result.body.screen ? result.body.screen.layout_size : null
+                  );
+                }}
                 dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
                 dialSyncScreenControlsEnabled(card);
               }}
@@ -4906,6 +4963,13 @@ def send_setup_page(
                     }}
                   }}
                   if (newTypeOpt) ev.target.dataset.prevDefault = newTypeOpt.dataset.defaultInches;
+                  // Reset the layout-size select to Native before saving --
+                  // the new type may not offer whatever size was selected,
+                  // and posting one it does not offer would 400 the whole
+                  // save. The response repopulates the options for the new
+                  // type (see dialSaveScreenSettings's success path).
+                  var layoutEl = card.querySelector('.dial-screen-layout');
+                  if (card.dataset.layoutCaps === '1' && layoutEl) layoutEl.value = '';
                 }}
                 dialSaveScreenSettings(card, ev.target);
               }}
