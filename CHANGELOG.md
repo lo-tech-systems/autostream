@@ -25,6 +25,9 @@
   idle. Lengths of an hour or more show hours.
 - improvement: an output in use by another autostream appliance now says
   which one (the HD dial shows "In Use by" and its name).
+- improvement: the dial's outputs list marks the appliance's default output (a
+  bullet on the small screen, a Default label on the HD page), and appliances
+  now report it to dials.
 - improvement: appliances advertise a new dial protocol generation (v3) and
   serve a capabilities list that a dial reads in place of the discovery flags,
   so new dial features need no new discovery keys. Older dials and appliances

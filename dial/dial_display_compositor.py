@@ -243,6 +243,10 @@ _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
 # (label and secondary) so it reads as unavailable next to the live rows.
 NOT_AUTHORISED_TEXT = "Not authorised"
 
+# A list row's trailing mark for the appliance's default output. Drawn after
+# the label and never truncated; present in the DejaVu faces the dial ships.
+DEFAULT_MARK = "•"
+
 # The compact tier's muted mute-cell: a solid wash (see the main-screen
 # frame builder) plus the glyph inverted to black, so "muted" reads at a
 # glance on a cell too small for the large tiers' translucent wash to read
@@ -374,7 +378,10 @@ class ListState:
         PLAY_GLYPH sentinel, draws the white play marker in the row's
         marker box instead of text (the appliance selector's "playing"
         mark). A 2-tuple row is byte-identical to before this field
-        existed.
+        existed. A row may carry a fourth element, a mark: a short string
+        drawn right after the label (after its ellipsis when the label is
+        cut) in the label's own colour. Rows without one are drawn exactly
+        as before.
     has_prev: whether a previous page exists — gates whether the LIST_UP
         chevron is drawn lit (see dial_touch_layout.ListLayout.up and the
         LIST_UP -> selector_page(-1) dispatch in dial_main.py).
@@ -2526,14 +2533,31 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
                 )
                 right_edge = sec_x - pad
 
-        if label and row_font is not None and right_edge > x0 + pad:
-            text = _truncate_to_width(draw, label, row_font, right_edge - (x0 + pad))
+        # A trailing mark keeps its own room: the label is cut to leave it,
+        # so the mark is always drawn whole, right after the label.
+        mark = row[3] if len(row) > 3 else ""
+        measured_mark = None
+        mark_w = 0
+        if mark and row_font is not None:
+            measured_mark = _text_size(draw, mark, row_font)
+            if measured_mark is not None:
+                mark_w = measured_mark[0] + pad // 2
+
+        if label and row_font is not None and right_edge > x0 + pad + mark_w:
+            text = _truncate_to_width(draw, label, row_font, right_edge - (x0 + pad) - mark_w)
             if text:
                 measured = _text_size(draw, text, row_font)
                 if measured is not None:
                     text_w, text_h, bbox = measured
                     left, top, _, _ = bbox
                     _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font, fill=row_color)
+                    if mark_w:
+                        mark_x = x0 + pad + text_w + pad // 2
+                        _draw_text_safe(
+                            draw,
+                            (mark_x - measured_mark[2][0], cy - measured_mark[1] // 2 - measured_mark[2][1]),
+                            mark, row_font, fill=row_color,
+                        )
 
 
 # ---------------------------------------------------------------------------

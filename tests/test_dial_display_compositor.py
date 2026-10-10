@@ -49,6 +49,7 @@ from dial_display_compositor import (  # noqa: E402
     BODY_REPEAT_ROW,
     BODY_TOGGLE_ROW,
     BODY_WARNING,
+    DEFAULT_MARK,
     EQ_LIMIT_DB,
     Body,
     DialDisplayCompositor,
@@ -1052,6 +1053,70 @@ class TestComposeList:
         state = ListState(rows=(("CD Player", True), ("Kitchen", False), ("Study", False)))
         result = compositor.compose_list(160, 128, state, rotate=False, bgr=False)
         assert result.size == (160, 128)
+
+    def test_a_row_without_a_mark_is_byte_identical_to_a_three_tuple_row(self, compositor):
+        three = compositor.compose_list(
+            160, 128, ListState(rows=(("Bedroom", False, "40"),)), rotate=False, bgr=False)
+        four = compositor.compose_list(
+            160, 128, ListState(rows=(("Bedroom", False, "40", ""),)), rotate=False, bgr=False)
+        assert list(three.getdata()) == list(four.getdata())
+
+    def test_a_marked_row_differs_only_within_its_row(self, compositor):
+        layout = list_layout_for(160, 128)
+        plain = compositor.compose_list(
+            160, 128, ListState(rows=(("Bedroom", False, "40"), ("Study", False, ""))),
+            rotate=False, bgr=False)
+        marked = compositor.compose_list(
+            160, 128, ListState(rows=(("Bedroom", False, "40", DEFAULT_MARK), ("Study", False, ""))),
+            rotate=False, bgr=False)
+        assert list(plain.crop(layout.rows[0]).getdata()) != list(marked.crop(layout.rows[0]).getdata())
+        for rect in layout.rows[1:]:
+            assert list(plain.crop(rect).getdata()) == list(marked.crop(rect).getdata())
+        for rect in (layout.up, layout.down, layout.back):
+            assert list(plain.crop(rect).getdata()) == list(marked.crop(rect).getdata())
+
+    def test_the_mark_survives_a_truncated_label(self, compositor):
+        long_name = "A very long speaker name that cannot possibly fit in the row " * 2
+        layout = list_layout_for(160, 128)
+        x0, y0, x1, y1 = layout.rows[0]
+        width, height = x1 - x0, y1 - y0
+        pad = metrics_for(160, 128).pad
+        blank = compositor.compose_list(
+            160, 128, ListState(rows=(("", False),)), rotate=False, bgr=False).crop(layout.rows[0])
+        marked = compositor.compose_list(
+            160, 128, ListState(rows=((long_name, False, "", DEFAULT_MARK),)),
+            rotate=False, bgr=False).crop(layout.rows[0])
+        plain = compositor.compose_list(
+            160, 128, ListState(rows=((long_name, False, ""),)),
+            rotate=False, bgr=False).crop(layout.rows[0])
+
+        def lit_in_centre_band(img):
+            # The right-hand end of the label area at the row's vertical middle:
+            # where a trailing bullet sits and a cut label's baseline dots do not.
+            cy = height // 2
+            return sum(
+                1 for yy in range(cy - 1, cy + 2) for xx in range(width - pad - 8, width - pad)
+                if img.getpixel((xx, yy)) != blank.getpixel((xx, yy)))
+
+        assert lit_in_centre_band(marked) > lit_in_centre_band(plain)
+
+    def test_the_mark_is_placed_after_a_short_label(self, compositor):
+        layout = list_layout_for(160, 128)
+        x0, y0, x1, y1 = layout.rows[0]
+        width, height = x1 - x0, y1 - y0
+        blank = compositor.compose_list(
+            160, 128, ListState(rows=(("", False),)), rotate=False, bgr=False).crop(layout.rows[0])
+        img = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False, "", DEFAULT_MARK),)),
+            rotate=False, bgr=False).crop(layout.rows[0])
+
+        def lit(x_from, x_to):
+            return sum(
+                1 for yy in range(height) for xx in range(x_from, x_to)
+                if img.getpixel((xx, yy)) != blank.getpixel((xx, yy)))
+
+        assert lit(0, width // 3) > 0
+        assert lit(2 * width // 3, width) == 0
 
     def test_checked_row_differs_from_unchecked_row(self, compositor):
         layout = list_layout_for(160, 128)

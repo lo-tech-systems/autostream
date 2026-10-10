@@ -181,16 +181,18 @@ def _repeat_obj(**overrides) -> dict:
 
 
 def _outputs_body(rows) -> dict:
-    """rows: an iterable of (id, name, selected, volume, remote_in_use)
-    tuples -- the shape POST /api/dial/outputs returns, fed straight to
-    on_outputs_result() via the "outputs_result" step."""
-    return {
-        "ok": True,
-        "outputs": [
-            {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": r}
-            for (i, n, s, v, r) in rows
-        ],
-    }
+    """rows: an iterable of (id, name, selected, volume, remote_in_use
+    [, is_default]) tuples -- the shape POST /api/dial/outputs returns, fed
+    straight to on_outputs_result() via the "outputs_result" step. The
+    "is_default" key is sent only for a row that gives a sixth element."""
+    def _row(row):
+        i, n, s, v, r, *rest = row
+        body = {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": r}
+        if rest:
+            body["is_default"] = rest[0]
+        return body
+
+    return {"ok": True, "outputs": [_row(row) for row in rows]}
 
 
 def _art(url_tag: str, title: str = "Song", artist: str = "Artist") -> dict:
@@ -480,8 +482,17 @@ def _snapshot(ctx: _Ctx) -> dict:
         "warning_page": d._warning_screen.warning_id if d._warning_screen is not None else None,
     }
 
+    # Present only once a held outputs row carries the default flag, for the
+    # same reason: no scenario that never feeds one records anything new.
+    default_row = next(
+        (r.id for r in (core_snap.outputs.rows if core_snap.outputs is not None else ()) if r.is_default),
+        None,
+    )
+    default_extra = {} if default_row is None else {"outputs_default": default_row}
+
     return {
         **appliance_extra,
+        **default_extra,
         "screen": d._screen,
         "showing": d._showing,
         "screen_request": d._screen_request,
@@ -1131,6 +1142,25 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("output_volume_tap", 10),
         ("repaint",),
         ("output_volume_tap", 10),
+        ("repaint",),
+    ])
+
+    # The appliance's default output is flagged in the held rows; the trace
+    # records which row it is from the result onwards.
+    aid = _aid("o7d")
+    t = _target("O7D", aid, dial_outputs=True)
+    add("outputs_default_row_marked", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([
+            ("1", "Bedroom", True, 40, False, False), ("2", "Study", False, 0, False, True),
+        ])),
+        ("repaint",),
+        ("outputs_row_tap", 1),
+        ("repaint",),
+        ("close_list",),
         ("repaint",),
     ])
 
@@ -2603,7 +2633,11 @@ class TestPreCoreScenariosUnchanged:
 
     # Scenarios recorded after the baseline was frozen: the only keys the
     # golden file may hold beyond it.
-    _ADDED = {"appliance_warning_pages_below_sdhealth", "appliance_warning_ok_holds_until_cleared"}
+    _ADDED = {
+        "appliance_warning_pages_below_sdhealth",
+        "appliance_warning_ok_holds_until_cleared",
+        "outputs_default_row_marked",
+    }
 
     def test_every_scenario_is_unchanged(self):
         old = json.loads(PRE_CORE_GOLDEN_PATH.read_text(encoding="utf-8"))

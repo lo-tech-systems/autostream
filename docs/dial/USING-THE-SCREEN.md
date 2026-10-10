@@ -285,7 +285,8 @@ from:
 ![Outputs list showing two speaker names, one with a volume level shown](images/outputs-list-rich.png)
 
 *The outputs list: a level number shows for whichever outputs are switched
-on; nothing shows for ones that are off.*
+on; nothing shows for ones that are off. The appliance's default output has
+a bullet after its name.*
 
 Tap a row to open that output's own detail page:
 

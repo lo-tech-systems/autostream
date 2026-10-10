@@ -39,7 +39,7 @@ import logging
 
 import dial_auth
 from dial_config import DialDisplayConfig
-from dial_display_compositor import OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL, _LIST_BG_RGB
+from dial_display_compositor import DEFAULT_MARK, OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL, _LIST_BG_RGB
 from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
     effective_diagonal_inches,
@@ -7792,12 +7792,25 @@ class TestOutputsPaintBuilders:
     def test_list_row_enabled_shows_volume_right_aligned_slot(self):
         assert dd._output_list_row(
             OutputRow(id="1", name="Bedroom", selected=True, volume=42),
-        ) == ("Bedroom", False, "42")
+        ) == ("Bedroom", False, "42", "")
 
     def test_list_row_disabled_shows_blank(self):
         assert dd._output_list_row(
             OutputRow(id="1", name="Bedroom", selected=False, volume=0),
-        ) == ("Bedroom", False, "")
+        ) == ("Bedroom", False, "", "")
+
+    def test_output_list_row_marks_the_default_output(self):
+        assert dd._output_list_row(
+            OutputRow(id="1", name="Bedroom", selected=True, volume=42, is_default=True),
+        ) == ("Bedroom", False, "42", DEFAULT_MARK)
+        assert dd._output_list_row(
+            OutputRow(id="2", name="Study", selected=True, volume=42),
+        )[3] == ""
+
+    def test_output_list_row_level_rule_is_unchanged(self):
+        on = dd._output_list_row(OutputRow(id="1", name="A", selected=True, volume=7, is_default=True))
+        off = dd._output_list_row(OutputRow(id="1", name="A", selected=False, volume=7, is_default=True))
+        assert (on[2], off[2]) == ("7", "")
 
     def test_loading_placeholder_before_first_fetch(self):
         display = _make_outputs_display()
@@ -7822,7 +7835,7 @@ class TestOutputsPaintBuilders:
         display.core.set_outputs_override(("1", True, 55, 1000.0))
         with display._lock:
             state = display._build_outputs_list_state_locked(160, 128)
-        assert state.rows == (("Bedroom", False, "55"),)
+        assert state.rows == (("Bedroom", False, "55", ""),)
         # Paint-time only: the manager's own row is never mutated.
         assert display._rows_of(display._outputs)[0].selected is False
 

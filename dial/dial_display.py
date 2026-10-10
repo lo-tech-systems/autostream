@@ -42,6 +42,7 @@ from PIL import Image, ImageChops
 
 from dial_auth import AUTH_UNAUTHORIZED
 from dial_display_compositor import (
+    DEFAULT_MARK,
     PLAY_GLYPH,
     DialDisplayCompositor,
     EqViewState,
@@ -717,13 +718,17 @@ def _picker_list_row(row: PickerRow) -> tuple:
     return (row.label, False, format_mmss(row.seconds))
 
 
+_OUTPUT_ROW_MARKS = {True: DEFAULT_MARK, False: ""}
+
+
 def _output_list_row(row: "OutputRow") -> tuple:
     """One outputs-list row: the level rides in the same secondary-text
     slot the picker uses for durations, right-aligned by the existing row
     renderer; a disabled output shows nothing on the right. No row is ever
     "current" (no wash) and none carries the play marker — the outputs
-    list has no notion of either."""
-    return (row.name, False, str(row.volume) if row.selected else "")
+    list has no notion of either. The default output carries the trailing
+    default mark."""
+    return (row.name, False, str(row.volume) if row.selected else "", _OUTPUT_ROW_MARKS[row.is_default])
 
 
 def _eq_loaded(eq: "EqState") -> bool:
