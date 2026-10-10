@@ -113,10 +113,23 @@ from dial_sdhealth import SdHealthView, is_low as _sd_is_low
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
+from dial_update_watch import (
+    PHASE_REBOOT,
+    PHASE_VERIFY,
+    STATUS_FAILURE,
+    STATUS_IN_PROGRESS,
+    STATUS_SUCCESS,
+    UPDATE_SEEN_PATH,
+    UpdateView,
+    UpdateWatcher,
+    read_seen_marker,
+    write_seen_marker,
+)
 from dial_touch_layout import (
     CONTENT_COMPACT,
     CONTENT_LARGE,
     CONTENT_RICH,
+    GEOMETRY_NONE,
     GEOMETRY_NOWIFI,
     GEOMETRY_SDHEALTH,
     LayoutMetrics,
@@ -317,6 +330,62 @@ def _sdhealth_message_for(percent) -> str:
     return SDHEALTH_BODY_TEXT.format(percent=percent)
 
 
+# The software update cards. The in-progress card's title is fixed and its
+# message is a short label chosen by the update's phase (never the result
+# file's long message, which is for the appliance's web page); the result
+# card says how the run ended and names the version. All of it must fit on
+# the smallest panel without truncation (tests render every string).
+UPDATING_TEXT = "Updating..."
+UPDATED_TEXT = "Updated"
+UPDATE_FAILED_TEXT = "Update failed"
+UPDATE_RESULT_DISMISS_TEXT = "Dismiss"
+UPDATE_PHASE_FALLBACK_TEXT = "Please wait"
+UPDATE_PHASE_TEXT = {
+    "download": "Downloading",
+    "prepare": "Preparing",
+    "packages": "Upgrading OS",
+    "python": "Installing",
+    "files": "Installing",
+    "configure": "Installing",
+    "staged": "Restarting",
+    "reboot": "Restarting",
+}
+
+# How long the result card waits for someone to see it before clearing
+# itself: an update can take most of an hour and is often left unattended.
+# Dismiss clears it sooner.
+UPDATE_RESULT_SECONDS = 3600.0
+
+
+def _update_title_for(_view) -> str:
+    return UPDATING_TEXT
+
+
+def _update_message_for(view) -> str:
+    phase = view.phase if isinstance(view, UpdateView) else ""
+    return UPDATE_PHASE_TEXT.get(phase, UPDATE_PHASE_FALLBACK_TEXT)
+
+
+def _update_progress_for(view) -> "int | None":
+    return view.percent if isinstance(view, UpdateView) else None
+
+
+def _update_result_title_for(view) -> str:
+    if isinstance(view, UpdateView) and view.status == STATUS_SUCCESS:
+        return UPDATED_TEXT
+    return UPDATE_FAILED_TEXT
+
+
+def _update_result_message_for(view) -> str:
+    if not isinstance(view, UpdateView):
+        return ""
+    if view.status == STATUS_SUCCESS:
+        return f"Version {view.tag}" if view.tag else ""
+    if view.rolled_back:
+        return f"Restored {view.previous_tag}" if view.previous_tag else "Restored previous"
+    return f"{view.previous_tag} kept" if view.previous_tag else "Previous kept"
+
+
 # ---------------------------------------------------------------------------
 # On-screen warnings
 #
@@ -364,6 +433,29 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
             WarningButton(TouchZone.SDHEALTH_DISMISS, SDHEALTH_DISMISS_TEXT, ACTION_DISMISS),
         ),
         persisted=True, snooze_for=_sdhealth_snooze_for,
+    ),
+    # A software update in progress: above No-WiFi (the link may drop while
+    # the system upgrades), no buttons (touch does nothing), shown over
+    # whatever is up and waking the panel; its source clears it.
+    WarningDescriptor(
+        id="update", priority=200, screen="update", geometry=GEOMETRY_NONE,
+        title=UPDATING_TEXT, message_for=_update_message_for,
+        buttons=(),
+        persisted=False, snooze_for=None,
+        title_for=_update_title_for, progress_for=_update_progress_for,
+        interrupting=True,
+    ),
+    # How an update ended: one Dismiss (the SD page's cell), clears itself
+    # after UPDATE_RESULT_SECONDS.
+    WarningDescriptor(
+        id="update_result", priority=150, screen="update_result", geometry=GEOMETRY_SDHEALTH,
+        title=UPDATED_TEXT, message_for=_update_result_message_for,
+        buttons=(
+            WarningButton(TouchZone.SDHEALTH_DISMISS, UPDATE_RESULT_DISMISS_TEXT, ACTION_DISMISS),
+        ),
+        persisted=False, snooze_for=None,
+        title_for=_update_result_title_for,
+        interrupting=True, auto_clear_after_s=UPDATE_RESULT_SECONDS,
     ),
 )
 _WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
@@ -990,6 +1082,8 @@ class DialDisplay:
         backend_factory_builder=None,
         get_roster=_default_get_roster,
         warnings: "WarningManager | None" = None,
+        update_watcher: "UpdateWatcher | None" = None,
+        update_seen_path: str = UPDATE_SEEN_PATH,
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
@@ -1397,6 +1491,13 @@ class DialDisplay:
         self._warnings = warnings if warnings is not None else WarningManager(
             WARNING_DESCRIPTORS, WarningStore(),
         )
+        # The software update source: the result file's watcher and the
+        # marker of the last finished result the screen has shown (read on
+        # first use, written when a result card is raised). Repaint thread
+        # only.
+        self._update_watcher = update_watcher if update_watcher is not None else UpdateWatcher()
+        self._update_seen_path = update_seen_path
+        self._update_seen: "str | None" = None
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -2812,6 +2913,7 @@ class DialDisplay:
                 self._tick_controls_hidden()
                 self._tick_controls_shown()
                 self._tick_wifi_flash()
+                self._tick_update_watch()
                 self._tick_warnings()
                 self._tick_controls_reveal()
                 self._tick_replay_timer()
@@ -3621,6 +3723,7 @@ class DialDisplay:
         if (
             showing is not None and showing.warning_id != warning_id
             and _WARNING_BY_ID[showing.warning_id].priority > desc.priority
+            and self._warnings.is_active(showing.warning_id)
         ):
             return False
         if desc.interrupting:
@@ -4790,6 +4893,44 @@ class DialDisplay:
             self._warning_cleared(warning_id)
         self._request_due_warning()
         self._warnings.flush()
+
+    # ---- Software update: the warning cards ---------------------------------
+
+    def _tick_update_watch(self) -> None:
+        """Once a second from the repaint thread's timeout branch: when the
+        update result file has changed, map it onto the update cards.
+        Lock-free, the on_network_view() discipline. Never raises."""
+        try:
+            view = self._update_watcher.tick(time.monotonic())
+            if view is not None:
+                self._apply_update_view(view)
+        except Exception:
+            logging.debug("dial display: update watch raised", exc_info=True)
+
+    def _apply_update_view(self, view: "UpdateView") -> None:
+        """A run in progress shows the progress card, except in the reboot
+        phase (the existing restarting screen, without asking for a reboot:
+        the updater already has) and the verify phase (the boot after the
+        swap: nothing until the verdict). A finished run shows its result
+        card once, recorded in the seen marker."""
+        if view.status == STATUS_IN_PROGRESS:
+            if view.phase == PHASE_REBOOT:
+                self._warning_cleared("update")
+                self._screen_request = "restarting"
+                self._overlay_signal.set()
+            elif view.phase != PHASE_VERIFY:
+                self._warning_active("update", severity=view)
+        elif view.status in (STATUS_SUCCESS, STATUS_FAILURE):
+            marker = view.last_run_at or f"{view.status}-{view.tag}"
+            if self._update_seen is None:
+                self._update_seen = read_seen_marker(self._update_seen_path)
+            if marker == self._update_seen:
+                return
+            self._update_seen = marker
+            write_seen_marker(marker, self._update_seen_path)
+            self._warning_cleared("update")
+            self._warning_active("update_result", severity=view)
+        self._overlay_signal.set()
 
     # ---- SD card health: the warning page --------------------------------
 

@@ -41,6 +41,8 @@ from dial_touch import (  # noqa: E402
     SURFACE_REPEAT_REPLAY,
     SURFACE_RESTARTING,
     SURFACE_SDHEALTH,
+    SURFACE_UPDATE,
+    SURFACE_UPDATE_RESULT,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
@@ -2119,6 +2121,25 @@ class TestNoWifiAndRestartingSurfaces:
 
     def test_sdhealth_surface_map(self):
         assert _GEOMETRY_FOR_SURFACE[SURFACE_SDHEALTH] == GEOMETRY_SDHEALTH
+
+    def test_update_surfaces_map_to_geometry_none_and_the_dismiss_cell(self):
+        # The progress card has no buttons; the result card reuses the SD
+        # warning's one Dismiss cell.
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE] == GEOMETRY_NONE
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE_RESULT] == GEOMETRY_SDHEALTH
+
+    def test_update_progress_card_is_touch_inert(self):
+        l = sdhealth_layout_for(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_UPDATE, False, now=0.0)
+        assert sm.on_filter_event(press_event(_rect_center(l.dismiss)), now=0.1) == []
+
+    def test_update_result_dismiss_cell_arms_as_zone_tap(self):
+        l = sdhealth_layout_for(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_UPDATE_RESULT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(_rect_center(l.dismiss)), now=0.1)
+        assert actions[-1].zone == TouchZone.SDHEALTH_DISMISS
 
     def test_sdhealth_dismiss_cell_arms_as_zone_tap(self):
         l = sdhealth_layout_for(WIDTH, HEIGHT)

@@ -8821,10 +8821,10 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_twelve_screens(self):
+    def test_table_has_exactly_the_fourteen_screens(self):
         assert set(SCREEN_POLICIES) == {
             "main", "selector", "picker", "info", "info_value", "repeat", "eq", "outputs", "output",
-            "nowifi", "restarting", "sdhealth",
+            "nowifi", "restarting", "sdhealth", "update", "update_result",
         }
 
     def test_nowifi_and_restarting_rows(self):
@@ -11119,7 +11119,7 @@ class TestGenericWarningCapabilities:
         return mock_compose.call_args.args[3]
 
     def test_default_descriptor_fields_leave_existing_rows_unchanged(self):
-        for desc in WARNING_DESCRIPTORS:
+        for desc in (d for d in WARNING_DESCRIPTORS if d.id in ("nowifi", "sdhealth")):
             assert desc.title_for is None and desc.progress_for is None
             assert desc.interrupting is False and desc.auto_clear_after_s is None
 
@@ -11262,3 +11262,234 @@ class TestGenericWarningCapabilities:
         display._warning_active("notice", severity=2)
         _fold(display)
         assert display._screen == "notice"
+
+
+# ---------------------------------------------------------------------------
+# The software update cards: the update-result file mapped onto the "update"
+# and "update_result" warning rows.
+# ---------------------------------------------------------------------------
+
+class TestUpdateWarnings:
+    @pytest.fixture
+    def rig(self, tmp_path):
+        from dial_update_watch import UpdateWatcher
+        clock = _Clock(1_000_000.0)
+        display, fb, gt = _make_display(
+            targets=[],
+            warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=clock.now),
+        )
+        display._update_seen_path = str(tmp_path / "seen")
+        display._update_watcher = UpdateWatcher(str(tmp_path / "update-result.env"))
+        display.enable()
+        display._poll_once()
+        _fold(display)
+        display.result_path = tmp_path / "update-result.env"
+        display.seen_path = tmp_path / "seen"
+        display.clock = clock
+        return display
+
+    @staticmethod
+    def _progress(phase="packages", percent=45, **kw):
+        from dial_update_watch import UpdateView
+        return UpdateView(status="in_progress", percent=percent, phase=phase, tag="0.7.0",
+                          previous_tag="0.6.0", message="a long message that must not be shown",
+                          last_run_at="2000-01-01T00:00:00+00:00", **kw)
+
+    @staticmethod
+    def _finished(status="success", **kw):
+        from dial_update_watch import UpdateView
+        fields = dict(status=status, percent=100, phase="done", tag="0.7.0", previous_tag="0.6.0",
+                      last_run_at="2000-01-01T01:00:00+00:00")
+        fields.update(kw)
+        return UpdateView(**fields)
+
+    @staticmethod
+    def _painted_view(display):
+        with patch.object(
+            display._compositor, "compose_warning", wraps=display._compositor.compose_warning,
+        ) as mock_compose:
+            with display._lock:
+                display._display_warning_locked()
+        return mock_compose.call_args.args[3]
+
+    def test_in_progress_view_opens_update_card_over_selector_and_wakes(self, rig):
+        display = rig
+        display._screen_request = "selector"
+        _fold(display)
+        assert display._screen == "selector"
+        with display._lock:
+            display._sleep_locked()
+        display._apply_update_view(self._progress())
+        _fold(display)
+        assert display._screen == "update"
+        assert not display._display_sleeping
+        assert display._selector is None
+
+    def test_update_card_shows_title_phase_label_and_bar(self, rig):
+        display = rig
+        display._apply_update_view(self._progress(phase="packages", percent=45))
+        _fold(display)
+        view = self._painted_view(display)
+        assert view.title == dd.UPDATING_TEXT == "Updating..."
+        assert view.message == "Upgrading OS"
+        assert view.percent == 45
+        assert view.buttons == ()
+
+    def test_phase_label_follows_the_phase_and_never_the_file_message(self, rig):
+        display = rig
+        for phase, label in (
+            ("download", "Downloading"), ("packages", "Upgrading OS"), ("python", "Installing"),
+            ("files", "Installing"), ("configure", "Installing"), ("staged", "Restarting"),
+            ("something-new", "Please wait"), ("", "Please wait"),
+        ):
+            display._apply_update_view(self._progress(phase=phase))
+            _fold(display)
+            assert self._painted_view(display).message == label, phase
+
+    def test_update_card_outranks_nowifi(self, rig):
+        display = rig
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "nowifi"
+        display._apply_update_view(self._progress())
+        _fold(display)
+        assert display._screen == "update"
+        # A later network poll cannot take the screen back while it runs.
+        display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "update"
+
+    def test_update_card_has_no_buttons_and_geometry_none(self):
+        from dial_touch import _GEOMETRY_FOR_SURFACE
+        from dial_touch_layout import GEOMETRY_NONE
+        desc = dd._WARNING_BY_ID["update"]
+        assert desc.buttons == ()
+        assert desc.geometry == GEOMETRY_NONE
+        assert desc.interrupting is True and desc.auto_clear_after_s is None
+        assert desc.priority > dd._WARNING_BY_ID["nowifi"].priority
+        assert _GEOMETRY_FOR_SURFACE[dd.SCREEN_POLICIES["update"].surface[0]] == GEOMETRY_NONE
+
+    def test_reboot_phase_switches_to_restarting_without_requesting_reboot(self, rig):
+        display = rig
+        display._apply_update_view(self._progress(phase="packages"))
+        _fold(display)
+        assert display._screen == "update"
+        with patch("dial_display._request_reboot") as reboot:
+            display._apply_update_view(self._progress(phase="reboot", percent=96))
+            _fold(display)
+        reboot.assert_not_called()
+        assert display._screen == "restarting"
+        assert not display._warnings.is_active("update")
+        # Nothing opens over the restarting screen.
+        display._apply_update_view(self._progress(phase="files"))
+        _fold(display)
+        assert display._screen == "restarting"
+
+    def test_verify_phase_shows_nothing(self, rig):
+        display = rig
+        display._apply_update_view(self._progress(phase="verify", percent=96))
+        assert display._screen_request is None
+        _fold(display)
+        assert display._screen == "main"
+        assert not display._warnings.is_active("update")
+
+    def test_success_shows_result_once_then_clears_after_an_hour(self, rig):
+        display = rig
+        display._apply_update_view(self._progress())
+        _fold(display)
+        display._apply_update_view(self._finished())
+        _fold(display)
+        assert display._screen == "update_result"
+        assert not display._warnings.is_active("update")
+        view = self._painted_view(display)
+        assert (view.title, view.message, view.buttons) == ("Updated", "Version 0.7.0", ("Dismiss",))
+        assert view.percent is None
+        display.clock.t += dd.UPDATE_RESULT_SECONDS - 1
+        display._tick_warnings()
+        assert display._warnings.is_active("update_result")
+        display.clock.t += 2
+        display._tick_warnings()
+        assert not display._warnings.is_active("update_result")
+        _fold(display)
+        assert display._screen == "main"
+        # The same result arriving again (a restart re-reading the file) stays quiet.
+        display._apply_update_view(self._finished())
+        _fold(display)
+        assert display._screen == "main"
+
+    def test_result_card_dismiss_clears_it(self, rig):
+        display = rig
+        display._apply_update_view(self._finished())
+        _fold(display)
+        assert display._screen == "update_result"
+        display.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
+        _fold(display)
+        assert display._screen == "main"
+        display._tick_warnings()
+        _fold(display)
+        assert display._screen == "main"
+
+    def test_failure_rolled_back_message_names_previous_version(self, rig):
+        display = rig
+        display._apply_update_view(self._finished("failure", rolled_back=True, phase="rolled_back"))
+        _fold(display)
+        view = self._painted_view(display)
+        assert (view.title, view.message) == ("Update failed", "Restored 0.6.0")
+
+    def test_failure_not_rolled_back_message_says_previous_kept(self, rig):
+        display = rig
+        display._apply_update_view(self._finished("failure", phase="failed"))
+        _fold(display)
+        view = self._painted_view(display)
+        assert (view.title, view.message) == ("Update failed", "0.6.0 kept")
+
+    def test_seen_marker_suppresses_repeat_on_restart(self, rig):
+        display = rig
+        display._apply_update_view(self._finished())
+        assert display.seen_path.read_text().strip() == "2000-01-01T01:00:00+00:00"
+        # A new process: same result file, same marker.
+        again, fb, gt = _make_display(targets=[])
+        again._update_seen_path = str(display.seen_path)
+        again.enable()
+        again._poll_once()
+        _fold(again)
+        again._apply_update_view(self._finished())
+        _fold(again)
+        assert again._screen == "main" and not again._warnings.is_active("update_result")
+        # A different (later) result is shown.
+        again._apply_update_view(self._finished("failure", last_run_at="2000-01-02T00:00:00+00:00"))
+        _fold(again)
+        assert again._screen == "update_result"
+
+    def test_fresh_install_with_no_status_shows_nothing(self, rig):
+        from dial_update_watch import UpdateView
+        display = rig
+        display._apply_update_view(UpdateView())
+        _fold(display)
+        assert display._screen == "main"
+        assert not display.seen_path.exists()
+
+    def test_tick_reads_the_file_once_per_change(self, rig):
+        display = rig
+        display.result_path.write_text(
+            "STATUS=in_progress\nPERCENT_COMPLETE=30\nMESSAGE=x\nLAST_RUN_AT=t1\nPHASE=files\n",
+        )
+        display._tick_update_watch()
+        _fold(display)
+        assert display._screen == "update"
+        assert display._warnings.severity("update").percent == 30
+        display._screen_request = "main"
+        _fold(display)
+        display._tick_update_watch()
+        assert display._screen_request is None
+
+    def test_result_card_replaces_open_progress_card(self, rig):
+        display = rig
+        display._apply_update_view(self._progress())
+        _fold(display)
+        assert display._screen == "update"
+        display._apply_update_view(self._finished())
+        _fold(display)
+        assert display._screen == "update_result"
