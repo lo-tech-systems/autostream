@@ -308,6 +308,7 @@ class TestArtwork:
     def test_artwork_is_a_key_and_a_local_url(self):
         art = _state("playing_artwork")["artwork"]
         assert art["url"] == "/api/v1/artwork/" + art["key"]
+        assert art["backdrop_url"] == art["url"] + "/backdrop"
         assert len(art["key"]) == 16
         assert _state("playing_no_artwork")["artwork"] is None
 

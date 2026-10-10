@@ -34,6 +34,11 @@ STRING_MAX = 200
 # Where the page fetches the held artwork from, by key.
 ARTWORK_PATH = "/api/v1/artwork/"
 
+# The blurred backdrop of the held artwork hangs off the artwork's own path;
+# the logo has a fixed one for when nothing is held.
+BACKDROP_SUFFIX = "/backdrop"
+LOGO_BACKDROP_PATH = "/api/v1/logo/backdrop"
+
 # The ids the core keeps for the two derived EQ controls. On a six-band
 # appliance they are left out: the page draws the six real bands.
 DERIVED_EQ_IDS = ("bass", "treble")
@@ -200,7 +205,8 @@ def _artwork_block(snapshot) -> dict | None:
     artwork = snapshot.artwork
     if artwork is None:
         return None
-    return {"key": artwork.key, "url": ARTWORK_PATH + artwork.key}
+    url = ARTWORK_PATH + artwork.key
+    return {"key": artwork.key, "url": url, "backdrop_url": url + BACKDROP_SUFFIX}
 
 
 def _volume_block(snapshot, muted: bool | None) -> dict:

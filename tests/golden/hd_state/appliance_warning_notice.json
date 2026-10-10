@@ -62,7 +62,8 @@
   },
   "artwork": {
     "key": "3f5de294daa51c2f",
-    "url": "/api/v1/artwork/3f5de294daa51c2f"
+    "url": "/api/v1/artwork/3f5de294daa51c2f",
+    "backdrop_url": "/api/v1/artwork/3f5de294daa51c2f/backdrop"
   },
   "volume": {
     "appliance_id": "aaaaaaaaaaaaaaaaaaaa",

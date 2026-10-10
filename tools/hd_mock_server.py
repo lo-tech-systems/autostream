@@ -44,7 +44,7 @@ for _p in (REPO_ROOT / "tests", REPO_ROOT / "dial", REPO_ROOT / "core"):
         sys.path.insert(0, str(_p))
 
 import hd_scenarios  # noqa: E402
-from dial_hd_state import dumps  # noqa: E402
+from dial_hd_state import LOGO_BACKDROP_PATH, dumps  # noqa: E402
 
 DEFAULT_SCENARIO = "playing_artwork"
 DEFAULT_PORT = 8080
@@ -88,7 +88,7 @@ ACTION_LEADS = {
 }
 PANEL_ACTIONS = ("wake", "sleep", "activity")
 ACTION_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
-ARTWORK_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+ARTWORK_REST_RE = re.compile(r"^([0-9a-f]{16})(?:/(backdrop))?$")
 
 INFO_ROWS = [
     ["Dial name", "Lounge dial"],
@@ -138,6 +138,7 @@ class MockServer:
             raise ValueError(f"unknown scenario {scenario!r}")
         self._cond = threading.Condition()
         self._scenario = scenario
+        self._current = hd_scenarios.SCENARIOS[scenario]   # held so a removed entry cannot break a late request
         self._seq = 1
         self._state_cache = None
         self._actions: list = []
@@ -195,6 +196,7 @@ class MockServer:
             return False
         with self._cond:
             self._scenario = name
+            self._current = hd_scenarios.SCENARIOS[name]
             if not keep_changes:
                 self._overrides = {}
                 self._asleep = None
@@ -223,7 +225,8 @@ class MockServer:
 
     def _screen(self) -> dict:
         """The screen settings now: the scenario's, with what a page posted."""
-        return {**hd_scenarios.SCENARIOS[self.scenario].settings, **self._overrides}
+        with self._cond:
+            return {**self._current.settings, **self._overrides}
 
     def _record(self, action: str, body: dict) -> None:
         with self._cond:
@@ -239,7 +242,7 @@ class MockServer:
         """(seq, wire body) of the current scenario, built once per change."""
         with self._cond:
             if self._state_cache is None or self._state_cache[0] != self._seq:
-                scenario = hd_scenarios.SCENARIOS[self._scenario]
+                scenario = self._current
                 panel = {**scenario.panel, **{k: v for k, v in self._overrides.items() if k in scenario.panel}}
                 if self._asleep is not None:
                     panel["asleep"] = self._asleep
@@ -333,6 +336,9 @@ class MockServer:
             self._stream(handler)
         elif path.startswith("/api/v1/artwork/"):
             self._get_artwork(handler, path[len("/api/v1/artwork/"):])
+        elif path == LOGO_BACKDROP_PATH:
+            handler.send_bytes(200, hd_scenarios.BACKDROP_BYTES, "image/png",
+                               {"Cache-Control": "no-cache"})
         elif path == "/api/v1/info":
             handler.send_json(200, {"ok": True, "rows": INFO_ROWS})
         elif path == "/api/v1/settings":
@@ -401,12 +407,15 @@ class MockServer:
         else:
             handler.send_json(404, {"ok": False, "error": "unknown_scenario"})
 
-    def _get_artwork(self, handler, key: str) -> None:
-        artwork = hd_scenarios.SCENARIOS[self.scenario].snapshot.artwork
-        if not ARTWORK_KEY_RE.match(key) or artwork is None or artwork.key != key:
+    def _get_artwork(self, handler, rest: str) -> None:
+        with self._cond:
+            artwork = self._current.snapshot.artwork
+        match = ARTWORK_REST_RE.match(rest)
+        if match is None or artwork is None or artwork.key != match.group(1):
             handler.send_json(404, {"ok": False, "error": "no_artwork"})
             return
-        handler.send_bytes(200, artwork.data, "image/png",
+        data = hd_scenarios.BACKDROP_BYTES if match.group(2) else artwork.data
+        handler.send_bytes(200, data, "image/png",
                            {"Cache-Control": "private, max-age=86400, immutable",
                             "ETag": '"%s"' % artwork.key})
 
