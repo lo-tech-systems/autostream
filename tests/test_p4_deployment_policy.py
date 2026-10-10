@@ -956,10 +956,10 @@ class TestNetworkManagerConfig:
 # Linux CI-only live validation
 # ---------------------------------------------------------------------------
 
-def _tool_ok(name: str) -> bool:
+def _tool_ok(name: str, version_flag: str = "--version") -> bool:
     try:
         return subprocess.run(
-            [name, "--version"], capture_output=True, timeout=5
+            [name, version_flag], capture_output=True, timeout=5
         ).returncode == 0
     except Exception:
         return False
@@ -981,8 +981,10 @@ autostream_installed = pytest.mark.skipif(
     reason="autostream not installed at /opt/autostream — run on a deployed appliance",
 )
 
+# nginx has no --version: it rejects the long option and exits non-zero,
+# which would read as "not installed" and skip the syntax checks everywhere.
 nginx_available = pytest.mark.skipif(
-    not _tool_ok("nginx"),
+    not _tool_ok("nginx", "-v"),
     reason="nginx not available",
 )
 
@@ -994,9 +996,63 @@ visudo_available = pytest.mark.skipif(
 
 NGINX_SNIPPETS = [
     NGINX_DIR / "autostream-nginxd.conf",
+    NGINX_DIR / "99-autostream-access-log.conf",
     NGINX_DIR / "autostream-nginx.conf",
     NGINX_DIR / "autostream-dial-nginx.conf",
 ]
+
+# Files the installer places alongside a snippet in the same http block, so
+# that anything the snippet uses from them is defined: the appliance site
+# reads $from_setup (autostream-nginxd.conf) and $autostream_access_log_level
+# (99-autostream-access-log.conf), all three loading from conf.d and
+# sites-enabled into one http block. The dial site stands alone.
+NGINX_COMPANIONS = {
+    "autostream-nginx.conf": [
+        NGINX_DIR / "autostream-nginxd.conf",
+        NGINX_DIR / "99-autostream-access-log.conf",
+    ],
+}
+
+# The stock files nginx resolves relative includes against (the snippets
+# include fastcgi_params by name).
+_NGINX_STOCK_DIR = Path("/etc/nginx")
+_NGINX_STOCK_FILES = ("fastcgi_params", "mime.types")
+
+_LISTEN_PORT_RE = re.compile(r"(\blisten\s+(?:\[[^\]]*\]:|[\w.]+:)?)(\d+)\b")
+_LOG_PATH_RE = re.compile(r"(\b(?:access_log|error_log)\s+)(/[^\s;]+)")
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _copy_for_unprivileged_check(src: Path, dst_dir: Path, ports: dict[int, int]) -> Path:
+    """Copy *src* into *dst_dir* ready for an unprivileged nginx -t, which
+    binds every listen socket and opens every log file named: each listen
+    port moves to a free unprivileged one (the same port always to the same
+    replacement, so a server listening on IPv4 and IPv6 stays one server),
+    since ports below 1024 need privilege and a local nginx may already
+    serve the real one; and each absolute access_log/error_log file moves
+    into *dst_dir*, since the system log directory is not writable. Only
+    port numbers and log file paths change; every other directive, log
+    formats and conditions included, is checked as deployed."""
+    def port(m: re.Match) -> str:
+        p = int(m.group(2))
+        if p not in ports:
+            ports[p] = _free_port()
+        return f"{m.group(1)}{ports[p]}"
+
+    def log_path(m: re.Match) -> str:
+        return f"{m.group(1)}{(dst_dir / Path(m.group(2)).name).as_posix()}"
+
+    text = src.read_text(encoding="utf-8")
+    text = _LOG_PATH_RE.sub(log_path, _LISTEN_PORT_RE.sub(port, text))
+    dst = dst_dir / src.name
+    dst.write_text(text, encoding="utf-8")
+    return dst
 
 
 class TestNginxSyntax:
@@ -1008,14 +1064,29 @@ class TestNginxSyntax:
     def test_nginx_t_validates_snippet(self, snippet, tmp_path):
         if not snippet.exists():
             pytest.skip(f"{snippet.name} not found")
-        # Wrap the snippet in a minimal nginx.conf so nginx -t can parse it.
-        # All three snippets contain http-context directives (map{} or server{}).
+        for name in _NGINX_STOCK_FILES:
+            stock = _NGINX_STOCK_DIR / name
+            if not stock.exists():
+                pytest.skip(f"{stock} not found (nginx not installed from the distribution package)")
+            (tmp_path / name).write_bytes(stock.read_bytes())
+        ports: dict[int, int] = {}
+        includes = [
+            _copy_for_unprivileged_check(p, tmp_path, ports)
+            for p in [*NGINX_COMPANIONS.get(snippet.name, []), snippet]
+        ]
+        # Wrap the snippets in a minimal nginx.conf so nginx -t can parse
+        # them; they all hold http-context directives (map{} or server{}).
+        # The pid file and the logs go to the scratch directory, which an
+        # unprivileged run can write, instead of the system defaults.
         wrapper = tmp_path / "nginx.conf"
         wrapper.write_text(
+            f'pid "{tmp_path.as_posix()}/nginx.pid";\n'
+            f'error_log "{tmp_path.as_posix()}/error.log";\n'
             'events {}\n'
             'http {\n'
-            f'    include "{snippet.as_posix()}";\n'
-            '}\n',
+            f'    access_log "{tmp_path.as_posix()}/access.log";\n'
+            + "".join(f'    include "{p.as_posix()}";\n' for p in includes)
+            + '}\n',
             encoding="utf-8",
         )
         r = subprocess.run(
@@ -1025,6 +1096,27 @@ class TestNginxSyntax:
         assert r.returncode == 0, (
             f"nginx -t failed for {snippet.name}:\n{r.stdout}\n{r.stderr}"
         )
+
+    def test_unprivileged_copy_moves_only_ports_and_log_paths(self, tmp_path):
+        src = tmp_path / "src" / "site.conf"
+        src.parent.mkdir()
+        src.write_text(
+            "server {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n}\n"
+            "server {\n    listen 127.0.0.1:8080;\n    server_name x;\n"
+            "    access_log /var/log/nginx/access.log combined if=$level;\n"
+            "    error_log off;\n}\n",
+            encoding="utf-8",
+        )
+        ports: dict[int, int] = {}
+        out = _copy_for_unprivileged_check(src, tmp_path, ports).read_text(encoding="utf-8")
+        assert set(ports) == {80, 8080}
+        assert f"listen {ports[80]} default_server;" in out
+        assert f"listen [::]:{ports[80]} default_server;" in out
+        assert f"listen 127.0.0.1:{ports[8080]};" in out
+        assert all(p >= 1024 for p in ports.values())
+        assert f"access_log {(tmp_path / 'access.log').as_posix()} combined if=$level;" in out
+        assert "error_log off;" in out
+        assert "server_name x;" in out
 
 
 class TestLinuxServiceValidation:
