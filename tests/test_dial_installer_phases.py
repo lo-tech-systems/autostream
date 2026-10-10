@@ -302,23 +302,25 @@ class TestInstallerPhases:
         text = self._text()
         calls = re.findall(r'^\s*phase (\w+) (\d+) "', text, re.M)
         names = [c[0] for c in calls]
-        assert names == ["prepare", "packages", "packages", "python", "files", "configure"]
+        assert names == ["prepare", "packages", "packages", "python", "files", "configure",
+                         "staged", "reboot"]
         percents = [int(c[1]) for c in calls]
         assert percents == sorted(percents)
         assert {n: int(p) for n, p in calls} == {
             "prepare": 5, "packages": 10, "python": 45, "files": 70, "configure": 80,
+            "staged": 92, "reboot": 96,
         }
 
     def test_phases_bracket_the_work_they_name(self):
         text = self._text()
         pos = {k: text.index(k) for k in (
             "phase prepare", "require_trixie_os\n", "system_upgrade", "phase python",
-            "setup_venv   #", "phase files", "deploy_admin\n", "phase configure",
+            "prepare_update_venv", "phase files", "deploy_admin\n", "phase configure",
             "enable_spi0", 'write_install_state "$DIAL_UUID"',
         )}
         assert pos["require_trixie_os\n"] < pos["phase prepare"]
-        assert pos["system_upgrade"] < pos["phase python"] < pos["setup_venv   #"]
-        assert pos["setup_venv   #"] < pos["phase files"] < pos["deploy_admin\n"]
+        assert pos["system_upgrade"] < pos["phase python"] < pos["prepare_update_venv"]
+        assert pos["prepare_update_venv"] < pos["phase files"] < pos["deploy_admin\n"]
         assert pos["deploy_admin\n"] < pos["phase configure"] < pos["enable_spi0"]
         assert pos["enable_spi0"] < pos['write_install_state "$DIAL_UUID"']
 
@@ -337,18 +339,22 @@ class TestInstallerPhases:
                      "install_venv_build_packages\n", "install_sdmon\n"):
             assert text.index(call) < python_pos, call
 
-    def test_success_is_recorded_as_the_done_phase(self):
+    def test_an_update_does_not_record_success_itself(self):
+        # The done phase is written by the boot step once the new version has
+        # passed its health check; the installer ends in the reboot phase.
         text = self._text()
-        m = re.search(r'write_update_result "success"[^\n]*\\\n[^\n]*', text)
-        assert m is not None
-        assert "PHASE=done" in m.group(0)
-        assert "100" in m.group(0)
+        assert 'write_update_result "success"' not in text
+        assert "PHASE=done" not in text
 
-    def test_exit_trap_records_the_failed_phase(self):
+    def test_exit_trap_reports_the_failed_phase_through_abort_update(self):
         text = self._text()
         trap = text[text.index("trap '"): text.index("' EXIT")]
-        assert "update_failure_message" in trap
-        assert "PHASE=failed" in trap
+        assert "abort_update" in trap
+        helpers = HELPERS.read_text(encoding="utf-8")
+        body = helpers[helpers.index("abort_update() {"):]
+        body = body[:body.index("\n}\n")]
+        assert "update_failure_message" in body
+        assert "PHASE=failed" in body
 
     def test_update_path_user_and_dirs_are_prepared_before_anything_installs(self):
         text = self._text()

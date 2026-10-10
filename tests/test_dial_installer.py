@@ -286,12 +286,12 @@ class TestInstallerExitTrap:
         """
         trap_body = self._trap_body()
         rm_pos = trap_body.find("rm -f")
-        write_pos = trap_body.find("write_update_result")
+        write_pos = trap_body.find("abort_update")
         assert rm_pos != -1, "rm -f not found in trap body"
-        assert write_pos != -1, "write_update_result not found in trap body"
+        assert write_pos != -1, "abort_update not found in trap body"
         assert rm_pos < write_pos, (
-            "rm -f \"$UPDATING_FLAG\" must appear before write_update_result in "
-            "the EXIT trap so the flag is cleared even if the write fails"
+            "rm -f \"$UPDATING_FLAG\" must appear before abort_update in "
+            "the EXIT trap so the flag is cleared even if the cleanup fails"
         )
 
     def test_exit_trap_write_update_result_is_nonfatal(self):
@@ -302,11 +302,11 @@ class TestInstallerExitTrap:
         '|| true' makes the write non-fatal so the trap always completes cleanly.
         """
         trap_body = self._trap_body()
-        write_pos = trap_body.find("write_update_result")
-        assert write_pos != -1, "write_update_result not found in trap body"
+        write_pos = trap_body.find("abort_update")
+        assert write_pos != -1, "abort_update not found in trap body"
         snippet = trap_body[write_pos: write_pos + 120]
         assert "|| true" in snippet, (
-            "write_update_result in the EXIT trap must be followed by '|| true' "
+            "abort_update in the EXIT trap must be followed by '|| true' "
             "to remain non-fatal under set -e"
         )
 
@@ -549,21 +549,21 @@ class TestDisplayImageProcessingDeployment:
         assert "python3-dev" in fn_text
         assert "gcc" in fn_text
 
-    def test_install_venv_build_packages_called_before_setup_venv(self):
+    def test_install_venv_build_packages_called_before_the_venv_build(self):
         """Build deps must land before the pip step that compiles against them."""
         content = self._installer_content()
         call_pos = content.find("install_venv_build_packages")
-        venv_pos = content.find("setup_venv")
+        venv_pos = content.find("prepare_update_venv")
         assert call_pos != -1, (
             "install_venv_build_packages not called in autostream_dial_install.sh"
         )
-        assert venv_pos != -1, "setup_venv not called in autostream_dial_install.sh"
+        assert venv_pos != -1, "prepare_update_venv not called in autostream_dial_install.sh"
         assert call_pos < venv_pos, (
-            "install_venv_build_packages must be called before setup_venv"
+            "install_venv_build_packages must be called before the venv is built"
         )
 
     def test_install_venv_build_packages_called_unconditionally(self):
-        """setup_venv runs on --update too, so its build deps must as well.
+        """The venv build runs on --update too, so its build deps must as well.
 
         Same guard-balance check used for install_recovery_packages().
         """
@@ -882,10 +882,10 @@ class TestControlSocketDeployment:
 
     def test_cli_python_installed_with_0644(self):
         """autostream_dial_control.py must be installed with mode 0644."""
-        content = self._installer_content()
+        content = HELPERS_SH.read_text(encoding="utf-8")
         # Look for the install command with 0644 and the CLI module
         assert "autostream_dial_control.py" in content, (
-            "autostream_dial_control.py deployment not found in installer"
+            "autostream_dial_control.py deployment not found in helpers"
         )
         # Find 0644 near the CLI install
         idx = content.find("autostream_dial_control.py")
@@ -913,18 +913,16 @@ class TestControlSocketDeployment:
         Both fresh and --update installations must deploy the CLI.
         """
         content = self._installer_content()
-        cli_pos = content.find("autostream_dial_control.py")
-        assert cli_pos != -1
-        # The CLI install must not be inside the 'if ! $UPDATE' fresh-only block
-        # (positioned before the block or outside it).
-        # Simplest check: CLI install appears after 'cp -a "$DEPLOY/dial/."'
-        cp_pos = content.find('cp -a "$DEPLOY/dial/."')
-        assert cp_pos != -1, "cp -a dial/ block not found"
-        # CLI install follows the cp -a block
-        assert cli_pos > cp_pos, (
-            "autostream_dial_control.py install must follow the cp -a dial/ block "
-            "so it runs on both fresh install and --update"
-        )
+        helpers = HELPERS_SH.read_text(encoding="utf-8")
+        fn = _extract_function(helpers, "install_code_tree")
+        assert "autostream_dial_control.py" in fn
+        # Both arms of the update/fresh choice install the code tree, so the
+        # CLI module is deployed either way.
+        assert "stage_code_tree" in content
+        assert 'install_code_tree "$(_opt_dir)"' in content
+        # The control module is installed after the dial package copy so it is
+        # not overwritten by it.
+        assert fn.index("cp -a") < fn.index("autostream_dial_control.py")
 
     def test_socket_path_constant_in_protocol_module(self):
         """CONTROL_SOCKET_PATH must be defined in dial_control_protocol.py."""

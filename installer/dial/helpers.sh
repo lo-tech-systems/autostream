@@ -23,7 +23,7 @@ install_os_packages() {
     # Offline-recovery packages are omitted here; install_recovery_packages() is
     # the single install site, called unconditionally for both fresh and update paths.
     # Venv build dependencies are likewise omitted; install_venv_build_packages()
-    # owns those and runs on both paths because setup_venv() does too.
+    # owns those and runs on both paths because build_venv() does too.
     apt_step apt-get install -y --no-install-recommends \
         avahi-daemon avahi-utils nginx dnsmasq curl \
         python3-venv python3-flask python3-lgpio
@@ -592,31 +592,215 @@ require_trixie_os() {
 }
 
 install_venv_build_packages() {
-    # Headers and a compiler for source builds in setup_venv().
+    # Headers and a compiler for source builds in build_venv().
     # adafruit-circuitpython-rgb-display pulls in sysv-ipc (via adafruit-blinka),
     # which publishes no armv7l wheel — on 32-bit images pip compiles it from the
     # sdist, and without Python.h the pip step fails and aborts the whole install.
     # python3-dev transitively supplies libc6-dev, so gcc needs no build-essential.
-    # Called unconditionally (fresh install and --update) because setup_venv() is:
+    # Called unconditionally (fresh install and --update) because build_venv() is:
     # dials installed from a 32-bit image before this existed must acquire it on
     # their next update, or that update's pip step fails the same way.
     apt_step apt-get install -y --no-install-recommends python3-dev gcc
 }
 
-setup_venv() {
+# ---- Update staging: paths and on-disk contract ------------------------------
+#
+# An --update never touches the running code tree or venv. The new version is
+# staged beside them and a root oneshot at the next boot (before the dial
+# service starts) swaps it in. Everything that oneshot consumes is here.
+#
+# Under /opt/autostream (all on one filesystem, so every switch is a rename):
+#   .next/           the complete new flat code set, plus .next/MANIFEST
+#   .next/MANIFEST   one line per file, tab separated: MODE, OWNER:GROUP, PATH
+#                    (PATH relative to the tree root, e.g.
+#                    0644<TAB>root:root<TAB>dial_main.py); directories are
+#                    implied by the paths and made on demand
+#   .prev/           files displaced by the previous swap (removed when the
+#                    next update starts)
+#   .manifest        manifest of the installed set (written by the swap)
+#   venv.<tag>/      one real venv per installed version, built at its final
+#                    path; `venv` is a symlink to the active one. The first
+#                    update of an older install finds a real `venv` directory.
+#
+# Under /var/lib/autostream:
+#   update-prev/     backup of every file this installer owns outside the tree
+#     MANIFEST       one line per path, tab separated: PRESENT or ABSENT, then
+#                    the absolute path. ABSENT means the file did not exist
+#                    before the update, so a restore removes it. The manifest
+#                    is written last, so a partial backup is never restored.
+#     files/<path>   the saved copy of each PRESENT path (cp -a)
+#   update-swap.env  KEY=VALUE hand-off to the boot step, written once
+#                    everything above is complete:
+#     PHASE          staged
+#     TAG            release being installed
+#     PREVIOUS_TAG   release installed before (may be empty)
+#     VENV           venv directory name the new version runs from
+#     PREVIOUS_VENV  directory name the previous version's venv has after the
+#                    swap
+#     VENV_MIGRATE   1 when the live `venv` is a real directory that must be
+#                    renamed to PREVIOUS_VENV before the symlink is made;
+#                    0 otherwise. When VENV is `venv` (a real directory kept
+#                    because its requirements are unchanged) there is
+#                    nothing to switch.
+#     BACKUP_DIR     the update-prev directory above
+#
+# AUTOSTREAM_FS_ROOT prefixes every path (tests use a scratch root);
+# AUTOSTREAM_OPT_DIR and AUTOSTREAM_STATE_DIR override the two directories
+# individually; AUTOSTREAM_ADMIN_BIN overrides the admin wrapper.
+_fs_root()   { local r="${AUTOSTREAM_FS_ROOT:-}"; printf '%s\n' "${r%/}"; }
+_opt_dir()   { printf '%s\n' "${AUTOSTREAM_OPT_DIR:-$(_fs_root)/opt/autostream}"; }
+_state_dir() { printf '%s\n' "${AUTOSTREAM_STATE_DIR:-$(_fs_root)/var/lib/autostream}"; }
+_admin_bin() {
+    printf '%s\n' "${AUTOSTREAM_ADMIN_BIN:-$(_fs_root)/usr/local/libexec/autostream/autostream_admin}"
+}
+
+install_code_tree() {
+    # Install every code file the dial runs from /opt/autostream into DEST:
+    # the shared core modules, the wifi_* siblings, the dial package, the
+    # control CLI module and the wifi watcher.
+    # Usage: install_code_tree DEST
+    local dest="$1" name
+    local -a own=()
+    [[ "${EUID:-$(id -u)}" -eq 0 ]] && own=(-o root -g root)
+    mkdir -p "${dest}"
+    # autostream_rpi.py is a re-export shim over the four modules its concerns
+    # were split into; it imports all four at import time, so a dial-only
+    # install must deploy them alongside it or dial_main's
+    # setup_rotary_encoder/setup_button import (and wifi_watcher's check_cpu
+    # import) fails at startup. dial_display imports the shared artwork fetch
+    # from autostream_artwork; without it the dial cannot start. The Wi-Fi
+    # recovery helper is deployed alongside the watcher so the recovery
+    # executable's import resolves on every install/update.
+    for name in autostream_rpi autostream_system_stats autostream_appliance_identity \
+                autostream_licensing autostream_dial_gpio autostream_sysutils \
+                autostream_mdns autostream_artwork autostream_wifi_network; do
+        install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/core/${name}.py" "${dest}/${name}.py"
+    done
+    # wifi_watcher's split sibling modules (imported beside it).
+    for name in wifi_state wifi_status wifi_recovery wifi_policy wifi_mdns wifi_nm \
+                wifi_hotspot wifi_config wifi_activation wifi_adoption wifi_loop wifi_web; do
+        install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/platform/${name}.py" "${dest}/${name}.py"
+    done
+    cp -a --no-preserve=ownership "$DEPLOY/dial/." "${dest}/"
+    find "${dest}" -name __pycache__ -type d -prune -exec rm -rf {} +
+    [[ ${#own[@]} -eq 0 ]] || chown -R root:root "${dest}"
+    install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/dial/autostream_dial_control.py" \
+        "${dest}/autostream_dial_control.py"
+    install -m 0755 ${own[@]+"${own[@]}"} "$DEPLOY/platform/wifi_watcher.py" \
+        "${dest}/autostream_wifi_watcher"
+    sed -i 's/\r$//' "${dest}/autostream_wifi_watcher"
+}
+
+write_code_manifest() {
+    # List every regular file under DIR (bytecode and the manifest itself
+    # excluded) as MODE<TAB>OWNER:GROUP<TAB>RELATIVE_PATH, sorted by path.
+    # Usage: write_code_manifest DIR OUTFILE
+    local dir="$1" out="$2" tmp
+    tmp="${out}.tmp.$$"
+    ( cd "${dir}" && find . -type f ! -path './MANIFEST*' ! -path '*/__pycache__/*' \
+        ! -name '*.pyc' -printf '0%m\t%u:%g\t%P\n' ) \
+        | LC_ALL=C sort -t $'\t' -k3 > "${tmp}"
+    mv -f "${tmp}" "${out}"
+}
+
+stage_code_tree() {
+    # Build the new code set in .next with its manifest. Nothing the running
+    # dial has imported or will import lazily is touched.
+    local opt
+    opt="$(_opt_dir)"
+    rm -rf "${opt}/.next" "${opt}/.prev"
+    install_code_tree "${opt}/.next"
+    write_code_manifest "${opt}/.next" "${opt}/.next/MANIFEST"
+}
+
+requirements_lock_sha256() {
+    # Digest of the file the venv is built from.
+    local file="$DEPLOY/dial/requirements.lock"
+    [[ -f "${file}" ]] || file="$DEPLOY/dial/requirements.txt"
+    sha256sum "${file}" | cut -d' ' -f1
+}
+
+_install_state_value() {
+    # Value of KEY in install-state.env; empty when absent.
+    local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
+    [[ -r "${state}" ]] || return 0
+    grep -m 1 "^$1=" "${state}" 2>/dev/null | cut -d= -f2- || true
+}
+
+_sanitise_tag() {
+    printf '%s\n' "${1//[^A-Za-z0-9._-]/_}"
+}
+
+build_venv() {
+    # Create a venv at DIR and install the dial's Python requirements into it.
+    # pip runs as `python -m pip`, never the console script, so nothing depends
+    # on the directory name baked into a script shebang.
     # --system-site-packages: exposes apt-installed python3-lgpio to the venv.
-    python3 -m venv --system-site-packages /opt/autostream/venv
-    /opt/autostream/venv/bin/pip install --quiet -U pip
+    # Usage: build_venv DIR
+    local dir="$1" py
+    py="${dir}/bin/python"
+    python3 -m venv --system-site-packages "${dir}"
+    "${py}" -m pip install --quiet -U pip
     # Prefer hash-locked requirements for reproducible builds.  Fall back to
     # pinned requirements.txt with a warning.
     if [[ -f "$DEPLOY/dial/requirements.lock" ]]; then
-        /opt/autostream/venv/bin/pip install --quiet \
+        "${py}" -m pip install --quiet \
             --require-hashes -r "$DEPLOY/dial/requirements.lock"
     else
         echo "WARNING: requirements.lock not found; installing from requirements.txt (not hash-pinned)" >&2
-        /opt/autostream/venv/bin/pip install --quiet \
+        "${py}" -m pip install --quiet \
             -r "$DEPLOY/dial/requirements.txt"
     fi
+}
+
+prepare_update_venv() {
+    # Decide which venv the new version runs from, building one when needed.
+    # Sets NEW_VENV, PREVIOUS_VENV, VENV_MIGRATE, VENV_BUILT and
+    # VENV_LOCK_SHA256 (read by write_install_state).
+    # The current venv is reused when the requirements digest recorded by the
+    # last install matches; otherwise a new venv.<tag> is built at its final
+    # path beside it. Venvs older than the active one cannot be rolled back
+    # to any more, so they are removed first to make room on a small card.
+    local opt venv current="" name candidate migrate_name="" prev_tag recorded
+    opt="$(_opt_dir)"
+    venv="${opt}/venv"
+    VENV_BUILT=false
+    VENV_MIGRATE=0
+    VENV_LOCK_SHA256="$(requirements_lock_sha256)"
+    if [[ -L "${venv}" ]]; then
+        current="$(basename "$(readlink "${venv}")")"
+    elif [[ -d "${venv}" ]]; then
+        current="venv"
+    fi
+    recorded="$(_install_state_value REQUIREMENTS_LOCK_SHA256)"
+    if [[ -n "${current}" && -x "${venv}/bin/python" && -n "${recorded}" \
+          && "${recorded}" == "${VENV_LOCK_SHA256}" ]]; then
+        echo "Python requirements unchanged; reusing ${current}"
+        NEW_VENV="${current}"
+        PREVIOUS_VENV="${current}"
+        return 0
+    fi
+    for candidate in "${opt}"/venv.*; do
+        [[ -e "${candidate}" || -L "${candidate}" ]] || continue
+        [[ "$(basename "${candidate}")" == "${current}" ]] && continue
+        rm -rf "${candidate}"
+    done
+    PREVIOUS_VENV="${current}"
+    if [[ "${current}" == "venv" ]]; then
+        prev_tag="$(_update_result_value PREVIOUS_TAG)"
+        [[ -n "${prev_tag}" ]] || prev_tag="${PREVIOUS_RELEASE_TAG:-}"
+        prev_tag="$(_sanitise_tag "${prev_tag}")"
+        migrate_name="venv.${prev_tag:-previous}"
+        PREVIOUS_VENV="${migrate_name}"
+        VENV_MIGRATE=1
+    fi
+    name="venv.$(_sanitise_tag "${AUTOSTREAM_RELEASE_TAG:-unknown}")"
+    while [[ "${name}" == "${current}" || "${name}" == "${migrate_name}" ]]; do
+        name="${name}.1"
+    done
+    NEW_VENV="${name}"
+    VENV_BUILT=true
+    build_venv "${opt}/${name}"
 }
 
 # Keys the update result file may carry beyond STATUS, PERCENT_COMPLETE,
@@ -738,6 +922,7 @@ update_failure_message() {
         python)    step="Python setup" ;;
         files)     step="file installation" ;;
         configure) step="configuration" ;;
+        staged|reboot) step="finishing" ;;
         *)         step="setup" ;;
     esac
     printf 'Update to %s failed during %s - %s kept' \
@@ -823,9 +1008,161 @@ deploy_avahi_template() {
         /usr/local/share/autostream/avahi/autostream-dial.service
 }
 
+owned_files_list() {
+    # Every file this installer writes outside the code tree and the venv,
+    # one absolute path per line. The restore after a failed run (or a failed
+    # first boot) covers exactly these. Not listed on purpose: boot
+    # configuration (additive, idempotent and tolerated by older software),
+    # installed packages, the sdmon binary, the cloud-init flag and group
+    # memberships.
+    local opt unit name
+    opt="/opt/autostream"
+    for name in autostream_admin autostream_dial_updater autostream_update_support.py \
+                autostream_storage_guard autostream_sdcardhealth; do
+        printf '%s\n' "/usr/local/libexec/autostream/${name}"
+    done
+    printf '%s\n' /usr/local/bin/autostream-dial-control
+    for unit in autostream_dial.service autostream_dial_wifi_watcher.service \
+                autostream_dial_dnsmasq.service autostream_dial_updater.service \
+                autostream_dial_updater.timer autostream_dial_update_recover.service \
+                autostream_storage_guard.service autostream_storage_guard.timer \
+                autostream_sdcardhealth.service autostream_sdcardhealth.timer \
+                autostream_sdcardhealth_boot.service; do
+        printf '%s\n' "/etc/systemd/system/${unit}"
+    done
+    printf '%s\n' /etc/nginx/sites-available/autostream-dial \
+                  /etc/nginx/sites-enabled/autostream-dial \
+                  /usr/local/share/autostream/avahi/autostream-dial.service \
+                  /etc/avahi/services/autostream-dial.service \
+                  /usr/local/share/autostream/dnsmasq/autostream-dial-setup.conf \
+                  /etc/sudoers.d/autostream_dial \
+                  /etc/logrotate.d/autostream-dial \
+                  /etc/systemd/journald.conf.d/99-autostream-storage.conf \
+                  /var/lib/autostream/install-state.env
+    for name in autostream-dial-badge.png favicon.ico favicon-16x16.png \
+                favicon-32x32.png autostream-logo-centred-dark.png; do
+        printf '%s\n' "${opt}/images/${name}"
+    done
+    # Offline pages are listed from the incoming release so a page it adds
+    # is recorded as absent; one an older release shipped and this one drops
+    # stays in place either way.
+    for name in "$DEPLOY"/nginx/offline/*.html; do
+        [[ -e "${name}" ]] || continue
+        printf '%s\n' "${opt}/nginx/offline/$(basename "${name}")"
+    done
+    for name in reboot.cgi factory-reset.cgi update-status.cgi download-logs.cgi; do
+        printf '%s\n' "${opt}/nginx/cgi/${name}"
+    done
+}
+
+backup_owned_files() {
+    # Save every owned file into update-prev with a manifest; a path that does
+    # not exist yet is recorded ABSENT so a restore removes what the update
+    # adds. The directory is rebuilt from scratch and the manifest is moved
+    # into place last.
+    local root dir path
+    root="$(_fs_root)"
+    BACKUP_DIR="$(_state_dir)/update-prev"
+    dir="${BACKUP_DIR}"
+    BACKUP_TAKEN=false
+    rm -rf "${dir}"
+    mkdir -p "${dir}/files"
+    chmod 0700 "${dir}"
+    : > "${dir}/MANIFEST.tmp"
+    while IFS= read -r path; do
+        if [[ -e "${root}${path}" || -L "${root}${path}" ]]; then
+            mkdir -p "${dir}/files$(dirname "${path}")"
+            cp -a "${root}${path}" "${dir}/files${path}"
+            printf 'PRESENT\t%s\n' "${path}" >> "${dir}/MANIFEST.tmp"
+        else
+            printf 'ABSENT\t%s\n' "${path}" >> "${dir}/MANIFEST.tmp"
+        fi
+    done < <(owned_files_list)
+    mv -f "${dir}/MANIFEST.tmp" "${dir}/MANIFEST"
+    BACKUP_TAKEN=true
+}
+
+restore_owned_files() {
+    # Put back every file recorded by backup_owned_files, remove those
+    # recorded ABSENT, then make systemd and nginx pick the restored files up.
+    # Best effort: one failed copy does not stop the rest.
+    # Usage: restore_owned_files [BACKUP_DIR]
+    local dir root state path
+    dir="${1:-${BACKUP_DIR:-$(_state_dir)/update-prev}}"
+    root="$(_fs_root)"
+    [[ -f "${dir}/MANIFEST" ]] || return 0
+    while IFS=$'\t' read -r state path; do
+        [[ -n "${path}" ]] || continue
+        case "${state}" in
+            PRESENT)
+                mkdir -p "$(dirname "${root}${path}")" || true
+                cp -a --remove-destination "${dir}/files${path}" "${root}${path}" \
+                    || echo "WARNING: could not restore ${path}" >&2
+                ;;
+            ABSENT)
+                rm -f "${root}${path}" || true
+                ;;
+        esac
+    done < "${dir}/MANIFEST"
+    systemctl daemon-reload || true
+    if nginx -t; then
+        systemctl restart nginx || true
+    fi
+    return 0
+}
+
+write_update_swap() {
+    # Hand the staged update to the boot step (contract above). Reads TAG,
+    # previous tag and the venv decision from the installer's variables.
+    local file tmp previous
+    previous="$(_update_result_value PREVIOUS_TAG)"
+    previous="${previous:-${PREVIOUS_RELEASE_TAG:-}}"
+    file="$(_state_dir)/update-swap.env"
+    tmp="${file}.tmp.$$"
+    {
+        printf 'PHASE=staged\n'
+        printf 'TAG=%s\n' "${AUTOSTREAM_RELEASE_TAG:-}"
+        printf 'PREVIOUS_TAG=%s\n' "${previous}"
+        printf 'VENV=%s\n' "${NEW_VENV:-}"
+        printf 'PREVIOUS_VENV=%s\n' "${PREVIOUS_VENV:-}"
+        printf 'VENV_MIGRATE=%s\n' "${VENV_MIGRATE:-0}"
+        printf 'BACKUP_DIR=%s\n' "${BACKUP_DIR:-}"
+    } > "${tmp}"
+    chmod 0644 "${tmp}"
+    mv -f "${tmp}" "${file}"
+    UPDATE_STAGED=true
+}
+
+abort_update() {
+    # Run by the EXIT trap when an --update did not finish. Before the swap
+    # file exists the running software was never touched: discard what was
+    # staged, restore the owned files if the backup completed and report the
+    # failure. After it, leave everything for the boot step.
+    local opt
+    if [[ "${UPDATE_STAGED:-false}" == true ]]; then
+        echo "Update interrupted after staging; the boot step completes it." >&2
+        return 0
+    fi
+    opt="$(_opt_dir)"
+    rm -rf "${opt}/.next"
+    if [[ "${VENV_BUILT:-false}" == true && -n "${NEW_VENV:-}" ]]; then
+        rm -rf "${opt}/${NEW_VENV}"
+    fi
+    if [[ "${BACKUP_TAKEN:-false}" == true ]]; then
+        restore_owned_files || true
+    fi
+    write_update_result "failure" "$(update_failure_message)" 0 PHASE=failed || true
+}
+
+schedule_update_reboot() {
+    # Same delayed reboot, with the same reason, as the appliance's update.
+    "$(_admin_bin)" reboot --delay 3 AutostreamUpdate || \
+        echo "WARNING: could not schedule the reboot; please reboot the device" >&2
+}
+
 write_install_state() {
     local uuid="$1"
-    local path=/var/lib/autostream/install-state.env
+    local path="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
     # The SD card health wrapper records its method and last outcome in
     # this file. Carry those lines over so an update keeps monitoring
     # enabled with the method the user chose.
@@ -840,6 +1177,9 @@ AUTOSTREAM_PRODUCT=autostream-dial
 DIAL_UUID=${uuid}
 AUTOSTREAM_RELEASE_TAG=${AUTOSTREAM_RELEASE_TAG}
 EOF
+        # Digest of the requirements the venv was built from; the next update
+        # reuses the venv when it still matches.
+        [[ -z "${VENV_LOCK_SHA256:-}" ]] || printf 'REQUIREMENTS_LOCK_SHA256=%s\n' "${VENV_LOCK_SHA256}"
         [[ -n "${sdmon_lines}" ]] && printf '%s\n' "${sdmon_lines}"
     } > "${path}"
     chown root:root "${path}"

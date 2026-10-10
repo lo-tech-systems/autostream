@@ -19,13 +19,16 @@ UPDATE=false
 # AUTOSTREAM_RELEASE_TAG is injected by systemd-run --setenv on --update runs.
 # On fresh install it is typically unset; detect_install_version() falls back to "unknown".
 AUTOSTREAM_RELEASE_TAG="$(detect_install_version)"
+# The release installed before this run, read before anything rewrites
+# install-state.env.
+PREVIOUS_RELEASE_TAG="$(_installed_release_tag)"
 
 # ---- Logging ----------------------------------------------------------------
 # On --update: log dir already exists (created on initial install); redirect immediately.
 # On fresh unattended install: log dir is created by create_dirs below; start in HOME,
 # then redirect to persistent path once create_dirs + init_service_dirs have run.
 if $UPDATE; then
-    LOGFILE=/var/log/autostream/dial-install.log
+    LOGFILE="${DIAL_INSTALL_LOGFILE:-/var/log/autostream/dial-install.log}"
 else
     LOGFILE="${HOME:-/root}/autostream_dial_install.log"
 fi
@@ -50,12 +53,16 @@ fi
 # The UPDATING_FLAG (/tmp/autostream-dial-updating) was created by the updater
 # immediately before scheduling this installer. Remove it on every exit so that
 # nginx stops redirecting requests to /offline/updating after this process ends.
+# An --update that stops before the staged hand-off is written discards what it
+# staged, restores the files it owns outside the code tree and reports the
+# failed phase (abort_update); the running software was never touched, and no
+# reboot follows. Once the hand-off exists the boot step owns the outcome.
 UPDATING_FLAG=/tmp/autostream-dial-updating
 _install_success=false
 trap '_exit_rc=$?
     rm -f "$UPDATING_FLAG"
     if [[ "$_install_success" != true ]] && $UPDATE; then
-        write_update_result "failure" "$(update_failure_message)" 0 PHASE=failed || true
+        abort_update || true
     fi
     exit $_exit_rc' EXIT
 
@@ -116,65 +123,30 @@ install_sdmon
 
 # ---- Python environment (fresh install and --update) ------------------------
 phase python 45 "Installing Python packages..."
-setup_venv   # pip install gpiozero into /opt/autostream/venv
+if $UPDATE; then
+    # Reuse the current venv when the requirements are unchanged, otherwise
+    # build venv.<tag> beside it; the running dial keeps its own venv.
+    prepare_update_venv
+else
+    VENV_LOCK_SHA256="$(requirements_lock_sha256)"
+    build_venv "$(_opt_dir)/venv"
+fi
 
 # ---- Files (fresh install and --update) -------------------------------------
 phase files 70 "Copying files..."
 # ---- Deploy Python files ----------------------------------------------------
-install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream_rpi.py
-# autostream_rpi.py is now a re-export shim over the four modules its concerns
-# were split into; it imports all four at import time, so a dial-only install
-# must deploy them alongside it or dial_main's setup_rotary_encoder/setup_button
-# import (and wifi_watcher's check_cpu import) fails at startup.
-install -m 0644 "$DEPLOY/core/autostream_system_stats.py" \
-    /opt/autostream/autostream_system_stats.py
-install -m 0644 "$DEPLOY/core/autostream_appliance_identity.py" \
-    /opt/autostream/autostream_appliance_identity.py
-install -m 0644 "$DEPLOY/core/autostream_licensing.py" \
-    /opt/autostream/autostream_licensing.py
-install -m 0644 "$DEPLOY/core/autostream_dial_gpio.py" \
-    /opt/autostream/autostream_dial_gpio.py
-install -m 0644 "$DEPLOY/core/autostream_sysutils.py" /opt/autostream/autostream_sysutils.py
-install -m 0644 "$DEPLOY/core/autostream_mdns.py"     /opt/autostream/autostream_mdns.py
-# dial_display imports the shared artwork fetch from here; without it the dial
-# cannot start on a dial-only install.
-install -m 0644 "$DEPLOY/core/autostream_artwork.py"  /opt/autostream/autostream_artwork.py
-# Dedicated Wi-Fi recovery helper — deployed alongside the watcher (root:root
-# 0644) so the recovery executable's import resolves on every install/update.
-install -m 0644 -o root -g root "$DEPLOY/core/autostream_wifi_network.py" \
-    /opt/autostream/autostream_wifi_network.py
-# wifi_watcher's split sibling modules (imported beside it from /opt/autostream).
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_state.py" \
-    /opt/autostream/wifi_state.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_status.py" \
-    /opt/autostream/wifi_status.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_recovery.py" \
-    /opt/autostream/wifi_recovery.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_policy.py" \
-    /opt/autostream/wifi_policy.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_mdns.py" \
-    /opt/autostream/wifi_mdns.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_nm.py" \
-    /opt/autostream/wifi_nm.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_hotspot.py" \
-    /opt/autostream/wifi_hotspot.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_config.py" \
-    /opt/autostream/wifi_config.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_activation.py" \
-    /opt/autostream/wifi_activation.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_adoption.py" \
-    /opt/autostream/wifi_adoption.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_loop.py" \
-    /opt/autostream/wifi_loop.py
-install -m 0644 -o root -g root "$DEPLOY/platform/wifi_web.py" \
-    /opt/autostream/wifi_web.py
-cp -a "$DEPLOY/dial/."     /opt/autostream/
-install -m 0644 "$DEPLOY/dial/autostream_dial_control.py" \
-    /opt/autostream/autostream_dial_control.py
+# --update stages the whole code set in /opt/autostream/.next after saving every
+# file this installer owns outside the tree; nothing the running dial has
+# imported changes before the reboot, when the boot step switches it in. A fresh
+# install has no running dial and installs in place.
+if $UPDATE; then
+    backup_owned_files
+    stage_code_tree
+else
+    install_code_tree "$(_opt_dir)"
+fi
 install -m 0755 "$DEPLOY/dial/autostream-dial-control" \
     /usr/local/bin/autostream-dial-control
-install -m 0755 "$DEPLOY/platform/wifi_watcher.py" /opt/autostream/autostream_wifi_watcher
-sed -i 's/\r$//' /opt/autostream/autostream_wifi_watcher
 
 deploy_admin
 deploy_avahi_template
@@ -235,7 +207,7 @@ if ! $UPDATE; then
 else
     # Parse without source — never execute env file contents.
     DIAL_UUID=$(grep '^DIAL_UUID=' \
-        /var/lib/autostream/install-state.env 2>/dev/null | cut -d= -f2-)
+        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" 2>/dev/null | cut -d= -f2-)
     if [[ -z "$DIAL_UUID" ]]; then
         echo "ERROR: DIAL_UUID not found in /var/lib/autostream/install-state.env" >&2
         exit 1
@@ -291,7 +263,7 @@ except Exception:
 fi
 # Use admin verb — handles XML escaping, avoids unsafe sed substitution.
 # Blank name falls back to UUID so the avahi TXT record is never empty.
-/usr/local/libexec/autostream/autostream_admin \
+"$(_admin_bin)" \
     update-dial-service "${AUTOSTREAM_RELEASE_TAG}" "${DIAL_UUID}" "${DIAL_NAME:-${DIAL_UUID}}"
 
 # ---- dnsmasq, sudoers, logrotate --------------------------------------------
@@ -322,23 +294,32 @@ write_install_state "$DIAL_UUID"
 # On --update the file already contains STATUS=in_progress written by the updater;
 # do not overwrite.
 if ! $UPDATE; then
-    printf 'STATUS=\nMESSAGE=\n' > /var/lib/autostream/update-result.env
-    chown root:autostream /var/lib/autostream/update-result.env
-    chmod 0644 /var/lib/autostream/update-result.env
+    _result_file="${UPDATE_RESULT_FILE:-/var/lib/autostream/update-result.env}"
+    printf 'STATUS=\nMESSAGE=\n' > "$_result_file"
+    chown root:autostream "$_result_file"
+    chmod 0644 "$_result_file"
 fi
 
-# ---- Start / restart services -----------------------------------------------
-systemctl restart autostream_dial autostream_dial_wifi_watcher
-
-# write_update_result only on --update: fresh install leaves status=idle (no update occurred).
-# Set _install_success AFTER the write — if write_update_result fails, the EXIT trap fires
-# and writes "failure", which is correct.
-# PERCENT_COMPLETE=100 signals the updating.html page to start its restart-and-redirect flow.
-$UPDATE && write_update_result "success" "Installed ${AUTOSTREAM_RELEASE_TAG}" 100 \
-    PHASE=done "TAG=${AUTOSTREAM_RELEASE_TAG}"
-_install_success=true   # disarm EXIT trap only after status is safely written
-
-echo "autostream dial installation complete."
+# ---- Finish -----------------------------------------------------------------
+# An --update never restarts the dial services here: the running processes keep
+# the code and venv they loaded, and the reboot below brings the new version up
+# through the boot step. The dial's own units are not touched in the meantime.
+if $UPDATE; then
+    phase staged 92 "Finishing..."
+    write_update_swap
+    phase reboot 96 "Restarting..."
+    # Let the running dial's next status poll paint "Restarting..." first.
+    sleep "${UPDATE_PAINT_DELAY:-2}"
+    _install_success=true   # the hand-off is complete; the boot step owns the outcome
+    echo "autostream dial update staged; rebooting to switch to ${AUTOSTREAM_RELEASE_TAG}."
+    # Same verb and reason as the appliance's update; a clean shutdown, so PIN
+    # recovery is not armed.
+    schedule_update_reboot
+else
+    systemctl restart autostream_dial autostream_dial_wifi_watcher
+    _install_success=true
+    echo "autostream dial installation complete."
+fi
 if ! $UPDATE; then
     if [[ -s /opt/autostream/ssid ]]; then
         echo "WiFi connection recorded. After reboot, continue setup from an autostream appliance."
