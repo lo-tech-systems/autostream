@@ -1917,7 +1917,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
 
         targets = self._targets()
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value="newer")
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
 
@@ -1927,7 +1927,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
 
         targets = self._targets()
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value="vanished")
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
 
@@ -1937,7 +1937,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
 
         targets = self._targets()
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
 
@@ -1958,7 +1958,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
 
         targets = self._targets()
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
 
         def boom():
             raise RuntimeError("display broke")
@@ -1971,7 +1971,7 @@ class TestVolumeTargetsResolver:
     def test_no_targets_returns_empty_list(self):
         import dial_main as dm
 
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value="anything")
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [])
 
@@ -1985,7 +1985,7 @@ class TestVolumeTargetsResolver:
                                playing_since=10.0, auth="unauthorized")
         newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer",
                                playing_since=20.0, auth="unknown")
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [older, newer])
 
@@ -1999,7 +1999,7 @@ class TestVolumeTargetsResolver:
 
         t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
                            playing_since=1.0, auth="unknown")
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [t])
 
@@ -2011,7 +2011,7 @@ class TestVolumeTargetsResolver:
 
         t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
                            playing_since=1.0, auth="authorized")
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [t])
 
@@ -2023,11 +2023,49 @@ class TestVolumeTargetsResolver:
 
         t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
                            playing_since=1.0, auth="unauthorized")
-        display = MagicMock()
+        display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
         resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [t])
 
         assert resolve() == []
+
+    def test_focus_volume_target_wins_regardless_of_get_targets(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        focused = object()
+        display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
+        display.current_source_service_name = MagicMock(return_value="newer")
+        display.focus_volume_target = MagicMock(return_value=focused)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [focused]
+
+    def test_focus_volume_target_returning_none_falls_back_to_today(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
+        display.current_source_service_name = MagicMock(return_value="newer")
+        display.focus_volume_target = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[1]]
+
+    def test_raising_focus_volume_target_falls_back_to_today(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
+        display.current_source_service_name = MagicMock(return_value=None)
+
+        def boom():
+            raise RuntimeError("focus accessor broke")
+
+        display.focus_volume_target = boom
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[0]]
 
 
 # ---------------------------------------------------------------------------
@@ -2105,6 +2143,24 @@ class TestMuteTargetsResolver:
         resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=all_targets_fn)
 
         assert resolve() == [authorized]
+
+    def test_single_target_mute_follows_the_focus_entry(self):
+        """mute_all_playing off: single-target mute is exactly whatever the
+        volume resolver returns, so a focus on an idle appliance (built
+        through the real volume resolver) reaches mute unchanged."""
+        import dial_main as dm
+
+        http_server = MagicMock()
+        http_server.mute_all_playing = False
+        focused = object()
+        display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
+        display.current_source_service_name = MagicMock(return_value=None)
+        display.focus_volume_target = MagicMock(return_value=focused)
+        volume_targets_fn = dm._build_volume_targets_fn(display, get_targets=lambda: [])
+
+        resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn)
+
+        assert resolve() == [focused]
 
 
 # ---------------------------------------------------------------------------

@@ -72,6 +72,22 @@ def _target(
     )
 
 
+def _roster_entry(
+    name="Kitchen", ip="192.168.1.10", port=80,
+    dial_status=True, appliance_id="a" * 20, auth="unknown",
+    service_name=None, playing=False, repeat_capable=False,
+):
+    """A merged-roster entry — the RosterEntry counterpart to _target(),
+    for tests that need an idle (playing=False) or explicitly playing row
+    without going through a PlayingTarget/get_display_targets at all."""
+    from dial_mdns import RosterEntry
+    return RosterEntry(
+        appliance_id=appliance_id, service_name=service_name or name, name=name,
+        ip=ip, port=port, playing=playing, repeat_capable=repeat_capable,
+        dial_api=True, audio_status=True, dial_status=dial_status, auth=auth,
+    )
+
+
 def _track_id(**overrides) -> dict:
     base = {
         "enabled": True, "state": "identified",
@@ -172,6 +188,7 @@ def _make_display(
     targets=None, backend=None,
     get_targets=None,
     get_roster=None,
+    roster=None,
     backend_factory_builder=None,
 ) -> tuple[DialDisplay, FakeBackend, MagicMock]:
     cfg = DialDisplayConfig(
@@ -180,7 +197,15 @@ def _make_display(
     )
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
-    gr = get_roster or (lambda: _roster_from_targets(gt()))
+    if get_roster is not None:
+        gr = get_roster
+    elif roster is not None:
+        # Convenience for tests that want to supply the merged roster
+        # directly (e.g. an idle appliance alongside the playing targets)
+        # rather than building it from *targets*.
+        gr = lambda: roster
+    else:
+        gr = lambda: _roster_from_targets(gt())
     display = DialDisplay(
         config=cfg,
         get_display_targets=gt,
@@ -2594,6 +2619,108 @@ class TestManualFocus:
         assert display.get_status()["showing"] == "artwork"
         assert display._source_service_name == "Focus"
 
+    def test_focus_clears_when_appliance_stops_but_stays_idle_on_roster(self):
+        aid = "b" * 20
+        playing = _target(name="A", service_name="A", appliance_id=aid, auth="authorized")
+        idle_entry = _roster_entry(name="A", service_name="A", appliance_id=aid, auth="authorized", playing=False)
+        display, fb, gt = _make_display(targets=[playing], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid)
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            display._poll_once()
+        assert display.manual_focus_id() == aid
+
+        gt.return_value = []  # the appliance stopped playing but stays rostered idle
+        display._poll_once()
+        assert display.manual_focus_id() is None
+
+    def test_focus_on_idle_appliance_is_kept_when_another_starts_playing(self):
+        aid_idle = "c" * 20
+        idle_entry = _roster_entry(name="Idle", service_name="Idle", appliance_id=aid_idle, auth="authorized",
+                                    playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid_idle)
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid_idle)):
+            display._poll_once()
+        assert display.manual_focus_id() == aid_idle
+
+        other = _target(name="Other", service_name="Other", appliance_id="d" * 20, auth="authorized")
+        gt.return_value = [other]
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        assert display.manual_focus_id() == aid_idle
+
+    def test_picking_an_idle_row_shows_it_with_no_fetch_for_playing_targets(self):
+        aid_idle = "e" * 20
+        idle_entry = _roster_entry(name="Idle", service_name="Idle", appliance_id=aid_idle, auth="authorized",
+                                    playing=False)
+        other = _target(name="Other", service_name="Other", appliance_id="f" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[other], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid_idle)  # simulates selector_pick's effect on an idle row
+
+        calls = []
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            calls.append(target.service_name)
+            return _status_result(track_id=None, appliance_id=target.appliance_id)
+
+        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+            display._poll_once()
+
+        assert calls == ["Idle"]
+        assert display._now_playing == dd.NowPlaying("Idle", "", "", 50)
+        assert display._reporting_appliance_id == aid_idle
+        assert display._source_service_name == "Idle"
+
+    def test_idle_focus_unauthorized_clears_mid_tick_and_walk_falls_through(self):
+        aid_idle = "5" * 20
+        idle_entry = _roster_entry(name="Idle", service_name="Idle", appliance_id=aid_idle, auth="authorized",
+                                    playing=False)
+        other = _target(name="Other", service_name="Other", appliance_id="6" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[other], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid_idle)
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            if target is idle_entry:
+                return _status_result(status_error="unauthorized", appliance_id=aid_idle)
+            return _status_result(track_id=None, appliance_id=target.appliance_id)
+
+        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+            display._poll_once()
+
+        assert display.manual_focus_id() is None
+        assert display._now_playing is not None
+        assert display._now_playing.service_name == "Other"
+        assert display._reporting_appliance_id == "6" * 20
+
+    def test_focus_volume_target_none_without_a_focus(self):
+        display, fb, gt = _make_display(targets=[])
+        display._last_roster = [_roster_entry(appliance_id="3" * 20, auth="authorized")]
+        assert display.focus_volume_target() is None
+
+    def test_focus_volume_target_returns_the_roster_entry_while_focused(self):
+        aid = "4" * 20
+        entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized",
+                               playing=False)
+        display, fb, gt = _make_display(targets=[])
+        display._manual_focus_id = aid
+        display._last_roster = [entry]
+        assert display.focus_volume_target() is entry
+
+    def test_focus_volume_target_none_when_entry_unauthorized(self):
+        aid = "2" * 20
+        entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="unauthorized",
+                               playing=False)
+        display, fb, gt = _make_display(targets=[])
+        display._manual_focus_id = aid
+        display._last_roster = [entry]
+        assert display.focus_volume_target() is None
+
 
 # ---------------------------------------------------------------------------
 # Appliance-selector screen (2.7, 2.5.5) — open/close/page/pick, row
@@ -2661,6 +2788,29 @@ class TestSelectorRows:
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
             display._poll_once()
         assert display._selector.page == 0
+
+    def test_idle_roster_entry_appears_unmarked_beside_a_playing_one(self):
+        playing_target = _target(
+            name="Playing", service_name="Playing", appliance_id="1" * 20, auth="authorized",
+        )
+        roster = [
+            _roster_entry(
+                name="Playing", service_name="Playing", appliance_id="1" * 20,
+                auth="authorized", playing=True,
+            ),
+            _roster_entry(
+                name="Idle", service_name="Idle", appliance_id="2" * 20,
+                auth="authorized", playing=False,
+            ),
+        ]
+        display, fb, gt = _make_display(targets=[playing_target], roster=roster)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        rows = display._selector.rows
+        # Roster order, not resorted here — playing first, then idle.
+        assert [r.appliance_id for r in rows] == ["1" * 20, "2" * 20]
+        assert [r.playing for r in rows] == [True, False]
 
 
 class TestSelectorOpenCloseAndRepaint:
@@ -2979,7 +3129,7 @@ class TestSelectorTimeout:
 
 
 class TestSelectorAndSleepBackendLifecycle:
-    def test_empty_target_branch_closes_selector_before_sleep_decision(self):
+    def test_open_selector_defers_the_sleep_decision_like_the_picker(self):
         a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
         display, fb, gt = _make_display(targets=[a])
         display.enable()
@@ -2992,8 +3142,36 @@ class TestSelectorAndSleepBackendLifecycle:
 
         gt.return_value = []  # nothing playing any more
         display._poll_once()
+        # An open selector is never closed by a poll finding nothing
+        # playing — only its own inactivity timeout does that.
+        assert display._screen == "selector"
+        assert display._selector is not None
+
+    def test_selector_closed_by_timeout_then_next_idle_poll_sleeps(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+
+        gt.return_value = []  # nothing playing any more
+        opened_at = display._selector.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
         assert display._screen == "main"
-        assert display._selector is None
+
+        t0 = opened_at + SELECTOR_TIMEOUT_SECONDS + 1
+        with patch("dial_display.time.monotonic", return_value=t0):
+            display._poll_once()  # starts the idle countdown now the list is closed
+        assert display._display_sleeping is False
+
+        with patch("dial_display.time.monotonic", return_value=t0 + dd.DISPLAY_IDLE_SLEEP_SECONDS):
+            display._poll_once()
+        assert display._display_sleeping is True
 
     def test_sleep_pops_to_main(self):
         t = _target()
@@ -3137,6 +3315,49 @@ class TestTouchSurface:
         with patch("dial_display.fetch_target_status", return_value=result):
             display._poll_once()
         assert display._dots_active is False
+
+    def test_hidden_and_name_inactive_with_an_idle_roster_entry_but_nothing_shown(self):
+        # An authorised idle appliance existing on the roster is not, by
+        # itself, an entry point into the selector — the NAME zone stays
+        # inert until something is actually shown (playing, or focused).
+        idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        display.enable()
+        display._poll_once()
+        assert display.touch_surface() == ("hidden", False, False)
+
+    def test_idle_affordance_still_drawn_with_an_idle_roster_entry(self):
+        idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        display.enable()
+        display._poll_once()
+        with display._lock:
+            display._idle_affordance = True
+        assert display.touch_surface() == ("idle", False, False)
+
+    def test_hidden_with_name_active_once_an_idle_focus_is_set(self):
+        aid = "9" * 19 + "2"
+        idle_entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized",
+                                    playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid)
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            display._poll_once()
+        assert display.touch_surface() == ("hidden", True, False)
+
+    def test_held_with_name_active_once_an_idle_focus_is_set_and_always_show(self):
+        aid = "9" * 19 + "3"
+        idle_entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized",
+                                    playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry], always_show_controls=True)
+        display.enable()
+        display.set_manual_focus(aid)
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            display._poll_once()
+        assert display.touch_surface() == ("held", True, False)
 
 
 class TestOverlayNameField:
@@ -3833,7 +4054,7 @@ class TestFocusPendingGrace:
         display._poll_once()
         assert display._idle_chassis_due_locked() is False
 
-    def test_pending_focus_expires_after_grace(self):
+    def test_pending_focus_expires_after_grace_without_rostered_appliance(self):
         display, fb, gt = _make_display(targets=[])
         aid = "d" * 20
         clock = _FakeClock()
@@ -3845,6 +4066,27 @@ class TestFocusPendingGrace:
             display._poll_once()
         assert display.manual_focus_id() is None
         assert display._focus_pending is None
+
+    def test_pending_focus_expires_after_grace_kept_as_idle_focus_when_rostered(self):
+        aid = "d" * 19 + "1"
+        idle_entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized",
+                                    playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock), \
+             patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            display.set_manual_focus_pending(aid, "Kitchen")
+            display._poll_once()
+            assert display.manual_focus_id() == aid
+            clock.t += dd.FOCUS_PENDING_GRACE_S + 1
+            display._poll_once()
+        # The grace expired, but the appliance is rostered (idle): the
+        # pending focus simply becomes an ordinary idle focus, not cleared.
+        assert display.manual_focus_id() == aid
+        assert display._focus_pending is None
+        assert display._now_playing is not None
+        assert display._now_playing.service_name == "Kitchen"
 
     def test_pending_focus_converts_to_normal_focus_when_sighted(self):
         aid = "e" * 20
@@ -3884,6 +4126,47 @@ class TestFocusPendingGrace:
         )
         assert display.manual_focus_id() == aid
         assert display._focus_pending is not None
+
+
+class TestIdleFocusShownWhenNothingPlays:
+    """The no-targets branch shows an idle focus in place of the plain idle
+    screen: logo with the name and volume, selector rows refreshed, and the
+    idle-sleep countdown still running underneath it."""
+
+    def test_shows_logo_with_name_and_refreshes_selector_rows(self):
+        aid = "7" * 20
+        idle_entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized",
+                                    playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid)
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            display._poll_once()
+
+        assert display.get_status()["showing"] == "logo"
+        assert display._now_playing is not None
+        assert display._now_playing.service_name == "Kitchen"
+        assert [r.appliance_id for r in display._selector.rows] == [aid]
+        assert [r.current for r in display._selector.rows] == [True]
+
+    def test_idle_sleep_countdown_still_runs(self):
+        aid = "8" * 20
+        idle_entry = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized",
+                                    playing=False)
+        display, fb, gt = _make_display(targets=[], roster=[idle_entry])
+        display.enable()
+        display.set_manual_focus(aid)
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            t0 = time.monotonic()
+            with patch("dial_display.time.monotonic", return_value=t0):
+                display._poll_once()
+            assert display._display_sleeping is False
+
+            with patch("dial_display.time.monotonic", return_value=t0 + dd.DISPLAY_IDLE_SLEEP_SECONDS):
+                display._poll_once()
+        assert display._display_sleeping is True
 
 
 # ---------------------------------------------------------------------------
@@ -4168,9 +4451,10 @@ class TestIdleReplayLogo:
 
 
 class TestPickerSurvivesIdle:
-    """The replay picker is the idle-state screen for choosing a held
-    recording, so a poll that finds nothing playing must NOT close it (the
-    appliance selector, by contrast, is closed when nothing plays)."""
+    """The replay picker and the appliance selector are both idle-state
+    screens for choosing what to replay or what to control, so a poll that
+    finds nothing playing must NOT close either of them — their own
+    inactivity timeout does."""
 
     def test_picker_stays_open_when_nothing_playing(self):
         display, fb, gt = _make_display(targets=[])
@@ -4196,7 +4480,7 @@ class TestPickerSurvivesIdle:
             display._poll_once()
         close.assert_not_called()
 
-    def test_selector_closes_when_nothing_playing(self):
+    def test_selector_stays_open_when_nothing_playing(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         with display._lock:
@@ -4204,7 +4488,29 @@ class TestPickerSurvivesIdle:
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
             display._poll_once()
+        close.assert_not_called()
+
+    def test_repeat_screen_closes_when_nothing_playing_and_no_focus(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "repeat"
+        gt.return_value = []
+        with patch.object(display, "_close_secondary_locked") as close:
+            display._poll_once()
         close.assert_called()
+
+    def test_repeat_screen_kept_when_an_idle_focus_is_set(self):
+        aid = "9" * 20
+        idle = _roster_entry(name="Kitchen", service_name="Kitchen", appliance_id=aid, auth="authorized")
+        display, fb, gt = _make_display(targets=[], roster=[idle])
+        display.enable()
+        display.set_manual_focus(aid)
+        with display._lock:
+            display._screen = "repeat"
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None, appliance_id=aid)):
+            display._poll_once()
+        assert display._screen == "repeat"
 
 
 # ---------------------------------------------------------------------------

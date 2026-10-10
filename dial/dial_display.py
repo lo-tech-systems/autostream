@@ -22,9 +22,11 @@ belief, from the same two poll paths that feed the auth map: the sequential
 artwork walk (6 s cadence for the focused/reporting appliance) and the
 concurrent reconcile pass (60 s cadence, run over the merged roster —
 dial_mdns.get_roster() — so idle appliances are covered too, through
-enrich_targets() only; an idle row never becomes the artwork base and never
-sets _now_playing). The roster and the repeat store are display-side only —
-they are never read by the volume or mute resolvers.
+enrich_targets() only; an idle row never becomes the artwork base, though a
+manual focus resting on one is polled every tick and can set _now_playing
+with no artwork of its own — see focus_volume_target()). The roster and the
+repeat store are display-side only, read by the volume resolver only
+through the display's focus accessor.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -243,10 +245,11 @@ class SelectorState:
     """Immutable snapshot of the appliance-selector screen's rows and
     paging, as last built by the poll thread (_refresh_selector_rows).
 
-    rows: every AUTHORIZED, rostered (playing), identified appliance — see
-        _refresh_selector_rows for the exact filter. ALL rows across every
-        page, not just the current one; the compositor's ListState (built
-        separately, at repaint time) slices out the current page.
+    rows: every AUTHORIZED, identified appliance on the merged roster, idle
+        or playing — see _refresh_selector_rows for the exact filter. ALL
+        rows across every page, not just the current one; the compositor's
+        ListState (built separately, at repaint time) slices out the
+        current page.
     page: the current page index. Preserved across each rebuild (clamped to
         the new row count) so an open selector's page does not jump back to
         0 every ~6s poll tick; reset to 0 only when the selector is freshly
@@ -844,8 +847,27 @@ class DialDisplay:
         None when nothing is identified/playing. Plain reference read, safe
         from any thread; may lag the poll by up to one poll cycle. Used by
         dial_main's volume-target resolver (see _build_volume_targets_fn) so
-        a touch/encoder press addresses whatever this dial is showing."""
+        a touch/encoder press addresses whatever this dial is showing — or,
+        with a manual focus, the focused appliance, see
+        focus_volume_target()."""
         return self._source_service_name
+
+    def focus_volume_target(self):
+        """The roster entry the volume/mute worker should address while a
+        manual focus is set: that appliance, playing or idle, when it is on
+        the last-published roster and not confirmed unauthorized; else None
+        (no focus, or the focus is unresolved this tick), meaning "use the
+        ordinary playing-set resolution". Plain reference reads of
+        self._manual_focus_id and self._last_roster, safe from the worker
+        thread — the same discipline current_source_service_name() uses;
+        may lag the poll by one cycle."""
+        focus_id = self._manual_focus_id
+        if not focus_id:
+            return None
+        for r in self._last_roster:
+            if r.appliance_id == focus_id:
+                return r if r.auth != AUTH_UNAUTHORIZED else None
+        return None
 
     def persistent_overlay_shown(self) -> bool:
         """True while the display is holding the controls overlay visible
@@ -1450,10 +1472,11 @@ class DialDisplay:
         Reads the last-published SelectorState (plain reference read, no
         lock — same discipline as _overlay_snapshot). When *index* still
         falls within the CURRENT page, sets manual focus to that row's
-        appliance. A stale index — the row disappeared between paint and
-        tap, e.g. the appliance stopped playing — is silently treated as
-        "back": no focus change, no error dialog. Either way the selector
-        closes.
+        appliance — playing or idle; picking an idle row controls it the
+        same way as picking a playing one. A stale index — the row
+        disappeared between paint and tap, e.g. the appliance left the
+        network — is silently treated as "back": no focus change, no error
+        dialog. Either way the selector closes.
         """
         selector = self._selector
         if selector is not None and selector.rows:
@@ -1776,20 +1799,22 @@ class DialDisplay:
             return 0, 0.0
         return _clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
 
-    def _refresh_selector_rows(self, targets: list, reporting_id: str | None) -> None:
-        """Rebuild the selector's row list from *targets*. Runs on the poll
-        thread at the end of every _poll_once, whether or not the selector
-        screen is actually open right now, so opening it always shows
-        fresh rows without waiting for a poll. The touch thread never
-        builds rows.
+    def _refresh_selector_rows(self, roster: list, reporting_id: str | None) -> None:
+        """Rebuild the selector's row list from the merged *roster* (idle
+        and playing appliances alike). Runs on the poll thread at the end of
+        every _poll_once, in both the playing-targets branch and the empty-
+        targets branch, whether or not the selector screen is actually open
+        right now, so opening it always shows fresh rows without waiting for
+        a poll. The touch thread never builds rows.
 
-        Rows: every target with a non-empty appliance_id whose auth is
+        Rows: every roster entry with a non-empty appliance_id whose auth is
         AUTHORIZED (not just "not unauthorized" — an unknown appliance is
         controllable but not yet confirmed, so it stays off the list until
         a probe confirms it). *current* marks the manual focus when one is
-        set, else the reporting-from target (*reporting_id*). *playing*
-        marks a row whose appliance is in the playing set — drawn as the
-        play marker (see _build_list_state_locked).
+        set, else the reporting-from appliance (*reporting_id*, the playing
+        reporting target or, with nothing playing, the idle focus). *playing*
+        marks a row whose appliance is in the playing set, live or replay —
+        drawn as the play marker (see _build_list_state_locked).
 
         The page is PRESERVED (clamped to the new row count) across each
         rebuild — resetting it to 0 here would make an open selector jump
@@ -1800,13 +1825,13 @@ class DialDisplay:
         current_id = focus_id if focus_id is not None else reporting_id
         rows = tuple(
             SelectorRow(
-                appliance_id=t.appliance_id,
-                label=appliance_display_name(t.service_name),
-                current=(t.appliance_id == current_id),
-                playing=True,
+                appliance_id=r.appliance_id,
+                label=appliance_display_name(r.service_name),
+                current=(r.appliance_id == current_id),
+                playing=r.playing,
             )
-            for t in targets
-            if t.appliance_id and t.auth == AUTH_AUTHORIZED
+            for r in roster
+            if r.appliance_id and r.auth == AUTH_AUTHORIZED
         )
         with self._lock:
             prev = self._selector
@@ -2049,9 +2074,13 @@ class DialDisplay:
         if not ids:
             return ""
         targets = {t.appliance_id: t for t in self._get_display_targets() if t.appliance_id}
+        roster = {r.appliance_id: r for r in self._last_roster if r.appliance_id}
         woke = False
         for appliance_id in ids:
-            target = targets.get(appliance_id)
+            # Playing set first, then the last-published roster — an
+            # authorization granted to an idle appliance is confirmed here
+            # rather than waiting for the next reconcile pass.
+            target = targets.get(appliance_id) or roster.get(appliance_id)
             if target is None or not target.dial_status:
                 continue     # not rostered right now: learn on the next poll
             before = auth_map.state(appliance_id)
@@ -2197,6 +2226,16 @@ class DialDisplay:
         instead."""
         return auth_map.state(appliance_id) != AUTH_UNAUTHORIZED
 
+    def _clear_focus(self, reason: str) -> None:
+        """Poll thread only: drop the manual focus and any pending grace,
+        and close an open repeat screen (it was opened for that focus)."""
+        self._manual_focus_id = None
+        self._focus_pending = None
+        logging.info("dial display: manual focus cleared (%s)", reason)
+        if self._screen == "repeat":
+            with self._lock:
+                self._close_secondary_locked()
+
     def _update_dots_active(self, now: float) -> None:
         """Recompute whether the repeat screen's dots are currently
         tappable, from the currently focused/reporting appliance's fresh
@@ -2227,7 +2266,8 @@ class DialDisplay:
         # cadence already covers them.) force_due() takes the leaf dial_auth
         # lock, so it is called here, before self._lock is taken below.
         playing_ids = {t.appliance_id for t in targets if t.appliance_id}
-        if self._prev_playing_ids - playing_ids:
+        stopped_ids = self._prev_playing_ids - playing_ids
+        if stopped_ids:
             self._reconcile_due = True
             auth_map.force_due()
         self._prev_playing_ids = playing_ids
@@ -2243,36 +2283,52 @@ class DialDisplay:
         self._last_roster = roster
         now = time.monotonic()
 
-        # Resolve manual focus before anything else: a focused appliance
-        # that is no longer rostered, or has since been confirmed
-        # unauthorized, reverts silently to auto-pick — UNLESS a picker-
-        # started replay is still within its pending grace window (6),
-        # in which case the focus is kept and the empty-targets branch
-        # below shows the appliance's name over the logo instead of the
-        # ordinary idle screen.
+        # Resolve manual focus before anything else. focus_entry is the
+        # roster entry (playing or idle); focus_target is the same
+        # appliance only when it is in the playing set this tick. A focus
+        # is cleared when the appliance is no longer rostered at all (or is
+        # confirmed unauthorized), or when it was playing last tick and has
+        # just stopped — "the show is over". A focus resting on an idle
+        # appliance is otherwise kept even while something else plays: that
+        # is what lets a pick control an idle device. UNLESS a picker-
+        # started replay is still within its pending grace window (6), in
+        # which case the focus is kept and the empty-targets branch below
+        # shows the appliance's name over the logo instead of the ordinary
+        # idle screen.
         focus_id = self._manual_focus_id
         pending = self._focus_pending
         if pending is not None and (pending[0] != focus_id or now >= pending[2]):
             self._focus_pending = None
             pending = None
-        focus_target = None
+        focus_entry = None      # the roster entry, playing or idle
+        focus_target = None     # the playing-set entry, when playing
         if focus_id is not None:
+            focus_entry = next(
+                (r for r in roster if r.appliance_id == focus_id and r.auth != AUTH_UNAUTHORIZED),
+                None,
+            )
             focus_target = next(
                 (t for t in targets if t.appliance_id == focus_id and t.auth != AUTH_UNAUTHORIZED),
                 None,
             )
-            if focus_target is None:
+            if focus_entry is None:
                 if pending is not None and self._auth_not_unauthorized(focus_id):
                     pass  # grace: keep the focus, appliance not rostered yet
                 else:
-                    self._manual_focus_id = None
-                    self._focus_pending = None
-                    logging.info("dial display: manual focus cleared (appliance gone or unauthorized)")
-                    if self._screen == "repeat":
-                        with self._lock:
-                            self._close_secondary_locked()
-            elif pending is not None:
+                    self._clear_focus("appliance gone or unauthorized")
+                    focus_entry = focus_target = None
+            elif focus_target is None and focus_id in stopped_ids:
+                self._clear_focus("appliance stopped playing")
+                focus_entry = None
+            elif focus_target is not None and pending is not None:
                 self._focus_pending = None  # sighted: converts to a normal focus
+
+        # An idle focus: a rostered focus with nothing playing under it.
+        # The walk/artwork-selection path below runs only when this is
+        # None; when it is set, one pinned status fetch replaces it (3.3),
+        # and it is what the empty-targets branch shows in place of the
+        # idle screen (5.2).
+        idle_focus = focus_entry if (focus_entry is not None and focus_target is None) else None
 
         # Any visible playing target counts as activity — including
         # unauthorized or status-erroring ones — because the mDNS
@@ -2295,12 +2351,13 @@ class DialDisplay:
         else:
             # Nothing playing anywhere: there is no reporting-from target any
             # more, and a stale readout for a target that has since stopped
-            # must not survive to the next time something starts playing.
-            # The roster reconcile and the idle-affordance/picker refresh
-            # still run here on their usual cadence — this is exactly the
-            # state the idle screen and the replay picker exist for, and
-            # the artwork walk below never runs in this branch to cover it
-            # another way.
+            # must not survive to the next time something starts playing —
+            # unless a manual focus (idle, or a not-yet-rostered pending
+            # replay) has something of its own to show. The roster reconcile
+            # and the idle-affordance/picker/selector refresh still run here
+            # on their usual cadence — this is exactly the state the idle
+            # screen and the replay picker exist for, and the artwork walk
+            # below never runs in this branch to cover it another way.
             self._source_service_name = None
             observe_master_volume(None, None)
             if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
@@ -2309,44 +2366,29 @@ class DialDisplay:
                 self._reconcile_due = False
             self._refresh_idle_affordance(roster, now)
             self._refresh_picker_rows(roster, now)
+            self._refresh_selector_rows(roster, idle_focus.appliance_id if idle_focus is not None else None)
 
-            if self._focus_pending is not None:
-                # A picker-started replay hasn't reached the playing set
-                # yet — keep showing its name over the logo rather than
-                # falling into the idle screen underneath it (the idle
-                # affordance is suppressed too: _now_playing is not None
-                # here, see _render_logo_locked/_display_idle_locked).
-                pending = self._focus_pending
-                self._now_playing = NowPlaying(pending[1], "", "", None)
-                self._reporting_appliance_id = pending[0]
-                self._update_dots_active(now)
-                with self._lock:
-                    self._close_secondary_locked()
-                self.show_logo()
-                return
-
-            self._now_playing = None
-            self._reporting_appliance_id = None
-            self._update_dots_active(now)
             with self._lock:
-                # The replay picker is the idle-state screen for choosing a
-                # held recording to replay, so it MUST stay open while
-                # nothing is playing — its own inactivity timeout
-                # (_check_secondary_timeout), not this branch, closes it.
-                # Every other secondary screen (the appliance selector, the
-                # repeat screen) is meaningless with nothing playing and is
-                # popped to main before the sleep decision below.
-                # A pending "picker" request (open_picker just ran on the
-                # touch thread, the repaint thread has not applied it yet)
-                # counts as open too, so this poll never clobbers a picker
-                # that is opening this very tick.
-                picker_open = self._screen == "picker" or self._screen_request == "picker"
-                if not picker_open:
+                # The two list screens are the idle-state screens for
+                # choosing what to replay or what to control, so a poll
+                # that finds nothing playing must not close them; their own
+                # inactivity timeout does. The repeat screen is closed
+                # unless an idle focus keeps it meaningful.
+                # A pending "selector"/"picker" request (an open_* call just
+                # ran on the touch thread, the repaint thread has not
+                # applied it yet) counts as open too, so this poll never
+                # clobbers a list that is opening this very tick.
+                list_open = (
+                    self._screen in ("selector", "picker")
+                    or self._screen_request in ("selector", "picker")
+                )
+                if self._screen == "repeat" and idle_focus is None:
                     self._close_secondary_locked()
+                if not list_open:
                     if self._idle_started_at is None:
                         self._idle_started_at = time.monotonic()
                 else:
-                    # An open picker counts as activity: never sleep out from
+                    # An open list counts as activity: never sleep out from
                     # under it (its timeout returns to main first, after
                     # which the idle-sleep clock restarts).
                     self._idle_started_at = None
@@ -2354,20 +2396,58 @@ class DialDisplay:
                     # Stay dark — no repaint while asleep.
                     return
                 should_sleep = (
-                    not picker_open
+                    not list_open
                     and time.monotonic() - self._idle_started_at >= DISPLAY_IDLE_SLEEP_SECONDS
                 )
                 if should_sleep:
                     self._sleep_locked()
                     return
-            if picker_open:
-                # Re-render the picker with the rows just refreshed above:
-                # the on-screen PickerState was built from whatever rows
-                # existed when the open request was applied, which can race
-                # ahead of the reconcile that populates a just-stopped
-                # source's held recording.
+            if list_open:
+                # Re-render the list with the rows just refreshed above:
+                # the on-screen state was built from whatever rows existed
+                # when the open request was applied, which can race ahead
+                # of the reconcile that populates a just-stopped source's
+                # held recording.
                 self._overlay_signal.set()
                 return
+
+            # Showing an idle appliance (a focus with nothing playing under
+            # it) is not activity — the idle-sleep countdown above already
+            # ran regardless of what follows here.
+            if idle_focus is not None:
+                result = fetch_target_status(
+                    idle_focus, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS,
+                )
+                self._apply_status_to_auth(idle_focus, result)
+                self._apply_status_to_repeat(idle_focus.appliance_id, result, time.monotonic())
+                if result.get("status_error") == "unauthorized":
+                    self._clear_focus("appliance now unauthorized")
+                    idle_focus = None   # fall through to the plain idle screen below
+                else:
+                    master_volume = result.get("master_volume") if not result.get("status_error") else None
+                    self._reporting_appliance_id = idle_focus.appliance_id
+                    self._source_service_name = idle_focus.service_name
+                    self._now_playing = NowPlaying(idle_focus.service_name, "", "", master_volume)
+                    self._update_dots_active(now)
+            if idle_focus is None:
+                if self._focus_pending is not None:
+                    # A picker-started replay hasn't reached the playing set
+                    # yet, and its appliance is not rostered at all — keep
+                    # showing its name over the logo rather than falling
+                    # into the idle screen underneath it (the idle
+                    # affordance is suppressed too: _now_playing is not
+                    # None here, see _render_logo_locked/_display_idle_locked).
+                    pending = self._focus_pending
+                    self._now_playing = NowPlaying(pending[1], "", "", None)
+                    self._reporting_appliance_id = pending[0]
+                    self._update_dots_active(now)
+                else:
+                    self._now_playing = None
+                    self._reporting_appliance_id = None
+                    self._update_dots_active(now)
+
+            self.show_logo()
+            return
             self.show_logo()
             return
 
@@ -2377,84 +2457,103 @@ class DialDisplay:
         selected_title = ""
         records: dict[str, dict] = {}
         visited: set[str] = set()
-        # With a focus, it is polled first and pinned to unconditionally —
-        # the walk never falls through to another appliance's artwork.
-        # Without one, today's playing_since-ordered walk is unchanged.
-        ordered = (
-            [focus_target] + [t for t in targets if t is not focus_target]
-            if focus_target is not None else targets
-        )
-        for target in ordered:
-            is_focus = focus_target is not None and target is focus_target
-            if target.auth == AUTH_UNAUTHORIZED:
-                logging.debug("dial display: skip unauthorized row %s", target.service_name)
-                continue
-            if not target.dial_status:
-                logging.debug("dial display: skip unsupported target %s", target.service_name)
+
+        if idle_focus is not None:
+            # One pinned status fetch in place of the whole walk: an idle
+            # focus has no artwork of its own, so selected_url/artist/title
+            # stay empty, but its auth/repeat state is refreshed and its
+            # visited entry stops the reconcile pass below re-probing it.
+            result = fetch_target_status(idle_focus, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+            visited.add(idle_focus.service_name)
+            self._apply_status_to_auth(idle_focus, result)
+            self._apply_status_to_repeat(idle_focus.appliance_id, result, time.monotonic())
+            if result.get("status_error") == "unauthorized":
+                self._clear_focus("appliance now unauthorized")
+                idle_focus = None            # fall through to the ordinary walk this tick
+            else:
+                selected_service = idle_focus.service_name
+                if not result.get("status_error"):
+                    records[idle_focus.service_name] = result
+
+        if idle_focus is None:
+            # With a focus, it is polled first and pinned to unconditionally
+            # — the walk never falls through to another appliance's
+            # artwork. Without one, today's playing_since-ordered walk is
+            # unchanged.
+            ordered = (
+                [focus_target] + [t for t in targets if t is not focus_target]
+                if focus_target is not None else targets
+            )
+            for target in ordered:
+                is_focus = focus_target is not None and target is focus_target
+                if target.auth == AUTH_UNAUTHORIZED:
+                    logging.debug("dial display: skip unauthorized row %s", target.service_name)
+                    continue
+                if not target.dial_status:
+                    logging.debug("dial display: skip unsupported target %s", target.service_name)
+                    if is_focus:
+                        # No status to poll, but the screen still follows the
+                        # focus for its name/label; there is simply no artwork.
+                        selected_service = target.service_name
+                        break
+                    continue
+
+                result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+                visited.add(target.service_name)
+                self._apply_status_to_auth(target, result)
+                self._apply_status_to_repeat(target.appliance_id, result, time.monotonic())
+                status_error = result.get("status_error")
+
+                if is_focus and status_error == "unauthorized":
+                    # Revoked mid-tick: clear focus now and fall through to the
+                    # normal walk over the remaining targets in this same poll,
+                    # so the screen shows the auto-pick target immediately.
+                    self._clear_focus("appliance now unauthorized")
+                    focus_target = None
+                    is_focus = False
+                    continue
+
                 if is_focus:
-                    # No status to poll, but the screen still follows the
-                    # focus for its name/label; there is simply no artwork.
+                    # The focus target is pinned regardless of whether it has
+                    # identified artwork — never fall through to another
+                    # appliance's artwork while a focus is set.
                     selected_service = target.service_name
+                    if not status_error:
+                        records[target.service_name] = result
+                        track_id = result.get("track_id")
+                        if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
+                            selected_url = track_id["artwork_url"]
+                            selected_artist = track_id.get("artist", "")
+                            selected_title = track_id.get("title", "")
                     break
-                continue
 
-            result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
-            visited.add(target.service_name)
-            self._apply_status_to_auth(target, result)
-            self._apply_status_to_repeat(target.appliance_id, result, time.monotonic())
-            status_error = result.get("status_error")
+                if status_error:
+                    logging.debug(
+                        "dial display: target %s status_error=%s", target.service_name, status_error,
+                    )
+                    continue
 
-            if is_focus and status_error == "unauthorized":
-                # Revoked mid-tick: clear focus now and fall through to the
-                # normal walk over the remaining targets in this same poll,
-                # so the screen shows the auto-pick target immediately.
-                self._manual_focus_id = None
-                self._focus_pending = None
-                focus_target = None
-                is_focus = False
-                logging.info("dial display: manual focus cleared (appliance now unauthorized)")
-                if self._screen == "repeat":
-                    with self._lock:
-                        self._close_secondary_locked()
-                continue
+                records[target.service_name] = result
+                track_id = result.get("track_id")
+                if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
+                    selected_url = track_id["artwork_url"]
+                    selected_service = target.service_name
+                    selected_artist = track_id.get("artist", "")
+                    selected_title = track_id.get("title", "")
+                    break
 
-            if is_focus:
-                # The focus target is pinned regardless of whether it has
-                # identified artwork — never fall through to another
-                # appliance's artwork while a focus is set.
-                selected_service = target.service_name
-                if not status_error:
-                    records[target.service_name] = result
-                    track_id = result.get("track_id")
-                    if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
-                        selected_url = track_id["artwork_url"]
-                        selected_artist = track_id.get("artist", "")
-                        selected_title = track_id.get("title", "")
-                break
-
-            if status_error:
-                logging.debug(
-                    "dial display: target %s status_error=%s", target.service_name, status_error,
-                )
-                continue
-
-            records[target.service_name] = result
-            track_id = result.get("track_id")
-            if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
-                selected_url = track_id["artwork_url"]
-                selected_service = target.service_name
-                selected_artist = track_id.get("artist", "")
-                selected_title = track_id.get("title", "")
-                break
-
-        # Reporting-from target: the identified (or focused) source, else
-        # the oldest playing CONTROLLABLE target (select_volume_target's
-        # fallback). Only auth != unauthorized targets are offered, matching
-        # the volume resolver's own filter (dial_main._build_volume_targets_fn)
-        # so the poll and the worker can never disagree about who
-        # volume/mute addresses.
-        targets_controllable = [t for t in targets if t.auth != AUTH_UNAUTHORIZED]
-        reporting = select_volume_target(targets_controllable, selected_service)
+        # Reporting-from target: the idle focus when one is pinned; else
+        # the identified (or focused) source, else the oldest playing
+        # CONTROLLABLE target (select_volume_target's fallback). Only
+        # auth != unauthorized targets are offered, matching the volume
+        # resolver's own filter (dial_main._build_volume_targets_fn) so the
+        # poll and the worker can never disagree about who volume/mute
+        # addresses.
+        if idle_focus is not None:
+            reporting = idle_focus
+        else:
+            targets_controllable = [t for t in targets if t.auth != AUTH_UNAUTHORIZED]
+            reporting = select_volume_target(targets_controllable, selected_service)
         reporting_name = reporting.service_name if reporting is not None else None
         reporting_id = reporting.appliance_id if reporting is not None else None
         self._reporting_appliance_id = reporting_id
@@ -2498,7 +2597,7 @@ class DialDisplay:
             self._reconcile_pass(roster, visited)
             self._last_reconcile_at = now
             self._reconcile_due = False
-        self._refresh_selector_rows(targets, reporting_id)
+        self._refresh_selector_rows(roster, reporting_id)
         self._refresh_idle_affordance(roster, now)
         self._refresh_picker_rows(roster, now)
 

@@ -239,24 +239,33 @@ def _clear_recovery_request() -> None:
 
 
 def _build_volume_targets_fn(display, get_targets=get_display_targets):
-    """Zero-arg resolver for the volume worker: the display's artwork
-    source when it has one, else the oldest playing target, as a list of
-    zero or one PlayingTarget.
+    """Zero-arg resolver for the volume worker: a manual focus (playing or
+    idle) the display is showing, when it has one, else the display's
+    artwork source, else the oldest playing target — as a list of zero or
+    one target.
 
     display may be any object — in particular NoOpDisplayStatusProvider,
-    which has no current_source_service_name() at all — a missing or
-    raising accessor degrades to the fallback so a NoOp or broken display
-    never blocks volume (display failure must never affect volume control).
-    get_targets defaults to the real dial_mdns.get_display_targets, imported
-    at module load time; tests override it directly for a fake target list.
+    which has neither accessor at all — a missing or raising accessor
+    degrades to the next step so a NoOp or broken display never blocks
+    volume (display failure must never affect volume control). get_targets
+    defaults to the real dial_mdns.get_display_targets, imported at module
+    load time; tests override it directly for a fake target list.
 
     Rows with a confirmed 412 (auth == "unauthorized") are excluded. Rows
     whose auth is still "unknown" stay eligible — the encoder must be live
     from the first second, and only a definitive miss removes a row.
     """
     getter = getattr(display, "current_source_service_name", None)
+    focus_getter = getattr(display, "focus_volume_target", None)
 
     def resolve():
+        if focus_getter is not None:
+            try:
+                focused = focus_getter()
+            except Exception:
+                focused = None
+            if focused is not None:
+                return [focused]
         targets = [t for t in get_targets() if t.auth != "unauthorized"]
         preferred = None
         if getter is not None:
