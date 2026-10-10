@@ -439,13 +439,21 @@ GEOMETRY_REPEAT = "repeat"
 GEOMETRY_REPEAT_REPLAY = "repeat_replay"
 GEOMETRY_IDLE = "idle"
 GEOMETRY_OUTPUT = "output"
-# The info page's own table: the list table with every LIST_ROW entry
-# removed, so a row press never arms, flashes or dispatches (rows are dead
-# at the geometry level, not just in the manager — see _info_zone_rects).
+# The info page's own table: off the compact tier, the list table with
+# every LIST_ROW entry removed, so a row press never arms, flashes or
+# dispatches (rows are dead at the geometry level, not just in the
+# manager); on compact the rows ARE tappable — this is the list table
+# unchanged there, since the compact info page's own rows open a value view
+# (see _info_zone_rects/info_row_tap).
 GEOMETRY_INFO = "info"
+# The compact info page's own drill-in, reached from a GEOMETRY_INFO row on
+# that tier only: one entry, the whole panel, LIST_BACK — a tap anywhere
+# returns to the list (close_list()'s existing back_to resolution already
+# does the rest). Tier-agnostic and pure like every table here.
+GEOMETRY_INFO_VALUE = "info_value"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO,
+    GEOMETRY_INFO, GEOMETRY_INFO_VALUE,
 )
 
 
@@ -597,11 +605,28 @@ def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
 
 
 def _info_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
-    """GEOMETRY_INFO: the list table with every LIST_ROW entry removed — the
-    info page's rows are dead at the geometry level, so a press anywhere on
-    one lands in no entry at all (no arm, no flash, no dispatch); the
-    controls (rail or cancel/more) resolve exactly as they do on the list."""
-    return tuple(e for e in _list_zone_rects(width, height, metrics) if e.zone != TouchZone.LIST_ROW)
+    """GEOMETRY_INFO: on the compact tier, the list table unchanged — the
+    same picker-shaped rows _list_zone_rects already returns there, now
+    tappable (see info_row_tap()); off compact, the list table with every
+    LIST_ROW entry removed — the info page's rows are dead at the geometry
+    level there, so a press anywhere on one lands in no entry at all (no
+    arm, no flash, no dispatch). Either way the controls (rail or
+    cancel/more) resolve exactly as they do on the list."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    if metrics.content_tier == CONTENT_COMPACT:
+        return _list_zone_rects(width, height, metrics=metrics)
+    return tuple(e for e in _list_zone_rects(width, height, metrics=metrics) if e.zone != TouchZone.LIST_ROW)
+
+
+def _info_value_zone_rects(
+    width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_INFO_VALUE: one entry, the whole panel, LIST_BACK — a tap
+    anywhere on the compact info page's drill-in returns to the list.
+    Tier-agnostic and pure; only the compact tier ever requests the screen
+    that reads it."""
+    return (ZoneRect(TouchZone.LIST_BACK, (0, 0, width, height)),)
 
 
 def _output_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
@@ -623,6 +648,7 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_IDLE: _idle_zone_rects,
     GEOMETRY_OUTPUT: _output_zone_rects,
     GEOMETRY_INFO: _info_zone_rects,
+    GEOMETRY_INFO_VALUE: _info_value_zone_rects,
 }
 
 
@@ -743,6 +769,34 @@ def output_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
         top_band=layout.top_band,
         bottom_band=layout.bottom_band,
     )
+
+
+@dataclass(frozen=True)
+class InfoValueLayout:
+    """The compact info page's drill-in: a small label band across the top
+    (the same tight height the picker's own title band uses — font_body +
+    pad) and the value rect below it, inset by the usual pad on the left,
+    right and bottom."""
+
+    label: Rect    # top band, full width, font_body + pad tall
+    value: Rect    # everything below the label band, inset by pad each side
+
+
+def info_value_layout_for(
+    width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> InfoValueLayout:
+    """Compute the compact info page's drill-in geometry for a *width* x
+    *height* panel: the label band is exactly as tall as the picker's own
+    title band; the value rect is everything below it, inset by pad on
+    three sides (the label band already sits flush at the top). Pure and
+    tier-agnostic, like every layout function here — only the compact tier
+    ever opens the screen that reads it. metrics=None means
+    metrics_for(width, height)."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    band_h = metrics.font_body + metrics.pad
+    pad = metrics.pad
+    return InfoValueLayout(label=(0, 0, width, band_h), value=(pad, band_h, width - pad, height))
 
 
 @dataclass(frozen=True)

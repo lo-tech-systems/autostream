@@ -33,6 +33,7 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRIES,
     GEOMETRY_IDLE,
     GEOMETRY_INFO,
+    GEOMETRY_INFO_VALUE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
@@ -48,6 +49,7 @@ from dial_touch_layout import (  # noqa: E402
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
     CompactPickerLayout,
+    InfoValueLayout,
     TouchZone,
     ZoneRect,
     _dead_zone_margin,
@@ -56,6 +58,7 @@ from dial_touch_layout import (  # noqa: E402
     hit_test,
     idle_layout_for,
     idle_zone_at,
+    info_value_layout_for,
     layout_for,
     list_layout_for,
     list_zone_at,
@@ -747,27 +750,42 @@ class TestListZoneAtExhaustive:
 
 
 class TestInfoGeometry:
-    """GEOMETRY_INFO: the list table with every LIST_ROW entry removed — the
-    info page's rows are display-only, dead at the geometry level."""
+    """GEOMETRY_INFO: off the compact tier, the list table with every
+    LIST_ROW entry removed — the info page's rows are display-only, dead at
+    the geometry level there. On the compact tier the rows are tappable
+    instead: the table is the list table unchanged (its rows open the
+    compact info page's own drill-in — see info_row_tap())."""
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_equals_list_minus_rows(self, width, height):
+    def test_equals_list_minus_rows_off_compact(self, width, height):
         list_entries = zone_rects_for(GEOMETRY_LIST, width, height)
         info_entries = zone_rects_for(GEOMETRY_INFO, width, height)
         assert info_entries == tuple(e for e in list_entries if e.zone != TouchZone.LIST_ROW)
         assert all(e.zone != TouchZone.LIST_ROW for e in info_entries)
 
-    @pytest.mark.parametrize(
-        "metrics", [None, metrics_for(320, 240, 0.1778),
-                    metrics_for(240, 240, 0.0973), metrics_for(128, 128, 0.2021)],
-    )
-    def test_no_pixel_ever_resolves_to_a_row(self, metrics):
+    @pytest.mark.parametrize("metrics", [metrics_for(240, 240, 0.0973), metrics_for(128, 128, 0.2021)])
+    def test_equals_list_unchanged_on_compact(self, metrics):
+        list_entries = zone_rects_for(GEOMETRY_LIST, metrics.width, metrics.height, metrics=metrics)
+        info_entries = zone_rects_for(GEOMETRY_INFO, metrics.width, metrics.height, metrics=metrics)
+        assert info_entries == list_entries
+        assert any(e.zone == TouchZone.LIST_ROW for e in info_entries)
+
+    @pytest.mark.parametrize("metrics", [None, metrics_for(320, 240, 0.1778)])
+    def test_no_pixel_ever_resolves_to_a_row_off_compact(self, metrics):
         width = metrics.width if metrics is not None else 160
         height = metrics.height if metrics is not None else 128
         for y in range(height):
             for x in range(width):
                 hit = hit_test(GEOMETRY_INFO, x, y, width, height, metrics=metrics)
                 assert hit is None or hit.zone != TouchZone.LIST_ROW
+
+    @pytest.mark.parametrize("metrics", [metrics_for(240, 240, 0.0973), metrics_for(128, 128, 0.2021)])
+    def test_rows_resolve_at_the_pinned_picker_rects_on_compact(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        for rect, index in ((p.row0, 0), (p.row1, 1)):
+            cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+            hit = hit_test(GEOMETRY_INFO, cx, cy, metrics.width, metrics.height, metrics=metrics)
+            assert hit is not None and (hit.zone, hit.index) == (TouchZone.LIST_ROW, index)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_controls_resolve_exactly_as_on_the_list(self, width, height):
@@ -795,6 +813,10 @@ class TestInfoGeometry:
         for width, height in PROFILE_SIZES:
             a = zone_rects_for(GEOMETRY_INFO, width, height)
             b = zone_rects_for(GEOMETRY_INFO, width, height)
+            assert a == b
+        for metrics in (metrics_for(240, 240, 0.0973), metrics_for(128, 128, 0.2021)):
+            a = zone_rects_for(GEOMETRY_INFO, metrics.width, metrics.height, metrics=metrics)
+            b = zone_rects_for(GEOMETRY_INFO, metrics.width, metrics.height, metrics=metrics)
             assert a == b
 
 
@@ -1873,6 +1895,64 @@ class TestCompactIdleGeometry:
             for x in range(metrics.width):
                 hit = hit_test(GEOMETRY_IDLE, x, y, metrics.width, metrics.height, metrics=metrics)
                 assert hit is not None and hit.zone in (TouchZone.IDLE_INFO, TouchZone.IDLE_REPLAY)
+
+
+class TestInfoValueGeometry:
+    """InfoValueLayout/info_value_layout_for and GEOMETRY_INFO_VALUE: the
+    compact info page's own drill-in — a small label band over a value rect,
+    and a single whole-panel LIST_BACK zone (a tap anywhere returns to the
+    list)."""
+
+    def test_pinned_at_240x240(self):
+        layout = info_value_layout_for(240, 240, metrics=_COMPACT_240x240)
+        assert isinstance(layout, InfoValueLayout)
+        assert layout.label == (0, 0, 240, 32)
+        assert layout.value == (8, 32, 232, 240)
+
+    def test_pinned_at_128x128(self):
+        layout = info_value_layout_for(128, 128, metrics=_COMPACT_128x128)
+        assert layout.label == (0, 0, 128, 17)
+        assert layout.value == (4, 17, 124, 128)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_label_band_height_is_font_body_plus_pad(self, metrics):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        band_h = metrics.font_body + metrics.pad
+        assert layout.label == (0, 0, metrics.width, band_h)
+        assert layout.value == (metrics.pad, band_h, metrics.width - metrics.pad, metrics.height)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_tier_agnostic(self, width, height):
+        # A pure function of (width, height, metrics) — only the compact
+        # tier ever opens the screen that reads it, but the geometry itself
+        # makes no tier check of its own.
+        metrics = metrics_for(width, height)
+        layout = info_value_layout_for(width, height)
+        band_h = metrics.font_body + metrics.pad
+        assert layout.label == (0, 0, width, band_h)
+        assert layout.value == (metrics.pad, band_h, width - metrics.pad, height)
+
+    def test_geometry_is_one_whole_panel_list_back_entry(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            entries = zone_rects_for(GEOMETRY_INFO_VALUE, metrics.width, metrics.height, metrics=metrics)
+            assert entries == (ZoneRect(TouchZone.LIST_BACK, (0, 0, metrics.width, metrics.height)),)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_every_pixel_resolves_to_list_back(self, metrics):
+        w, h = metrics.width, metrics.height
+        for y in range(h):
+            for x in range(w):
+                hit = hit_test(GEOMETRY_INFO_VALUE, x, y, w, h, metrics=metrics)
+                assert hit is not None and hit.zone == TouchZone.LIST_BACK
+
+    def test_is_pure(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            a = zone_rects_for(GEOMETRY_INFO_VALUE, metrics.width, metrics.height, metrics=metrics)
+            b = zone_rects_for(GEOMETRY_INFO_VALUE, metrics.width, metrics.height, metrics=metrics)
+            assert a == b
+            la = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+            lb = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+            assert la == lb
 
 
 # ---------------------------------------------------------------------------
