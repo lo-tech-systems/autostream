@@ -22,6 +22,7 @@ import hd_scenarios as hs
 from hd_fake_core import FakeCore
 from dial_config import DialDisplayConfig
 from dial_core_state import Artwork, artwork_key
+from dial_hd_backdrop import BackdropStore
 from dial_hd_state import build_state
 
 PAGE = b"<!doctype html><title>t</title>"
@@ -566,6 +567,212 @@ class TestArtwork:
             assert request(server, "GET", "/api/v1/state")[0].status == 200
         finally:
             sock.close()
+
+
+# ---- backdrops -------------------------------------------------------------
+
+BACKDROP_JPEG = JPEG + b"backdrop"
+
+
+class _Render:
+    def __init__(self, result=BACKDROP_JPEG):
+        self.calls = []
+        self.result = result
+
+    def __call__(self, arg):
+        self.calls.append(arg)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class TestBackdrop:
+    @pytest.fixture
+    def art_render(self):
+        return _Render()
+
+    @pytest.fixture
+    def logo_render(self):
+        return _Render()
+
+    @pytest.fixture
+    def bserver(self, make_server, art_render, logo_render):
+        store = BackdropStore(hs.REPO_ROOT / "images" / "autostream-logo-centred-dark.png",
+                              render_artwork=art_render, render_logo=logo_render)
+        return make_server(backdrops=store)
+
+    def key(self, core):
+        return core.snapshot().artwork.key
+
+    def path(self, core, suffix="/backdrop"):
+        return "/api/v1/artwork/" + self.key(core) + suffix
+
+    def test_the_held_artworks_backdrop_is_served(self, bserver, core, art_render):
+        response, data = request(bserver, "GET", self.path(core))
+        assert response.status == 200
+        assert data == BACKDROP_JPEG
+        assert response.getheader("Content-Type") == "image/jpeg"
+        assert response.getheader("Content-Length") == str(len(BACKDROP_JPEG))
+        assert response.getheader("Cache-Control") == "private, max-age=86400, immutable"
+        assert response.getheader("X-Content-Type-Options") == "nosniff"
+        assert response.getheader("ETag") == '"%s"' % self.key(core)
+        assert art_render.calls == [hs.ARTWORK_BYTES]
+
+    def test_a_matching_etag_is_a_304_without_a_render(self, bserver, core, art_render):
+        response, data = request(bserver, "GET", self.path(core),
+                                 headers={"If-None-Match": '"%s"' % self.key(core)})
+        assert (response.status, data) == (304, b"")
+        assert art_render.calls == []
+
+    def test_a_second_request_reuses_the_render(self, bserver, core, art_render):
+        for _ in range(3):
+            assert request(bserver, "GET", self.path(core))[0].status == 200
+        assert len(art_render.calls) == 1
+
+    def test_a_released_key_is_404_and_the_entry_is_not_served(self, bserver, core, art_render):
+        held = core.snapshot().artwork
+        path = self.path(core)
+        assert request(bserver, "GET", path)[0].status == 200
+        core.publish(artwork=None)
+        response, data = request(bserver, "GET", path)
+        assert (response.status, error_of(data)) == (404, "no_artwork")
+        core.publish(artwork=held)
+        assert request(bserver, "GET", path)[0].status == 200
+        assert len(art_render.calls) == 1
+
+    def test_a_different_held_key_renders_again_and_replaces_the_first(self, bserver, core, art_render):
+        held = core.snapshot().artwork
+        first = self.path(core)
+        assert request(bserver, "GET", first)[0].status == 200
+        other = artwork_key("https://provider.example/other.jpg")
+        core.publish(artwork=Artwork("", other, JPEG, "", 0.0))
+        assert request(bserver, "GET", "/api/v1/artwork/%s/backdrop" % other)[0].status == 200
+        assert len(art_render.calls) == 2
+        core.publish(artwork=held)
+        assert request(bserver, "GET", first)[0].status == 200
+        assert len(art_render.calls) == 3
+
+    def test_an_unrenderable_cover_is_404_once(self, make_server, core):
+        render = _Render(None)
+        server = make_server(backdrops=BackdropStore(Path("x"), render_artwork=render))
+        for _ in range(2):
+            response, data = request(server, "GET", self.path(core))
+            assert (response.status, error_of(data)) == (404, "no_backdrop")
+        assert len(render.calls) == 1
+
+    def test_a_renderer_that_raises_is_404_and_the_server_survives(self, make_server, core):
+        render = _Render(RuntimeError("secret decoder text"))
+        server = make_server(backdrops=BackdropStore(Path("x"), render_artwork=render))
+        response, data = request(server, "GET", self.path(core))
+        assert (response.status, error_of(data)) == (404, "no_backdrop")
+        assert b"secret" not in data
+        assert request(server, "GET", "/api/v1/state")[0].status == 200
+
+    def test_the_plain_artwork_is_untouched_and_never_renders(self, bserver, core, art_render):
+        response, data = request(bserver, "GET", self.path(core, ""))
+        assert (response.status, data) == (200, hs.ARTWORK_BYTES)
+        assert art_render.calls == []
+
+    @pytest.mark.parametrize("suffix", ["/", "/backdrop/", "/Backdrop", "/other", "/backdrop/x"])
+    def test_malformed_variants_are_400(self, bserver, core, suffix):
+        response, data = request(bserver, "GET", self.path(core, suffix))
+        assert (response.status, error_of(data)) == (400, "bad_artwork_key")
+
+    def test_a_backdrop_without_a_key_is_400(self, bserver):
+        response, data = request(bserver, "GET", "/api/v1/artwork//backdrop")
+        assert (response.status, error_of(data)) == (400, "bad_artwork_key")
+        response, data = request(bserver, "GET", "/api/v1/artwork/backdrop")
+        assert (response.status, error_of(data)) == (400, "bad_artwork_key")
+
+    def test_the_two_key_patterns_agree(self):
+        for rest in ("0123456789abcdef", "0123456789ABCDEF", "short", "", "../state",
+                     "0123456789abcdef0", "0123456789abcdeg"):
+            assert bool(hds.ARTWORK_KEY_RE.match(rest)) == bool(hds.ARTWORK_REST_RE.match(rest))
+
+    def test_concurrent_requests_cost_one_render_and_block_nothing(self, make_server, core):
+        release = threading.Event()
+        entered = threading.Event()
+        calls = []
+
+        def slow(data):
+            calls.append(data)
+            entered.set()
+            release.wait(5)
+            return BACKDROP_JPEG
+
+        server = make_server(backdrops=BackdropStore(Path("x"), render_artwork=slow))
+        path = self.path(core)
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(request(server, "GET", path)))
+                   for _ in range(2)]
+        threads[0].start()
+        assert entered.wait(5)
+        threads[1].start()
+        try:
+            started = time.monotonic()
+            assert request(server, "GET", "/api/v1/state")[0].status == 200
+            for _ in range(20):
+                core.publish(polling=True)
+            assert time.monotonic() - started < 0.5
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(5)
+        assert [r[0].status for r in results] == [200, 200]
+        assert results[0][1] == results[1][1] == BACKDROP_JPEG
+        assert len(calls) == 1
+
+    # ---- the logo's backdrop ----
+
+    def test_the_logo_backdrop_is_served_with_the_logos_etag(self, bserver, logo_render):
+        response, data = request(bserver, "GET", "/api/v1/logo/backdrop")
+        logo = request(bserver, "GET", "/static/logo.png")[0]
+        assert (response.status, data) == (200, BACKDROP_JPEG)
+        assert response.getheader("Content-Type") == "image/jpeg"
+        assert response.getheader("Cache-Control") == "no-cache"
+        assert response.getheader("ETag") == logo.getheader("ETag")
+        assert response.getheader("X-Content-Type-Options") == "nosniff"
+
+    def test_a_matching_etag_is_a_304_and_the_render_runs_once(self, bserver, logo_render):
+        etag = request(bserver, "GET", "/static/logo.png")[0].getheader("ETag")
+        response, data = request(bserver, "GET", "/api/v1/logo/backdrop",
+                                 headers={"If-None-Match": etag})
+        assert (response.status, data) == (304, b"")
+        assert response.getheader("Cache-Control") == "no-cache"
+        for _ in range(3):
+            assert request(bserver, "GET", "/api/v1/logo/backdrop")[0].status == 200
+        assert len(logo_render.calls) == 1
+
+    def test_the_logo_backdrop_needs_no_held_artwork(self, bserver, core):
+        core.publish(artwork=None)
+        assert request(bserver, "GET", "/api/v1/logo/backdrop")[0].status == 200
+
+    def test_an_unrenderable_logo_is_404(self, make_server):
+        server = make_server(backdrops=BackdropStore(Path("x"), render_logo=_Render(None)))
+        response, data = request(server, "GET", "/api/v1/logo/backdrop")
+        assert (response.status, error_of(data)) == (404, "no_backdrop")
+
+    def test_a_missing_logo_file_is_404(self, make_server, monkeypatch, tmp_path):
+        monkeypatch.setattr(hds, "LOGO_PATH", tmp_path / "none.png")
+        monkeypatch.setattr(hds, "LOGO_FALLBACK_PATH", tmp_path / "none2.png")
+        server = make_server(backdrops=BackdropStore(Path("x"), render_logo=_Render()))
+        response, data = request(server, "GET", "/api/v1/logo/backdrop")
+        assert (response.status, error_of(data)) == (404, "not_found")
+
+    def test_the_default_store_serves_real_jpegs(self, make_server, core):
+        pytest.importorskip("PIL")
+        import io
+        from PIL import Image
+        out = io.BytesIO()
+        Image.new("RGB", (64, 64), (200, 30, 30)).save(out, "PNG")
+        key = artwork_key("https://provider.example/real.png")
+        core.publish(artwork=Artwork("", key, out.getvalue(), "", 0.0))
+        server = make_server()
+        response, data = request(server, "GET", "/api/v1/artwork/%s/backdrop" % key)
+        assert response.status == 200 and data[:2] == b"\xff\xd8"
+        assert Image.open(io.BytesIO(data)).size == (320, 240)
+        response, data = request(server, "GET", "/api/v1/logo/backdrop")
+        assert response.status == 200 and data[:2] == b"\xff\xd8"
 
 
 def test_sniff_image_type_table():

@@ -323,6 +323,7 @@ class TestNoSessionNoAccess:
 
     @pytest.mark.parametrize("path", [
         "/api/v1/state", "/api/v1/info", "/api/v1/settings", "/api/v1/artwork/" + "0" * 16,
+        "/api/v1/artwork/" + "0" * 16 + "/backdrop", "/api/v1/logo/backdrop",
         "/api/v1/events", "/static/hd.js",
     ])
     def test_api_and_page_routes_are_401(self, dev, path):
@@ -429,6 +430,10 @@ class TestLogin:
         cookie = signed_in(dev)
         assert api(dev, "/", cookie)[0].status == 200
         assert api(dev, "/static/hd.js", cookie)[0].status == 200
+        key = core.snapshot().artwork.key
+        assert api(dev, "/api/v1/artwork/%s" % key, cookie)[0].status == 200
+        assert api(dev, "/api/v1/artwork/%s/backdrop" % key, cookie)[0].status in (200, 404)
+        assert api(dev, "/api/v1/logo/backdrop", cookie)[0].status in (200, 404)
         state = json.loads(api(dev, "/api/v1/state", cookie)[1])
         assert state["v"] == 1
         assert api(dev, "/api/v1/settings", cookie)[0].status == 200

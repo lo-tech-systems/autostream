@@ -106,7 +106,7 @@ def test_every_request_the_script_makes_names_a_real_route():
 
     routes = {"/api/v1/settings", "/api/v1/info", "/api/v1/state", "/api/v1/events",
               "/api/v1/panel/wake", "/api/v1/panel/sleep", "/api/v1/panel/activity",
-              "/api/v1/actions/", "/api/v1/artwork/"}
+              "/api/v1/actions/", "/api/v1/artwork/", "/api/v1/logo/backdrop"}
     assert set(re.findall(r'"(/api/v1/[a-z/_]*)"', source)) <= routes
 
 

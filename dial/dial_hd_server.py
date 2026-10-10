@@ -37,6 +37,7 @@ from dial_config import (
 from dial_hd_actions import (
     ACTION_NAME_RE, ACTIONS, Context, InvalidArgument, boolean, integer, prepare,
 )
+from dial_hd_backdrop import BackdropStore
 from dial_hd_events import SSE_MAX_CLIENTS, serve_events
 from dial_hd_state import build_state, dumps
 
@@ -76,6 +77,8 @@ LOCAL_ONLY_ACTIONS = frozenset({"presence"})
 SETTINGS_KEYS = ("brightness", "sleep_after_s", "always_show_controls")
 
 ARTWORK_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+# The artwork route: the key, then optionally the variant served for it.
+ARTWORK_REST_RE = re.compile(r"^([0-9a-f]{16})(?:/(backdrop))?$")
 ARTWORK_CACHE_CONTROL = "private, max-age=86400, immutable"
 
 HD_STATIC_ROOT = Path(__file__).resolve().parent / "hd"
@@ -128,6 +131,14 @@ def sniff_image_type(data: bytes) -> str:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
     return "application/octet-stream"
+
+
+# The artwork route's variants: what is served for the held artwork, as
+# (body, content type); a None body means that variant cannot be made.
+ARTWORK_VARIANTS = {
+    "": lambda server, art: (art.data, sniff_image_type(art.data)),
+    "backdrop": lambda server, art: (server._backdrops.artwork(art.key, art.data), "image/jpeg"),
+}
 
 
 def _one_of(value, choices):
@@ -201,7 +212,7 @@ class HdServer:
         self, cfg, core, *, http_server=None, panel=None, hub=None, static_root=HD_STATIC_ROOT,
         clock=time.monotonic, wall_clock=time.time, muted_fn=None, extra_routes=(),
         port: int | None = None, dev_port: int | None = None, info_fn=None,
-        dev_bind_address: str = DEV_BIND_ADDRESS,
+        dev_bind_address: str = DEV_BIND_ADDRESS, backdrops: BackdropStore | None = None,
     ) -> None:
         self._cfg = cfg
         self._core = core
@@ -220,6 +231,7 @@ class HdServer:
         self._info_fn = info_fn
         self._info_lock = threading.Lock()
         self._info_cache: tuple[float, list] | None = None
+        self._backdrops = backdrops or BackdropStore(self.static_path("logo.png") or LOGO_PATH)
         self._ctx = Context(core, http_server)
         # Development listener: the listener, its thread, a flag that ends its
         # event streams, and the sessions (token -> (expiry, pin epoch)).
@@ -244,6 +256,7 @@ class HdServer:
             ("GET", "/static/", self._serve_static, True),
             ("GET", "/api/v1/state", self._get_state, False),
             ("GET", "/api/v1/artwork/", self._get_artwork, True),
+            ("GET", "/api/v1/logo/backdrop", self._get_logo_backdrop, False),
             ("GET", "/api/v1/events", self._stream_events, False),
             ("GET", "/api/v1/info", self._get_info, False),
             ("GET", "/api/v1/settings", self._get_settings, False),
@@ -570,11 +583,13 @@ class HdServer:
         serve_events(handler, self._hub, gate)
 
     def _get_artwork(self, handler, rest) -> None:
-        if not ARTWORK_KEY_RE.match(rest):
+        match = ARTWORK_REST_RE.match(rest)
+        if match is None:
             handler.send_json(400, {"ok": False, "error": "bad_artwork_key"})
             return
+        key, variant = match.group(1), match.group(2) or ""
         artwork = self._core.snapshot().artwork
-        if artwork is None or artwork.key != rest:
+        if artwork is None or artwork.key != key:
             handler.send_json(404, {"ok": False, "error": "no_artwork"})
             return
         headers = {
@@ -584,7 +599,30 @@ class HdServer:
         if _etag_matches(handler.headers.get("If-None-Match"), headers["ETag"]):
             handler.send_bytes(304, b"", None, headers)
             return
-        handler.send_bytes(200, artwork.data, sniff_image_type(artwork.data), headers)
+        body, content_type = ARTWORK_VARIANTS[variant](self, artwork)
+        if body is None:
+            handler.send_json(404, {"ok": False, "error": "no_backdrop"})
+            return
+        handler.send_bytes(200, body, content_type, headers)
+
+    def _get_logo_backdrop(self, handler, rest) -> None:
+        path = self.static_path("logo.png")
+        try:
+            info = path.stat() if path is not None else None
+        except OSError:
+            info = None
+        if info is None:
+            handler.send_json(404, {"ok": False, "error": "not_found"})
+            return
+        headers = {"ETag": '"%x-%x"' % (info.st_mtime_ns, info.st_size), "Cache-Control": "no-cache"}
+        if _etag_matches(handler.headers.get("If-None-Match"), headers["ETag"]):
+            handler.send_bytes(304, b"", None, headers)
+            return
+        body = self._backdrops.logo()
+        if body is None:
+            handler.send_json(404, {"ok": False, "error": "no_backdrop"})
+            return
+        handler.send_bytes(200, body, "image/jpeg", headers)
 
 
     # ---- actions, settings, info, panel ----------------------------------
