@@ -2382,6 +2382,155 @@ class TestReplaySeekRearm:
 
 
 # ---------------------------------------------------------------------------
+# Replay end: identification torn down for the origin monitor
+#
+# A replay ending raises no capture-stop edge, so _on_capture_stopped() never
+# runs for it. _dispatch_session_event() tears the origin monitor's
+# identification down from the tracker's previous source instead.
+# ---------------------------------------------------------------------------
+
+class TestReplayEndTeardown:
+
+    @staticmethod
+    def _origin(**monitor_kw):
+        svc = _make_service(analysis_lead_in=10, snapshot=15)
+        mon = _make_monitor(**monitor_kw)
+        mon.is_capturing = False
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_snapshot = _identified_snapshot()
+        mon._ti_next_attempt = time.time() + 100
+        mon._ti_next_attempt_reason = "refresh"
+        mon._track_change_seq_baseline = 7
+        return mon
+
+    @staticmethod
+    def _end(mon, prev_source="replay", event="session_ended", new_mon=None,
+             new_source=None):
+        from autostream_core import _dispatch_session_event
+        with patch.object(core, "_start_session_owntone"), \
+             patch.object(core, "_stop_and_disable_owntone") as stop, \
+             patch.object(core, "_session_nowplaying_end") as np_end, \
+             patch.object(core, "_session_nowplaying_start"):
+            _dispatch_session_event(
+                event, mon, new_mon, "http://owntone.invalid",
+                new_source=new_source, prev_source=prev_source,
+            )
+        return stop, np_end
+
+    def test_session_ended_from_replay_resets_origin_snapshot_to_waiting(self):
+        mon = self._origin()
+        gen = mon._ti_generation
+        self._end(mon)
+        assert mon._ti_snapshot.state == STATE_WAITING
+        assert mon._ti_snapshot.artwork_url == ""
+        assert mon._ti_generation == gen + 1
+        assert mon._ti_next_attempt == 0.0
+        assert mon._ti_next_attempt_reason == ""
+        assert mon._track_change_seq_baseline == 0
+        assert mon._ti_inflight is False
+        assert mon._ti_inflight_token is None
+
+    def test_session_ended_from_replay_with_service_disabled_publishes_disabled(self):
+        mon = self._origin()
+        core._track_id_service = None
+        self._end(mon)
+        assert mon._ti_snapshot.state == STATE_DISABLED
+
+    def test_session_ended_from_replay_drops_a_protected_deadline(self):
+        mon = self._origin()
+        mon._ti_next_attempt = time.time() + 600
+        mon._ti_next_attempt_reason = "rate_limit"
+        self._end(mon)
+        assert mon._ti_next_attempt == 0.0
+        assert mon._ti_next_attempt_reason == ""
+
+    def test_session_ended_from_replay_discards_a_late_worker_result(self):
+        mon = self._origin()
+        gen = mon._ti_generation
+        self._end(mon)
+        _run_worker_sync(mon, dispatch_gen=gen)
+        assert mon._ti_snapshot.state == STATE_WAITING
+        assert core._track_id_request_gate.acquire(blocking=False)
+        core._track_id_request_gate.release()
+
+    def test_session_ended_from_live_input_leaves_identification_alone(self):
+        mon = self._origin()
+        gen = mon._ti_generation
+        snap = mon._ti_snapshot
+        self._end(mon, prev_source="input1")
+        assert mon._ti_generation == gen
+        assert mon._ti_snapshot is snap
+
+    def test_session_ended_without_prev_source_leaves_identification_alone(self):
+        mon = self._origin()
+        gen = mon._ti_generation
+        self._end(mon, prev_source=None)
+        assert mon._ti_generation == gen
+
+    def test_teardown_is_idempotent(self):
+        mon = self._origin()
+        gen = mon._ti_generation
+        self._end(mon)
+        self._end(mon)
+        assert mon._ti_generation == gen + 2
+        assert mon._ti_snapshot.state == STATE_WAITING
+        assert mon._ti_next_attempt == 0.0
+
+    def test_capture_stop_then_replay_end_teardown_does_no_harm(self):
+        mon = self._origin()
+        mon._replay_origin = False
+        mon._on_capture_stopped(None)
+        self._end(mon)
+        assert mon._ti_snapshot.state == STATE_WAITING
+        assert mon._ti_next_attempt == 0.0
+
+    def test_session_ended_still_stops_owntone_and_publishes_end(self):
+        mon = self._origin()
+        core.set_user_silence_latch()
+        stop, np_end = self._end(mon)
+        stop.assert_called_once_with("http://owntone.invalid", "session ended")
+        np_end.assert_called_once_with(mon)
+        assert core.user_silence_latch_active() is False
+
+    def test_live_interrupt_by_another_input_tears_down_the_old_origin(self):
+        origin = self._origin(input_index=1)
+        live = _make_monitor(input_index=2)
+        live.is_capturing = True
+        gen = origin._ti_generation
+        self._end(origin, event="source_changed", new_mon=live,
+                  new_source="input2")
+        assert origin._ti_generation == gen + 1
+        assert origin._ti_snapshot.state == STATE_WAITING
+        assert live._ti_next_attempt_reason == "initial"
+
+    def test_live_interrupt_on_the_origin_itself_is_armed_not_torn_down(self):
+        origin = self._origin(input_index=1)
+        gen = origin._ti_generation
+        self._end(origin, event="source_changed", new_mon=origin,
+                  new_source="input1")
+        # Only the session arm ran: one generation bump, fresh initial attempt.
+        assert origin._ti_generation == gen + 1
+        assert origin._ti_next_attempt_reason == "initial"
+        assert origin._ti_next_attempt > time.time() + 20
+
+    def test_teardown_takes_the_ti_state_lock(self):
+        mon = self._origin()
+        done = threading.Event()
+
+        def teardown():
+            mon._teardown_identification_after_replay()
+            done.set()
+
+        with mon._ti_state_lock:
+            t = threading.Thread(target=teardown, daemon=True)
+            t.start()
+            assert not done.wait(0.3)
+        assert done.wait(5)
+        t.join(5)
+
+
+# ---------------------------------------------------------------------------
 # _apply_track_id_service: replay-origin scheduling
 #
 # Before this fix, _apply_track_id_service() only scheduled an initial

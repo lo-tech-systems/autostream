@@ -1406,6 +1406,7 @@ def _dispatch_session_event(
     new_monitor: Optional["AudioMonitor"],
     owntone_base_url: str,
     new_source: Optional[str] = None,
+    prev_source: Optional[str] = None,
 ) -> None:
     """Apply the session-level side effects for one _SessionTracker event.
 
@@ -1429,7 +1430,23 @@ def _dispatch_session_event(
     event with no fresh edge left (see _arm_track_identification_for_
     session()'s docstring for both cases), so this is the one place that
     is guaranteed to run for either.
+
+    *prev_source* is the tracker's source before this update() call. When it
+    was "replay" and the replay has ended (session_ended) or handed over to a
+    different monitor (source_changed), the origin monitor's identification
+    is torn down: the replay end raises no capture-stop edge, and
+    _replay_origin is already false on that tick, so this is the only place
+    that can tell. A live source ending is torn down by _on_capture_stopped()
+    and is left alone here.
     """
+    if (
+        event in ("session_ended", "source_changed")
+        and prev_source == "replay"
+        and prev_monitor is not None
+        and prev_monitor is not new_monitor
+    ):
+        prev_monitor._teardown_identification_after_replay()
+
     if event == "session_started":
         _session_nowplaying_start(new_monitor)
         if new_monitor is not None:
@@ -3627,6 +3644,46 @@ class AudioMonitor:
             from track_id.models import disabled_snapshot
             self._ti_snapshot = disabled_snapshot()
 
+    def _teardown_identification_after_replay(self) -> None:
+        """Drop this monitor's identification state once its replay has ended.
+
+        Called on the coordinator thread from _dispatch_session_event() when
+        the session's previous source was "replay" and that source has gone
+        (session_ended) or moved to a different monitor (source_changed).
+        A replay end produces no capturing edge, so _on_capture_stopped()
+        never runs for it; without this the origin monitor would carry its
+        last identified snapshot through Hold and let a worker that finishes
+        after the end land a match on an idle input.
+
+        Same effect as _on_capture_stopped()'s live teardown (generation
+        bump so a late worker result is discarded, deadlines and baseline
+        zeroed, waiting/disabled snapshot), plus clearing the in-flight
+        fields so the next arm starts clean. A rate-limit or
+        upstream-rejection deadline is dropped with the rest, as on a live
+        capture stop; the next session arm starts from a clean schedule
+        either way. Takes _ti_state_lock. Idempotent: a second call only
+        bumps the generation again.
+        """
+        with self._ti_state_lock:
+            self._ti_generation += 1
+            self._ti_inflight = False
+            self._ti_inflight_token = None
+            self._ti_next_attempt = 0.0
+            self._ti_next_attempt_reason = ""
+            self._ti_last_identified_at = 0.0
+            self._track_change_seq_baseline = 0
+            if _track_id_service is not None:
+                from track_id.models import waiting_snapshot
+                self._ti_snapshot = waiting_snapshot()
+            else:
+                from track_id.models import disabled_snapshot
+                self._ti_snapshot = disabled_snapshot()
+
+        logging.debug(
+            "Input %d (%s): identification torn down after replay.",
+            self.input_index, self.input_device,
+        )
+
     # ── Track identification ──────────────────────────────────────────────────
 
     def _apply_track_id_service(self, service) -> None:
@@ -5371,12 +5428,14 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # now-playing publish_start/publish_end run -- see
                 # _SessionTracker's module comment for the full event
                 # semantics.
+                session_prev_source = session_tracker.active_source
                 session_event, session_prev_monitor, session_new_monitor, session_source = (
                     session_tracker.update(monitors, repeat_status)
                 )
                 _dispatch_session_event(
                     session_event, session_prev_monitor, session_new_monitor,
                     cfg.owntone.base_url, new_source=session_source,
+                    prev_source=session_prev_source,
                 )
                 _set_session_state(session_source is not None, session_source)
 
