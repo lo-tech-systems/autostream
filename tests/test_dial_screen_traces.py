@@ -48,6 +48,12 @@ GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces.json"
 # which proves every pre-existing scripted scenario's recorded fields are
 # unchanged by this feature (new keys aside).
 PRE_OUTPUTS_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_outputs.json"
+# A frozen copy of GOLDEN_PATH taken immediately before sticky binding (the
+# automatic pin to the last-shown playing appliance) was added — see
+# TestPreBindingScenariosUnchanged below, the same proof
+# TestPreOutputsScenariosUnchanged gives for the outputs feature, one layer
+# further back.
+PRE_BINDING_GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces_pre_binding.json"
 
 # Set to True locally to regenerate the golden fixture after a *deliberate*,
 # reviewed change. Must be False in committed code.
@@ -168,6 +174,16 @@ def _outputs_body(rows) -> dict:
             {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": r}
             for (i, n, s, v, r) in rows
         ],
+    }
+
+
+def _art(url_tag: str, title: str = "Song", artist: str = "Artist") -> dict:
+    """A minimal "identified, with artwork" track_id object, keyed by
+    *url_tag* alone so two calls with different tags never collide on the
+    dedupe url comparison _show_artwork() does."""
+    return {
+        "state": "identified", "artwork_url": f"https://provider.example/{url_tag}.jpg",
+        "artist": artist, "title": title,
     }
 
 
@@ -361,6 +377,8 @@ def _snapshot(ctx: _Ctx) -> dict:
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
+        "bound_appliance_id": d._bound_appliance_id,
+        "source_artwork_url": dd._url_log_key(d._source_artwork_url) if d._source_artwork_url else "",
         "manual_focus_id": d._manual_focus_id,
         "focus_pending": d._focus_pending is not None,
         "display_sleeping": d._display_sleeping,
@@ -373,11 +391,22 @@ def _snapshot(ctx: _Ctx) -> dict:
     }
 
 
+# Sized to match FakeBackend's own (default) panel dimensions: compose()
+# drops a transformed frame whose size does not match the active logical
+# size (see _show_artwork()'s post-transform guard), so a fake "transform"
+# that ignores its requested size must still land on the one size these
+# scenarios actually use.
+_FAKE_ARTWORK_IMAGE = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
+
+
 def _run_scenario(steps: list[tuple]) -> list[dict]:
     ctx = _Ctx()
     with patch("dial_display.time.monotonic", ctx.clock), \
          patch("dial_display.fetch_target_status", side_effect=ctx.fake_fetch), \
-         patch("dial_display.enrich_targets", side_effect=ctx.fake_enrich):
+         patch("dial_display.enrich_targets", side_effect=ctx.fake_enrich), \
+         patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+         patch("dial_display.decode_artwork", return_value=_FAKE_ARTWORK_IMAGE), \
+         patch("dial_display_compositor.transform_artwork_for_panel", return_value=_FAKE_ARTWORK_IMAGE):
         ctx.display.enable()
         ctx.frame_offset = len(ctx.fb.displayed)
         trace = []
@@ -1048,6 +1077,178 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("poll",),
     ])
 
+    # --- Sticky binding to the shown playing appliance (items 2 and 3) -----
+    # A = oldest playing, B = later starter, art(X) = an identified track
+    # with artwork on X. Each scenario name states the case it pins.
+
+    aid_a = _aid("bd1")
+    ta = _target("BD1A", aid_a, playing_since=1.0)
+    add("binding_binds_on_the_first_tick", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=None)}),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd2a"), _aid("bd2b")
+    ta = _target("BD2A", aid_a, playing_since=1.0)
+    tb = _target("BD2B", aid_b, playing_since=2.0)
+    add("binding_second_starter_with_no_artwork_on_bound_does_not_steal", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=None)}),
+        ("poll",),
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=_art("bd2b"))}),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd3a"), _aid("bd3b")
+    ta = _target("BD3A", aid_a, playing_since=1.0)
+    tb = _target("BD3B", aid_b, playing_since=2.0)
+    add("binding_second_starter_with_both_identified_still_does_not_steal", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=_art("bd3a"))}),
+        ("poll",),
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=_art("bd3a")), aid_b: _status_result(track_id=_art("bd3b"))}),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd4a"), _aid("bd4b")
+    ta = _target("BD4A", aid_a, playing_since=1.0)
+    tb = _target("BD4B", aid_b, playing_since=2.0)
+    add("binding_track_change_on_a_non_shown_appliance_is_invisible", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=_art("bd4a")), aid_b: _status_result(track_id=_art("bd4b1"))}),
+        ("poll",),
+        ("status", {aid_b: _status_result(track_id=_art("bd4b2"))}),
+        ("poll",),
+    ])
+
+    aid_a = _aid("bd5")
+    ta = _target("BD5A", aid_a, playing_since=1.0)
+    add("binding_track_change_on_the_bound_appliance_updates_artwork", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=_art("bd5v1"))}),
+        ("poll",),
+        ("status", {aid_a: _status_result(track_id=_art("bd5v2"))}),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd6a"), _aid("bd6b")
+    ta = _target("BD6A", aid_a, playing_since=1.0)
+    tb = _target("BD6B", aid_b, playing_since=2.0)
+    add("binding_bound_appliance_stops_rebinds_to_the_survivor", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=_art("bd6a"))}),
+        ("poll",),
+        ("targets", [tb]),
+        ("status", {aid_b: _status_result(track_id=_art("bd6b"))}),
+        ("poll",),
+    ])
+
+    aid_a = _aid("bd7")
+    ta = _target("BD7A", aid_a, playing_since=1.0)
+    add("binding_bound_appliance_stops_nothing_playing_releases_to_idle", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=None)}),
+        ("poll",),
+        ("targets", []),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd8a"), _aid("bd8b")
+    ta = _target("BD8A", aid_a, playing_since=1.0)
+    tb = _target("BD8B", aid_b, playing_since=2.0)
+    add("binding_survives_the_original_appliance_returning", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=None)}),
+        ("poll",),
+        ("targets", [tb]),
+        ("poll",),
+        ("targets", [ta, tb]),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd9a"), _aid("bd9b")
+    ta = _target("BD9A", aid_a, playing_since=1.0)
+    tb = _target("BD9B", aid_b, playing_since=2.0)
+    add("binding_selector_pick_sets_manual_focus_and_binding_mirrors_it", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=None)}),
+        ("poll",),
+        ("open_selector",),
+        ("repaint",),
+        ("list_row_tap", 1),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd10a"), _aid("bd10b")
+    ta = _target("BD10A", aid_a, playing_since=1.0)
+    tb = _target("BD10B", aid_b, playing_since=2.0)
+    add("binding_picked_appliance_stops_other_still_playing_rebinds", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=None)}),
+        ("poll",),
+        ("set_manual_focus", aid_b),
+        ("poll",),
+        ("targets", [ta]),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd11a"), _aid("bd11b")
+    ta = _target("BD11A", aid_a, playing_since=1.0)
+    tb = _target("BD11B", aid_b, playing_since=2.0)
+    add("binding_picked_appliance_stops_nothing_else_playing_goes_idle", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=None)}),
+        ("poll",),
+        ("set_manual_focus", aid_b),
+        ("poll",),
+        ("targets", []),
+        ("poll",),
+    ])
+
+    aid_a, aid_x = _aid("bd12a"), _aid("bd12x")
+    ta = _target("BD12A", aid_a, playing_since=1.0)
+    idle_x = _idle_row("BD12X", aid_x, repeat_capable=False)
+    add("binding_idle_focus_pick_is_unaffected_by_another_appliance", [
+        ("targets", [ta]),
+        ("status", {aid_a: _status_result(track_id=None)}),
+        ("roster", [_roster_row_for_target(ta), idle_x]),
+        ("poll",),
+        ("set_manual_focus", aid_x),
+        ("poll",),
+        ("targets", []),
+        ("roster", [idle_x]),
+        ("poll",),
+        ("targets", [ta]),
+        ("roster", [_roster_row_for_target(ta), idle_x]),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd13a"), _aid("bd13b")
+    ta = _target("BD13A", aid_a, playing_since=1.0)
+    tb = _target("BD13B", aid_b, playing_since=2.0)
+    add("binding_bound_appliance_unauthorized_mid_tick_releases_and_continues", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=None)}),
+        ("poll",),
+        ("status", {
+            aid_a: _status_result(status_error="unauthorized"),
+            aid_b: _status_result(track_id=_art("bd13b")),
+        }),
+        ("poll",),
+    ])
+
+    aid_a, aid_b = _aid("bd14a"), _aid("bd14b")
+    ta = _target("BD14A", aid_a, playing_since=1.0)
+    tb = _target("BD14B", aid_b, playing_since=2.0)
+    add("binding_boot_with_two_playing_only_one_identified_binds_to_it", [
+        ("targets", [ta, tb]),
+        ("status", {aid_a: _status_result(track_id=None), aid_b: _status_result(track_id=_art("bd14b"))}),
+        ("poll",),
+    ])
+
     return scenarios
 
 
@@ -1239,6 +1440,8 @@ def _strip_new_fields(step: dict) -> dict:
     stripped.pop("output_detail", None)
     stripped.pop("outputs_optimistic", None)
     stripped.pop("showing", None)
+    stripped.pop("bound_appliance_id", None)
+    stripped.pop("source_artwork_url", None)
     if "touch_surface" in stripped:
         stripped["touch_surface"] = stripped["touch_surface"][:3]
     return stripped
@@ -1276,3 +1479,57 @@ class TestPreOutputsScenariosUnchanged:
         new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
         assert "picker_touch_restarts_timeout" in new
         assert "picker_touch_does_not_restart_timeout" not in new
+
+
+# ---------------------------------------------------------------------------
+# Proof that adding sticky binding (the automatic pin to the last-shown
+# playing appliance, beneath manual focus) did not change any pre-existing
+# scenario's own recorded behaviour: the same strip-and-compare shape as
+# TestPreOutputsScenariosUnchanged, one baseline further back
+# (PRE_BINDING_GOLDEN_PATH, frozen immediately before this change), stripping
+# only the two keys this change adds (bound_appliance_id, source_artwork_url
+# -- "showing" was already present in that baseline).
+#
+# No scenario needs excluding here: every pre-existing scripted scenario
+# plays at most one appliance at a time (binding only ever changes behaviour
+# with a second SIMULTANEOUSLY playing appliance, or a track change on one
+# that is not the shown appliance -- see the fourteen new "binding_*"
+# scenarios above, all of which are new names, not exclusions). Random walks
+# are excluded as always: their own step sequence did not change, but the
+# manager's behaviour along it legitimately did.
+# ---------------------------------------------------------------------------
+
+def _strip_binding_fields(step: dict) -> dict:
+    stripped = dict(step)
+    stripped.pop("bound_appliance_id", None)
+    stripped.pop("source_artwork_url", None)
+    return stripped
+
+
+class TestPreBindingScenariosUnchanged:
+    def test_every_pre_existing_scripted_scenario_is_unchanged(self):
+        old = json.loads(PRE_BINDING_GOLDEN_PATH.read_text(encoding="utf-8"))
+        new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+
+        checked = 0
+        for name, old_trace in old.items():
+            if name.startswith("random_walk_"):
+                continue
+            assert name in new, f"scenario {name!r} present in the pre-binding golden is missing from the current one"
+            new_trace = new[name]
+            assert len(new_trace) == len(old_trace), f"{name!r}: step count changed"
+            for i, (old_step, new_step) in enumerate(zip(old_trace, new_trace)):
+                assert _strip_binding_fields(new_step) == old_step, (
+                    f"{name!r} step {i}: a pre-existing scenario's recorded "
+                    f"fields changed beyond the new bound_appliance_id/"
+                    f"source_artwork_url keys"
+                )
+            checked += 1
+        # Sanity: this must actually have exercised a meaningful number of
+        # scenarios, not silently compared zero because of a path/name typo.
+        assert checked >= 30
+
+    def test_the_fourteen_binding_scenarios_are_present(self):
+        new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+        binding_scenarios = [name for name in new if name.startswith("binding_")]
+        assert len(binding_scenarios) == 14

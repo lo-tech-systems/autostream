@@ -704,6 +704,15 @@ class DialDisplay:
         # on_zone_tap dispatch for a LIST_ROW tap). Plain reference
         # read/write, same discipline as _overlay_snapshot. Never persisted.
         self._manual_focus_id: str | None = None
+        # Sticky binding to the shown playing appliance, beneath manual
+        # focus: appliance_id of whichever appliance the screen is bound to
+        # when no manual focus is set, or None. Poll-thread-only plain
+        # attribute (like _prev_playing_ids) — written and read exclusively
+        # in _poll_once(); mirrors the manual focus whenever one is set, so
+        # a later focus clear releases and rebinds exactly like any other
+        # release. See _poll_once's binding resolution, right beneath the
+        # manual-focus resolution it always defers to.
+        self._bound_appliance_id: str | None = None
         # Manual-focus pending grace (a picker-started replay's focus, set
         # by set_manual_focus_pending()): (appliance_id, service_name,
         # expires_at monotonic), or None. Written by the touch thread and
@@ -3196,6 +3205,12 @@ class DialDisplay:
                     self._update_dots_active(now)
                     self._update_outputs_available()
 
+            # Mirror the binding to whatever is reporting now: a manual
+            # focus (idle or pending) always wins and the binding simply
+            # tracks it; with none, the binding tracks the (possibly None)
+            # reporting id directly, so it releases cleanly to nothing
+            # playing/focused and the next tick's walk starts unpinned.
+            self._bound_appliance_id = focus_id if focus_id is not None else self._reporting_appliance_id
             self._maybe_show_transition(previous_reporting_id)
             self._close_bound_screen_if_unfocused()
             self.show_logo()
@@ -3227,16 +3242,38 @@ class DialDisplay:
                     records[idle_focus.service_name] = result
 
         if idle_focus is None:
-            # With a focus, it is polled first and pinned to unconditionally
-            # — the walk never falls through to another appliance's
-            # artwork. Without one, today's playing_since-ordered walk is
-            # unchanged.
+            # Automatic binding beneath manual focus, only when no manual
+            # focus is set: the appliance the screen was already bound to
+            # (see the mirror update after reporting resolution below and
+            # in the empty-targets branch above) is pinned the same way a
+            # manual focus is, so a newly-identified appliance elsewhere
+            # cannot steal the screen. Released — and the walk below runs
+            # unpinned — the moment the bound appliance stops, leaves the
+            # roster, or is confirmed unauthorized; whatever the unpinned
+            # walk then reports becomes the new binding at the end of the
+            # tick.
+            bound_target = None
+            if focus_id is None:
+                bid = self._bound_appliance_id
+                if bid is not None:
+                    bound_target = next(
+                        (t for t in targets if t.appliance_id == bid and t.auth != AUTH_UNAUTHORIZED),
+                        None,
+                    )
+                    if bound_target is None:
+                        self._bound_appliance_id = None
+
+            # With a focus (or, absent one, a binding), it is polled first
+            # and pinned to unconditionally — the walk never falls through
+            # to another appliance's artwork. With neither, today's
+            # playing_since-ordered walk is unchanged.
+            pin_target = focus_target if focus_target is not None else bound_target
             ordered = (
-                [focus_target] + [t for t in targets if t is not focus_target]
-                if focus_target is not None else targets
+                [pin_target] + [t for t in targets if t is not pin_target]
+                if pin_target is not None else targets
             )
             for target in ordered:
-                is_focus = focus_target is not None and target is focus_target
+                is_focus = pin_target is not None and target is pin_target
                 if target.auth == AUTH_UNAUTHORIZED:
                     logging.debug("dial display: skip unauthorized row %s", target.service_name)
                     continue
@@ -3244,7 +3281,8 @@ class DialDisplay:
                     logging.debug("dial display: skip unsupported target %s", target.service_name)
                     if is_focus:
                         # No status to poll, but the screen still follows the
-                        # focus for its name/label; there is simply no artwork.
+                        # pinned target for its name/label; there is simply
+                        # no artwork.
                         selected_service = target.service_name
                         break
                     continue
@@ -3256,18 +3294,25 @@ class DialDisplay:
                 status_error = result.get("status_error")
 
                 if is_focus and status_error == "unauthorized":
-                    # Revoked mid-tick: clear focus now and fall through to the
-                    # normal walk over the remaining targets in this same poll,
-                    # so the screen shows the auto-pick target immediately.
-                    self._clear_focus("appliance now unauthorized")
-                    focus_target = None
+                    # Revoked mid-tick: release whichever pin this was — a
+                    # manual focus clears it, an automatic binding just
+                    # releases — and fall through to the normal walk over
+                    # the remaining targets in this same poll, so the
+                    # screen shows the auto-pick target immediately.
+                    if focus_target is not None:
+                        self._clear_focus("appliance now unauthorized")
+                        focus_target = None
+                    else:
+                        self._bound_appliance_id = None
+                    pin_target = None
                     is_focus = False
                     continue
 
                 if is_focus:
-                    # The focus target is pinned regardless of whether it has
-                    # identified artwork — never fall through to another
-                    # appliance's artwork while a focus is set.
+                    # The pinned target is shown regardless of whether it
+                    # has identified artwork — never fall through to
+                    # another appliance's artwork while a focus or a
+                    # binding pins one.
                     selected_service = target.service_name
                     if not status_error:
                         records[target.service_name] = result
@@ -3310,6 +3355,11 @@ class DialDisplay:
         reporting_name = reporting.service_name if reporting is not None else None
         reporting_id = reporting.appliance_id if reporting is not None else None
         self._reporting_appliance_id = reporting_id
+        # Mirror the binding to whatever is reporting now — see the
+        # empty-targets branch's identical mirror update above for the full
+        # rationale. reporting_id can still be None here (e.g. every target
+        # unauthorized this tick); the mirror releases to None the same way.
+        self._bound_appliance_id = focus_id if focus_id is not None else reporting_id
         self._update_dots_active(time.monotonic())
         self._update_outputs_available()
         self._maybe_show_transition(previous_reporting_id)
