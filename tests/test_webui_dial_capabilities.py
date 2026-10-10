@@ -48,7 +48,7 @@ class TestReply:
             "dial_proto": 3,
             "capabilities": {
                 "dial_status": 1,
-                "dial_outputs": 1,
+                "dial_outputs": 2,
                 "dial_eq": 2,
                 "repeat": 1,
                 "audio_status": 1,
@@ -103,3 +103,23 @@ class TestRegistration:
         assert "/api/dial/capabilities" in text
         for name in DIAL_CAPABILITIES:
             assert f"`{name}`" in text
+
+
+class TestOutputsCapability:
+    def test_outputs_capability_is_two(self):
+        _, body, _ = _call()
+        assert body["capabilities"]["dial_outputs"] == 2
+
+    def test_every_capability_name_appears_in_the_protocol_doc(self):
+        from pathlib import Path
+        from autostream_dials import DIAL_CAPABILITIES
+        doc = (Path(__file__).resolve().parent.parent / "docs" / "dial" / "DIAL_PROTOCOL.md"
+               ).read_text(encoding="utf-8")
+        for name in DIAL_CAPABILITIES:
+            assert f"`{name}" in doc, name
+
+    def test_txt_value_for_outputs_stays_v1_in_the_doc(self):
+        from pathlib import Path
+        doc = (Path(__file__).resolve().parent.parent / "docs" / "dial" / "DIAL_PROTOCOL.md"
+               ).read_text(encoding="utf-8")
+        assert "dial_outputs=v1" in doc

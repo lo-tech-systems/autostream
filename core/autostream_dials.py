@@ -43,7 +43,7 @@ DIAL_PROTO_VERSION = "v3"
 # capability key in the TXT records appears here.
 DIAL_CAPABILITIES: dict[str, int] = {
     "dial_status": 1,
-    "dial_outputs": 1,
+    "dial_outputs": 2,
     "dial_eq": 2,
     "repeat": 1,
     "audio_status": 1,

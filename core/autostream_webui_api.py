@@ -124,7 +124,7 @@ from autostream_core import (
     update_live_silence_threshold_dbfs,
     update_playback_input_config,
 )
-from autostream_pin_pairing import REQUESTER_WEBUI
+from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
     _dial_update_banner_text,
     _OUTPUT_EQ_ALL_FIELDS,
@@ -1265,6 +1265,9 @@ def _dial_outputs_list(parsed) -> Optional[list]:
             "volume": o["volume"], "remote_in_use": bool(o.get("remote_in_use")),
             "remote_owner": str(o.get("remote_owner") or ""),
             "is_default": bool(o.get("is_default")),
+            "pin_pending": bool(o.get("pin_pending")),
+            "needs_auth_key": bool(o.get("needs_auth_key")),
+            "pin_claim": str(o.get("pin_claim") or ""),
         }
         for o in annotate_outputs(outputs)
     ]
@@ -1332,17 +1335,22 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
     Enabling without an explicit volume applies the configured default
     volume, exactly as the setup page does; a volume change on an already-
     enabled output and a disable pass through untouched. Rejections
-    (output already in use elsewhere, a PIN required, encoder capacity)
-    are returned as-is -- the dial has no dialog surface and reconciles by
-    refetching the list.
+    (output already in use elsewhere, a PIN required or wrong, attempts
+    limited with the seconds to wait, encoder capacity) are typed and
+    returned as-is. A dial that declares pin_capable, or submits a PIN, is
+    the pairing requester for the output; the PIN rule and the attempt limit
+    are applied by the mutation.
     """
-    if _dial_auth_gate(handler, json_obj) is None:
+    dial_id = _dial_auth_gate(handler, json_obj)
+    if dial_id is None:
         return
-    body = {k: json_obj.get(k) for k in ("id", "selected", "volume") if k in json_obj}
+    body = {k: json_obj.get(k) for k in ("id", "selected", "volume", "op", "pin") if k in json_obj}
     sanitized, err = sanitize_output_body(body)
     if err is not None:
         send_json(handler, 400, {"ok": False, "error": err})
         return
+    pin_capable = json_obj.get("pin_capable") is True or sanitized.get("op") == "pin"
+    requester = dial_requester(dial_id) if pin_capable else None
     try:
         parsed = _config_snapshot(state)
         base_url = parsed.owntone.base_url.rstrip("/")
@@ -1360,6 +1368,7 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
         return
     result = apply_output_mutation(
         base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
+        requester=requester,
     )
     result["appliance_id"] = get_appliance_id()
     send_json(handler, 200, result)

@@ -235,7 +235,8 @@ class TestOutputsList:
         assert body["appliance_id"] == TEST_APPLIANCE_ID
         assert body["outputs"] == [
             {"id": "1", "name": "Bedroom", "selected": True, "volume": 40,
-             "remote_in_use": False, "remote_owner": "", "is_default": False},
+             "remote_in_use": False, "remote_owner": "", "is_default": False,
+             "pin_pending": False, "needs_auth_key": False, "pin_claim": ""},
         ]
 
     def test_hidden_unselected_output_excluded(self):
@@ -281,6 +282,49 @@ class TestOutputsList:
                 list_result=_ok_list(_output("1", "Bedroom", 40)),
             )
         assert body["outputs"][0]["is_default"] is False
+
+    def test_rows_carry_pin_pending_needs_auth_key_and_claim(self):
+        import autostream_pin_pairing as pp
+        rows_in = (
+            OutputInfo(id="1", name="Bedroom", selected=False, pin_pending=True,
+                       needs_auth_key=True),
+            OutputInfo(id="2", name="Kitchen", selected=False),
+        )
+        with patch.object(pp, "STATE", pp.PairingState()) as fresh:
+            fresh.claim("1", "dial:abc")
+            code, body = _invoke_list({"dial_id": DIAL_ID}, list_result=_ok_list(*rows_in))
+        rows = {o["name"]: o for o in body["outputs"]}
+        assert rows["Bedroom"]["pin_pending"] is True
+        assert rows["Bedroom"]["needs_auth_key"] is True
+        assert rows["Bedroom"]["pin_claim"] == "dial:abc"
+        assert rows["Kitchen"]["pin_pending"] is False
+        assert rows["Kitchen"]["needs_auth_key"] is False
+        assert rows["Kitchen"]["pin_claim"] == ""
+
+    def test_pairing_fields_are_always_bools_and_a_string(self):
+        from autostream_appliance_models import build_output_list as real_build
+
+        def _odd(*args, **kwargs):
+            rows = real_build(*args, **kwargs)
+            variants = [(None, None, None), ("yes", "yes", None), ("", 0, "x")]
+            for r, (pp_, nk, pc) in zip(rows, variants):
+                r["pin_pending"], r["needs_auth_key"], r["pin_claim"] = pp_, nk, pc
+            for r in rows[len(variants):]:
+                for k in ("pin_pending", "needs_auth_key", "pin_claim"):
+                    r.pop(k, None)
+            return rows
+
+        with patch("autostream_webui_api.build_output_list", side_effect=_odd):
+            code, body = _invoke_list(
+                {"dial_id": DIAL_ID},
+                list_result=_ok_list(*[_output(str(i), f"O{i}", 10) for i in range(4)]),
+            )
+        for row in body["outputs"]:
+            assert isinstance(row["pin_pending"], bool)
+            assert isinstance(row["needs_auth_key"], bool)
+            assert isinstance(row["pin_claim"], str)
+        assert body["outputs"][1]["pin_pending"] is True
+        assert body["outputs"][2]["pin_claim"] == "x"
 
     def test_remote_in_use_true_when_used_elsewhere_and_not_locally_selected(self):
         from autostream_output_usage import OutputUsage
@@ -360,16 +404,113 @@ class TestOutputsSetValidation:
         assert body == {"ok": False, "error": "invalid_request_body"}
         mutation.assert_not_called()
 
-    def test_op_pin_is_rejected_as_invalid_request_body(self):
-        """The dial never sends op/pin; only id/selected/volume reach the
-        sanitiser, so a pin submission body is left with no `selected` and
-        is rejected the same as any other malformed body."""
-        code, body, mutation, mode_mock = _invoke_set(
-            {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234"},
+    def test_op_pin_with_digits_reaches_the_mutation_with_the_dial_as_requester(self):
+        for extra in ({}, {"pin_capable": True}):
+            code, body, mutation, mode_mock = _invoke_set(
+                {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234", **extra},
+            )
+            assert code == 200
+            args, kwargs = mutation.call_args
+            assert args[2] == {"id": "1", "op": "pin", "pin": "1234"}
+            assert kwargs["requester"] == f"dial:{DIAL_ID}"
+
+    def test_a_plain_enable_has_a_requester_only_when_pin_capable(self):
+        _, _, mutation, _ = _invoke_set({"dial_id": DIAL_ID, "id": "1", "selected": True})
+        assert mutation.call_args.kwargs["requester"] is None
+        _, _, mutation, _ = _invoke_set(
+            {"dial_id": DIAL_ID, "id": "1", "selected": True, "pin_capable": True},
+        )
+        assert mutation.call_args.kwargs["requester"] == f"dial:{DIAL_ID}"
+
+    def test_pin_capable_must_be_the_bool_true(self):
+        for value in ("true", 1, "yes", None, [True]):
+            _, _, mutation, _ = _invoke_set(
+                {"dial_id": DIAL_ID, "id": "1", "selected": True, "pin_capable": value},
+            )
+            assert mutation.call_args.kwargs["requester"] is None, value
+
+    def test_a_malformed_pin_is_400_invalid_request_body(self):
+        hostile = ["123", "123456789", "12a4", "１２３４", " 1234", "1234\n",
+                   "", None, 1234, ["1234"], {"a": 1}, True]
+        for pin in hostile:
+            code, body, mutation, _ = _invoke_set(
+                {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": pin},
+            )
+            assert code == 400, repr(pin)
+            assert body == {"ok": False, "error": "invalid_request_body"}, repr(pin)
+            mutation.assert_not_called()
+
+    def test_a_pin_op_without_a_pin_is_400(self):
+        code, body, mutation, _ = _invoke_set({"dial_id": DIAL_ID, "id": "1", "op": "pin"})
+        assert code == 400
+        mutation.assert_not_called()
+
+    def test_an_unknown_op_without_selected_is_400(self):
+        code, body, mutation, _ = _invoke_set({"dial_id": DIAL_ID, "id": "1", "op": "nope"})
+        assert code == 400
+        mutation.assert_not_called()
+
+    def test_a_non_bool_selected_with_a_pin_is_400(self):
+        code, body, mutation, _ = _invoke_set(
+            {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234", "selected": "true"},
         )
         assert code == 400
-        assert body == {"ok": False, "error": "invalid_request_body"}
         mutation.assert_not_called()
+
+    def test_a_rate_limited_mutation_result_is_returned_with_retry_after(self):
+        code, body, mutation, _ = _invoke_set(
+            {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234"},
+            mutation_result={"ok": False, "error": "rate_limited", "retry_after_s": 42, "id": "1"},
+        )
+        assert code == 200
+        assert body == {"ok": False, "error": "rate_limited", "retry_after_s": 42, "id": "1",
+                        "appliance_id": TEST_APPLIANCE_ID}
+
+    def test_pin_then_selected_fills_the_default_volume(self):
+        _, _, mutation, _ = _invoke_set(
+            {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234", "selected": True},
+            parsed=_parsed(volume_percent=63),
+        )
+        args, _ = mutation.call_args
+        assert args[2]["volume"] == 63
+        assert args[2]["selected"] is True and args[2]["pin"] == "1234"
+
+    def test_pin_then_selected_keeps_an_explicit_volume(self):
+        _, _, mutation, _ = _invoke_set(
+            {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234", "selected": True,
+             "volume": 30},
+            parsed=_parsed(volume_percent=63),
+        )
+        assert mutation.call_args.args[2]["volume"] == 30
+
+    def test_older_dial_bodies_get_the_same_call_as_before(self):
+        _, body, mutation, _ = _invoke_set(
+            {"dial_id": DIAL_ID, "id": "1", "selected": False},
+        )
+        args, kwargs = mutation.call_args
+        assert args[2]["selected"] is False and "op" not in args[2] and "pin" not in args[2]
+        assert kwargs["requester"] is None
+        assert body == {"ok": True, "id": "1", "appliance_id": TEST_APPLIANCE_ID}
+
+    def test_the_real_mutation_never_logs_the_pin(self, caplog):
+        import logging as _logging
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        handler = _make_handler()
+        with (
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+            patch("autostream_webui_api._config_snapshot", return_value=_parsed()),
+            patch("autostream_appliance_models.submit_output_pin") as submit,
+            caplog.at_level(_logging.DEBUG),
+        ):
+            submit.return_value = MagicMock(ok=False, error_code="pin_invalid", message="bad")
+            send_dial_outputs_set_post_json(
+                handler, state, {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "918273"},
+            )
+        code, body = _response(handler)
+        assert body["pin_invalid"] is True
+        assert "918273" not in caplog.text
 
     def test_non_bool_selected_is_400(self):
         code, body, mutation, mode_mock = _invoke_set(

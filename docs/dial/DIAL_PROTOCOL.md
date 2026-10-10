@@ -95,6 +95,9 @@ What `v3` adds to `v2`, on an appliance:
 - **Appliance warnings.** `POST /api/dial/warnings` lists what the appliance wants a dial to
   show (wear and power supply notices); the capabilities endpoint reports `dial_warnings`
   as `1`.
+- **Speaker pairing.** `POST /api/dial/outputs` reports `pin_pending`, `needs_auth_key` and
+  `pin_claim`; `POST /api/dial/outputs/set` accepts a PIN; the capabilities endpoint reports
+  `dial_outputs` as `2`.
 
 What `v3` means, on a dial: it reads `GET /api/dial/capabilities` from an appliance that
 advertises `v3` and uses the reply in place of the TXT capability keys, shows the six-band EQ,
@@ -232,7 +235,7 @@ names with versions), so a dial can read it before it is authorized.
   "dial_proto": 3,
   "capabilities": {
     "dial_status": 1,
-    "dial_outputs": 1,
+    "dial_outputs": 2,
     "dial_eq": 2,
     "repeat": 1,
     "audio_status": 1,
@@ -659,7 +662,8 @@ instance.
 ```json
 {"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "outputs": [
   {"id": "1", "name": "Living Room", "selected": true, "volume": 42,
-   "remote_in_use": false, "remote_owner": "", "is_default": true}
+   "remote_in_use": false, "remote_owner": "", "is_default": true,
+   "pin_pending": false, "needs_auth_key": false, "pin_claim": ""}
 ]}
 ```
 
@@ -672,6 +676,16 @@ empty string.
 other. Appliances from before this field existed omit it; a reader treats a missing value as
 `false`. It is informational: the default output is listed first, and a dial may mark it, but
 it needs no different handling.
+
+`pin_pending`, `needs_auth_key` and `pin_claim` describe speaker pairing. They are present
+from `dial_outputs` version 2; an appliance from before that omits them, and a reader
+treats a missing `pin_pending` or `needs_auth_key` as `false` and a missing `pin_claim` as
+an empty string. `pin_pending` is `true` while the speaker is waiting for a PIN to be
+entered. `needs_auth_key` is `true` when the speaker has never been paired and has to be
+paired from a PIN before it will play. `pin_claim` names who is being asked for the PIN
+right now: `webui` for the appliance's own web page, `dial:<id>` for a dial, or an empty
+string when nobody is. A claim ends when the PIN is accepted or after a short while. A dial
+does not act on `pin_claim`; it acts on `needs_auth_key`.
 
 | `error` | Meaning |
 |---|---|
@@ -693,15 +707,48 @@ already-enabled output and a disable pass through untouched.
 `volume` is optional on an enable (the configured default applies); it is ignored on a
 disable.
 
-**Responses:** the underlying mutation's own result plus `appliance_id` -- `{"ok": true,
-"id": "1"}` on success, or an `ok:false` dict carrying one of `output_in_use`,
-`pin_required`, `encoder_capacity`, or a backend error message. The dial does not
-special-case any of these; it refetches `POST /api/dial/outputs` and shows the truth.
+A speaker that has never been paired needs a PIN, shown on the speaker itself. A dial
+that can ask the user for one sends `"pin_capable": true` with its requests. Without
+it, the request behaves exactly as it always did. To send the PIN, use `op`:
+
+```json
+{"dial_id": "<id>", "id": "1", "op": "pin", "pin": "2718"}
+```
+
+```json
+{"dial_id": "<id>", "id": "1", "op": "pin", "pin": "2718", "selected": true, "volume": 60}
+```
+
+The second form pairs the speaker and switches it on in one request; `volume` is optional
+and the configured default applies when it is left out. The first form only pairs. `pin`
+is a string of four to eight digits. A dial that sends `pin_capable: true`, or that
+submits a PIN, is the one the appliance asks for the PIN for that speaker, and a PIN
+sent without `selected` leaves the speaker switched off. At most five PINs per minute are
+accepted for each speaker from each requester.
+
+**Responses:** the underlying mutation's own result plus `appliance_id`. Success is
+`{"ok": true, "id": "1"}`. Anything else is `ok:false`:
+
+| Reply | Meaning |
+|---|---|
+| `pin_required: true` | The speaker needs a PIN before it can be switched on. This is a flag on the reply, not an `error` value; `error` carries a message from the player |
+| `pin_invalid: true` | The PIN was sent but the speaker did not accept it. Also a flag (with a player message in `error`), and the speaker stays off |
+| `error: "output_in_use"` | Another appliance is using the speaker; `owner` names it |
+| `error: "encoder_capacity"` | The appliance cannot take another output right now |
+| `error: "rate_limited"` | Too many PINs were sent. `retry_after_s` is a whole number of seconds, at least 1, after which a PIN may be sent again |
+| `error: "invalid_pin"` | The PIN was not four to eight digits (only reachable when the appliance is called without the usual body check) |
+| `error: "config_error"` | The appliance configuration could not be loaded |
+| any other `error` | A message from the player backend |
+
+A dial that does not handle one of these refetches `POST /api/dial/outputs` and shows the
+truth.
 
 | `error` (`400`) | Meaning |
 |---|---|
 | `missing_output_id` | `id` is missing or empty |
-| `invalid_request_body` | `selected` is missing or not a boolean (the dial never sends `op`) |
+| `invalid_request_body` | `selected` is missing or not a boolean on a plain request, or `op` is `pin` and `pin` is not four to eight digits or `selected` is not a boolean |
+
+An appliance that announces `dial_outputs` version 1 does not understand `op`.
 
 ### `POST /api/dial/eq`
 
@@ -1746,7 +1793,7 @@ Responses:
 | `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
-| `dial_outputs=v1` | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume |
+| `dial_outputs=v1`; version 2 (JSON only) | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the pairing fields, the PIN submission and `retry_after_s` |
 | `dial_eq=v1`; version 2 (JSON only) | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; version 1 is bass/treble over the output EQ bands. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the six-band `bands` field on both routes |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
