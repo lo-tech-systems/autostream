@@ -118,13 +118,13 @@ master volume slider. The artwork sits on a soft, blurred copy of itself, and
 the logo does the same when nothing is playing. When the track changes, the
 picture and its blurred backdrop fade into the new one together (a plain
 change if the screen is set to reduce motion). With nothing playing the side
-shows the autostream logo and **Nothing playing**.
+shows the autostream logo and **Nothing playing**. When the appliance is
+playing but has not named the track yet, as the track changes or in the first
+moments of playback, the track line reads **Playing**, the same word the small
+screen uses, until the title arrives.
 
-To keep the screen restful, while something plays and nobody has touched the
-screen for about six seconds, the replay row, track line and volume row fade
-away and the artwork grows into the space. Touch the right side to bring them
-back. Turn on **Always show controls** (see below) if you would rather they
-stayed.
+The controls are always on show: the replay row, the track line and the volume
+row stay where they are however long the screen is left alone.
 
 ### Replay row
 
@@ -151,6 +151,12 @@ order, like the front of a tape deck:
 - With nothing playing and nothing held, both buttons are greyed out and the
   timer reads `-:-- / -:--`.
 
+Play and back to the start look pushed in from the moment you press them,
+because the appliance takes a few seconds to answer. They come back out when
+the appliance reports the replay running from the start. They also come back
+out if the request is refused or gets no answer, if the appliance stops, or if
+you move to another appliance, so a button never stays down.
+
 A greyed-out button does nothing. Lengths of an hour or more show hours, for
 example 1:02:05. If repeat is turned off on the appliance, the row is not
 shown.
@@ -174,12 +180,20 @@ Pull the handle at the top of the screen down (or tap it) to open a sheet:
 
 - **Brightness** slider.
 - **Sleep after**: 1 min, 5 min, 15 min or Never.
-- **Always show controls**.
 - **Sleep now**, which puts the screen to sleep straight away.
 - **This dial**: the dial's name, firmware version, IP address, Wi-Fi network
   and signal, free disk space and, where monitoring is on, SD card health.
+- A **power button** at the top right, which shuts the dial down.
 
 Changes apply at once and are saved by the dial.
+
+To shut the dial down, press the power button. The dial asks **Shut down?**;
+choose **Shut down** to go ahead or **Cancel** to leave things as they are.
+Once you confirm, the screen reads **Shutting down...** and then the shutdown
+screen takes over. Wait for the screen to go dark before taking the power
+away, and unplug and replug the dial to start it again. Only the dial's own
+touchscreen can do this: the page served on the local network for development
+(see below) refuses it.
 
 ### Warnings
 
@@ -260,6 +274,9 @@ Security notes:
   through the appliance's web server.
 - Every request except the sign-in page needs a session. A wrong PIN counts
   against the same per-address lockout as the dial's other PIN checks.
+- Shutting the dial down and confirming that a person is at the dial are not
+  possible from this page; the dial's own touchscreen is the only way to do
+  either.
 - Sessions last 12 hours, are kept in the dial's memory only (a restart signs
   everyone out), and at most eight are held at once.
 - The connection is plain HTTP, so the PIN crosses the network unencrypted.

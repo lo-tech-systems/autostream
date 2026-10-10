@@ -59,9 +59,11 @@ def _snapshot(state: str) -> bytes:
 def _reset_module_state():
     dn._latest = dn.UNKNOWN_VIEW
     dn._last_reboot_monotonic = None
+    dn._shutdown_pending = False
     yield
     dn._latest = dn.UNKNOWN_VIEW
     dn._last_reboot_monotonic = None
+    dn._shutdown_pending = False
 
 
 class TestClassify:
@@ -214,6 +216,46 @@ class TestWorker:
                     break
                 deadline.wait(0.01)
         assert calls["n"] == 2
+
+
+class TestRequestShutdown:
+    def test_runs_the_helpers_poweroff_verb_through_sudo(self):
+        with patch("dial_network.subprocess.run", return_value=MagicMock(returncode=0)) as run,              patch("dial_network.threading.Thread") as thread_cls:
+            assert dn.request_shutdown() is True
+            _, kwargs = thread_cls.call_args
+            assert kwargs["daemon"] is True
+            kwargs["target"]()          # run the thread body inline
+        assert run.call_args[0][0] == [
+            "sudo", "-n", "/usr/local/libexec/autostream/autostream_admin", "poweroff"]
+
+    def test_a_second_request_is_refused_while_one_stands(self):
+        with patch("dial_network.threading.Thread") as thread_cls:
+            assert dn.request_shutdown() is True
+            assert dn.request_shutdown() is False
+        assert thread_cls.return_value.start.call_count == 1
+
+    @pytest.mark.parametrize("outcome", [
+        MagicMock(returncode=1), RuntimeError("no sudo"),
+    ])
+    def test_a_request_that_failed_frees_the_slot(self, outcome):
+        run = patch("dial_network.subprocess.run", side_effect=None if isinstance(
+            outcome, MagicMock) else outcome, return_value=outcome)
+        with run, patch("dial_network.threading.Thread") as thread_cls:
+            assert dn.request_shutdown() is True
+            thread_cls.call_args[1]["target"]()
+            assert dn.request_shutdown() is True
+
+    def test_a_request_that_went_through_keeps_the_slot(self):
+        with patch("dial_network.subprocess.run", return_value=MagicMock(returncode=0)),              patch("dial_network.threading.Thread") as thread_cls:
+            assert dn.request_shutdown() is True
+            thread_cls.call_args[1]["target"]()
+            assert dn.request_shutdown() is False
+
+    def test_thread_start_failure_is_swallowed_and_frees_the_slot(self):
+        with patch("dial_network.threading.Thread", side_effect=RuntimeError("no threads")):
+            assert dn.request_shutdown() is False
+        with patch("dial_network.threading.Thread"):
+            assert dn.request_shutdown() is True
 
 
 class TestRequestReboot:

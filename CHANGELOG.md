@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- improvement: the HD dial reads "Playing" as the track while an appliance is
+  playing but has not named the track yet (as a track changes, or at the start
+  of playback), as the small screen does, instead of "Nothing playing".
+- improvement: the HD dial's play and back-to-the-start buttons look pushed in
+  from the press until the appliance reports the replay running from the
+  start. They let go if the request is refused or unanswered, if the appliance
+  stops, or if you move to another appliance.
+- change: the HD dial now always shows its controls. The "Always show controls"
+  switch is gone from its pull-down and from the dial's Setup card for an HD
+  dial, and the controls no longer fade away. The small screen keeps its own
+  setting.
+- new: the HD dial's pull-down has a power button at the top right. It asks
+  "Shut down?" and, once confirmed, shuts the dial down. It works only from
+  the dial's own touchscreen, not from the page served on the local network.
+  Dials gain a `poweroff` verb in their privileged helper and a matching
+  sudoers line on update.
 - new: an HD dial can pair a speaker that asks for a PIN. Switching the
   speaker on opens a keypad on the dial; enter the code the device shows. The
   appliance's Home page leaves the prompt to the dial while it is doing this.

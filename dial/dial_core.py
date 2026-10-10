@@ -74,6 +74,7 @@ from dial_mdns import get_roster as _default_get_roster
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_network import request_reboot as _default_reboot
+from dial_network import request_shutdown as _default_shutdown
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import repeat_store
@@ -338,6 +339,7 @@ class DialCore:
         update_watcher: UpdateWatcher | None = None,
         update_seen_path: str = UPDATE_SEEN_PATH,
         reboot: Callable[[], bool] | None = None,
+        shutdown: Callable[[], bool] | None = None,
         io: PollIO | None = None,
     ) -> None:
         self._dial_id = dial_id
@@ -363,6 +365,7 @@ class DialCore:
         self.update_seen_path = update_seen_path
         self._update_seen: str | None = None
         self._reboot = reboot if reboot is not None else _default_reboot
+        self._shutdown = shutdown if shutdown is not None else _default_shutdown
         # The poll. Its bookkeeping belongs to the thread running a tick;
         # the flags other threads set (`_poll_wake`, `_reconcile_due`) are
         # plain, lock-free writes.
@@ -1419,6 +1422,16 @@ class DialCore:
             return bool(self._reboot())
         except Exception:
             logging.debug("dial core: reboot request raised", exc_info=True)
+            return False
+
+    def request_dial_shutdown(self) -> bool:
+        """Ask for a graceful power-off of the dial's own system (one
+        request at a time where the request is made). True when a request
+        went out."""
+        try:
+            return bool(self._shutdown())
+        except Exception:
+            logging.debug("dial core: shutdown request raised", exc_info=True)
             return False
 
     def flush_warnings(self) -> None:

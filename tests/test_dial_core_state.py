@@ -977,3 +977,18 @@ class TestAwaitingPin:
             assert cs.PIN_RE.match(good)
         for bad in ("123", "123456789", "12a4", "1234\n", " 1234", "１２３４", ""):
             assert not cs.PIN_RE.match(bad)
+
+
+class TestAwaitingTitle:
+    @pytest.mark.parametrize("playing,title,expected", [
+        (True, "", True), (True, "Tunnel of Love", False), (False, "", False), (False, "x", False),
+    ])
+    def test_only_a_playing_appliance_with_no_title_is_awaiting_one(self, playing, title, expected):
+        now_playing = cs.NowPlaying("Lounge", "Dire Straits", title, 42, playing=playing)
+        assert cs.awaiting_title(now_playing) is expected
+
+    def test_nothing_held_is_not_awaiting_a_title(self):
+        assert cs.awaiting_title(None) is False
+
+    def test_the_word_for_it_is_playing(self):
+        assert cs.PLAYING_TEXT == "Playing"

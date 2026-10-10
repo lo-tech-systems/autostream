@@ -16,7 +16,8 @@ single missed poll can never flash the icon or raise the prompt.
 
 request_reboot() asks the local offline-recovery CGI for a full OS reboot,
 fire-and-forget on its own short-lived thread, rate-gated so a double tap
-cannot queue two reboots.
+cannot queue two reboots. request_shutdown() asks the privileged helper for
+a graceful power-off the same way, one request at a time.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -25,6 +26,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -62,6 +64,12 @@ REBOOT_REQUEST_TIMEOUT_S = 4.0
 # already on its way, and the helper's own delay means the box is still up
 # for a few seconds after it is asked.
 REBOOT_COOLDOWN_S = 60.0
+
+# The privileged helper's power-off verb, run through the dial's own sudo
+# grant. The helper waits a few seconds before powering off, so the dial's
+# reply has gone out by then.
+ADMIN_CMD = "/usr/local/libexec/autostream/autostream_admin"
+SHUTDOWN_REQUEST_TIMEOUT_S = 15.0
 
 # Link verdicts, derived from the watcher's device.state.
 LINK_CONNECTED = "connected"   # online, degraded
@@ -106,6 +114,9 @@ _stop_event = threading.Event()
 
 _reboot_lock = threading.Lock()
 _last_reboot_monotonic: "float | None" = None
+
+_shutdown_lock = threading.Lock()
+_shutdown_pending = False
 
 
 def classify_device_state(state) -> str:
@@ -298,4 +309,46 @@ def request_reboot(now: "float | None" = None) -> bool:
         return True
     except Exception:
         logging.debug("dial network: request_reboot raised", exc_info=True)
+        return False
+
+
+def _shutdown_thread() -> None:
+    """Run the helper's power-off verb. A request that did not go through
+    frees the slot, so the person can ask again; one that did keeps it, as
+    the box is going down."""
+    global _shutdown_pending
+    try:
+        done = subprocess.run(
+            ["sudo", "-n", ADMIN_CMD, "poweroff"],
+            capture_output=True, timeout=SHUTDOWN_REQUEST_TIMEOUT_S,
+        )
+        ok = done.returncode == 0
+    except Exception:
+        ok = False
+    if ok:
+        logging.info("dial network: shutdown requested")
+        return
+    logging.warning("dial network: shutdown request failed")
+    with _shutdown_lock:
+        _shutdown_pending = False
+
+
+def request_shutdown() -> bool:
+    """Ask for a graceful power-off, fire-and-forget: starts a short-lived
+    daemon thread for the request. Returns False (and does nothing) while an
+    earlier request is still in hand. Does no I/O on the calling thread.
+    Never raises."""
+    global _shutdown_pending
+    try:
+        with _shutdown_lock:
+            if _shutdown_pending:
+                logging.warning("dial network: shutdown refused - already requested")
+                return False
+            _shutdown_pending = True
+        threading.Thread(target=_shutdown_thread, daemon=True, name="dial-shutdown").start()
+        return True
+    except Exception:
+        logging.debug("dial network: request_shutdown raised", exc_info=True)
+        with _shutdown_lock:
+            _shutdown_pending = False
         return False

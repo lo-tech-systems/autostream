@@ -25,6 +25,7 @@ COMMANDS
 --------
 Exactly one of:
   reboot [--delay SECONDS] [reason]
+  poweroff
   restart-owntone
   restart-monitor
   restart-dial-service
@@ -1015,6 +1016,46 @@ def schedule_delayed_reboot(delay_s: int, reason: Optional[str]) -> Optional[boo
         log("ERROR", f"reboot: systemd-run scheduling failed rc={rc} stderr='{err}' stdout='{out}'")
         return False
 
+    return False
+
+# Seconds between the request and the power-off, so the caller's reply has
+# been sent before its own service is stopped.
+POWEROFF_DELAY_SECONDS = 3
+POWEROFF_BIN = Path("/sbin/poweroff")
+
+
+def schedule_poweroff() -> bool:
+    """Power the system off after POWEROFF_DELAY_SECONDS and return at once.
+
+    Used by the dial's own shutdown request. The command is a literal and
+    the verb takes no arguments, so nothing the caller sends reaches it; the
+    wait is a transient systemd timer, as the delayed reboot uses.
+    """
+    log("INFO", "poweroff: received request")
+    systemd_run = find_systemd_run()
+    if systemd_run is None:
+        log("ERROR", "poweroff: systemd-run not found")
+        return False
+    if not POWEROFF_BIN.exists():
+        log("ERROR", f"poweroff: {POWEROFF_BIN} not found")
+        return False
+
+    unit_name = f"autostream-delayed-poweroff-{int(time.time())}-{os.getpid()}"
+    rc, out, err = run_cmd([
+        str(systemd_run),
+        "--quiet",
+        "--collect",
+        f"--unit={unit_name}",
+        f"--on-active={POWEROFF_DELAY_SECONDS}",
+        "--property=Type=oneshot",
+        "--",
+        str(POWEROFF_BIN),
+    ])
+    if rc == 0:
+        log("INFO", f"poweroff: scheduled in {POWEROFF_DELAY_SECONDS}s unit={unit_name}")
+        return True
+
+    log("ERROR", f"poweroff: systemd-run scheduling failed rc={rc} stderr='{err}' stdout='{out}'")
     return False
 
 # ---------------------------------------------------------------------------
@@ -2070,6 +2111,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
 
     subparsers.add_parser(
+        "poweroff",
+        help="Power the system off in a few seconds (the dial's shutdown request).",
+    )
+
+    subparsers.add_parser(
         "restart-owntone",
         help="Restart the owntone service.",
     )
@@ -2261,6 +2307,9 @@ def main(argv: list[str]) -> int:
             if ok is None:
                 return 2  # rate-limited: not an error, reboot suppressed by policy
             return 0 if ok else 1
+
+        if args.command == "poweroff":
+            return 0 if schedule_poweroff() else 1
 
         if args.command == "restart-owntone":
             ok = restart_owntone()

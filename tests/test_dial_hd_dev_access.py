@@ -399,6 +399,18 @@ class TestPresenceIsLocalOnly:
         assert json.loads(data) == {"ok": False, "error": "local_only"}
         assert confirmed == []
 
+    def test_a_signed_in_remote_session_cannot_shut_the_dial_down(self, dev, core):
+        cookie = signed_in(dev)
+        response, data = api(dev, "/api/v1/actions/dial_shutdown", cookie, method="POST", body={})
+        assert response.status == 403
+        assert json.loads(data) == {"ok": False, "error": "local_only"}
+        assert core.calls == []
+
+    def test_the_dials_own_listener_takes_the_shutdown(self, server, core):
+        response, data = post(server.port, "/api/v1/actions/dial_shutdown", {})
+        assert response.status == 200
+        assert core.calls == [("request_dial_shutdown", (), {})]
+
     def test_other_actions_still_work_for_a_signed_in_session(self, dev, core):
         cookie = signed_in(dev)
         response, _ = api(dev, "/api/v1/actions/focus", cookie, method="POST", body={})

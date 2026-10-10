@@ -119,6 +119,15 @@ def _dial_restart(ctx: Context, args: dict) -> ActionResult:
     return ActionResult(True)
 
 
+def _dial_shutdown(ctx: Context, args: dict) -> ActionResult:
+    """The pull-down's Shut down: a graceful power-off of the dial. The page
+    asks for confirmation first, and the server takes this only from the
+    dial's own screen."""
+    if not ctx.core.request_dial_shutdown():
+        return ActionResult(False, "wrong_state")
+    return ActionResult(True)
+
+
 def _presence(ctx: Context, args: dict) -> ActionResult:
     """Confirm a person is at the dial (the recovery window ignores it unless
     one is open and unconfirmed)."""
@@ -182,6 +191,7 @@ ACTIONS: "dict[str, tuple[dict, Callable[[Context, dict], ActionResult]]]" = {
         lambda c, a: c.core.dismiss_warning(a["warning_id"]),
     ),
     "dial_restart": ({}, _dial_restart),
+    "dial_shutdown": ({}, _dial_shutdown),
     "presence": ({}, _presence),
 }
 

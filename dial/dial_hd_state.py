@@ -22,7 +22,7 @@ import json
 from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
-from dial_core_state import awaiting_pin
+from dial_core_state import PLAYING_TEXT, awaiting_pin, awaiting_title
 from dial_warning_text import appliance_warning_key
 
 # The body's version. Bumped only for a change an older page could not read;
@@ -138,6 +138,9 @@ def _repeat_block(record, now: float) -> dict | None:
         "position_s": _round(heard),
         "duration_s": _round(record.duration_seconds),
         "latency_s": _round(record.latency_seconds),
+        # When the appliance last reported this record (the core's clock); the
+        # page compares it with a request's changed_at to know a report is newer.
+        "observed_at": _round(record.observed_at, 3),
     }
 
 
@@ -203,6 +206,9 @@ def _now_playing_block(snapshot) -> dict | None:
         "artist": playing.artist,
         "album": playing.album,
         "playing": bool(playing.playing),
+        # What the page shows as the track while the appliance is playing but
+        # has not named it yet; the same word the screen's view uses.
+        "title_fallback": PLAYING_TEXT if awaiting_title(playing) else "",
     }
 
 
@@ -283,6 +289,8 @@ def _request_block(held, now: float) -> dict | None:
         "retry_after_s": held.retry_after_s,
         # An opaque identity for the page to remember a dismissal by; never drawn.
         "requested_at": held.requested_at,
+        # When the request reached its current state, on the same clock.
+        "changed_at": _round(held.changed_at, 3),
         "awaiting_pin": awaiting_pin(held, now),
     }
 
@@ -361,6 +369,8 @@ def _panel_block(panel: "Mapping | None", settings: "Mapping | None") -> dict:
         "brightness": pick("brightness", DEFAULT_BRIGHTNESS),
         "sleep_after_s": pick("sleep_after_s", DEFAULT_SLEEP_AFTER_S),
         "backlight": _text(panel.get("backlight", "none")),
+        # Not read by the page any more (it always shows its controls); kept so
+        # an older page loaded against this dial still finds it.
         "always_show_controls": bool(pick("always_show_controls", False)),
         "kiosk": bool(panel.get("kiosk", False)),
     }

@@ -48,7 +48,8 @@
     "title": "Tunnel of Love",
     "artist": "Dire Straits",
     "album": "Making Movies",
-    "playing": true
+    "playing": true,
+    "title_fallback": ""
   },
   "artwork": null,
   "volume": {

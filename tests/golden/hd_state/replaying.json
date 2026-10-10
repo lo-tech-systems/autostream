@@ -45,7 +45,8 @@
         "recording_s": 1122.0,
         "position_s": 119.0,
         "duration_s": 1100.0,
-        "latency_s": 2.0
+        "latency_s": 2.0,
+        "observed_at": 999.0
       },
       "warnings": [],
       "webui": "http://192.0.2.20:80/"
@@ -56,7 +57,8 @@
     "title": "Tunnel of Love",
     "artist": "Dire Straits",
     "album": "",
-    "playing": true
+    "playing": true,
+    "title_fallback": ""
   },
   "artwork": null,
   "volume": {
@@ -156,6 +158,7 @@
     "output_id": null,
     "retry_after_s": 0,
     "requested_at": 998.0,
+    "changed_at": 999.0,
     "awaiting_pin": false
   },
   "outputs_request": null,

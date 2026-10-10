@@ -468,11 +468,6 @@ class TestMute:
             page.clock.run_for(2500)
             shown(title, True)
 
-        # The controls have faded from the untouched screen by now: a touch
-        # on the artwork brings them back.
-        if "controls-hidden" in (page.locator("#right").get_attribute("class") or ""):
-            box = page.locator("#art-zone").bounding_box()
-            page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         expect(page.locator("#mute")).to_be_visible()
         shown("T4", True)
         page.locator("#mute").click()
@@ -959,27 +954,6 @@ class TestBackdrop:
         assert abs((art["x"] + art["width"] / 2) - (frame["x"] + frame["width"] / 2)) <= 1
         assert abs((art["y"] + art["height"] / 2) - (frame["y"] + frame["height"] / 2)) <= 1
         hd.cleanup()
-
-    def test_hidden_controls_keep_the_backdrop_behind_the_frame(self, page, hd):
-        open_page(page, hd)
-        page.locator(".art-frame").click()
-        expect(page.locator("#right")).to_have_class(re.compile("controls-hidden"))
-        zone = page.locator(".art-zone").bounding_box()
-        column = page.locator("#right").bounding_box()
-        assert page.locator("#backdrop").bounding_box() == zone
-        assert zone == column
-        frame = page.locator(".art-frame").bounding_box()
-        assert abs((frame["x"] + frame["width"] / 2) - (zone["x"] + zone["width"] / 2)) <= 1
-        assert abs((frame["y"] + frame["height"] / 2) - (zone["y"] + zone["height"] / 2)) <= 1
-
-    def test_a_tap_on_the_zone_beside_the_frame_toggles_the_controls(self, page, hd):
-        open_page(page, hd)
-        zone = page.locator(".art-zone").bounding_box()
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.mouse.click(zone["x"] + 20, zone["y"] + zone["height"] / 2)
-        expect(page.locator("#volume-row")).to_be_hidden()
-        page.mouse.click(zone["x"] + 20, zone["y"] + zone["height"] / 2)
-        expect(page.locator("#volume-row")).to_be_visible()
 
 
 PICTURE_IDS = ("art", "art-prev", "backdrop", "backdrop-prev")

@@ -79,7 +79,7 @@ STATIC_FILES = {
 ACTIONS = (
     "focus", "output", "eq", "eq_reset", "replay_start", "replay_restart", "replay_stop",
     "repeat_arm", "volume_set", "volume_step", "mute_toggle", "warning_dismiss",
-    "dial_restart", "presence",
+    "dial_restart", "dial_shutdown", "presence",
 )
 ACTION_LEADS = {
     "replay_start": "replaying",
@@ -99,7 +99,7 @@ INFO_ROWS = [
     ["Disk free", "5.2 GB"],
     ["SD health", "84%"],
 ]
-SETTINGS_KEYS = ("brightness", "sleep_after_s", "always_show_controls")
+SETTINGS_KEYS = ("brightness", "sleep_after_s")
 
 
 def load_script(path) -> list:

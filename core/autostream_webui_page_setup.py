@@ -3894,9 +3894,6 @@ def send_setup_page(
           var ctlEl = card.querySelector('.dial-screen-always-controls');
           var ctlRow = card.querySelector('.dial-screen-controls-row');
           var noTouch = !touchEl || touchEl.value === '' || touchEl.value === 'none';
-          // A kiosk dial has no touch controller selector; its touch is the
-          // display itself.
-          if (card.dataset.surface === 'kiosk') noTouch = false;
           if (ctlEl) ctlEl.disabled = off || noTouch;
           if (ctlRow) ctlRow.classList.toggle('is-disabled', off || noTouch);
           // Volume/mute scope: without a screen the dial cannot pick an
@@ -4562,7 +4559,7 @@ def send_setup_page(
           var kiosk = screen.surface === 'kiosk';
           card.dataset.surface = kiosk ? 'kiosk' : 'spi';
           var spiOnly = ['dial-screen-rotate-row', 'dial-screen-bgr-row', 'dial-screen-size-row',
-            'dial-screen-layout-row', 'dial-screen-touch-row', 'dial-screen-layout-note',
+            'dial-screen-layout-row', 'dial-screen-touch-row', 'dial-screen-controls-row', 'dial-screen-layout-note',
             'dial-screen-touch-warning'];
           if (kiosk) {{
             spiOnly.forEach(function(cls) {{

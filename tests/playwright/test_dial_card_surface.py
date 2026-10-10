@@ -189,7 +189,7 @@ class TestDialCardSurface:
         assert page.locator(".dial-card .dial-screen-brightness").input_value() == "45"
         assert page.locator(".dial-card .dial-screen-sleep").input_value() == "900"
         for cls in ("dial-screen-rotate-row", "dial-screen-bgr-row", "dial-screen-size-row",
-                    "dial-screen-layout-row", "dial-screen-touch-row",
+                    "dial-screen-layout-row", "dial-screen-touch-row", "dial-screen-controls-row",
                     "dial-screen-layout-note", "dial-screen-touch-warning"):
             assert not _visible(page, cls), cls
         expect(page.locator('.dial-card [data-dial-action="show-screen"]')).to_be_hidden()
@@ -198,6 +198,7 @@ class TestDialCardSurface:
         _open_dials(page, dial_url, _body("spi"))
         assert _visible(page, "dial-screen-rotate-row")
         assert _visible(page, "dial-screen-size-row")
+        assert _visible(page, "dial-screen-controls-row")
         assert not _visible(page, "dial-screen-brightness-row")
         assert not _visible(page, "dial-screen-sleep-row")
         expect(page.locator('.dial-card [data-dial-action="show-screen"]')).to_be_visible()

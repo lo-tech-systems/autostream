@@ -73,8 +73,8 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    PIN_ERRORS, EqState, OutputRow, PickerRow, SelectorRow,
-    dots_active,
+    PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
+    awaiting_title, dots_active,
     eq_gain, selector_rows,
 )
 import dial_core_poll
@@ -498,7 +498,7 @@ class DisplayRuntimeStatus:
 # with no identified title yet. Compact draws no artist row at all, and base
 # keeps its own row unchanged, so neither constant is ever read there.
 IDLE_ARTIST_TEXT = "Idle"
-PLAYING_ARTIST_TEXT = "Playing"
+PLAYING_ARTIST_TEXT = PLAYING_TEXT
 
 
 @dataclass(frozen=True)
@@ -2429,7 +2429,7 @@ class DialDisplay:
             # whatever the artwork state.
             if not now_playing.playing:
                 artist = IDLE_ARTIST_TEXT
-            elif not now_playing.title:
+            elif awaiting_title(now_playing):
                 artist = PLAYING_ARTIST_TEXT
         title = now_playing.title if now_playing is not None else ""
         album = now_playing.album if now_playing is not None else ""

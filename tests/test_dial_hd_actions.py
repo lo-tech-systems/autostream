@@ -144,12 +144,12 @@ class TestActionTable:
         assert set(hda.ACTIONS) == {
             "focus", "output", "eq", "eq_reset", "replay_start", "replay_restart",
             "replay_stop", "repeat_arm", "volume_set", "volume_step", "mute_toggle",
-            "warning_dismiss", "dial_restart", "presence",
+            "warning_dismiss", "dial_restart", "dial_shutdown", "presence",
         }
 
     def test_the_valid_table_covers_every_core_calling_action(self):
         covered = {row[0] for row in VALID}
-        assert covered == set(hda.ACTIONS) - {"dial_restart", "presence"}
+        assert covered == set(hda.ACTIONS) - {"dial_restart", "dial_shutdown", "presence"}
 
     @pytest.mark.parametrize("name,body,field", [
         ("focus", {"appliance_id": 5}, "appliance_id"),
@@ -460,6 +460,25 @@ class TestDialRestart:
         assert ("request_dial_reboot", (), {}) not in core.calls
 
 
+class TestDialShutdown:
+    def test_accepted_calls_the_core_once(self, server, core):
+        response, data = act(server, "dial_shutdown")
+        assert response.status == 200
+        assert json.loads(data) == {"ok": True}
+        assert core.calls == [("request_dial_shutdown", (), {})]
+
+    def test_refused_when_the_request_is_not_taken(self, make_server, core):
+        core.shutdown_result = False
+        response, data = act(make_server(), "dial_shutdown")
+        assert response.status == 409
+        assert error_of(data) == "wrong_state"
+
+    def test_takes_no_arguments(self, server, core):
+        response, data = act(server, "dial_shutdown", {"now": True})
+        assert response.status == 400
+        assert core.calls == []
+
+
 class TestPresence:
     def test_presence_confirms_through_the_management_server(self, server, management):
         management.begin_recovery_window()
@@ -516,7 +535,6 @@ class TestSettings:
         for body, field, value in [
             ({"brightness": 40}, "brightness", 40),
             ({"sleep_after_s": 900}, "sleep_after_s", 900),
-            ({"always_show_controls": True}, "always_show_controls", True),
         ]:
             response, data = post(server.port, "/api/v1/settings", body)
             assert response.status == 200, data
@@ -524,14 +542,14 @@ class TestSettings:
             assert reply["ok"] is True
             assert reply["screen"][field] == value
             assert getattr(management.display_config, field) == value
-        assert len(saved) == 3
+        assert len(saved) == 2
 
-    def test_post_all_three_at_once(self, server, management, saved):
-        body = {"brightness": 25, "sleep_after_s": 60, "always_show_controls": True}
+    def test_post_both_at_once(self, server, management, saved):
+        body = {"brightness": 25, "sleep_after_s": 60}
         response, data = post(server.port, "/api/v1/settings", body)
         assert response.status == 200
         display = management.display_config
-        assert (display.brightness, display.sleep_after_s, display.always_show_controls) == (25, 60, True)
+        assert (display.brightness, display.sleep_after_s) == (25, 60)
         assert saved[-1].display.brightness == 25
 
     def test_the_other_screen_fields_are_kept(self, server, management, saved):
@@ -563,7 +581,7 @@ class TestSettings:
     @pytest.mark.parametrize("key", [
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "screen_size_inches",
         "layout_size", "volume_scope", "mute_scope", "poll_interval_s", "surface", "screen",
-        "current_pin", "pin", "name", "hd_dev_access", "new_pin",
+        "current_pin", "pin", "name", "hd_dev_access", "new_pin", "always_show_controls",
     ])
     def test_any_other_key_is_400_invalid_field_and_changes_nothing(self, server, management, saved, key):
         before = management.display_config
@@ -586,9 +604,6 @@ class TestSettings:
         ({"sleep_after_s": 7}, "sleep_after_s"), ({"sleep_after_s": -1}, "sleep_after_s"),
         ({"sleep_after_s": "60"}, "sleep_after_s"), ({"sleep_after_s": False}, "sleep_after_s"),
         ({"sleep_after_s": 60.0}, "sleep_after_s"),
-        ({"always_show_controls": "yes"}, "always_show_controls"),
-        ({"always_show_controls": 1}, "always_show_controls"),
-        ({"always_show_controls": None}, "always_show_controls"),
     ])
     def test_a_bad_value_is_400_naming_the_key(self, server, management, saved, body, field):
         response, data = post(server.port, "/api/v1/settings", body)

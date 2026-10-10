@@ -65,7 +65,8 @@
         "recording_s": 1122.0,
         "position_s": 299.0,
         "duration_s": 1100.0,
-        "latency_s": 2.0
+        "latency_s": 2.0,
+        "observed_at": 999.0
       },
       "warnings": [],
       "webui": "http://192.0.2.20:80/"
@@ -76,7 +77,8 @@
     "title": "Blue",
     "artist": "Joni Mitchell",
     "album": "Blue",
-    "playing": true
+    "playing": true,
+    "title_fallback": ""
   },
   "artwork": null,
   "volume": {

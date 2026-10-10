@@ -250,6 +250,9 @@ def _build() -> dict:
     add(Scenario("nothing_playing", base(), muted=None))
     add(Scenario("playing_artwork", _playing()))
     add(Scenario("playing_no_artwork", _playing(artwork=False)))
+    add(Scenario("playing_untitled", _playing(
+        artwork=False, now_playing=NowPlaying("Lounge", "", "", 42),
+    )))
     add(Scenario("replay_hold", _replay_snapshot("hold", recording=1122.0), muted=None))
     add(Scenario("replaying", _replay_snapshot("replaying", armed=True, position=120.0, duration=1100.0)))
     add(Scenario("fading_out", _replay_snapshot("fading_out", position=1099.0, duration=1100.0)))

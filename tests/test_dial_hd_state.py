@@ -73,7 +73,7 @@ class TestCorpus:
     def test_every_named_scenario_exists(self):
         assert set(hs.SCENARIO_NAMES) == {
             "starting", "nothing_playing", "playing_artwork", "playing_no_artwork",
-            "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
+            "playing_untitled", "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
             "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_two", "eq_six",
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
             "appliance_warning", "appliance_warning_notice", "disconnected",
@@ -140,8 +140,23 @@ class TestShape:
         state = _state("playing_artwork")
         assert state["now_playing"] == {
             "appliance_id": hs.LOUNGE, "title": "Tunnel of Love", "artist": "Dire Straits",
-            "album": "Making Movies", "playing": True}
+            "album": "Making Movies", "playing": True, "title_fallback": ""}
         assert _state("nothing_playing")["now_playing"] is None
+
+    def test_a_playing_appliance_without_a_title_carries_the_screens_word(self):
+        import dial_display
+        from dial_core_state import NowPlaying, PLAYING_TEXT
+        assert _state("playing_untitled")["now_playing"]["title_fallback"] == PLAYING_TEXT == "Playing"
+        # The same word the screen's view puts in its artist row.
+        assert PLAYING_TEXT == dial_display.PLAYING_ARTIST_TEXT
+
+        def fallback(playing, title):
+            held = hs.SCENARIOS["playing_untitled"]
+            now_playing = NowPlaying("Lounge", "Dire Straits", title, 42, playing=playing)
+            return held.with_snapshot(now_playing=now_playing).state()["now_playing"]["title_fallback"]
+        assert fallback(True, "") == "Playing"
+        assert fallback(True, "Tunnel of Love") == ""
+        assert fallback(False, "") == ""
 
     def test_volume_carries_the_readout_and_the_mute_flag_handed_in(self):
         assert _state("playing_artwork", muted=True)["volume"] == {
@@ -217,6 +232,9 @@ class TestRepeat:
         return dataclasses.replace(scenario, snapshot=snapshot, **scenario_kw).state()[
             "appliances"][0]["repeat"]
 
+    def test_the_block_says_when_the_appliance_last_reported(self):
+        assert _state("replaying")["appliances"][0]["repeat"]["observed_at"] == hs.NOW - 1.0
+
     def test_the_block_carries_the_latency(self):
         assert _state("replaying")["appliances"][0]["repeat"]["latency_s"] == 2.0
         assert self._with_latency("replaying", 0.3)["latency_s"] == 0.3
@@ -275,7 +293,7 @@ class TestOutputsRequest:
         assert block("pin_required") == {
             "appliance_id": hs.LOUNGE, "kind": "output_set", "state": "rejected",
             "error": "pin_required", "output_id": "o2", "retry_after_s": 0,
-            "requested_at": hs.NOW - 1, "awaiting_pin": True}
+            "requested_at": hs.NOW - 1, "changed_at": hs.NOW - 1, "awaiting_pin": True}
         assert (block("pin_rate_limited")["awaiting_pin"], block("pin_rate_limited")["retry_after_s"]) == (True, 7)
         assert block("pin_expired")["awaiting_pin"] is False
         assert block("pin_busy")["awaiting_pin"] is True and block("pin_busy")["state"] == "pending"
@@ -286,6 +304,12 @@ class TestOutputsRequest:
         assert transport["kind"] == "seek" and transport["awaiting_pin"] is False
         assert set(transport) == set(_state("pin_required")["outputs_request"])
         assert transport["output_id"] is None and transport["retry_after_s"] == 0
+
+    def test_the_request_says_when_it_reached_its_state(self):
+        transport = _state("replaying")["transport"]
+        assert transport["changed_at"] == hs.NOW - 1 and transport["requested_at"] == hs.NOW - 2
+        # Both are on the clock the repeat block's observed_at uses.
+        assert _state("replaying")["appliances"][0]["repeat"]["observed_at"] >= transport["changed_at"]
 
     def test_no_request_is_null(self):
         state = _state("playing_artwork")

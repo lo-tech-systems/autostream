@@ -13,7 +13,6 @@
         streamRetryMs: 30000,       // wait before reopening a stream the browser gave up on
         tickMs: 1000,
         toastMs: 3000,
-        hideControlsMs: 6000,       // untouched this long, a playing screen shows the artwork alone
         activityGapMs: 5000,        // at most one panel activity report in this time
         infoMaxAgeMs: 10000,        // the dial details are fetched again after this
         tapMovePx: 6,               // a press that moves less than this is a tap
@@ -45,7 +44,8 @@
         wrong_state: "Not possible right now.",
         not_polling: "The dial is still starting.",
         not_focused: "Select that appliance first.",
-        no_record: "There is nothing to do that with."
+        no_record: "There is nothing to do that with.",
+        local_only: "That can only be done on the dial's own screen."
     };
     const FALLBACK_REFUSAL = "That did not work.";
     const OFFLINE_REFUSAL = "No connection to the dial.";
@@ -100,7 +100,7 @@
         outputs_request: null,
         eq: null,
         warnings: { due: null, cards: [] },
-        panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", always_show_controls: false, kiosk: false },
+        panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", kiosk: false },
         recovery: { active: false, confirmed: false }
     };
 
@@ -143,8 +143,28 @@
         },
         stop: { action: "replay_stop", label: "Stop the replay", icon: "M6.5 6.5h11v11h-11z" }
     };
+    // The buttons that start a replay: held down from the press until the
+    // appliance has answered.
+    const STARTING_BUTTONS = ["play", "restart"];
     const NO_TIME = "-:--";
     const SVG_NS = "http://www.w3.org/2000/svg";
+
+    // The cards the Shut down button leads to, by stage: the question, then
+    // the wait while the dial goes down.
+    const POWER_CARDS = {
+        confirm: {
+            title: "Shut down?", closable: true,
+            message: "The dial will switch off. Unplug it and plug it back in to start it again.",
+            buttons: [
+                { id: "cancel", label: "Cancel", act: "close" },
+                { id: "shutdown", label: "Shut down", act: "shutdown" }
+            ]
+        },
+        going: {
+            title: "Shutting down...", closable: false, buttons: [],
+            message: "Wait for the screen to go dark before taking the power away."
+        }
+    };
 
     // The pull-down's choices: [seconds, label]; 0 is never.
     const SLEEP_CHOICES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [0, "Never"]];
@@ -257,9 +277,9 @@
         state: null, stateAt: Date.now(), offline: false, vm: null,
         eqOpen: false, eqFor: null, sheetOpen: false, info: null, infoBusy: false,
         notice: null, viewing: null,
-        touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0,
+        activityAt: 0,
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
-        replayClock: null, stopHold: null, host: window.location.hostname,
+        replayClock: null, stopHold: null, press: null, power: null, host: window.location.hostname,
         // The keypad's own buffer (the digits live nowhere else), the request
         // it was typed for, the request the person turned away, and the
         // page-clock moment a rate-limit wait ends.
@@ -419,9 +439,10 @@
     function nowPlayingText(s, focus) {
         const np = s.now_playing;
         if (!s.started) { return { title: "Starting...", sub: "" }; }
-        if (np && (np.title || np.artist)) {
-            const rest = np.title ? [np.artist, np.album] : [np.album];
-            return { title: np.title || np.artist, sub: rest.filter(Boolean).join(" · ") };
+        const head = np ? np.title || np.title_fallback : "";
+        if (head || (np && np.artist)) {
+            const rest = head ? [np.artist, np.album] : [np.album];
+            return { title: head || np.artist, sub: rest.filter(Boolean).join(" · ") };
         }
         return { title: "Nothing playing", sub: focus ? focus.name : "" };
     }
@@ -458,6 +479,35 @@
 
     const timeText = (seconds) => (seconds === null ? NO_TIME : formatLength(seconds));
 
+    // A pressed play or restart button, { id, target, from, before,
+    // requestedAt }, is held down from the press until the first of these
+    // lets it go. Each reads the state alone, so the button can never stay
+    // down: the request is the dial's own, and it always ends accepted or
+    // rejected, with the appliance's next report to follow. Each rule gets
+    // { press, focus, offline, r (the appliance's record), t (the dial's
+    // latest replay request), own (t is this press's request) }.
+    const PRESS_RELEASES = [
+        // the appliance is no longer the one being followed, or the dial is gone
+        (c) => c.offline || !c.focus || c.focus.id !== c.press.id,
+        // the appliance stopped what it was replaying, or has no record
+        (c) => !c.r || (c.press.from === "replaying" && c.r.state !== "replaying"),
+        // another request has taken the press's place
+        (c) => c.press.requestedAt !== null && !c.own,
+        (c) => c.own && c.t.state === "rejected",
+        // the appliance accepted it and has reported since
+        (c) => c.own && c.t.state === "accepted" && c.r.observed_at >= c.t.changed_at
+    ];
+
+    function pressHeld(press, focus, transport, offline) {
+        if (!press) { return false; }
+        const t = transport && transport.appliance_id === press.id && transport.kind === "seek" ? transport : null;
+        const context = {
+            press: press, focus: focus, offline: offline, r: focus ? focus.repeat : null, t: t,
+            own: !!t && t.requested_at === press.requestedAt
+        };
+        return !PRESS_RELEASES.some((rule) => rule(context));
+    }
+
     // The replay row's controls for the focused appliance, from its record.
     // The position counts whole seconds gone, so it is cut, not rounded,
     // until the replay is at its end.
@@ -465,10 +515,11 @@
     // A Stop that has been pressed holds the timer where it was and greys
     // the controls until the appliance stops replaying, the request is
     // refused, or its time is up; the timer then goes by the state again.
-    function deriveReplay(focus, usable, local) {
+    function deriveReplay(focus, usable, local, transport) {
         const r = focus && focus.capabilities.repeat ? focus.repeat : null;
         const row = r && r.available ? REPLAY_ROWS[r.state] : null;
-        if (!row) { return { items: [], ticking: false, nextMs: 0 }; }
+        if (!row) { return { items: [], ticking: false, nextMs: 0, pressed: false }; }
+        const pressed = pressHeld(local.press, focus, transport, local.offline);
         const running = r.state === "replaying";
         const held = local.stopHold && local.stopHold.id === focus.id ? local.stopHold : null;
         const stopping = settle("stop", running) !== running && !!held;
@@ -485,11 +536,12 @@
                 const times = REPLAY_TIMES[row.time](r, position);
                 return { id: id, text: timeText(times[0]) + " / " + timeText(times[1]), frozen: row.dim || stopping };
             }
-            return { id: id, enabled: can(id) };
+            return { id: id, enabled: can(id), pushed: pressed && local.press.target === id };
         });
         return {
             items: items,
             ticking: ticking,
+            pressed: pressed,
             // How long until the position reaches its next whole second.
             nextMs: ticking
                 ? (Math.floor(at) + 1 - at) / clockRate(clock, local.now) * 1000 + CONFIG.replayTickLagMs : 0
@@ -562,7 +614,8 @@
         };
     }
 
-    // The one modal card to show, if any: the PIN recovery confirmation first,
+    // The one modal card to show, if any: the shut-down card first (the person
+    // has just asked for it), then the PIN recovery confirmation,
     // then a speaker's PIN, the not-authorised notice, an appliance warning
     // opened from its badge, then the warning the dial says is due.
     function deriveModal(s, focus, local) {
@@ -571,6 +624,10 @@
         s.appliances.forEach((a) => a.warnings.forEach((w) => owners.set(w.key, a.id)));
         const due = cardsById.get(s.warnings.due);
 
+        const power = POWER_CARDS[local.power];
+        if (power) {
+            return Object.assign({ key: "power", source: "", severity: "warning", progress: null, kind: "notice" }, power);
+        }
         if (s.recovery.active && !s.recovery.confirmed) {
             return {
                 key: "presence", source: "", title: "Confirm you are at the dial",
@@ -658,17 +715,13 @@
         const settings = {
             brightness: settle("brightness", panel.brightness),
             sleepAfter: settle("sleep_after_s", panel.sleep_after_s),
-            always: settle("always", !!panel.always_show_controls),
             dim: panel.backlight === "none"
                 ? DIM_FLOOR + (1 - DIM_FLOOR) * settle("brightness", panel.brightness) / BRIGHTNESS_MAX : null
         };
 
-        const replay = deriveReplay(focus, usable, local);
+        const replay = deriveReplay(focus, usable, local, s.transport);
         const eq = deriveEq(s, focus, usable, local);
         const modal = deriveModal(s, focus, local);
-        const playing = !!s.now_playing && !!s.now_playing.playing;
-        const idle = local.now - local.touchAt > CONFIG.hideControlsMs;
-        const hideable = !settings.always && playing && !modal && !eq.open && !local.sheetOpen;
 
         return {
             offline: offline,
@@ -690,11 +743,10 @@
             eq: eq,
             settings: settings,
             hidePointer: !!panel.kiosk && isLoopbackHost(local.host),
-            sheet: { open: local.sheetOpen, info: deriveInfo(local.info) },
+            sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !local.power },
             modal: modal,
-            controlsHidden: hideable && (local.forceHidden || idle),
             // Something on the page changes with the clock.
-            live: replay.ticking || !!(modal && modal.kind === "pin" && modal.pin.waiting) || (hideable && !local.forceHidden && !idle)
+            live: replay.ticking || !!(modal && modal.kind === "pin" && modal.pin.waiting)
         };
     }
 
@@ -711,14 +763,14 @@
         app: $("app"), appliances: $("appliances"), appliancesNote: $("appliances-note"),
         appliancesList: $("appliances-list"), speakersList: $("speakers-list"),
         speakers: $("speakers"), speakersNote: $("speakers-note"), speakersLabel: $("speakers-label"),
-        right: $("right"), replay: $("replay-row"),
+        replay: $("replay-row"),
         art: $("art"), artPrev: $("art-prev"), backdrop: $("backdrop"), backdropPrev: $("backdrop-prev"),
         artZone: $("art-zone"), title: $("title"), sub: $("sub"), eq: $("eq-open"), mute: $("mute"),
         master: $("master"), masterNum: $("master-num"), volumeRow: $("volume-row"),
         offline: $("offline"), toast: $("toast"),
         handle: $("handle"), scrim: $("scrim"), sheet: $("sheet"),
         brightness: $("brightness"), brightnessNum: $("brightness-num"), sleepAfter: $("sleep-after"),
-        always: $("always"), sleepNow: $("sleep-now"), info: $("info"), infoNote: $("info-note"),
+        sleepNow: $("sleep-now"), power: $("power"), info: $("info"), infoNote: $("info-note"),
         eqPage: $("eq"), eqClose: $("eq-close"), eqReset: $("eq-reset"), eqFor: $("eq-for"),
         eqBands: $("eq-bands"), eqGraph: $("eq-graph"), eqNote: $("eq-note"),
         modal: $("modal"), card: $("card"), cardTitle: $("card-title"), cardMessage: $("card-message"),
@@ -815,7 +867,10 @@
         node.setAttribute("aria-label", REPLAY_BUTTONS[id].label);
         node.appendChild(makeIcon(REPLAY_BUTTONS[id].icon));
         node.addEventListener("click", () => onReplayButton(id));
-        node._update = (item) => { node.disabled = !item.enabled; };
+        node._update = (item) => {
+            node.disabled = !item.enabled;
+            node.setAttribute("aria-busy", item.pushed ? "true" : "false");
+        };
         return node;
     }
 
@@ -937,7 +992,7 @@
         syncList(els.sleepAfter, SLEEP_CHOICES.map(([seconds, label]) => (
             { id: String(seconds), seconds: seconds, label: label, on: st.sleepAfter === seconds }
         )), createSleepChoice);
-        if (els.always.checked !== st.always) { els.always.checked = st.always; }
+        els.power.disabled = !vm.sheet.canPower;
         syncList(els.info, vm.sheet.info.rows, createInfoRow);
         paintNote(els.infoNote, vm.sheet.info.note);
     }
@@ -1114,7 +1169,6 @@
         setText(els.sub, vm.sub);
         swapPictures(vm.art || LOGO_URL, vm.backdrop || LOGO_BACKDROP_URL, !vm.art);
         els.eq.hidden = !vm.eqVisible;
-        els.right.classList.toggle("controls-hidden", vm.controlsHidden);
         paintReplay(vm.replay);
 
         const v = vm.volume;
@@ -1146,15 +1200,11 @@
             ui.pin = Object.assign({}, ui.pin, { waitKey: asked.pin.key, waitUntil: Date.now() + asked.pin.retryAfterS * 1000 });
             ui.vm = view();
         }
-        // Controls stay up while a page or card covers them, and for a full
-        // while after it goes.
-        const covered = !!ui.vm.modal || ui.vm.eq.open || ui.sheetOpen;
-        if (ui.covered && !covered) {
-            ui.touchAt = Date.now();
-            ui.forceHidden = false;
+        // A held button ends with its reason, and is drawn once more without it.
+        if (ui.press && !ui.vm.replay.pressed) {
+            ui.press = null;
             ui.vm = view();
         }
-        ui.covered = covered;
         // A page-only selection ends when nothing shows it any more.
         if (ui.eqOpen && !ui.vm.eq.open) { ui.eqOpen = false; }
         if (!ui.vm.modal) {
@@ -1296,7 +1346,8 @@
 
     // Every request that changes something goes through here. A refusal or a
     // failure shows briefly (unless *quiet*) and puts the controls named in
-    // *keys* back to what the state says.
+    // *keys* back to what the state says. The promise says whether it went
+    // through.
     function post(action, body, keys, quiet) {
         const abort = new AbortController();
         const timer = setTimeout(() => abort.abort(), CONFIG.requestTimeoutMs);
@@ -1312,11 +1363,14 @@
                 console.warn("action " + action + " refused: " + reason);
                 if (!quiet) { toast(REFUSALS[reason] || FALLBACK_REFUSAL); }
                 rollBack(keys);
+                return false;
             }
+            return true;
         })).catch((error) => {
             console.warn("action " + action + " failed: " + error);
             if (!quiet) { toast(OFFLINE_REFUSAL); }
             rollBack(keys);
+            return false;
         }).finally(() => clearTimeout(timer));
     }
 
@@ -1449,6 +1503,7 @@
         const id = focusId();
         const a = ui.state.appliances.find((item) => item.id === id);
         if (pending.stop || !a || !a.repeat) { return; }
+        ui.press = null;
         const clock = ui.replayClock && ui.replayClock.id === id ? ui.replayClock : null;
         ui.stopHold = { id: id, position: clock ? clockPosition(clock, Date.now()) : a.repeat.position_s };
         setPending("stop", false);
@@ -1456,9 +1511,43 @@
         post(REPLAY_BUTTONS.stop.action, { appliance_id: id }, ["stop"]);
     }
 
+    // Play and restart are held down from the press (see PRESS_RELEASES) and
+    // let go at once if the request does not go through. Only one at a time.
+    function onStart(id) {
+        if (ui.press) { return; }
+        const appliance = ui.state && ui.state.appliances.find((item) => item.id === focusId());
+        if (appliance && appliance.repeat) {
+            const t = ui.state.transport;
+            ui.press = {
+                id: appliance.id, target: id, from: appliance.repeat.state,
+                before: t ? t.requested_at : null, requestedAt: null
+            };
+            render();
+        }
+        post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() }).then((went) => {
+            if (!went && ui.press) {
+                ui.press = null;
+                render();
+            }
+        });
+    }
+
+    // The press's own request is the first new seek the state shows for it.
+    function adoptPress(state) {
+        const p = ui.press;
+        const t = state.transport;
+        if (p && p.requestedAt === null && t && t.appliance_id === p.id && t.kind === "seek" && t.requested_at !== p.before) {
+            p.requestedAt = t.requested_at;
+        }
+    }
+
     function onReplayButton(id) {
         if (id === "stop" && canAct()) {
             onStop();
+            return;
+        }
+        if (STARTING_BUTTONS.indexOf(id) >= 0) {
+            onStart(id);
             return;
         }
         post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() });
@@ -1500,12 +1589,6 @@
         post("settings", { sleep_after_s: seconds }, ["sleep_after_s"]);
     }
 
-    function onAlways(checked) {
-        setPending("always", checked);
-        render();
-        post("settings", { always_show_controls: checked }, ["always"]);
-    }
-
     function setSheet(open) {
         ui.sheetOpen = open;
         if (open) { loadInfo(); }
@@ -1538,10 +1621,21 @@
             render();
         },
         restart: () => post("dial_restart", {}),
+        shutdown: () => {
+            ui.power = "going";
+            setSheet(false);
+            post("dial_shutdown", {}).then((went) => {
+                if (!went) {
+                    ui.power = null;
+                    render();
+                }
+            });
+        },
         presence: () => post("presence", {}),
         close: () => {
             ui.notice = null;
             ui.viewing = null;
+            ui.power = null;
             render();
         },
         pin_cancel: (card) => {
@@ -1576,7 +1670,10 @@
     els.brightness.addEventListener("input", () => onBrightness(Number(els.brightness.value), false));
     els.brightness.addEventListener("change", () => onBrightness(Number(els.brightness.value), true));
     trackDrag(els.brightness, () => "brightness");
-    els.always.addEventListener("change", () => onAlways(els.always.checked));
+    els.power.addEventListener("click", () => {
+        ui.power = "confirm";
+        render();
+    });
     els.sleepNow.addEventListener("click", () => {
         setSheet(false);
         post("panel_sleep", {});
@@ -1658,20 +1755,14 @@
         post("panel_wake", {});
     });
 
-    // Every other touch: it counts as activity for the panel's idle clock
-    // (reported at most once in a while), and on the right column it brings
-    // back controls that have faded, or with the artwork toggles them.
-    document.addEventListener("pointerdown", (event) => {
+    // Every other touch counts as activity for the panel's idle clock
+    // (reported at most once in a while).
+    document.addEventListener("pointerdown", () => {
         if (ui.vm && ui.vm.asleep) { return; }
         const now = Date.now();
         if (now - ui.activityAt >= CONFIG.activityGapMs) {
             ui.activityAt = now;
             post("panel_activity", {}, [], true);
-        }
-        if (els.right.contains(event.target)) {
-            ui.touchAt = now;
-            ui.forceHidden = !!event.target.closest(".art-zone") && !!ui.vm && !ui.vm.controlsHidden;
-            render();
         }
     }, true);
 
@@ -1702,6 +1793,7 @@
         }
         ui.stateAt = Date.now();
         ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt, stopHeldAt);
+        adoptPress(ui.state);
         render();
     }
 

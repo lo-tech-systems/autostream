@@ -75,6 +75,17 @@ class NowPlaying:
     artwork_url: str = ""   # the selected track's artwork URL ("" = none)
 
 
+# What stands in for a track the appliance has not named yet, on every view:
+# a playing appliance with no title reads as playing rather than blank.
+PLAYING_TEXT = "Playing"
+
+
+def awaiting_title(now_playing: "NowPlaying | None") -> bool:
+    """Whether the appliance is playing but has not named the track yet (a
+    track change just detected, or the first moments of playback)."""
+    return now_playing is not None and now_playing.playing and not now_playing.title
+
+
 @dataclass(frozen=True)
 class SelectorRow:
     """One row of the appliance-selector screen — see SelectorState."""

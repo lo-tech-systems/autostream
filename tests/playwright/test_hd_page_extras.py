@@ -313,7 +313,10 @@ class TestReplayRow:
         open_page(page, hd)
         expect(replay_timer(page)).to_have_text(re.compile(r"^(1:59|2:0[0-9]) / 18:20$"))
         before = timer_seconds(page)
-        page.clock.run_for(4000)
+        # A little over four seconds: the page draws each second a hair after it
+        # begins (replayTickLagMs), so exactly four, read within that hair of the
+        # state arriving, would stop just short of the fourth second.
+        page.clock.run_for(4100)
         assert 4 <= timer_seconds(page) - before <= 6
 
         hd.show(hs.replay_scenario("end", "replaying", position=1098.0, duration=1100.0, latency=0.0))
@@ -965,7 +968,7 @@ class TestPullDown:
     @pytest.fixture(autouse=True)
     def restore_settings(self, hd):
         yield
-        post_settings(hd.url, {"brightness": 80, "sleep_after_s": 300, "always_show_controls": False})
+        post_settings(hd.url, {"brightness": 80, "sleep_after_s": 300})
 
     def test_the_handle_opens_it_and_shows_the_current_settings(self, page, hd):
         open_page(page, hd)
@@ -978,7 +981,6 @@ class TestPullDown:
         pressed = page.locator("#sleep-after button[aria-pressed=true]")
         expect(pressed).to_have_text("5 min")
         assert page.locator("#sleep-after button").all_text_contents() == ["1 min", "5 min", "15 min", "Never"]
-        expect(page.locator("#always")).not_to_be_checked()
         expect(page.locator("#sleep-now")).to_be_visible()
 
     def test_this_dial_lists_the_details_from_the_info_route(self, page, hd):
@@ -1123,17 +1125,6 @@ class TestPullDown:
         page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.panel.sleep_after_s === 0)")
         expect(page.locator("#sleep-after button[aria-pressed=true]")).to_have_text("Never")
 
-    def test_always_show_controls_posts_and_sticks(self, page, hd):
-        sent = watch_posts(page)
-        open_page(page, hd)
-        open_sheet(page)
-        page.locator("#always").locator("xpath=..").click()
-        expect(page.locator("#always")).to_be_checked()
-        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.panel.always_show_controls === true)")
-        assert only(sent, "settings") == [("settings", {"always_show_controls": True})]
-        page.wait_for_timeout(300)
-        expect(page.locator("#always")).to_be_checked()
-
     def test_a_refused_setting_snaps_back(self, page, hd):
         page.route("**/api/v1/settings", lambda route: route.fulfill(
             status=400, content_type="application/json", body=json.dumps({"ok": False, "error": "invalid_field"})))
@@ -1174,7 +1165,7 @@ class TestPullDown:
         width, height = size
         sheet = page.locator("#sheet").bounding_box()
         assert sheet["y"] >= -1 and sheet["y"] + sheet["height"] <= height and sheet["width"] == width
-        for selector in ("#sleep-now", "#sleep-after", "#brightness", "#always", "#info"):
+        for selector in ("#sleep-now", "#sleep-after", "#brightness", "#info"):
             box = page.locator(selector).bounding_box()
             assert box["x"] >= 0 and box["x"] + box["width"] <= width, selector
             assert box["y"] + box["height"] <= sheet["y"] + sheet["height"], selector
@@ -1598,104 +1589,49 @@ class TestPanelActivity:
 
 
 # ---------------------------------------------------------------------------
-# Idle controls
+# The controls are always shown
 # ---------------------------------------------------------------------------
 
 def art_height(page) -> float:
     return page.locator(".art-frame").bounding_box()["height"]
 
 
-class TestControlsFade:
-    def test_a_playing_screen_left_alone_shows_the_artwork_alone(self, page, hd):
+class TestControlsAlwaysShown:
+    def test_the_pull_down_has_no_always_show_toggle(self, page, hd):
+        open_page(page, hd)
+        open_sheet(page)
+        assert page.locator("#always").count() == 0
+        assert "Always show" not in page.locator("#sheet").inner_text()
+        assert page.locator("#sheet input[type=checkbox]").count() == 0
+
+    def test_a_playing_screen_left_alone_keeps_its_controls(self, page, hd):
         page.clock.install()
         open_page(page, hd)
-        expect(page.locator("#volume-row")).to_be_visible()
         before = art_height(page)
-        page.clock.run_for(4000)
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.clock.run_for(3500)
-        expect(page.locator("#right")).to_have_class(re.compile("controls-hidden"))
+        page.clock.run_for(30000)
         for selector in ("#volume-row", ".track-row"):
-            expect(page.locator(selector)).to_be_hidden()
-        assert art_height(page) > before + 40
-        assert art_height(page) <= 480 - 22 - 12
+            expect(page.locator(selector)).to_be_visible()
+        assert art_height(page) == before
+        assert "controls-hidden" not in (page.locator("#right").get_attribute("class") or "")
 
-    def test_a_touch_on_the_right_column_brings_them_back(self, page, hd):
-        page.clock.install()
+    def test_a_touch_on_the_artwork_or_beside_it_changes_nothing(self, page, hd):
         open_page(page, hd)
-        page.clock.run_for(7000)
-        expect(page.locator("#volume-row")).to_be_hidden()
+        zone = page.locator(".art-zone").bounding_box()
+        before = art_height(page)
         page.locator(".art-frame").click()
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.clock.run_for(4000)
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.clock.run_for(3000)
-        expect(page.locator("#volume-row")).to_be_hidden()
-
-    def test_a_tap_on_the_artwork_toggles_them(self, page, hd):
-        open_page(page, hd)
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.locator(".art-frame").click()
-        expect(page.locator("#volume-row")).to_be_hidden()
-        page.locator(".art-frame").click()
-        expect(page.locator("#volume-row")).to_be_visible()
-
-    def test_a_touch_elsewhere_does_not_bring_them_back(self, page, hd):
-        page.clock.install()
-        open_page(page, hd)
-        page.clock.run_for(7000)
-        expect(page.locator("#volume-row")).to_be_hidden()
-        # The appliances label band: over the left column but over no card.
-        assert page.evaluate("!document.elementFromPoint(60, 34).closest('.appliance, .output-card')")
-        page.mouse.click(60, 34)
+        page.mouse.click(zone["x"] + 20, zone["y"] + zone["height"] / 2)
         page.wait_for_timeout(100)
-        expect(page.locator("#volume-row")).to_be_hidden()
+        expect(page.locator("#volume-row")).to_be_visible()
+        expect(page.locator(".track-row")).to_be_visible()
+        assert art_height(page) == before
 
-    def test_always_show_controls_keeps_them(self, page, hd):
-        post_settings(hd.url, {"always_show_controls": True})
-        try:
-            page.clock.install()
-            open_page(page, hd)
-            page.clock.run_for(20000)
-            expect(page.locator("#volume-row")).to_be_visible()
-            expect(page.locator("#right")).not_to_have_class(re.compile("controls-hidden"))
-            page.locator(".art-frame").click()
-            expect(page.locator("#volume-row")).to_be_visible()
-        finally:
-            post_settings(hd.url, {"always_show_controls": False})
-
-    def test_nothing_playing_never_hides_them(self, page, hd):
-        hd.show(hs.SCENARIOS["nothing_playing"])
-        page.clock.install()
+    def test_the_settings_route_no_longer_takes_it(self, page, hd):
         open_page(page, hd)
-        page.clock.run_for(20000)
-        expect(page.locator("#volume-row")).to_be_visible()
-
-    def test_a_card_keeps_them_and_closing_it_starts_the_time_again(self, page, hd):
-        page.clock.install()
-        base = hs.SCENARIOS["playing_artwork"]
-        hd.show(base.with_snapshot(appliances=(
-            base.snapshot.appliances[0], hs.appliance(KITCHEN, "Kitchen", auth=hs.AUTH_UNAUTHORIZED))))
-        open_page(page, hd)
-        rows(page).filter(has_text="Kitchen").click()
-        expect(modal_card(page)).to_be_visible()
-        page.clock.run_for(9000)
-        expect(page.locator("#right")).not_to_have_class(re.compile("controls-hidden"))
-        page.locator("#card-buttons button").click()
-        expect(modal_card(page)).to_be_hidden()
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.clock.run_for(2000)
-        expect(page.locator("#volume-row")).to_be_visible()
-        page.clock.run_for(5000)
-        expect(page.locator("#volume-row")).to_be_hidden()
-
-    def test_the_equaliser_page_keeps_them(self, page, hd):
-        page.clock.install()
-        open_page(page, hd)
-        open_eq(page)
-        page.clock.run_for(9000)
-        page.locator("#eq-close").click()
-        expect(page.locator("#volume-row")).to_be_visible()
+        reply = page.evaluate(
+            """fetch('/api/v1/settings', {method: 'POST', body: JSON.stringify({always_show_controls: true}),
+                headers: {'Content-Type': 'application/json', 'X-Requested-With': 'autostream-hd'}})
+                .then(r => r.status)""")
+        assert reply == 400
 
 
 # ---------------------------------------------------------------------------

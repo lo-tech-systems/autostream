@@ -1927,6 +1927,21 @@ class TestHousekeepingAndReboot:
         core, manager, _ = _warning_core(reboot=boom)
         assert core.request_dial_reboot() is False
 
+    def test_a_shutdown_request_goes_to_the_injected_function(self):
+        calls = []
+        core, manager, _ = _warning_core(shutdown=lambda: calls.append(1) or True)
+        assert core.request_dial_shutdown() is True
+        assert calls == [1]
+
+    def test_a_refused_or_raising_shutdown_request_is_false(self):
+        core, manager, _ = _warning_core(shutdown=lambda: False)
+        assert core.request_dial_shutdown() is False
+
+        def boom():
+            raise RuntimeError("no")
+        core, manager, _ = _warning_core(shutdown=boom)
+        assert core.request_dial_shutdown() is False
+
     def test_warning_changes_are_published_outside_the_core_lock(self):
         core, manager, _ = _warning_core()
         seen = []

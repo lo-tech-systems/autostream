@@ -73,8 +73,8 @@ DEV_PUBLIC_STATIC = ("hd.css", "theme.css", "logo.png", "login.js")
 INFO_CACHE_S = 10.0
 PANEL_ACTIONS = ("wake", "sleep", "activity")
 # Actions only the dial's own screen may take, never the development listener.
-LOCAL_ONLY_ACTIONS = frozenset({"presence"})
-SETTINGS_KEYS = ("brightness", "sleep_after_s", "always_show_controls")
+LOCAL_ONLY_ACTIONS = frozenset({"presence", "dial_shutdown"})
+SETTINGS_KEYS = ("brightness", "sleep_after_s")
 
 ARTWORK_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 # The artwork route: the key, then optionally the variant served for it.
@@ -632,7 +632,7 @@ class HdServer:
             handler.send_json(404, {"ok": False, "error": "unknown_action"})
             return
         if rest in LOCAL_ONLY_ACTIONS and handler.server.hd_dev:
-            # Presence means a person at the dial's own screen; a remote
+            # These mean a person at the dial's own screen; a remote
             # session must never be able to stand in for that.
             handler.send_json(403, {"ok": False, "error": "local_only"})
             return
@@ -672,7 +672,6 @@ class HdServer:
         checks = {
             "brightness": integer(BRIGHTNESS_MIN, BRIGHTNESS_MAX),
             "sleep_after_s": lambda v: _one_of(v, SLEEP_AFTER_CHOICES_S),
-            "always_show_controls": boolean,
         }
         for key, value in body.items():
             try:

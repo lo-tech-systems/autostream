@@ -129,7 +129,9 @@ nor EQ.
 **Actions.** A POST to an action route is checked against the action's
 argument spec (only the named fields, each of its type and range) and then maps
 to one core method. Results map to HTTP status codes in the server, not in the
-action table. Screen settings go through the management server's own config
+action table. Two actions mean a person at the dial's own screen, confirming
+presence and shutting the dial down, and are refused with a 403 on the
+development listener. Screen settings go through the management server's own config
 path, and sleep, wake and activity go to the panel.
 
 **Panel.** `HdPanel` keeps the screen awake or asleep. Asleep, the page draws a

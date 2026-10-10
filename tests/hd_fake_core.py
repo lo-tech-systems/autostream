@@ -27,7 +27,7 @@ ACTION_METHODS = (
 
 
 class FakeCore:
-    def __init__(self, snapshot, *, warnings=None, results=None, reboot_result=True):
+    def __init__(self, snapshot, *, warnings=None, results=None, reboot_result=True, shutdown_result=True):
         self._snapshot = snapshot
         self._cond = threading.Condition()
         self._subscribers: dict = {}
@@ -39,6 +39,7 @@ class FakeCore:
         self.results: dict = dict(results or {})   # method -> ActionResult
         self.default_result = ActionResult(True)
         self.reboot_result = reboot_result
+        self.shutdown_result = shutdown_result
         self.watches: list = []               # (kind, appliance_id, watcher, on)
         for method in ACTION_METHODS:
             setattr(self, method, self._action(method))
@@ -98,6 +99,10 @@ class FakeCore:
     def request_dial_reboot(self) -> bool:
         self.calls.append(("request_dial_reboot", (), {}))
         return self.reboot_result
+
+    def request_dial_shutdown(self) -> bool:
+        self.calls.append(("request_dial_shutdown", (), {}))
+        return self.shutdown_result
 
     def watch_outputs(self, appliance_id, watcher, on, *, fetch=True) -> None:
         self.watches.append(("outputs", appliance_id, watcher, on))

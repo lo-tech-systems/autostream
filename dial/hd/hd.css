@@ -192,6 +192,8 @@ input.hslider:disabled { opacity: 0.4; cursor: default; }
 .mute-slash { display: none; }
 .icon-btn[aria-pressed="true"] .mute-slash { display: inline; }
 .icon-btn[aria-pressed="true"] .mute-waves { display: none; }
+/* A replay button held down until the appliance has answered */
+.icon-btn[aria-busy="true"] { background: var(--color-surface-selected); border-color: var(--color-accent); }
 .volume-row { flex: none; display: grid; grid-template-columns: var(--row-h) 1fr 2.2em; align-items: center; gap: 12px; }
 .vol-num { font-size: 1.47em; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text-strong); }
 .volume-row.muted .vol-num { color: var(--color-text-dim); text-decoration: line-through; }
@@ -251,12 +253,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 }
 .replay-counter.frozen { color: var(--color-text-dim); }
 
-/* Controls fade away on a playing screen nobody touches, and the artwork takes the room */
-.right.controls-hidden > :not(.art-zone) { display: none; }
-.right.controls-hidden .art-frame { --art: min(100cqw, 100cqh); }
-.right > :not(.art-zone) { animation: reveal 200ms ease; }
-@keyframes reveal { from { opacity: 0; } to { opacity: 1; } }
-
 /* Pull-down handle, scrim and sheet */
 .handle {
     position: absolute; left: 0; right: 0; top: 0; height: var(--top-inset); z-index: 4; padding: 0; border: 0;
@@ -288,6 +284,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
     position: absolute; left: 50%; bottom: 9px; transform: translateX(-50%);
     width: 54px; height: 5px; border-radius: 999px; background: var(--color-control-off);
 }
+/* The power button sits in the sheet's top right corner, over no content */
+.sheet .power-btn { position: absolute; top: 8px; right: 14px; }
 .setting { display: grid; grid-template-columns: 26px 1fr 2.6em; gap: 10px; align-items: center; min-height: calc(var(--row-h) - 6px); }
 .setting-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -299,7 +297,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
     background: transparent; color: var(--color-text-secondary); cursor: pointer;
 }
 .seg button[aria-pressed="true"] { background: var(--color-surface-selected); color: var(--color-text-strong); }
-.info { display: flex; flex-direction: column; gap: 6px; margin: 0; font-size: 0.9em; }
+.info { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-right: var(--row-h); font-size: 0.9em; }
 .info-row { display: grid; grid-template-columns: 7.5em 1fr; gap: 10px; }
 .info-row dt { color: var(--color-text-dim); }
 .info-row dd { margin: 0; color: var(--color-text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -425,7 +423,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .sleep span { color: #2a3a4a; font-size: 0.87em; }
 
 @media (prefers-reduced-motion: reduce) {
-    .sheet, .eq, .scrim, .sleep, .progress-bar, .right > :not(.art-zone) { transition: none; animation: none; }
+    .sheet, .eq, .scrim, .sleep, .progress-bar { transition: none; }
 }
 
 /* The dial's own touchscreen shows no pointer. */
