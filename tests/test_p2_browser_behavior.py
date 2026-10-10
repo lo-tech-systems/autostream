@@ -1558,7 +1558,7 @@ class TestDialCardHtmlStructure:
     def test_scope_save_body_gated_by_scope_caps_and_reads_stored(self):
         """The save body must include volume_scope/mute_scope only when the
         scopeCaps gate flag is set, and must post the STORED value, never
-        the (possibly forced) live select value -- see fork 2 in the design:
+        the (possibly forced) live select value --
         turning the screen back on must restore the user's earlier choice."""
         src = _setup_page_src()
         fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
@@ -1609,7 +1609,7 @@ class TestDialCardHtmlStructure:
         assert body.count("changedEl.dataset.stored = prevValue;") == 2
 
     def test_legacy_mute_all_row_left_untouched(self):
-        """fork 1: the legacy 'Mute all playing devices' row stays in the
+        """The legacy 'Mute all playing devices' row stays in the
         markup as is -- it self-hides on a new dial because GET /configure
         no longer reports mute_all_playing at all."""
         src = _setup_page_src()

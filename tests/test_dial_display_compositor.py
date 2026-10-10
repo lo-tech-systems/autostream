@@ -1707,7 +1707,7 @@ class TestComposeIdle:
         return Image.new("RGB", (160, 128), (32, 32, 32))
 
     def test_renders_the_base_plus_the_info_badge_only(self, compositor):
-        # Every idle frame now carries the "i" badge (fork 1: the badge
+        # Every idle frame now carries the "i" badge (the badge
         # shows on the plain logo too, not only the replay-available one),
         # so the only pixels that ever differ from the plain base are the
         # ones inside its own box.

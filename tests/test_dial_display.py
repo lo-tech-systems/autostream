@@ -5718,7 +5718,7 @@ class TestIdleReplayLogo:
 
 
 class TestIdlePlainLogo:
-    """Fork 1: the idle screen's own compose path is reached whenever
+    """The idle screen's own compose path is reached whenever
     nothing is playing, not only while a replay is available — a dial with
     no repeat-capable appliance still gets the "i" badge (see
     TestComposeIdle in the compositor suite), just over the plain logo

@@ -1288,8 +1288,8 @@ class TestScreenSettingsPost:
             fitted=True, always_show_controls=True,
         ))
         # A whole-object POST that omits the field resets it, same as an old
-        # appliance omitting bgr/screen_type today (see B.6 in the design
-        # notes) — this is the accepted cost of whole-object semantics.
+        # appliance omitting bgr/screen_type today — this is the accepted
+        # cost of whole-object semantics.
         r = _call_handler(
             "/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg,
         )
