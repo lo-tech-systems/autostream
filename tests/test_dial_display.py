@@ -3669,6 +3669,30 @@ class TestReconcileOnPlayingSetShrink:
         rp.assert_not_called()
 
 
+class TestIdleReplayLogo:
+    """When a replay is available the idle screen renders the replay-logo
+    (the arrows-on-disc image), not the plain logo or any text."""
+
+    def test_idle_render_requests_the_replay_logo(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._current_base_image = MagicMock()
+            with patch("dial_display.load_logo", return_value=MagicMock()) as ll:
+                display._display_idle_locked()
+        assert ll.call_args_list[0].args[0] == display._replay_logo_path
+
+    def test_idle_render_falls_back_to_plain_base_when_replay_logo_missing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        base = MagicMock()
+        with display._lock:
+            display._current_base_image = base
+            with patch("dial_display.load_logo", return_value=None):
+                # Must not raise when the replay image cannot be loaded.
+                display._display_idle_locked()
+
+
 # ---------------------------------------------------------------------------
 # _refresh_idle_affordance: the idle screen's own "should I draw the
 # affordance" computation.

@@ -82,7 +82,6 @@ from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
     OverlayLayout,
     TouchZone,
-    idle_layout_for,
     layout_for,
     list_layout_for,
     repeat_layout_for,
@@ -413,28 +412,18 @@ class DialDisplayCompositor:
             frame = Image.merge("RGB", frame.split()[::-1])
         return frame
 
-    def compose_idle(
-        self, base, width: int, height: int, *, affordance: bool, rotate: bool, bgr: bool,
-    ):
-        """Build one display-ready frame for the idle screen: the logo,
-        optionally with a "Tap to replay" affordance line drawn over it.
-
-        No volume/mute controls overlay is composited here — nothing is
-        playing, so there is nothing on this screen for one to control.
-        *base* is assumed already panel-sized (the manager's own logo
-        load). rotate/bgr are applied last, in the same order compose()
-        uses. Never raises: a font/halo failure simply leaves the
-        affordance text off, matching _draw_text_with_halo()'s own
-        discipline.
-        """
+    def compose_idle(self, base, width: int, height: int, *, rotate: bool, bgr: bool):
+        """Build one display-ready frame for the idle screen: just *base* —
+        the logo the manager chose (the plain disc, or the replay-available
+        arrows-on-disc logo when a held recording can be replayed) — with no
+        volume/mute controls overlay, since nothing is playing and there is
+        nothing on this screen to control. *base* is assumed already
+        panel-sized (the manager's own logo load). rotate/bgr are applied
+        last, in the same order compose() uses. Never raises beyond a None
+        passthrough."""
         if base is None:
             return base
         image = base.convert("RGB")
-        if affordance:
-            layout = idle_layout_for(width, height)
-            font_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
-            font = _load_font(font_px)
-            _draw_text_with_halo(image, layout.affordance, "Tap to replay", font, width, height)
         if rotate:
             image = image.transpose(Image.ROTATE_180)
         if bgr:

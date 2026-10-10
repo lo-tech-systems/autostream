@@ -92,6 +92,9 @@ except ImportError:
     from autostream_artwork import artwork_url_eligible, fetch_artwork
 
 DEFAULT_DISPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-centred-dark.png"
+# Shown on the idle screen in place of the plain logo whenever a held
+# recording can be replayed (the arrows-on-disc "replay available" logo).
+DEFAULT_DISPLAY_REPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-replay-dark.png"
 
 # Fallback compose dimensions for when no backend is open yet (or it just
 # closed) — the default profile's landscape 160x128, matching today's only
@@ -362,6 +365,7 @@ class DialDisplay:
         get_display_targets,
         dial_id: str,
         logo_path: str = DEFAULT_DISPLAY_LOGO_PATH,
+        replay_logo_path: str = DEFAULT_DISPLAY_REPLAY_LOGO_PATH,
         backend_factory=NoOpBackend,
         backend_factory_builder=None,
         get_roster=_default_get_roster,
@@ -376,6 +380,7 @@ class DialDisplay:
         self._get_roster = get_roster
         self._dial_id = dial_id
         self._logo_path = logo_path
+        self._replay_logo_path = replay_logo_path
         self._backend_factory = backend_factory
         # Optional screen_type -> zero-arg-backend-factory resolver, used to
         # rebuild self._backend_factory on a live screen_type swap. Left as
@@ -1218,9 +1223,10 @@ class DialDisplay:
             return
         was_showing = self._showing
         if self._idle_chassis_due_locked():
-            # The "tap to replay" affordance is due: the idle screen's own
-            # compose path (no volume/mute controls overlay — there is
-            # nothing to control) in place of a plain logo.
+            # A replay is available: the idle screen's own compose path
+            # (the replay-available logo, no volume/mute controls overlay —
+            # there is nothing to control) in place of a plain logo. The
+            # plain logo is still stored as the base for the fallback path.
             self._current_base_image = image
             self._current_base_is_artwork = False
             self._display_idle_locked()
@@ -1950,25 +1956,25 @@ class DialDisplay:
             )
 
     def _display_idle_locked(self) -> None:
-        """Compose and push the idle-screen frame (the logo, plus the
-        "tap to replay" affordance when one is due) — the compose_idle()
-        counterpart to _display_locked(). No volume/mute controls overlay
-        is drawn here: nothing is playing, so there is nothing on this
-        screen for it to control. Used both by _render_logo_locked() (a
-        fresh poll-driven frame) and by _repaint_current_locked() (an
-        overlay-only repaint, e.g. the affordance turning on/off) so the
-        two never disagree about what an idle repaint looks like. Caller
-        holds self._lock; a no-op if the backend is closed or nothing has
-        been rendered yet."""
+        """Compose and push the idle-screen frame — the "replay available"
+        logo (the arrows-on-disc image) in place of the plain logo, with no
+        volume/mute controls overlay (nothing is playing, so there is
+        nothing on this screen to control). Only ever reached while a replay
+        is available (the idle affordance is due; see
+        _idle_chassis_due_locked and its call sites in _render_logo_locked/
+        _repaint_current_locked), so it always shows the replay logo,
+        degrading to the plain base if the replay image cannot be loaded.
+        Caller holds self._lock; a no-op if the backend is closed or nothing
+        has been rendered yet."""
         if not (self._backend_open and self._backend is not None):
             return
         if self._current_base_image is None:
             return
         width, height = self._active_panel_dims()
-        affordance = self._idle_chassis_due_locked()
+        base = load_logo(self._replay_logo_path, width, height) or self._current_base_image
         try:
             composed = self._compositor.compose_idle(
-                self._current_base_image, width, height, affordance=affordance,
+                base, width, height,
                 rotate=self._config.rotate, bgr=self._config.bgr,
             )
             self._backend.display(composed)

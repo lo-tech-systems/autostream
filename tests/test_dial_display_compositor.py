@@ -42,7 +42,6 @@ from dial_display_compositor import (  # noqa: E402
 )
 from dial_touch_layout import (  # noqa: E402
     TouchZone,
-    idle_layout_for,
     layout_for,
     list_layout_for,
     repeat_layout_for,
@@ -1263,7 +1262,8 @@ class TestComposeRepeatReplayingLayout:
 
 
 # ---------------------------------------------------------------------------
-# compose_idle — the idle screen: the logo, plus the optional affordance.
+# compose_idle — the idle screen: just the base logo the manager chose
+# (plain disc, or the replay-available logo), with no overlay.
 # ---------------------------------------------------------------------------
 
 class TestComposeIdle:
@@ -1276,37 +1276,21 @@ class TestComposeIdle:
     def _logo(self):
         return Image.new("RGB", (160, 128), (32, 32, 32))
 
-    def test_no_affordance_is_the_plain_base(self, compositor):
+    def test_renders_the_base_plainly(self, compositor):
         base = self._logo()
-        result = compositor.compose_idle(base, 160, 128, affordance=False, rotate=False, bgr=False)
+        result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
         assert list(result.getdata()) == list(base.convert("RGB").getdata())
 
-    def test_affordance_draws_text(self, compositor):
-        layout = idle_layout_for(160, 128)
-        base = self._logo()
-        without = compositor.compose_idle(base, 160, 128, affordance=False, rotate=False, bgr=False)
-        with_affordance = compositor.compose_idle(base, 160, 128, affordance=True, rotate=False, bgr=False)
-        assert list(without.crop(layout.affordance).getdata()) != list(
-            with_affordance.crop(layout.affordance).getdata()
-        )
-
     def test_none_base_returns_none(self, compositor):
-        assert compositor.compose_idle(None, 160, 128, affordance=True, rotate=False, bgr=False) is None
+        assert compositor.compose_idle(None, 160, 128, rotate=False, bgr=False) is None
 
     def test_rotate_and_bgr_applied(self, compositor):
         base = self._logo()
-        plain = compositor.compose_idle(base, 160, 128, affordance=True, rotate=False, bgr=False)
-        rotated = compositor.compose_idle(base, 160, 128, affordance=True, rotate=True, bgr=False)
+        plain = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        rotated = compositor.compose_idle(base, 160, 128, rotate=True, bgr=False)
         assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
-        swapped = compositor.compose_idle(base, 160, 128, affordance=True, rotate=False, bgr=True)
+        swapped = compositor.compose_idle(base, 160, 128, rotate=False, bgr=True)
         assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
-
-    def test_never_raises_with_no_font(self, compositor):
-        base = self._logo()
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
-            result = compositor.compose_idle(base, 160, 128, affordance=True, rotate=False, bgr=False)
-        assert result.size == (160, 128)
 
 
 # ---------------------------------------------------------------------------
