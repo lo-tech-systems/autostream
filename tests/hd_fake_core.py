@@ -42,6 +42,7 @@ class FakeCore:
         self.shutdown_result = shutdown_result
         self.watches: list = []               # (kind, appliance_id, watcher, on)
         self.on_call = None                   # called with (method, args, kwargs) after each is recorded
+        self._first_warnings = {d.id for d in self.warnings.descriptors()}
         for method in ACTION_METHODS:
             setattr(self, method, self._action(method))
 
@@ -87,6 +88,19 @@ class FakeCore:
     def calls_to(self, method) -> list:
         """The (args, kwargs) of each call to *method*."""
         return [(a, k) for m, a, k in self.calls if m == method]
+
+    def reset(self) -> None:
+        """Forget what a test did: the calls, the canned answers, the call hook,
+        the watches and every warning registered since the start."""
+        self.calls.clear()
+        self.results.clear()
+        self.default_result = ActionResult(True)
+        self.reboot_result = self.shutdown_result = True
+        self.on_call = None
+        self.watches.clear()
+        for descriptor in self.warnings.descriptors():
+            if descriptor.id not in self._first_warnings:
+                self.warnings.unregister(descriptor.id)
 
     # ---- the core's request methods --------------------------------------
 

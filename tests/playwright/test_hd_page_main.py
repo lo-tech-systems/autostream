@@ -39,8 +39,9 @@ SIZES = [(800, 480), (1024, 600), (1280, 800)]
 
 @pytest.fixture
 def hd(hd_server):
-    """The server, showing the playing_artwork scenario; hd.show(scenario)
-    puts the dial into another."""
+    """The server as it started, showing the playing_artwork scenario;
+    hd.show(scenario) puts the dial into another."""
+    hd_server.reset()
     hd_server.show(hs.SCENARIOS["playing_artwork"])
     return hd_server
 

@@ -89,6 +89,7 @@ class HdPreview:
             clock=lambda: self.dial_clock[0], wall_clock=lambda: hd_scenarios.WALL_NOW,
         )
         self.url = f"http://127.0.0.1:{self.server.port}"
+        self._first_screen = {k: v for k, v in self.management.screen_report().items() if k != "surface"}
         self._saver = patch("dial_config.save_config", lambda cfg: None)
         self._saved_cap = hds.SSE_MAX_CLIENTS
 
@@ -111,6 +112,15 @@ class HdPreview:
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+    def reset(self) -> None:
+        """Put back what a test can change that show() does not set: the
+        screen settings, what the core and the panel recorded and the
+        warnings registered. Call it before show()."""
+        status, reply = self.management.apply_screen_settings(dict(self._first_screen))
+        assert status == 200 and reply.get("ok"), reply
+        self.core.reset()
+        self.panel.calls.clear()
 
     def show(self, scenario) -> None:
         """Make *scenario* the state the dial reports now."""
