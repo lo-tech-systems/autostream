@@ -1154,7 +1154,7 @@ class TestRowWash:
 
     @pytest.mark.parametrize(
         "width,height,sample_col,sep_row",
-        [(160, 128, 158, 31), (320, 240, 246, 59)],
+        [(160, 128, 158, 31), (320, 240, 246, 47)],
     )
     def test_wash_pixels_match_the_documented_table(self, compositor, width, height, sample_col, sep_row):
         metrics = _RICH_METRICS if width == 320 else None
@@ -2567,8 +2567,10 @@ class TestLargeFontCaps:
         sizes = {call.args[0] for call in spy.call_args_list}
         assert FONT_BODY_MAX_PX in sizes
         assert FONT_READOUT_MAX_PX in sizes
-        assert 49 not in sizes  # the uncapped body size at this panel — never reached
-        assert 56 not in sizes  # the uncapped readout size at this panel — never reached
+        # At this panel's own short side the reference formula's uncapped
+        # value already equals the cap, so there is no larger uncapped size
+        # to rule out here — see test_title_glyph_is_narrower_than_the_
+        # uncapped_scaled_size below for a panel where the cap actually bites.
 
     def test_title_glyph_is_narrower_than_the_uncapped_scaled_size(self, compositor):
         # Compare the real (capped) metrics against what this same panel
@@ -2576,15 +2578,21 @@ class TestLargeFontCaps:
         # a magic pixel threshold. The title rect is far wider than either
         # rendering of "Title" needs, so — unlike its height, which the
         # halo's rect-sized canvas always fills — glyph WIDTH is a clean
-        # measure of the font actually used.
-        metrics = _LARGE_METRICS
+        # measure of the font actually used. A panel bigger than the native
+        # large panel is used here (rather than _LARGE_METRICS) because at
+        # the native panel's own short side the reference formula's
+        # uncapped value already equals the cap — there is nothing left for
+        # the cap to do there.
+        width, height, mm = 960, 960, 0.06
+        metrics = metrics_for(width, height, mm)
+        assert metrics.content_tier == CONTENT_LARGE
         with patch("dial_touch_layout.FONT_BODY_MAX_PX", 999):
-            uncapped_metrics = metrics_for(640, 480, 0.127)
-        assert uncapped_metrics.font_body == 49
+            uncapped_metrics = metrics_for(width, height, mm)
+        assert uncapped_metrics.font_body == 72  # round(960*36/480), uncapped
         assert metrics.font_body == 36
 
-        img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        img = Image.new("RGB", (width, height), (200, 150, 100))
+        layout = layout_for(width, height, metrics=metrics)
 
         def glyph_width(m):
             with_title = compositor.compose(

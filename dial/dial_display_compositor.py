@@ -1111,6 +1111,18 @@ def _draw_glyph(
         pass
 
 
+def _centred_box(rect: tuple[int, int, int, int], side: int) -> tuple[int, int, int, int]:
+    """A *side*-by-*side* box centred within *rect* — used to draw a small
+    glyph inside a much larger touch zone (the rail's controls, the header's
+    own back control) rather than stretching it across the whole zone, so
+    the glyph's own size can shrink independently of the zone's own touch
+    floor."""
+    x0, y0, x1, y1 = rect
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    half = side // 2
+    return (cx - half, cy - half, cx - half + side, cy - half + side)
+
+
 def _reset_render_caches() -> None:
     """Clear the memoised glyph-tile and halo-layer caches. Test-only hook,
     the same purpose _reset_font_cache() serves for the font cache — lets a
@@ -1479,16 +1491,20 @@ def _footer_list_rail(img: Image.Image, layout, metrics: LayoutMetrics, footer: 
     controls (previous page, back/cancel, next page), stacked top to bottom
     in a dimmed column at the panel's right edge instead of side by side in
     a bottom bar. A 1px separator column marks the boundary between the rows
-    and the rail, in the same shade the row separators use."""
+    and the rail, in the same shade the row separators use. Each glyph is
+    drawn into a centred metrics.rail_glyph-side box within its own zone,
+    not the whole zone — the rail column stays a full touch target even
+    though the glyph inside it is smaller."""
     ll = list_layout_for(metrics.width, metrics.height, metrics=metrics)
     _dim_rect(img, ll.rail)
     ImageDraw.Draw(img).line(
         [(ll.rail[0] - 1, 0), (ll.rail[0] - 1, ll.rail[3] - 1)], fill=_LIST_SEPARATOR_RGB, width=1,
     )
     ss = metrics.supersample
-    _draw_glyph(img, ll.rail_up, GLYPH_CHEVRON, "up", footer.has_prev, supersample=ss)
-    _draw_glyph(img, ll.rail_cancel, GLYPH_CROSS, supersample=ss)
-    _draw_glyph(img, ll.rail_down, GLYPH_CHEVRON, "down", footer.has_next, supersample=ss)
+    side = metrics.rail_glyph
+    _draw_glyph(img, _centred_box(ll.rail_up, side), GLYPH_CHEVRON, "up", footer.has_prev, supersample=ss)
+    _draw_glyph(img, _centred_box(ll.rail_cancel, side), GLYPH_CROSS, supersample=ss)
+    _draw_glyph(img, _centred_box(ll.rail_down, side), GLYPH_CHEVRON, "down", footer.has_next, supersample=ss)
 
 
 _FOOTER_RENDERERS = {

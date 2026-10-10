@@ -3120,11 +3120,11 @@ class TestSelectorPickAndPage:
 class TestListPagingMatchesPaintedRows:
     """Regression: the touch-thread page slice must use the SAME density-aware
     rows-per-page the repaint thread paints with. On a physically large panel
-    whose short side puts it in the richer content tier the list paints four
+    whose short side puts it in the richer content tier the list paints five
     rows per page, not three; if the touch path still counts three, a tap on
-    the fourth row reads as a miss and the second page starts one row late.
-    Uses the 320x240 2.8-inch panel (band tall enough that the touch-floor
-    veto does not pull it back to the base three-row layout)."""
+    the fourth or fifth row reads as a miss and the second page starts rows
+    late. Uses the 320x240 2.8-inch panel (band tall enough that the touch-
+    floor veto does not pull it back to the base three-row layout)."""
 
     def _rich_opened(self, count):
         fb = FakeBackend()
@@ -3149,7 +3149,7 @@ class TestListPagingMatchesPaintedRows:
         display, fb, gt, targets = self._rich_opened(count=5)
         with display._lock:
             painted = display._metrics_locked().rows_per_page
-        assert painted == 4  # richer tier on the 2.8-inch 320x240 panel
+        assert painted == 5  # richer tier on the 2.8-inch 320x240 panel
         assert display._rows_per_page() == painted
 
     def test_fourth_row_is_pickable_not_a_miss(self):
@@ -3163,8 +3163,8 @@ class TestListPagingMatchesPaintedRows:
         with display._lock:
             display._repaint_current_locked()
         assert display._selector.page == 1
-        display.selector_pick(0)  # row 0 of PAGE 1 == the fifth target overall
-        assert display.manual_focus_id() == "4" * 20
+        display.selector_pick(0)  # row 0 of PAGE 1 == the sixth target overall
+        assert display.manual_focus_id() == "5" * 20
 
 
 # ---------------------------------------------------------------------------
@@ -3272,10 +3272,10 @@ class TestMetricsFollowLayout:
         )
         m = display._layout_metrics()
         assert m.content_tier == "large"
-        assert m.rows_per_page == 4
+        assert m.rows_per_page == 5
         assert m.supersample == 2
         assert m.mm_per_px == pytest.approx(0.0889, abs=1e-4)
-        assert display._rows_per_page() == 4
+        assert display._rows_per_page() == 5
 
     def test_small_on_320x240(self):
         display, fb, gt = _make_display(

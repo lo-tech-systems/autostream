@@ -176,6 +176,21 @@ FONT_BODY_MAX_PX = 36
 FONT_READOUT_MAX_PX = 44
 HALO_MAX_PX = 3
 
+# Text on the rich and large tiers scales from the large tier's own
+# reference (36/44 px on a 480 px short side) rather than from the 160x128
+# base, so a rich panel reads with the large tier's own proportions instead
+# of base's own numbers scaled up; the large-tier caps above then coincide
+# with this reference at short side 480.
+FONT_BODY_PX_AT_LARGE_REFERENCE = (36, 480)
+FONT_READOUT_PX_AT_LARGE_REFERENCE = (44, 480)
+# Header and footer bands on the rich and large tiers take a fifth of the
+# height (a quarter on base), still capped physically by BAND_MAX_MM.
+BAND_DIVISOR_RICH = 5
+# Floor for the rich/large list's right-hand rail column — a computed
+# icon-plus-padding width can undercut a safe touch column on a dense rich
+# panel; this keeps the rail no thinner than this regardless.
+RAIL_W_MIN_PX = 46
+
 
 @dataclass(frozen=True)
 class LayoutMetrics:
@@ -208,6 +223,8 @@ class LayoutMetrics:
     icon_gap: int
     halo_stroke: int
     halo_blur: int
+    rail_w: int                  # right-rail column width (rich/large only; 0 on base)
+    rail_glyph: int              # rail glyph box side, centred within its zone (0 on base)
 
 
 def metrics_for(
@@ -261,25 +278,51 @@ def metrics_for(
         # BAND_MAX_MM — past that point extra height buys nothing but empty
         # chrome — and the list drops its bottom bar for a right-hand rail,
         # so its rows fill the whole panel height instead of leaving room
-        # for one.
-        band_h = min(quarter, ceil(BAND_MAX_MM / mm_per_px))
+        # for one. The header/footer bands take a fifth of the height here
+        # (a quarter on base), still capped by BAND_MAX_MM.
+        band_h = min(height // BAND_DIVISOR_RICH, ceil(BAND_MAX_MM / mm_per_px))
         rows_per_page = height // band_h
         row_h = height // rows_per_page               # rows tile the height exactly
         list_rail = True
         supersample = SUPERSAMPLE_LARGE if content_tier == CONTENT_LARGE else SUPERSAMPLE_DEFAULT
 
-    font_body = scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1])
-    font_readout = scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1])
-    icon = scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1])
+    if content_tier == CONTENT_BASE:
+        font_body = scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1])
+        font_readout = scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1])
+    else:
+        # The rich and large tiers scale text from the large tier's own
+        # reference (36/44px on a 480px short side) instead of the 160x128
+        # base scaled up, so a rich panel reads with the large tier's own
+        # proportions rather than a blown-up base one — the large tier's
+        # own caps below then coincide with this reference at short side
+        # 480.
+        font_body = round(short * FONT_BODY_PX_AT_LARGE_REFERENCE[0] / FONT_BODY_PX_AT_LARGE_REFERENCE[1])
+        font_readout = round(short * FONT_READOUT_PX_AT_LARGE_REFERENCE[0] / FONT_READOUT_PX_AT_LARGE_REFERENCE[1])
+    icon = font_readout
+    pad = scale_px(PAD_PX_AT_REFERENCE[0], width, height, PAD_PX_AT_REFERENCE[1])
     halo_stroke = scale_px(HALO_STROKE_PX_AT_REFERENCE[0], width, height, HALO_STROKE_PX_AT_REFERENCE[1])
     halo_blur = scale_px(HALO_BLUR_PX_AT_REFERENCE[0], width, height, HALO_BLUR_PX_AT_REFERENCE[1])
+    if content_tier != CONTENT_BASE:
+        # The halo is a fine screen-space stroke — physical scale keeps it
+        # from ballooning into a blur on a bigger panel.
+        halo_stroke = min(halo_stroke, HALO_MAX_PX)
+        halo_blur = min(halo_blur, HALO_MAX_PX)
     if content_tier == CONTENT_LARGE:
         # More room buys more content, not bigger glyphs past a legible size.
         font_body = min(font_body, FONT_BODY_MAX_PX)
         font_readout = min(font_readout, FONT_READOUT_MAX_PX)
         icon = min(icon, FONT_READOUT_MAX_PX)
-        halo_stroke = min(halo_stroke, HALO_MAX_PX)
-        halo_blur = min(halo_blur, HALO_MAX_PX)
+
+    if content_tier == CONTENT_BASE:
+        rail_w = 0
+        rail_glyph = 0
+    else:
+        rail_glyph = icon
+        # icon plus its own pad on each side, floored at a fixed minimum —
+        # a computed value can undercut the touch floor on a dense rich
+        # panel (the owner's call: a thinner rail than the header/footer
+        # bands, but never thinner than this).
+        rail_w = max(icon + 2 * pad, RAIL_W_MIN_PX)
 
     return LayoutMetrics(
         width=width, height=height, mm_per_px=mm_per_px, content_tier=content_tier,
@@ -290,9 +333,10 @@ def metrics_for(
         divider_w=scale_px(DIVIDER_PX_AT_REFERENCE[0], width, height, DIVIDER_PX_AT_REFERENCE[1]),
         blur_radius=scale_px(BLUR_RADIUS_AT_REFERENCE[0], width, height, BLUR_RADIUS_AT_REFERENCE[1]),
         font_body=font_body, font_readout=font_readout, icon=icon,
-        pad=scale_px(PAD_PX_AT_REFERENCE[0], width, height, PAD_PX_AT_REFERENCE[1]),
+        pad=pad,
         icon_gap=scale_px(ICON_GAP_PX_AT_REFERENCE[0], width, height, ICON_GAP_PX_AT_REFERENCE[1]),
         halo_stroke=halo_stroke, halo_blur=halo_blur,
+        rail_w=rail_w, rail_glyph=rail_glyph,
     )
 
 
@@ -767,11 +811,13 @@ def list_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
     dial_display_profiles.py.
 
     On the rich/large tiers (metrics.list_rail is True): the navigation
-    moves to a right-hand rail as wide as one band, so rows tile
+    moves to a right-hand rail (metrics.rail_w wide) so rows tile
     [0, width - rail_w - 2*margin) instead of the full width — the same 2m
     dead gap the header's own name/cluster split and DOWN/UP split use. The
     rail itself is split three ways top to bottom, inset by margin on the
-    left the same way the bottom bar is inset by margin at the top.
+    left the same way the bottom bar is inset by margin at the top; its
+    glyphs are drawn into a centred metrics.rail_glyph-side box within each
+    third, not the whole zone (see _centred_box in the compositor).
     """
     if metrics is None:
         metrics = metrics_for(width, height)
@@ -792,7 +838,7 @@ def list_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
             up=(ux0, by0, ux1, height),
         )
 
-    rail_w = metrics.band_h
+    rail_w = metrics.rail_w
     rows_x1 = width - rail_w - 2 * m
     rows = tuple((0, i * row_h, rows_x1, (i + 1) * row_h) for i in range(rows_per_page))
     (uy0, uy1), (cy0, cy1), (dy0, dy1) = _split(height, m, [1, 1, 1])

@@ -21,6 +21,7 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 from dial_touch_layout import (  # noqa: E402
+    BAND_DIVISOR_RICH,
     BAND_MAX_MM,
     CONTENT_BASE,
     CONTENT_LARGE,
@@ -632,12 +633,12 @@ class TestOutputLayout:
     def test_pinned_geometry_at_320x240_rich(self):
         metrics = metrics_for(320, 240, 0.1778)
         output = output_layout_for(320, 240, metrics=metrics)
-        assert output.back == (6, 0, 66, 60)
-        assert output.name == (78, 0, 186, 60)
-        assert output.volume_cluster == (198, 0, 320, 54)
-        assert output.row == (6, 60, 314, 180)
-        assert output.down == (0, 186, 154, 240)
-        assert output.up == (166, 186, 320, 240)
+        assert output.back == (6, 0, 54, 48)
+        assert output.name == (66, 0, 186, 48)
+        assert output.volume_cluster == (198, 0, 320, 42)
+        assert output.row == (6, 72, 314, 168)
+        assert output.down == (0, 198, 154, 240)
+        assert output.up == (166, 198, 320, 240)
         assert output.divider_x == 160
 
 
@@ -862,8 +863,8 @@ _CONFIRMED_PANEL_TABLE = [
     ((160, 128), 0.2231, CONTENT_BASE, 32, 3, 32, 36, False, SUPERSAMPLE_DEFAULT),
     ((128, 128), 0.2021, CONTENT_BASE, 32, 3, 32, 40, False, SUPERSAMPLE_DEFAULT),
     ((240, 240), 0.0973, CONTENT_BASE, 60, 3, 60, 83, False, SUPERSAMPLE_DEFAULT),
-    ((320, 240), 0.1778, CONTENT_RICH, 60, 4, 60, 45, True, SUPERSAMPLE_DEFAULT),
-    ((320, 240), 0.1778, CONTENT_RICH, 60, 4, 60, 45, True, SUPERSAMPLE_DEFAULT),
+    ((320, 240), 0.1778, CONTENT_RICH, 48, 5, 48, 45, True, SUPERSAMPLE_DEFAULT),
+    ((320, 240), 0.1778, CONTENT_RICH, 48, 5, 48, 45, True, SUPERSAMPLE_DEFAULT),
     ((640, 480), 0.127, CONTENT_LARGE, 95, 5, 96, 63, True, SUPERSAMPLE_LARGE),
 ]
 
@@ -962,11 +963,11 @@ class TestTierReporting:
         from math import ceil
 
         mm = 0.127
-        expected = min(480 // 4, ceil(BAND_MAX_MM / mm))
+        expected = min(480 // BAND_DIVISOR_RICH, ceil(BAND_MAX_MM / mm))
         assert metrics_for(640, 480, mm).band_h == expected == 95
 
     def test_band_cap_does_not_bite_at_the_shipped_320x240_density(self):
-        assert metrics_for(320, 240, 0.1778).band_h == 60
+        assert metrics_for(320, 240, 0.1778).band_h == 48
 
     def test_band_cap_bites_at_a_coarser_320x240_density(self):
         # Same pixel count, physically bigger pixels (a 3.5 inch panel): the
@@ -988,12 +989,13 @@ class TestRailListLayout:
     def test_pinned_geometry_at_320x240(self):
         layout = list_layout_for(320, 240, metrics=_RICH_320x240)
         assert layout.rows == (
-            (0, 0, 248, 60), (0, 60, 248, 120), (0, 120, 248, 180), (0, 180, 248, 240),
+            (0, 0, 262, 48), (0, 48, 262, 96), (0, 96, 262, 144),
+            (0, 144, 262, 192), (0, 192, 262, 240),
         )
-        assert layout.rail == (260, 0, 320, 240)
-        assert layout.rail_up == (266, 0, 320, 72)
-        assert layout.rail_cancel == (266, 84, 320, 156)
-        assert layout.rail_down == (266, 168, 320, 240)
+        assert layout.rail == (274, 0, 320, 240)
+        assert layout.rail_up == (280, 0, 320, 72)
+        assert layout.rail_cancel == (280, 84, 320, 156)
+        assert layout.rail_down == (280, 168, 320, 240)
         assert layout.bar is None
         assert layout.back is None
         assert layout.down is None
@@ -1003,11 +1005,11 @@ class TestRailListLayout:
         layout = list_layout_for(640, 480, metrics=_LARGE_640x480)
         assert layout.row_h == 96
         assert layout.rows_per_page == 5
-        assert layout.rows[0] == (0, 0, 523, 96)
-        assert layout.rail == (545, 0, 640, 480)
-        assert layout.rail_up == (556, 0, 640, 145)
-        assert layout.rail_cancel == (556, 167, 640, 312)
-        assert layout.rail_down == (556, 335, 640, 480)
+        assert layout.rows[0] == (0, 0, 544, 96)
+        assert layout.rail == (566, 0, 640, 480)
+        assert layout.rail_up == (577, 0, 640, 145)
+        assert layout.rail_cancel == (577, 167, 640, 312)
+        assert layout.rail_down == (577, 335, 640, 480)
         assert layout.bar is None
         assert layout.back is None
         assert layout.down is None
@@ -1023,12 +1025,27 @@ class TestRailListLayout:
 
     @pytest.mark.parametrize("metrics", [_RICH_320x240, _LARGE_640x480])
     def test_touch_floor_is_respected(self, metrics):
+        """Every row and every rail button clears the touch floor on its
+        own (taller) axis. The rail's WIDTH is a deliberate, narrower,
+        owner-accepted exception — see test_rail_width_is_the_owner_set_
+        minimum below — so it is not asserted here."""
         layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
         for rect in layout.rows:
             assert rect[3] - rect[1] >= metrics.touch_min_px
         for rect in (layout.rail_up, layout.rail_cancel, layout.rail_down):
             assert rect[3] - rect[1] >= metrics.touch_min_px
-        assert metrics.band_h - metrics.margin >= metrics.touch_min_px
+
+    def test_rail_width_is_the_owner_set_minimum(self):
+        # A straight icon-plus-padding formula gives 38px at the shipped
+        # rich density — under the 8mm touch floor (TOUCH_MIN_MM). The
+        # owner chose a fixed 46px column instead (about 7mm): narrower
+        # than the header/footer bands, but not as narrow as the formula
+        # alone would produce. The large tier's own icon-plus-padding value
+        # already clears 46px, so it is untouched by the floor.
+        assert _RICH_320x240.rail_glyph == 22
+        assert _RICH_320x240.rail_w == 46
+        assert _LARGE_640x480.rail_glyph == 44
+        assert _LARGE_640x480.rail_w == 74
 
 
 class TestRailZoneTable:
@@ -1039,6 +1056,7 @@ class TestRailZoneTable:
             (TouchZone.LIST_ROW, 1),
             (TouchZone.LIST_ROW, 2),
             (TouchZone.LIST_ROW, 3),
+            (TouchZone.LIST_ROW, 4),
             (TouchZone.LIST_UP, None),
             (TouchZone.LIST_BACK, None),
             (TouchZone.LIST_DOWN, None),
@@ -1152,7 +1170,7 @@ class TestFontCaps:
 
     def test_large_preview_on_a_smaller_chosen_panel_caps_the_same_way(self):
         m = metrics_for(640, 480, 0.0889, size_chosen=True)
-        assert m.band_h == 120
+        assert m.band_h == 96
         assert m.font_body == 36
         assert m.font_readout == 44
         assert m.icon == 44
@@ -1160,14 +1178,17 @@ class TestFontCaps:
         assert m.halo_blur == 3
         assert m.has_album_line is True
 
-    def test_rich_tier_is_uncapped_and_has_no_album_line(self):
-        # Pre-change values, pinned explicitly so the tier gate is proven.
+    def test_rich_tier_sizes_and_has_no_album_line(self):
+        # Rich scales its text from the large tier's own reference (see
+        # FONT_BODY_PX_AT_LARGE_REFERENCE); its halo is capped the same way
+        # the large tier's is, even though its fonts stay well under their
+        # own cap at this panel size.
         m = _RICH_320x240
-        assert m.font_body == 24
-        assert m.font_readout == 28
-        assert m.icon == 28
-        assert m.halo_stroke == 4
-        assert m.halo_blur == 4
+        assert m.font_body == 18
+        assert m.font_readout == 22
+        assert m.icon == 22
+        assert m.halo_stroke == 3
+        assert m.halo_blur == 3
         assert m.has_album_line is False
 
     @pytest.mark.parametrize("width,height", [(160, 128), (128, 128)])
@@ -1193,20 +1214,18 @@ class TestFontCaps:
         assert m.has_album_line is False
 
     def test_cap_is_a_minimum_not_a_constant(self):
-        # A smaller panel that still clears the large-tier pixel threshold
-        # (only reachable with size_chosen, since its physical band is too
-        # short for the automatic tier) scales to a lower uncapped value
-        # than the native panel, but both land on the same cap — the cap is
-        # a min(), not a hardcoded replacement for one specific size.
-        small_large = metrics_for(400, 400, 0.05, size_chosen=True)
-        assert small_large.content_tier == CONTENT_LARGE
-        assert small_large.font_body == 36        # round(400*13/128) = 41, capped
-        assert small_large.font_readout == 44      # round(400*15/128) = 47, capped
-        assert _LARGE_640x480.font_body == 36       # round(480*13/128) = 49, capped
-        assert _LARGE_640x480.font_readout == 44    # round(480*15/128) = 56, capped
+        # A much bigger large-tier panel scales to a far higher natural
+        # value than the native panel, but both land on the same cap — the
+        # cap is a min(), not a hardcoded replacement for one specific size.
+        big_large = metrics_for(960, 960, 0.05)
+        assert big_large.content_tier == CONTENT_LARGE
+        assert big_large.font_body == 36        # round(960*36/480) = 72, capped
+        assert big_large.font_readout == 44     # round(960*44/480) = 88, capped
+        assert _LARGE_640x480.font_body == 36   # round(480*36/480) = 36, already at the cap
+        assert _LARGE_640x480.font_readout == 44
         # the uncapped fields still scale between the two sizes
-        assert small_large.pad != _LARGE_640x480.pad
-        assert small_large.margin != _LARGE_640x480.margin
+        assert big_large.pad != _LARGE_640x480.pad
+        assert big_large.margin != _LARGE_640x480.margin
 
 
 class TestAlbumLine:
@@ -1219,18 +1238,21 @@ class TestAlbumLine:
     def test_large_preview_panel_album_rect(self):
         metrics = metrics_for(640, 480, 0.0889, size_chosen=True)
         layout = layout_for(640, 480, metrics=metrics)
-        assert layout.album == (11, 180, 629, 240)
+        assert layout.album == (11, 240, 629, 288)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_base_tier_has_no_album_rect(self, width, height):
         assert layout_for(width, height).album is None
 
-    def test_rich_tier_has_no_album_rect_and_title_artist_are_unchanged(self):
+    def test_rich_tier_has_no_album_rect_and_title_artist_follow_the_shorter_band(self):
+        # The rich tier's own (shorter) band height moves title/artist up
+        # from where the base tier's own band would put them — pinned
+        # explicitly rather than compared to base, which no longer shares
+        # the same band height at this panel size.
         layout = layout_for(320, 240, metrics=_RICH_320x240)
-        today = layout_for(320, 240)
         assert layout.album is None
-        assert layout.title == today.title
-        assert layout.artist == today.artist
+        assert layout.title == (6, 144, 314, 168)
+        assert layout.artist == (6, 168, 314, 192)
 
     def test_main_zone_table_unaffected_at_large(self):
         # No touch/zone change: the album rect never enters the hit-test
