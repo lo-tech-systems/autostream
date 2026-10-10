@@ -722,15 +722,24 @@ def band(page, n):
     return page.locator("#eq-bands .eq-band").nth(n)
 
 
+def graph_drawn(page) -> None:
+    """Wait until the page has had its frame to redraw the graph in. The page
+    draws from an animation frame it asks for when a slider moves; a frame
+    asked for later than that one comes after it, so two of them are enough,
+    however slowly an engine delivers frames (WebKit's can be 150 ms apart
+    just after the equaliser page slides in)."""
+    page.evaluate("() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))")
+
+
 def graph_image(page) -> str:
-    page.wait_for_timeout(120)         # a frame, for the redraw
+    graph_drawn(page)
     return page.evaluate("document.getElementById('eq-graph').toDataURL()")
 
 
 def curve_y(page, hz):
     """The row of the response curve's line at *hz*: the first pixel in that
-    column that is the line's colour, or None. Waits a frame for the redraw."""
-    page.wait_for_timeout(120)
+    column that is the line's colour, or None. Waits for the redraw."""
+    graph_drawn(page)
     return page.evaluate(
         """(hz) => {
             const c = document.getElementById('eq-graph');
@@ -920,6 +929,7 @@ class TestEqPage:
         assert curve_y(page, 20) < zero_y(page) - 10          # bass lifts the low end
         assert abs(curve_y(page, 7000) - zero_y(page)) <= 4
         hd.show(eq_scenario(1, {"treble": 6}))
+        expect(band(page, 1).locator(".eq-band-val")).to_have_text("+6 dB")
         assert curve_y(page, 18000) < zero_y(page) - 6        # treble lifts the top
         assert abs(curve_y(page, 20) - zero_y(page)) <= 4
 
