@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "seq": 4821,
+  "core_seq": 4790,
+  "started": false,
+  "polling": true,
+  "dial": {
+    "name": "Lounge dial",
+    "version": "0.8.0",
+    "uuid": "11111111-2222-3333-4444-555555555555",
+    "address": "192.0.2.10",
+    "inputs": [
+      "touch:hd"
+    ],
+    "volume_scope": "current",
+    "mute_scope": "current"
+  },
+  "focus": {
+    "appliance_id": null,
+    "manual": false,
+    "pending": false,
+    "idle": false
+  },
+  "appliances": [],
+  "now_playing": null,
+  "artwork": null,
+  "volume": {
+    "appliance_id": null,
+    "level": null,
+    "muted": null
+  },
+  "outputs": null,
+  "outputs_available": false,
+  "eq": null,
+  "eq_available": false,
+  "transport": null,
+  "warnings": {
+    "due": null,
+    "cards": []
+  },
+  "network": null,
+  "sd_health": null,
+  "update": null,
+  "panel": {
+    "asleep": false,
+    "brightness": 80,
+    "sleep_after_s": 300,
+    "backlight": "sysfs",
+    "always_show_controls": false
+  },
+  "recovery": {
+    "active": false,
+    "confirmed": false
+  }
+}

@@ -1,0 +1,179 @@
+{
+  "v": 1,
+  "seq": 4821,
+  "core_seq": 4790,
+  "started": true,
+  "polling": true,
+  "dial": {
+    "name": "Lounge dial",
+    "version": "0.8.0",
+    "uuid": "11111111-2222-3333-4444-555555555555",
+    "address": "192.0.2.10",
+    "inputs": [
+      "touch:hd"
+    ],
+    "volume_scope": "current",
+    "mute_scope": "current"
+  },
+  "focus": {
+    "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
+    "manual": true,
+    "pending": false,
+    "idle": true
+  },
+  "appliances": [
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaa",
+      "name": "Lounge",
+      "auth": "authorized",
+      "playing": false,
+      "replaying": false,
+      "reachable": true,
+      "volume": 42,
+      "muted": false,
+      "capabilities": {
+        "outputs": 1,
+        "eq": 2,
+        "repeat": true,
+        "warnings": true,
+        "proto": 3
+      },
+      "repeat": {
+        "available": true,
+        "state": "hold",
+        "armed": false,
+        "recording_s": 1122.0,
+        "position_s": 0.0,
+        "duration_s": 0.0
+      },
+      "warnings": [],
+      "webui": "http://192.0.2.20:80/"
+    }
+  ],
+  "now_playing": {
+    "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
+    "title": "Tunnel of Love",
+    "artist": "Dire Straits",
+    "album": "",
+    "playing": false
+  },
+  "artwork": null,
+  "volume": {
+    "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
+    "level": 42,
+    "muted": null
+  },
+  "outputs": {
+    "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
+    "loaded": true,
+    "rows": [
+      {
+        "id": "o1",
+        "name": "Lounge L + R",
+        "selected": true,
+        "volume": 45,
+        "in_use": false,
+        "owner": ""
+      },
+      {
+        "id": "o2",
+        "name": "Patio",
+        "selected": false,
+        "volume": 30,
+        "in_use": false,
+        "owner": ""
+      },
+      {
+        "id": "o3",
+        "name": "Bedroom",
+        "selected": false,
+        "volume": 20,
+        "in_use": false,
+        "owner": ""
+      }
+    ]
+  },
+  "outputs_available": true,
+  "eq": {
+    "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
+    "version": 2,
+    "loaded": true,
+    "bands": [
+      {
+        "id": "peq1",
+        "frequency_hz": 40,
+        "gain_db": 2,
+        "min_db": -12,
+        "max_db": 12
+      },
+      {
+        "id": "peq2",
+        "frequency_hz": 100,
+        "gain_db": 0,
+        "min_db": -12,
+        "max_db": 12
+      },
+      {
+        "id": "peq3",
+        "frequency_hz": 300,
+        "gain_db": -1,
+        "min_db": -12,
+        "max_db": 12
+      },
+      {
+        "id": "peq4",
+        "frequency_hz": 1000,
+        "gain_db": 0,
+        "min_db": -12,
+        "max_db": 12
+      },
+      {
+        "id": "peq5",
+        "frequency_hz": 4000,
+        "gain_db": 3,
+        "min_db": -12,
+        "max_db": 12
+      },
+      {
+        "id": "peq6",
+        "frequency_hz": 10000,
+        "gain_db": 1,
+        "min_db": -12,
+        "max_db": 12
+      }
+    ]
+  },
+  "eq_available": true,
+  "transport": {
+    "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
+    "kind": "seek",
+    "state": "accepted",
+    "error": null
+  },
+  "warnings": {
+    "due": null,
+    "cards": []
+  },
+  "network": {
+    "link": "connected",
+    "ssid": "HomeNet",
+    "signal": "Strong",
+    "bars": 3
+  },
+  "sd_health": {
+    "status": "valid",
+    "percent": 84
+  },
+  "update": null,
+  "panel": {
+    "asleep": false,
+    "brightness": 80,
+    "sleep_after_s": 300,
+    "backlight": "sysfs",
+    "always_show_controls": false
+  },
+  "recovery": {
+    "active": false,
+    "confirmed": false
+  }
+}
