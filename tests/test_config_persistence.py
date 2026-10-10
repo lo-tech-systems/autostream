@@ -319,9 +319,102 @@ class TestParseConfigAudio:
         cfg = c.parse_config({"audio1": {"turntable": True, "silence_threshold": -30.0}})
         assert cfg.audio1.silence_threshold_dbfs == -30.0
 
-    def test_stored_zero_threshold_is_preserved(self):
+    def test_stored_threshold_above_range_clamps_to_max(self):
         cfg = c.parse_config({"audio1": {"turntable": False, "silence_threshold": 0.0}})
-        assert cfg.audio1.silence_threshold_dbfs == 0.0
+        assert cfg.audio1.silence_threshold_dbfs == -30.0
+
+
+class TestInputType:
+    @staticmethod
+    def _audio1(section):
+        return c.parse_config({"audio1": section}).audio1
+
+    def test_explicit_type_parsed(self):
+        a = self._audio1({"input_type": "cd"})
+        assert a.input_type == "cd"
+        assert a.is_turntable is False
+        assert a.silence_threshold_dbfs == -60.0
+
+    def test_absent_type_derives_from_flag_true(self):
+        a = self._audio1({"turntable": True})
+        assert a.input_type == "turntable"
+        assert a.is_turntable is True
+        assert a.silence_threshold_dbfs == -45.0
+
+    def test_absent_type_derives_from_flag_false(self):
+        assert self._audio1({"turntable": False}).input_type == "line"
+        assert self._audio1({}).input_type == "line"
+
+    def test_invalid_type_falls_back_to_flag(self):
+        assert self._audio1({"input_type": "tape", "turntable": True}).input_type == "turntable"
+        assert self._audio1({"input_type": "tape", "turntable": False}).input_type == "line"
+
+    def test_flag_wins_on_disagreement(self):
+        assert self._audio1({"input_type": "cd", "turntable": True}).input_type == "turntable"
+        assert self._audio1({"input_type": "turntable", "turntable": False}).input_type == "line"
+
+    def test_type_without_flag_is_used(self):
+        assert self._audio1({"input_type": "cd"}).input_type == "cd"
+
+    def test_migrated_minus_66_survives(self):
+        assert self._audio1({"silence_threshold": -66}).silence_threshold_dbfs == -66.0
+
+    def test_below_range_clamps_to_min(self):
+        assert self._audio1({"silence_threshold": -71}).silence_threshold_dbfs == -70.0
+
+    def test_non_numeric_threshold_falls_back_to_preset(self):
+        a = self._audio1({"input_type": "turntable", "silence_threshold": "loud"})
+        assert a.silence_threshold_dbfs == -45.0
+
+    def test_labels_and_presets(self):
+        assert c.input_type_label("cd") == "CD"
+        assert c.input_type_label("nonsense") == "Line"
+        assert c.input_type_silence_threshold_dbfs("turntable") == -45.0
+
+
+class TestSetInputType:
+    def test_writes_both_keys(self):
+        raw = {}
+        result = c.set_input_type(raw, 1, "cd")
+        assert raw["audio1"] == {
+            "input_type": "cd", "turntable": False, "silence_threshold": -60.0}
+        assert result == -60.0
+
+    def test_turntable_to_line_resets_preset(self):
+        raw = {"audio1": {"input_type": "turntable", "turntable": True,
+                          "silence_threshold": -40.0}}
+        c.set_input_type(raw, 1, "line")
+        assert raw["audio1"]["silence_threshold"] == -60.0
+
+    def test_cd_to_line_keeps_tuned_threshold(self):
+        raw = {"audio1": {"input_type": "cd", "turntable": False,
+                          "silence_threshold": -50.0}}
+        c.set_input_type(raw, 1, "line")
+        assert raw["audio1"]["silence_threshold"] == -50.0
+
+    def test_same_preset_change_still_clamps(self):
+        raw = {"audio1": {"input_type": "cd", "turntable": False,
+                          "silence_threshold": -80.0}}
+        c.set_input_type(raw, 1, "line")
+        assert raw["audio1"]["silence_threshold"] == -70.0
+
+    def test_set_input_mode_always_resets_to_preset(self):
+        def tuned():
+            return {"audio1": {"input_type": "line", "turntable": False,
+                               "silence_threshold": -50.0}}
+        raw = tuned()
+        assert c.set_input_mode(raw, 1, False) == -60.0
+        assert raw["audio1"]["silence_threshold"] == -60.0
+        raw = tuned()
+        assert c.set_input_type(raw, 1, "line") == -50.0
+        assert raw["audio1"]["silence_threshold"] == -50.0
+
+    def test_set_input_mode_is_a_wrapper(self):
+        raw = {}
+        result = c.set_input_mode(raw, 2, True)
+        assert raw["audio2"]["input_type"] == "turntable"
+        assert raw["audio2"]["turntable"] is True
+        assert result == -45.0
 
 
 class TestSetInputMode:

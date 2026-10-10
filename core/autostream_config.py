@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -140,6 +141,60 @@ def normalize_audio_path(value: object, *, high_perf: bool) -> str:
 TURNTABLE_SILENCE_THRESHOLD_DBFS = -45.0
 LINE_LEVEL_SILENCE_THRESHOLD_DBFS = -60.0
 
+INPUT_TYPES = ("turntable", "cd", "line")
+INPUT_TYPE_DEFAULT = "line"
+INPUT_TYPE_LABELS = {"turntable": "Turntable", "cd": "CD", "line": "Line"}
+INPUT_TYPE_SILENCE_THRESHOLD_DBFS = {
+    "turntable": TURNTABLE_SILENCE_THRESHOLD_DBFS,
+    "cd": LINE_LEVEL_SILENCE_THRESHOLD_DBFS,
+    "line": LINE_LEVEL_SILENCE_THRESHOLD_DBFS,
+}
+# The sensitivity slider's range; a stored threshold outside it is clamped
+# on parse.
+SILENCE_THRESHOLD_MIN_DBFS = -70.0
+SILENCE_THRESHOLD_MAX_DBFS = -30.0
+
+
+def normalize_input_type(value: object, default: str = INPUT_TYPE_DEFAULT) -> str:
+    """Return one of INPUT_TYPES, or *default* for anything else."""
+    text = str(value or "").strip().lower()
+    return text if text in INPUT_TYPES else default
+
+
+def input_type_label(input_type: object) -> str:
+    return INPUT_TYPE_LABELS[normalize_input_type(input_type)]
+
+
+def input_type_silence_threshold_dbfs(input_type: object) -> float:
+    return INPUT_TYPE_SILENCE_THRESHOLD_DBFS[normalize_input_type(input_type)]
+
+
+def clamp_silence_threshold_dbfs(value: object, default: float) -> float:
+    """Clamp a stored threshold to the slider range; *default* for a missing
+    or unusable value."""
+    if value is None:
+        return float(default)
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(v):
+        return float(default)
+    return min(SILENCE_THRESHOLD_MAX_DBFS, max(SILENCE_THRESHOLD_MIN_DBFS, v))
+
+
+def input_type_from_section(section: dict) -> str:
+    """Resolve an audio section's type from its input_type key and its
+    older turntable flag. Only an older release writes the flag alone, so
+    when the two disagree the flag is the more recent word."""
+    raw_type = normalize_input_type(section.get("input_type"), default="")
+    flag = section.get("turntable")
+    if raw_type == "":
+        return "turntable" if bool(flag) else "line"
+    if flag is not None and bool(flag) != (raw_type == "turntable"):
+        return "turntable" if bool(flag) else "line"
+    return raw_type
+
 
 def normalize_stylus_life_hours(
     value: object,
@@ -189,11 +244,7 @@ def normalize_maintenance_life_years(value: object, default: int = 0) -> int:
 
 def suggested_silence_threshold_dbfs(is_turntable: bool) -> float:
     """Return the recommended silence threshold preset for the input type."""
-    return (
-        TURNTABLE_SILENCE_THRESHOLD_DBFS
-        if bool(is_turntable)
-        else LINE_LEVEL_SILENCE_THRESHOLD_DBFS
-    )
+    return input_type_silence_threshold_dbfs("turntable" if is_turntable else "line")
 
 
 _PYTHON_LOG_LEVELS = {
@@ -375,6 +426,7 @@ class AudioInputConfig:
     eq_40hz_db: float
     eq_100hz_db: float
     eq_8khz_db: float
+    input_type: str = INPUT_TYPE_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -623,13 +675,13 @@ class AutostreamConfig:
 
 def _parse_audio_input_config(section: dict) -> AudioInputConfig:
     """Parse a single audio section dict into an AudioInputConfig."""
-    is_turntable = bool(section.get("turntable", False))
-    raw_threshold = section.get("silence_threshold")
+    input_type = input_type_from_section(section)
+    is_turntable = input_type == "turntable"
     return AudioInputConfig(
         capture_device=str(section.get("capture_device", "") or "").strip(),
-        silence_threshold_dbfs=(
-            float(raw_threshold) if raw_threshold is not None
-            else suggested_silence_threshold_dbfs(is_turntable)
+        silence_threshold_dbfs=clamp_silence_threshold_dbfs(
+            section.get("silence_threshold"),
+            default=input_type_silence_threshold_dbfs(input_type),
         ),
         is_turntable=is_turntable,
         stylus_life_hours=normalize_stylus_life_hours(
@@ -645,20 +697,36 @@ def _parse_audio_input_config(section: dict) -> AudioInputConfig:
         eq_100hz_db=float(section.get("eq_100hz_db", 0.0) or 0.0),
         # Support legacy eq_10khz_db key from pre-migration INI configs.
         eq_8khz_db=float(section.get("eq_8khz_db", section.get("eq_10khz_db", 0.0)) or 0.0),
+        input_type=input_type,
     )
 
 
-def set_input_mode(raw: dict, index: int, is_turntable: bool) -> float:
-    """Set an input's turntable flag and its derived silence threshold together.
+def set_input_type(raw: dict, index: int, input_type: object) -> float:
+    """Set an input's type, keep the turntable flag in step, and move the
+    silence threshold to the new type's preset when the preset changes.
 
-    Returns the threshold that was written, so callers can compare it against
-    the previously stored value without recomputing it.
+    Returns the threshold that is now stored.
     """
     section = raw.setdefault(f"audio{index}", {})
-    section["turntable"] = bool(is_turntable)
-    threshold = suggested_silence_threshold_dbfs(is_turntable)
-    section["silence_threshold"] = threshold
-    return threshold
+    new_type = normalize_input_type(input_type)
+    old_type = input_type_from_section(section)
+    section["input_type"] = new_type
+    section["turntable"] = new_type == "turntable"
+    old_preset = input_type_silence_threshold_dbfs(old_type)
+    new_preset = input_type_silence_threshold_dbfs(new_type)
+    if "silence_threshold" not in section or old_preset != new_preset:
+        section["silence_threshold"] = new_preset
+    else:
+        section["silence_threshold"] = clamp_silence_threshold_dbfs(
+            section["silence_threshold"], default=new_preset)
+    return float(section["silence_threshold"])
+
+
+def set_input_mode(raw: dict, index: int, is_turntable: bool) -> float:
+    """Older entry point: a turntable flag maps to the turntable or line
+    type, and the threshold always goes to that type's preset."""
+    raw.setdefault(f"audio{index}", {}).pop("silence_threshold", None)
+    return set_input_type(raw, index, "turntable" if is_turntable else "line")
 
 
 def parse_config(
