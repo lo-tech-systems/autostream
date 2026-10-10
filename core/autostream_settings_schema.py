@@ -48,8 +48,9 @@ cross-field validation it runs:
     the setup form and the settings API enforce the same rule.
   - `mutate` -- overrides the default ``raw[section][key] = value`` write
     for the handful of fields whose on-disk shape isn't a flat
-    ``section[key]`` assignment (e.g. the turntable flag, which calls
-    ``set_input_mode()`` to also derive ``silence_threshold_dbfs``).
+    ``section[key]`` assignment (e.g. the input type, which calls
+    ``set_input_type()`` to write the type, the turntable flag and
+    ``silence_threshold_dbfs`` together).
   - Wildcard/template rows: a path containing a literal ``"*"`` segment
     (e.g. ``"owntone.offsets.*"``) is a *template* row, matched by
     ``get_field_spec()`` on an exact-path miss -- see ``_split_template`` and

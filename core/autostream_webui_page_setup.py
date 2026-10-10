@@ -1031,7 +1031,7 @@ def _setup_input_card_html(
             <label>Input device: <select name="{capture_name}" id="{capture_name}_select" data-input-index="{input_index}"{data_prev_attr} onchange="{capture_onchange}">{build_opts(parsed_input.capture_device, other_capture_device)}</select></label>
             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
               <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index}); if(liveEnabled) settingsSaveField('audio{input_index}.turntable', this.checked);">
+                <input type="checkbox" name="{turntable_name}" {'checked' if is_turntable else ''} onchange="syncInputUi({input_index}); if(liveEnabled) settingsSaveField('audio{input_index}.input_type', this.checked ? 'turntable' : 'line');">
                 <span class="switch"></span>
               </label>
               <span>Turntable</span>

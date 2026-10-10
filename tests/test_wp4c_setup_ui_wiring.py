@@ -257,10 +257,10 @@ class TestSetupPageHtmlControls:
         assert "settingsSaveField('audio2.capture_device', this.value)" in html
 
     def test_turntable_1_wired(self, html):
-        assert "settingsSaveField('audio1.turntable', this.checked)" in html
+        assert "settingsSaveField('audio1.input_type', this.checked ? 'turntable' : 'line')" in html
 
     def test_turntable_2_wired(self, html):
-        assert "settingsSaveField('audio2.turntable', this.checked)" in html
+        assert "settingsSaveField('audio2.input_type', this.checked ? 'turntable' : 'line')" in html
 
     def test_output_select_wired(self, html):
         assert "settingsSaveField('owntone.output_name', this.value)" in html

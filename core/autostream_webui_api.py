@@ -70,11 +70,15 @@ from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     REPEAT_CODEC_CHOICES,
+    SILENCE_THRESHOLD_MAX_DBFS,
+    SILENCE_THRESHOLD_MIN_DBFS,
     VALID_AIRPLAY_MODES,
+    input_type_silence_threshold_dbfs,
     is_valid_monitor_device_id,
     load_config,
     load_state,
     normalize_airplay_mode,
+    normalize_input_type,
     normalize_output_usage_poll_interval,
     normalize_repeat_codec,
     normalize_track_id_analysis_lead_in_seconds,
@@ -84,8 +88,7 @@ from autostream_config import (
     parse_config,
     save_config,
     save_state,
-    set_input_mode,
-    suggested_silence_threshold_dbfs,
+    set_input_type,
 )
 from autostream_rpi import get_appliance_id, is_high_performance_pi
 from autostream_dials import (
@@ -119,6 +122,7 @@ from autostream_core import (
     set_live_repeat_armed,
     set_live_repeat_armed_ack,
     set_live_repeat_enabled,
+    update_live_input_type,
     update_live_owntone_runtime,
     update_live_silence_seconds,
     update_live_silence_threshold_dbfs,
@@ -531,6 +535,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
                 1,
                 enabled=p.audio1_enabled,
                 is_turntable=a.is_turntable,
+                input_type=a.input_type,
                 is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
                 stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
                 belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
@@ -544,6 +549,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
                 2,
                 enabled=p.audio2_enabled,
                 is_turntable=a.is_turntable,
+                input_type=a.input_type,
                 is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
                 stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
                 belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
@@ -2150,6 +2156,7 @@ def _live_audio1_enabled(state: object, value: object) -> bool:
             1,
             enabled=bool(value),
             is_turntable=snap.audio1.is_turntable,
+            input_type=snap.audio1.input_type,
             is_bluetooth=classify_loopback_hw(snap.audio1.capture_device) == "capture",
             stylus_life_hours=snap.audio1.stylus_life_hours,
             belt_life_hours=snap.audio1.belt_life_hours,
@@ -2170,6 +2177,7 @@ def _live_audio2_enabled(state: object, value: object) -> bool:
             2,
             enabled=bool(value),
             is_turntable=snap.audio2.is_turntable,
+            input_type=snap.audio2.input_type,
             is_bluetooth=classify_loopback_hw(snap.audio2.capture_device) == "capture",
             stylus_life_hours=snap.audio2.stylus_life_hours,
             belt_life_hours=snap.audio2.belt_life_hours,
@@ -2181,54 +2189,69 @@ def _live_audio2_enabled(state: object, value: object) -> bool:
     return True
 
 
-def _live_turntable_1(state: object, value: object) -> bool:
+def _validate_input_type(value: object) -> str:
+    if not isinstance(value, str) or normalize_input_type(value, default="") == "":
+        raise ValueError("Value must be one of turntable, cd, line")
+    return normalize_input_type(value)
+
+
+def _validate_silence_threshold_dbfs(value: object) -> float:
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    v = float(value)
+    if not math.isfinite(v) or v < SILENCE_THRESHOLD_MIN_DBFS or v > SILENCE_THRESHOLD_MAX_DBFS:
+        raise ValueError(
+            f"Value must be between {SILENCE_THRESHOLD_MIN_DBFS:.0f} and {SILENCE_THRESHOLD_MAX_DBFS:.0f}"
+        )
+    return float(round(v))
+
+
+def _sync_playback_input_config(snap, input_index: int) -> None:
+    """Hand one input's current settings to the playback tracker."""
+    a = snap.audio1 if input_index == 1 else snap.audio2
+    update_playback_input_config(
+        input_index,
+        enabled=snap.audio1_enabled if input_index == 1 else snap.audio2_enabled,
+        is_turntable=a.is_turntable,
+        input_type=a.input_type,
+        is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
+        stylus_life_hours=a.stylus_life_hours,
+        belt_life_hours=a.belt_life_hours,
+        belt_life_years=a.belt_life_years,
+        bearing_life_hours=a.bearing_life_hours,
+        bearing_life_years=a.bearing_life_years,
+    )
+
+
+def _live_input_type(state: object, input_index: int, value: object) -> bool:
+    # Runs after the store has committed the type, flag and preset, so the
+    # snapshot already holds the threshold to push with the type.
     from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
     if isinstance(settings, _SettingsStore):
         snap = settings.snapshot()
-        update_playback_input_config(
-            1,
-            enabled=snap.audio1_enabled,
-            is_turntable=bool(value),
-            is_bluetooth=classify_loopback_hw(snap.audio1.capture_device) == "capture",
-            stylus_life_hours=snap.audio1.stylus_life_hours,
-            belt_life_hours=snap.audio1.belt_life_hours,
-            belt_life_years=snap.audio1.belt_life_years,
-            bearing_life_hours=snap.audio1.bearing_life_hours,
-            bearing_life_years=snap.audio1.bearing_life_years,
-        )
-    # Turntable mode only changes the derived silence threshold, which the
-    # monitor daemon accepts as a live configure_input() field on a running
-    # input -- so this never needs a coordinator teardown. Fall back to the
-    # existing reload debounce only if that live push could not be applied
-    # (e.g. daemon unreachable), so the setting still takes effect the same
-    # way it always has.
-    if not update_live_silence_threshold_dbfs(1, suggested_silence_threshold_dbfs(bool(value))):
-        _debounce_coordinator_reload(state)
-    return True
+        _sync_playback_input_config(snap, input_index)
+        a = snap.audio1 if input_index == 1 else snap.audio2
+        return update_live_input_type(input_index, a.input_type, a.silence_threshold_dbfs)
+    return update_live_input_type(
+        input_index, value, input_type_silence_threshold_dbfs(value))
 
 
-def _live_turntable_2(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        snap = settings.snapshot()
-        update_playback_input_config(
-            2,
-            enabled=snap.audio2_enabled,
-            is_turntable=bool(value),
-            is_bluetooth=classify_loopback_hw(snap.audio2.capture_device) == "capture",
-            stylus_life_hours=snap.audio2.stylus_life_hours,
-            belt_life_hours=snap.audio2.belt_life_hours,
-            belt_life_years=snap.audio2.belt_life_years,
-            bearing_life_hours=snap.audio2.bearing_life_hours,
-            bearing_life_years=snap.audio2.bearing_life_years,
-        )
-    # See _live_turntable_1: live push of the derived threshold, reload
-    # debounce only as a fallback if the daemon push fails.
-    if not update_live_silence_threshold_dbfs(2, suggested_silence_threshold_dbfs(bool(value))):
-        _debounce_coordinator_reload(state)
-    return True
+def _live_input_type_1(state: object, value: object) -> bool:
+    return _live_input_type(state, 1, value)
+
+
+def _live_input_type_2(state: object, value: object) -> bool:
+    return _live_input_type(state, 2, value)
+
+
+def _live_silence_threshold_1(state: object, value: object) -> bool:
+    return update_live_silence_threshold_dbfs(1, float(value))
+
+
+def _live_silence_threshold_2(state: object, value: object) -> bool:
+    return update_live_silence_threshold_dbfs(2, float(value))
 
 
 def _live_track_id(state: object, value: object) -> bool:
@@ -2271,14 +2294,10 @@ def _reg_settings_field(path, section, key, validate, live=None, form_coerce=Non
     return (section, key, validate, live)
 
 
-def _mutate_turntable(raw: dict, section: str, key: str, value: object) -> None:
-    """FieldSpec.mutate override for audio{1,2}.turntable: the on-disk write
-    isn't a flat ``raw[section][key] = value`` assignment -- ``set_input_mode``
-    also derives ``silence_threshold_dbfs`` atomically alongside the flag.
-    Unchanged from the logic ``send_settings_post_json`` used to special-
-    case inline for this field.
-    """
-    set_input_mode(raw, int(section[-1]), bool(value))
+def _mutate_input_type(raw: dict, section: str, key: str, value: object) -> None:
+    """FieldSpec.mutate for audio{1,2}.input_type: set_input_type also keeps
+    the turntable flag in step and moves the threshold to the new preset."""
+    set_input_type(raw, int(section[-1]), value)
 
 
 _SETTINGS_FIELDS: dict = {
@@ -2313,9 +2332,12 @@ _SETTINGS_FIELDS: dict = {
     "audio1.enabled":                           _reg_settings_field("audio1.enabled", "audio1", "enabled", _validate_bool, _live_audio1_enabled, live_class=LiveClass.RELOAD),
     # Audio2 enabled (live: playback tracker + coordinator reload debounce)
     "audio2.enabled":                           _reg_settings_field("audio2.enabled", "audio2", "enabled", _validate_bool, _live_audio2_enabled, live_class=LiveClass.RELOAD),
-    # Turntable mode (atomic mutation with derived silence_threshold; live: playback tracker + coordinator reload debounce)
-    "audio1.turntable":                         _reg_settings_field("audio1.turntable", "audio1", "turntable", _validate_bool, _live_turntable_1, mutate=_mutate_turntable, live_class=LiveClass.RELOAD),
-    "audio2.turntable":                         _reg_settings_field("audio2.turntable", "audio2", "turntable", _validate_bool, _live_turntable_2, mutate=_mutate_turntable, live_class=LiveClass.RELOAD),
+    # Input type (one store update writes the type, the turntable flag and the preset threshold; live: playback tracker and daemon push, never a reload)
+    "audio1.input_type":                        _reg_settings_field("audio1.input_type", "audio1", "input_type", _validate_input_type, _live_input_type_1, mutate=_mutate_input_type, live_class=LiveClass.LIVE),
+    "audio2.input_type":                        _reg_settings_field("audio2.input_type", "audio2", "input_type", _validate_input_type, _live_input_type_2, mutate=_mutate_input_type, live_class=LiveClass.LIVE),
+    # Sensitivity in whole dB (live: daemon push, never a reload)
+    "audio1.silence_threshold":                 _reg_settings_field("audio1.silence_threshold", "audio1", "silence_threshold", _validate_silence_threshold_dbfs, _live_silence_threshold_1, live_class=LiveClass.LIVE),
+    "audio2.silence_threshold":                 _reg_settings_field("audio2.silence_threshold", "audio2", "silence_threshold", _validate_silence_threshold_dbfs, _live_silence_threshold_2, live_class=LiveClass.LIVE),
     # Track identification (live: track-ID rebuild debounce)
     "track_identification.enabled":             _reg_settings_field("track_identification.enabled", "track_identification", "enabled", _validate_bool, _live_track_id, live_class=LiveClass.RELOAD),
     "track_identification.analysis_lead_in_seconds": _reg_settings_field("track_identification.analysis_lead_in_seconds", "track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id, form_coerce=normalize_track_id_analysis_lead_in_seconds, live_class=LiveClass.RELOAD),
@@ -2448,7 +2470,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
             return
 
     # Dispatches through SettingsStore.set()'s internal "already
-    # normalised" entry point -- the mutation (including the turntable's
+    # normalised" entry point -- the mutation (including the input type's
     # non-flat write and the hostname-visibility cascade) and the live-push
     # side effect are the schema row's own `mutate`/`cross_validate`/
     # `live_fn` (see the row registrations above), not logic hand-rolled at

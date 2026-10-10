@@ -366,7 +366,8 @@ class TestPokeSites:
         state = MagicMock()
         state.settings = None
         parsed = SimpleNamespace(
-            audio1=SimpleNamespace(is_turntable=True, capture_device="x", stylus_life_hours=1,
+            audio1=SimpleNamespace(is_turntable=True, input_type="turntable",
+                                   capture_device="x", stylus_life_hours=1,
                                    belt_life_hours=0, belt_life_years=0,
                                    bearing_life_hours=0, bearing_life_years=0),
             audio1_enabled=True,

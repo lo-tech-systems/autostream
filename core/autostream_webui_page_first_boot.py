@@ -404,6 +404,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             1,
             enabled=snap.audio1_enabled,
             is_turntable=snap.audio1.is_turntable,
+            input_type=snap.audio1.input_type,
             stylus_life_hours=snap.audio1.stylus_life_hours,
             belt_life_hours=snap.audio1.belt_life_hours,
             belt_life_years=snap.audio1.belt_life_years,

@@ -5,7 +5,7 @@ WP4B acceptance tests: input configuration and track identification settings.
 Tests cover:
   - Validators for capture_device and track-ID numeric fields
   - Store persistence for all WP4B fields
-  - Turntable mode atomically updates derived silence_threshold
+  - Input type atomically updates the flag and the preset silence_threshold
   - Coordinator reload is debounced (not immediate per-request)
   - audio2.enabled triggers playback tracker update
   - Track-ID fields trigger debounced rebuild
@@ -170,9 +170,12 @@ class TestSettingsFieldsWp4bPresent:
     def test_audio2_enabled(self):
         assert "audio2.enabled" in _SETTINGS_FIELDS
 
-    def test_turntable_fields(self):
-        assert "audio1.turntable" in _SETTINGS_FIELDS
-        assert "audio2.turntable" in _SETTINGS_FIELDS
+    def test_input_type_and_sensitivity_fields(self):
+        for f in ("audio1.input_type", "audio2.input_type",
+                  "audio1.silence_threshold", "audio2.silence_threshold"):
+            assert f in _SETTINGS_FIELDS
+        assert "audio1.turntable" not in _SETTINGS_FIELDS
+        assert "audio2.turntable" not in _SETTINGS_FIELDS
 
     def test_track_id_fields(self):
         for f in (
@@ -186,7 +189,8 @@ class TestSettingsFieldsWp4bPresent:
     def test_all_wp4b_entries_are_4_tuples_with_live_fn(self):
         wp4b = [
             "audio1.capture_device", "audio2.capture_device",
-            "audio2.enabled", "audio1.turntable", "audio2.turntable",
+            "audio2.enabled", "audio1.input_type", "audio2.input_type",
+            "audio1.silence_threshold", "audio2.silence_threshold",
             "track_identification.enabled",
             "track_identification.analysis_lead_in_seconds",
             "track_identification.refresh_seconds",
@@ -223,14 +227,6 @@ class TestWp4bStorePersistence:
         assert resp["ok"] is True
         assert store.snapshot().audio2_enabled is True
 
-    def test_turntable_1_stored(self, tmp_path):
-        state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload"), \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            code, resp = _post_resp(state, "audio1.turntable", True)
-        assert resp["ok"] is True
-        assert store.snapshot().audio1.is_turntable is True
-
     def test_track_id_enabled_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         with patch("autostream_webui_api._debounce_track_id_rebuild"):
@@ -260,44 +256,67 @@ class TestWp4bStorePersistence:
         assert store.snapshot().track_identification.track_change_silence_seconds == pytest.approx(1.5)
 
 
-# ── Turntable derives silence_threshold atomically ────────────────────────────
+# ── Input type row ────────────────────────────────────────────────────────────
 
-class TestTurntableDerivedThreshold:
-    def test_turntable_true_sets_turntable_threshold(self, tmp_path):
-        # Turntable threshold = -45 dBFS; line-level = -60 dBFS.
-        # Turntable is more sensitive (less negative value ≡ closer to 0 dBFS).
+@pytest.fixture(autouse=True)
+def _no_push_retry_sleep():
+    with patch.object(_core_mod, "LIVE_PUSH_RETRY_GAP_SECONDS", 0.0):
+        yield
+
+
+@contextmanager
+def _tracker_patched():
+    with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m:
+        yield m
+
+
+class TestInputTypeRow:
+    def test_type_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload"), \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            _post_resp(state, "audio1.turntable", True)
+        with _tracker_patched():
+            code, resp = _post_resp(state, "audio1.input_type", "cd")
+        assert resp["ok"] is True
+        snap = store.snapshot()
+        assert snap.audio1.input_type == "cd"
+        assert snap.audio1.is_turntable is False
+
+    def test_line_to_turntable_resets_threshold(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        with _tracker_patched():
+            _post_resp(state, "audio1.input_type", "turntable")
         snap = store.snapshot()
         assert snap.audio1.is_turntable is True
         assert snap.audio1.silence_threshold_dbfs == pytest.approx(-45.0)
 
-    def test_turntable_false_sets_line_level_threshold(self, tmp_path):
+    def test_turntable_to_line_resets_threshold(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        def _set_turntable(raw):
-            raw.setdefault("audio1", {})["turntable"] = True
-            raw.setdefault("audio1", {})["silence_threshold"] = -45.0
-        store.update(_set_turntable)
-        with patch("autostream_webui_api._debounce_coordinator_reload"), \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            _post_resp(state, "audio1.turntable", False)
+        store.update(lambda raw: raw.update(
+            {"audio1": {"input_type": "turntable", "turntable": True,
+                        "silence_threshold": -45.0}}))
+        with _tracker_patched():
+            _post_resp(state, "audio1.input_type", "line")
         snap = store.snapshot()
         assert snap.audio1.is_turntable is False
         assert snap.audio1.silence_threshold_dbfs == pytest.approx(-60.0)
 
-    def test_turntable_2_also_derives_threshold(self, tmp_path):
+    def test_input_2_has_its_own_row(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload"), \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            _post_resp(state, "audio2.turntable", True)
+        with _tracker_patched():
+            _post_resp(state, "audio2.input_type", "turntable")
         snap = store.snapshot()
-        assert snap.audio2.is_turntable is True
+        assert snap.audio2.input_type == "turntable"
         assert snap.audio2.silence_threshold_dbfs == pytest.approx(-45.0)
+        assert snap.audio1.input_type == "line"
 
-    def test_turntable_mutation_is_atomic(self, tmp_path):
-        """turntable and silence_threshold change in one store.update call."""
+    def test_cd_to_line_keeps_tuned_threshold(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        store.update(lambda raw: raw.update(
+            {"audio1": {"input_type": "cd", "silence_threshold": -50.0}}))
+        with _tracker_patched():
+            _post_resp(state, "audio1.input_type", "line")
+        assert store.snapshot().audio1.silence_threshold_dbfs == pytest.approx(-50.0)
+
+    def test_type_flag_and_threshold_change_in_one_update(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         update_count = [0]
         orig_update = store.update
@@ -307,46 +326,156 @@ class TestTurntableDerivedThreshold:
             return orig_update(mutator)
 
         store.update = _count
-        with patch("autostream_webui_api._debounce_coordinator_reload"), \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            _post_resp(state, "audio1.turntable", True)
-        # Exactly one store.update call covers both turntable and silence_threshold
+        with _tracker_patched():
+            _post_resp(state, "audio1.input_type", "turntable")
         assert update_count[0] == 1
 
+    def test_invalid_type_rejected(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        with _tracker_patched():
+            code, resp = _post_resp(state, "audio1.input_type", "tape")
+        assert code == 400
+        assert "turntable, cd, line" in resp["error"]
 
-# ── Turntable live push vs. reload fallback ───────────────────────────────────
+    def test_turntable_field_is_unknown(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.turntable", True)
+        assert code == 400
+        assert "Unknown field" in resp["error"]
 
-class TestTurntableLiveApply:
-    def test_turntable_change_pushed_live_without_reload(self, tmp_path):
-        """Turntable mode only changes the derived silence threshold, which
-        the monitor daemon accepts as a live configure_input() field on a
-        running input -- a successful live push must not also fall back to
-        the coordinator reload debounce."""
+    def test_live_push_carries_type_and_preset(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         _make_live_monitor(1, silence_threshold_dbfs=-60.0)
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            code, resp = _post_resp(state, "audio1.turntable", True)
+             _tracker_patched():
+            code, resp = _post_resp(state, "audio1.input_type", "turntable")
         assert resp["ok"] is True
+        assert resp["live"] is True
         mock_client.configure_input.assert_called_once()
+        pushed = mock_client.configure_input.call_args
+        assert pushed.kwargs["input_type"] == "turntable"
+        assert pushed.args[2] == pytest.approx(-45.0)
         m_deb.assert_not_called()
 
-    def test_turntable_change_falls_back_to_reload_on_live_push_failure(self, tmp_path):
-        """If the live threshold push cannot reach the monitor daemon, the
-        existing reload debounce must still fire so the setting is not
-        silently dropped -- same fallback behaviour as before this field
-        gained a live path."""
+    def test_push_failure_is_reported_not_reloaded(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         _make_live_monitor(1, silence_threshold_dbfs=-60.0)
         with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
-            code, resp = _post_resp(state, "audio1.turntable", True)
+             patch("autostream_webui_api.request_config_reload") as m_rel, \
+             _tracker_patched():
+            code, resp = _post_resp(state, "audio1.input_type", "cd")
         assert resp["ok"] is True
-        m_deb.assert_called_once()
+        assert resp["live"] is False
+        assert "live_error" in resp
+        m_deb.assert_not_called()
+        m_rel.assert_not_called()
+        assert store.snapshot().audio1.input_type == "cd"
+
+    def test_non_string_type_rejected(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        with _tracker_patched():
+            _, unknown = _post_resp(state, "audio1.input_type", "tape")
+            for bad in (True, 1):
+                code, resp = _post_resp(state, "audio1.input_type", bad)
+                assert code == 400
+                assert resp["error"] == unknown["error"]
+        assert store.snapshot().audio1.input_type == "line"
+
+    def test_failed_push_leaves_the_monitor_holding_the_new_type(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        mon = _make_live_monitor(1, silence_threshold_dbfs=-60.0)
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+             _tracker_patched():
+            code, resp = _post_resp(state, "audio1.input_type", "turntable")
+        assert resp["live"] is False
+        assert mon.input_type == "turntable"
+        assert mon.silence_threshold_dbfs == pytest.approx(-45.0)
+
+    def test_tracker_told_the_type(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        with patch("autostream_webui_api.update_playback_input_config") as m_trk:
+            _post_resp(state, "audio1.input_type", "cd")
+        m_trk.assert_called_once()
+        assert m_trk.call_args.kwargs["input_type"] == "cd"
+
+
+# ── Silence threshold row ─────────────────────────────────────────────────────
+
+class TestSilenceThresholdRow:
+    def test_stored_and_rounded(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.silence_threshold", -45.4)
+        assert resp["ok"] is True
+        assert resp["value"] == -45.0
+        assert store.snapshot().audio1.silence_threshold_dbfs == -45.0
+
+    def test_bounds(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        for bad in (-71, -29):
+            code, resp = _post_resp(state, "audio1.silence_threshold", bad)
+            assert code == 400
+            assert "between -70 and -30" in resp["error"]
+        for good in (-70, -30):
+            code, resp = _post_resp(state, "audio1.silence_threshold", good)
+            assert resp["ok"] is True
+
+    def test_bool_rejected(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.silence_threshold", True)
+        assert code == 400
+
+    def test_live_push_carries_the_monitor_type(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1, input_type="cd")
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb:
+            code, resp = _post_resp(state, "audio1.silence_threshold", -50)
+        assert resp["live"] is True
+        pushed = mock_client.configure_input.call_args
+        assert pushed.kwargs["input_type"] == "cd"
+        assert pushed.args[2] == pytest.approx(-50.0)
+        m_deb.assert_not_called()
+
+    def test_push_failure_is_reported_not_reloaded(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1)
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_webui_api.request_config_reload") as m_rel:
+            code, resp = _post_resp(state, "audio1.silence_threshold", -50)
+        assert resp["ok"] is True
+        assert resp["live"] is False
+        assert "live_error" in resp
+        m_deb.assert_not_called()
+        m_rel.assert_not_called()
+        assert store.snapshot().audio1.silence_threshold_dbfs == -50.0
+
+    def test_input_2_stored_and_pushed_to_input_2(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(2, input_type="cd")
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)):
+            code, resp = _post_resp(state, "audio2.silence_threshold", -52)
+        snap = store.snapshot()
+        assert snap.audio2.silence_threshold_dbfs == -52.0
+        assert snap.audio1.silence_threshold_dbfs == pytest.approx(-60.0)
+        assert resp["live"] is True
+        pushed = mock_client.configure_input.call_args
+        assert pushed.args[0] == 2
+        assert pushed.args[2] == pytest.approx(-52.0)
+        assert pushed.kwargs["input_type"] == "cd"
+
+    def test_no_running_monitor_is_still_live(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.silence_threshold", -50)
+        assert resp["live"] is True
 
 
 # ── Coordinator reload debounce ───────────────────────────────────────────────

@@ -1008,13 +1008,13 @@ def update_playback_input_config(
     *,
     enabled: bool,
     is_turntable: bool,
+    input_type: str,
     is_bluetooth: bool = False,
     stylus_life_hours: int,
     belt_life_hours: int = 0,
     belt_life_years: int = 0,
     bearing_life_hours: int = 0,
     bearing_life_years: int = 0,
-    input_type: Optional[str] = None,
 ) -> bool:
     tracker = _playback_tracker
     if tracker is None:
@@ -1030,10 +1030,7 @@ def update_playback_input_config(
             belt_life_years=belt_life_years,
             bearing_life_hours=bearing_life_hours,
             bearing_life_years=bearing_life_years,
-            input_type=(
-                input_type if input_type is not None
-                else ("turntable" if is_turntable else "line")
-            ),
+            input_type=input_type,
         )
         return True
     except Exception as e:
