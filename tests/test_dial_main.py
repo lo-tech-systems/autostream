@@ -624,6 +624,7 @@ class TestDialFinalCleanup:
         _, vol_kwargs = mock_vol_worker.call_args
         assert callable(vol_kwargs["mute_targets_fn"])
         assert vol_kwargs["on_readout_changed"] == display.core.readout_changed
+        assert vol_kwargs["on_mute_changed"] == display.core.mute_changed
 
         # DialHTTPServer must receive a get_rostered_ips callable — the
         # /auth-changed route uses it to verify a push's source IP against a
@@ -715,6 +716,7 @@ class TestDialFinalCleanup:
         # screen, so volume is fully wired up regardless.
         _, vol_kwargs = mock_vol_worker.call_args
         assert vol_kwargs["on_readout_changed"].__name__ == "readout_changed"
+        assert vol_kwargs["on_mute_changed"].__name__ == "mute_changed"
         assert callable(vol_kwargs["mute_targets_fn"])
 
     def test_display_stack_import_failure_still_polls_through_the_core(self):

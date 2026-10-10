@@ -872,6 +872,7 @@ def main() -> None:
         cfg, volume_targets_fn, led,
         mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
         on_readout_changed=core.readout_changed,
+        on_mute_changed=core.mute_changed,
     )
 
     # The repeat-transport sender: its own thread, queue and HTTP client,

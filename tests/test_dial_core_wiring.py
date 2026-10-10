@@ -14,6 +14,7 @@ import dial_core
 import dial_repeat_store as drs
 from dial_auth import AUTH_AUTHORIZED
 from dial_core import ADDRESS_REFRESH_S, EFFECTS_BACKLOG_MAX, DialCore, RepeatEffect, SourceEffects
+from dial_core_state import NowPlaying
 from dial_mdns import RosterEntry
 from dial_network import LINK_CONNECTED, NetworkView
 
@@ -94,13 +95,46 @@ class TestDialInfo:
 
 
 class TestReadoutChanged:
-    def test_the_readout_is_published_for_the_followed_service(self):
+    def test_the_readout_is_published_for_the_reporting_service(self):
         core = _core()
-        core.set_field("source_service_name", "Kitchen")
+        core.set_field("now_playing", NowPlaying("Kitchen", "", "", 40))
         with patch("dial_core.shown_volume", return_value=42) as shown:
             core.readout_changed()
         shown.assert_called_once_with("Kitchen")
         assert core.snapshot().volume_readout == ("Kitchen", 42)
+
+    def test_with_nothing_reported_the_readout_is_empty(self):
+        core = _core()
+        core.set_field("source_service_name", "Kitchen")
+        core.readout_changed()
+        assert core.snapshot().volume_readout == (None, None)
+
+    def test_a_mute_change_publishes_the_readout_and_queues_no_repaint(self):
+        core = _core()
+        core.set_field("now_playing", NowPlaying("Kitchen", "", "", 40))
+        seen = []
+        core.subscribe(lambda: seen.append(len(core._effects)))
+        seq = core.snapshot().seq
+        with patch("dial_core.shown_volume", return_value=42):
+            core.mute_changed()
+        assert core.snapshot().seq == seq + 1
+        assert core.snapshot().volume_readout == ("Kitchen", 42)
+        assert seen == [0]
+
+    def test_a_mute_change_never_raises_into_the_worker(self):
+        core = _core()
+        with patch("dial_core.shown_volume", side_effect=RuntimeError("store")):
+            core.mute_changed()
+            core.readout_changed()
+
+    def test_the_end_of_a_tick_publishes_the_readout_as_the_store_has_it(self):
+        core = _core()
+        core.set_field("now_playing", NowPlaying("Kitchen", "", "", 40))
+        with patch("dial_core.shown_volume", return_value=31):
+            core.publish_tick(polling=True, volume_readout=core._readout_now())
+        assert core.snapshot().volume_readout == ("Kitchen", 31)
+        core.publish_tick(polling=True)
+        assert core.snapshot().volume_readout == ("Kitchen", 31)
 
     def test_a_view_is_told_to_repaint_before_it_is_woken(self):
         core = _core()

@@ -477,6 +477,7 @@ class DialCore:
         visible_playing: "tuple | object" = _UNSET,
         tick: "TickContext | None | object" = _UNSET,
         statuses: "dict | object" = _UNSET,
+        volume_readout: "tuple | object" = _UNSET,
     ) -> CoreSnapshot:
         """Publish the end of one poll tick. Fields passed are stored as
         given; fields left out keep the value the writers (the poll's own
@@ -488,7 +489,11 @@ class DialCore:
         snapshot carries it and a tick count one higher, which is what tells
         a view the tick is over. *statuses* (appliance id to (status_error,
         master_volume, muted)) is what this tick read from each appliance it
-        asked; an appliance it did not ask shows none of the three."""
+        asked; an appliance it did not ask shows none of the three.
+        *volume_readout* ((service, shown volume)) is the readout as the
+        tick's own observations left it: the poll moves the volume worker's
+        store without a volume reply, and the reporting appliance can change,
+        so a tick's end brings the published readout back in step."""
         def mutate(state: _CoreState) -> None:
             state.polling = polling
             if visible_playing is not _UNSET:
@@ -515,6 +520,8 @@ class DialCore:
                 state.repeats = repeats
             if statuses is not _UNSET:
                 state.statuses = statuses
+            if volume_readout is not _UNSET:
+                state.volume_readout = volume_readout
             if repeats is not _UNSET or statuses is not _UNSET:
                 state.appliances = self._derive_appliances_locked(state)
         return self._publish(mutate)
@@ -1572,13 +1579,21 @@ class DialCore:
         if fields:
             self._publish(lambda state: self._replace_dial(state, **fields))
 
+    def _readout_now(self) -> tuple:
+        """(service, shown volume) for the appliance the dial reports from,
+        as the volume worker's store has it at this moment. The service is
+        the one the poll records its volume and mute observations under.
+        Plain reads; never called with the core lock held."""
+        playing = self._state.now_playing
+        service = playing.service_name if playing is not None else None
+        return (service, shown_volume(service))
+
     def readout_changed(self) -> None:
         """The volume worker has a new reading for the readout: publish it
         with the service it belongs to, and queue a repaint for a view. Safe
         from the worker thread; never raises into it."""
         try:
-            service = self._snapshot.focus.source_service_name
-            readout = (service, shown_volume(service))
+            readout = self._readout_now()
 
             def mutate(state: _CoreState) -> None:
                 state.volume_readout = readout
@@ -1587,6 +1602,22 @@ class DialCore:
             self._publish(mutate)
         except Exception:
             logging.debug("dial core: readout_changed raised", exc_info=True)
+
+    def mute_changed(self) -> None:
+        """The mute state the dial shows may have changed (a press was
+        echoed, or an appliance answered one): publish, so whoever builds
+        from the snapshot reads the mute store again. The mute flag is not
+        part of the snapshot, so this always publishes; no repaint is queued
+        for a view, which reads the store whenever it paints. Safe from the
+        worker thread; never raises into it."""
+        try:
+            readout = self._readout_now()
+
+            def mutate(state: _CoreState) -> None:
+                state.volume_readout = readout
+            self._publish(mutate)
+        except Exception:
+            logging.debug("dial core: mute_changed raised", exc_info=True)
 
     def _not_focused(self, appliance_id: str | None) -> ActionResult | None:
         """The refusal for an id-addressed master volume or mute request:
@@ -1627,16 +1658,20 @@ class DialCore:
     def mute_toggle(self, appliance_id: str | None = None) -> ActionResult:
         """Toggle mute. Under the broadcast scope "all" a fleet toggle is
         queued, decided when the worker sends; otherwise what the followed
-        appliance last reported is flipped. Plain reads and a queue put: no
-        network, no lock held. With an id, refused unless that is the
+        appliance last reported is flipped, and the flipped state, which
+        the mute store shows at once, is published. Plain reads, a queue put
+        and a publish: no network. With an id, refused unless that is the
         appliance the dial is following."""
         refusal = self._not_focused(appliance_id)
         if refusal is not None:
             return refusal
         if self._mute_scope() == SCOPE_ALL:
+            # Nothing is known yet: the worker decides, echoes and reports
+            # the change itself (see mute_changed).
             enqueue_mute_all()
         else:
             enqueue_mute(shown_muted(self.current_source_service_name()))
+            self.mute_changed()
         return ActionResult(True)
 
     def current_source_service_name(self) -> str | None:
@@ -2008,7 +2043,7 @@ class DialCore:
         }
         self.publish_tick(
             polling=polling, repeats=repeats, visible_playing=visible_ids, tick=tick,
-            statuses=statuses,
+            statuses=statuses, volume_readout=self._readout_now(),
         )
 
     def _note_status(self, service_name: str, result: dict) -> None:

@@ -101,10 +101,12 @@ _queue: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 _cfg        = None
 _targets_fn = None
 _led_ref    = None
-# Resolvers for mute and the readout-changed callback — both optional (None
-# is a legitimate, fully-supported value; see start_volume_worker()).
+# Resolvers for mute and the readout-changed and mute-changed callbacks — all
+# optional (None is a legitimate, fully-supported value; see
+# start_volume_worker()).
 _mute_targets_fn = None
 _on_readout_changed = None
+_on_mute_changed = None
 
 _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failures
 
@@ -358,7 +360,9 @@ def select_volume_target(targets: list, preferred_service_name: str | None):
     return targets[0] if targets else None
 
 
-def start_volume_worker(cfg, targets_fn, led, *, mute_targets_fn=None, on_readout_changed=None) -> None:
+def start_volume_worker(
+    cfg, targets_fn, led, *, mute_targets_fn=None, on_readout_changed=None, on_mute_changed=None,
+) -> None:
     """Store shared state and start the background worker thread.
 
     targets_fn resolves the volume-delta target(s), called fresh per
@@ -367,12 +371,18 @@ def start_volume_worker(cfg, targets_fn, led, *, mute_targets_fn=None, on_readou
     when not supplied (single-target mute, scope "current"). on_readout_changed,
     when supplied, is called (best-effort)
     after a volume response updates the optimistic readout, so the display
-    can repaint the overlay's number — see _send_one().
+    can repaint the overlay's number — see _send_one(). on_mute_changed,
+    when supplied, is called (best-effort) whenever the worker itself has
+    written the mute observation store: after a fleet toggle's echo and
+    after each mute request is answered or fails. A reader that only looks
+    at the store when it is told to (one that is not repainting anyway)
+    needs this, because the worker's writes happen well after the press.
     """
-    global _cfg, _targets_fn, _led_ref, _mute_targets_fn, _on_readout_changed
+    global _cfg, _targets_fn, _led_ref, _mute_targets_fn, _on_readout_changed, _on_mute_changed
     _cfg, _targets_fn, _led_ref = cfg, targets_fn, led
     _mute_targets_fn = mute_targets_fn
     _on_readout_changed = on_readout_changed
+    _on_mute_changed = on_mute_changed
     threading.Thread(target=_worker, daemon=True, name='volume-worker').start()
 
 
@@ -507,6 +517,19 @@ def _worker() -> None:
                 _fan_out_mute(targets, _cfg.uuid, event[1])  # type: ignore[arg-type]
 
 
+def _notify_mute_changed() -> None:
+    """Tell the mute-changed callback, if there is one, that the worker has
+    written the mute observation store. Never raises: a listener's failure
+    must not affect a send."""
+    callback = _on_mute_changed
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        pass
+
+
 def _fan_out(targets: list, uuid: str, delta: int) -> bool:
     """Send volume delta to all targets concurrently.
 
@@ -587,6 +610,7 @@ def _dispatch_mute_all(targets: list, uuid: str) -> None:
         # flight first so a poll cannot slip in between and undo it.
         _mark_mute_inflight(t.service_name)
         observe_mute_state(t.service_name, muted)
+    _notify_mute_changed()
     _fan_out_mute(targets, uuid, muted)
 
 
@@ -681,6 +705,7 @@ def _send_one_mute(target, uuid: str, muted: bool) -> None:
         # Answered or failed, the request is no longer outstanding: the
         # reply (if any) has been recorded above, so polls resume.
         _clear_mute_inflight(target.service_name)
+        _notify_mute_changed()
 
 
 class _ErrorResponse:
