@@ -71,7 +71,7 @@ from autostream_player_service import (
     sync_monitor_args_for_audio_path,
     update_output,
 )
-from autostream_rpi import is_high_performance_pi
+from autostream_rpi import get_appliance_id, is_high_performance_pi
 from autostream_playback_stats import (
     DEFAULT_FLUSH_INTERVAL_SECONDS,
     DEFAULT_STYLUS_LIFE_HOURS,
@@ -414,7 +414,7 @@ def _sync_playing_announcement(active: bool, version: str) -> None:
     active = bool(active)
     with _playing_lock:
         if active and not _playing_announced:
-            if write_avahi_playing_service(version):
+            if write_avahi_playing_service(version, get_appliance_id()):
                 _playing_announced = True
         elif not active and _playing_announced:
             if remove_avahi_playing_service():

@@ -32,7 +32,7 @@ Exactly one of:
   version-info
   sethostname HOSTNAME
   factory-reset
-  write-playing-service VERSION
+  write-playing-service VERSION [ID]
   remove-playing-service
   write-appliance-service VERSION ID
   remove-appliance-service
@@ -1396,6 +1396,11 @@ def _remove_fixed_service(path: Path) -> None:
 
 
 def _write_playing_service(args) -> int:
+    appliance_id = getattr(args, "id", "") or ""
+    if appliance_id and not _APPLIANCE_ID_RE.match(appliance_id):
+        log("ERROR", f"write-playing-service: invalid appliance ID format: {appliance_id!r}")
+        return 1
+    id_record = f"\n    <txt-record>id={_html.escape(appliance_id)}</txt-record>" if appliance_id else ""
     content = f"""<?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
@@ -1406,7 +1411,7 @@ def _write_playing_service(args) -> int:
     <txt-record>version={_html.escape(args.version)}</txt-record>
     <txt-record>dial_api=v1</txt-record>
     <txt-record>audio_status=v1</txt-record>
-    <txt-record>dial_status=v1</txt-record>
+    <txt-record>dial_status=v1</txt-record>{id_record}
   </service>
 </service-group>
 """
@@ -2089,6 +2094,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Write _autostream-playing._tcp avahi service file.",
     )
     p_wps.add_argument("version", help="autostream version string.")
+    p_wps.add_argument(
+        "id",
+        nargs="?",
+        default="",
+        help="Appliance ID (20 lowercase hex chars); omitted for an identity-less appliance.",
+    )
 
     subparsers.add_parser(
         "remove-playing-service",

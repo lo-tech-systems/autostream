@@ -1055,17 +1055,23 @@ class TestCaptureStopOrdering:
 # session announces exactly like a live-capture one.
 # ---------------------------------------------------------------------------
 
+_FIXED_APPLIANCE_ID = "a1b2c3d4e5f6a1b2c3d4"
+
+
 class TestSyncPlayingAnnouncement:
     def setup_method(self):
         core._playing_announced = False
+        self._id_patcher = patch.object(core, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID)
+        self._id_patcher.start()
 
     def teardown_method(self):
+        self._id_patcher.stop()
         core._playing_announced = False
 
     def test_zero_to_one_writes_avahi_service(self):
         with patch.object(core, "write_avahi_playing_service", return_value=True) as mock_write:
             core._sync_playing_announcement(True, "v1")
-        mock_write.assert_called_once_with("v1")
+        mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
         assert core._playing_announced is True
 
     def test_write_failure_leaves_announced_false(self):
@@ -1107,7 +1113,7 @@ class TestSyncPlayingAnnouncement:
                 core._sync_playing_announcement(
                     core.get_session_state()["active"], "v1"
                 )
-            mock_write.assert_called_once_with("v1")
+            mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
             assert core._playing_announced is True
         finally:
             core._set_session_state(False, None)

@@ -805,12 +805,15 @@ def get_install_state(path) -> dict:
 # Avahi playing-state helpers (mDNS service file lifecycle)
 # ---------------------------------------------------------------------------
 
-def write_avahi_playing_service(version: str) -> bool:
-    """Call sudo autostream_admin write-playing-service <version>.
+def write_avahi_playing_service(version: str, appliance_id: str | None = None) -> bool:
+    """Call sudo autostream_admin write-playing-service <version> [id].
 
     Returns True on success.  Logs at WARNING on failure; never raises.
     """
-    p = run_admin_cmd(["write-playing-service", version], timeout=10.0)
+    args = ["write-playing-service", version]
+    if appliance_id:
+        args.append(appliance_id)
+    p = run_admin_cmd(args, timeout=10.0)
     if p.returncode == 0:
         return True
     logger.warning(

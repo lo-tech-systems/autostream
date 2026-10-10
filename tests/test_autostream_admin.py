@@ -309,6 +309,7 @@ class TestAvahiXmlEscaping:
 
         args = MagicMock()
         args.version = "<script>bad</script>"
+        args.id = ""
 
         with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
              patch.object(m, "_PLAYING_SERVICE", svc_file):
@@ -318,6 +319,56 @@ class TestAvahiXmlEscaping:
         content = svc_file.read_text(encoding="utf-8")
         assert "<script>" not in content
         assert "&lt;script&gt;" in content
+
+    def test_playing_service_writes_id_record(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream-playing.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_PLAYING_SERVICE", svc_file):
+            rc = m._write_playing_service(args)
+
+        assert rc == 0
+        content = svc_file.read_text(encoding="utf-8")
+        assert "id=" + args.id in content
+
+    def test_playing_service_omits_id_when_absent(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream-playing.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = ""
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_PLAYING_SERVICE", svc_file):
+            rc = m._write_playing_service(args)
+
+        assert rc == 0
+        content = svc_file.read_text(encoding="utf-8")
+        assert "id=" not in content
+
+    def test_playing_service_rejects_malformed_id(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream-playing.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "not-a-valid-id"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_PLAYING_SERVICE", svc_file):
+            rc = m._write_playing_service(args)
+
+        assert rc == 1
+        assert not svc_file.exists()
 
     def test_dial_service_rejects_semicolon_in_name(self, tmp_path):
         template = tmp_path / "template.xml"

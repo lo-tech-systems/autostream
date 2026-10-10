@@ -140,7 +140,7 @@ def _hermetic_playing_announcement(monkeypatch):
     except Exception:
         yield
         return
-    monkeypatch.setattr(m, "write_avahi_playing_service", lambda version: True)
+    monkeypatch.setattr(m, "write_avahi_playing_service", lambda version, appliance_id=None: True)
     monkeypatch.setattr(m, "remove_avahi_playing_service", lambda: True)
     monkeypatch.setattr(m, "_start_playing_reconciliation", lambda version: None)
     m._playing_announced = False
