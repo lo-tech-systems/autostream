@@ -75,7 +75,7 @@ from dial_warnings import WarningManager, WarningStore
 def _target(
     name="Kitchen", ip="192.168.1.10", port=80,
     dial_status=True, appliance_id="", auth="unknown",
-    service_name=None, playing_since=100.0,
+    service_name=None, playing_since=100.0, dial_proto_version=0,
 ) -> PlayingTarget:
     return PlayingTarget(
         ip=ip, port=port, name=name,
@@ -83,7 +83,7 @@ def _target(
         service_name=service_name or name,
         playing_since=playing_since,
         appliance_id=appliance_id,
-        auth=auth,
+        auth=auth, dial_proto_version=dial_proto_version,
     )
 
 
@@ -451,7 +451,7 @@ class TestMuteObservationFromStatusPoll:
                    return_value=_status_result(track_id=None, muted=True)), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, True, requested_at=ANY)
+        mock_observe.assert_called_once_with(t.service_name, True, requested_at=ANY, status_reports_mute=False)
 
     def test_unmuted_field_observed_as_false(self):
         t = _target()
@@ -461,7 +461,7 @@ class TestMuteObservationFromStatusPoll:
                    return_value=_status_result(track_id=None, muted=False)), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, False, requested_at=ANY)
+        mock_observe.assert_called_once_with(t.service_name, False, requested_at=ANY, status_reports_mute=False)
 
     def test_status_error_response_observes_none(self):
         """A status_error response is never stored in the poll's `records`
@@ -475,7 +475,7 @@ class TestMuteObservationFromStatusPoll:
                    return_value=_status_result(status_error="timeout")), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, None, requested_at=ANY)
+        mock_observe.assert_called_once_with(t.service_name, None, requested_at=ANY, status_reports_mute=False)
 
     def test_muted_on_every_walked_target_is_observed(self):
         """Two targets, neither identified: the walk visits both before
@@ -493,8 +493,8 @@ class TestMuteObservationFromStatusPoll:
         with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_any_call("older", False, requested_at=ANY)
-        mock_observe.assert_any_call("newer", True, requested_at=ANY)
+        mock_observe.assert_any_call("older", False, requested_at=ANY, status_reports_mute=False)
+        mock_observe.assert_any_call("newer", True, requested_at=ANY, status_reports_mute=False)
         assert mock_observe.call_count == 2
 
     def test_fallback_reporting_target_is_oldest_when_nothing_identified(self):
@@ -550,7 +550,7 @@ class TestMuteObservationFromStatusPoll:
         import dial_volume as dv
         dv.observe_mute_state(None, None)
         try:
-            t = _target()
+            t = _target(dial_proto_version=2)
             display, fb, gt = _make_display(targets=[t])
             display.enable()
             with patch("dial_display.fetch_target_status",
@@ -559,6 +559,48 @@ class TestMuteObservationFromStatusPoll:
             assert dv.shown_muted(t.service_name) is True
             with patch("dial_display.fetch_target_status",
                        return_value=_status_result(status_error="timeout")):
+                display._poll_once()
+            assert dv.shown_muted(t.service_name) is True
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_v2_target_is_observed_as_reporting_mute(self):
+        t = _target(dial_proto_version=2)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, muted=True)), \
+             patch("dial_display.observe_mute_state") as mock_observe:
+            display._poll_once()
+        mock_observe.assert_called_once_with(t.service_name, True, requested_at=ANY, status_reports_mute=True)
+
+    def test_status_without_muted_clears_a_legacy_targets_mute_once_settled(self):
+        """An earlier-release appliance never reports the flag, so a mute
+        reply must not latch the highlight on past the next poll."""
+        import dial_volume as dv
+        dv.observe_mute_state(None, None)
+        try:
+            t = _target()
+            display, fb, gt = _make_display(targets=[t])
+            display.enable()
+            dv.observe_mute_state(t.service_name, True)      # a mute reply
+            with patch("dial_display.fetch_target_status",
+                       return_value=_status_result(track_id=None, muted=None)):
+                display._poll_once()
+            assert dv.shown_muted(t.service_name) is False
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_status_without_muted_keeps_a_v2_targets_mute(self):
+        import dial_volume as dv
+        dv.observe_mute_state(None, None)
+        try:
+            t = _target(dial_proto_version=2)
+            display, fb, gt = _make_display(targets=[t])
+            display.enable()
+            dv.observe_mute_state(t.service_name, True)
+            with patch("dial_display.fetch_target_status",
+                       return_value=_status_result(track_id=None, muted=None)):
                 display._poll_once()
             assert dv.shown_muted(t.service_name) is True
         finally:
@@ -580,7 +622,7 @@ class TestMuteObservationFromStatusPoll:
              patch("dial_display.time.monotonic", side_effect=lambda: clock["now"]), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with(t.service_name, True, requested_at=100.0)
+        mock_observe.assert_called_once_with(t.service_name, True, requested_at=100.0, status_reports_mute=False)
 
 
 # ---------------------------------------------------------------------------

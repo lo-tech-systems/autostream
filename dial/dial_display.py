@@ -5613,15 +5613,22 @@ class DialDisplay:
         # clobber another target's flag; the glyph itself is unaffected — it
         # always reads back the reporting/bound service's own entry (see
         # shown_muted() at compose time), never another target's.
+        # Whether a service's status carries the flag at all decides how a
+        # missing value is treated (see the store's comment block).
+        reports_mute = {
+            t.service_name: getattr(t, "status_reports_mute", True) for t in targets
+        }
         for walked_name, walked_record in records.items():
             if walked_name == reporting_name:
                 continue  # the explicit call just below covers this one
             observe_mute_state(
                 walked_name, walked_record.get("muted"), requested_at=status_sent_at.get(walked_name, 0.0),
+                status_reports_mute=reports_mute.get(walked_name, True),
             )
         observe_mute_state(
             reporting_name, record.get("muted") if record else None,
             requested_at=status_sent_at.get(reporting_name, 0.0),
+            status_reports_mute=reports_mute.get(reporting_name, True),
         )
         forget_mute_states_except({t.service_name for t in targets})
         if isinstance(master_volume, int) and not isinstance(master_volume, bool):

@@ -63,7 +63,10 @@ via get_playing_targets() so no IP-based dedup is needed here.
 
 Failure logging is rate-limited: WARNING on the 1st failure and every 10th
 thereafter per target IP; DEBUG for all intermediate failures.  403 and 412
-responses (unauthorized UUID) are DEBUG-only — expected on mixed-network LAN.
+responses (unauthorized UUID) are DEBUG-only — expected on mixed-network LAN
+— but also recorded in the auth map exactly as a status poll's refusal is, so
+a dial refused on volume or mute learns it without waiting for a poll (see
+_note_refusal()).
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -78,7 +81,13 @@ import urllib.error
 import urllib.request
 from typing import Tuple, Union
 
-from dial_target_status import fetch_target_status
+from dial_auth import AUTH_UNAUTHORIZED, OUTCOME_UNAUTHORIZED, auth_map
+from dial_target_status import (
+    _is_untyped_refusal,
+    _lenient_json_object,
+    _parse_appliance_id,
+    fetch_target_status,
+)
 
 # Each queue item is ("delta", int), ("mute", bool) or ("mute_all", int) —
 # for "delta" the int is the delta itself; for "mute" the bool is the
@@ -171,8 +180,15 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 #                     expires after MUTE_INFLIGHT_EXPIRY_SECONDS (above the
 #                     worker's send timeout), so a lost request can never
 #                     freeze the state.
-# A poll's unknown (non-bool) value never overwrites a known bool, so a
-# failed or timed-out status fetch cannot flip a confirmed mute to unmuted.
+# For an appliance whose status reports mute, a poll's unknown (non-bool)
+# value never overwrites a known bool, so a failed or timed-out status fetch
+# cannot flip a confirmed mute to unmuted. An appliance whose status never
+# carries the flag (an earlier release) can only ever give unknown, so there
+# that rule would latch a reply's mute state on until some other event
+# replaced it; for those a poll that passes the in-flight and settled-time
+# checks may clear the stored state, so the highlight follows a mute made
+# elsewhere within a poll. The in-flight and settled-time checks still
+# protect the press itself.
 # ---------------------------------------------------------------------------
 
 _readout_lock = threading.Lock()     # leaf lock, never held across I/O
@@ -229,7 +245,10 @@ def shown_volume(service_name: str | None) -> int | None:
         return max(0, min(100, _readout_base + _readout_pending))
 
 
-def observe_mute_state(service_name: str | None, muted, requested_at: float | None = None) -> None:
+def observe_mute_state(
+    service_name: str | None, muted, requested_at: float | None = None,
+    *, status_reports_mute: bool = True,
+) -> None:
     """Record the mute flag an appliance reported (a status poll, a mute
     response or a volume response) for *service_name*, in that service's own
     entry. service_name None clears every entry (nothing is playing any
@@ -242,7 +261,11 @@ def observe_mute_state(service_name: str | None, muted, requested_at: float | No
     request for the service is in flight, when it was requested before the
     service's settled time, or when it is unknown and a bool is already
     known. A call without requested_at is a reply and always applies; a
-    bool reply also settles the service at its receive time."""
+    bool reply also settles the service at its receive time.
+
+    status_reports_mute says whether the service's status carries the mute
+    flag at all. When it does not, the unknown-never-overwrites-known rule
+    is skipped for its poll observations (see the store's comment block)."""
     global _last_observed_mute_service
     now = time.monotonic()
     with _readout_lock:
@@ -262,7 +285,11 @@ def observe_mute_state(service_name: str | None, muted, requested_at: float | No
             settled = _mute_settled_at.get(service_name)
             if settled is not None and requested_at < settled:
                 return
-            if not is_bool and isinstance(_observed_muted.get(service_name), bool):
+            if (
+                status_reports_mute
+                and not is_bool
+                and isinstance(_observed_muted.get(service_name), bool)
+            ):
                 return
         elif is_bool:
             _mute_settled_at[service_name] = now
@@ -612,6 +639,7 @@ def _send_one(target, uuid: str, delta: int, clamped: list) -> None:
     except urllib.error.HTTPError as e:
         if e.code in (403, 412):
             logging.debug("volume POST %s: %d unauthorized", target.ip, e.code)
+            _note_refusal(target, e)
         else:
             _log_volume_failure(target.ip, "HTTP %d", e.code)
     except Exception as e:
@@ -644,6 +672,7 @@ def _send_one_mute(target, uuid: str, muted: bool) -> None:
     except urllib.error.HTTPError as e:
         if e.code in (403, 412):
             logging.debug("mute POST %s: %d unauthorized", target.ip, e.code)
+            _note_refusal(target, e)
         else:
             _log_mute_failure(target.ip, "HTTP %d", e.code)
     except Exception as e:
@@ -652,6 +681,51 @@ def _send_one_mute(target, uuid: str, muted: bool) -> None:
         # Answered or failed, the request is no longer outstanding: the
         # reply (if any) has been recorded above, so polls resume.
         _clear_mute_inflight(target.service_name)
+
+
+class _ErrorResponse:
+    """The one method of a response object the status helpers read."""
+
+    def __init__(self, err: urllib.error.HTTPError) -> None:
+        self._err = err
+
+    def getheader(self, name: str):
+        headers = self._err.headers
+        return headers.get(name) if headers is not None else None
+
+
+def _note_refusal(target, err: urllib.error.HTTPError) -> None:
+    """Feed a volume or mute refusal into the auth map the way a status
+    poll's refusal is fed: a typed 412 whose body id matches the target's
+    own, or, for an appliance without typed refusals, a 403 whose body is
+    exactly an empty JSON object (correlated with the id the target was
+    resolved to). Anything else is ignored. Never raises: a failed refusal
+    note must not affect the send."""
+    try:
+        raw = err.read(4096)
+        if err.code == 412:
+            data = _lenient_json_object(raw)
+            if data is None or data.get("error") != "dial_not_authorized":
+                return
+            body_id = _parse_appliance_id(data)
+        elif err.code == 403:
+            if target.typed_refusals or not _is_untyped_refusal(_ErrorResponse(err), raw):
+                return
+            body_id = target.appliance_id
+        else:
+            return
+        auth_map.apply(target.appliance_id, OUTCOME_UNAUTHORIZED, body_id, time.monotonic())
+        if (
+            auth_map.state(target.appliance_id) == AUTH_UNAUTHORIZED
+            and auth_map.record_refusal(target.appliance_id)
+        ):
+            logging.warning(
+                "dial volume: appliance %s refused this dial; allow it in "
+                "that appliance's web UI",
+                target.name,
+            )
+    except Exception:
+        logging.debug("volume refusal note failed", exc_info=True)
 
 
 def _log_volume_failure(ip: str, fmt: str, *args) -> None:

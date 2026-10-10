@@ -1313,3 +1313,112 @@ class TestSendOneReadoutObservation:
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=55)):
             dv._send_one(first, "uuid", 2, [])
         assert dv.shown_volume("svc-first") == 55
+
+
+# ---------------------------------------------------------------------------
+# Refusals feed the auth map
+# ---------------------------------------------------------------------------
+
+def _refusal(code: int, body: bytes, content_type: str = "application/json"):
+    import io
+    from email.message import Message
+    headers = Message()
+    if content_type:
+        headers["Content-Type"] = content_type
+    return urllib.error.HTTPError(url="", code=code, msg="refused", hdrs=headers, fp=io.BytesIO(body))
+
+
+def _id_target(proto: int, service_name: str = "svc") -> PlayingTarget:
+    return PlayingTarget(
+        ip="192.168.1.10", port=80, name="Kitchen", dial_api=True,
+        service_name=service_name, appliance_id="a" * 20, dial_proto_version=proto,
+    )
+
+
+class TestRefusalsFeedAuthMap:
+    def setup_method(self):
+        _clear_state()
+        from dial_auth import auth_map
+        auth_map.reset()
+
+    def _state(self):
+        from dial_auth import auth_map
+        return auth_map.state("a" * 20)
+
+    def test_volume_412_marks_appliance_unauthorized(self):
+        body = json.dumps({"ok": False, "error": "dial_not_authorized", "appliance_id": "a" * 20}).encode()
+        with patch("urllib.request.urlopen", side_effect=_refusal(412, body)):
+            dv._send_one(_id_target(2), "uuid", 1, [])
+        assert self._state() == "unauthorized"
+
+    def test_mute_412_marks_appliance_unauthorized(self):
+        body = json.dumps({"ok": False, "error": "dial_not_authorized", "appliance_id": "a" * 20}).encode()
+        with patch("urllib.request.urlopen", side_effect=_refusal(412, body)):
+            dv._send_one_mute(_id_target(2), "uuid", True)
+        assert self._state() == "unauthorized"
+
+    def test_volume_412_for_another_appliance_id_is_ignored(self):
+        body = json.dumps({"ok": False, "error": "dial_not_authorized", "appliance_id": "b" * 20}).encode()
+        with patch("urllib.request.urlopen", side_effect=_refusal(412, body)):
+            dv._send_one(_id_target(2), "uuid", 1, [])
+        assert self._state() == "unknown"
+
+    def test_volume_412_without_the_typed_body_is_ignored(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(412, b"{}")):
+            dv._send_one(_id_target(2), "uuid", 1, [])
+        assert self._state() == "unknown"
+
+    def test_volume_legacy_403_marks_appliance_unauthorized(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}")):
+            dv._send_one(_id_target(0), "uuid", 1, [])
+        assert self._state() == "unauthorized"
+
+    def test_mute_legacy_403_marks_appliance_unauthorized(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}")):
+            dv._send_one_mute(_id_target(0), "uuid", True)
+        assert self._state() == "unauthorized"
+
+    def test_v2_403_stays_transient(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}")):
+            dv._send_one(_id_target(2), "uuid", 1, [])
+        assert self._state() == "unknown"
+
+    def test_legacy_403_with_a_body_stays_transient(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(403, b'{"error": "csrf"}')):
+            dv._send_one(_id_target(0), "uuid", 1, [])
+        assert self._state() == "unknown"
+
+    def test_legacy_403_without_json_content_type_stays_transient(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}", content_type="text/html")):
+            dv._send_one(_id_target(0), "uuid", 1, [])
+        assert self._state() == "unknown"
+
+    def test_unresolved_legacy_403_changes_nothing(self):
+        target = PlayingTarget(ip="192.168.1.10", port=80, name="Kitchen", dial_api=True, service_name="svc")
+        with patch("urllib.request.urlopen", side_effect=_refusal(403, b"{}")):
+            dv._send_one(target, "uuid", 1, [])
+        from dial_auth import auth_map
+        assert auth_map.states() == {}
+
+    def test_first_refusal_logs_one_warning(self, caplog):
+        import logging
+        with patch("urllib.request.urlopen", side_effect=lambda *a, **k: (_ for _ in ()).throw(_refusal(403, b"{}"))):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one(_id_target(0), "uuid", 1, [])
+                dv._send_one(_id_target(0), "uuid", 1, [])
+                dv._send_one_mute(_id_target(0), "uuid", True)
+        warnings = [r for r in caplog.records
+                    if r.levelno == logging.WARNING and "refused this dial" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_generic_errors_are_unchanged(self):
+        with patch("urllib.request.urlopen", side_effect=_refusal(500, b"{}")):
+            dv._send_one(_id_target(0), "uuid", 1, [])
+        assert self._state() == "unknown"
+        assert dv._fail_counts.get("192.168.1.10") == 1
+
+    def test_existing_hdrs_none_refusal_does_not_raise(self):
+        err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            dv._send_one(_id_target(0), "uuid", 1, [])
+        assert self._state() == "unknown"

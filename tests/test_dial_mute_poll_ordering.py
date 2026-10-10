@@ -256,3 +256,53 @@ class TestMuteAll:
              patch("urllib.request.urlopen", side_effect=OSError("down")):
             dv._dispatch_mute_all([t1, t2], "uuid")
         assert dv._mute_inflight == {}
+
+
+class TestStatusWithoutMuteFlag:
+    """An appliance whose status never carries the flag (an earlier release)
+    must not latch the highlight on from a mute reply."""
+
+    def test_legacy_poll_after_mute_reply_clears_known_state(self, clock):
+        clock[0] = 1000.0
+        dv.observe_mute_state("svc", True)              # mute reply received
+        clock[0] = 1001.0
+        dv.observe_mute_state("svc", None, requested_at=1000.5, status_reports_mute=False)
+        assert dv.shown_muted("svc") is False
+        assert dv._observed_muted["svc"] is None
+
+    def test_legacy_poll_sent_before_the_reply_is_still_ignored(self, clock):
+        clock[0] = 1000.0
+        dv.observe_mute_state("svc", True)
+        dv.observe_mute_state("svc", None, requested_at=999.0, status_reports_mute=False)
+        assert dv.shown_muted("svc") is True
+
+    def test_legacy_poll_during_inflight_mute_is_ignored(self, clock):
+        dv.observe_mute_state("svc", True)
+        dv._mark_mute_inflight("svc")
+        clock[0] += 1.0
+        dv.observe_mute_state("svc", None, requested_at=clock[0], status_reports_mute=False)
+        assert dv.shown_muted("svc") is True
+
+    def test_legacy_poll_after_press_echo_clears_once_the_reply_landed(self, clock):
+        dv.observe_mute_state("svc", False)
+        clock[0] = 1010.0
+        dv.enqueue_mute(False)
+        clock[0] = 1010.4
+        with patch("urllib.request.urlopen", return_value=_urlopen_mute(True)):
+            dv._send_one_mute(_target("svc"), "uuid", True)
+        assert dv.shown_muted("svc") is True
+        clock[0] = 1016.0
+        dv.observe_mute_state("svc", None, requested_at=1015.9, status_reports_mute=False)
+        assert dv.shown_muted("svc") is False
+
+    def test_v2_poll_without_muted_keeps_known_state(self, clock):
+        clock[0] = 1000.0
+        dv.observe_mute_state("svc", True)
+        clock[0] = 1001.0
+        dv.observe_mute_state("svc", None, requested_at=1000.5, status_reports_mute=True)
+        assert dv.shown_muted("svc") is True
+
+    def test_status_reports_mute_defaults_to_protected(self, clock):
+        dv.observe_mute_state("svc", True)
+        dv.observe_mute_state("svc", None, requested_at=clock[0])
+        assert dv.shown_muted("svc") is True
