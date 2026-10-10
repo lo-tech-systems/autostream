@@ -138,10 +138,17 @@ def scale_px(reference_px: int, width: int, height: int, floor: int) -> int:
 # whose quarter-height band would be too short to hold a floor-sized touch
 # target vetoes a richer tier back to base unless the size was chosen
 # deliberately rather than picked automatically (see metrics_for()).
+#
+# CONTENT_COMPACT sits below CONTENT_BASE: a physically tiny panel (a small
+# round or square watch-style glass) has no room for bands, a name or a
+# volume readout at all, however many logical pixels it reports, so it is
+# decided purely from physical size, ahead of the pixel-tier checks below
+# (see metrics_for()) rather than being reachable through them.
+CONTENT_COMPACT = "compact"
 CONTENT_BASE = "base"
 CONTENT_RICH = "rich"
 CONTENT_LARGE = "large"
-_CONTENT_TIERS = (CONTENT_BASE, CONTENT_RICH, CONTENT_LARGE)
+_CONTENT_TIERS = (CONTENT_COMPACT, CONTENT_BASE, CONTENT_RICH, CONTENT_LARGE)
 
 RICH_MIN_SHORT_SIDE_PX = 200   # logical short side at/above which the rich tier applies
 LARGE_MIN_SHORT_SIDE_PX = 400  # logical short side at/above which the large tier applies
@@ -149,6 +156,14 @@ LARGE_MIN_SHORT_SIDE_PX = 400  # logical short side at/above which the large tie
 TOUCH_MIN_MM = 8.0                # fingertip floor, resistive and capacitive alike
 TOUCH_SHORT_BELOW_BAND_MM = 6.0   # a quarter-height band shorter than this cannot hold a floor-sized control
 BAND_MAX_MM = 12.0                # on rich/large panels, chrome stops growing past this physical band height
+
+# Physical short side at or below which the band+body+footer layouts stop
+# being usable and the compact (2x2) layouts apply instead. 27mm admits a
+# 1.3in 240x240 panel (23.4mm) and a 1.44in 128x128 panel (25.9mm), and
+# excludes a 1.8in 160x128 panel (28.6mm) and a 2.8in 320x240 panel
+# (42.7mm). Purely physical: unlike the pixel-tier thresholds above, no
+# logical pixel count feeds this decision at all (see metrics_for()).
+COMPACT_MAX_SHORT_SIDE_MM = 27.0
 
 # Glyph supersample factor fed to _draw_glyph() in dial_display_compositor —
 # carried here because it is a property of the content tier, decided
@@ -247,6 +262,15 @@ def metrics_for(
     in which case the veto does not apply but touch_short is still reported
     so the caller can warn about it.
 
+    Ahead of all of that, CONTENT_COMPACT is decided purely from physical
+    size: a panel whose short side is at or below COMPACT_MAX_SHORT_SIDE_MM
+    of actual glass has no room for the band+body+footer layouts at any
+    logical pixel count, so it never enters the pixel-tier ladder above at
+    all. mm_per_px=None can never resolve compact (there is no physical size
+    to test), and *size_chosen* has no effect on it either way — compact is
+    a physical tier down, not a pixel tier the veto below ever tiers back
+    up to.
+
     mm_per_px=None also means every pixel quantity is computed exactly as it
     always was (the base-tier formulas), so every existing caller that never
     passes a density is completely unaffected by any of this.
@@ -255,25 +279,30 @@ def metrics_for(
     quarter = height // BAND_DIVISOR
     band_mm = quarter * mm_per_px if mm_per_px is not None else None
     touch_short = band_mm is not None and band_mm < TOUCH_SHORT_BELOW_BAND_MM
+    short_mm = short * mm_per_px if mm_per_px is not None else None
 
-    if short >= LARGE_MIN_SHORT_SIDE_PX:
+    if short_mm is not None and short_mm <= COMPACT_MAX_SHORT_SIDE_MM:
+        content_tier = CONTENT_COMPACT
+    elif short >= LARGE_MIN_SHORT_SIDE_PX:
         content_tier = CONTENT_LARGE
     elif short >= RICH_MIN_SHORT_SIDE_PX:
         content_tier = CONTENT_RICH
     else:
         content_tier = CONTENT_BASE
-    if content_tier != CONTENT_BASE and mm_per_px is None:
+    if content_tier not in (CONTENT_BASE, CONTENT_COMPACT) and mm_per_px is None:
         content_tier = CONTENT_BASE           # density unknown: never guess a richer layout
-    if content_tier != CONTENT_BASE and touch_short and not size_chosen:
+    if content_tier not in (CONTENT_BASE, CONTENT_COMPACT) and touch_short and not size_chosen:
         content_tier = CONTENT_BASE           # the veto: automatic tiering only
 
     touch_min_px = ceil(TOUCH_MIN_MM / mm_per_px) if mm_per_px else None
     has_album_line = content_tier == CONTENT_LARGE
 
-    if content_tier == CONTENT_BASE:
+    if content_tier in (CONTENT_BASE, CONTENT_COMPACT):
         band_h = quarter
         row_h = band_h
-        rows_per_page = (height - band_h) // row_h    # today's formula, unchanged
+        # The compact tier's picker shows two rows (its own 2x2 geometry),
+        # never the base tier's own row-count formula.
+        rows_per_page = 2 if content_tier == CONTENT_COMPACT else (height - band_h) // row_h
         list_rail = False
         supersample = SUPERSAMPLE_DEFAULT
     else:
@@ -289,7 +318,7 @@ def metrics_for(
         list_rail = True
         supersample = SUPERSAMPLE_LARGE if content_tier == CONTENT_LARGE else SUPERSAMPLE_DEFAULT
 
-    if content_tier == CONTENT_BASE:
+    if content_tier in (CONTENT_BASE, CONTENT_COMPACT):
         font_body = scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1])
         font_readout = scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1])
     else:
@@ -305,7 +334,7 @@ def metrics_for(
     pad = scale_px(PAD_PX_AT_REFERENCE[0], width, height, PAD_PX_AT_REFERENCE[1])
     halo_stroke = scale_px(HALO_STROKE_PX_AT_REFERENCE[0], width, height, HALO_STROKE_PX_AT_REFERENCE[1])
     halo_blur = scale_px(HALO_BLUR_PX_AT_REFERENCE[0], width, height, HALO_BLUR_PX_AT_REFERENCE[1])
-    if content_tier != CONTENT_BASE:
+    if content_tier not in (CONTENT_BASE, CONTENT_COMPACT):
         # The halo is a fine screen-space stroke — physical scale keeps it
         # from ballooning into a blur on a bigger panel.
         halo_stroke = min(halo_stroke, HALO_MAX_PX)
@@ -316,7 +345,7 @@ def metrics_for(
         font_readout = min(font_readout, FONT_READOUT_MAX_PX)
         icon = min(icon, FONT_READOUT_MAX_PX)
 
-    if content_tier == CONTENT_BASE:
+    if content_tier in (CONTENT_BASE, CONTENT_COMPACT):
         rail_w = 0
         rail_glyph = 0
     else:
@@ -395,9 +424,17 @@ Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 GEOMETRY_MAIN = "main"
 GEOMETRY_LIST = "list"
 GEOMETRY_REPEAT = "repeat"
+# The repeat screen's OWN replaying-layout geometry. Off the compact tier
+# this is identical, byte for byte, to GEOMETRY_REPEAT — the large tiers
+# share one row/start/stop table between the enable and replaying layouts —
+# so the name is valid everywhere; only the compact tier gives the two
+# repeat-screen states different rectangles (see _repeat_replay_zone_rects).
+GEOMETRY_REPEAT_REPLAY = "repeat_replay"
 GEOMETRY_IDLE = "idle"
 GEOMETRY_OUTPUT = "output"
-GEOMETRIES = (GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE, GEOMETRY_OUTPUT)
+GEOMETRIES = (
+    GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
+)
 
 
 @dataclass(frozen=True)
@@ -428,6 +465,19 @@ def zone_rects_for(
 
 
 def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    if metrics.content_tier == CONTENT_COMPACT:
+        # The playing 2x2: pager dots top-left, mute top-right, minus/plus
+        # along the bottom — no NAME (appliance selection is unreachable on
+        # compact) and no ARTWORK strip (every cell is already a control).
+        c = compact_layout_for(width, height, metrics=metrics)
+        return (
+            ZoneRect(TouchZone.DOTS, c.tl),
+            ZoneRect(TouchZone.MUTE, c.tr),
+            ZoneRect(TouchZone.DOWN, c.bl),
+            ZoneRect(TouchZone.UP, c.br),
+        )
     layout = layout_for(width, height, metrics=metrics)
     return (
         ZoneRect(TouchZone.DOTS, layout.dots),
@@ -443,6 +493,20 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
 
 
 def _list_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    if metrics.content_tier == CONTENT_COMPACT:
+        # The replay picker's 2x2: the two visible rows on the left, "more"
+        # (next page, wrapping — see the manager's paging) top-right, cancel
+        # bottom-right. No LIST_UP: compact never shows a previous-page
+        # control of its own — wrapping makes one unnecessary.
+        c = compact_layout_for(width, height, metrics=metrics)
+        return (
+            ZoneRect(TouchZone.LIST_ROW, c.tl, 0),
+            ZoneRect(TouchZone.LIST_ROW, c.bl, 1),
+            ZoneRect(TouchZone.LIST_DOWN, c.tr),
+            ZoneRect(TouchZone.LIST_BACK, c.br),
+        )
     layout = list_layout_for(width, height, metrics=metrics)
     rows = tuple(ZoneRect(TouchZone.LIST_ROW, rect, i) for i, rect in enumerate(layout.rows))
     if layout.rail is None:
@@ -460,6 +524,18 @@ def _list_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
 
 
 def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    if metrics.content_tier == CONTENT_COMPACT:
+        # The repeat screen's enable layout: the "Repeat Play" row on top,
+        # cancel (the pager dots, same as opening it) on the bottom. No
+        # NAME/OUTPUTS: appliance selection and the volume readout are
+        # unreachable on compact.
+        c = compact_layout_for(width, height, metrics=metrics)
+        return (
+            ZoneRect(TouchZone.REPEAT_PLAY, c.top_row),
+            ZoneRect(TouchZone.DOTS, c.bottom_row),
+        )
     layout = repeat_layout_for(width, height, metrics=metrics)
     return (
         ZoneRect(TouchZone.DOTS, layout.dots),
@@ -469,6 +545,27 @@ def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
         ZoneRect(TouchZone.REPEAT_START, layout.start),
         ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
     )
+
+
+def _repeat_replay_zone_rects(
+    width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_REPEAT_REPLAY: the repeat screen's OWN replaying-layout
+    table. Off the compact tier this is _repeat_zone_rects() itself, byte
+    for byte — the large tiers share one row/start/stop table between the
+    enable and replaying layouts, so there is nothing of its own to
+    describe there; only compact gives the replaying layout different
+    rectangles (time/back on top, Restart/Stop on the bottom)."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    if metrics.content_tier == CONTENT_COMPACT:
+        c = compact_layout_for(width, height, metrics=metrics)
+        return (
+            ZoneRect(TouchZone.DOTS, c.top_row),
+            ZoneRect(TouchZone.REPEAT_START, c.bl),
+            ZoneRect(TouchZone.REPEAT_STOP, c.br),
+        )
+    return _repeat_zone_rects(width, height, metrics=metrics)
 
 
 def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
@@ -491,6 +588,7 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_MAIN: _main_zone_rects,
     GEOMETRY_LIST: _list_zone_rects,
     GEOMETRY_REPEAT: _repeat_zone_rects,
+    GEOMETRY_REPEAT_REPLAY: _repeat_replay_zone_rects,
     GEOMETRY_IDLE: _idle_zone_rects,
     GEOMETRY_OUTPUT: _output_zone_rects,
 }
@@ -658,6 +756,45 @@ class ListLayout:
     rail_up: Rect | None = None      # previous page  (== LIST_UP zone)
     rail_cancel: Rect | None = None  # back / cancel  (== LIST_BACK zone)
     rail_down: Rect | None = None    # next page      (== LIST_DOWN zone)
+
+
+@dataclass(frozen=True)
+class CompactLayout:
+    """The 2x2 grid every compact-tier screen is laid out on: four cells
+    (tl/tr/bl/br), the two full-width rows those cells tile (top_row/
+    bottom_row, used by screens that treat a row as one control rather than
+    two), and the two divider-line positions between them. Which cells a
+    given screen uses, and as which zones, is each geometry table's own
+    business (see the compact branches of _main_zone_rects and friends,
+    below) — this dataclass only describes the grid itself."""
+
+    tl: Rect
+    tr: Rect
+    bl: Rect
+    br: Rect
+    top_row: Rect
+    bottom_row: Rect
+    divider_x: int
+    divider_y: int
+
+
+def compact_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> CompactLayout:
+    """Compute the compact-tier 2x2 grid for a *width* x *height* panel: both
+    axes are split independently with the same _split(total, margin, [1, 1])
+    two-way rule the base tier's own DOWN/UP footer uses, so the grid is
+    built from the one existing split primitive rather than a new rule of
+    its own. metrics=None means metrics_for(width, height)."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    m = metrics.margin
+    (x0, x1), (x2, x3) = _split(width, m, [1, 1])
+    (y0, y1), (y2, y3) = _split(height, m, [1, 1])
+    return CompactLayout(
+        tl=(x0, y0, x1, y1), tr=(x2, y0, x3, y1),
+        bl=(x0, y2, x1, y3), br=(x2, y2, x3, y3),
+        top_row=(0, y0, width, y1), bottom_row=(0, y2, width, height),
+        divider_x=(x1 + x2) // 2, divider_y=(y1 + y2) // 2,
+    )
 
 
 def _dead_zone_margin(width: int, height: int) -> int:
@@ -925,8 +1062,14 @@ def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
 def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> IdleLayout:
     """Compute the idle-screen geometry: the affordance line is the same
     centre-low rectangle the main surface's (non-actuating) artist line
-    occupies; replay is the whole panel below the top band."""
+    occupies; replay is the whole panel below the top band — or, on the
+    compact tier (which has no top band of its own to exclude), the whole
+    panel."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
     layout = layout_for(width, height, metrics=metrics)
+    if metrics.content_tier == CONTENT_COMPACT:
+        return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height))
     return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height))
 
 

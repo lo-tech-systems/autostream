@@ -23,7 +23,9 @@ if _DIAL not in sys.path:
 from dial_touch_layout import (  # noqa: E402
     BAND_DIVISOR_RICH,
     BAND_MAX_MM,
+    COMPACT_MAX_SHORT_SIDE_MM,
     CONTENT_BASE,
+    CONTENT_COMPACT,
     CONTENT_LARGE,
     CONTENT_RICH,
     FONT_BODY_MAX_PX,
@@ -34,6 +36,7 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
+    GEOMETRY_REPEAT_REPLAY,
     HALO_MAX_PX,
     LARGE_MIN_SHORT_SIDE_PX,
     RICH_MIN_SHORT_SIDE_PX,
@@ -41,8 +44,11 @@ from dial_touch_layout import (  # noqa: E402
     SUPERSAMPLE_LARGE,
     TOUCH_MIN_MM,
     TOUCH_SHORT_BELOW_BAND_MM,
+    CompactLayout,
     TouchZone,
+    ZoneRect,
     _dead_zone_margin,
+    compact_layout_for,
     hit_test,
     idle_layout_for,
     idle_zone_at,
@@ -755,13 +761,22 @@ class TestMetricsForReferenceEquivalence:
 # (indices 3 and 4) are confirmed but resolve to the rich content tier (the
 # panel's short side clears RICH_MIN_SHORT_SIDE_PX and its quarter-height
 # band is physically tall enough to escape the touch_short veto) — see
-# TestRichAndLargeGeometry for their pins. Only the first three stay base.
+# TestRichAndLargeGeometry for their pins. Indices 1 and 2 (128x128,
+# 240x240) are physically small enough to resolve to the compact tier at
+# this density instead — see _COMPACT_RESOLVING_CASES below. Only the first
+# entry stays base.
 _CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
-_BASE_RESOLVING_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))[:3]
+_BASE_RESOLVING_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))[:1]
+_COMPACT_RESOLVING_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))[1:3]
 
-# A density fine enough that the touch_short veto fires regardless of a
-# panel's pixel size — proves the veto, not the tier boundary, decides
-# geometry here.
+# A density fine enough that a panel is physically tiny by any measure —
+# below the compact gate at every shipped pixel size, so this now resolves
+# CONTENT_COMPACT everywhere rather than exercising the older rich/large
+# touch_short veto: the compact gate (COMPACT_MAX_SHORT_SIDE_MM=27mm) is
+# deliberately looser than the veto's own implied screen size
+# (BAND_DIVISOR * TOUCH_SHORT_BELOW_BAND_MM = 24mm), so any panel dense
+# enough to trip touch_short is always dense enough to be compact too — see
+# TestTierReporting's compact-vs-veto tests.
 _TOUCH_SHORT_VETO_MM_PER_PX = 0.05
 
 
@@ -810,14 +825,56 @@ class TestDensityHasNoEffectOnGeometry:
                 geometry, width, height, metrics=metrics
             )
 
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_touch_short_veto_still_leaves_geometry_at_base(self, width, height):
-        metrics = metrics_for(width, height, _TOUCH_SHORT_VETO_MM_PER_PX)
-        assert metrics.content_tier == CONTENT_BASE
-        assert layout_for(width, height, metrics=metrics) == layout_for(width, height)
-        assert list_layout_for(width, height, metrics=metrics) == list_layout_for(width, height)
-        assert repeat_layout_for(width, height, metrics=metrics) == repeat_layout_for(width, height)
-        assert idle_layout_for(width, height, metrics=metrics) == idle_layout_for(width, height)
+    # -- the same panels at a compact-resolving density: layout_for()/
+    # repeat_layout_for() are not tier-aware at all (they read only margin/
+    # band_h, which the compact tier keeps at the base formula) so they stay
+    # byte-identical; list_layout_for()'s rows_per_page and every compact
+    # zone table are a deliberate, pinned difference instead — see
+    # TestCompactTier below for their pins. GEOMETRY_OUTPUT is unreachable
+    # on compact, so it is the one geometry left wholly untouched.
+
+    @pytest.mark.parametrize("size,mm", _COMPACT_RESOLVING_CASES)
+    def test_layout_for_unaffected_even_when_compact_resolving(self, size, mm):
+        width, height = size
+        assert layout_for(width, height) == layout_for(
+            width, height, metrics=metrics_for(width, height, mm)
+        )
+
+    @pytest.mark.parametrize("size,mm", _COMPACT_RESOLVING_CASES)
+    def test_repeat_layout_for_unaffected_even_when_compact_resolving(self, size, mm):
+        width, height = size
+        assert repeat_layout_for(width, height) == repeat_layout_for(
+            width, height, metrics=metrics_for(width, height, mm)
+        )
+
+    @pytest.mark.parametrize("size,mm", _COMPACT_RESOLVING_CASES)
+    def test_list_layout_for_rows_per_page_drops_to_two_when_compact_resolving(self, size, mm):
+        width, height = size
+        base_layout = list_layout_for(width, height)
+        compact_layout = list_layout_for(width, height, metrics=metrics_for(width, height, mm))
+        assert base_layout.rows_per_page == 3
+        assert compact_layout.rows_per_page == 2
+        assert len(compact_layout.rows) == 2
+
+    @pytest.mark.parametrize("size,mm", _COMPACT_RESOLVING_CASES)
+    def test_output_geometry_unaffected_even_when_compact_resolving(self, size, mm):
+        width, height = size
+        metrics = metrics_for(width, height, mm)
+        assert zone_rects_for(GEOMETRY_OUTPUT, width, height) == zone_rects_for(
+            GEOMETRY_OUTPUT, width, height, metrics=metrics
+        )
+
+    def test_touch_short_veto_and_compact_gate_agree(self):
+        # Any density fine enough to trip the older rich/large touch_short
+        # veto is also fine enough to trip the compact gate — the compact
+        # threshold (27mm) is deliberately looser than the veto's own
+        # implied screen size (BAND_DIVISOR * TOUCH_SHORT_BELOW_BAND_MM =
+        # 24mm) — so this now resolves CONTENT_COMPACT at every shipped
+        # pixel size rather than exercising the older veto path.
+        for width, height in PROFILE_SIZES:
+            metrics = metrics_for(width, height, _TOUCH_SHORT_VETO_MM_PER_PX)
+            assert metrics.touch_short is True
+            assert metrics.content_tier == CONTENT_COMPACT
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_mm_per_px_none_matches_the_bare_call(self, width, height):
@@ -854,11 +911,12 @@ class TestScalePxConsolidation:
 # (size, mm_per_px, expected content_tier) for six confirmed profiles: the
 # five shipped sizes plus one representative large panel. The two 320x240
 # entries resolve rich (the band cap does not bite at that density); the
-# 240x240 entry is vetoed back to base by its own physical touch floor.
+# 128x128 and 240x240 entries are physically small enough (25.9mm, 23.4mm
+# short side) to resolve to the compact tier ahead of any pixel-tier check.
 _CONFIRMED_TIERS = [
     ((160, 128), 0.2231, CONTENT_BASE),
-    ((128, 128), 0.2021, CONTENT_BASE),
-    ((240, 240), 0.0973, CONTENT_BASE),
+    ((128, 128), 0.2021, CONTENT_COMPACT),
+    ((240, 240), 0.0973, CONTENT_COMPACT),
     ((320, 240), 0.1778, CONTENT_RICH),
     ((320, 240), 0.1778, CONTENT_RICH),
     ((640, 480), 0.127, CONTENT_LARGE),
@@ -866,11 +924,13 @@ _CONFIRMED_TIERS = [
 
 # (size, mm, tier, band_h, rows_per_page, row_h, touch_min_px, list_rail,
 # supersample) — the confirmed-panel table, one row per _CONFIRMED_TIERS
-# entry, above.
+# entry, above. The compact rows keep every base-formula field (band_h,
+# row_h, touch_min_px, list_rail, supersample) except rows_per_page, which
+# drops to 2 (the compact picker's own two visible rows).
 _CONFIRMED_PANEL_TABLE = [
     ((160, 128), 0.2231, CONTENT_BASE, 32, 3, 32, 36, False, SUPERSAMPLE_DEFAULT),
-    ((128, 128), 0.2021, CONTENT_BASE, 32, 3, 32, 40, False, SUPERSAMPLE_DEFAULT),
-    ((240, 240), 0.0973, CONTENT_BASE, 60, 3, 60, 83, False, SUPERSAMPLE_DEFAULT),
+    ((128, 128), 0.2021, CONTENT_COMPACT, 32, 2, 32, 40, False, SUPERSAMPLE_DEFAULT),
+    ((240, 240), 0.0973, CONTENT_COMPACT, 60, 2, 60, 83, False, SUPERSAMPLE_DEFAULT),
     ((320, 240), 0.1778, CONTENT_RICH, 48, 5, 48, 45, True, SUPERSAMPLE_DEFAULT),
     ((320, 240), 0.1778, CONTENT_RICH, 48, 5, 48, 45, True, SUPERSAMPLE_DEFAULT),
     ((640, 480), 0.127, CONTENT_LARGE, 95, 5, 96, 63, True, SUPERSAMPLE_LARGE),
@@ -942,28 +1002,43 @@ class TestTierReporting:
     # -- the touch_short veto ------------------------------------------------
 
     def test_touch_short_veto_downgrades_an_automatic_size(self):
+        # At this density 240x240 is compact (23.4mm short side), decided
+        # ahead of the pixel-tier ladder the veto below lives in — so this
+        # panel never reaches the veto at all any more; it is caught by the
+        # compact gate first. touch_short is still reported, informationally.
         m = metrics_for(240, 240, 0.0973)
         assert m.touch_short is True
-        assert m.content_tier == CONTENT_BASE
+        assert m.content_tier == CONTENT_COMPACT
 
     def test_touch_short_veto_does_not_apply_to_a_chosen_size(self):
+        # size_chosen lifts the older rich/large veto, but never lifts
+        # compact — compact is a physical tier down, decided from the glass
+        # itself, not a pixel tier the veto ever tiers back up to.
         m = metrics_for(240, 240, 0.0973, size_chosen=True)
         assert m.touch_short is True
-        assert m.content_tier == CONTENT_RICH
+        assert m.content_tier == CONTENT_COMPACT
 
-    def test_touch_short_is_reported_on_the_base_tier_too(self):
-        m = metrics_for(160, 128, 0.05)
+    def test_touch_short_is_reported_on_the_compact_tier_too(self):
+        # Any density fine enough to trip touch_short is also fine enough to
+        # trip the compact gate (COMPACT_MAX_SHORT_SIDE_MM is deliberately
+        # looser than the veto's own implied screen size) — touch_short
+        # still reports correctly there, alongside the compact tier itself.
+        m = metrics_for(128, 128, 0.2021)
+        assert m.touch_short is False  # band_mm is 6.47mm here, not short
+        m = metrics_for(240, 240, 0.05)
         assert m.touch_short is True
-        assert m.content_tier == CONTENT_BASE
+        assert m.content_tier == CONTENT_COMPACT
 
     def test_touch_short_boundary_is_strict_less_than(self):
         # band_mm exactly at the threshold must NOT read touch_short — the
-        # comparison is strict '<'.
+        # comparison is strict '<'. At this density the panel is also well
+        # within the compact gate (24mm short side), so content_tier reads
+        # compact rather than the rich tier this boundary predates.
         quarter = 240 // 4
         mm = TOUCH_SHORT_BELOW_BAND_MM / quarter
         m = metrics_for(240, 240, mm)
         assert m.touch_short is False
-        assert m.content_tier == CONTENT_RICH
+        assert m.content_tier == CONTENT_COMPACT
 
     # -- the band cap ----------------------------------------------------------
 
@@ -1209,13 +1284,15 @@ class TestFontCaps:
         assert m.halo_blur == 2
         assert m.has_album_line is False
 
-    def test_touch_short_vetoed_panel_is_uncapped_and_has_no_album_line(self):
-        # Vetoed back to base by its physical touch floor (see
+    def test_compact_resolving_panel_is_uncapped_and_has_no_album_line(self):
+        # This physically tiny panel resolves compact ahead of the pixel-
+        # tier ladder the cap lives in (see
         # TestTierReporting.test_touch_short_veto_downgrades_an_automatic_size)
         # despite a pixel size that would otherwise scale past the cap: the
-        # gate is the resolved tier, not the raw scaled value.
+        # gate is the resolved tier, not the raw scaled value. Compact keeps
+        # the base tier's own font formula, uncapped.
         m = metrics_for(240, 240, 0.0973)
-        assert m.content_tier == CONTENT_BASE
+        assert m.content_tier == CONTENT_COMPACT
         assert m.font_body == round(240 * 13 / 128) == 24
         assert m.font_readout == round(240 * 15 / 128) == 28
         assert m.icon == round(240 * 15 / 128) == 28
@@ -1270,6 +1347,249 @@ class TestAlbumLine:
             TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
             TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP, TouchZone.ARTWORK,
         ]
+
+
+# ---------------------------------------------------------------------------
+# The compact tier: a physically tiny panel's 2x2 grid, replacing the
+# band+body+footer layouts entirely. Gated purely on physical size (see
+# metrics_for()), never on logical pixel count.
+# ---------------------------------------------------------------------------
+
+# Pinned rects at both shipped compact panels — see the module's own
+# CompactLayout/compact_layout_for docstrings.
+_COMPACT_240x240 = metrics_for(240, 240, 0.0973)
+_COMPACT_128x128 = metrics_for(128, 128, 0.2021)
+
+
+class TestCompactGate:
+    def test_shipped_compact_panels_resolve_compact(self):
+        assert metrics_for(240, 240, 0.0973).content_tier == CONTENT_COMPACT  # 1.3in
+        assert metrics_for(128, 128, 0.2021).content_tier == CONTENT_COMPACT  # 1.44in
+
+    def test_shipped_larger_panels_do_not_resolve_compact(self):
+        assert metrics_for(160, 128, 0.2231).content_tier != CONTENT_COMPACT  # 1.8in
+        assert metrics_for(320, 240, 0.1778).content_tier != CONTENT_COMPACT  # 2.8in
+
+    def test_boundary_is_at_or_below(self):
+        # short * mm_per_px == COMPACT_MAX_SHORT_SIDE_MM resolves compact
+        # (<=); one hundredth of a millimetre more does not.
+        width = height = 128
+        at_boundary = COMPACT_MAX_SHORT_SIDE_MM / width
+        just_over = (COMPACT_MAX_SHORT_SIDE_MM + 0.01) / width
+        assert metrics_for(width, height, at_boundary).content_tier == CONTENT_COMPACT
+        assert metrics_for(width, height, just_over).content_tier != CONTENT_COMPACT
+
+    def test_unknown_density_never_resolves_compact(self):
+        assert metrics_for(240, 240).content_tier == CONTENT_BASE
+        assert metrics_for(128, 128).content_tier == CONTENT_BASE
+
+    def test_size_chosen_does_not_lift_compact(self):
+        # A deliberately chosen logical size lifts the older rich/large
+        # touch_short veto, but compact is never reached through that veto
+        # in the first place — it is decided purely from the glass, ahead
+        # of the pixel-tier ladder, so size_chosen has no effect on it.
+        without = metrics_for(240, 240, 0.0973, size_chosen=False)
+        with_chosen = metrics_for(240, 240, 0.0973, size_chosen=True)
+        assert without.content_tier == CONTENT_COMPACT
+        assert with_chosen.content_tier == CONTENT_COMPACT
+
+    def test_compact_metrics_keep_base_formulas_except_rows_per_page(self):
+        base = metrics_for(240, 240)
+        compact = _COMPACT_240x240
+        assert compact.rows_per_page == 2
+        assert base.rows_per_page == 3
+        for field in (
+            "margin", "band_h", "row_h", "divider_w", "font_body", "font_readout",
+            "icon", "pad", "icon_gap", "halo_stroke", "halo_blur", "list_rail",
+            "rail_w", "rail_glyph", "supersample",
+        ):
+            assert getattr(compact, field) == getattr(base, field), field
+
+    def test_pinned_metrics_at_both_shipped_sizes(self):
+        assert (_COMPACT_240x240.margin, _COMPACT_240x240.divider_w) == (6, 2)
+        assert (_COMPACT_240x240.font_body, _COMPACT_240x240.font_readout, _COMPACT_240x240.icon) == (24, 28, 28)
+        assert _COMPACT_240x240.pad == 8
+        assert (_COMPACT_128x128.margin, _COMPACT_128x128.divider_w) == (3, 1)
+        assert (_COMPACT_128x128.font_body, _COMPACT_128x128.font_readout, _COMPACT_128x128.icon) == (13, 15, 15)
+        assert _COMPACT_128x128.pad == 4
+
+
+class TestCompactLayoutFor:
+    def test_pinned_cells_at_240x240(self):
+        layout = compact_layout_for(240, 240, metrics=_COMPACT_240x240)
+        assert layout.tl == (0, 0, 114, 114)
+        assert layout.tr == (126, 0, 240, 114)
+        assert layout.bl == (0, 126, 114, 240)
+        assert layout.br == (126, 126, 240, 240)
+        assert layout.top_row == (0, 0, 240, 114)
+        assert layout.bottom_row == (0, 126, 240, 240)
+        assert (layout.divider_x, layout.divider_y) == (120, 120)
+
+    def test_pinned_cells_at_128x128(self):
+        layout = compact_layout_for(128, 128, metrics=_COMPACT_128x128)
+        assert layout.tl == (0, 0, 61, 61)
+        assert layout.tr == (67, 0, 128, 61)
+        assert layout.bl == (0, 67, 61, 128)
+        assert layout.br == (67, 67, 128, 128)
+        assert layout.top_row == (0, 0, 128, 61)
+        assert layout.bottom_row == (0, 67, 128, 128)
+        assert (layout.divider_x, layout.divider_y) == (64, 64)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_cells_are_square(self, metrics):
+        layout = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        for rect in (layout.tl, layout.tr, layout.bl, layout.br):
+            x0, y0, x1, y1 = rect
+            assert x1 - x0 == y1 - y0
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_cells_plus_gaps_exactly_tile_the_panel(self, metrics):
+        layout = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        covered = [[False] * metrics.width for _ in range(metrics.height)]
+        for rect in (layout.tl, layout.tr, layout.bl, layout.br):
+            x0, y0, x1, y1 = rect
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    assert not covered[y][x]
+                    covered[y][x] = True
+        # The only uncovered pixels are the dead-zone gap around each
+        # divider — every one of them lies within margin px of divider_x
+        # or divider_y.
+        m = metrics.margin
+        for y in range(metrics.height):
+            for x in range(metrics.width):
+                if covered[y][x]:
+                    continue
+                near_v_divider = abs(x - layout.divider_x) <= m
+                near_h_divider = abs(y - layout.divider_y) <= m
+                assert near_v_divider or near_h_divider, (x, y)
+
+    def test_non_square_panel_splits_each_axis_independently(self):
+        # A developer-preview size: 320x240 at a low enough screen-size
+        # setting to resolve compact. Not a shipped target, but each axis
+        # is still split on its own, so the cells need not be square.
+        mm = 1.4 * 25.4 / (320 ** 2 + 240 ** 2) ** 0.5
+        metrics = metrics_for(320, 240, mm)
+        assert metrics.content_tier == CONTENT_COMPACT
+        layout = compact_layout_for(320, 240, metrics=metrics)
+        x0, y0, x1, y1 = layout.tl
+        assert (x1 - x0) != (y1 - y0)
+
+
+class TestCompactZoneTables:
+    """Pinned zone tables at both shipped compact sizes, plus an exhaustive
+    per-pixel hit-test proving every pixel maps to exactly one entry or a
+    dead gap — the same discipline TestListZoneAtExhaustive applies to the
+    base tier's own list geometry."""
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_main_table(self, metrics):
+        entries = zone_rects_for(GEOMETRY_MAIN, metrics.width, metrics.height, metrics=metrics)
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert [(e.zone, e.rect) for e in entries] == [
+            (TouchZone.DOTS, c.tl), (TouchZone.MUTE, c.tr),
+            (TouchZone.DOWN, c.bl), (TouchZone.UP, c.br),
+        ]
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_list_table(self, metrics):
+        entries = zone_rects_for(GEOMETRY_LIST, metrics.width, metrics.height, metrics=metrics)
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert [(e.zone, e.rect, e.index) for e in entries] == [
+            (TouchZone.LIST_ROW, c.tl, 0), (TouchZone.LIST_ROW, c.bl, 1),
+            (TouchZone.LIST_DOWN, c.tr, None), (TouchZone.LIST_BACK, c.br, None),
+        ]
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_repeat_enable_table(self, metrics):
+        entries = zone_rects_for(GEOMETRY_REPEAT, metrics.width, metrics.height, metrics=metrics)
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert [(e.zone, e.rect) for e in entries] == [
+            (TouchZone.REPEAT_PLAY, c.top_row), (TouchZone.DOTS, c.bottom_row),
+        ]
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_repeat_replay_table(self, metrics):
+        entries = zone_rects_for(GEOMETRY_REPEAT_REPLAY, metrics.width, metrics.height, metrics=metrics)
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert [(e.zone, e.rect) for e in entries] == [
+            (TouchZone.DOTS, c.top_row),
+            (TouchZone.REPEAT_START, c.bl), (TouchZone.REPEAT_STOP, c.br),
+        ]
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_idle_table_is_the_whole_panel(self, metrics):
+        entries = zone_rects_for(GEOMETRY_IDLE, metrics.width, metrics.height, metrics=metrics)
+        assert entries == (ZoneRect(TouchZone.IDLE_REPLAY, (0, 0, metrics.width, metrics.height)),)
+
+    def test_output_table_is_unreachable_and_unaffected(self):
+        # GEOMETRY_OUTPUT is unchanged on compact — the per-output detail
+        # page is not reachable there at all.
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            assert zone_rects_for(GEOMETRY_OUTPUT, metrics.width, metrics.height, metrics=metrics) == (
+                zone_rects_for(GEOMETRY_OUTPUT, metrics.width, metrics.height)
+            )
+
+    @pytest.mark.parametrize(
+        "geometry,metrics", [
+            (g, m) for g in (GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE)
+            for m in (_COMPACT_240x240, _COMPACT_128x128)
+        ],
+    )
+    def test_every_pixel_hits_exactly_one_entry_or_a_dead_gap(self, geometry, metrics):
+        w, h = metrics.width, metrics.height
+        entries = zone_rects_for(geometry, w, h, metrics=metrics)
+        c = compact_layout_for(w, h, metrics=metrics)
+        m = metrics.margin
+        for y in range(h):
+            for x in range(w):
+                hits = [
+                    (e.zone, e.index) for e in entries
+                    if e.rect[0] <= x < e.rect[2] and e.rect[1] <= y < e.rect[3]
+                ]
+                assert len(hits) <= 1, (geometry, x, y, hits)
+                result = hit_test(geometry, x, y, w, h, metrics=metrics)
+                if hits:
+                    assert result is not None and (result.zone, result.index) == hits[0]
+                elif geometry != GEOMETRY_IDLE:
+                    # A dead pixel must sit in the grid's own margin gap
+                    # around one of the two dividers — idle has no gap at
+                    # all (its one zone covers the whole panel).
+                    near_v = abs(x - c.divider_x) <= m
+                    near_h = abs(y - c.divider_y) <= m
+                    assert near_v or near_h, (geometry, x, y)
+                    assert result is None
+
+    def test_repeat_replay_equals_repeat_off_compact(self):
+        for width, height in PROFILE_SIZES:
+            assert zone_rects_for(GEOMETRY_REPEAT_REPLAY, width, height) == zone_rects_for(
+                GEOMETRY_REPEAT, width, height,
+            )
+
+    def test_zone_rects_for_is_pure(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            for geometry in GEOMETRIES:
+                a = zone_rects_for(geometry, metrics.width, metrics.height, metrics=metrics)
+                b = zone_rects_for(geometry, metrics.width, metrics.height, metrics=metrics)
+                assert a == b
+
+
+class TestCompactIdleGeometry:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_idle_layout_replay_is_the_whole_panel(self, metrics):
+        idle = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert idle.replay == (0, 0, metrics.width, metrics.height)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_idle_hit_test_covers_every_pixel(self, metrics):
+        # idle_zone_at() itself has no metrics parameter (a base-tier-only
+        # convenience — see zone_at()/list_zone_at()/repeat_zone_at()); the
+        # density-aware hit-test every real caller uses is hit_test() with
+        # an explicit metrics, exercised directly here.
+        for y in range(metrics.height):
+            for x in range(metrics.width):
+                hit = hit_test(GEOMETRY_IDLE, x, y, metrics.width, metrics.height, metrics=metrics)
+                assert hit is not None and hit.zone == TouchZone.IDLE_REPLAY
 
 
 # ---------------------------------------------------------------------------
