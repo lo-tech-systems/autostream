@@ -5081,6 +5081,14 @@ class DialDisplay:
             # An earlier-dialect refusal carries no id: correlate with the
             # id this target was resolved to.
             body_id = target.appliance_id
+        elif (
+            outcome == OUTCOME_AUTHORIZED and not body_id
+            and not getattr(target, "typed_refusals", True)
+        ):
+            # Nor does an earlier-dialect success reply. Without this, an
+            # appliance of that dialect that once refused the dial could
+            # never be seen to accept it again.
+            body_id = target.appliance_id
         changed = auth_map.apply(
             target.appliance_id, outcome, body_id, time.monotonic(),
         )
@@ -5466,6 +5474,19 @@ class DialDisplay:
         if stopped_ids:
             self._reconcile_due = True
             auth_map.force_due()
+        # A refused appliance that starts playing again is re-checked at
+        # once rather than at the end of its re-probe backoff: the usual way
+        # to fix a refusal is to allow the dial in the appliance's web UI and
+        # press play, and an appliance that pushes no auth change gives the
+        # dial no other prompt to look again.
+        started_refused = [
+            t.appliance_id for t in targets
+            if t.appliance_id not in self._prev_playing_ids and t.auth == AUTH_UNAUTHORIZED
+        ]
+        for appliance_id in started_refused:
+            auth_map.force_due(appliance_id)
+        if started_refused:
+            self._reconcile_due = True
         self._prev_playing_ids = playing_ids
         # The merged playing+idle roster — this is where general (idle)
         # sightings get noted into the auth map (dial_mdns.get_roster()'s

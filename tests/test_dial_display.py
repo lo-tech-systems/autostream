@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.error
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 
@@ -11019,6 +11019,48 @@ class TestUntypedRefusal:
         t = _target(name="Hall", service_name="Hall", appliance_id="")
         display, fb, gt = _make_display(targets=[t])
         assert display._apply_status_to_auth(t, self._refusal()) is False
+
+    def test_earlier_dialect_success_without_body_id_authorizes_again(self):
+        aid = "7" * 20
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display._apply_status_to_auth(t, self._refusal())
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
+        ok = _status_result(track_id=_track_id(), appliance_id=None)
+        assert display._apply_status_to_auth(t, ok) is True
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_AUTHORIZED
+
+    def test_newer_dialect_success_without_body_id_stays_uncorrelated(self):
+        aid = "8" * 20
+        t = dataclasses.replace(
+            _target(name="Hall", service_name="Hall", appliance_id=aid), dial_proto_version=2,
+        )
+        display, fb, gt = _make_display(targets=[t])
+        ok = _status_result(track_id=_track_id(), appliance_id=None)
+        assert display._apply_status_to_auth(t, ok) is False
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNKNOWN
+
+    def test_refused_appliance_starting_to_play_is_rechecked_at_once(self):
+        aid = "9" * 20
+        refused = _target(name="Hall", service_name="Hall", appliance_id=aid, auth="unauthorized")
+        display, fb, gt = _make_display(targets=[refused])
+        display.enable()
+        with patch("dial_display.auth_map.force_due") as force_due, \
+                patch("dial_display.fetch_target_status", return_value=_status_result()):
+            display._poll_once()
+        force_due.assert_any_call(aid)
+        assert display._reconcile_due or display._last_reconcile_at > 0
+
+    def test_refused_appliance_already_playing_is_not_rechecked_every_tick(self):
+        aid = "9" * 20
+        refused = _target(name="Hall", service_name="Hall", appliance_id=aid, auth="unauthorized")
+        display, fb, gt = _make_display(targets=[refused])
+        display.enable()
+        display._prev_playing_ids = {aid}
+        with patch("dial_display.auth_map.force_due") as force_due, \
+                patch("dial_display.fetch_target_status", return_value=_status_result()):
+            display._poll_once()
+        assert call(aid) not in force_due.call_args_list
 
     def test_plain_unauthorized_without_body_id_is_still_uncorrelated(self):
         aid = "4" * 20
