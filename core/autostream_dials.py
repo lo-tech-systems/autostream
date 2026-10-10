@@ -69,6 +69,68 @@ def _load_dials_locked() -> dict:
         return {}
 
 
+class DialsStoreUnavailable(Exception):
+    """dials.json exists but cannot be read or parsed."""
+
+
+_last_store_warning: str | None = None
+
+
+def _load_dials_locked_strict() -> dict:
+    """Like _load_dials_locked but distinguishes 'nobody authorized' from
+    'store unreadable'.
+
+    Missing file -> {} (an appliance that has never authorized a dial is not
+    "unavailable", it is simply empty). Malformed JSON, a non-object root, or
+    an OSError reading the file -> DialsStoreUnavailable, so callers can tell
+    a corrupt/unreadable store apart from a definitive "not authorized".
+    """
+    try:
+        raw = DIALS_PATH.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        _warn_store_unavailable_once(f"dials.json unreadable: {e}")
+        raise DialsStoreUnavailable(str(e)) from e
+    try:
+        data = _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        _warn_store_unavailable_once(f"dials.json malformed: {e}")
+        raise DialsStoreUnavailable(str(e)) from e
+    if not isinstance(data, dict):
+        _warn_store_unavailable_once(
+            f"dials.json: expected object, got {type(data).__name__}"
+        )
+        raise DialsStoreUnavailable("dials.json root is not an object")
+    return data
+
+
+def _warn_store_unavailable_once(message: str) -> None:
+    """Log at WARNING once per distinct message, so a persistently corrupt
+    file does not warn on every poll from every dial."""
+    global _last_store_warning
+    if message != _last_store_warning:
+        logging.warning(message)
+        _last_store_warning = message
+
+
+AUTH_AUTHORIZED = "authorized"
+AUTH_NOT_AUTHORIZED = "not_authorized"
+AUTH_UNAVAILABLE = "unavailable"
+
+
+def dial_authorization(uuid: str) -> str:
+    """Three-valued lookup for the dial protocol routes: AUTH_AUTHORIZED,
+    AUTH_NOT_AUTHORIZED (definitive miss), or AUTH_UNAVAILABLE (the dials
+    store is unreadable, so no definitive answer is possible)."""
+    with _DIALS_LOCK:
+        try:
+            dials = _load_dials_locked_strict()
+        except DialsStoreUnavailable:
+            return AUTH_UNAVAILABLE
+    return AUTH_AUTHORIZED if uuid in dials else AUTH_NOT_AUTHORIZED
+
+
 def write_dial_entry(uuid: str, name: str) -> None:
     from autostream_sysutils import atomic_write_file
     with _DIALS_LOCK:
@@ -89,9 +151,7 @@ def remove_dial_entry(uuid: str) -> None:
 
 def is_dial_authorized(uuid: str) -> bool:
     """Return True if uuid is present in DIALS_PATH."""
-    with _DIALS_LOCK:
-        dials = _load_dials_locked()
-    return uuid in dials
+    return dial_authorization(uuid) == AUTH_AUTHORIZED
 
 
 def parse_dial_entries() -> list:

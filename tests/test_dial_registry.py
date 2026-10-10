@@ -168,6 +168,62 @@ class TestWriteRemoveDialEntry:
 
 
 # ---------------------------------------------------------------------------
+# dial_authorization: three-valued lookup (authorized / not_authorized /
+# unavailable). _load_dials_locked and its {}-on-error contract (above) are
+# untouched by this -- dial_authorization is a separate, stricter lookup
+# used only by the dial protocol routes.
+# ---------------------------------------------------------------------------
+
+class TestDialAuthorization:
+    def test_missing_file_is_not_authorized(self, tmp_path):
+        with _redirect(tmp_path):
+            result = dials.dial_authorization("any-uuid")
+        assert result == dials.AUTH_NOT_AUTHORIZED
+
+    def test_present_uuid_in_store_is_authorized(self, tmp_path):
+        with _redirect(tmp_path) as p:
+            _write_dials(p, {"uuid-1": {"name": "Test", "authorized_at": "2026-01-01"}})
+            result = dials.dial_authorization("uuid-1")
+        assert result == dials.AUTH_AUTHORIZED
+
+    def test_present_uuid_absent_from_store_is_not_authorized(self, tmp_path):
+        with _redirect(tmp_path) as p:
+            _write_dials(p, {"uuid-1": {"name": "Test", "authorized_at": "2026-01-01"}})
+            result = dials.dial_authorization("some-other-uuid")
+        assert result == dials.AUTH_NOT_AUTHORIZED
+
+    def test_malformed_json_is_unavailable(self, tmp_path):
+        with _redirect(tmp_path) as p:
+            p.write_text("not-json", encoding="utf-8")
+            result = dials.dial_authorization("any-uuid")
+        assert result == dials.AUTH_UNAVAILABLE
+
+    def test_non_object_root_is_unavailable(self, tmp_path):
+        with _redirect(tmp_path) as p:
+            _write_dials(p, [1, 2, 3])
+            result = dials.dial_authorization("any-uuid")
+        assert result == dials.AUTH_UNAVAILABLE
+
+    def test_oserror_on_read_is_unavailable(self, tmp_path):
+        # A directory at DIALS_PATH makes read_text() raise IsADirectoryError,
+        # a subclass of OSError, without depending on process privileges
+        # (chmod 000 is a no-op for a root-equivalent test runner).
+        with _redirect(tmp_path) as p:
+            p.mkdir()
+            result = dials.dial_authorization("any-uuid")
+        assert result == dials.AUTH_UNAVAILABLE
+
+    def test_is_dial_authorized_still_bool_for_authorized(self, tmp_path):
+        with _redirect(tmp_path):
+            dials.write_dial_entry("auth-uuid", "Test")
+            assert dials.is_dial_authorized("auth-uuid") is True
+
+    def test_is_dial_authorized_still_bool_for_not_authorized(self, tmp_path):
+        with _redirect(tmp_path):
+            assert dials.is_dial_authorized("unknown-uuid") is False
+
+
+# ---------------------------------------------------------------------------
 # update_dial_sighting: throttle and unknown UUID
 # ---------------------------------------------------------------------------
 
