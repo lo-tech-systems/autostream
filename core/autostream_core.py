@@ -400,6 +400,10 @@ _AVAHI_PLAYING_PATH = Path("/etc/avahi/services/autostream-playing.service")
 _playing_lock = threading.Lock()
 _playing_announced: bool = False
 _reconcile_started: bool = False
+# Release string the coordinator passes to _sync_playing_announcement; set by
+# run_autostream so an API-thread caller can announce without knowing it.
+# None until the coordinator has started.
+_playing_version: Optional[str] = None
 
 
 def _sync_playing_announcement(active: bool, version: str) -> None:
@@ -800,12 +804,36 @@ def _rearm_replay_identification(origin_input: Optional[int], in_session: bool) 
         target.on_replay_seek_accepted(in_session)
 
 
+def _announce_playing_if_active(version: str) -> None:
+    """Pool worker: sync the announcement to the session state as it is now.
+
+    The state is read when the task runs, not when it was submitted, so a
+    stop that lands between the ack and the write leaves the service file
+    removed (or never written) instead of announcing an idle appliance. A
+    stop landing inside the window between this read and the write is
+    corrected by the coordinator's next tick or the periodic reconciliation.
+    """
+    _sync_playing_announcement(get_session_state()["active"], version)
+
+
 def _announce_replay_playing() -> None:
     """Advertise the appliance as playing as soon as a replay start is acked.
 
-    Called from apply_repeat_ack on the API thread. Currently a no-op.
+    Called from apply_repeat_ack on the API thread, so the write (a sudo
+    admin call) is handed to the task pool rather than run inline. The
+    submission is single-flight, and _sync_playing_announcement is
+    idempotent under _playing_lock, so the coordinator's own sync later in
+    the session either finds it announced or waits briefly for the write:
+    one write per session. Never raises.
     """
-    return None
+    version = _playing_version
+    if version is None or _playing_announced:
+        return
+    try:
+        _task_pool.submit(
+            "playing-announce", _announce_playing_if_active, version)
+    except Exception:
+        logging.debug("replay playing announcement not submitted", exc_info=True)
 
 
 def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
@@ -5094,7 +5122,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     the coordinator exits.  Pass an externally-owned store to share the same
     in-memory config between the coordinator and the Web UI.
     """
-    global _reconcile_started
+    global _reconcile_started, _playing_version
 
     bootstrap = _bootstrap(config_path, start_webui, settings)
     settings = bootstrap.settings
@@ -5103,6 +5131,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     webui_thread = bootstrap.webui_thread
     socket_path = bootstrap.socket_path
     version = bootstrap.version
+    _playing_version = version
     POLL_INTERVAL = bootstrap.poll_interval
     SWITCH_SILENCE_SECONDS = bootstrap.switch_silence_seconds
 

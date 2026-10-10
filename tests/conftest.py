@@ -146,6 +146,7 @@ def _hermetic_playing_announcement(monkeypatch):
     m._playing_announced = False
     yield
     m._playing_announced = False
+    m._playing_version = None
     m._reconcile_started = False
 
 

@@ -1117,3 +1117,119 @@ class TestSyncPlayingAnnouncement:
             assert core._playing_announced is True
         finally:
             core._set_session_state(False, None)
+
+
+# ---------------------------------------------------------------------------
+# Replay-start acks advertise "playing" from the API thread, via the task pool.
+# ---------------------------------------------------------------------------
+
+def _repeat_block(replaying=False):
+    return {
+        "enabled": True, "armed": True,
+        "recording": {"active": False, "seconds": 342.0, "origin_input": 1},
+        "replay": {"active": replaying, "fading_out": False,
+                   "position_seconds": 10.0 if replaying else 0.0,
+                   "duration_seconds": 342.0},
+    }
+
+
+def _repeat_ack(command, state):
+    return {"type": "ack", "command": command, "ok": True, "state": state,
+            "armed": True, "position_seconds": 0.0}
+
+
+class TestReplayAckAnnouncement:
+    def setup_method(self):
+        core._playing_announced = False
+        core._playing_version = "v1"
+        core._set_session_state(False, None)
+
+    def teardown_method(self):
+        core._playing_announced = False
+        core._playing_version = None
+        core._set_repeat_status(None)
+        core._set_session_state(False, None)
+
+    def _ack_from_hold(self, command="repeat_seek", state="replaying",
+                       replaying=False):
+        core._set_repeat_status(_repeat_block(replaying=replaying))
+        with patch.object(core, "_rearm_replay_identification"), \
+             patch.object(core._task_pool, "submit", return_value=True) as submit:
+            core.apply_repeat_ack(_repeat_ack(command, state))
+        return submit
+
+    def test_replaying_ack_submits_the_announcement_off_thread(self):
+        submit = self._ack_from_hold()
+        submit.assert_called_once_with(
+            "playing-announce", core._announce_playing_if_active, "v1")
+
+    def test_replaying_ack_is_a_noop_when_already_announced(self):
+        core._playing_announced = True
+        submit = self._ack_from_hold()
+        submit.assert_not_called()
+
+    def test_replaying_ack_is_a_noop_without_a_version(self):
+        core._playing_version = None
+        submit = self._ack_from_hold()
+        submit.assert_not_called()
+
+    def test_seek_within_a_replay_does_not_submit(self):
+        submit = self._ack_from_hold(replaying=True)
+        submit.assert_not_called()
+
+    def test_stop_and_fading_out_acks_never_submit(self):
+        assert self._ack_from_hold("repeat_stop", "fading_out",
+                                   replaying=True).call_count == 0
+        assert self._ack_from_hold("set_repeat_armed", "hold").call_count == 0
+
+    def test_a_submit_failure_never_reaches_the_caller(self):
+        core._set_repeat_status(_repeat_block())
+        with patch.object(core, "_rearm_replay_identification"), \
+             patch.object(core._task_pool, "submit",
+                          side_effect=RuntimeError("pool down")):
+            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
+
+    def test_duplicate_submission_is_dropped_by_single_flight(self):
+        import threading
+        release = threading.Event()
+        started = threading.Event()
+        pool = core.TaskPool(max_workers=1)
+
+        def slow(_v):
+            started.set()
+            release.wait(5)
+
+        try:
+            with patch.object(core, "_task_pool", pool), \
+                 patch.object(core, "_announce_playing_if_active", slow):
+                core._announce_replay_playing()
+                assert started.wait(5)
+                core._announce_replay_playing()
+                assert pool.is_inflight("playing-announce")
+        finally:
+            release.set()
+
+    def test_worker_reads_the_session_state_when_it_runs(self):
+        # A stop that lands before the pooled task runs must not leave the
+        # service announced.
+        core._set_session_state(False, None)
+        with patch.object(core, "write_avahi_playing_service") as write:
+            core._announce_playing_if_active("v1")
+        write.assert_not_called()
+        assert core._playing_announced is False
+
+    def test_worker_announces_while_the_session_is_active(self):
+        core._set_session_state(True, "replay")
+        with patch.object(core, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
+             patch.object(core, "write_avahi_playing_service",
+                          return_value=True) as write:
+            core._announce_playing_if_active("v1")
+            core._sync_playing_announcement(True, "v1")
+        write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
+        assert core._playing_announced is True
+
+    def test_run_autostream_records_the_version(self):
+        import inspect
+        src = inspect.getsource(core.run_autostream)
+        assert "_playing_version = version" in src
+        assert "_playing_version" in src.split("global", 1)[1].split("\n", 1)[0]
