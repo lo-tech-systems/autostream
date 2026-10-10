@@ -16,6 +16,7 @@ Covers:
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import threading
@@ -501,18 +502,29 @@ class TestRetryDelaySequence:
 # Dial installer test: mdns module deployed
 # ---------------------------------------------------------------------------
 
+def _dial_code_tree() -> str:
+    """The body of install_code_tree() in the dial installer helpers, which
+    deploys every dial code file into the flat code tree."""
+    text = (REPO_ROOT / "installer" / "dial" / "helpers.sh").read_text(encoding="utf-8")
+    start = text.index("install_code_tree() {")
+    return text[start:text.index("\n}\n", start)]
+
+
 class TestDialInstallerMdnsDeploy:
     def test_mdns_module_deployed_in_dial_installer(self):
-        content = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
-        assert "autostream_mdns.py" in content, (
-            "autostream_dial_install.sh must deploy core/autostream_mdns.py"
+        body = _dial_code_tree()
+        core_loop = next(
+            m.group(1) for m in re.finditer(r"for name in (.*?); do(.*?)done", body, re.S)
+            if "$DEPLOY/core/${name}.py" in m.group(2)
+        )
+        assert "autostream_mdns" in core_loop.replace("\\", " ").split(), (
+            "the dial installer must deploy core/autostream_mdns.py"
         )
 
     def test_mdns_module_deployed_as_flat_path(self):
-        content = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
-        assert "/opt/autostream/autostream_mdns.py" in content, (
-            "autostream_mdns.py must be installed at /opt/autostream/autostream_mdns.py"
-        )
+        # Core modules land directly in the code tree root (/opt/autostream on a
+        # fresh install, the staged tree on an update), not in a subdirectory.
+        assert '"$DEPLOY/core/${name}.py" "${dest}/${name}.py"' in _dial_code_tree()
 
 
 # ---------------------------------------------------------------------------
