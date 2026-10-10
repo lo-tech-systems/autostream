@@ -3651,8 +3651,11 @@ class TestArtworkReveal:
 
     def test_tick_signals_each_frame_and_once_at_the_end(self):
         display, fb, gt, _ = self._rich(always_show=False)
-        display.set_overlay(OverlayState(visible=True))
-        _repaint(display)
+        # Showing the controls slides them in; that slide must be over on a
+        # fake clock too, or a real clock reading later than the one below
+        # would leave it apparently still running and the dismiss would turn
+        # it round instead of starting afresh.
+        self._shown_settled(display, fb)
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.set_overlay(OverlayState(visible=False))
