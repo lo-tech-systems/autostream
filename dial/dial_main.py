@@ -33,6 +33,7 @@ from dial_mdns import (
     stop_general_browser,
     stop_playing_browser,
 )
+from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
 from dial_volume import (
     enqueue_delta,
@@ -370,9 +371,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     def on_dismiss_overlay() -> None:
         display.set_overlay(OverlayState(visible=False))
 
-    # LIST_* zones only ever arm while the selector screen is on the panel
-    # (see dial_touch.TouchStateMachine._arm's surface branch), and the
-    # selector is rendered through compose_list()/ListState, not through
+    # LIST_* zones only ever arm while the selector/picker screen is on the
+    # panel (see dial_touch.TouchStateMachine._arm's surface branch), and
+    # that screen is rendered through compose_list()/ListState, not through
     # OverlayState at all. Publishing an OverlayState for one of these
     # zones — even the SET_PRESSED_ZONE(None) that later clears the flash —
     # would incorrectly leave the MAIN overlay's published snapshot
@@ -384,8 +385,21 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     # (see dial_display._build_list_state_locked's docstring); touch
     # activity/presence are still recorded either way, since a list tap is
     # a genuine touch.
+    #
+    # The repeat screen's own zones (REPEAT_RING/REPEAT_START/REPEAT_STOP)
+    # and the idle screen's IDLE_REPLAY are rendered through their own
+    # compose paths too, so the same suppression applies — but their
+    # pressed-wash feedback IS wired, through display.set_secondary_pressed()
+    # rather than the main OverlayState. DOTS is deliberately NOT in either
+    # group: it is one of zones_for()'s own main-surface zones (drawn via
+    # the ordinary OverlayState.pressed path on both the main and repeat
+    # screens), so it needs no special handling here.
     _LIST_ZONES = (TouchZone.LIST_BACK, TouchZone.LIST_DOWN, TouchZone.LIST_UP, TouchZone.LIST_ROW)
+    _SECONDARY_ZONES = (
+        TouchZone.REPEAT_RING, TouchZone.REPEAT_START, TouchZone.REPEAT_STOP, TouchZone.IDLE_REPLAY,
+    )
     _list_zone_pressed = [False]
+    _secondary_zone_pressed = [False]
 
     def on_set_pressed_zone(zone) -> None:
         _confirm_presence()
@@ -393,9 +407,18 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         if zone in _LIST_ZONES:
             _list_zone_pressed[0] = True
             return
-        if zone is None and _list_zone_pressed[0]:
-            _list_zone_pressed[0] = False
+        if zone in _SECONDARY_ZONES:
+            _secondary_zone_pressed[0] = True
+            display.set_secondary_pressed(zone)
             return
+        if zone is None:
+            if _list_zone_pressed[0]:
+                _list_zone_pressed[0] = False
+                return
+            if _secondary_zone_pressed[0]:
+                _secondary_zone_pressed[0] = False
+                display.set_secondary_pressed(None)
+                return
         display.set_overlay(OverlayState(visible=True, pressed=zone, muted=is_muted()))
 
     def on_volume_up() -> None:
@@ -426,22 +449,34 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         display.set_overlay(OverlayState(visible=True, pressed=TouchZone.MUTE, muted=muted))
 
     def on_zone_tap(zone, index) -> None:
-        # NAME opens the appliance selector; the LIST_* zones act on it —
-        # see dial_display.DialDisplay's selector screen state (2.7) and
-        # dial_touch.py's SURFACES paragraph for how a press ever reaches
-        # one of these zones in the first place.
+        # NAME opens the appliance selector; the LIST_* zones act on
+        # whichever list-chassis screen (selector or picker) is open; DOTS
+        # opens/closes the repeat screen; REPEAT_* act on it; IDLE_REPLAY
+        # opens the replay picker — see dial_touch.py's SURFACES paragraph
+        # for how a press ever reaches one of these zones in the first
+        # place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
             display.open_selector()
         elif zone == TouchZone.LIST_BACK:
-            display.close_selector()
+            display.close_list()
         elif zone == TouchZone.LIST_DOWN:
-            display.selector_page(+1)
+            display.list_page(+1)
         elif zone == TouchZone.LIST_UP:
-            display.selector_page(-1)
+            display.list_page(-1)
         elif zone == TouchZone.LIST_ROW:
-            display.selector_pick(index)
+            display.list_row_tap(index)
+        elif zone == TouchZone.DOTS:
+            display.toggle_repeat_screen()
+        elif zone == TouchZone.REPEAT_RING:
+            display.repeat_ring_tap()
+        elif zone == TouchZone.REPEAT_START:
+            display.repeat_start_tap()
+        elif zone == TouchZone.REPEAT_STOP:
+            display.repeat_stop_tap()
+        elif zone == TouchZone.IDLE_REPLAY:
+            display.open_picker()
 
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,
@@ -558,8 +593,8 @@ def main() -> None:
         start_general_browser(shutdown_event=shutdown_event)
     display.start()
 
-    # Single-target volume/mute (see dial_volume.py's module docstring and
-    # the design notes' Workstream C): volume always addresses the display's
+    # Single-target volume/mute (see dial_volume.py's module docstring):
+    # volume always addresses the display's
     # reporting-from target; mute widens to every playing target only when
     # mute_all_playing is on. Both resolvers degrade gracefully for a
     # NoOpDisplayStatusProvider (no current_source_service_name) and for a
@@ -571,6 +606,12 @@ def main() -> None:
         mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
         on_readout_changed=getattr(display, "request_repaint", None),
     )
+
+    # The repeat-transport sender: its own thread, queue and HTTP client,
+    # entirely separate from the volume worker above (see dial_repeat.py's
+    # module docstring for why). on_result degrades to a no-op for a
+    # NoOpDisplayStatusProvider (no on_repeat_result method).
+    start_repeat_worker(cfg, on_result=getattr(display, "on_repeat_result", None))
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch
@@ -608,14 +649,26 @@ def main() -> None:
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
 
+    def _pop_repeat_screen() -> None:
+        # A physical volume/mute nudge while the repeat screen is open
+        # returns to the volume readout on main — display.pop_secondary()
+        # is a lock-free flag write; a raising/missing display (e.g. the
+        # NoOp fallback) must never block the nudge itself.
+        try:
+            display.pop_secondary("repeat")
+        except Exception:
+            pass
+
     def nudge_up() -> int:
         http_server.confirm_volume()
+        _pop_repeat_screen()
         delta = http_server.step_percent
         enqueue_delta(delta)
         return delta
 
     def nudge_down() -> int:
         http_server.confirm_volume()
+        _pop_repeat_screen()
         delta = -http_server.step_percent
         enqueue_delta(delta)
         return delta
@@ -664,6 +717,7 @@ def main() -> None:
 
         def on_press() -> None:
             http_server.confirm_volume()
+            _pop_repeat_screen()
             enqueue_mute()
 
         button = None

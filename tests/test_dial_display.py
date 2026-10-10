@@ -86,6 +86,16 @@ def _status_result(track_id=None, status_error=None, appliance_id=None) -> dict:
     }
 
 
+def _repeat_obj(**overrides) -> dict:
+    base = {
+        "available": True, "state": "hold", "armed": False, "held": True,
+        "recording_seconds": 30.0,
+        "replay": {"active": False, "position_seconds": 0.0, "duration_seconds": 30.0},
+    }
+    base.update(overrides)
+    return base
+
+
 _TEST_LOGO_PATH = str(REPO_ROOT / "images" / "autostream-logo-centred-dark.png")
 
 
@@ -2128,7 +2138,7 @@ class TestReconcilePass:
 
 
 # ---------------------------------------------------------------------------
-# dial_repeat_store fed from both poll paths (dial phase 2, D2).
+# dial_repeat_store fed from both poll paths.
 # ---------------------------------------------------------------------------
 
 class TestRepeatStoreFeed:
@@ -2667,14 +2677,14 @@ class TestSelectorTimeout:
         display = self._opened_display()
         opened_at = display._selector.opened_at
         with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
-            display._check_selector_timeout()
+            display._check_secondary_timeout()
         assert display._screen == "main"
 
     def test_stays_open_before_the_timeout(self):
         display = self._opened_display()
         opened_at = display._selector.opened_at
         with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS - 1):
-            display._check_selector_timeout()
+            display._check_secondary_timeout()
         assert display._screen == "selector"
 
     def test_touch_activity_refreshes_the_deadline(self):
@@ -2688,7 +2698,7 @@ class TestSelectorTimeout:
 
         # Well past the ORIGINAL deadline, but still short of a fresh one.
         with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
-            display._check_selector_timeout()
+            display._check_secondary_timeout()
         assert display._screen == "selector"
 
 
@@ -2765,27 +2775,92 @@ class TestTouchSurface:
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
-        assert display.touch_surface() == ("selector", False)
+        assert display.touch_surface() == ("selector", False, False)
 
     def test_hidden_with_name_active_when_something_is_playing(self):
         t = _target()
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         _poll_with_artwork(display, fb)
-        assert display.touch_surface() == ("hidden", True)
+        assert display.touch_surface() == ("hidden", True, False)
 
     def test_held_with_name_active(self):
         t = _target()
         display, fb, gt = _make_display(targets=[t], always_show_controls=True)
         display.enable()
         _poll_with_artwork(display, fb)
-        assert display.touch_surface() == ("held", True)
+        assert display.touch_surface() == ("held", True, False)
 
     def test_hidden_with_name_inactive_when_nothing_playing(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         display._poll_once()
-        assert display.touch_surface() == ("hidden", False)
+        assert display.touch_surface() == ("hidden", False, False)
+
+    def test_idle_when_affordance_drawn(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        with display._lock:
+            display._idle_affordance = True
+        assert display.touch_surface() == ("idle", False, False)
+
+    def test_hidden_not_idle_when_nothing_playing_and_no_affordance(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._idle_affordance = False
+        display._poll_once()
+        assert display.touch_surface()[0] == "hidden"
+
+    def test_repeat_screen_reports_repeat_with_dots_active(self):
+        aid = "1" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        import dial_repeat_store as drs
+        drs.repeat_store.update(aid, drs.RepeatRecord(
+            available=True, state="recording", armed=False,
+            recording_seconds=0.0, position_seconds=0.0, duration_seconds=0.0,
+            observed_at=time.monotonic(),
+        ))
+        with display._lock:
+            display._screen = "repeat"
+        assert display.touch_surface() == ("repeat", False, True)
+
+    def test_picker_while_open(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "picker"
+        assert display.touch_surface() == ("picker", False, False)
+
+    def test_dots_active_reflects_fresh_available_record(self):
+        aid = "2" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        import dial_repeat_store as drs
+        result = _status_result(track_id=None, appliance_id=aid)
+        result["repeat"] = {
+            "available": True, "state": "idle", "armed": False, "held": False,
+            "recording_seconds": 0.0,
+            "replay": {"active": False, "position_seconds": 0.0, "duration_seconds": 0.0},
+        }
+        with patch("dial_display.fetch_target_status", return_value=result):
+            display._poll_once()
+        assert display._dots_active is True
+        surface, name_active, dots_active = display.touch_surface()
+        assert dots_active is True
+
+    def test_dots_inactive_when_record_unavailable(self):
+        aid = "3" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        result = _status_result(track_id=None, appliance_id=aid)
+        with patch("dial_display.fetch_target_status", return_value=result):
+            display._poll_once()
+        assert display._dots_active is False
 
 
 class TestOverlayNameField:
@@ -2817,4 +2892,697 @@ class TestOverlayNameField:
         display.enable()
         _poll_with_artwork(display, fb)
         assert len(display._selector.rows) == 1
-        assert display.touch_surface() == ("hidden", True)
+        assert display.touch_surface() == ("hidden", True, False)
+
+
+# ---------------------------------------------------------------------------
+# Repeat screen: opening/closing, the ring/transport taps, its own compose
+# path, no inactivity timeout, and closing when the focused appliance's
+# manual focus clears.
+# ---------------------------------------------------------------------------
+
+def _poll_focused_with_repeat(display, fb, aid, repeat_obj):
+    """Drive one poll that identifies artwork for appliance_id=aid and
+    feeds repeat_obj into the store for it — leaves _now_playing and
+    _reporting_appliance_id set to aid, mirroring toggle_repeat_screen()'s
+    own precondition for opening."""
+    fake_image = Image.new("RGB", (fb.width, fb.height))
+    result = _status_result(track_id=_track_id(), appliance_id=aid)
+    result["repeat"] = repeat_obj
+    with patch("dial_display.fetch_target_status", return_value=result), \
+         patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+         patch("dial_display.decode_artwork", return_value=fake_image), \
+         patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+        display._poll_once()
+
+
+class TestToggleRepeatScreen:
+    def test_opens_when_record_available(self):
+        aid = "1" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+        assert display._repeat_screen.appliance_id == aid
+
+    def test_does_not_open_with_no_record(self):
+        aid = "2" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(), appliance_id=aid)):
+            display._poll_once()
+
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_does_not_open_when_record_unavailable(self):
+        aid = "3" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(available=False, state="idle"))
+
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_does_not_open_with_nothing_playing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_second_tap_closes_it(self):
+        aid = "4" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+        assert display._repeat_screen is None
+
+
+class TestRepeatScreenTouchEntries:
+    def _opened(self, state="idle", armed=False, appliance_id="5" * 20):
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, appliance_id, _repeat_obj(state=state, armed=armed))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+        return display, appliance_id
+
+    def test_ring_tap_arms_in_idle(self):
+        display, aid = self._opened(state="idle", armed=False)
+        with patch("dial_display.enqueue_arm") as mock_arm:
+            display.repeat_ring_tap()
+        mock_arm.assert_called_once()
+        target, armed = mock_arm.call_args[0]
+        assert target.appliance_id == aid
+        assert armed is True
+
+    def test_ring_tap_disarms_when_already_armed(self):
+        display, aid = self._opened(state="recording", armed=True)
+        with patch("dial_display.enqueue_arm") as mock_arm:
+            display.repeat_ring_tap()
+        mock_arm.assert_called_once()
+        _, armed = mock_arm.call_args[0]
+        assert armed is False
+
+    def test_ring_tap_ignored_while_replaying(self):
+        display, aid = self._opened(state="replaying")
+        with patch("dial_display.enqueue_arm") as mock_arm:
+            display.repeat_ring_tap()
+        mock_arm.assert_not_called()
+
+    def test_start_tap_seeks_zero_while_hold(self):
+        display, aid = self._opened(state="hold")
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.repeat_start_tap()
+        mock_transport.assert_called_once()
+        target, action, position = mock_transport.call_args[0]
+        assert target.appliance_id == aid
+        assert action == "seek"
+        assert position == 0.0
+
+    def test_start_tap_seeks_zero_while_replaying(self):
+        display, aid = self._opened(state="replaying")
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.repeat_start_tap()
+        mock_transport.assert_called_once()
+
+    def test_start_tap_ignored_while_recording(self):
+        display, aid = self._opened(state="recording")
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.repeat_start_tap()
+        mock_transport.assert_not_called()
+
+    def test_stop_tap_stops_while_replaying(self):
+        display, aid = self._opened(state="replaying")
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.repeat_stop_tap()
+        mock_transport.assert_called_once()
+        target, action, position = mock_transport.call_args[0]
+        assert target.appliance_id == aid
+        assert action == "stop"
+
+    def test_stop_tap_ignored_while_hold(self):
+        display, aid = self._opened(state="hold")
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.repeat_stop_tap()
+        mock_transport.assert_not_called()
+
+    def test_taps_are_noop_when_screen_not_open(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch("dial_display.enqueue_arm") as mock_arm, \
+             patch("dial_display.enqueue_transport") as mock_transport:
+            display.repeat_ring_tap()
+            display.repeat_start_tap()
+            display.repeat_stop_tap()
+        mock_arm.assert_not_called()
+        mock_transport.assert_not_called()
+
+
+class TestRepeatScreenComposePath:
+    def _opened(self, state="idle", appliance_id="6" * 20):
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, appliance_id, _repeat_obj(state=state))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, fb, gt, appliance_id
+
+    def test_own_compose_path_used_never_the_main_overlay(self):
+        display, fb, gt, aid = self._opened()
+        with patch.object(display._compositor, "compose") as mock_compose, \
+             patch.object(display._compositor, "compose_repeat",
+                          wraps=display._compositor.compose_repeat) as mock_compose_repeat:
+            display.set_overlay(OverlayState(visible=True))
+            with display._lock:
+                display._repaint_current_locked()
+        mock_compose.assert_not_called()
+        assert mock_compose_repeat.call_count >= 1
+
+    def test_no_inactivity_timeout(self):
+        display, fb, gt, aid = self._opened()
+        opened_at = time.monotonic()
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 100):
+            display._check_secondary_timeout()
+        assert display._screen == "repeat"
+
+    def test_closes_when_manual_focus_clears(self):
+        aid = "7" * 20
+        focus_t = _target(name="Focus", service_name="Focus", appliance_id=aid, playing_since=1.0)
+        display, fb, gt = _make_display(targets=[focus_t])
+        display.enable()
+        display.set_manual_focus(aid)
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle"))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        gt.return_value = []  # the appliance leaves the roster entirely
+        display._poll_once()
+        assert display.manual_focus_id() is None
+        assert display._screen == "main"
+
+    def test_closes_on_mid_tick_unauthorized_clear(self):
+        aid = "8" * 20
+        focus_t = _target(name="Focus", service_name="Focus", appliance_id=aid, playing_since=1.0)
+        other_t = _target(name="Other", service_name="Other", playing_since=5.0)
+        display, fb, gt = _make_display(targets=[focus_t, other_t])
+        display.enable()
+        display.set_manual_focus(aid)
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle"))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            if target is focus_t:
+                return _status_result(status_error="unauthorized", appliance_id=aid)
+            return _status_result(track_id=_track_id())
+
+        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+            display._poll_once()
+
+        assert display.manual_focus_id() is None
+        assert display._screen == "main"
+
+    def test_sleep_pops_repeat_screen(self):
+        display, fb, gt, aid = self._opened()
+        assert display._screen == "repeat"
+        with display._lock:
+            display._sleep_locked()
+        assert display._screen == "main"
+        assert display._repeat_screen is None
+
+    def test_sleep_pops_picker(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "picker"
+        with display._lock:
+            display._sleep_locked()
+        assert display._screen == "main"
+        assert display._picker is None
+
+
+class TestRepeatLineInterpolation:
+    def test_wraps_at_duration_plus_loop_gap(self):
+        import dial_repeat_store as drs
+        rec = drs.RepeatRecord(
+            available=True, state="replaying", armed=True,
+            recording_seconds=10.0, position_seconds=9.0, duration_seconds=10.0,
+            observed_at=100.0,
+        )
+        # 100.0 + 3.0 elapsed = 12.0 raw; wraps at (10 + 1.5) = 11.5 -> 0.5,
+        # then clamped to <= duration (already under it).
+        pos = dd._interpolate_repeat_position(rec, now=103.0)
+        assert pos == pytest.approx(0.5)
+
+    def test_clamped_to_duration_within_the_gap_window(self):
+        import dial_repeat_store as drs
+        rec = drs.RepeatRecord(
+            available=True, state="replaying", armed=True,
+            recording_seconds=10.0, position_seconds=9.5, duration_seconds=10.0,
+            observed_at=100.0,
+        )
+        # 100.0 + 0.7 = 10.2 raw, under the 11.5 wrap point, but past
+        # duration (10.0) — clamped, not wrapped, since it is still within
+        # the inter-loop gap.
+        pos = dd._interpolate_repeat_position(rec, now=100.7)
+        assert pos == pytest.approx(10.0)
+
+    def test_never_negative(self):
+        import dial_repeat_store as drs
+        rec = drs.RepeatRecord(
+            available=True, state="replaying", armed=True,
+            recording_seconds=10.0, position_seconds=0.0, duration_seconds=0.0,
+            observed_at=100.0,
+        )
+        pos = dd._interpolate_repeat_position(rec, now=99.0)  # clock went backwards
+        assert pos >= 0.0
+
+    def test_tick_repeat_line_signals_only_while_replaying(self):
+        aid = "9" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="replaying", armed=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        display._overlay_signal.clear()
+        display._tick_repeat_line()
+        assert display._overlay_signal.is_set()
+
+    def test_tick_repeat_line_noop_while_hold(self):
+        aid = "10" * 10
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="hold"))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        display._overlay_signal.clear()
+        display._tick_repeat_line()
+        assert not display._overlay_signal.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Manual-focus pending grace: a picker-started replay's focus survives
+# absence from the roster for FOCUS_PENDING_GRACE_S, converts to a normal
+# focus once sighted, and clears on expiry or a failed transport.
+# ---------------------------------------------------------------------------
+
+class TestFocusPendingGrace:
+    def test_pending_focus_survives_absence_within_grace(self):
+        display, fb, gt = _make_display(targets=[])
+        aid = "b" * 20
+        display.set_manual_focus_pending(aid, "Kitchen")
+        display._poll_once()
+        assert display.manual_focus_id() == aid
+        assert display._now_playing is not None
+        assert display._now_playing.service_name == "Kitchen"
+
+    def test_pending_focus_shows_logo_not_idle_screen(self):
+        display, fb, gt = _make_display(targets=[])
+        aid = "c" * 20
+        display.set_manual_focus_pending(aid, "Kitchen")
+        with display._lock:
+            display._idle_affordance = True  # would otherwise draw the idle-screen affordance
+        display._poll_once()
+        assert display._idle_chassis_due_locked() is False
+
+    def test_pending_focus_expires_after_grace(self):
+        display, fb, gt = _make_display(targets=[])
+        aid = "d" * 20
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display.set_manual_focus_pending(aid, "Kitchen")
+            display._poll_once()
+            assert display.manual_focus_id() == aid
+            clock.t += dd.FOCUS_PENDING_GRACE_S + 1
+            display._poll_once()
+        assert display.manual_focus_id() is None
+        assert display._focus_pending is None
+
+    def test_pending_focus_converts_to_normal_focus_when_sighted(self):
+        aid = "e" * 20
+        display, fb, gt = _make_display(targets=[])
+        display.set_manual_focus_pending(aid, "Kitchen")
+        display._poll_once()
+        assert display._focus_pending is not None
+
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid, playing_since=1.0)
+        gt.return_value = [t]
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, appliance_id=aid)):
+            display._poll_once()
+        assert display.manual_focus_id() == aid
+        assert display._focus_pending is None
+
+    def test_on_repeat_result_failure_clears_pending_focus(self):
+        aid = "f" * 20
+        display, fb, gt = _make_display(targets=[])
+        display.set_manual_focus_pending(aid, "Kitchen")
+        display._poll_once()
+        assert display.manual_focus_id() == aid
+
+        display.on_repeat_result("transport", aid, 200, {"ok": False, "error": "source_active"})
+        assert display.manual_focus_id() is None
+        assert display._focus_pending is None
+
+    def test_on_repeat_result_success_does_not_clear_pending_focus(self):
+        aid = "1" * 20 + "a" * 0
+        aid = "a" * 19 + "1"
+        display, fb, gt = _make_display(targets=[])
+        display.set_manual_focus_pending(aid, "Kitchen")
+        display._poll_once()
+        display.on_repeat_result(
+            "transport", aid, 200,
+            {"ok": True, "state": "replaying", "armed": True, "position_seconds": 0.0},
+        )
+        assert display.manual_focus_id() == aid
+        assert display._focus_pending is not None
+
+
+# ---------------------------------------------------------------------------
+# The replay picker: rows from held+authorized+capable roster entries,
+# picker_pick starting a replay with a pending focus, stale-index handling,
+# and the shared inactivity timeout.
+# ---------------------------------------------------------------------------
+
+class TestReplayPickerRows:
+    def _roster_row(self, aid, name, playing=False, repeat_capable=True, auth="authorized"):
+        from dial_mdns import RosterEntry
+        return RosterEntry(
+            appliance_id=aid, service_name=name, name=name, ip="10.0.0.9", port=8080,
+            playing=playing, repeat_capable=repeat_capable, auth=auth,
+        )
+
+    def test_rows_from_held_authorized_capable_only(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        now = time.monotonic()
+
+        held_ok = self._roster_row("1" * 20, "Held")
+        held_unauth = self._roster_row("2" * 20, "Unauth", auth="unknown")
+        held_incapable = self._roster_row("3" * 20, "Incapable", repeat_capable=False)
+        not_held = self._roster_row("4" * 20, "Idle")
+
+        drs.repeat_store.update("1" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=42.0), now))
+        drs.repeat_store.update("2" * 20, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        drs.repeat_store.update("3" * 20, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        drs.repeat_store.update("4" * 20, drs.parse_repeat_object(_repeat_obj(state="idle"), now))
+
+        display._refresh_picker_rows(
+            [held_ok, held_unauth, held_incapable, not_held], now,
+        )
+        assert [r.appliance_id for r in display._picker.rows] == ["1" * 20]
+        assert display._picker.rows[0].seconds == 42.0
+
+    def test_open_picker_sets_screen_request(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "picker"
+
+    def test_picker_shows_placeholder_when_empty(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        width, height = display._active_panel_dims()
+        with display._lock:
+            list_state = display._build_picker_list_state_locked(width, height)
+        assert list_state.rows == (("Nothing to replay", False),)
+
+
+class TestPickerPick:
+    def _opened_with_row(self, aid="a" * 20):
+        import dial_repeat_store as drs
+        from dial_mdns import RosterEntry
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        row = RosterEntry(
+            appliance_id=aid, service_name="Kitchen", name="Kitchen", ip="10.0.0.9", port=8080,
+            playing=False, repeat_capable=True, auth="authorized",
+        )
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=12.0), now))
+        display._refresh_picker_rows([row], now)
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "picker"
+        return display, fb, gt
+
+    def test_pick_sets_pending_focus_and_enqueues_seek(self):
+        display, fb, gt = self._opened_with_row(aid="a" * 20)
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.picker_pick(0)
+        mock_transport.assert_called_once()
+        target, action, position = mock_transport.call_args[0]
+        assert target.appliance_id == "a" * 20
+        assert action == "seek"
+        assert position == 0.0
+        assert display.manual_focus_id() == "a" * 20
+        assert display._focus_pending is not None
+
+    def test_pick_closes_the_picker(self):
+        display, fb, gt = self._opened_with_row()
+        with patch("dial_display.enqueue_transport"):
+            display.picker_pick(0)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_stale_index_is_back_no_focus_no_enqueue(self):
+        display, fb, gt = self._opened_with_row()
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.picker_pick(5)
+        mock_transport.assert_not_called()
+        assert display.manual_focus_id() is None
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+
+class TestPickerTimeout:
+    def test_closes_after_timeout(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        opened_at = display._picker.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
+        assert display._screen == "main"
+
+    def test_stays_open_before_timeout(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        opened_at = display._picker.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS - 1):
+            display._check_secondary_timeout()
+        assert display._screen == "picker"
+
+
+# ---------------------------------------------------------------------------
+# on_repeat_result: the worker-thread callback wired to dial_repeat.py.
+# ---------------------------------------------------------------------------
+
+class TestOnRepeatResult:
+    def test_ok_true_applies_ack_and_signals_repaint(self):
+        import dial_repeat_store as drs
+        aid = "1" * 20
+        display, fb, gt = _make_display(targets=[])
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._overlay_signal.clear()
+
+        display.on_repeat_result(
+            "transport", aid, 200,
+            {"ok": True, "state": "replaying", "armed": True, "position_seconds": 0.0},
+        )
+        rec = drs.repeat_store.get(aid, time.monotonic())
+        assert rec.state == "replaying"
+        assert rec.armed is True
+        assert display._overlay_signal.is_set()
+
+    def test_412_forces_due_and_requests_poll_never_touches_auth(self):
+        aid = "2" * 20
+        display, fb, gt = _make_display(targets=[])
+        display._poll_wake.clear()
+        with patch("dial_auth.auth_map.force_due") as mock_force_due, \
+             patch("dial_auth.auth_map.apply") as mock_apply:
+            display.on_repeat_result("transport", aid, 412, {"ok": False, "error": "dial_not_authorized"})
+        mock_force_due.assert_called_once_with(aid)
+        mock_apply.assert_not_called()
+        assert display._poll_wake.is_set()
+        assert display._reconcile_due is True
+
+    def test_ok_false_source_active_clears_the_record(self):
+        import dial_repeat_store as drs
+        aid = "3" * 20
+        display, fb, gt = _make_display(targets=[])
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+
+        display.on_repeat_result("transport", aid, 200, {"ok": False, "error": "source_active"})
+        assert drs.repeat_store.get(aid, time.monotonic()) is None
+
+    def test_ok_false_no_recording_clears_the_record(self):
+        import dial_repeat_store as drs
+        aid = "4" * 20
+        display, fb, gt = _make_display(targets=[])
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+
+        display.on_repeat_result("transport", aid, 200, {"ok": False, "error": "no_recording"})
+        assert drs.repeat_store.get(aid, time.monotonic()) is None
+
+    def test_ok_false_other_error_leaves_the_record(self):
+        import dial_repeat_store as drs
+        aid = "5" * 20
+        display, fb, gt = _make_display(targets=[])
+        now = time.monotonic()
+        rec = drs.parse_repeat_object(_repeat_obj(state="hold"), now)
+        drs.repeat_store.update(aid, rec)
+
+        display.on_repeat_result("transport", aid, 200, {"ok": False, "error": "fading_out"})
+        assert drs.repeat_store.get(aid, time.monotonic()) == rec
+
+    def test_transient_status_none_nudges_only_no_store_change(self):
+        import dial_repeat_store as drs
+        aid = "6" * 20
+        display, fb, gt = _make_display(targets=[])
+        now = time.monotonic()
+        rec = drs.parse_repeat_object(_repeat_obj(state="hold"), now)
+        drs.repeat_store.update(aid, rec)
+
+        with patch("dial_auth.auth_map.force_due") as mock_force_due:
+            display.on_repeat_result("transport", aid, None, None)
+        mock_force_due.assert_called_once_with(aid)
+        assert drs.repeat_store.get(aid, time.monotonic()) == rec
+
+    def test_transient_other_http_code_nudges_only(self):
+        aid = "7" * 20
+        display, fb, gt = _make_display(targets=[])
+        with patch("dial_auth.auth_map.force_due") as mock_force_due:
+            display.on_repeat_result("transport", aid, 500, None)
+        mock_force_due.assert_called_once_with(aid)
+
+    def test_takes_no_lock(self):
+        """Regression guard for the invariant that on_repeat_result never
+        takes DialDisplay._lock — simulated by holding the lock on this
+        (the calling) thread and confirming the call still returns."""
+        aid = "8" * 20
+        display, fb, gt = _make_display(targets=[])
+        with display._lock:
+            display.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold",
+                                                              "armed": False, "position_seconds": 0.0})
+
+
+# ---------------------------------------------------------------------------
+# _refresh_idle_affordance: the idle screen's own "should I draw the
+# affordance" computation.
+# ---------------------------------------------------------------------------
+
+class TestRefreshIdleAffordance:
+    def _roster_row(self, aid, auth="authorized", repeat_capable=True):
+        from dial_mdns import RosterEntry
+        return RosterEntry(
+            appliance_id=aid, service_name="Kitchen", name="Kitchen", ip="10.0.0.9", port=8080,
+            playing=False, repeat_capable=repeat_capable, auth=auth,
+        )
+
+    def test_true_when_a_held_authorized_capable_row_exists(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        aid = "1" * 20
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._refresh_idle_affordance([self._roster_row(aid)], now)
+        assert display._idle_affordance is True
+
+    def test_false_when_unauthorized(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        aid = "2" * 20
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._refresh_idle_affordance([self._roster_row(aid, auth="unknown")], now)
+        assert display._idle_affordance is False
+
+    def test_false_when_not_repeat_capable(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        aid = "3" * 20
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._refresh_idle_affordance([self._roster_row(aid, repeat_capable=False)], now)
+        assert display._idle_affordance is False
+
+    def test_false_when_not_held(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        aid = "4" * 20
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="replaying"), now))
+        display._refresh_idle_affordance([self._roster_row(aid)], now)
+        assert display._idle_affordance is False
+
+    def test_change_signals_overlay(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        aid = "5" * 20
+        now = time.monotonic()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._overlay_signal.clear()
+        display._refresh_idle_affordance([self._roster_row(aid)], now)
+        assert display._overlay_signal.is_set()

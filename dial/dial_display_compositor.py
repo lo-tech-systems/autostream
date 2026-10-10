@@ -82,8 +82,10 @@ from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
     OverlayLayout,
     TouchZone,
+    idle_layout_for,
     layout_for,
     list_layout_for,
+    repeat_layout_for,
     zones_for,
 )
 
@@ -161,6 +163,17 @@ _LIST_SEPARATOR_RGB = (48, 48, 48)
 # the whole frame. See _draw_glyph_supersampled().
 _GLYPH_SUPERSAMPLE = 4
 
+# A disabled repeat-screen label (Start/Stop when the daemon state does not
+# accept that action right now) is drawn in this dimmed shade of the glyph
+# colour — the same OVERLAY_DIM_FACTOR the overlay's chevrons use for their
+# own disabled state.
+_DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
+
+# The selector/picker row "currently replaying" marker (see LOOP_GLYPH
+# below) is drawn in this accent colour rather than the plain glyph white,
+# so it reads as a status marker distinct from the check mark and chevrons.
+_LOOP_GLYPH_RGB = (100, 149, 237)
+
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -188,11 +201,16 @@ class OverlayState:
         keeps working.
     name: the appliance's display name, or "" to draw nothing and leave the
         NAME tap-zone inert. Always visible whenever a focused/controllable
-        appliance is shown — see the low-level design's Q4: this is
-        unconditional, never gated on how many appliances are authorized.
-        Drawn top-left with a soft halo (see _draw_text_with_halo()), the
-        same as the artist line. Appended last so positional construction
-        in existing tests/call sites keeps working.
+        appliance is shown — never gated on how many appliances are
+        authorized. Drawn top-left with a soft halo (see
+        _draw_text_with_halo()), the same as the artist line. Appended last
+        so positional construction in existing tests/call sites keeps
+        working.
+    dots: whether the two repeat-screen pager dots are drawn, left of the
+        name. False leaves the NAME text's own rect untouched — the dots
+        rect is a separate zone carved out of the top band (see
+        dial_touch_layout.layout_for). Appended after name/title so
+        existing positional construction keeps working.
     """
 
     visible: bool = False
@@ -202,6 +220,7 @@ class OverlayState:
     volume: int | None = None
     name: str = ""
     title: str = ""
+    dots: bool = False
 
 
 @dataclass(frozen=True)
@@ -213,7 +232,13 @@ class ListState:
 
     rows: (label, checked) pairs for the CURRENT page only — at most
         ListLayout.rows_per_page entries (3 on every shipped profile).
-        checked marks the row that is the current focus.
+        checked marks the row that is the current focus. A row may instead
+        be a (label, checked, secondary) triple: secondary is drawn right-
+        aligned when it is a plain non-empty string (the replay picker's
+        buffer length, e.g. "42:10"), or, when it is the LOOP_GLYPH
+        sentinel, draws the accent-coloured "currently replaying" marker in
+        the row's dot box instead of text (used by the appliance selector).
+        A 2-tuple row is byte-identical to before this field existed.
     has_prev: whether a previous page exists — gates whether the LIST_UP
         chevron is drawn lit (see dial_touch_layout.ListLayout.up and the
         LIST_UP -> selector_page(-1) dispatch in dial_main.py).
@@ -224,10 +249,61 @@ class ListState:
         OverlayState.pressed for the main surface.
     """
 
-    rows: tuple[tuple[str, bool], ...] = ()
+    rows: tuple = ()
     has_prev: bool = False
     has_next: bool = False
     pressed: tuple[TouchZone, int | None] | None = None
+
+
+class _LoopGlyphSentinel:
+    """Unique marker for a ListState row's secondary slot — see ListState's
+    docstring. A dedicated object (rather than a string like "loop") so it
+    can never collide with genuine row text."""
+
+    def __repr__(self) -> str:
+        return "LOOP_GLYPH"
+
+
+LOOP_GLYPH = _LoopGlyphSentinel()
+
+
+@dataclass(frozen=True)
+class RepeatViewState:
+    """Immutable snapshot of what the repeat screen should show — the
+    compose_repeat() counterpart to OverlayState/ListState. Built by the
+    display manager from its repeat-store record (dial_display.py) on the
+    repeat-screen compose path; this module has no idea what a daemon state
+    is, only a layout name and the fields that layout draws.
+
+    name: the appliance's display name, drawn plain (no halo — there is no
+        artwork behind it on this screen).
+    layout: "enable" (a live source is playing or about to; draws the ring
+        and the "Repeat" label) or "replaying" (draws the Start/Stop row
+        and the position line).
+    armed: whether the daemon will auto-start a replay on its own — read by
+        the enable layout's ring (a solid disc when False, a black centre
+        punched out of it when True). Meaningful in either layout, but only
+        drawn in "enable".
+    line: the centre text for the "replaying" layout ("0:00 / 3:12" style);
+        ignored (nothing drawn) in "enable".
+    start_enabled, stop_enabled: whether the Start/Stop label is drawn at
+        full brightness (True) or dimmed (False) — "replaying" layout only.
+    stop_pressed: whether Stop is drawn with a pressed wash regardless of
+        an actual touch — used while a fade-out is already in flight, so
+        the button visibly reads as "already actioned, no further tap
+        needed" rather than merely dimmed.
+    pressed: the TouchZone currently being pressed by a genuine touch, or
+        None. Mirrors OverlayState.pressed/ListState.pressed.
+    """
+
+    name: str
+    layout: str
+    armed: bool
+    line: str
+    start_enabled: bool
+    stop_enabled: bool
+    stop_pressed: bool
+    pressed: "TouchZone | None" = None
 
 
 class DialDisplayCompositor:
@@ -301,6 +377,70 @@ class DialDisplayCompositor:
         if bgr:
             frame = Image.merge("RGB", frame.split()[::-1])
         return frame
+
+    def compose_repeat(
+        self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool,
+    ):
+        """Build one display-ready frame for the repeat screen.
+
+        A flat dark background (_LIST_BG_RGB, the same chassis colour as
+        compose_list()) — there is no artwork here either. Draws the pager
+        dots (right dot filled — this is the second of the two screens) and
+        the appliance name, then either the enable layout (the "Repeat"
+        label and a ring, filled solid white and punched with a black
+        centre disc when armed) or the replaying layout (a dimmed bottom
+        band, the Start/Stop labels with a divider between them, and the
+        centred position line). rotate/bgr are applied last, in the same
+        order compose() uses. Never raises: a font or glyph failure
+        degrades to a plainer frame, matching compose()'s own discipline.
+        """
+        frame = _draw_repeat(width, height, state)
+
+        if rotate:
+            frame = frame.transpose(Image.ROTATE_180)
+        if bgr:
+            frame = Image.merge("RGB", frame.split()[::-1])
+        return frame
+
+    def compose_idle(
+        self, base, width: int, height: int, *, affordance: bool, rotate: bool, bgr: bool,
+    ):
+        """Build one display-ready frame for the idle screen: the logo,
+        optionally with a "Tap to replay" affordance line drawn over it.
+
+        No volume/mute controls overlay is composited here — nothing is
+        playing, so there is nothing on this screen for one to control.
+        *base* is assumed already panel-sized (the manager's own logo
+        load). rotate/bgr are applied last, in the same order compose()
+        uses. Never raises: a font/halo failure simply leaves the
+        affordance text off, matching _draw_text_with_halo()'s own
+        discipline.
+        """
+        if base is None:
+            return base
+        image = base.convert("RGB")
+        if affordance:
+            layout = idle_layout_for(width, height)
+            font_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+            font = _load_font(font_px)
+            _draw_text_with_halo(image, layout.affordance, "Tap to replay", font, width, height)
+        if rotate:
+            image = image.transpose(Image.ROTATE_180)
+        if bgr:
+            image = Image.merge("RGB", image.split()[::-1])
+        return image
+
+
+def format_mmss(seconds: float) -> str:
+    """Format *seconds* as "m:ss" — used by the repeat screen's position
+    line and the replay picker's row length. Hours fold into minutes (no
+    separate hour field: an hour-plus recording just reads "62:03"); a
+    negative input clamps to zero rather than producing a negative string.
+    Pure — no I/O, no state.
+    """
+    total = max(0, int(round(seconds)))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}:{secs:02d}"
 
 
 def _scaled_px(reference_px: int, width: int, height: int, floor: int) -> int:
@@ -399,6 +539,11 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
     _draw_text_with_halo(frame, layout.title, overlay.title, artist_font, width, height)
     _draw_text_with_halo(frame, layout.artist, overlay.artist, artist_font, width, height)
     draw = ImageDraw.Draw(frame)
+    if overlay.dots:
+        _draw_glyph_supersampled(
+            frame, layout.dots, lambda d, w, h: _draw_two_dots(d, w, h, filled=0),
+        )
+        draw = ImageDraw.Draw(frame)
     _draw_minus_glyph(draw, layout.down)
     _draw_plus_glyph(draw, layout.up)
     _draw_band_divider(draw, layout, width, height)
@@ -542,12 +687,16 @@ def _text_size(
     return right - left, bottom - top, bbox
 
 
-def _draw_text_safe(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font) -> bool:
-    """Draw *text* at *xy* in the glyph colour, guarded so a Pillow/font
-    failure degrades to "no text drawn" rather than an exception escaping
-    compose(). Returns True on success, False if the draw call raised."""
+def _draw_text_safe(
+    draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font, fill=_GLYPH_RGB,
+) -> bool:
+    """Draw *text* at *xy* in *fill* (the glyph colour by default), guarded
+    so a Pillow/font failure degrades to "no text drawn" rather than an
+    exception escaping compose(). Returns True on success, False if the
+    draw call raised. *fill* is overridable so a disabled repeat-screen
+    label can be drawn dimmed without a separate code path."""
     try:
-        draw.text(xy, text, font=font, fill=_GLYPH_RGB)
+        draw.text(xy, text, font=font, fill=fill)
         return True
     except Exception:
         return False
@@ -741,6 +890,151 @@ def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit
     draw.line(points, fill=color, width=stroke, joint="curve")
 
 
+def _draw_loop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """A small looping-arrow glyph — the appliance selector's "currently
+    replaying" row marker (see LOOP_GLYPH). Drawn in the accent colour
+    (_LOOP_GLYPH_RGB) rather than plain glyph white, into a (w, h) canvas —
+    see _draw_glyph_supersampled."""
+    cx, cy = w / 2.0, h / 2.0
+    r = min(w, h) * 0.28
+    stroke = max(1, min(w, h) // 8)
+    draw.arc([cx - r, cy - r, cx + r, cy + r], start=30, end=300, fill=_LOOP_GLYPH_RGB, width=stroke)
+    ax, ay = cx + r * 0.5, cy - r * 0.87
+    draw.polygon(
+        [
+            (ax, ay - stroke),
+            (ax + stroke * 1.6, ay + stroke * 0.4),
+            (ax - stroke * 0.4, ay + stroke * 1.6),
+        ],
+        fill=_LOOP_GLYPH_RGB,
+    )
+
+
+def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int) -> None:
+    """Two small circles side by side, one of them (*filled*: 0 for the
+    left one, 1 for the right) drawn solid and the other outlined — the
+    main/repeat screen pager dots. Rendered into a (w, h) canvas — see
+    _draw_glyph_supersampled."""
+    r = max(2, round(min(w, h) * 0.12))
+    cy = h / 2.0
+    gap = r * 3
+    cx0 = w / 2.0 - gap / 2.0
+    cx1 = w / 2.0 + gap / 2.0
+    for i, cx in enumerate((cx0, cx1)):
+        box = [cx - r, cy - r, cx + r, cy + r]
+        if i == filled:
+            draw.ellipse(box, fill=_GLYPH_RGB)
+        else:
+            draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
+
+
+def _draw_ring(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
+    """The repeat screen's enable-layout affordance: a solid white disc,
+    with a black centre disc punched out of it when *armed* — so a pixel
+    probe at the exact centre reads white unarmed, black armed. Rendered
+    into a (w, h) canvas — see _draw_glyph_supersampled."""
+    cx, cy = w / 2.0, h / 2.0
+    r_outer = min(w, h) * 0.45
+    draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer], fill=_GLYPH_RGB)
+    if armed:
+        r_inner = r_outer * 0.55
+        draw.ellipse([cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner], fill=(0, 0, 0))
+
+
+def _draw_label(
+    draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, pad: int,
+    color=_GLYPH_RGB,
+) -> None:
+    """Draw *text* left-aligned inside *rect*, no halo — used on the flat
+    dark repeat-screen background, where (unlike compose()'s overlay over
+    arbitrary artwork) there is nothing behind the text to make illegible.
+    Degrades to "no text drawn" on a blank string, a missing font,
+    truncation-to-nothing, or any Pillow failure — the same discipline as
+    _draw_text_with_halo()."""
+    if not text or font is None:
+        return
+    max_w = rect[2] - rect[0] - pad
+    if max_w <= 0:
+        return
+    truncated = _truncate_to_width(draw, text, font, max_w)
+    if not truncated:
+        return
+    measured = _text_size(draw, truncated, font)
+    if measured is None:
+        return
+    text_w, text_h, bbox = measured
+    left, top, _, _ = bbox
+    cy = (rect[1] + rect[3]) // 2
+    x = rect[0] + pad
+    y = cy - text_h // 2
+    _draw_text_safe(draw, (x - left, y - top), truncated, font, fill=color)
+
+
+def _draw_label_centered(
+    draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, color=_GLYPH_RGB,
+) -> None:
+    """Draw *text* centred within *rect*, no halo — same degrade-gracefully
+    discipline as _draw_label()."""
+    if not text or font is None:
+        return
+    measured = _text_size(draw, text, font)
+    if measured is None:
+        return
+    text_w, text_h, bbox = measured
+    left, top, _, _ = bbox
+    cx = (rect[0] + rect[2]) // 2
+    cy = (rect[1] + rect[3]) // 2
+    x = cx - text_w // 2
+    y = cy - text_h // 2
+    _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
+
+
+def _draw_repeat(width: int, height: int, state: RepeatViewState) -> Image.Image:
+    """Render the repeat-screen chassis (compose-space, pre rotate/BGR) —
+    see DialDisplayCompositor.compose_repeat()."""
+    layout = repeat_layout_for(width, height)
+    frame = Image.new("RGB", (width, height), _LIST_BG_RGB)
+    if state.layout == "replaying":
+        _dim_rect(frame, layout.bottom_band)
+
+    draw = ImageDraw.Draw(frame)
+    zones = {
+        TouchZone.DOTS: layout.dots,
+        TouchZone.REPEAT_RING: layout.ring,
+        TouchZone.REPEAT_START: layout.start,
+        TouchZone.REPEAT_STOP: layout.stop,
+    }
+    if state.pressed is not None and state.pressed in zones:
+        _draw_pressed_highlight(frame, zones[state.pressed])
+        draw = ImageDraw.Draw(frame)
+    if state.layout == "replaying" and state.stop_pressed:
+        _draw_pressed_highlight(frame, layout.stop)
+        draw = ImageDraw.Draw(frame)
+
+    pad = _pad_px(width, height)
+    name_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+    line_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
+    name_font = _load_font(name_px)
+    line_font = _load_font(line_px)
+
+    _draw_label(draw, layout.name, state.name, name_font, pad)
+    _draw_glyph_supersampled(frame, layout.dots, lambda d, w, h: _draw_two_dots(d, w, h, filled=1))
+    draw = ImageDraw.Draw(frame)
+
+    if state.layout == "enable":
+        _draw_label_centered(draw, layout.label, "Repeat", name_font)
+        _draw_glyph_supersampled(frame, layout.ring, lambda d, w, h: _draw_ring(d, w, h, state.armed))
+    else:
+        start_color = _GLYPH_RGB if state.start_enabled else _DIMMED_GLYPH_RGB
+        stop_color = _GLYPH_RGB if state.stop_enabled else _DIMMED_GLYPH_RGB
+        _draw_label_centered(draw, layout.start, "Start", line_font, color=start_color)
+        _draw_label_centered(draw, layout.stop, "Stop", line_font, color=stop_color)
+        _draw_band_divider(draw, layout, width, height)
+        _draw_label_centered(draw, layout.line, state.line, line_font)
+
+    return frame
+
+
 def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
     """Render the appliance-selector chassis (compose-space, pre rotate/BGR)
     — see DialDisplayCompositor.compose_list()."""
@@ -775,22 +1069,53 @@ def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
         draw.line([(x0, y1 - 1), (x1 - 1, y1 - 1)], fill=_LIST_SEPARATOR_RGB, width=1)
         if i >= len(state.rows):
             continue
-        label, checked = state.rows[i]
+        row = state.rows[i]
+        label, checked = row[0], row[1]
+        secondary = row[2] if len(row) > 2 else ""
+        is_loop = secondary is LOOP_GLYPH
         check_box = layout.row_h
-        text_x1 = x1 - pad - (check_box if checked else 0)
-        if label and row_font is not None and text_x1 > x0 + pad:
-            text = _truncate_to_width(draw, label, row_font, text_x1 - (x0 + pad))
+        cy = (y0 + y1) // 2
+
+        # Right-hand reserved space, built up right to left: the loop
+        # glyph (if any), then the selected dot (if any), then free-text
+        # secondary (e.g. a buffer length) just left of whatever glyph
+        # space is reserved. A plain 2-tuple row (secondary == "") takes
+        # exactly the pre-existing "checked reserves one box" path below,
+        # byte-identical to before this field existed.
+        right_edge = x1 - pad
+        if is_loop:
+            loop_rect = (right_edge - check_box, y0, right_edge, y1)
+            _draw_glyph_supersampled(frame, loop_rect, _draw_loop_glyph)
+            draw = ImageDraw.Draw(frame)
+            right_edge -= check_box
+            if checked:
+                check_rect = (right_edge - check_box, y0, right_edge, y1)
+                _draw_glyph_supersampled(frame, check_rect, _draw_selected_dot)
+                draw = ImageDraw.Draw(frame)
+                right_edge -= check_box
+        elif checked:
+            check_rect = (right_edge - check_box, y0, right_edge, y1)
+            _draw_glyph_supersampled(frame, check_rect, _draw_selected_dot)
+            draw = ImageDraw.Draw(frame)
+            right_edge -= check_box
+
+        if isinstance(secondary, str) and secondary and row_font is not None:
+            measured_sec = _text_size(draw, secondary, row_font)
+            if measured_sec is not None:
+                sec_w, sec_h, sec_bbox = measured_sec
+                sec_left, sec_top, _, _ = sec_bbox
+                sec_x = right_edge - sec_w
+                _draw_text_safe(draw, (sec_x - sec_left, cy - sec_h // 2 - sec_top), secondary, row_font)
+                right_edge = sec_x - pad
+
+        if label and row_font is not None and right_edge > x0 + pad:
+            text = _truncate_to_width(draw, label, row_font, right_edge - (x0 + pad))
             if text:
                 measured = _text_size(draw, text, row_font)
                 if measured is not None:
                     text_w, text_h, bbox = measured
                     left, top, _, _ = bbox
-                    cy = (y0 + y1) // 2
                     _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font)
-        if checked:
-            check_rect = (x1 - pad - check_box, y0, x1 - pad, y1)
-            _draw_glyph_supersampled(frame, check_rect, _draw_selected_dot)
-            draw = ImageDraw.Draw(frame)
 
     _dim_rect(frame, layout.bar)
     draw = ImageDraw.Draw(frame)

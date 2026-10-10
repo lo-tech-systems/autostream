@@ -112,18 +112,22 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
          patch("dial_main.stop_playing_browser") as mock_stop_browser, \
          patch("dial_main.stop_general_browser") as mock_stop_general_browser, \
          patch("dial_main.start_volume_worker"), \
+         patch("dial_main.start_repeat_worker") as mock_start_repeat_worker, \
          patch("dial_main.DialControlServer", return_value=mock_control), \
          patch("threading.Event", _CapturingEvent):
         dm.main()
 
     return (
         captured_event.get("ev"), mock_stop_browser, mock_http, mock_control,
-        mock_start_general_browser, mock_stop_general_browser,
+        mock_start_general_browser, mock_stop_general_browser, mock_start_repeat_worker,
     )
 
 
 # ---------------------------------------------------------------------------
-# General (_autostream._tcp) mDNS browser startup gating (dial phase 2, D1).
+# General (_autostream._tcp) mDNS browser startup gating — the roster-
+# feeding browser and the repeat-transport worker only ever matter to a
+# fitted dial (an unfitted one has no roster/repeat UI to feed), but the
+# worker is started unconditionally, same as the volume worker.
 # ---------------------------------------------------------------------------
 
 class TestGeneralBrowserStartup:
@@ -132,14 +136,14 @@ class TestGeneralBrowserStartup:
     unfitted dial has no roster/repeat UI to feed."""
 
     def test_started_when_fitted(self):
-        _ev, _stop, _http, _ctrl, start_general, stop_general = _run_main_patched(
+        _ev, _stop, _http, _ctrl, start_general, stop_general, _start_repeat = _run_main_patched(
             fitted=True, shutdown_event_setter=lambda ev: ev.set(),
         )
         start_general.assert_called_once()
         stop_general.assert_called_once()
 
     def test_not_started_when_not_fitted(self):
-        _ev, _stop, _http, _ctrl, start_general, stop_general = _run_main_patched(
+        _ev, _stop, _http, _ctrl, start_general, stop_general, _start_repeat = _run_main_patched(
             fitted=False, shutdown_event_setter=lambda ev: ev.set(),
         )
         start_general.assert_not_called()
@@ -147,6 +151,25 @@ class TestGeneralBrowserStartup:
         # shutdown path — it must still run even when the browser was never
         # started, exactly like stop_playing_browser().
         stop_general.assert_called_once()
+
+
+class TestRepeatWorkerStartup:
+    """The repeat-transport worker (dial_repeat.py) starts unconditionally,
+    like the volume worker — it has its own thread/queue/client and is
+    wired to the display's on_repeat_result callback."""
+
+    def test_started_regardless_of_fitted(self):
+        _ev, _stop, _http, _ctrl, _sg, _stg, start_repeat = _run_main_patched(
+            fitted=False, shutdown_event_setter=lambda ev: ev.set(),
+        )
+        start_repeat.assert_called_once()
+
+    def test_on_result_wired_to_display(self):
+        _ev, _stop, _http, _ctrl, _sg, _stg, start_repeat = _run_main_patched(
+            fitted=True, shutdown_event_setter=lambda ev: ev.set(),
+        )
+        kwargs = start_repeat.call_args.kwargs
+        assert callable(kwargs.get("on_result"))
 
 
 # ---------------------------------------------------------------------------
@@ -1751,33 +1774,33 @@ class TestBuildTouchSourceWiring:
             display.open_selector.assert_called_once()
             display.notify_touch_activity.assert_called_once()
 
-    def test_on_zone_tap_list_back_closes_the_selector(self):
+    def test_on_zone_tap_list_back_closes_the_list_screen(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.LIST_BACK, None)
-            display.close_selector.assert_called_once()
+            display.close_list.assert_called_once()
 
     def test_on_zone_tap_list_down_pages_forward(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.LIST_DOWN, None)
-            display.selector_page.assert_called_once_with(1)
+            display.list_page.assert_called_once_with(1)
 
     def test_on_zone_tap_list_up_pages_backward(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.LIST_UP, None)
-            display.selector_page.assert_called_once_with(-1)
+            display.list_page.assert_called_once_with(-1)
 
-    def test_on_zone_tap_list_row_picks_the_row(self):
+    def test_on_zone_tap_list_row_dispatches_to_list_row_tap(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.LIST_ROW, 2)
-            display.selector_pick.assert_called_once_with(2)
+            display.list_row_tap.assert_called_once_with(2)
 
     def test_on_zone_tap_confirms_presence(self):
         from dial_touch_layout import TouchZone
@@ -1786,6 +1809,80 @@ class TestBuildTouchSourceWiring:
         with self._built(confirm_presence=confirm) as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.NAME, None)
         confirm.assert_called_once()
+
+    def test_on_zone_tap_dots_toggles_repeat_screen(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.DOTS, None)
+            display.toggle_repeat_screen.assert_called_once()
+
+    def test_on_zone_tap_repeat_ring_taps_the_ring(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_RING, None)
+            display.repeat_ring_tap.assert_called_once()
+
+    def test_on_zone_tap_repeat_start_taps_start(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_START, None)
+            display.repeat_start_tap.assert_called_once()
+
+    def test_on_zone_tap_repeat_stop_taps_stop(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_STOP, None)
+            display.repeat_stop_tap.assert_called_once()
+
+    def test_on_zone_tap_idle_replay_opens_the_picker(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_REPLAY, None)
+            display.open_picker.assert_called_once()
+
+    def test_set_pressed_zone_repeat_ring_routes_to_secondary_pressed(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_RING)
+            display.set_secondary_pressed.assert_called_once_with(TouchZone.REPEAT_RING)
+            display.set_overlay.assert_not_called()
+
+    def test_set_pressed_zone_idle_replay_routes_to_secondary_pressed(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.IDLE_REPLAY)
+            display.set_secondary_pressed.assert_called_once_with(TouchZone.IDLE_REPLAY)
+            display.set_overlay.assert_not_called()
+
+    def test_set_pressed_zone_clear_after_secondary_zone_is_suppressed(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_START)
+            captured["kwargs"]["on_set_pressed_zone"](None)
+            display.set_overlay.assert_not_called()
+            assert display.set_secondary_pressed.call_args_list == [
+                call(TouchZone.REPEAT_START), call(None),
+            ]
+
+    def test_set_pressed_zone_dots_still_uses_the_main_overlay(self):
+        """DOTS is one of the main surface's own zones (drawn via the
+        ordinary OverlayState.pressed path on both the main and repeat
+        screens) — it must NOT be routed through set_secondary_pressed()."""
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.DOTS)
+            display.set_secondary_pressed.assert_not_called()
+            state = display.set_overlay.call_args[0][0]
+            assert state.pressed == TouchZone.DOTS
 
 
 # ---------------------------------------------------------------------------
@@ -2303,6 +2400,44 @@ class TestPresenceConfirmationWiring:
         on_press_cb = button_setup.call_args.args[1]
         assert server._recovery_window.snapshot()["volume_confirmed"] is False
         on_press_cb()
+        assert server._recovery_window.snapshot()["volume_confirmed"] is True
+
+    # -- encoder/button nudges pop the repeat screen back to main ---------
+
+    def test_encoder_nudge_pops_repeat_screen(self, tmp_path):
+        cfg = _make_cfg()  # clk=22, dt=27 already set
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        with patch("dial_display.DialDisplay.pop_secondary") as mock_pop:
+            _, encoder_setup, _ = self._run(cfg, server, tmp_path)
+            nudge_down_cb = encoder_setup.call_args.args[3]
+            nudge_down_cb()
+        mock_pop.assert_called_with("repeat")
+
+    def test_button_press_pops_repeat_screen(self, tmp_path):
+        cfg = _make_cfg()
+        cfg.sw_gpio = 23
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        with patch("dial_display.DialDisplay.pop_secondary") as mock_pop:
+            _, _, button_setup = self._run(cfg, server, tmp_path)
+            on_press_cb = button_setup.call_args.args[1]
+            on_press_cb()
+        mock_pop.assert_called_with("repeat")
+
+    def test_nudge_survives_a_raising_pop_secondary(self, tmp_path):
+        """A raising/missing display.pop_secondary() must never block the
+        nudge itself — display failure must never affect volume control."""
+        cfg = _make_cfg()
+        cfg.pin = "1234"
+        server = self._real_server()
+
+        with patch("dial_display.DialDisplay.pop_secondary", side_effect=RuntimeError("boom")):
+            _, encoder_setup, _ = self._run(cfg, server, tmp_path)
+            nudge_down_cb = encoder_setup.call_args.args[3]
+            nudge_down_cb()  # must not raise
         assert server._recovery_window.snapshot()["volume_confirmed"] is True
 
     def test_touch_contact_confirms(self, tmp_path):

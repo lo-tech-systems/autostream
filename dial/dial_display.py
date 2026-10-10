@@ -47,7 +47,14 @@ from dial_auth import (
     OUTCOME_UNAUTHORIZED,
     auth_map,
 )
-from dial_display_compositor import DialDisplayCompositor, ListState, OverlayState
+from dial_display_compositor import (
+    LOOP_GLYPH,
+    DialDisplayCompositor,
+    ListState,
+    OverlayState,
+    RepeatViewState,
+    format_mmss,
+)
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
     decode_artwork,
@@ -60,9 +67,10 @@ from dial_display_profiles import (
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
+from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
-from dial_touch_layout import list_layout_for
+from dial_touch_layout import TouchZone, list_layout_for
 from dial_volume import (
     is_muted,
     note_master_volume_positive,
@@ -98,13 +106,49 @@ DISPLAY_IDLE_SLEEP_SECONDS = 15 * 60
 RECONCILE_INTERVAL_SECONDS = 60
 # How long the appliance-selector screen stays open with no touch activity
 # before it closes back to the main (now-playing) screen. Refreshed by any
-# touch activity while open — see _apply_touch_activity_locked.
+# touch activity while open — see _apply_touch_activity_locked. The replay
+# picker uses the same timeout; the repeat screen has none of its own — see
+# _check_secondary_timeout.
 SELECTOR_TIMEOUT_SECONDS = 18
+
+# How long a picker-started replay's manual focus is held "pending" while
+# the appliance has not yet reached the playing set — see
+# set_manual_focus_pending() and the empty-targets branch of _poll_once.
+FOCUS_PENDING_GRACE_S = 10.0
+
+# The fixed inter-loop gap the appliance's replay engine inserts between
+# the end of a buffer and its restart — used only to wrap the locally
+# interpolated Replaying-line position between polls (see
+# _interpolate_repeat_position()). Purely cosmetic: the next status poll
+# always corrects any drift this produces.
+_REPEAT_LOOP_GAP_S = 1.5
 
 
 def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
     """Fetch artwork for the panel, at the dial's own size ceiling."""
     return fetch_artwork(url, timeout, MAX_ARTWORK_RESPONSE_BYTES)
+
+
+def _row_is_replaying(appliance_id: str, now: float) -> bool:
+    """True when appliance_id's fresh repeat-store record shows it
+    replaying or fading out — the appliance-selector row's loop-glyph
+    marker. Pure, no lock beyond the store's own leaf lock."""
+    rec = repeat_store.get(appliance_id, now)
+    return rec is not None and rec.state in ("replaying", "fading_out")
+
+
+def _interpolate_repeat_position(rec, now: float) -> float:
+    """Local interpolation of the repeat screen's Replaying-line playback
+    position between polls: advances the last observed position by elapsed
+    wall time and wraps at the loop boundary (the buffer's duration plus
+    the fixed inter-loop gap). No network call is added for this — the
+    next status poll always corrects any drift. Never negative."""
+    pos = rec.position_seconds + (now - rec.observed_at)
+    dur = rec.duration_seconds
+    if dur > 0:
+        pos = pos % (dur + _REPEAT_LOOP_GAP_S)
+        pos = min(pos, dur)
+    return max(0.0, pos)
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +227,7 @@ class SelectorRow:
     appliance_id: str
     label: str        # appliance_display_name(service_name)
     current: bool     # this row is the focus (manual, else the reporting-from target)
+    replaying: bool = False  # a fresh repeat-store record shows it replaying/fading out
 
 
 @dataclass(frozen=True)
@@ -203,6 +248,45 @@ class SelectorState:
         SELECTOR_TIMEOUT_SECONDS counts down from.
     """
     rows: tuple[SelectorRow, ...]
+    page: int
+    opened_at: float
+
+
+@dataclass(frozen=True)
+class RepeatScreenState:
+    """Immutable snapshot of which appliance the repeat screen is open for
+    — built once, when the screen opens (_apply_screen_requests_locked),
+    from the last-published roster snapshot. Never rebuilt while the
+    screen stays open: the daemon-state content shown on it (armed, the
+    Replaying line, ...) comes fresh from the repeat store on every
+    repaint instead — see _build_repeat_view_locked."""
+    appliance_id: str
+    service_name: str
+    ip: str
+    port: int
+    opened_at: float
+
+
+@dataclass(frozen=True)
+class PickerRow:
+    """One row of the replay picker — see PickerState."""
+    appliance_id: str
+    service_name: str
+    ip: str
+    port: int
+    label: str        # appliance_display_name(service_name)
+    seconds: float     # recording_seconds — the held buffer's length
+
+
+@dataclass(frozen=True)
+class PickerState:
+    """Immutable snapshot of the replay picker's rows and paging — the
+    picker's counterpart to SelectorState. rows: every held, authorized, repeat-
+    capable appliance, ALL pages (see _refresh_picker_rows); page: the
+    current page, preserved across each rebuild the same way SelectorState
+    preserves it; opened_at: what SELECTOR_TIMEOUT_SECONDS counts down
+    from."""
+    rows: tuple[PickerRow, ...]
     page: int
     opened_at: float
 
@@ -392,23 +476,70 @@ class DialDisplay:
         # on_zone_tap dispatch for a LIST_ROW tap). Plain reference
         # read/write, same discipline as _overlay_snapshot. Never persisted.
         self._manual_focus_id: str | None = None
+        # Manual-focus pending grace (a picker-started replay's focus, set
+        # by set_manual_focus_pending()): (appliance_id, service_name,
+        # expires_at monotonic), or None. Written by the touch thread and
+        # the poll thread; plain reference assignment, same discipline as
+        # _manual_focus_id itself.
+        self._focus_pending: tuple[str, str, float] | None = None
+        # Reporting/focused appliance_id for THIS poll tick — written only
+        # by the poll thread alongside _now_playing, read lock-free by the
+        # touch thread's toggle_repeat_screen()/repeat_*_tap() entries (the
+        # same discipline _source_service_name already uses) so they know
+        # which appliance the repeat screen would open for without needing
+        # a manual focus to be set.
+        self._reporting_appliance_id: str | None = None
+        # Last-published merged roster (dial_mdns.get_roster()), written by
+        # the poll thread every tick; read under self._lock by the repeat
+        # thread when building a RepeatScreenState (_build_repeat_screen_
+        # locked) — the one place outside the poll thread that needs a
+        # RosterEntry's ip/port/service_name for a given appliance_id.
+        self._last_roster: list = []
+        # Whether the repeat screen's dots are currently tappable — the
+        # main and repeat surfaces share this one gate (mirrors
+        # dial_touch.TouchStateMachine's own _dots_active). Computed by the
+        # poll thread each tick (_poll_once); read lock-free by
+        # touch_surface() and _effective_overlay_locked().
+        self._dots_active = False
+        # Whether the idle screen's "tap to replay" affordance is currently
+        # drawn — poll thread only (_refresh_idle_affordance); read by
+        # _render_logo_locked/_display_idle_locked (under self._lock) and by
+        # touch_surface() (lock-free, same discipline as _idle_started_at).
+        self._idle_affordance = False
 
-        # ---- Selector screen state -------------------------------------
+        # ---- Selector, repeat and picker screen state -------------------
         # self._screen is written under self._lock — usually by the repaint
-        # thread (_apply_screen_requests_locked()/_close_selector_locked()),
+        # thread (_apply_screen_requests_locked()/_close_secondary_locked()),
         # occasionally by the poll thread (the empty-target branch,
         # _sleep_locked) — and read lock-free elsewhere (a plain str read is
         # atomic) — same discipline as _current_base_is_artwork.
         # "main": the now-playing screen. "selector": the appliance list.
+        # "repeat": the repeat screen. "picker": the replay picker.
         self._screen = "main"
         # Last-built rows, refreshed every poll tick regardless of whether
         # the selector is actually open (_refresh_selector_rows) so opening
         # it never waits on a poll; published under self._lock. None until
         # the first poll runs.
         self._selector: SelectorState | None = None
-        # Touch-thread requests (open_selector/close_selector/selector_page)
-        # are flag writes only — plain str/int, no lock — folded into
-        # self._screen/self._selector by the repaint thread
+        # The repeat screen's own state — built once when it opens (see
+        # RepeatScreenState); None while the main/selector/picker screen is
+        # showing. Written by the repeat thread under self._lock, read
+        # lock-free by the touch thread's repeat_ring_tap()/repeat_start_
+        # tap()/repeat_stop_tap() entries.
+        self._repeat_screen: RepeatScreenState | None = None
+        # The replay picker's own rows/paging — refreshed every poll tick
+        # regardless of whether it is open, mirroring self._selector.
+        self._picker: PickerState | None = None
+        # The zone currently pressed on a secondary screen's own chassis
+        # (the repeat screen or the idle affordance) — written by the touch
+        # thread via set_secondary_pressed(), read at compose time by
+        # _build_repeat_view_locked(). Plain attribute, same discipline as
+        # dial_touch's own pressed-zone tracking.
+        self._secondary_pressed: "TouchZone | None" = None
+        # Touch-thread requests (open_selector/close_list/list_page/
+        # toggle_repeat_screen/open_picker) are flag writes only — plain
+        # str/int, no lock — folded into self._screen/self._selector/
+        # self._repeat_screen/self._picker by the repeat thread
         # (_apply_screen_requests_locked), the same pattern
         # _touch_activity_pending uses. None means "no pending request".
         self._screen_request: str | None = None
@@ -656,28 +787,41 @@ class DialDisplay:
             and self._screen == "main"
         )
 
-    def touch_surface(self) -> tuple[str, bool]:
-        """(surface, name_active) for dial_touch.TouchStateMachine.
-        set_surface() — see that module's SURFACES paragraph. Polled once
-        per loop iteration by TouchEventSource; a plain-attribute read
-        discipline, same as persistent_overlay_shown() and
-        noncomposited_generation().
+    def touch_surface(self) -> tuple[str, bool, bool]:
+        """(surface, name_active, dots_active) for dial_touch.
+        TouchStateMachine.set_surface() — see that module's SURFACES
+        paragraph. Polled once per loop iteration by TouchEventSource; a
+        plain-attribute read discipline, same as persistent_overlay_shown()
+        and noncomposited_generation().
 
         name_active is true whenever there is a controllable appliance
-        currently shown (self._now_playing is not None) — unconditional,
-        per the low-level design's Q4: the appliance name and its tap-zone
-        are always active in that case, never gated on how many
-        appliances are authorized. It is independent of held/hidden: by
-        the time a second press can sample the NAME zone at all, the
-        REVEAL-ONLY FIRST TOUCH rule (dial_touch.py) has already made the
-        overlay visible.
+        currently shown (self._now_playing is not None) — unconditional:
+        the appliance name and its tap-zone are always active in that
+        case, never gated on how many appliances are authorized. It is
+        independent of held/hidden: by the time a second press can sample
+        the NAME zone at all, the REVEAL-ONLY FIRST TOUCH rule
+        (dial_touch.py) has already made the overlay visible.
+
+        dots_active is true whenever the currently focused/reporting
+        appliance has a fresh, available repeat-store record — see
+        _poll_once, which computes it into self._dots_active every tick.
+        "idle" is reported only while the idle affordance is drawn — a tap
+        on a plain logo with nothing held stays reveal-only, as before this
+        feature existed.
         """
         if self._screen == "selector":
-            return ("selector", False)
-        name_active = self._now_playing is not None
+            return ("selector", False, False)
+        if self._screen == "picker":
+            return ("picker", False, False)
+        if self._screen == "repeat":
+            return ("repeat", False, True)
+        if self._now_playing is None:
+            return ("idle" if self._idle_affordance else "hidden", False, False)
+        name_active = True
+        dots_active = self._dots_active
         if self.persistent_overlay_shown():
-            return ("held", name_active)
-        return ("hidden", name_active)
+            return ("held", name_active, dots_active)
+        return ("hidden", name_active, dots_active)
 
     def request_repaint(self) -> None:
         """Ask the repaint thread to recompose the current base against the
@@ -769,7 +913,7 @@ class DialDisplay:
         # A reopen after a screen_type swap starts on the main screen, not
         # wherever the list happened to be — the old panel's geometry is
         # gone anyway.
-        self._close_selector_locked()
+        self._close_secondary_locked()
         self._enable_locked()
 
     def _disable_locked(self) -> None:
@@ -790,7 +934,7 @@ class DialDisplay:
         self._display_sleeping = False
         self._current_base_is_artwork = False
         # A later re-enable starts on the main screen.
-        self._close_selector_locked()
+        self._close_secondary_locked()
 
     def _clear_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -807,7 +951,7 @@ class DialDisplay:
         # appliance list must never be the last thing left on screen
         # (I8; see also the empty-target branch in _poll_once, which is
         # the only path that can reach sleep with a fresh reason to check).
-        self._close_selector_locked()
+        self._close_secondary_locked()
         if self._backend_open and self._backend is not None:
             try:
                 self._backend.sleep()
@@ -1000,8 +1144,15 @@ class DialDisplay:
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
         muted = snapshot.muted if snapshot.muted is not None else is_muted()
+        # Belt and braces: dots are meaningful only on the main screen —
+        # _repaint_current_locked never reaches this merge for the repeat/
+        # selector/picker screens anyway (they bypass _display_locked
+        # entirely), but the explicit screen check here means a stray call
+        # can never show them somewhere they should not appear.
+        dots = self._dots_active and self._screen == "main"
         return dataclasses.replace(
             snapshot, visible=True, artist=artist, title=title, volume=volume, muted=muted, name=name,
+            dots=dots,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -1030,7 +1181,15 @@ class DialDisplay:
             self._clear_locked()
             return
         was_showing = self._showing
-        self._display_locked(image, is_artwork_base=False)
+        if self._idle_chassis_due_locked():
+            # The "tap to replay" affordance is due: the idle screen's own
+            # compose path (no volume/mute controls overlay — there is
+            # nothing to control) in place of a plain logo.
+            self._current_base_image = image
+            self._current_base_is_artwork = False
+            self._display_idle_locked()
+        else:
+            self._display_locked(image, is_artwork_base=False)
         self._source_artwork_url = ""
         self._current_rendered_image = None
         self._showing = "logo"
@@ -1051,11 +1210,13 @@ class DialDisplay:
             if self._repaint_stop_event.is_set():
                 break
             if not signaled:
-                # Plain timeout — nothing to do beyond the selector's own
-                # inactivity check, then go back to waiting. This periodic
-                # wake exists only so stop() is noticed promptly even if no
+                # Plain timeout — nothing to do beyond the selector/picker's
+                # own inactivity check and the Replaying line's once-a-
+                # second tick, then go back to waiting. This periodic wake
+                # exists only so stop() is noticed promptly even if no
                 # overlay signal ever arrives.
-                self._check_selector_timeout()
+                self._check_secondary_timeout()
+                self._tick_repeat_line()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -1097,48 +1258,76 @@ class DialDisplay:
         if self._screen == "selector":
             self._display_selector_locked()
             return woke
+        if self._screen == "repeat":
+            self._display_repeat_locked()
+            return woke
+        if self._screen == "picker":
+            self._display_picker_locked()
+            return woke
         if self._current_base_image is None:
+            return woke
+        if self._idle_chassis_due_locked():
+            self._display_idle_locked()
             return woke
         self._display_locked(self._current_base_image)
         return woke
 
-    # ---- appliance selector screen -----------------------------------------
+    def _idle_chassis_due_locked(self) -> bool:
+        """True when the idle screen's own compose path (compose_idle, no
+        volume/mute controls overlay) should be used in place of the
+        ordinary overlay compose path — exactly when the "tap to replay"
+        affordance is due. When nothing is playing but no affordance is
+        due, the plain logo goes through the normal reveal-on-touch overlay
+        path unchanged, matching the behaviour from before this screen
+        existed (see touch_surface(): the touch surface itself stays
+        "hidden", not "idle", in that case, so nothing here should look any
+        different from it either)."""
+        return self._idle_affordance and self._screen == "main" and self._now_playing is None
+
+    # ---- appliance selector, repeat and picker screens ----------------------
     #
-    # Touch-thread entry points (open_selector/close_selector/selector_page/
-    # selector_pick) are flag-write-plus-signal only, exactly like
+    # Touch-thread entry points (open_selector/close_list/list_page/
+    # selector_pick/toggle_repeat_screen/repeat_*_tap/open_picker/
+    # picker_pick) are flag-write-plus-signal only, exactly like
     # notify_touch_activity()/set_manual_focus() — the actual screen-state
-    # change happens on the repaint thread under self._lock
+    # change happens on the repeat thread under self._lock
     # (_apply_screen_requests_locked). Rows themselves are built ONLY on the
-    # poll thread (_refresh_selector_rows) — the touch thread never builds
-    # rows, it only reads the last-published SelectorState.
+    # poll thread (_refresh_selector_rows/_refresh_picker_rows) — the touch
+    # thread never builds rows, it only reads the last-published state.
 
     def open_selector(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a NAME tap).
         Also forces an immediate reconcile/poll so any not-yet-confirmed
-        row is checked within about one poll interval of opening, per the
-        low-level design's review note (unknown rows confirmed quickly
-        rather than left stale for up to 60s)."""
+        row is checked within about one poll interval of opening, rather
+        than left stale for up to 60s."""
         self._screen_request = "selector"
         self._reconcile_due = True
         auth_map.force_due()
         self._poll_wake.set()
         self._overlay_signal.set()
 
-    def close_selector(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_BACK tap,
-        or selector_pick() below)."""
+    def close_list(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_BACK
+        tap): pop back to main from whichever list-chassis screen (the
+        appliance selector or the replay picker) is open."""
         self._screen_request = "main"
         self._overlay_signal.set()
 
-    def selector_page(self, delta: int) -> None:
+    close_selector = close_list  # alias kept for existing direct callers/tests
+
+    def list_page(self, delta: int) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_DOWN/
-        LIST_UP tap): +1 for the next page, -1 for the previous. Clamped to
-        the valid range by _apply_screen_requests_locked()."""
+        LIST_UP tap): +1 for the next page, -1 for the previous, on
+        whichever list-chassis screen is open. Clamped to the valid range
+        by _apply_screen_requests_locked()."""
         self._page_request += delta
         self._overlay_signal.set()
 
+    selector_page = list_page  # alias kept for existing direct callers/tests
+
     def selector_pick(self, index: int) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW tap).
+        """Touch-thread entry: a LIST_ROW tap while the appliance selector
+        is open.
 
         Reads the last-published SelectorState (plain reference read, no
         lock — same discipline as _overlay_snapshot). When *index* still
@@ -1153,7 +1342,17 @@ class DialDisplay:
             page_rows = self._selector_page_rows(selector)
             if 0 <= index < len(page_rows):
                 self.set_manual_focus(page_rows[index].appliance_id)
-        self.close_selector()
+        self.close_list()
+
+    def list_row_tap(self, index: int) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW
+        tap): routes to whichever list-chassis screen is actually open —
+        the appliance selector (selector_pick) or the replay picker
+        (picker_pick)."""
+        if self._screen == "picker":
+            self.picker_pick(index)
+        else:
+            self.selector_pick(index)
 
     def _selector_page_rows(self, selector: SelectorState) -> tuple[SelectorRow, ...]:
         """The CURRENT page's slice of *selector*.rows — shared by
@@ -1166,19 +1365,187 @@ class DialDisplay:
         start = selector.page * rows_per_page
         return selector.rows[start:start + rows_per_page]
 
-    def _close_selector_locked(self) -> None:
-        """Pop to the main screen. Caller holds self._lock. Called from the
-        repaint thread's own request-folding, from sleep/disable/swap (so a
-        later wake/reopen never resumes on a stale list), and is what a
-        stale selector_pick() index falls back to."""
-        self._screen = "main"
-        self._selector = None
+    def _picker_page_rows(self, picker: PickerState) -> tuple[PickerRow, ...]:
+        """The CURRENT page's slice of *picker*.rows — the PickerState
+        counterpart to _selector_page_rows()."""
+        width, height = self._active_panel_dims()
+        rows_per_page = list_layout_for(width, height).rows_per_page
+        start = picker.page * rows_per_page
+        return picker.rows[start:start + rows_per_page]
+
+    def toggle_repeat_screen(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a DOTS tap):
+        open or close the repeat screen.
+
+        Closing is unconditional. Opening reads self._now_playing,
+        self._manual_focus_id and self._reporting_appliance_id (all plain
+        reference reads, same discipline as set_manual_focus()) and the
+        repeat store's own leaf lock — it only opens when the focused/
+        reporting appliance has a fresh, available record; an appliance
+        this dial cannot see repeat state for has nothing to show on the
+        repeat screen. No poll/reconcile is forced here: unlike
+        open_selector()/open_picker(), the repeat screen's own content is
+        entirely driven by whatever the repeat store already holds.
+        """
+        if self._screen == "repeat":
+            self._screen_request = "main"
+            self._overlay_signal.set()
+            return
+        if self._now_playing is None:
+            return
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        if not appliance_id:
+            return
+        rec = repeat_store.get(appliance_id, time.monotonic())
+        if rec is None or not rec.available:
+            return
+        self._screen_request = "repeat"
         self._overlay_signal.set()
 
+    def repeat_ring_tap(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_RING
+        tap): toggle arm/disarm — only meaningful in the enable layout
+        (a live source recording/pending, or idle with the daemon still
+        enabled); a tap here while the replaying/hold layout is showing
+        (no ring drawn) is a no-op. Enqueues on the repeat worker's own
+        queue — no lock, no I/O on this thread."""
+        screen = self._repeat_screen
+        if screen is None:
+            return
+        rec = repeat_store.get(screen.appliance_id, time.monotonic())
+        if rec is None or not rec.available:
+            return
+        if rec.state in ("recording", "pending", "idle"):
+            enqueue_arm(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), not rec.armed)
+
+    def repeat_start_tap(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_START
+        tap): seek to 0 — restart a running replay, or start one from
+        Hold. A no-op while fading out (the appliance would refuse it with
+        "fading_out" anyway) or while a live source is recording."""
+        screen = self._repeat_screen
+        if screen is None:
+            return
+        rec = repeat_store.get(screen.appliance_id, time.monotonic())
+        if rec is None or not rec.available:
+            return
+        if rec.state in ("replaying", "hold"):
+            enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "seek", 0.0)
+
+    def repeat_stop_tap(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_STOP
+        tap): stop a running replay (fades out, lands in Hold, disarmed).
+        A no-op outside Replaying — while fading out the button is drawn
+        pressed and inert, and in Hold there is nothing to stop."""
+        screen = self._repeat_screen
+        if screen is None:
+            return
+        rec = repeat_store.get(screen.appliance_id, time.monotonic())
+        if rec is None or not rec.available:
+            return
+        if rec.state == "replaying":
+            enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "stop", 0.0)
+
+    def set_secondary_pressed(self, zone) -> None:
+        """Touch-thread entry: record the zone currently pressed on a
+        secondary screen's own chassis (the repeat screen) for the next
+        repaint to draw a pressed wash. Plain attribute write plus a
+        signal — same discipline as notify_touch_activity()."""
+        self._secondary_pressed = zone
+        self._overlay_signal.set()
+
+    def pop_secondary(self, screen: str) -> None:
+        """Touch-thread entry: pop back to main if *screen* is the one
+        currently open — used by the encoder and button paths so a
+        physical nudge while the repeat screen is open returns to the
+        volume readout on main. Lock-free request, exactly like
+        close_list()."""
+        if self._screen == screen:
+            self._screen_request = "main"
+            self._overlay_signal.set()
+
+    def set_manual_focus_pending(self, appliance_id: str, service_name: str) -> None:
+        """Touch-thread entry (the replay picker's picker_pick()): pin the
+        focus to *appliance_id* the way set_manual_focus() does, and mark
+        it PENDING for FOCUS_PENDING_GRACE_S — a picker-started replay has
+        not yet reached the playing set, so the ordinary "gone from the
+        roster" focus-clear must not fire before it has had a chance to
+        appear. See the empty-targets branch of _poll_once."""
+        now = time.monotonic()
+        self._manual_focus_id = appliance_id
+        self._focus_pending = (appliance_id, service_name, now + FOCUS_PENDING_GRACE_S)
+        self._poll_wake.set()
+
+    def open_picker(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_REPLAY
+        tap). Also forces an immediate reconcile/poll, the same as
+        open_selector(), so a row that just went stale is refreshed within
+        about one poll interval of opening."""
+        self._screen_request = "picker"
+        self._reconcile_due = True
+        auth_map.force_due()
+        self._poll_wake.set()
+        self._overlay_signal.set()
+
+    def picker_pick(self, index: int) -> None:
+        """Touch-thread entry: start replaying the tapped row's held
+        recording from the beginning. A stale index (the row vanished
+        between paint and tap) is treated as back, same as
+        selector_pick(). Sets a PENDING manual focus (see
+        set_manual_focus_pending()) so the screen follows the appliance
+        through the gap before its replay reaches the playing set; a
+        rejected seek (source_active/no_recording, or any transport
+        failure) clears it again in on_repeat_result()."""
+        picker = self._picker
+        if picker is not None and picker.rows:
+            page_rows = self._picker_page_rows(picker)
+            if 0 <= index < len(page_rows):
+                row = page_rows[index]
+                self.set_manual_focus_pending(row.appliance_id, row.service_name)
+                enqueue_transport(_RepeatTarget(row.appliance_id, row.ip, row.port), "seek", 0.0)
+        self.close_list()
+
+    def _close_secondary_locked(self) -> None:
+        """Pop to the main screen from any secondary screen — the
+        appliance list, the repeat screen, or the replay picker. Caller
+        holds self._lock. Called from the repeat thread's own request-
+        folding, from sleep/disable/swap (so a later wake/reopen never
+        resumes on a stale secondary screen), from the poll thread when the
+        focused appliance changes while the repeat screen is open, and is
+        what a stale selector_pick()/picker_pick() index falls back to."""
+        self._screen = "main"
+        self._selector = None
+        self._repeat_screen = None
+        self._picker = None
+        self._secondary_pressed = None
+        self._overlay_signal.set()
+
+    _close_selector_locked = _close_secondary_locked  # alias kept for existing direct callers/tests
+
+    def _build_repeat_screen_locked(self) -> "RepeatScreenState | None":
+        """Build a RepeatScreenState for the currently focused/reporting
+        appliance from the last-published roster snapshot
+        (self._last_roster). Caller holds self._lock; runs on the repeat
+        thread only. Returns None when there is no focus/reporting
+        appliance right now, or it has since dropped out of the roster —
+        either way the screen request is simply dropped and whatever was
+        on screen before stays there."""
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        if not appliance_id:
+            return None
+        for r in self._last_roster:
+            if r.appliance_id == appliance_id:
+                return RepeatScreenState(
+                    appliance_id=appliance_id, service_name=r.service_name,
+                    ip=r.ip, port=r.port, opened_at=time.monotonic(),
+                )
+        return None
+
     def _apply_screen_requests_locked(self) -> None:
-        """Fold pending open_selector()/close_selector()/selector_page()
-        touch-thread requests into self._screen/self._selector. Caller
-        holds self._lock; runs on the repaint thread only.
+        """Fold pending open_selector()/close_list()/list_page()/
+        toggle_repeat_screen()/open_picker() touch-thread requests into
+        self._screen/self._selector/self._repeat_screen/self._picker.
+        Caller holds self._lock; runs on the repeat thread only.
         """
         request = self._screen_request
         self._screen_request = None
@@ -1189,52 +1556,96 @@ class DialDisplay:
             rows = self._selector.rows if self._selector is not None else ()
             self._selector = SelectorState(rows=rows, page=0, opened_at=time.monotonic())
             self._screen = "selector"
+        elif request == "picker":
+            rows = self._picker.rows if self._picker is not None else ()
+            self._picker = PickerState(rows=rows, page=0, opened_at=time.monotonic())
+            self._screen = "picker"
+        elif request == "repeat":
+            screen = self._build_repeat_screen_locked()
+            if screen is not None:
+                self._repeat_screen = screen
+                self._screen = "repeat"
         elif request == "main":
-            self._close_selector_locked()
+            self._close_secondary_locked()
 
-        if delta and self._screen == "selector" and self._selector is not None:
+        active = (
+            self._selector if self._screen == "selector"
+            else self._picker if self._screen == "picker"
+            else None
+        )
+        if delta and active is not None:
             width, height = self._active_panel_dims()
             rows_per_page = list_layout_for(width, height).rows_per_page
-            row_count = len(self._selector.rows)
+            row_count = len(active.rows)
             max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
-            new_page = max(0, min(self._selector.page + delta, max_page))
-            if new_page != self._selector.page:
-                self._selector = dataclasses.replace(self._selector, page=new_page)
+            new_page = max(0, min(active.page + delta, max_page))
+            if new_page != active.page:
+                updated = dataclasses.replace(active, page=new_page)
+                if self._screen == "selector":
+                    self._selector = updated
+                else:
+                    self._picker = updated
 
-    def _check_selector_timeout(self) -> None:
-        """Close the selector after SELECTOR_TIMEOUT_SECONDS of no touch
-        activity — called from the repaint thread's own 1s timeout branch,
-        so this runs even when nothing else signals a repaint.
+    def _check_secondary_timeout(self) -> None:
+        """Close the appliance selector or the replay picker after
+        SELECTOR_TIMEOUT_SECONDS of no touch activity — called from the
+        repaint thread's own 1s timeout branch, so this runs even when
+        nothing else signals a repaint. The repeat screen has NO timeout
+        of its own: it is the device's second screen, a user may be
+        watching the Replaying line, and the dots toggle back to main at
+        any time.
 
-        self._screen and self._selector are read lock-free here: both are
-        also written by the poll thread (_poll_once's empty-target branch,
-        _sleep_locked), not only the repaint thread, but every write is
-        already under self._lock and each is a plain reference/str
-        assignment — the same "a stale read costs at most one harmless
-        extra tick" discipline _sleeping_lockfree() documents. The actual
-        close below is re-checked and applied under the lock regardless.
+        self._screen/self._selector/self._picker are read lock-free here:
+        all three are also written by the poll thread (_poll_once's
+        empty-target branch, _sleep_locked), not only the repeat thread,
+        but every write is already under self._lock and each is a plain
+        reference/str assignment — the same "a stale read costs at most
+        one harmless extra tick" discipline _sleeping_lockfree() documents.
+        The actual close below is re-checked and applied under the lock
+        regardless.
         """
-        if self._screen != "selector":
+        if self._screen not in ("selector", "picker"):
             return
-        selector = self._selector
-        if selector is None:
+        state = self._selector if self._screen == "selector" else self._picker
+        if state is None:
             return
-        if time.monotonic() - selector.opened_at >= SELECTOR_TIMEOUT_SECONDS:
+        if time.monotonic() - state.opened_at >= SELECTOR_TIMEOUT_SECONDS:
             with self._lock:
-                self._close_selector_locked()
+                self._close_secondary_locked()
+
+    def _tick_repeat_line(self) -> None:
+        """Recompose the repeat screen once a second while it is showing a
+        live Replaying position, so the line visibly counts up between
+        polls — called from the repeat thread's own 1s timeout branch. No
+        HTTP call is added for this: the interpolation is purely local
+        (see _interpolate_repeat_position()) and the next poll always
+        corrects any drift. A no-op while asleep (the repeat thread does
+        nothing then) or when the repeat screen is not the one on screen.
+        """
+        if self._screen != "repeat":
+            return
+        screen = self._repeat_screen
+        if screen is None:
+            return
+        rec = repeat_store.get(screen.appliance_id, time.monotonic())
+        if rec is not None and rec.state == "replaying":
+            self._overlay_signal.set()
 
     def _refresh_selector_rows(self, targets: list, reporting_id: str | None) -> None:
-        """Rebuild the selector's row list from *targets* — see section 2.7
-        of the low-level design. Runs on the poll thread at the end of
-        every _poll_once, whether or not the selector screen is actually
-        open right now, so opening it always shows fresh rows without
-        waiting for a poll. The touch thread never builds rows.
+        """Rebuild the selector's row list from *targets*. Runs on the poll
+        thread at the end of every _poll_once, whether or not the selector
+        screen is actually open right now, so opening it always shows
+        fresh rows without waiting for a poll. The touch thread never
+        builds rows.
 
         Rows: every target with a non-empty appliance_id whose auth is
         AUTHORIZED (not just "not unauthorized" — an unknown appliance is
         controllable but not yet confirmed, so it stays off the list until
         a probe confirms it). *current* marks the manual focus when one is
-        set, else the reporting-from target (*reporting_id*).
+        set, else the reporting-from target (*reporting_id*). *replaying*
+        marks a row whose fresh repeat-store record shows it replaying or
+        fading out — drawn as the loop-glyph secondary marker (see
+        _build_list_state_locked).
 
         The page is PRESERVED (clamped to the new row count) across each
         rebuild — resetting it to 0 here would make an open selector jump
@@ -1243,11 +1654,13 @@ class DialDisplay:
         """
         focus_id = self._manual_focus_id
         current_id = focus_id if focus_id is not None else reporting_id
+        now = time.monotonic()
         rows = tuple(
             SelectorRow(
                 appliance_id=t.appliance_id,
                 label=appliance_display_name(t.service_name),
                 current=(t.appliance_id == current_id),
+                replaying=_row_is_replaying(t.appliance_id, now),
             )
             for t in targets
             if t.appliance_id and t.auth == AUTH_AUTHORIZED
@@ -1261,12 +1674,58 @@ class DialDisplay:
             opened_at = prev.opened_at if prev is not None else 0.0
             self._selector = SelectorState(rows=rows, page=page, opened_at=opened_at)
 
+    def _refresh_picker_rows(self, roster: list, now: float) -> None:
+        """Rebuild the replay picker's row list from *roster* — poll thread
+        only, every tick regardless of whether the picker is actually open,
+        mirroring _refresh_selector_rows(). Rows: every rostered,
+        authorized, repeat-capable appliance currently in Hold — the only
+        daemon state the picker can start a replay from. The page is
+        preserved across rebuilds the same way the selector's is."""
+        rows = tuple(
+            PickerRow(
+                appliance_id=r.appliance_id, service_name=r.service_name,
+                ip=r.ip, port=r.port,
+                label=appliance_display_name(r.service_name),
+                seconds=rec.recording_seconds,
+            )
+            for r in roster
+            for rec in [repeat_store.get(r.appliance_id, now)]
+            if rec is not None and rec.state == "hold"
+            and r.auth == AUTH_AUTHORIZED and r.repeat_capable
+        )
+        with self._lock:
+            prev = self._picker
+            width, height = self._active_panel_dims()
+            rows_per_page = list_layout_for(width, height).rows_per_page
+            max_page = max(0, (len(rows) - 1) // rows_per_page) if rows else 0
+            page = max(0, min(prev.page, max_page)) if prev is not None else 0
+            opened_at = prev.opened_at if prev is not None else 0.0
+            self._picker = PickerState(rows=rows, page=page, opened_at=opened_at)
+
+    def _refresh_idle_affordance(self, roster: list, now: float) -> None:
+        """Recompute whether the idle screen's "tap to replay" affordance
+        should be drawn — poll thread only, every tick regardless of
+        whether anything is currently playing. True when at least one
+        rostered, authorized, repeat-capable appliance is currently held (a
+        retained recording with nothing else to show). A change signals
+        the repeat thread so the affordance appears/disappears promptly."""
+        held = repeat_store.held_ids(now)
+        affordance = any(
+            r.appliance_id in held and r.auth == AUTH_AUTHORIZED and r.repeat_capable
+            for r in roster
+        )
+        if affordance != self._idle_affordance:
+            self._idle_affordance = affordance
+            self._overlay_signal.set()
+
     def _build_list_state_locked(self, width: int, height: int) -> ListState:
         """Build the compositor's ListState for the CURRENT page. Caller
-        holds self._lock; runs on the repaint thread only. Live touch-press
+        holds self._lock; runs on the repeat thread only. Live touch-press
         feedback is not wired into the selector chassis in this phase —
         pressed is always None here (compose_list still supports it, for
-        the compositor's own tests)."""
+        the compositor's own tests). A replaying row's secondary slot
+        carries the LOOP_GLYPH sentinel; every other row stays a plain
+        2-tuple."""
         selector = self._selector
         if selector is None or not selector.rows:
             return ListState(rows=(("No devices", False),), has_prev=False, has_next=False)
@@ -1274,9 +1733,29 @@ class DialDisplay:
         start = selector.page * rows_per_page
         page_rows = selector.rows[start:start + rows_per_page]
         return ListState(
-            rows=tuple((row.label, row.current) for row in page_rows),
+            rows=tuple(
+                (row.label, row.current, LOOP_GLYPH) if row.replaying else (row.label, row.current)
+                for row in page_rows
+            ),
             has_prev=selector.page > 0,
             has_next=start + rows_per_page < len(selector.rows),
+        )
+
+    def _build_picker_list_state_locked(self, width: int, height: int) -> ListState:
+        """Build the compositor's ListState for the replay picker's CURRENT
+        page — the PickerState counterpart to _build_list_state_locked().
+        Each row's secondary slot carries the buffer length, formatted
+        "m:ss"."""
+        picker = self._picker
+        if picker is None or not picker.rows:
+            return ListState(rows=(("Nothing to replay", False),), has_prev=False, has_next=False)
+        rows_per_page = list_layout_for(width, height).rows_per_page
+        start = picker.page * rows_per_page
+        page_rows = picker.rows[start:start + rows_per_page]
+        return ListState(
+            rows=tuple((row.label, False, format_mmss(row.seconds)) for row in page_rows),
+            has_prev=picker.page > 0,
+            has_next=start + rows_per_page < len(picker.rows),
         )
 
     def _display_selector_locked(self) -> None:
@@ -1292,6 +1771,126 @@ class DialDisplay:
         try:
             composed = self._compositor.compose_list(
                 width, height, list_state,
+                rotate=self._config.rotate, bgr=self._config.bgr,
+            )
+            self._backend.display(composed)
+        except Exception as e:
+            self._record_error_locked("display_write_failed")
+            self._log_limiter.log(
+                logging.WARNING, "display_write_failed",
+                "dial display: backend write failed: %s", e,
+            )
+
+    def _display_picker_locked(self) -> None:
+        """Compose and push the replay-picker frame — the compose_list()
+        counterpart for the picker, sharing the same list chassis as the
+        appliance selector. Caller holds self._lock."""
+        width, height = self._active_panel_dims()
+        list_state = self._build_picker_list_state_locked(width, height)
+        try:
+            composed = self._compositor.compose_list(
+                width, height, list_state,
+                rotate=self._config.rotate, bgr=self._config.bgr,
+            )
+            self._backend.display(composed)
+        except Exception as e:
+            self._record_error_locked("display_write_failed")
+            self._log_limiter.log(
+                logging.WARNING, "display_write_failed",
+                "dial display: backend write failed: %s", e,
+            )
+
+    def _build_repeat_view_locked(self, screen: "RepeatScreenState | None", now: float) -> RepeatViewState:
+        """Build the compositor's RepeatViewState from the repeat store's
+        CURRENT record for *screen* — the daemon-state-to-layout mapping:
+        no/unavailable record or a live source (recording/pending/idle)
+        draws the enable layout (dots, name, the "Repeat" label and the
+        ring); hold/replaying/fading_out draw the replaying layout (the
+        Start/Stop row and the position line). The ring reads `armed`,
+        never `state` — armed can be true while a live source is playing.
+        Caller holds self._lock (called from _display_repeat_locked)."""
+        pressed = self._secondary_pressed
+        if screen is None:
+            return RepeatViewState(
+                name="", layout="enable", armed=False, line="",
+                start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
+            )
+        name = appliance_display_name(screen.service_name)
+        rec = repeat_store.get(screen.appliance_id, now)
+        if rec is None or not rec.available:
+            return RepeatViewState(
+                name=name, layout="enable", armed=False, line="",
+                start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
+            )
+        if rec.state in ("recording", "pending", "idle"):
+            return RepeatViewState(
+                name=name, layout="enable", armed=rec.armed, line="",
+                start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
+            )
+        if rec.state == "hold":
+            line = f"0:00 / {format_mmss(rec.recording_seconds)}"
+            return RepeatViewState(
+                name=name, layout="replaying", armed=rec.armed, line=line,
+                start_enabled=True, stop_enabled=False, stop_pressed=False, pressed=pressed,
+            )
+        if rec.state == "replaying":
+            pos = _interpolate_repeat_position(rec, now)
+            line = f"{format_mmss(pos)} / {format_mmss(rec.duration_seconds)}"
+            return RepeatViewState(
+                name=name, layout="replaying", armed=rec.armed, line=line,
+                start_enabled=True, stop_enabled=True, stop_pressed=False, pressed=pressed,
+            )
+        # fading_out: the line freezes at the last observed position (no
+        # interpolation — the fade is a fixed-length event, not a running
+        # clock), Start is dimmed and inert, Stop is drawn pressed to read
+        # as "already actioned" rather than merely disabled.
+        line = f"{format_mmss(rec.position_seconds)} / {format_mmss(rec.duration_seconds)}"
+        return RepeatViewState(
+            name=name, layout="replaying", armed=rec.armed, line=line,
+            start_enabled=False, stop_enabled=True, stop_pressed=True, pressed=pressed,
+        )
+
+    def _display_repeat_locked(self) -> None:
+        """Compose and push the repeat-screen frame — the compose_repeat()
+        counterpart to _display_locked(). Bypasses _display_locked()
+        entirely, like _display_selector_locked(): this screen has its own
+        compose path and must never pick up the main now-playing overlay.
+        Caller holds self._lock."""
+        view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
+        width, height = self._active_panel_dims()
+        try:
+            composed = self._compositor.compose_repeat(
+                width, height, view,
+                rotate=self._config.rotate, bgr=self._config.bgr,
+            )
+            self._backend.display(composed)
+        except Exception as e:
+            self._record_error_locked("display_write_failed")
+            self._log_limiter.log(
+                logging.WARNING, "display_write_failed",
+                "dial display: backend write failed: %s", e,
+            )
+
+    def _display_idle_locked(self) -> None:
+        """Compose and push the idle-screen frame (the logo, plus the
+        "tap to replay" affordance when one is due) — the compose_idle()
+        counterpart to _display_locked(). No volume/mute controls overlay
+        is drawn here: nothing is playing, so there is nothing on this
+        screen for it to control. Used both by _render_logo_locked() (a
+        fresh poll-driven frame) and by _repaint_current_locked() (an
+        overlay-only repaint, e.g. the affordance turning on/off) so the
+        two never disagree about what an idle repaint looks like. Caller
+        holds self._lock; a no-op if the backend is closed or nothing has
+        been rendered yet."""
+        if not (self._backend_open and self._backend is not None):
+            return
+        if self._current_base_image is None:
+            return
+        width, height = self._active_panel_dims()
+        affordance = self._idle_chassis_due_locked()
+        try:
+            composed = self._compositor.compose_idle(
+                self._current_base_image, width, height, affordance=affordance,
                 rotate=self._config.rotate, bgr=self._config.bgr,
             )
             self._backend.display(composed)
@@ -1398,8 +1997,9 @@ class DialDisplay:
         412 clears it (this dial's authorization for the appliance was
         revoked, so any cached repeat state is no longer this dial's to
         show); everything else (timeout, unreachable, bad_response, ...) is
-        transient and leaves the record untouched — N2/N4 must not blank
-        mid-poll on a single bad response. A no-op for an identity-less
+        transient and leaves the record untouched — the repeat screen and
+        the idle affordance must not blank mid-poll on a single bad
+        response. A no-op for an identity-less
         target (dial_repeat_store.update/clear both already guard on this,
         checked again here so the intent reads at the call site)."""
         if not appliance_id:
@@ -1438,6 +2038,47 @@ class DialDisplay:
                 self._apply_status_to_repeat(target.appliance_id, record, now)
         repeat_store.prune({r.appliance_id for r in roster})
 
+    def on_repeat_result(self, kind: str, appliance_id: str, status: int | None, body) -> None:
+        """Callback for the repeat-transport worker (dial_repeat.py). Runs
+        on the WORKER thread — never the poll/repeat/touch threads — and
+        takes NO lock of this class's own (self._lock is never touched
+        here; repeat_store and auth_map each guard themselves with their
+        own leaf lock).
+
+        An ok:true ack (status 200, body["ok"] truthy) folds optimistically
+        into the repeat store (repeat_store.apply_ack) and wakes the repeat
+        thread so the ring/buttons reflect it immediately. Every other
+        outcome — a 412, a 200 ok:false, or a transient failure (no
+        response, a timeout, or any other HTTP code) — never touches the
+        auth map's STATE, only its due-ness (force_due plus a poll
+        request), the same nudge a transient status-poll error gets
+        elsewhere. A known daemon rejection of "source_active" or
+        "no_recording" additionally clears the store record (the buffer is
+        gone, or a live source has started again — a stale ring/row would
+        otherwise linger until the next poll corrects it). Any outcome
+        other than ok:true also clears a pending focus for this appliance
+        (set_manual_focus_pending) — the replay did not start.
+        """
+        now = time.monotonic()
+        if status == 200 and isinstance(body, dict) and body.get("ok"):
+            repeat_store.apply_ack(appliance_id, body, now)
+            self._overlay_signal.set()
+            return
+
+        auth_map.force_due(appliance_id)
+        self._reconcile_due = True
+        self.request_poll()
+
+        if status == 412 or (status == 200 and isinstance(body, dict)):
+            error = body.get("error") if isinstance(body, dict) else None
+            if error in ("source_active", "no_recording"):
+                repeat_store.clear(appliance_id)
+
+        pending = self._focus_pending
+        if pending is not None and pending[0] == appliance_id:
+            self._focus_pending = None
+            self._manual_focus_id = None
+
     def set_manual_focus(self, appliance_id: str | None) -> None:
         """Sticky manual focus: pins the display source to appliance_id
         (or clears it back to auto-pick with None). Lock-free write plus a
@@ -1449,12 +2090,31 @@ class DialDisplay:
     def manual_focus_id(self) -> str | None:
         return self._manual_focus_id
 
+    def _auth_not_unauthorized(self, appliance_id: str) -> bool:
+        """True unless dial_auth confirms appliance_id unauthorized. Used
+        only by the pending-focus grace window (set_manual_focus_pending):
+        during the gap the appliance is not rostered at all, so there is no
+        target row to read .auth from — this reads the auth map directly
+        instead."""
+        return auth_map.state(appliance_id) != AUTH_UNAUTHORIZED
+
+    def _update_dots_active(self, now: float) -> None:
+        """Recompute whether the repeat screen's dots are currently
+        tappable, from the currently focused/reporting appliance's fresh
+        repeat-store record. Poll thread only; read lock-free by
+        touch_surface() and _effective_overlay_locked()."""
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        rec = repeat_store.get(appliance_id, now) if appliance_id else None
+        self._dots_active = rec is not None and rec.available
+
     def _poll_once(self) -> None:
         with self._lock:
             fitted = self._config.fitted
         if not fitted:
             self._source_service_name = None
             self._now_playing = None
+            self._reporting_appliance_id = None
+            self._dots_active = False
             return
 
         targets = self._get_display_targets()
@@ -1462,13 +2122,26 @@ class DialDisplay:
         # sightings get noted into the auth map (dial_mdns.get_roster()'s
         # docstring). Computed unconditionally, whether or not anything is
         # playing, so an idle appliance's presence is tracked at every poll
-        # tick, not only while something else happens to be playing.
+        # tick, not only while something else happens to be playing. Also
+        # published for the repeat thread's own use when it opens the
+        # repeat screen (see _build_repeat_screen_locked) — a plain
+        # reference write, read later under self._lock.
         roster = self._get_roster()
+        self._last_roster = roster
+        now = time.monotonic()
 
         # Resolve manual focus before anything else: a focused appliance
         # that is no longer rostered, or has since been confirmed
-        # unauthorized, reverts silently to auto-pick.
+        # unauthorized, reverts silently to auto-pick — UNLESS a picker-
+        # started replay is still within its pending grace window (6),
+        # in which case the focus is kept and the empty-targets branch
+        # below shows the appliance's name over the logo instead of the
+        # ordinary idle screen.
         focus_id = self._manual_focus_id
+        pending = self._focus_pending
+        if pending is not None and (pending[0] != focus_id or now >= pending[2]):
+            self._focus_pending = None
+            pending = None
         focus_target = None
         if focus_id is not None:
             focus_target = next(
@@ -1476,8 +2149,17 @@ class DialDisplay:
                 None,
             )
             if focus_target is None:
-                self._manual_focus_id = None
-                logging.info("dial display: manual focus cleared (appliance gone or unauthorized)")
+                if pending is not None and self._auth_not_unauthorized(focus_id):
+                    pass  # grace: keep the focus, appliance not rostered yet
+                else:
+                    self._manual_focus_id = None
+                    self._focus_pending = None
+                    logging.info("dial display: manual focus cleared (appliance gone or unauthorized)")
+                    if self._screen == "repeat":
+                        with self._lock:
+                            self._close_secondary_locked()
+            elif pending is not None:
+                self._focus_pending = None  # sighted: converts to a normal focus
 
         # Any visible playing target counts as activity — including
         # unauthorized or status-erroring ones — because the mDNS
@@ -1501,14 +2183,43 @@ class DialDisplay:
             # Nothing playing anywhere: there is no reporting-from target any
             # more, and a stale readout for a target that has since stopped
             # must not survive to the next time something starts playing.
+            # The roster reconcile and the idle-affordance/picker refresh
+            # still run here on their usual cadence — this is exactly the
+            # state the idle screen and the replay picker exist for, and
+            # the artwork walk below never runs in this branch to cover it
+            # another way.
             self._source_service_name = None
-            self._now_playing = None
             observe_master_volume(None, None)
+            if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
+                self._reconcile_pass(roster, set())
+                self._last_reconcile_at = now
+                self._reconcile_due = False
+            self._refresh_idle_affordance(roster, now)
+            self._refresh_picker_rows(roster, now)
+
+            if self._focus_pending is not None:
+                # A picker-started replay hasn't reached the playing set
+                # yet — keep showing its name over the logo rather than
+                # falling into the idle screen underneath it (the idle
+                # affordance is suppressed too: _now_playing is not None
+                # here, see _render_logo_locked/_display_idle_locked).
+                pending = self._focus_pending
+                self._now_playing = NowPlaying(pending[1], "", "", None)
+                self._reporting_appliance_id = pending[0]
+                self._update_dots_active(now)
+                with self._lock:
+                    self._close_secondary_locked()
+                self.show_logo()
+                return
+
+            self._now_playing = None
+            self._reporting_appliance_id = None
+            self._update_dots_active(now)
             with self._lock:
                 # The list must never be the last thing on screen when
                 # nothing is playing any more — pop to main before the
                 # sleep decision below (I8).
-                self._close_selector_locked()
+                self._close_secondary_locked()
                 if self._idle_started_at is None:
                     self._idle_started_at = time.monotonic()
                 if self._display_sleeping:
@@ -1561,9 +2272,13 @@ class DialDisplay:
                 # normal walk over the remaining targets in this same poll,
                 # so the screen shows the auto-pick target immediately.
                 self._manual_focus_id = None
+                self._focus_pending = None
                 focus_target = None
                 is_focus = False
                 logging.info("dial display: manual focus cleared (appliance now unauthorized)")
+                if self._screen == "repeat":
+                    with self._lock:
+                        self._close_secondary_locked()
                 continue
 
             if is_focus:
@@ -1605,6 +2320,8 @@ class DialDisplay:
         reporting = select_volume_target(targets_controllable, selected_service)
         reporting_name = reporting.service_name if reporting is not None else None
         reporting_id = reporting.appliance_id if reporting is not None else None
+        self._reporting_appliance_id = reporting_id
+        self._update_dots_active(time.monotonic())
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
         # Free reconciliation for the dial mute belief (dial_volume.py),
@@ -1645,6 +2362,8 @@ class DialDisplay:
             self._last_reconcile_at = now
             self._reconcile_due = False
         self._refresh_selector_rows(targets, reporting_id)
+        self._refresh_idle_affordance(roster, now)
+        self._refresh_picker_rows(roster, now)
 
     # ---- artwork selection -------------------------------------------------
 
