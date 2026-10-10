@@ -30,9 +30,12 @@ def _conf():
     return NGINX_CONF.read_text(encoding="utf-8")
 
 
-def _location_block(conf: str, path: str) -> str:
-    """Extract the body of a named location block."""
-    pattern = rf"location\s+=?\s*{re.escape(path)}\s*\{{"
+def _location_block(conf: str, path: str, exact: "bool | None" = None) -> str:
+    """Extract the body of a named location block: an exact-match
+    (`location = path`) block when *exact* is True, a prefix one when False,
+    and whichever comes first when None."""
+    modifier = {True: r"=\s*", False: "", None: r"=?\s*"}[exact]
+    pattern = rf"location\s+{modifier}{re.escape(path)}\s*\{{"
     m = re.search(pattern, conf)
     assert m, f"location block not found for: {path}"
     start = m.end()
@@ -344,18 +347,96 @@ class TestUpdatingRedirect:
         assert "is_updating" in conf
         assert "autostream-dial-updating" in conf
 
-    def test_updating_redirect_in_location_block(self):
-        """When $is_updating is set, location / must redirect to /offline/updating."""
+    @pytest.mark.parametrize("exact", [True, False], ids=["home page", "main proxy"])
+    def test_updating_redirect_in_location_block(self, exact):
+        """When $is_updating is set, both the home page and the main proxy
+        must redirect to /offline/updating."""
         conf = _conf()
-        block = _location_block(conf, "/")
+        block = _location_block(conf, "/", exact=exact)
         assert "is_updating" in block
         assert "/offline/updating" in block
 
-    def test_updating_redirect_uses_302(self):
+    @pytest.mark.parametrize("exact", [True, False], ids=["home page", "main proxy"])
+    def test_updating_redirect_uses_302(self, exact):
         """The updating redirect must be a 302 (temporary)."""
         conf = _conf()
-        block = _location_block(conf, "/")
+        block = _location_block(conf, "/", exact=exact)
         assert "302" in block and "/offline/updating" in block
+
+
+# ---------------------------------------------------------------------------
+# Dial home page (/)
+# ---------------------------------------------------------------------------
+
+class TestDialHomePage:
+    """The dial's own address shows the recovery tools, worded for a dial that
+    is running normally; /offline/ keeps the page's problem wording for when
+    the dial server is not responding."""
+
+    NEUTRAL_HEADLINE = "is running normally."
+    PROBLEM_HEADLINE = "has encountered a problem."
+    PROBLEM_ADVICE = "Please wait a few moments then retry, or reboot the device."
+
+    def _home(self) -> str:
+        return _location_block(_conf(), "/", exact=True)
+
+    def _render(self, block: str) -> str:
+        html = (OFFLINE_DIR / "index.html").read_text(encoding="utf-8")
+        return _apply_sub_filters(html, _sub_filters(block))
+
+    def test_home_serves_the_shared_recovery_page(self):
+        block = self._home()
+        assert "root /opt/autostream/nginx;" in block
+        assert "try_files /offline/index.html" in block
+        assert 'add_header Cache-Control "no-store";' in block
+        assert "sub_filter_once off;" in block
+
+    def test_ap_mode_hands_the_address_to_the_backend(self):
+        """In AP mode / belongs to the setup portal: the home page hands the
+        request to @backend, which proxies to $backend (the portal in AP
+        mode) with the same offline fallback as the main proxy."""
+        block = self._home()
+        m = re.search(r"if\s*\(\s*-f\s+/tmp/autostream-dial-apmode\s*\)\s*\{([^}]*)\}", block)
+        assert m, "home page must check the AP-mode flag"
+        assert "return 418;" in m.group(1)
+        assert "error_page 418 = @backend;" in block
+        m = re.search(r"location\s+@backend\s*\{([^}]+)\}", _conf())
+        assert m, "@backend location block not found"
+        backend = m.group(1)
+        assert "proxy_pass $backend$uri$is_args$args;" in backend
+        assert "error_page 502 503 504 = @offline;" in backend
+
+    def test_home_never_proxies_itself(self):
+        """The portal must be reached through @backend, never a proxy_pass
+        inside the home page (an if block inherits the page's sub_filters,
+        which would then rewrite the portal's own pages)."""
+        assert "proxy_pass" not in self._home()
+
+    def test_home_wording_is_for_a_running_dial(self):
+        page = self._render(self._home())
+        assert f"autostream dial</strong> {self.NEUTRAL_HEADLINE}" in page
+        assert "set up and controlled from your autostream appliance" in page
+        assert self.PROBLEM_HEADLINE not in page
+        assert self.PROBLEM_ADVICE not in page
+        assert ">Refresh<" in page and ">Retry<" not in page
+
+    def test_offline_page_keeps_the_problem_wording(self):
+        page = self._render(_location_block(_conf(), "/offline/"))
+        assert self.PROBLEM_HEADLINE in page
+        assert self.PROBLEM_ADVICE in page
+
+    @pytest.mark.parametrize("stale", TestBrandingSimulation.STALE_STRINGS)
+    def test_home_page_has_dial_branding(self, stale):
+        assert stale not in self._render(self._home())
+
+    def test_home_wording_filters_match_the_shared_page(self):
+        """Each wording substitution must find its text in the shared page,
+        so an edit to that page cannot silently bring the problem wording
+        back to a healthy dial."""
+        html = (OFFLINE_DIR / "index.html").read_text(encoding="utf-8")
+        for frm in (self.PROBLEM_HEADLINE, self.PROBLEM_ADVICE, ">Retry<"):
+            assert frm in [f for f, _ in _sub_filters(self._home())]
+            assert frm in html
 
 
 # ---------------------------------------------------------------------------
