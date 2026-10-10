@@ -934,3 +934,46 @@ class TestApplianceWarningsSlot:
     def test_new_fields_are_appended(self):
         names = [f.name for f in dataclasses.fields(cs.ApplianceState)]
         assert names[-2:] == ["supplies_warnings", "warnings"]
+
+
+def _request(kind, state, error=None, changed_at=100.0):
+    return cs.TransportRequest(
+        "a" * 20, kind, changed_at, state, changed_at, error, "o2", 0)
+
+
+class TestAwaitingPin:
+    def test_a_pending_pin_is_awaited_and_a_pending_set_is_not(self):
+        assert cs.awaiting_pin(_request("output_pin", "pending"), 101.0) is True
+        assert cs.awaiting_pin(_request("output_set", "pending"), 101.0) is False
+
+    def test_a_set_rejected_asking_for_a_pin_is_awaited_within_the_window(self):
+        for error in ("pin_required", "pin_invalid"):
+            request = _request("output_set", "rejected", error)
+            assert cs.awaiting_pin(request, 100.0) is True
+            assert cs.awaiting_pin(request, 100.0 + cs.PIN_WINDOW_S - 0.01) is True
+            assert cs.awaiting_pin(request, 100.0 + cs.PIN_WINDOW_S) is False
+
+    def test_a_rejected_pin_attempt_is_awaited_whatever_the_reason(self):
+        for error in ("rate_limited", "unreachable", "backend_error", "output_in_use"):
+            request = _request("output_pin", "rejected", error)
+            assert cs.awaiting_pin(request, 150.0) is True
+            assert cs.awaiting_pin(request, 100.0 + cs.PIN_WINDOW_S) is False
+
+    def test_a_rejected_set_for_another_reason_is_not_awaited(self):
+        assert cs.awaiting_pin(_request("output_set", "rejected", "output_in_use"), 101.0) is False
+        assert cs.awaiting_pin(_request("output_set", "rejected", "rate_limited"), 101.0) is False
+        assert cs.awaiting_pin(_request("output_set", "rejected", None), 101.0) is False
+
+    def test_an_accepted_request_is_not_awaited(self):
+        assert cs.awaiting_pin(_request("output_pin", "accepted"), 101.0) is False
+
+    def test_other_request_kinds_and_no_request_are_not_awaited(self):
+        assert cs.awaiting_pin(_request("seek", "rejected", "pin_required"), 101.0) is False
+        assert cs.awaiting_pin(_request("seek", "pending"), 101.0) is False
+        assert cs.awaiting_pin(None, 101.0) is False
+
+    def test_the_pin_rule_is_four_to_eight_ascii_digits(self):
+        for good in ("1234", "12345678", "0000"):
+            assert cs.PIN_RE.match(good)
+        for bad in ("123", "123456789", "12a4", "1234\n", " 1234", "１２３４", ""):
+            assert not cs.PIN_RE.match(bad)

@@ -163,6 +163,20 @@ def _playing(artwork=True, **overrides) -> CoreSnapshot:
     return base(**values)
 
 
+def pin_request(state, error=None, kind="output_set", at=NOW - 1, retry_after_s=0) -> TransportRequest:
+    """An output request on the Lounge's Patio speaker (id o2), made at *at*
+    and now in *state*."""
+    return TransportRequest(LOUNGE, kind, at, state, at, error, "o2", retry_after_s)
+
+
+def _pin_snapshot(request, outputs_version=2) -> CoreSnapshot:
+    return _playing(
+        appliances=(appliance(
+            playing=True, master_volume=42, muted=False, outputs_version=outputs_version),),
+        outputs_request=request,
+    )
+
+
 def _replay_snapshot(state, **repeat_kwargs) -> CoreSnapshot:
     record = repeat_record(state, **repeat_kwargs)
     return _playing(
@@ -292,6 +306,14 @@ def _build() -> dict:
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))
     add(_appliance_warning_scenario(
         "appliance_warning_notice", _stylus_warning(dismissal="none", severity="info")))
+    add(Scenario("pin_required", _pin_snapshot(pin_request("rejected", "pin_required"))))
+    add(Scenario("pin_invalid", _pin_snapshot(pin_request("rejected", "pin_invalid", "output_pin"))))
+    add(Scenario("pin_busy", _pin_snapshot(pin_request("pending", None, "output_pin"))))
+    add(Scenario("pin_rate_limited", _pin_snapshot(
+        pin_request("rejected", "rate_limited", "output_pin", retry_after_s=7))))
+    add(Scenario("pin_required_v1", _pin_snapshot(
+        pin_request("rejected", "pin_required"), outputs_version=1)))
+    add(Scenario("pin_expired", _pin_snapshot(pin_request("rejected", "pin_required", at=NOW - 100))))
     add(Scenario("disconnected", base(
         polling=False, appliances=(), network=NetworkView(link=LINK_DOWN), sd_health=None,
     ), muted=None))

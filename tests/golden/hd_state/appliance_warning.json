@@ -155,6 +155,7 @@
   },
   "eq_available": true,
   "transport": null,
+  "outputs_request": null,
   "warnings": {
     "due": "appliance:aaaaaaaaaaaaaaaaaaaa:stylus_in1",
     "cards": [

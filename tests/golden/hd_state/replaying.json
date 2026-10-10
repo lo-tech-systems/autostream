@@ -152,8 +152,13 @@
     "appliance_id": "aaaaaaaaaaaaaaaaaaaa",
     "kind": "seek",
     "state": "accepted",
-    "error": null
+    "error": null,
+    "output_id": null,
+    "retry_after_s": 0,
+    "requested_at": 998.0,
+    "awaiting_pin": false
   },
+  "outputs_request": null,
   "warnings": {
     "due": null,
     "cards": []

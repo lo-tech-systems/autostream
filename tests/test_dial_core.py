@@ -1,6 +1,7 @@
 """Tests for dial/dial_core.py: snapshot, publish and subscribe."""
 import dataclasses
 import gc
+import logging
 import os
 import sys
 import threading
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import pytest
 
 from dial_core import DialCore, create_dial_core
+import dial_core_state as cs
 from dial_core_state import CoreSnapshot, FocusState, NowPlaying, artwork_key
 
 
@@ -768,7 +770,8 @@ class TestArtworkBytes:
 
 from unittest.mock import patch  # noqa: E402
 
-from dial_core import RepeatOutcome  # noqa: E402
+import dial_capabilities  # noqa: E402
+from dial_core import OutputsEffect, RepeatOutcome  # noqa: E402
 from dial_core_state import ActionResult, EqBand, OutputRow, TransportRequest  # noqa: E402
 
 
@@ -874,6 +877,26 @@ class TestWatchOutputs:
         fetch.assert_not_called()
 
 
+def _loaded_outputs(clock=None, v2=False):
+    """A core holding the rows and, for *v2*, an appliance whose capabilities
+    reply announced the PIN-capable outputs capability."""
+    dial_capabilities.registry.clear()
+    core = _core(clock)
+    if v2:
+        dial_capabilities.record(AID, "0.8.0", {"dial_status": 1, "dial_outputs": 2}, 0.0)
+        entry = dataclasses.replace(_entry(dial_outputs=True), dial_proto_version=3, version="0.8.0")
+    else:
+        entry = _entry(dial_outputs=True)
+    core.set_roster([entry])
+    core.set_field("reporting_id", AID)
+    with patch("dial_core.enqueue_fetch"):
+        core.watch_outputs(AID, "spi", True)
+    core.on_outputs_result("fetch", AID, 200, _outputs_body(
+        *_ROWS, ("3", "Hall", True, 20, True, "Den"),
+    ))
+    return core
+
+
 class TestOutputsResult:
     def _watching(self, clock=None):
         core = _io_core(clock)
@@ -902,10 +925,110 @@ class TestOutputsResult:
         assert (rows[0].remote_in_use, rows[0].remote_owner) == (False, None)
         assert (rows[1].remote_in_use, rows[1].remote_owner) == (True, "Hall")
 
-    def test_a_set_result_is_not_applied(self):
+    def test_a_set_reply_never_replaces_the_rows(self):
         core = self._watching()
-        assert not core.on_outputs_result("set", AID, 200, _outputs_body(*_ROWS))
+        core.on_outputs_result("set", AID, 200, _outputs_body(*_ROWS))
         assert core.snapshot().outputs.rows == ()
+
+    def _sent(self, clock=None, v2=False):
+        core = _loaded_outputs(clock, v2=v2)
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "2", selected=True)
+        return core
+
+    def test_a_set_reply_resolves_the_pending_request(self):
+        clock = _Clock(1000.0)
+        core = self._sent(clock)
+        pending = core.snapshot().outputs_request
+        assert (pending.kind, pending.state, pending.output_id) == ("output_set", "pending", "2")
+        clock.t = 1002.0
+        assert core.on_outputs_result("set", AID, 200, {"ok": True, "id": "2"})
+        done = core.snapshot().outputs_request
+        assert (done.state, done.error, done.changed_at, done.requested_at) == ("accepted", None, 1002.0, 1000.0)
+        assert core.outputs_override() == ("2", True, 0, 1000.0)    # kept until a fetch reads it back
+
+    def test_a_refused_set_clears_the_pending_tap_at_once(self):
+        core = self._sent()
+        seen = []
+        core.subscribe(lambda: seen.append(core.snapshot()))
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "output_in_use", "owner": "Den"})
+        snap = core.snapshot()
+        assert snap.outputs.optimistic is None and core.outputs_override() is None
+        assert (snap.outputs_request.state, snap.outputs_request.error) == ("rejected", "output_in_use")
+        # The request and the dropped tap land in one snapshot.
+        assert seen[0].outputs.optimistic is None and seen[0].outputs_request.state == "rejected"
+
+    def test_a_refusal_leaves_a_tap_for_another_output_alone(self):
+        core = self._sent()
+        core.set_outputs_override(("1", False, 40, 1000.0))
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "encoder_capacity"})
+        assert core.outputs_override() == ("1", False, 40, 1000.0)
+
+    def test_a_set_reply_with_nothing_pending_changes_nothing(self):
+        core = _loaded_outputs()
+        seq = core.snapshot().seq
+        assert not core.on_outputs_result("set", AID, 200, {"ok": False, "error": "x"})
+        assert core.snapshot().seq == seq and core.take_effects() == []
+        core = self._sent()
+        core.on_outputs_result("set", AID, 200, {"ok": True})
+        seq = core.snapshot().seq
+        core.take_effects()
+        assert not core.on_outputs_result("set", AID, 200, {"ok": False, "error": "late"})
+        assert core.snapshot().seq == seq and core.snapshot().outputs_request.state == "accepted"
+
+    def test_a_set_reply_for_another_appliance_is_dropped(self):
+        core = self._sent()
+        seq = core.snapshot().seq
+        assert not core.on_outputs_result("set", BID, 200, {"ok": False, "error": "x"})
+        assert core.snapshot().seq == seq and core.snapshot().outputs_request.state == "pending"
+
+    def test_the_effect_names_output_kind_outcome_and_error(self):
+        core = self._sent()
+        core.take_effects()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "pin_required": True, "error": "Output requires PIN"})
+        assert core.take_effects() == [OutputsEffect(AID, "2", "output_set", "rejected", "pin_required")]
+        core = self._sent()
+        core.take_effects()
+        core.on_outputs_result("set", AID, 200, {"ok": True})
+        assert core.take_effects() == [OutputsEffect(AID, "2", "output_set", "accepted", None)]
+
+    def test_a_lost_reply_is_unreachable(self):
+        core = self._sent()
+        core.on_outputs_result("set", AID, None, None)
+        held = core.snapshot().outputs_request
+        assert (held.state, held.error) == ("rejected", "unreachable")
+        assert core.outputs_override() is None
+
+    def test_a_rate_limited_reply_carries_the_wait_on_the_request(self):
+        core = self._sent()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": 42})
+        held = core.snapshot().outputs_request
+        assert (held.error, held.retry_after_s) == ("rate_limited", 42)
+
+    @pytest.mark.parametrize("wait", [True, "5", 7.9, -3, None, [3], {"a": 1}])
+    def test_a_hostile_wait_reads_as_zero(self, wait):
+        core = self._sent()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": wait})
+        assert core.snapshot().outputs_request.retry_after_s == 0
+
+    def test_a_huge_wait_is_capped_and_only_a_rate_limit_carries_one(self):
+        core = self._sent()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "rate_limited", "retry_after_s": 10 ** 9})
+        assert core.snapshot().outputs_request.retry_after_s == 3600
+        core = self._sent()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "config_error", "retry_after_s": 30})
+        assert core.snapshot().outputs_request.retry_after_s == 0
+
+    @pytest.mark.parametrize("body", [
+        "junk", [], 5, {"ok": False, "error": ["pin_required"]}, {"ok": False, "error": "x" * 400},
+        {"ok": False, "error": "Backend returned HTTP 500"}, {"ok": "yes"}, {"pin_required": "true"},
+    ])
+    def test_a_hostile_reply_is_a_backend_error(self, body):
+        core = self._sent()
+        core.on_outputs_result("set", AID, 200, body)
+        held = core.snapshot().outputs_request
+        assert (held.state, held.error) == ("rejected", "backend_error")
+        assert core.outputs_override() is None
 
     def test_a_late_result_for_another_appliance_is_dropped(self):
         core = self._watching()
@@ -957,14 +1080,16 @@ class TestSetOutput:
         assert core.snapshot().outputs.optimistic == ("2", True, 0, 1000.0)
         target, output_id = send.call_args[0]
         assert (target.appliance_id, target.ip, output_id) == (AID, "192.0.2.10", "2")
-        assert send.call_args[1] == {"selected": True, "volume": None}
+        assert send.call_args[1] == {
+            "selected": True, "volume": None, "pin": None, "pin_capable": False}
 
     def test_a_level_is_sent_and_shown(self):
         core = self._loaded(_Clock(1000.0))
         with patch("dial_core.enqueue_set") as send:
             core.set_output(AID, "1", selected=True, volume=55)
         assert core.outputs_override() == ("1", True, 55, 1000.0)
-        assert send.call_args[1] == {"selected": True, "volume": 55}
+        assert send.call_args[1] == {
+            "selected": True, "volume": 55, "pin": None, "pin_capable": False}
 
     def test_the_step_clamps_and_starts_from_the_tap_shown(self):
         core = self._loaded(_Clock(1000.0))
@@ -1010,6 +1135,136 @@ class TestSetOutput:
         core.watch_outputs(AID, "spi", False)
         assert core.snapshot().outputs is None
         assert core.outputs_override() == ("1", False, 40, 1000.0)
+
+
+class TestSetOutputPin:
+    def _core(self, clock=None, v2=True):
+        return _loaded_outputs(clock or _Clock(1000.0), v2=v2)
+
+    def test_a_pin_is_sent_with_op_pin_and_selected_true(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set") as send:
+            result = core.set_output(AID, "2", selected=None, pin="1234")
+        assert result == ActionResult(True)
+        assert send.call_args[1] == {
+            "selected": True, "volume": None, "pin": "1234", "pin_capable": False}
+        assert core.outputs_override() == ("2", True, 0, 1000.0)
+        assert core.snapshot().outputs_request.kind == "output_pin"
+
+    def test_a_pin_overrides_a_false_selected(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set") as send:
+            core.set_output(AID, "2", selected=False, pin="12345678")
+        assert send.call_args[1]["selected"] is True
+
+    def test_pin_entry_declares_pin_capable(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set") as send:
+            core.set_output(AID, "2", selected=True, pin_entry=True)
+        assert send.call_args[1]["pin_capable"] is True and send.call_args[1]["pin"] is None
+        assert core.snapshot().outputs_request.kind == "output_set"
+
+    def test_pin_entry_is_not_declared_to_an_appliance_that_does_not_know_it(self):
+        core = self._core(v2=False)
+        with patch("dial_core.enqueue_set") as send:
+            assert core.set_output(AID, "2", selected=True, pin_entry=True).accepted
+        assert send.call_args[1]["pin_capable"] is False
+
+    def test_a_pin_is_refused_for_an_appliance_without_the_second_capability(self):
+        core = self._core(v2=False)
+        seq = core.snapshot().seq
+        with patch("dial_core.enqueue_set") as send:
+            assert core.set_output(AID, "2", pin="1234") == ActionResult(False, "no_capability")
+        send.assert_not_called()
+        assert core.snapshot().seq == seq and core.snapshot().outputs_request is None
+
+    @pytest.mark.parametrize("pin", [
+        "", "123", "123456789", "abcd", "12 34", "1234\n", " 1234", "１２３４", "-1234", "1e34",
+        1234, 12.5, True, b"1234", ["1234"], {"pin": "1234"},
+    ])
+    def test_a_malformed_pin_is_refused_without_sending(self, pin):
+        core = self._core()
+        seq = core.snapshot().seq
+        with patch("dial_core.enqueue_set") as send:
+            assert core.set_output(AID, "2", selected=True, pin=pin) == ActionResult(False, "wrong_state")
+        send.assert_not_called()
+        assert core.snapshot().seq == seq and core.outputs_override() is None
+
+    @pytest.mark.parametrize("pin", ["1234", "12345", "123456", "1234567", "12345678", "0000"])
+    def test_four_to_eight_digits_are_accepted(self, pin):
+        core = self._core()
+        with patch("dial_core.enqueue_set") as send:
+            assert core.set_output(AID, "2", pin=pin).accepted
+        assert send.call_args[1]["pin"] == pin
+
+    def test_the_request_lane_is_pending_in_the_same_snapshot_as_the_tap(self):
+        core = self._core()
+        seen = []
+        core.subscribe(lambda: seen.append(core.snapshot()))
+        seq = core.snapshot().seq
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "2", selected=True)
+        assert len(seen) == 1 and seen[0].seq == seq + 1
+        assert seen[0].outputs.optimistic == ("2", True, 0, 1000.0)
+        request = seen[0].outputs_request
+        assert (request.appliance_id, request.kind, request.state, request.output_id) == (
+            AID, "output_set", "pending", "2")
+        assert (request.requested_at, request.error, request.retry_after_s) == (1000.0, None, 0)
+
+    def test_the_request_lane_never_holds_the_pin(self):
+        core = self._core()
+        snaps = []
+        core.subscribe(lambda: snaps.append(core.snapshot()))
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "2", pin="4829")
+        core.on_outputs_result("set", AID, 200, {"ok": False, "pin_invalid": True, "error": "Wrong PIN 4829"},
+                               {"id": "2", "op": "pin", "pin": "4829"})
+        snaps.append(core.snapshot())
+        for snap in snaps:
+            assert "4829" not in repr(snap)
+        assert "4829" not in repr(core.take_effects())
+        assert "4829" not in repr(core._state)
+
+    def test_the_pin_never_reaches_the_logs(self, caplog):
+        core = self._core()
+        with caplog.at_level(logging.DEBUG):
+            with patch("dial_core.enqueue_set"):
+                core.set_output(AID, "2", pin="4829")
+            core.on_outputs_result("set", AID, 200, {"ok": False, "pin_invalid": True})
+            core.set_output(AID, "2", pin="abc4829")
+        assert "4829" not in caplog.text
+
+    def test_a_second_request_replaces_the_first(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "2", selected=True)
+            core.set_output(AID, "1", selected=False)
+        request = core.snapshot().outputs_request
+        assert (request.output_id, request.state) == ("1", "pending")
+        assert core.outputs_override()[:2] == ("1", False)
+
+    def test_a_rejection_of_a_pin_keeps_the_request_owed_an_answer(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "2", pin="1234")
+        assert cs.awaiting_pin(core.snapshot().outputs_request, 1001.0)
+        core.on_outputs_result("set", AID, 200, {"ok": False, "pin_invalid": True})
+        assert cs.awaiting_pin(core.snapshot().outputs_request, 1001.0)
+        assert not cs.awaiting_pin(core.snapshot().outputs_request, 1000.0 + cs.PIN_WINDOW_S + 1)
+
+    def test_a_lost_reply_to_a_pin_is_still_owed_an_answer(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "2", pin="1234")
+        core.on_outputs_result("set", AID, None, None)
+        assert core.snapshot().outputs_request.error == "unreachable"
+        assert cs.awaiting_pin(core.snapshot().outputs_request, 1001.0)
+
+    def test_a_volume_step_uses_the_lane_too(self):
+        core = self._core()
+        with patch("dial_core.enqueue_set"):
+            core.step_output_volume(AID, "1", +2)
+        assert core.snapshot().outputs_request.kind == "output_set"
 
 
 def _eq_body(bass, treble):

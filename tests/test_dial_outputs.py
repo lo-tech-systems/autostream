@@ -103,6 +103,29 @@ class _RaisingConn:
         pass
 
 
+class _OnePass(BaseException):
+    pass
+
+
+def _run_worker_once(items):
+    """Run the worker loop over *items* on this thread, then stop it. The
+    shared queue and the worker threads other tests leave parked on it are
+    not touched."""
+    pending = list(items)
+
+    class _Items:
+        def get(self):
+            if not pending:
+                raise _OnePass()
+            return pending.pop(0)
+
+    with patch.object(do, "_queue", _Items()), patch.object(do, "enqueue_fetch"):
+        try:
+            do._worker()
+        except _OnePass:
+            pass
+
+
 def _drain_queue():
     """Empty dial_outputs._queue and clear pending-fetch bookkeeping so
     tests never see leftovers from a previous test."""
@@ -145,6 +168,21 @@ class TestSendOneRequestShape:
         sent = json.loads(req["body"])
         assert sent == {"dial_id": "dial-uuid"}
         assert req["headers"]["Content-Type"] == "application/json"
+
+    def test_a_set_uses_the_longer_timeout_and_a_fetch_the_short_one(self):
+        patcher, instances = _mock_conn({"ok": True})
+        with patcher:
+            _run_worker_once([("fetch", _target(), {}), ("set", _target(), {"id": "1"})])
+        assert do.OUTPUTS_SET_TIMEOUT_S == 10.0 and do.OUTPUTS_SEND_TIMEOUT_S == 2.0
+        by_path = {i.request_called_with["url"]: i.timeout for i in instances}
+        assert by_path["/api/dial/outputs"] == 2.0
+        assert by_path["/api/dial/outputs/set"] == 10.0
+
+    def test_send_one_defaults_to_the_short_timeout(self):
+        patcher, instances = _mock_conn({"ok": True})
+        with patcher:
+            _send_one("/api/dial/outputs", _target(), {})
+        assert instances[0].timeout == OUTPUTS_SEND_TIMEOUT_S
 
     def test_set_path_and_body(self):
         patcher, instances = _mock_conn({"ok": True, "id": "1"})
@@ -293,6 +331,19 @@ class TestEnqueue:
         enqueue_fetch(target)
         assert do._queue.qsize() == 1
 
+    def test_enqueue_set_adds_op_pin_and_pin_capable_only_when_given(self):
+        target = _target()
+        enqueue_set(target, "1", selected=True, volume=None, pin="1234", pin_capable=True)
+        assert do._queue.get_nowait()[2] == {
+            "id": "1", "selected": True, "op": "pin", "pin": "1234", "pin_capable": True}
+        enqueue_set(target, "1", selected=True, volume=None, pin_capable=True)
+        assert do._queue.get_nowait()[2] == {"id": "1", "selected": True, "pin_capable": True}
+        enqueue_set(target, "1", selected=True, volume=None, pin="1234")
+        assert do._queue.get_nowait()[2] == {
+            "id": "1", "selected": True, "op": "pin", "pin": "1234"}
+        enqueue_set(target, "1", selected=True, volume=None)
+        assert do._queue.get_nowait()[2] == {"id": "1", "selected": True}
+
     def test_set_is_never_coalesced(self):
         target = _target()
         enqueue_set(target, "1", selected=True, volume=10)
@@ -352,6 +403,31 @@ class TestWorker:
                 time.sleep(0.01)
 
         assert results == ["set", "fetch"]
+
+    def test_nothing_the_worker_logs_contains_the_pin(self, caplog):
+        seen = []
+
+        def on_result(kind, appliance_id, status, body, request):
+            seen.append((kind, request))
+            raise RuntimeError("callback boom")
+
+        with patch.object(do, "_queue") as q:
+            enqueue_set(_target(appliance_id="g" * 20), "1", selected=True, volume=None, pin="4829")
+        item = q.put.call_args[0][0]
+        patcher, instances = _mock_conn({"ok": False, "pin_invalid": True})
+        with caplog.at_level("DEBUG"), patcher:
+            saved = do._cfg, do._on_result
+            do._cfg, do._on_result = MagicMock(uuid="dial-uuid"), on_result
+            try:
+                _run_worker_once([item])
+            finally:
+                do._cfg, do._on_result = saved
+        assert "4829" not in caplog.text
+        # The appliance is sent the PIN; the callback is told what was asked, without it.
+        sent = next(i for i in instances if i.request_called_with["url"].endswith("/set"))
+        assert json.loads(sent.request_called_with["body"])["pin"] == "4829"
+        set_request = next(r for k, r in seen if k == "set")
+        assert "pin" not in set_request and set_request["op"] == "pin"
 
     def test_worker_survives_a_raising_callback_and_keeps_processing(self):
         """A raising on_result for one item must not stop the worker from

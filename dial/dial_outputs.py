@@ -38,6 +38,11 @@ from dataclasses import dataclass
 # a volume detent or a repeat transport send.
 OUTPUTS_SEND_TIMEOUT_S = 2.0
 
+# A set waits on the appliance, which waits on the player: an enable up to
+# three seconds, a PIN followed by an enable twice that, plus the check that
+# the output is free. The fetches keep the short budget above.
+OUTPUTS_SET_TIMEOUT_S = 10.0
+
 # A generous but bounded read — the response bodies this protocol returns
 # are a handful of fields plus a short output list, never anything
 # approaching this size; the cap exists only to stop a misbehaving or
@@ -103,19 +108,30 @@ def enqueue_fetch(target: "_OutputsTarget") -> None:
 
 def enqueue_set(
     target: "_OutputsTarget", output_id: str, *, selected: bool, volume: "int | None",
+    pin: "str | None" = None, pin_capable: bool = False,
 ) -> None:
     """Enqueue an enable/disable/volume change for *output_id* on *target*.
     Returns immediately — same discipline as enqueue_fetch(). Called from
     the touch thread. *volume* is omitted from the body when None (a plain
     enable/disable with no explicit level), letting the appliance apply its
-    own configured default on an enable."""
+    own configured default on an enable. A *pin* makes it a PIN submission
+    (the appliance pairs the speaker and, with selected true, enables it);
+    *pin_capable* tells the appliance this sender can answer a request for
+    a PIN. The body is never logged."""
     body: dict = {"id": output_id, "selected": bool(selected)}
     if volume is not None:
         body["volume"] = int(volume)
+    if pin is not None:
+        body["op"] = "pin"
+        body["pin"] = pin
+    if pin_capable:
+        body["pin_capable"] = True
     _queue.put(("set", target, body))
 
 
-def _send_one(path: str, target: "_OutputsTarget", body: dict) -> "tuple[int | None, dict | None]":
+def _send_one(
+    path: str, target: "_OutputsTarget", body: dict, timeout: float = OUTPUTS_SEND_TIMEOUT_S,
+) -> "tuple[int | None, dict | None]":
     """POST *body* (plus this dial's id) to *target* at *path*.
 
     Never raises: any connection, timeout or parse failure returns
@@ -125,7 +141,7 @@ def _send_one(path: str, target: "_OutputsTarget", body: dict) -> "tuple[int | N
     rather than raising.
     """
     try:
-        conn = http.client.HTTPConnection(target.ip, target.port, timeout=OUTPUTS_SEND_TIMEOUT_S)
+        conn = http.client.HTTPConnection(target.ip, target.port, timeout=timeout)
         try:
             payload = dict(body)
             payload["dial_id"] = _cfg.uuid if _cfg is not None else ""
@@ -157,13 +173,15 @@ def _worker() -> None:
         if kind == "fetch":
             with _pending_fetch_lock:
                 _pending_fetch_ids.discard(target.appliance_id)
-            path = _FETCH_PATH
+            path, timeout = _FETCH_PATH, OUTPUTS_SEND_TIMEOUT_S
         else:
-            path = _SET_PATH
-        status, body = _send_one(path, target, payload)
+            path, timeout = _SET_PATH, OUTPUTS_SET_TIMEOUT_S
+        status, body = _send_one(path, target, payload, timeout)
+        # The callback is told what was asked, never the PIN.
+        request = {k: v for k, v in payload.items() if k != "pin"}
         if _on_result is not None:
             try:
-                _on_result(kind, target.appliance_id, status, body, payload)
+                _on_result(kind, target.appliance_id, status, body, request)
             except Exception:
                 logging.debug("dial outputs: on_result callback raised", exc_info=True)
         if kind == "set":

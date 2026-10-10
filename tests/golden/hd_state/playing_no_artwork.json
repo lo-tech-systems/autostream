@@ -141,6 +141,7 @@
   },
   "eq_available": true,
   "transport": null,
+  "outputs_request": null,
   "warnings": {
     "due": null,
     "cards": []

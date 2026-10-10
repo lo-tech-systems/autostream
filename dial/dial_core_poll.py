@@ -453,7 +453,9 @@ def parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
     taken is kept and marked (`remote_in_use`, with `remote_owner` when the
     reply names it) so a surface can show it dimmed; one that is not
     well-formed is skipped, as it never made the result unusable. The optional
-    `is_default` flag reads as false when absent."""
+    `is_default` flag reads as false when absent. `needs_auth_key` reads
+    the same way (false unless it is the bool true); the list's other pairing
+    fields are not read here."""
     if status != 200 or not isinstance(body, dict) or body.get("ok") is not True:
         return None
     raw = body.get("outputs")
@@ -480,8 +482,46 @@ def parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
             remote_in_use=in_use,
             remote_owner=owner if in_use and isinstance(owner, str) and owner else None,
             is_default=bool(o.get("is_default")),
+            needs_auth_key=o.get("needs_auth_key") is True,
         ))
     return tuple(rows)
+
+
+_REPLY_ID_RE = re.compile(r"^[a-z_]{1,32}\Z")
+RETRY_AFTER_MAX_S = 3600
+
+
+def reply_error_id(status, body) -> "str | None":
+    """None for an accepted set reply (200 with ok true); otherwise the id a
+    view keys its reaction on: pin_invalid, pin_required, a short typed
+    error, unreachable (no reply), else backend_error. A reply whose error
+    is not a short lower-case id (a backend's free text, anything of another
+    type) is backend_error, so nothing a responder sends reaches a screen."""
+    if status is None:
+        return "unreachable"
+    if isinstance(body, dict):
+        if status == 200 and body.get("ok") is True:
+            return None
+        if body.get("pin_invalid") is True:
+            return "pin_invalid"
+        if body.get("pin_required") is True:
+            return "pin_required"
+        error = body.get("error")
+        if isinstance(error, str) and _REPLY_ID_RE.match(error):
+            return error
+    return "backend_error"
+
+
+def reply_retry_after(body) -> int:
+    """The whole seconds a reply asks the sender to wait: a non-negative int
+    capped at RETRY_AFTER_MAX_S; 0 for anything else (bools and floats
+    included)."""
+    if not isinstance(body, dict):
+        return 0
+    value = body.get("retry_after_s")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return min(value, RETRY_AFTER_MAX_S)
 
 
 _DERIVED_EQ_IDS = ("bass", "treble")

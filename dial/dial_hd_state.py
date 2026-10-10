@@ -22,6 +22,7 @@ import json
 from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
+from dial_core_state import awaiting_pin
 from dial_warning_text import appliance_warning_key
 
 # The body's version. Bumped only for a change an older page could not read;
@@ -270,8 +271,7 @@ def _eq_block(snapshot, now: float) -> dict | None:
     }
 
 
-def _transport_block(snapshot) -> dict | None:
-    held = snapshot.transport
+def _request_block(held, now: float) -> dict | None:
     if held is None:
         return None
     return {
@@ -279,6 +279,11 @@ def _transport_block(snapshot) -> dict | None:
         "kind": held.kind,
         "state": held.state,
         "error": held.error,
+        "output_id": held.output_id,
+        "retry_after_s": held.retry_after_s,
+        # An opaque identity for the page to remember a dismissal by; never drawn.
+        "requested_at": held.requested_at,
+        "awaiting_pin": awaiting_pin(held, now),
     }
 
 
@@ -426,7 +431,8 @@ def build_state(
         "outputs_available": bool(snapshot.outputs_available),
         "eq": _eq_block(snapshot, now),
         "eq_available": bool(snapshot.eq_available),
-        "transport": _transport_block(snapshot),
+        "transport": _request_block(snapshot.transport, now),
+        "outputs_request": _request_block(snapshot.outputs_request, now),
         "warnings": _warnings_block(snapshot, descriptors, wall_now),
         "network": _network_block(snapshot.network),
         "sd_health": _sd_health_block(snapshot.sd_health),

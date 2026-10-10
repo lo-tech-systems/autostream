@@ -55,6 +55,7 @@
   "eq": null,
   "eq_available": false,
   "transport": null,
+  "outputs_request": null,
   "warnings": {
     "due": "update_result",
     "cards": [

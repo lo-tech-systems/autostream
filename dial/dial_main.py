@@ -19,6 +19,7 @@ from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_con
 from dial_display_profiles import get_profile_or_default
 from dial_control import DialControlServer
 from dial_core import create_dial_core
+from dial_core_state import awaiting_pin
 from dial_hd_events import ChangeHub
 from dial_hd_panel import Backlight, HdPanel
 from dial_hd_server import HdServer
@@ -785,7 +786,10 @@ def main() -> None:
 
         def panel_inputs() -> tuple[bool, bool]:
             due = core.warnings.due()
-            return bool(core.snapshot().visible_playing), bool(due is not None and due.interrupting)
+            snap = core.snapshot()
+            # A PIN being asked for keeps the panel awake: nobody is playing, but someone is at the keypad.
+            awaiting = awaiting_pin(snap.outputs_request, time.monotonic())
+            return bool(snap.visible_playing) or awaiting, bool(due is not None and due.interrupting)
 
         hd_panel = HdPanel(
             hd_hub, settings=lambda: http_server.display_config,

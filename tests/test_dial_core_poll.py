@@ -752,3 +752,79 @@ class TestParseEqBodySixBand:
     def test_a_failed_request_is_transient_at_version_two(self):
         assert cp.parse_eq_body(500, _six_band_body(), 2) is None
         assert cp.parse_eq_body(200, None, 2) is None
+
+
+# ---------------------------------------------------------------------------
+# Pairing flag on the rows and the set-reply readers
+# ---------------------------------------------------------------------------
+
+
+class TestPairingFlag:
+    def test_rows_read_needs_auth_key_and_default_it(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            _out("1", needs_auth_key=True), _out("2"), _out("3", needs_auth_key=None),
+            _out("4", needs_auth_key="yes"), _out("5", needs_auth_key=1),
+            _out("6", needs_auth_key=False),
+        ]})
+        assert [r.needs_auth_key for r in rows] == [True, False, False, False, False, False]
+
+    def test_the_other_pairing_fields_are_not_read(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            _out("1", pin_pending=True, pin_claim="webui"),
+        ]})
+        assert rows == (OutputRow("1", "Bedroom", True, 40),)
+
+
+class TestReplyErrorId:
+    @pytest.mark.parametrize("status, body, expected", [
+        (200, {"ok": True}, None),
+        (200, {"ok": True, "id": "2"}, None),
+        (200, {"ok": False, "pin_required": True, "error": "Output requires PIN"}, "pin_required"),
+        (200, {"ok": False, "pin_invalid": True, "error": "Wrong PIN"}, "pin_invalid"),
+        (200, {"ok": False, "pin_required": True, "pin_invalid": True}, "pin_invalid"),
+        (200, {"ok": False, "error": "output_in_use", "owner": "Den"}, "output_in_use"),
+        (200, {"ok": False, "error": "encoder_capacity"}, "encoder_capacity"),
+        (200, {"ok": False, "error": "rate_limited", "retry_after_s": 42}, "rate_limited"),
+        (200, {"ok": False, "error": "invalid_pin"}, "invalid_pin"),
+        (412, {"ok": False, "error": "dial_not_authorized"}, "dial_not_authorized"),
+        (400, {"ok": False, "error": "invalid_request_body"}, "invalid_request_body"),
+        (200, {"ok": False, "error": "Backend returned HTTP 500"}, "backend_error"),
+        (200, {"ok": False, "error": "x" * 40}, "backend_error"),
+        (200, {"ok": False, "error": "x" * 32}, "x" * 32),
+        (200, {"ok": False, "error": "bad\n"}, "backend_error"),
+        (200, {"ok": False, "error": 7}, "backend_error"),
+        (200, {"ok": False, "error": None}, "backend_error"),
+        (200, {"ok": False}, "backend_error"),
+        (200, {"ok": "yes"}, "backend_error"),
+        (200, {"ok": 1}, "backend_error"),
+        (200, {"pin_required": "true"}, "backend_error"),
+        (500, {"ok": True}, "backend_error"),
+        (200, "junk", "backend_error"),
+        (200, None, "backend_error"),
+        (200, [], "backend_error"),
+        (None, None, "unreachable"),
+        (None, {"ok": True}, "unreachable"),
+    ])
+    def test_the_id_a_view_keys_on(self, status, body, expected):
+        assert cp.reply_error_id(status, body) == expected
+
+
+class TestReplyRetryAfter:
+    @pytest.mark.parametrize("body, expected", [
+        ({"retry_after_s": 42}, 42),
+        ({"retry_after_s": 0}, 0),
+        ({"retry_after_s": 7.9}, 0),
+        ({"retry_after_s": True}, 0),
+        ({"retry_after_s": False}, 0),
+        ({"retry_after_s": -3}, 0),
+        ({"retry_after_s": 10 ** 9}, 3600),
+        ({"retry_after_s": 3600}, 3600),
+        ({"retry_after_s": "5"}, 0),
+        ({"retry_after_s": None}, 0),
+        ({"retry_after_s": [5]}, 0),
+        ({}, 0),
+        (None, 0),
+        ("junk", 0),
+    ])
+    def test_whole_seconds_or_zero(self, body, expected):
+        assert cp.reply_retry_after(body) == expected

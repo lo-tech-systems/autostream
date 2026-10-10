@@ -77,6 +77,8 @@ class TestCorpus:
             "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_two", "eq_six",
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
             "appliance_warning", "appliance_warning_notice", "disconnected",
+            "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited", "pin_required_v1",
+            "pin_expired",
         }
 
     def test_a_build_is_repeatable(self):
@@ -264,6 +266,43 @@ class TestReachable:
     def test_an_unauthorized_appliance_is_listed_as_such(self):
         by_id = {a["id"]: a for a in _state("unauthorized")["appliances"]}
         assert by_id[hs.KITCHEN]["auth"] == "unauthorized"
+
+
+class TestOutputsRequest:
+    def test_the_block_names_the_output_the_wait_and_whether_a_pin_may_be_entered(self):
+        def block(name):
+            return _state(name)["outputs_request"]
+        assert block("pin_required") == {
+            "appliance_id": hs.LOUNGE, "kind": "output_set", "state": "rejected",
+            "error": "pin_required", "output_id": "o2", "retry_after_s": 0,
+            "requested_at": hs.NOW - 1, "awaiting_pin": True}
+        assert (block("pin_rate_limited")["awaiting_pin"], block("pin_rate_limited")["retry_after_s"]) == (True, 7)
+        assert block("pin_expired")["awaiting_pin"] is False
+        assert block("pin_busy")["awaiting_pin"] is True and block("pin_busy")["state"] == "pending"
+        assert block("pin_invalid")["awaiting_pin"] is True
+
+    def test_the_transport_block_gained_the_same_keys(self):
+        transport = _state("replaying")["transport"]
+        assert transport["kind"] == "seek" and transport["awaiting_pin"] is False
+        assert set(transport) == set(_state("pin_required")["outputs_request"])
+        assert transport["output_id"] is None and transport["retry_after_s"] == 0
+
+    def test_no_request_is_null(self):
+        state = _state("playing_artwork")
+        assert state["outputs_request"] is None and state["transport"] is None
+
+    def test_rows_carry_no_pairing_field(self):
+        for name in ("pin_required", "pin_invalid", "playing_artwork"):
+            for row in _state(name)["outputs"]["rows"]:
+                assert set(row) == {"id", "name", "selected", "volume", "in_use", "owner", "default"}
+
+    def test_the_capability_version_reaches_the_page(self):
+        assert _state("pin_required")["appliances"][0]["capabilities"]["outputs"] == 2
+        assert _state("pin_required_v1")["appliances"][0]["capabilities"]["outputs"] == 1
+
+    def test_the_body_never_carries_a_pin_field(self):
+        text = json.dumps(_state("pin_busy"))
+        assert '"pin"' not in text and "pin_value" not in text
 
 
 class TestOutputs:

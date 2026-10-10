@@ -108,6 +108,7 @@ class OutputRow:
     remote_in_use: bool = False      # owned by another appliance
     remote_owner: str | None = None  # that appliance's name once known; None until then
     is_default: bool = False         # the appliance's configured default output
+    needs_auth_key: bool = False     # a speaker that has never been paired (its first PIN is still to be entered)
 
 
 # ---- appliance snapshot types --------------------------------------------
@@ -208,11 +209,38 @@ class WarningState:
 @dataclass(frozen=True)
 class TransportRequest:
     appliance_id: str
-    kind: str                 # "seek" | "stop" | "arm"
+    kind: str                 # "seek" | "stop" | "arm" | "output_set" | "output_pin"
     requested_at: float
     state: str                # "pending" | "accepted" | "rejected"
     changed_at: float
-    error: str | None         # daemon error string on rejection, else None
+    error: str | None         # the daemon's error string on rejection, or a reply id (see dial_core_poll.reply_error_id), else None
+    output_id: str | None = None   # the output an output request was for
+    retry_after_s: int = 0         # seconds a rate-limited reply asked the sender to wait
+
+
+# The rule an appliance applies to a speaker PIN; the dial refuses anything
+# else before sending it.
+PIN_RE = re.compile(r"^[0-9]{4,8}\Z")
+# How long after a pairing outcome the screen may still be answering it.
+PIN_WINDOW_S = 90.0
+# Reply ids that mean the speaker is asking for a PIN.
+PIN_ERRORS = frozenset({"pin_required", "pin_invalid"})
+# The kinds of request the outputs lane carries.
+OUTPUT_KINDS = frozenset({"output_set", "output_pin"})
+
+
+def awaiting_pin(request, now: float) -> bool:
+    """Whether a PIN may be entered for *request*: a PIN is on its way
+    (a pending output_pin), or within PIN_WINDOW_S the request ended asking
+    for one, or a PIN attempt ended any other way (rate limited, lost) and
+    is owed an answer on the screen."""
+    if request is None or request.kind not in OUTPUT_KINDS:
+        return False
+    if request.state == "pending":
+        return request.kind == "output_pin"
+    if request.state != "rejected" or now - request.changed_at >= PIN_WINDOW_S:
+        return False
+    return request.error in PIN_ERRORS or request.kind == "output_pin"
 
 
 @dataclass(frozen=True)
@@ -278,6 +306,7 @@ class CoreSnapshot:
     ticks: int = 0                      # poll ticks completed; a snapshot with a new count ends a tick
     tick: TickContext | None = None     # what the tick that ended in this snapshot started from
     auth_promotions: int = 0            # appliances a pushed auth change has confirmed as newly authorised
+    outputs_request: TransportRequest | None = None  # the latest output request and its outcome
 
     def appliance(self, appliance_id: str | None) -> ApplianceState | None:
         if appliance_id is None:
