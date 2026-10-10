@@ -301,26 +301,28 @@ class TestHdServerWiring:
         assert captured["hd_class"].call_args.kwargs["panel"] is captured["panel"]
         assert callable(captured["hd_class"].call_args.kwargs["info_fn"])
 
-    def test_the_panel_stays_awake_while_a_pin_is_awaited(self):
+    def test_a_pin_being_awaited_engages_the_panel(self):
         import time
         from dial_core_state import TransportRequest
         captured = _run_core_wiring()
         inputs = captured["panel_class"].call_args.kwargs["inputs"]
         core = captured["core"]
-        assert inputs() == (False, False)
+        assert inputs() == (False, False, False)
 
         def set_request(request):
             core._publish(lambda state: setattr(state, "outputs_request", request))
 
         now = time.monotonic()
         set_request(TransportRequest("a" * 20, "output_pin", now, "pending", now, None, "o2"))
-        assert inputs() == (True, False)
+        assert inputs() == (False, False, True)
         set_request(TransportRequest("a" * 20, "output_set", now, "rejected", now, "pin_required", "o2"))
-        assert inputs() == (True, False)
+        assert inputs() == (False, False, True)
         set_request(TransportRequest("a" * 20, "output_set", now, "rejected", now, "output_in_use", "o2"))
-        assert inputs() == (False, False)
+        assert inputs() == (False, False, False)
         set_request(TransportRequest("a" * 20, "output_set", now - 500, "rejected", now - 500, "pin_required", "o2"))
-        assert inputs() == (False, False)
+        assert inputs() == (False, False, False)
+        core._publish(lambda state: setattr(state, "visible_playing", ("o1",)))
+        assert inputs() == (True, False, False)       # playback alone
 
     def test_the_panel_drives_a_backlight_only_on_a_kiosk_surface(self):
         spi = _run_core_wiring(screen_type="st7735s_160x128")

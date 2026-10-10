@@ -9,9 +9,10 @@ dial_hd_ddc.py); both have the same interface. With no backlight the
 page-only shield is all there is.
 
 The idle clock starts when nothing is playing and restarts on activity. After
-the configured sleep-after time the panel sleeps. Playback starting, or an
-interrupting warning becoming due, wakes it; an appliance warning that does
-not interrupt never does.
+the configured sleep-after time the panel sleeps. Someone in the middle of
+something on the page (engaged) holds it awake without restarting the idle
+clock. Playback starting, or an interrupting warning becoming due, wakes it;
+an appliance warning that does not interrupt never does.
 
 Locking: one small lock guards the panel's own fields and is never held while
 calling out (the hub, the settings reader, the backlight). Backlight writes
@@ -115,12 +116,12 @@ class HdPanel:
     """*hub* is published to on every transition. *settings* returns the
     current screen settings (sleep_after_s, brightness, always_show_controls).
     *kiosk* says the page is shown on this dial's own screen.
-    *inputs*, when given, returns (playing, interrupting) and feeds the
+    *inputs*, when given, returns (playing, interrupting, engaged) and feeds the
     background tick started by start()."""
 
     def __init__(
         self, hub, *, settings: Callable[[], object], backlight: "BacklightBase | None" = None,
-        inputs: "Callable[[], tuple[bool, bool]] | None" = None, clock=time.monotonic,
+        inputs: "Callable[[], tuple[bool, bool, bool]] | None" = None, clock=time.monotonic,
         kiosk: bool = False,
     ) -> None:
         self._hub = hub
@@ -160,8 +161,8 @@ class HdPanel:
     def _run(self) -> None:
         while not self._stop.wait(TICK_S):
             try:
-                playing, interrupting = self._inputs()
-                self.tick(self._clock(), playing=playing, interrupt=interrupting)
+                playing, interrupting, engaged = self._inputs()
+                self.tick(self._clock(), playing=playing, interrupt=interrupting, engaged=engaged)
             except Exception:
                 logging.debug("hd panel: tick failed", exc_info=True)
 
@@ -214,9 +215,10 @@ class HdPanel:
         self._apply_backlight()
         self._hub.publish()
 
-    def tick(self, now: float, *, playing: bool, interrupt: bool) -> None:
+    def tick(self, now: float, *, playing: bool, interrupt: bool, engaged: bool = False) -> None:
         """Fold what is playing and whether an interrupting warning is due,
-        and sleep when the idle time has run out."""
+        and sleep when the idle time has run out. *engaged* (someone mid-task on
+        the page) only defers the sleep: it neither wakes nor restarts the clock."""
         sleep_after = self._settings().sleep_after_s
         changed = False
         with self._lock:
@@ -236,7 +238,7 @@ class HdPanel:
                 if not playing:
                     self._idle_since = now
             elif (
-                not self._asleep and not playing and sleep_after > 0
+                not self._asleep and not playing and not engaged and sleep_after > 0
                 and self._idle_since is not None and now - self._idle_since >= sleep_after
             ):
                 self._asleep = True

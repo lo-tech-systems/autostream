@@ -86,7 +86,8 @@ def panel(hub, settings, clock):
 
 def idle(panel, clock, seconds, **kwargs):
     clock.now += seconds
-    panel.tick(clock.now, playing=kwargs.get("playing", False), interrupt=kwargs.get("interrupt", False))
+    panel.tick(clock.now, playing=kwargs.get("playing", False), interrupt=kwargs.get("interrupt", False),
+               engaged=kwargs.get("engaged", False))
 
 
 # ---- the idle clock --------------------------------------------------------
@@ -143,6 +144,14 @@ class TestIdleClock:
         idle(panel, clock, 10)
         assert panel.view()["asleep"] is True
 
+    def test_engaged_holds_it_awake_without_restarting_the_clock(self, panel, clock):
+        panel.tick(clock.now, playing=False, interrupt=False)
+        idle(panel, clock, 290, engaged=True)
+        idle(panel, clock, 10, engaged=True)
+        assert panel.view()["asleep"] is False
+        idle(panel, clock, 1)                          # the clock was never restarted
+        assert panel.view()["asleep"] is True
+
     def test_ticks_while_asleep_change_nothing(self, panel, clock, hub):
         panel.tick(clock.now, playing=False, interrupt=False)
         idle(panel, clock, 300)
@@ -155,6 +164,20 @@ class TestWakeRules:
     def asleep(self, panel, clock):
         panel.tick(clock.now, playing=False, interrupt=False)
         idle(panel, clock, 300)
+        assert panel.view()["asleep"] is True
+
+    def test_engaged_does_not_wake_a_sleeping_panel(self, panel, clock, hub):
+        self.asleep(panel, clock)
+        idle(panel, clock, 1, engaged=True)
+        idle(panel, clock, 1000, engaged=True)
+        assert panel.view()["asleep"] is True
+        assert hub.publishes == 1
+
+    def test_the_clock_is_not_restarted_when_engaged_ends(self, panel, clock):
+        panel.tick(clock.now, playing=False, interrupt=False)
+        idle(panel, clock, 1000, engaged=True)
+        assert panel.view()["asleep"] is False
+        idle(panel, clock, 0)                          # engaged ends: idle for the whole time already
         assert panel.view()["asleep"] is True
 
     def test_playback_starting_wakes_it(self, panel, clock, hub):
@@ -414,7 +437,7 @@ class TestTickThread:
         monkeypatch.setattr(hdp, "TICK_S", 0.01)
         state = {"playing": False, "interrupt": False}
         panel = HdPanel(
-            hub, settings=lambda: settings, inputs=lambda: (state["playing"], state["interrupt"]),
+            hub, settings=lambda: settings, inputs=lambda: (state["playing"], state["interrupt"], False),
         )
         settings.sleep_after_s = 60
         panel.start()

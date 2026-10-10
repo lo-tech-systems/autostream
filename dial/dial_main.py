@@ -785,12 +785,15 @@ def main() -> None:
         hd_hub = ChangeHub(core)
         kiosk_surface = get_profile_or_default(cfg.display.screen_type).surface == "kiosk"
 
-        def panel_inputs() -> tuple[bool, bool]:
+        def panel_inputs() -> tuple[bool, bool, bool]:
             due = core.warnings.due()
             snap = core.snapshot()
-            # A PIN being asked for keeps the panel awake: nobody is playing, but someone is at the keypad.
-            awaiting = awaiting_pin(snap.outputs_request, time.monotonic())
-            return bool(snap.visible_playing) or awaiting, bool(due is not None and due.interrupting)
+            return (
+                bool(snap.visible_playing),
+                bool(due is not None and due.interrupting),
+                # a PIN being asked for holds the panel awake
+                awaiting_pin(snap.outputs_request, time.monotonic()),
+            )
 
         hd_panel = HdPanel(
             hd_hub, settings=lambda: http_server.display_config,
