@@ -25,6 +25,7 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import dataclass
 
 from autostream_dials import (
     dial_proto_generation,
@@ -270,18 +271,42 @@ def dispatch_dial_management_post(handler, path: str, json_obj) -> None:
 # Every push goes through one worker thread fed by a queue, so a burst of
 # changes costs one thread however many pushes it holds; a slow dial delays
 # the pushes behind it by at most the timeout and one retry.
+#
+# A job naming one dial is tried, then retried once. A job naming no dial is a
+# fan-out: the worker resolves the eligible dials when it runs it and sends to
+# each once with no retry. A dial that did not answer is skipped for a few
+# seconds and tried last afterwards, so an unreachable dial does not hold up
+# the others.
 
 _PUSH_TIMEOUT_S = 1.0
 _PUSH_RETRY_DELAY_S = 2.0
 _AUTH_CHANGED_PATH = "/auth-changed"
 
-_push_queue: "queue.SimpleQueue[tuple[str, str, str]]" = queue.SimpleQueue()
+# After a failed fan-out send a dial is skipped for this long and sent to last
+# thereafter.
+STATE_FANOUT_BACKOFF_S = 5.0
+# A failure mark older than this is forgotten, which bounds the table.
+_PUSH_ENTRY_MAX_AGE_S = 60.0
+
+
+@dataclass(frozen=True)
+class _PushJob:
+    path: str
+    uuid: str | None          # None: every eligible dial, resolved when the job runs
+    body: dict
+    min_generation: int = 0
+    exclude: frozenset = frozenset()
+
+
+_push_queue: "queue.SimpleQueue[_PushJob]" = queue.SimpleQueue()
 _push_worker_lock = threading.Lock()
 _push_worker_thread: threading.Thread | None = None
+# uuid -> monotonic time of its last failed fan-out send. Worker thread only.
+_fanout_failed_at: dict[str, float] = {}
 
 
-def _post_push(ip: str, port: int, path: str, appliance_id: str, timeout: float) -> bool:
-    """One POST of {"appliance_id": ...} to *path* on the dial's own server.
+def _post_push_body(ip: str, port: int, path: str, body: dict, timeout: float) -> bool:
+    """One POST of the JSON object *body* to *path* on the dial's own server.
     Never raises.
 
     Returns True on any 2xx response. Plain http.client, no redirects
@@ -290,8 +315,7 @@ def _post_push(ip: str, port: int, path: str, appliance_id: str, timeout: float)
     conn = None
     try:
         conn = http.client.HTTPConnection(ip, port, timeout=timeout)
-        body = _json.dumps({"appliance_id": appliance_id}).encode()
-        conn.request("POST", path, body=body,
+        conn.request("POST", path, body=_json.dumps(body).encode(),
                      headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
         resp.read()
@@ -302,6 +326,11 @@ def _post_push(ip: str, port: int, path: str, appliance_id: str, timeout: float)
     finally:
         if conn is not None:
             conn.close()
+
+
+def _post_push(ip: str, port: int, path: str, appliance_id: str, timeout: float) -> bool:
+    """One POST of {"appliance_id": ...} to *path*; see _post_push_body."""
+    return _post_push_body(ip, port, path, {"appliance_id": appliance_id}, timeout)
 
 
 def _push_once(path: str, uuid: str, appliance_id: str) -> None:
@@ -331,18 +360,54 @@ def eligible_dial_uuids(min_generation: int, *, exclude=()) -> list[str]:
     return out
 
 
-def _push_worker_loop(jobs: "queue.SimpleQueue[tuple[str, str, str]]") -> None:
+def _fanout(job: _PushJob) -> None:
+    """One fan-out job: *job.body* plus the appliance id, sent once to each
+    eligible dial. No retry and no sleep. Dials that have not failed lately go
+    first; one that failed is skipped for STATE_FANOUT_BACKOFF_S and goes last
+    after that. Runs on the worker thread, which owns _fanout_failed_at."""
+    appliance_id = get_appliance_id()
+    if not appliance_id:
+        return
+    body = dict(job.body)
+    body["appliance_id"] = appliance_id
+    now = time.monotonic()
+    for uuid in [u for u, t in _fanout_failed_at.items() if now - t > _PUSH_ENTRY_MAX_AGE_S]:
+        del _fanout_failed_at[uuid]
+    uuids = eligible_dial_uuids(job.min_generation, exclude=job.exclude)
+    for uuid in sorted(uuids, key=lambda u: _fanout_failed_at.get(u, 0.0)):
+        failed_at = _fanout_failed_at.get(uuid)
+        if failed_at is not None and now - failed_at < STATE_FANOUT_BACKOFF_S:
+            continue
+        sighting = get_dial_sighting(uuid)
+        if sighting is None:
+            continue
+        if _post_push_body(sighting.ip, sighting.port, job.path, body, _PUSH_TIMEOUT_S):
+            _fanout_failed_at.pop(uuid, None)
+        else:
+            _fanout_failed_at[uuid] = time.monotonic()
+            logging.debug("dial push: %s did not take %s, skipping it for %.0f s",
+                          uuid, job.path, STATE_FANOUT_BACKOFF_S)
+
+
+def _run_job(job: _PushJob) -> None:
+    if job.uuid is not None:
+        _push_once(job.path, job.uuid, job.body["appliance_id"])
+    else:
+        _fanout(job)
+
+
+def _push_worker_loop(jobs: "queue.SimpleQueue[_PushJob]") -> None:
     while True:
         job = jobs.get()
         try:
-            _push_once(*job)
+            _run_job(job)
         except Exception:
             logging.debug("dial push: job failed", exc_info=True)
 
 
-def enqueue_push(path: str, uuid: str, appliance_id: str) -> None:
-    """Queue one push of *path* to the dial *uuid*, starting the worker
-    thread on first use. Never blocks on the network."""
+def _enqueue(job: _PushJob) -> None:
+    """Queue *job*, starting the worker thread on first use. Never blocks on
+    the network."""
     global _push_worker_thread
     with _push_worker_lock:
         if _push_worker_thread is None or not _push_worker_thread.is_alive():
@@ -350,7 +415,21 @@ def enqueue_push(path: str, uuid: str, appliance_id: str) -> None:
                 target=_push_worker_loop, args=(_push_queue,),
                 daemon=True, name="dial-push")
             _push_worker_thread.start()
-    _push_queue.put((path, uuid, appliance_id))
+    _push_queue.put(job)
+
+
+def enqueue_push(path: str, uuid: str, appliance_id: str) -> None:
+    """Queue one push of *path* to the dial *uuid*, starting the worker
+    thread on first use. Never blocks on the network."""
+    _enqueue(_PushJob(path, uuid, {"appliance_id": appliance_id}))
+
+
+def enqueue_fanout(path: str, body: dict, *, min_generation: int,
+                   exclude: frozenset = frozenset()) -> None:
+    """Queue one push of *path* to every eligible dial, resolved when the
+    worker runs it, with no retry. The appliance id is added then."""
+    _enqueue(_PushJob(path, None, dict(body),
+                      min_generation=min_generation, exclude=frozenset(exclude)))
 
 
 def notify_dial_auth_changed(uuid: str) -> None:

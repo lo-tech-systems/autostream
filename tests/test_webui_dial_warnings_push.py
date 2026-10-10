@@ -307,8 +307,8 @@ class TestSharedWorker:
         with patch("autostream_webui_dials._push_once", side_effect=fake_push):
             thread = threading.Thread(target=wd._push_worker_loop, args=(jobs,), daemon=True)
             thread.start()
-            jobs.put(("/warnings-changed", "bad", APPLIANCE_ID))
-            jobs.put(("/warnings-changed", "good", APPLIANCE_ID))
+            jobs.put(wd._PushJob("/warnings-changed", "bad", {"appliance_id": APPLIANCE_ID}))
+            jobs.put(wd._PushJob("/warnings-changed", "good", {"appliance_id": APPLIANCE_ID}))
             assert done.wait(2.0)
         assert handled == ["bad", "good"]
 
