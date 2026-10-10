@@ -477,6 +477,9 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
     When *settings* is a SettingsStore instance, it is used as the sole
     persistence mechanism (store → background disk write). The config_path
     is only used as a fallback when no store is available.
+
+    Dials are told when a band changes: they show the bands, not the output
+    gain or auto-trim.
     """
     from autostream_settings import SettingsStore as _SettingsStore
     _store = settings if isinstance(settings, _SettingsStore) else None
@@ -506,6 +509,7 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
 
     value = _spec.validate(value_raw)
     normalised_str = f"{value:.1f}"
+    band_applied = False
 
     try:
         if _store is not None:
@@ -533,10 +537,13 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
                 band_vals["peq5_db"],
                 band_vals["peq6_db"],
             )
+            band_applied = True
     except Exception as e:
         logging.exception("apply_eq_field: save failed")
         return False, normalised_str, str(e)
 
+    if band_applied:
+        notify_state_changed("eq")
     return True, normalised_str, ""
 
 
@@ -662,6 +669,7 @@ def apply_eq_fields(config_path: str, values: dict, *, settings=None) -> tuple:
         logging.exception("apply_eq_fields: save failed")
         return False, str(e)
 
+    notify_state_changed("eq")
     return True, ""
 
 
@@ -691,6 +699,7 @@ def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
     except Exception as e:
         logging.exception("apply_eq_reset: reset failed")
         return False, str(e)
+    notify_state_changed("eq")
     return True, ""
 
 

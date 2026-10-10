@@ -953,3 +953,133 @@ class TestRepeatAndLoopCallSites:
             snap["v"] = _snap(title="Other")
             assert watches[1].step() is True
         assert [c.args for c in notify.call_args_list] == [("repeat",), ("track",)]
+
+
+class TestEqualiserCallSites:
+    """Every equaliser change goes through three functions; each hints "eq"
+    once, after the change took, and never when it did not."""
+
+    @staticmethod
+    def _config(tmp_path):
+        import json
+        path = tmp_path / "autostream.json"
+        path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
+        return str(path)
+
+    def test_apply_eq_fields_hints_eq_once_after_the_live_apply(self, tmp_path):
+        import autostream_appliance_models as models
+        order = []
+        with patch("autostream_appliance_models.set_live_output_eq",
+                   side_effect=lambda *a: order.append("live")), \
+             patch("autostream_appliance_models.notify_state_changed",
+                   side_effect=lambda *k: order.append(k)) as notify:
+            result = models.apply_eq_fields(
+                self._config(tmp_path), {"peq1_db": 2.0, "peq2_db": 2.0})
+        assert result == (True, "")
+        assert order == ["live", ("eq",)]
+        notify.assert_called_once_with("eq")
+
+    def test_apply_eq_fields_does_not_hint_when_the_live_apply_raises(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.set_live_output_eq",
+                   side_effect=RuntimeError("no mixer")), \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            ok, err = models.apply_eq_fields(self._config(tmp_path), {"peq1_db": 2.0})
+        assert ok is False and err
+        notify.assert_not_called()
+
+    def test_apply_eq_fields_does_not_hint_when_the_save_fails(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.save_config", side_effect=OSError("full")), \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            ok, err = models.apply_eq_fields(self._config(tmp_path), {"peq1_db": 2.0})
+        assert ok is False
+        notify.assert_not_called()
+
+    def test_apply_eq_fields_does_not_hint_for_an_unknown_field(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.notify_state_changed") as notify:
+            try:
+                models.apply_eq_fields(self._config(tmp_path), {"bogus": 1.0})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("expected ValueError")
+        notify.assert_not_called()
+
+    def test_apply_eq_reset_hints_eq_once_after_the_live_apply(self, tmp_path):
+        import autostream_appliance_models as models
+        order = []
+        with patch("autostream_appliance_models.set_live_output_eq",
+                   side_effect=lambda *a: order.append("live")), \
+             patch("autostream_appliance_models.notify_state_changed",
+                   side_effect=lambda *k: order.append(k)) as notify:
+            result = models.apply_eq_reset(self._config(tmp_path))
+        assert result == (True, "")
+        assert order == ["live", ("eq",)]
+        notify.assert_called_once_with("eq")
+
+    def test_apply_eq_reset_does_not_hint_when_the_live_apply_raises(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.set_live_output_eq",
+                   side_effect=RuntimeError("no mixer")), \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            ok, err = models.apply_eq_reset(self._config(tmp_path))
+        assert ok is False and err
+        notify.assert_not_called()
+
+    def test_apply_eq_field_hints_eq_for_a_band_after_the_live_apply(self, tmp_path):
+        import autostream_appliance_models as models
+        order = []
+        with patch("autostream_appliance_models.set_live_output_eq",
+                   side_effect=lambda *a: order.append("live")), \
+             patch("autostream_appliance_models.notify_state_changed",
+                   side_effect=lambda *k: order.append(k)) as notify:
+            ok, norm, err = models.apply_eq_field(self._config(tmp_path), "peq1_db", "3")
+        assert (ok, norm, err) == (True, "3.0", "")
+        assert order == ["live", ("eq",)]
+        notify.assert_called_once_with("eq")
+
+    def test_apply_eq_field_does_not_hint_for_a_gain_change(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.set_live_output_gain") as live, \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            ok, norm, err = models.apply_eq_field(self._config(tmp_path), "gain_db", "-2")
+        assert ok is True
+        live.assert_called_once()
+        notify.assert_not_called()
+
+    def test_apply_eq_field_does_not_hint_for_an_auto_trim_change(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.set_live_output_auto_trim") as live, \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            ok, norm, err = models.apply_eq_field(
+                self._config(tmp_path), "auto_trim_enabled", "true")
+        assert (ok, norm) == (True, "true")
+        live.assert_called_once_with(True)
+        notify.assert_not_called()
+
+    def test_apply_eq_field_does_not_hint_when_the_live_apply_raises(self, tmp_path):
+        import autostream_appliance_models as models
+        for field, value, target in (
+                ("peq1_db", "3", "set_live_output_eq"),
+                ("gain_db", "-2", "set_live_output_gain"),
+                ("auto_trim_enabled", "true", "set_live_output_auto_trim")):
+            with patch(f"autostream_appliance_models.{target}",
+                       side_effect=RuntimeError("no mixer")), \
+                 patch("autostream_appliance_models.notify_state_changed") as notify:
+                ok, norm, err = models.apply_eq_field(self._config(tmp_path), field, value)
+            assert ok is False and err, field
+            notify.assert_not_called()
+
+    def test_apply_eq_field_does_not_hint_for_a_rejected_value(self, tmp_path):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.notify_state_changed") as notify:
+            for field, value in (("nope", "1"), ("peq1_db", "loud")):
+                try:
+                    models.apply_eq_field(self._config(tmp_path), field, value)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"expected ValueError for {field}")
+        notify.assert_not_called()
