@@ -83,9 +83,8 @@ def _make_handler(
     return h
 
 
-def _fake_state(tmp_path: Path) -> MagicMock:
-    cfg_path = tmp_path / "autostream.json"
-    cfg_path.write_text(json.dumps({
+def _fake_state(tmp_path: Path, advertise_appliance: bool | None = None) -> MagicMock:
+    cfg: dict = {
         "general": {"silence_seconds": 30},
         "owntone": {"base_url": "http://localhost:3689"},
         "audio1": {
@@ -108,7 +107,11 @@ def _fake_state(tmp_path: Path) -> MagicMock:
             "peq4_db": 0.0, "peq5_db": 0.0, "peq6_db": 0.0,
             "auto_trim_enabled": False,
         },
-    }), encoding="utf-8")
+    }
+    if advertise_appliance is not None:
+        cfg["webui"] = {"advertise_appliance": advertise_appliance}
+    cfg_path = tmp_path / "autostream.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
     s = MagicMock()
     s.config_path = str(cfg_path)
     return s
@@ -280,6 +283,61 @@ class TestFederationBearerAuth:
         # send_response must not have been called with 302
         for call in h.send_response.call_args_list:
             assert call[0][0] != 302, "Federation must not redirect to /auth"
+
+
+# ---------------------------------------------------------------------------
+# Peer control fail-closed gate (advertise_appliance)
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestFederationControlDisabled:
+    def test_session_refused_when_control_disabled(self, tmp_path):
+        state = _fake_state(tmp_path, advertise_appliance=False)
+        h = _make_handler("POST", "/api/federation/v1/session", b"")
+        code, data = _call(h, state)
+        assert code == 403
+        assert data["ok"] is False
+        assert data["error"] == "control_disabled"
+
+    def test_bearer_route_refused_when_control_disabled_even_with_valid_token(self, tmp_path):
+        state = _fake_state(tmp_path, advertise_appliance=False)
+        bearer = _get_bearer()
+        h = _make_handler("GET", "/api/federation/v1/home",
+                          headers={"Authorization": bearer})
+        code, data = _call(h, state)
+        assert code == 403
+        assert data["ok"] is False
+        assert data["error"] == "control_disabled"
+
+    def test_output_route_refused_when_control_disabled(self, tmp_path):
+        state = _fake_state(tmp_path, advertise_appliance=False)
+        bearer = _get_bearer()
+        h = _make_handler("POST", "/api/federation/v1/output", b'{"output_id": "x"}',
+                          headers={"Authorization": bearer})
+        code, data = _call(h, state)
+        assert code == 403
+        assert data["ok"] is False
+        assert data["error"] == "control_disabled"
+
+    def test_session_still_works_when_control_enabled(self, tmp_path):
+        state = _fake_state(tmp_path, advertise_appliance=True)
+        h = _make_handler("POST", "/api/federation/v1/session", b"")
+        code, data = _call(h, state)
+        assert code == 200
+        assert data["ok"] is True
+
+    def test_control_setting_unreadable_refuses(self, tmp_path):
+        state = _fake_state(tmp_path)
+        h = _make_handler("POST", "/api/federation/v1/session", b"")
+        sent = []
+        with patch("autostream_webui.STATE", state), \
+             patch("autostream_webui.is_commissioning_required", return_value=False), \
+             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+             patch("autostream_webui_common._config_snapshot", side_effect=RuntimeError("boom")), \
+             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
+            h.do_POST()
+        assert sent and sent[0][0] == 403
+        assert sent[0][1]["error"] == "control_disabled"
 
 
 # ---------------------------------------------------------------------------

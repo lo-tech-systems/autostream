@@ -91,8 +91,11 @@ def _parts(service_name="AS._autostream._tcp.local", hostname="peer.local",
     return p
 
 
-def _txt(appliance_id=_PEER_ID, ui="v1", federation="v1", version="v1.0"):
-    return {"id": appliance_id, "ui": ui, "federation": federation, "version": version}
+def _txt(appliance_id=_PEER_ID, ui="v1", federation="v1", version="v1.0", control=None):
+    txt = {"id": appliance_id, "ui": ui, "federation": federation, "version": version}
+    if control is not None:
+        txt["control"] = control
+    return txt
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +116,27 @@ class TestParseApplianceEvent:
         m, parse_fn, *_ = _load_module()
         result = parse_fn(_parts(), _txt(appliance_id=_LOCAL_ID))
         assert result is None
+
+    def test_control_absent_defaults_true(self):
+        m, parse_fn, *_ = _load_module()
+        result = parse_fn(_parts(), _txt())
+        assert result is not None
+        _, sighting = result
+        assert sighting.control is True
+
+    def test_control_on_is_true(self):
+        m, parse_fn, *_ = _load_module()
+        result = parse_fn(_parts(), _txt(control="on"))
+        assert result is not None
+        _, sighting = result
+        assert sighting.control is True
+
+    def test_control_off_is_false_but_still_returned(self):
+        m, parse_fn, *_ = _load_module()
+        result = parse_fn(_parts(), _txt(control="off"))
+        assert result is not None
+        _, sighting = result
+        assert sighting.control is False
 
     def test_invalid_id_too_short(self):
         m, parse_fn, *_ = _load_module()
@@ -337,6 +361,27 @@ class TestConflictDetection:
         on_remove(_PEER_ID, sighting1)
         assert "SvcA._autostream._tcp.local" not in m._svc_info
 
+    def test_conflict_tracking_works_for_control_off_row(self):
+        """A control=off sighting must still participate in conflict detection."""
+        m, parse_fn, *_ = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="host-a.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID, control="off"),
+        )
+        assert r1 is not None
+        _, sighting1 = r1
+        assert sighting1.control is False
+
+        r2 = parse_fn(
+            _parts(service_name="SvcB._autostream._tcp.local",
+                   hostname="host-b.local", ip="192.168.1.11"),
+            _txt(appliance_id=_PEER_ID, control="off"),
+        )
+        assert r2 is not None
+        assert _PEER_ID in m.get_conflict_ids()
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -415,6 +460,53 @@ class TestPublicAPI:
         )
         assert _PEER_ID in m.get_conflict_ids()
         assert m.get_all_appliances() == []
+
+    def test_get_all_appliances_excludes_control_off(self):
+        m, parse_fn, *_ = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID, control="off"),
+        )
+        assert r1 is not None
+        _, sighting1 = r1
+        with m._browser._lock:
+            m._browser._by_key[_PEER_ID] = sighting1
+
+        assert m.get_all_appliances() == []
+
+    def test_get_all_appliances_includes_control_on(self):
+        m, parse_fn, *_ = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID, control="on"),
+        )
+        assert r1 is not None
+        _, sighting1 = r1
+        with m._browser._lock:
+            m._browser._by_key[_PEER_ID] = sighting1
+
+        result = m.get_all_appliances()
+        assert len(result) == 1
+        assert result[0].id == _PEER_ID
+
+    def test_get_appliance_sighting_control_off_returns_none(self):
+        m, parse_fn, *_ = _load_module()
+
+        r1 = parse_fn(
+            _parts(service_name="SvcA._autostream._tcp.local",
+                   hostname="ha.local", ip="192.168.1.10"),
+            _txt(appliance_id=_PEER_ID, control="off"),
+        )
+        assert r1 is not None
+        _, sighting1 = r1
+        with m._browser._lock:
+            m._browser._by_key[_PEER_ID] = sighting1
+
+        assert m.get_appliance_sighting(_PEER_ID) is None
 
     def test_scanner_ready_returns_bool(self):
         m, *_ = _load_module()

@@ -245,10 +245,13 @@ class TestFederationRoutesSkipBrowserAuth:
         mgr = _make_manager(pin="secret")
         handler = self._make_post_handler("/api/federation/v1/session")
         sent = []
+        fake_cfg = MagicMock()
+        fake_cfg.webui.advertise_appliance = True
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
+             patch("autostream_webui_common._config_snapshot", return_value=fake_cfg), \
              patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             handler.do_POST()
         codes = [c for c, _ in sent]

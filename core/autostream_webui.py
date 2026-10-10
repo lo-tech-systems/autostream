@@ -1156,6 +1156,21 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             send_json(self, 404, {"ok": False, "error": "appliance_unconfigured"})
             return
 
+        # Fail closed: refuse every federation route (including /session, so
+        # no bearer token is ever issued) when the local peer-control setting
+        # is off. Unlike _effective_control_other_appliances (which fails
+        # open for the local UI), an unreadable setting here must not leave
+        # the security gap open.
+        try:
+            from autostream_webui_common import _config_snapshot
+            if not _config_snapshot(STATE).webui.advertise_appliance:
+                send_json(self, 403, {"ok": False, "error": "control_disabled"})
+                return
+        except Exception:
+            logging.debug("federation: control setting unreadable; refusing", exc_info=True)
+            send_json(self, 403, {"ok": False, "error": "control_disabled"})
+            return
+
         # POST /session: no bearer token required
         if path == f"{_FEDERATION_PREFIX}/session":
             if method != "POST":

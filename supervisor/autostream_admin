@@ -34,7 +34,7 @@ Exactly one of:
   factory-reset
   write-playing-service VERSION [ID]
   remove-playing-service
-  write-appliance-service VERSION ID
+  write-appliance-service VERSION ID [CONTROL]
   remove-appliance-service
   update-dial-service VERSION UUID NAME [--pin-recovery]
   run-updater
@@ -1440,6 +1440,7 @@ def _write_appliance_service(args) -> int:
     if not _APPLIANCE_ID_RE.match(args.id):
         log("ERROR", f"write-appliance-service: invalid appliance ID format: {args.id!r}")
         return 1
+    control = "off" if getattr(args, "control", "on") == "off" else "on"
     content = f"""<?xml version="1.0" standalone='no'?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
@@ -1451,6 +1452,10 @@ def _write_appliance_service(args) -> int:
     <txt-record>ui=v1</txt-record>
     <txt-record>federation=v1</txt-record>
     <txt-record>version={_html.escape(args.version)}</txt-record>
+    <txt-record>control={control}</txt-record>
+    <txt-record>dial_api=v1</txt-record>
+    <txt-record>dial_status=v1</txt-record>
+    <txt-record>repeat=v1</txt-record>
   </service>
 </service-group>
 """
@@ -2112,6 +2117,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p_was.add_argument("version", help="Installed release tag string.")
     p_was.add_argument("id",      help="Appliance ID (20 lowercase hex chars).")
+    p_was.add_argument(
+        "control",
+        nargs="?",
+        default="on",
+        choices=("on", "off"),
+        help="Peer control allowed (on) or refused (off).",
+    )
 
     subparsers.add_parser(
         "remove-appliance-service",

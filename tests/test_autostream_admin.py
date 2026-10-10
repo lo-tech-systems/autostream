@@ -1131,6 +1131,34 @@ class TestApplianceService:
         assert "ui=v1" in content
         assert "federation=v1" in content
         assert "version=" + args.version in content
+        assert "control=on" in content
+        assert "dial_api=v1" in content
+        assert "dial_status=v1" in content
+        assert "repeat=v1" in content
+
+    def test_write_appliance_service_control_off_writes_off(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+        args.control = "off"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            rc = m._write_appliance_service(args)
+
+        assert rc == 0
+        content = svc_file.read_text(encoding="utf-8")
+        assert "control=off" in content
+        assert "control=on" not in content
+
+    def test_write_appliance_service_rejects_bad_control(self):
+        with pytest.raises(SystemExit):
+            m.parse_args(["write-appliance-service", "v1.0",
+                           "a1b2c3d4e5f6a1b2c3d4", "sideways"])
 
     def test_write_appliance_service_suppresses_unchanged_log(self, tmp_path):
         svc_dir = tmp_path / "avahi"

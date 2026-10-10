@@ -1830,7 +1830,7 @@ def _card_summary_customise(ctx: SetupCtx) -> str:
         + (" · Dark mode: On" if ctx.parsed.webui.dark_mode else " · Dark mode: Off")
         + (" · Hostname: On" if ctx.parsed.webui.show_hostname_on_home else " · Hostname: Off")
         + (" · Control others: On" if _ctrl_other_effective else " · Control others: Off")
-        + (" · Visible to peers: On" if ctx.parsed.webui.advertise_appliance else " · Visible to peers: Off")
+        + (" · Peer control: On" if ctx.parsed.webui.advertise_appliance else " · Peer control: Off")
     )
 
 
@@ -3612,7 +3612,7 @@ def send_setup_page(
           var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
           var host = (cbHost && cbHost.checked) ? 'Hostname: On' : 'Hostname: Off';
           var ctrl = (cbCtrl && cbCtrl.checked) ? 'Control others: On' : 'Control others: Off';
-          var adv = (cbAdv && cbAdv.checked) ? 'Visible to peers: On' : 'Visible to peers: Off';
+          var adv = (cbAdv && cbAdv.checked) ? 'Peer control: On' : 'Peer control: Off';
           sub.textContent = mv + ' \u00b7 ' + det + ' \u00b7 ' + dark + ' \u00b7 ' + host + ' \u00b7 ' + ctrl + ' \u00b7 ' + adv;
         }}
         function refreshPlaybackCardSub() {{

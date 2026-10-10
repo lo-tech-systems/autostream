@@ -41,6 +41,7 @@ class ApplianceSighting:
     ip: str
     port: int
     version: str
+    control: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,7 @@ def _parse_appliance_event(parts: list, txt: dict) -> tuple | None:
     hostname = parts[6]
     ip = parts[7]
     version = txt.get('version', '')
+    control = txt.get('control', 'on') != 'off'
 
     with _reg_lock:
         prev = _svc_info.get(service_name)
@@ -132,6 +134,7 @@ def _parse_appliance_event(parts: list, txt: dict) -> tuple | None:
         ip=ip,
         port=port,
         version=version,
+        control=control,
     )
     return (appliance_id, sighting)
 
@@ -207,18 +210,24 @@ _browser: MdnsBrowser = MdnsBrowser(
 
 
 def get_appliance_sighting(appliance_id: str) -> Optional[ApplianceSighting]:
-    """Return the live sighting for *appliance_id* or None if absent/conflicted."""
+    """Return the live sighting for *appliance_id*, or None if absent, conflicted
+    or control-disabled."""
     with _reg_lock:
         if appliance_id in _conflict_ids:
             return None
-    return _browser.get_snapshot().get(appliance_id)
+    sighting = _browser.get_snapshot().get(appliance_id)
+    if sighting is not None and not sighting.control:
+        return None
+    return sighting
 
 
 def get_all_appliances() -> list[ApplianceSighting]:
-    """Return all eligible live appliances sorted by case-insensitive hostname."""
+    """Return all eligible live appliances sorted by case-insensitive hostname.
+
+    Excludes conflicted IDs and control-disabled sightings."""
     with _reg_lock:
         conflicts = frozenset(_conflict_ids)
-    sightings = [s for s in _browser.get_snapshot().values() if s.id not in conflicts]
+    sightings = [s for s in _browser.get_snapshot().values() if s.id not in conflicts and s.control]
     sightings.sort(key=lambda s: s.hostname.lower())
     return sightings
 
@@ -285,6 +294,10 @@ def _run_admin(args: list[str]) -> int:
 def reconcile_appliance_announcement(version: str, advertise: bool) -> bool:
     """Write or remove the _autostream._tcp Avahi service file.
 
+    The appliance is always advertised when it has a local identity; the
+    *advertise* flag selects the control TXT value (on/off), not presence.
+    An identity-less appliance still never advertises (no id to key on).
+
     Must be called with CONFIG_IO_LOCK not held; acquires _ANNOUNCE_LOCK
     internally to serialize concurrent reconciliation calls.
 
@@ -292,8 +305,9 @@ def reconcile_appliance_announcement(version: str, advertise: bool) -> bool:
     """
     app_id = get_appliance_id()
     with _ANNOUNCE_LOCK:
-        if advertise and app_id is not None:
-            rc = _run_admin(["write-appliance-service", version or "unknown", app_id])
+        if app_id is not None:
+            control = "on" if advertise else "off"
+            rc = _run_admin(["write-appliance-service", version or "unknown", app_id, control])
         else:
             rc = _run_admin(["remove-appliance-service"])
     if rc != 0:

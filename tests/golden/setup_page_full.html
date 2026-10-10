@@ -333,7 +333,7 @@
       <div class="setup-list-card" onclick="openPanel('customise')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Personalisation</span>
-          <span class="setup-list-card-sub" id="customise-card-sub">Master volume: On · Input detail: On · Dark mode: Off · Hostname: On · Control others: On · Visible to peers: On</span>
+          <span class="setup-list-card-sub" id="customise-card-sub">Master volume: On · Input detail: On · Dark mode: Off · Hostname: On · Control others: On · Peer control: On</span>
         </div>
         <span class="setup-list-chevron">›</span>
       </div>
@@ -1581,7 +1581,7 @@
           var dark = (cbDark && cbDark.checked) ? 'Dark mode: On' : 'Dark mode: Off';
           var host = (cbHost && cbHost.checked) ? 'Hostname: On' : 'Hostname: Off';
           var ctrl = (cbCtrl && cbCtrl.checked) ? 'Control others: On' : 'Control others: Off';
-          var adv = (cbAdv && cbAdv.checked) ? 'Visible to peers: On' : 'Visible to peers: Off';
+          var adv = (cbAdv && cbAdv.checked) ? 'Peer control: On' : 'Peer control: Off';
           sub.textContent = mv + ' · ' + det + ' · ' + dark + ' · ' + host + ' · ' + ctrl + ' · ' + adv;
         }
         function refreshPlaybackCardSub() {

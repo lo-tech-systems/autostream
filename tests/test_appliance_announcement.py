@@ -87,9 +87,11 @@ class TestReconcileApplianceAnnouncement:
             ok = m.reconcile_appliance_announcement("v1.0", True)
 
         assert ok is True
-        assert any("write-appliance-service" in " ".join(a) for a in calls)
+        write_calls = [a for a in calls if a and a[0] == "write-appliance-service"]
+        assert write_calls
+        assert write_calls[0][-1] == "on"
 
-    def test_advertise_false_calls_remove_service(self):
+    def test_advertise_false_writes_control_off(self):
         m = _make_module()
         calls = []
 
@@ -97,7 +99,10 @@ class TestReconcileApplianceAnnouncement:
             ok = m.reconcile_appliance_announcement("v1.0", False)
 
         assert ok is True
-        assert any("remove-appliance-service" in " ".join(a) for a in calls)
+        write_calls = [a for a in calls if a and a[0] == "write-appliance-service"]
+        assert write_calls
+        assert write_calls[0] == ["write-appliance-service", "v1.0", "a1b2c3d4e5f6a1b2c3d4", "off"]
+        assert not any(a and a[0] == "remove-appliance-service" for a in calls)
 
     def test_admin_failure_returns_false(self):
         m = _make_module()
