@@ -257,3 +257,19 @@ def _reset_dial_seek_rate_limit():
     m = _mod("autostream_webui_api")
     if m is not None:
         m._dial_seek_last = 0.0
+
+
+@pytest.fixture(autouse=True)
+def _reset_dial_repeat_worker():
+    """Reset the dial repeat-transport worker's module state after each
+    test — a fresh queue (so a leftover enqueued item from one test can
+    never be drained by the next) and cleared cfg/on_result (so a stray
+    worker thread from an earlier test can never call into another test's
+    callback)."""
+    yield
+    m = _mod("dial_repeat")
+    if m is not None:
+        import queue as _queue_mod
+        m._queue = _queue_mod.SimpleQueue()
+        m._cfg = None
+        m._on_result = None
