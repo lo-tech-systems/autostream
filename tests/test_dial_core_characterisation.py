@@ -36,11 +36,19 @@ from dial_test_support import (
     _status_result,
     _target,
     _track_id,
+    eq_optimistic,
     make_display,
+    on_eq_result,
+    on_repeat_result,
+    set_focus_pending,
+    warning_active,
+    warning_cleared,
 )
 
 import dial_auth
 import dial_display as dd
+from dial_core import FOCUS_PENDING_GRACE_S
+from dial_core_state import ACCEPTED_REPLAY_GRACE_S
 import dial_repeat_store as drs
 import dial_volume as dv
 from dial_core_state import artwork_key
@@ -169,7 +177,7 @@ class TestMuteObservationOrdering:
         }
         with patch("dial_display.fetch_target_status", side_effect=_fetch_by_service(results)):
             display._poll_once()
-        assert display._reporting_appliance_id == older.appliance_id
+        assert display.core.snapshot().focus.reporting_id == older.appliance_id
         assert set(dv._observed_muted) == {"older", "newer"}
         assert dv.shown_muted("older") is False
         assert dv.shown_muted("newer") is True
@@ -194,7 +202,7 @@ class TestSourceServiceBeforeArtworkFetch:
         seen = []
 
         def fetch_artwork(url, timeout):
-            seen.append(display.current_source_service_name())
+            seen.append(display.core.current_source_service_name())
             return None, "stub"
 
         with patch("dial_display.fetch_target_status", side_effect=_fetch_by_service(results)), \
@@ -216,8 +224,8 @@ def _replay_display(state="hold", **display_kwargs):
     entry = _roster_entry(appliance_id=AID, auth="authorized", repeat_capable=True)
     display, fb, gt = make_display(targets=[], roster=[entry], **display_kwargs)
     display.enable()
-    display._last_roster = [entry]
-    display._manual_focus_id = AID
+    display.core.set_roster([entry])
+    display.core.set_field("manual_id", AID)
     drs.repeat_store.update(
         AID, drs.parse_repeat_object(_repeat_obj(state=state), dd.time.monotonic()),
     )
@@ -226,7 +234,7 @@ def _replay_display(state="hold", **display_kwargs):
 
 
 def _accept_replay(display) -> None:
-    display.on_repeat_result(
+    on_repeat_result(display,
         "transport", AID, 200,
         {"ok": True, "state": "replaying", "armed": False, "position_seconds": 0.0},
     )
@@ -243,7 +251,7 @@ class TestAcceptedReplayWindow:
             with patch("dial_display.fetch_target_status",
                        return_value=_status_result(appliance_id=AID)):
                 display._poll_once()
-        playing = display._now_playing
+        playing = display.core.snapshot().now_playing
         assert playing is not None and playing.playing
         assert playing.title == ""
         assert playing.artist == ""
@@ -257,14 +265,14 @@ class TestAcceptedReplayWindow:
             display, fb, gt = _replay_display()
             _accept_replay(display)
             accepted_at = clock.t
-            clock.t = accepted_at + dd.ACCEPTED_REPLAY_GRACE_S - 0.01
+            clock.t = accepted_at + ACCEPTED_REPLAY_GRACE_S - 0.01
             kept = display._core.with_accepted_replay([], clock.t)
             assert [t.appliance_id for t in kept] == [AID]
-            assert display._accepted_replay is not None
-            clock.t = accepted_at + dd.ACCEPTED_REPLAY_GRACE_S + 0.01
+            assert display.core.snapshot().focus.accepted_replay is not None
+            clock.t = accepted_at + ACCEPTED_REPLAY_GRACE_S + 0.01
             assert display._core.with_accepted_replay([], clock.t) == []
-            assert display._accepted_replay is None
-        assert dd.ACCEPTED_REPLAY_GRACE_S == 20.0
+            assert display.core.snapshot().focus.accepted_replay is None
+        assert ACCEPTED_REPLAY_GRACE_S == 20.0
 
     def test_pending_focus_boundary_under_fake_clock(self):
         """A pending focus on an appliance that never appears survives to
@@ -273,17 +281,17 @@ class TestAcceptedReplayWindow:
         display, fb, gt = make_display(targets=[])
         clock = _FakeClock()
         with _patch_monotonic(clock):
-            display.set_manual_focus_pending(aid, "Kitchen")
+            set_focus_pending(display, aid, "Kitchen")
             start = clock.t
-            clock.t = start + dd.FOCUS_PENDING_GRACE_S - 0.01
+            clock.t = start + FOCUS_PENDING_GRACE_S - 0.01
             display._poll_once()
-            assert display.manual_focus_id() == aid
-            assert display._focus_pending is not None
-            clock.t = start + dd.FOCUS_PENDING_GRACE_S + 0.01
+            assert display.core.manual_focus_id() == aid
+            assert display.core.snapshot().focus.pending is not None
+            clock.t = start + FOCUS_PENDING_GRACE_S + 0.01
             display._poll_once()
-        assert display.manual_focus_id() is None
-        assert display._focus_pending is None
-        assert dd.FOCUS_PENDING_GRACE_S == 10.0
+        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.pending is None
+        assert FOCUS_PENDING_GRACE_S == 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +366,8 @@ class TestReplayStopFrames:
             assert not any(
                 o is not None and o.artist == PLAYING_ARTIST_TEXT for kind, o in after_stop
             )
-            assert display._now_playing is None
-            assert display._idle_affordance is True
+            assert display.core.snapshot().now_playing is None
+            assert display.core.snapshot().idle_affordance is True
             assert display._idle_chassis_due_locked() is True
             assert any(kind == "idle" for kind, _ in after_stop)
             assert load_logo.call_args_list[-1].args[0] == display._replay_logo_path
@@ -427,10 +435,10 @@ class TestBinding:
         a = _target(name="Alpha", service_name="alpha", playing_since=1.0)
         display, fb, gt = make_display(targets=[a])
         display.enable()
-        assert display._bound_appliance_id is None
+        assert display.core.snapshot().focus.bound_id is None
         self._poll(display, {"alpha": _status_result(track_id=None)})
-        assert display._bound_appliance_id == a.appliance_id
-        assert display._reporting_appliance_id == a.appliance_id
+        assert display.core.snapshot().focus.bound_id == a.appliance_id
+        assert display.core.snapshot().focus.reporting_id == a.appliance_id
 
     def test_second_starter_with_artwork_does_not_steal(self):
         a = _target(name="Alpha", service_name="alpha", playing_since=1.0)
@@ -443,9 +451,9 @@ class TestBinding:
             "alpha": _status_result(track_id=None),
             "bravo": _status_result(track_id=_track_id()),
         })
-        assert display._bound_appliance_id == a.appliance_id
-        assert display._reporting_appliance_id == a.appliance_id
-        assert display.current_source_service_name() == "alpha"
+        assert display.core.snapshot().focus.bound_id == a.appliance_id
+        assert display.core.snapshot().focus.reporting_id == a.appliance_id
+        assert display.core.current_source_service_name() == "alpha"
         assert [c.args[0].service_name for c in fetch.call_args_list] == ["alpha"]
         shown.assert_not_called()
 
@@ -453,35 +461,35 @@ class TestBinding:
         display, gt, a, b = self._two()
         both = {"alpha": _status_result(track_id=None), "bravo": _status_result(track_id=None)}
         self._poll(display, both)
-        assert display._bound_appliance_id == a.appliance_id
+        assert display.core.snapshot().focus.bound_id == a.appliance_id
         gt.return_value = [b]
         self._poll(display, both)
-        assert display._bound_appliance_id == b.appliance_id
-        assert display._reporting_appliance_id == b.appliance_id
+        assert display.core.snapshot().focus.bound_id == b.appliance_id
+        assert display.core.snapshot().focus.reporting_id == b.appliance_id
 
     def test_bound_stops_with_nothing_releases_to_none(self):
         a = _target(name="Alpha", service_name="alpha", playing_since=1.0)
         display, fb, gt = make_display(targets=[a])
         display.enable()
         self._poll(display, {"alpha": _status_result(track_id=None)})
-        assert display._bound_appliance_id == a.appliance_id
+        assert display.core.snapshot().focus.bound_id == a.appliance_id
         gt.return_value = []
         self._poll(display, {})
-        assert display._bound_appliance_id is None
-        assert display._reporting_appliance_id is None
+        assert display.core.snapshot().focus.bound_id is None
+        assert display.core.snapshot().focus.reporting_id is None
 
     def test_revoke_mid_tick_releases_and_continues(self):
         display, gt, a, b = self._two()
         self._poll(display, {"alpha": _status_result(track_id=None), "bravo": _status_result(track_id=None)})
-        assert display._bound_appliance_id == a.appliance_id
+        assert display.core.snapshot().focus.bound_id == a.appliance_id
         fetch, shown = self._poll(display, {
             "alpha": _status_result(status_error="unauthorized", appliance_id=a.appliance_id),
             "bravo": _status_result(track_id=_track_id()),
         })
         assert [c.args[0].service_name for c in fetch.call_args_list] == ["alpha", "bravo"]
-        assert display._bound_appliance_id == b.appliance_id
-        assert display._reporting_appliance_id == b.appliance_id
-        assert display.current_source_service_name() == "bravo"
+        assert display.core.snapshot().focus.bound_id == b.appliance_id
+        assert display.core.snapshot().focus.reporting_id == b.appliance_id
+        assert display.core.current_source_service_name() == "bravo"
         shown.assert_called_once()
         assert shown.call_args.args[0].key == artwork_key("https://provider.example/x.jpg")
 
@@ -489,12 +497,12 @@ class TestBinding:
         display, gt, a, b = self._two()
         both = {"alpha": _status_result(track_id=None), "bravo": _status_result(track_id=None)}
         self._poll(display, both)
-        assert display._bound_appliance_id == a.appliance_id
-        display.set_manual_focus(b.appliance_id)
+        assert display.core.snapshot().focus.bound_id == a.appliance_id
+        display.core.set_focus(b.appliance_id)
         self._poll(display, both)
-        assert display._bound_appliance_id == b.appliance_id
-        assert display._reporting_appliance_id == b.appliance_id
-        assert display.manual_focus_id() == b.appliance_id
+        assert display.core.snapshot().focus.bound_id == b.appliance_id
+        assert display.core.snapshot().focus.reporting_id == b.appliance_id
+        assert display.core.manual_focus_id() == b.appliance_id
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +523,7 @@ class TestFocusClearClosesPolicyScreens:
         policy = SCREEN_POLICIES[name]
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._manual_focus_id = AID
+        display.core.set_field("manual_id", AID)
         sentinel = object()
         with display._lock:
             display._screen = name
@@ -523,7 +531,7 @@ class TestFocusClearClosesPolicyScreens:
                 setattr(display, policy.state_attr, sentinel)
         display._core.clear_focus("test")
         display._close_screens_for_cleared_focus()
-        assert display.manual_focus_id() is None
+        assert display.core.manual_focus_id() is None
         if policy.closes_on_focus_clear:
             assert display._screen == "main"
             if policy.state_attr is not None:
@@ -537,11 +545,11 @@ class TestFocusClearClosesPolicyScreens:
     def test_a_tick_that_clears_the_focus_closes_the_screen(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._manual_focus_id = AID      # not on the roster: the tick clears it
+        display.core.set_field("manual_id", AID)      # not on the roster: the tick clears it
         with display._lock:
             display._screen = "outputs"
         display._poll_once()
-        assert display.manual_focus_id() is None
+        assert display.core.manual_focus_id() is None
         assert display._screen == "main"
 
 
@@ -581,7 +589,7 @@ class TestRefusedPlayingReprobe:
                 clock.t += 10.0
         walk_fetch.assert_not_called()
         assert probed_at == [0.0, 60.0, 120.0, 240.0, 480.0]
-        assert display._reporting_appliance_id is None
+        assert display.core.snapshot().focus.reporting_id is None
         assert dial_auth.auth_map.state(t.appliance_id) == dial_auth.AUTH_UNAUTHORIZED
 
 
@@ -664,8 +672,8 @@ class TestArtworkLogging:
 class TestOutputsRefreshBoundary:
     def _opened(self, screen="outputs"):
         display, fb, gt = make_display(targets=[])
-        display._reporting_appliance_id = AID
-        display._last_roster = [_roster_entry(appliance_id=AID, dial_outputs=True)]
+        display.core.set_field("reporting_id", AID)
+        display.core.set_roster([_roster_entry(appliance_id=AID, dial_outputs=True)])
         assert display._open_outputs_locked() is True
         display._screen = screen
         return display
@@ -698,8 +706,8 @@ class TestOutputsRefreshBoundary:
 
 def _eq_display():
     display, fb, gt = make_display(targets=[])
-    display._reporting_appliance_id = AID
-    display._last_roster = [_roster_entry(appliance_id=AID, dial_eq=True)]
+    display.core.set_field("reporting_id", AID)
+    display.core.set_roster([_roster_entry(appliance_id=AID, dial_eq=True)])
     display._core._update_availability(time.monotonic())
     return display
 
@@ -711,27 +719,29 @@ class TestEqOptimisticWindow:
         fetched = {"ok": True, "bass_db": 0, "treble_db": 0}
         with _patch_monotonic(clock), patch("dial_core._enqueue_eq_set"):
             assert display._open_eq_locked() is True
+            display._sync_core_interest()
             display.eq_step("bass", +2)
             clock.t = 1001.99
             assert display._shown_eq(display._eq, "bass") == 2
             # A fetch that lands inside the window leaves the override in place.
-            display.on_eq_result("fetch", AID, 200, fetched, {})
-            assert display._eq_optimistic is not None
+            on_eq_result(display, "fetch", AID, 200, fetched, {})
+            assert eq_optimistic(display) is not None
             assert display._shown_eq(display._eq, "bass") == 2
             clock.t = 1002.01
             assert display._shown_eq(display._eq, "bass") == 0
             # One that lands after it clears the override.
-            display.on_eq_result("fetch", AID, 200, fetched, {})
-        assert display._eq_optimistic is None
+            on_eq_result(display, "fetch", AID, 200, fetched, {})
+        assert eq_optimistic(display) is None
 
     def test_eq_step_preserves_the_other_controls_shown_value(self):
         display = _eq_display()
         clock = _FakeClock(1000.0)
         with _patch_monotonic(clock), patch("dial_core._enqueue_eq_set"):
             display._open_eq_locked()
-            display.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": 1, "treble_db": -3}, {})
+            display._sync_core_interest()
+            on_eq_result(display, "fetch", AID, 200, {"ok": True, "bass_db": 1, "treble_db": -3}, {})
             display.eq_step("bass", +9)
-            assert display._eq_optimistic == (6, -3, 1002.0)   # clamped to the limit
+            assert eq_optimistic(display) == (6, -3, 1002.0)   # clamped to the limit
             assert display._shown_eq(display._eq, "treble") == -3
 
 
@@ -753,7 +763,7 @@ class TestPersistedSnoozeRestart:
         path = str(tmp_path / "warnings.json")
         wall = _FakeClock(1_000_000.0)
         first, manager = self._display(path, wall)
-        first._warning_active("sdhealth", percent)
+        warning_active(first, "sdhealth", percent)
         first.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
         assert manager.is_snoozed("sdhealth") is True
         manager.flush()
@@ -763,14 +773,14 @@ class TestPersistedSnoozeRestart:
         # A restart: a fresh manager over the same file, the condition still holding.
         wall.t += 3600.0
         second, manager2 = self._display(path, wall)
-        second._warning_active("sdhealth", percent)
+        warning_active(second, "sdhealth", percent)
         assert manager2.is_snoozed("sdhealth") is True
         assert manager2.due() is None
 
         # Past the snooze it is due again.
         wall.t += snooze_s
         third, manager3 = self._display(path, wall)
-        third._warning_active("sdhealth", percent)
+        warning_active(third, "sdhealth", percent)
         assert manager3.is_snoozed("sdhealth") is False
         assert manager3.due().id == "sdhealth"
 
@@ -778,11 +788,11 @@ class TestPersistedSnoozeRestart:
         path = str(tmp_path / "warnings.json")
         wall = _FakeClock(1_000_000.0)
         first, manager = self._display(path, wall)
-        first._warning_active("sdhealth", 50)
+        warning_active(first, "sdhealth", 50)
         first.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
         manager.flush()
-        first._warning_cleared("sdhealth")
+        warning_cleared(first, "sdhealth")
         manager.flush()
         second, manager2 = self._display(path, wall)
-        second._warning_active("sdhealth", 50)
+        warning_active(second, "sdhealth", 50)
         assert manager2.is_snoozed("sdhealth") is False

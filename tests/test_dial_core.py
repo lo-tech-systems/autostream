@@ -630,48 +630,48 @@ class TestDisplayDelegates:
 
     def test_focus_attributes_write_through_to_the_core(self):
         display = self._display()
-        display._manual_focus_id = AID
-        display._bound_appliance_id = BID
-        display._reporting_appliance_id = AID
-        display._source_service_name = "Kitchen"
-        display._focus_pending = (AID, "Kitchen", 9.0)
-        display._accepted_replay = (AID, 20.0)
+        display.core.set_field("manual_id", AID)
+        display.core.set_field("bound_id", BID)
+        display.core.set_field("reporting_id", AID)
+        display.core.set_field("source_service_name", "Kitchen")
+        display.core.set_field("pending", (AID, "Kitchen", 9.0))
+        display.core.set_field("accepted_replay", (AID, 20.0))
         focus = display._core.snapshot().focus
         assert (focus.manual_id, focus.bound_id, focus.reporting_id) == (AID, BID, AID)
         assert focus.source_service_name == "Kitchen"
         assert focus.pending == (AID, "Kitchen", 9.0)
         assert focus.accepted_replay == (AID, 20.0)
-        assert display._manual_focus_id == AID and display.current_source_service_name() == "Kitchen"
+        assert display.core.snapshot().focus.manual_id == AID and display.core.current_source_service_name() == "Kitchen"
 
     def test_core_writes_are_visible_through_the_attributes(self):
         display = self._display()
         display._core.set_focus_pending(AID, "Kitchen", 9.0)
-        assert display._manual_focus_id == AID
-        assert display._focus_pending == (AID, "Kitchen", 9.0)
-        assert display.manual_focus_id() == AID
+        assert display.core.snapshot().focus.manual_id == AID
+        assert display.core.snapshot().focus.pending == (AID, "Kitchen", 9.0)
+        assert display.core.manual_focus_id() == AID
 
     def test_availability_and_now_playing_attributes(self):
         display = self._display()
         np = NowPlaying("Kitchen", "a", "t", 30)
-        display._now_playing = np
-        display._dots_active = True
-        display._outputs_available = True
-        display._eq_available = True
-        display._idle_affordance = True
+        display.core.set_field("now_playing", np)
+        display.core.set_field("dots_active", True)
+        display.core.set_field("outputs_available", True)
+        display.core.set_field("eq_available", True)
+        display.core.set_field("idle_affordance", True)
         snap = display._core.snapshot()
         assert snap.now_playing is np
         assert snap.dots_active and snap.outputs_available and snap.eq_available
         assert snap.idle_affordance
-        assert display._now_playing is np
+        assert display.core.snapshot().now_playing is np
 
     def test_last_roster_derives_the_appliances_and_the_volume_target(self):
         display = self._display()
         entry = _entry(ip="192.0.2.50", port=80)
-        display._last_roster = [entry]
-        assert display._last_roster == [entry]
+        display.core.set_roster([entry])
+        assert display.core.roster() == [entry]
         assert display._core.snapshot().appliance(AID).webui_host == "192.0.2.50"
-        display.set_manual_focus(AID)
-        assert display.focus_volume_target() is entry
+        display.core.set_focus(AID)
+        assert display.core.focus_volume_target() is entry
 
     def test_the_display_still_does_not_subscribe_to_the_core(self):
         display = self._display()

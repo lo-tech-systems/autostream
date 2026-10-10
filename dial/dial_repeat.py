@@ -13,7 +13,7 @@ Touch-thread entry points (enqueue_transport/enqueue_arm) do no I/O and
 take no lock other than the queue's own — the same discipline
 dial_volume.enqueue_delta()/enqueue_mute() follow. The worker thread never
 touches dial_display.DialDisplay._lock; its result callback
-(on_result, wired to DialDisplay.on_repeat_result by dial_main.py) is
+(on_result, wired to DialCore.on_repeat_result by dial_main.py) is
 called with no lock held here either.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -64,7 +64,7 @@ def start_repeat_worker(cfg, *, on_result=None) -> None:
 
     on_result, when supplied, is called as on_result(kind, appliance_id,
     http_status, body) after every send completes — wired to
-    DialDisplay.on_repeat_result by dial_main.py. A raising callback is
+    DialCore.on_repeat_result by dial_main.py. A raising callback is
     swallowed by the worker loop, never allowed to kill the thread.
     """
     global _cfg, _on_result

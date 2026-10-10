@@ -85,7 +85,6 @@ class TestDataclasses:
 
     def test_dial_display_reexports_the_moved_types(self):
         import dial_display
-        assert dial_display.NowPlaying is cs.NowPlaying
         assert dial_display.OutputRow is cs.OutputRow
         assert dial_display.SelectorRow is cs.SelectorRow
         assert dial_display.PickerRow is cs.PickerRow

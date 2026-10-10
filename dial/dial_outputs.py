@@ -12,7 +12,7 @@ no lock other than a small pending-fetch set guarded by its own lock — the
 same discipline dial_volume.enqueue_delta()/enqueue_mute() and
 dial_repeat.enqueue_transport()/enqueue_arm() follow. The worker thread
 never touches dial_display.DialDisplay._lock; its result callback
-(on_result, wired to DialDisplay.on_outputs_result by dial_main.py) is
+(on_result, wired to DialCore.on_outputs_result by dial_main.py) is
 called with no lock held here either.
 
 Every mutation is followed by an automatic list refetch for the same
@@ -79,7 +79,7 @@ def start_outputs_worker(cfg, *, on_result=None) -> None:
 
     on_result, when supplied, is called as
     on_result(kind, appliance_id, http_status, body, request_body) after
-    every send completes — wired to DialDisplay.on_outputs_result by
+    every send completes — wired to DialCore.on_outputs_result by
     dial_main.py. A raising callback is swallowed by the worker loop, never
     allowed to kill the thread.
     """

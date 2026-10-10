@@ -1,43 +1,27 @@
-"""dial_display.py — Dial display manager facade.
+"""dial_display.py — the dial's screen: the view over the appliance model.
 
-Owns the panel: threading of the repaint loop, fallback policy (logo vs
-artwork), image identity dedupe, error handling, and the no-op path for
-display-disabled installs. The poll itself belongs to the appliance model
-(dial_core.py), which runs it on its own thread from the mDNS
-display-selection helper get_display_targets() — never the volume fan-out
-get_playing_targets(), which is unrelated and unaffected by display state —
-and publishes immutable snapshots. This manager subscribes to them and its
-repaint thread folds each into the screen (_apply_snapshot): a finished poll
-tick shows its artwork or logo, rows and idle sleep; a playing appliance
-wakes a sleeping panel; a snapshot nothing on screen depends on paints
-nothing.
+Owns the panel: threading of the repaint loop, screen policy (the table of
+screens, their timeouts and what a poll that finds nothing playing does to
+each), composing and transmitting frames, panel sleep and wake from
+snapshots, the artwork-tap reveal slide, the replay timer line, the pressed
+channel, the artwork decode and fit cache, and the touch surface the touch
+source reads. It holds no appliance state of its own.
 
-Authorization gating reads target.auth (stamped by dial_mdns from dial_auth):
-a confirmed 412 (unauthorized) is skipped for display purposes; an unknown or
-authorized row is polled normally. The core is one of the writers of
-dial_auth's map (from both the sequential poll and the concurrent reconcile
-pass) but never the sole source of truth for it — a push notification and the
-mDNS browser's own sightings write it too.
+Everything about the appliances belongs to the core (dial_core.py): the poll
+(from the mDNS display-selection helper get_display_targets(), never the
+volume fan-out get_playing_targets()), authorization gating, focus, the
+now-playing line and its artwork bytes, the repeat and outputs/EQ state, the
+Wi-Fi link, SD health and update watch, and the warning manager. The core
+runs on its own thread and publishes immutable snapshots. This manager
+subscribes to them and its repaint thread folds each into the screen
+(_apply_snapshot): a finished poll tick shows its artwork or logo, rows and
+idle sleep; a playing appliance wakes a sleeping panel; a snapshot nothing
+on screen depends on paints nothing. What the core's warning sources and
+worker results mean for a screen reaches it as queued effects.
 
 Display failure must always degrade to a no-op display; it must never affect
 volume control. Backend hardware code lives in dial_display_adafruit.py;
 Pillow-only image policy lives in dial_display_image.py.
-
-The core also feeds dial_repeat_store's per-appliance repeat/replay belief,
-from the same two poll paths that feed the auth map: the sequential artwork
-walk (every poll for the focused/reporting appliance) and the concurrent
-reconcile pass (every 60 s, run over the merged roster —
-dial_mdns.get_roster() — so idle appliances are covered too, through
-enrich_targets() only; an idle row never becomes the artwork base, though a
-manual focus resting on one is polled every tick and can set the now-playing
-line with no artwork of its own — see focus_volume_target()). The roster and
-the repeat store are read by the volume resolver only through the display's
-focus accessor.
-
-This manager also consumes the network poller's view (dial_network.py, via
-on_network_view()) for the idle screen's Wi-Fi status icon and the No-WiFi
-page. Both the network view and the SD health reader feed the on-screen
-warning manager (dial_warnings.py) through the core.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -56,10 +40,7 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageChops
 
-from dial_auth import (
-    AUTH_UNAUTHORIZED,
-    auth_map,
-)
+from dial_auth import AUTH_UNAUTHORIZED
 from dial_display_compositor import (
     PLAY_GLYPH,
     DialDisplayCompositor,
@@ -90,41 +71,27 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, NOWIFI_PROMPT_STREAK, EqBand, EqState, NowPlaying, OutputRow, PickerRow, SelectorRow, availability,
-    dots_active, picker_rows,
-    eq_gain, selector_rows, with_accepted_replay,
-)
-from dial_core_poll import (
-    DIAL_STATUS_TIMEOUT_SECONDS,
-    url_log_key as _url_log_key,
+    EqState, OutputRow, PickerRow, SelectorRow,
+    dots_active,
+    eq_gain, selector_rows,
 )
 import dial_core_poll
 from dial_core import (
-    DEFAULT_POLL_INTERVAL_S, FOCUS_PENDING_GRACE_S, RECONCILE_INTERVAL_S, DialCore, PollIO,
+    DEFAULT_POLL_INTERVAL_S, RECONCILE_INTERVAL_S, DialCore, PollIO,
     RepeatEffect,
 )
-from dial_mdns import PlayingTarget, appliance_display_name
+from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import (
     LINK_CONNECTED,
     LINK_DOWN,
-    NetworkView,
 )
 from dial_network import request_reboot as _request_reboot
-from dial_sdhealth import SdHealthView
 from dial_repeat_store import repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_warning_text import (  # re-exported: the warning table and its text live there
-    NOWIFI_DISMISS_TEXT,
-    NOWIFI_MESSAGE_TEXT,
-    NOWIFI_RESTART_TEXT,
-    SDHEALTH_BODY_TEXT,
-    SDHEALTH_BODY_TEXT_NO_PERCENT,
-    SDHEALTH_CRITICAL_PERCENT,
     SDHEALTH_CRITICAL_SNOOZE_S,
-    SDHEALTH_DISMISS_TEXT,
     SDHEALTH_SNOOZE_S,
-    SDHEALTH_TITLE_TEXT,
     UPDATE_FAILED_TEXT,
     UPDATE_PHASE_FALLBACK_TEXT,
     UPDATE_PHASE_TEXT,
@@ -134,18 +101,9 @@ from dial_warning_text import (  # re-exported: the warning table and its text l
     UPDATING_TEXT,
     WARNING_DESCRIPTORS,
     _WARNING_BY_ID,
-    _WARNING_BY_SCREEN,
-    _sdhealth_message_for,
-    _sdhealth_snooze_for,
-    _update_message_for,
-    _update_progress_for,
-    _update_result_message_for,
-    _update_result_title_for,
-    _update_title_for,
 )
 from dial_update_watch import (
     UPDATE_SEEN_PATH,
-    UpdateView,
     UpdateWatcher,
 )
 from dial_touch_layout import (
@@ -161,7 +119,6 @@ from dial_volume import (
     forget_mute_states_except,
     observe_master_volume,
     observe_mute_state,
-    select_volume_target,
     shown_muted,
     shown_volume,
 )
@@ -638,18 +595,15 @@ class InfoValueState:
 
 @dataclass(frozen=True)
 class OutputsState:
-    """The outputs list screen: which appliance it is showing, its last
-    fetched rows (remote-in-use outputs already dropped by the worker's
-    result parsing), paging and the inactivity clock. rows is () until the
-    first fetch lands (loaded False draws the loading placeholder)."""
+    """The outputs list screen: which appliance it is showing, its paging
+    and the inactivity clock. The rows are the core's, read from its
+    snapshot at paint time (see DialDisplay._rows_of)."""
     appliance_id: str
     service_name: str
     ip: str
     port: int
-    rows: "tuple[OutputRow, ...]"
     page: int
     opened_at: float
-    loaded: bool = False
 
 
 @dataclass(frozen=True)
@@ -664,19 +618,14 @@ class OutputDetailState:
 
 @dataclass(frozen=True)
 class EqScreenState:
-    """The EQ page: which appliance it is showing and the last fetched
-    bass/treble pair. bass_db/treble_db are None until the first fetch for
-    THIS appliance lands (loaded False draws "-" and dimmed controls); a
-    reopen for the same appliance keeps the last known pair rather than
-    blanking the bars (see _open_eq_locked)."""
+    """The EQ page: which appliance it is showing and the inactivity clock.
+    The bass/treble readings are the core's, read from its snapshot at
+    paint time (loaded False draws "-" and dimmed controls)."""
     appliance_id: str
     service_name: str
     ip: str
     port: int
     opened_at: float
-    bass_db: "int | None" = None
-    treble_db: "int | None" = None
-    loaded: bool = False
 
 
 @dataclass(frozen=True)
@@ -728,20 +677,24 @@ def _page_slice(rows: tuple, page: int, rows_per_page: int) -> tuple[int, tuple]
     return start, rows[start:start + rows_per_page]
 
 
-def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed=None) -> ListState:
+def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed=None, rows=None) -> ListState:
     """Build the compositor's ListState for *state*'s current page, or a
     single non-selected *placeholder* row when there are no rows. *to_row*
-    maps one row of *state* to the row tuple ListState carries. *pressed*
-    is the (zone, index) pair from the unified pressed channel, passed
-    through unchanged — the compositor resolves it against this screen's
-    own geometry, so a zone from another screen simply washes nothing."""
-    if state is None or not state.rows:
+    maps one row of *state* to the row tuple ListState carries. *rows*
+    replaces state.rows for a screen whose rows are not its own (the
+    outputs list reads the core's). *pressed* is the (zone, index) pair
+    from the unified pressed channel, passed through unchanged — the
+    compositor resolves it against this screen's own geometry, so a zone
+    from another screen simply washes nothing."""
+    if rows is None and state is not None:
+        rows = state.rows
+    if state is None or not rows:
         return ListState(rows=((placeholder, False),), has_prev=False, has_next=False, pressed=pressed)
-    start, page_rows = _page_slice(state.rows, state.page, rows_per_page)
+    start, page_rows = _page_slice(rows, state.page, rows_per_page)
     return ListState(
         rows=tuple(to_row(row) for row in page_rows),
         has_prev=state.page > 0,
-        has_next=start + rows_per_page < len(state.rows),
+        has_next=start + rows_per_page < len(rows),
         pressed=pressed,
     )
 
@@ -771,28 +724,6 @@ def _output_list_row(row: "OutputRow") -> tuple:
     return (row.name, False, str(row.volume) if row.selected else "")
 
 
-def _parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
-    """The outputs a POST /api/dial/outputs response lists that this screen
-    can offer: the core's parse (None on anything malformed, non-200 or
-    unreachable, so the caller keeps showing the last good snapshot) less
-    the outputs another autostream instance has taken, matching the Home
-    page's own filtering."""
-    rows = dial_core_poll.parse_outputs_body(status, body)
-    if rows is None:
-        return None
-    return _offerable(rows)
-
-
-def _eq_bands_of(screen: "EqScreenState") -> tuple:
-    """The bands a screen's bass and treble readings stand for, for the
-    readings it has."""
-    bands = []
-    for band_id, gain in (("bass", screen.bass_db), ("treble", screen.treble_db)):
-        if gain is not None:
-            bands.append(EqBand(band_id, None, gain, -EQ_LIMIT_DB, EQ_LIMIT_DB))
-    return tuple(bands)
-
-
 def _eq_loaded(eq: "EqState") -> bool:
     """Whether the EQ page has a reading it can draw: one has landed and it
     carries a band the page knows."""
@@ -802,6 +733,24 @@ def _eq_loaded(eq: "EqState") -> bool:
 def _offerable(rows: "tuple[OutputRow, ...]") -> "tuple[OutputRow, ...]":
     """*rows* without the outputs another appliance has taken."""
     return tuple(r for r in rows if not r.remote_in_use)
+
+
+def _held_outputs(snapshot, state: "OutputsState | None"):
+    """The core's outputs state for the appliance the outputs screen *state*
+    shows, or None when the core holds none for it."""
+    held = snapshot.outputs
+    if state is None or held is None or held.appliance_id != state.appliance_id:
+        return None
+    return held
+
+
+def _held_eq(snapshot, state: "EqScreenState | None"):
+    """The core's EQ state for the appliance the EQ page *state* shows, or
+    None when the core holds none for it."""
+    held = snapshot.eq
+    if state is None or held is None or held.appliance_id != state.appliance_id:
+        return None
+    return held
 
 
 # ---------------------------------------------------------------------------
@@ -870,22 +819,6 @@ class NoOpBackend(DisplayBackend):
 # ---------------------------------------------------------------------------
 # Display manager
 # ---------------------------------------------------------------------------
-
-def _focus_property(name: str):
-    """A DialDisplay attribute held in the core's focus state."""
-    return property(
-        lambda self: getattr(self._core.snapshot().focus, name),
-        lambda self, value: self._core.set_field(name, value),
-    )
-
-
-def _snapshot_property(name: str):
-    """A DialDisplay attribute held in the core's snapshot."""
-    return property(
-        lambda self: getattr(self._core.snapshot(), name),
-        lambda self, value: self._core.set_field(name, value),
-    )
-
 
 class DialDisplay:
     def __init__(
@@ -1024,28 +957,16 @@ class DialDisplay:
         # show/update/hide the overlay.
         self._current_base_image = None
 
-        # Now-playing state for the overlay, the artwork source's service
-        # name, the focus and the roster live in the core (see the
-        # delegating properties below). The core's poll thread writes them;
-        # the repaint thread reads them under self._lock at compose time
-        # and the HTTP/touch/worker threads read them lock-free.
+        # Everything about the appliances (now-playing, artwork source,
+        # focus, roster, page-dots gate, idle affordance, outputs, EQ, link,
+        # warnings, update watch) lives in the core. The repaint thread
+        # reads its newest snapshot at compose time and the touch/worker
+        # threads read it lock-free.
         # Non-composited-state notification (screen cleared or asleep) for
         # the touch side to observe — see _mark_noncomposited_locked().
         self._noncomposited_event = threading.Event()
         self._noncomposited_generation = 0
 
-        # ---- Auth, focus and push plumbing ----------------------------
-        # The poll, its wake, the push queue and the reconcile bookkeeping
-        # belong to the core.
-        # The manual focus (the appliance_id the user chose, or None for
-        # auto-pick; never persisted), the sticky binding beneath it, the
-        # pending-focus grace of a picker-started replay, the reporting
-        # appliance, the accepted-replay window, the roster, the page-dots
-        # gate and the idle-affordance flag are all core state, reached
-        # through the delegating properties below. The touch thread writes
-        # the manual and pending focus (set_manual_focus(),
-        # set_manual_focus_pending()); the core's poll thread resolves and
-        # rewrites them; the core's lock makes each write atomic.
         # Monotonic deadline until which the controls bands are hidden after
         # an artwork tap (0.0, i.e. never, until something arms it) — set by
         # the touch thread, read lock-free by the repaint loop's deadline
@@ -1143,8 +1064,8 @@ class DialDisplay:
         self._picker: PickerState | None = None
         # The info page's own state — written under self._lock by its
         # opener (_open_info_locked) and by _gather_info's fold-in (its own
-        # short-lived daemon thread, the on_outputs_result fold-in
-        # discipline: one assignment under the lock, no I/O while held).
+        # short-lived daemon thread: one assignment under the lock, no I/O
+        # while held).
         self._info: InfoState | None = None
         # Bumped by open_info() (touch thread, no lock — a plain int write)
         # each time the page (re)opens; a landing gather compares its own
@@ -1169,17 +1090,16 @@ class DialDisplay:
         # (e.g. a NoOpDisplayStatusProvider stand-in, or before wiring runs)
         # means _gather_info() falls back to the placeholder rows.
         self._get_info_rows = None
-        # The outputs list screen's own state — written under self._lock by
-        # its opener and by on_outputs_result's fold (worker thread); read
-        # lock-free by the touch thread's outputs_row_tap()/output_toggle_
-        # tap()/output_volume_tap() entries, mirroring self._repeat_screen's
-        # discipline. Its rows are the core's, less the outputs another
-        # appliance has taken, refreshed in the fold; a rows or loaded
-        # change made here is carried to the core by _flush_core_state().
-        self._outputs_view: OutputsState | None = None
-        self._eq_view: "EqScreenState | None" = None
-        self._core_outputs_dirty = False
-        self._core_eq_dirty = False
+        # The outputs list screen's own state (appliance, page, clock) —
+        # written under self._lock by its opener and by the snapshot fold's
+        # page clamp; read lock-free by the touch thread's outputs_row_tap()/
+        # output_toggle_tap()/output_volume_tap() entries, mirroring
+        # self._repeat_screen's discipline. Its rows are the core's, less
+        # the outputs another appliance has taken, read at use.
+        self._outputs: OutputsState | None = None
+        # The EQ page's own state (appliance, clock) — same discipline; its
+        # bands are the core's.
+        self._eq: "EqScreenState | None" = None
         # Serialises the interest this view holds in the core's outputs and
         # EQ state with the requests that open the screens, see
         # _sync_core_interest().
@@ -1192,18 +1112,6 @@ class DialDisplay:
         # Touch-thread plain write: the row a LIST_ROW tap on the outputs
         # list chose, consumed by the detail page's opener.
         self._output_open_id: str | None = None
-        # The EQ page's own state (self._eq_view) — same write/read
-        # discipline as the outputs screen's: written under self._lock by
-        # its opener and by on_eq_result's fold (worker thread); read
-        # lock-free by the touch thread's eq_step() entry.
-        # ---- Wi-Fi link, SD health, warnings and the update watch ---------
-        # All of it lives in the core: the latest network and SD health
-        # readings, the down streak and ever-connected latches (the latter
-        # describes this boot, not the panel: it splits a DOWN link into a
-        # dial still connecting, whose icon flashes grey/blank and raises no
-        # prompt, and one that has lost a link it had, which flashes
-        # grey/red and raises the No-WiFi page), the warning manager and the
-        # update source. The properties further down read them back.
         # The restarting screen's own state, same write/read discipline as
         # self._info (opener under self._lock, cleared by
         # _close_secondary_locked via the policy table).
@@ -1296,7 +1204,7 @@ class DialDisplay:
             except RuntimeError:
                 pass
         # A Dismiss inside the last tick has not been written yet.
-        self._warnings.flush()
+        self._core.flush_warnings()
         with self._lock:
             self._disable_locked()
 
@@ -1576,118 +1484,6 @@ class DialDisplay:
             self._overlay_snapshot = state
         self._overlay_signal.set()
 
-    # Core-held state, read and written through the core: a read is a plain
-    # reference read of the newest snapshot (any thread), a write stores the
-    # value under the core's lock and publishes it.
-    _manual_focus_id = _focus_property("manual_id")
-    _bound_appliance_id = _focus_property("bound_id")
-    _focus_pending = _focus_property("pending")
-    _reporting_appliance_id = _focus_property("reporting_id")
-    _source_service_name = _focus_property("source_service_name")
-    _accepted_replay = _focus_property("accepted_replay")
-    _now_playing = _snapshot_property("now_playing")
-    _dots_active = _snapshot_property("dots_active")
-    @property
-    def _outputs(self) -> "OutputsState | None":
-        return self._outputs_view
-
-    @_outputs.setter
-    def _outputs(self, value: "OutputsState | None") -> None:
-        old = self._outputs_view
-        self._outputs_view = value
-        if value is not None and (
-            old is None or old.appliance_id != value.appliance_id
-            or old.loaded != value.loaded or old.rows != value.rows
-        ):
-            self._core_outputs_dirty = True
-
-    @property
-    def _eq(self) -> "EqScreenState | None":
-        return self._eq_view
-
-    @_eq.setter
-    def _eq(self, value: "EqScreenState | None") -> None:
-        old = self._eq_view
-        self._eq_view = value
-        if value is not None and (
-            old is None or old.appliance_id != value.appliance_id or old.loaded != value.loaded
-            or old.bass_db != value.bass_db or old.treble_db != value.treble_db
-        ):
-            self._core_eq_dirty = True
-
-    @property
-    def _outputs_optimistic(self) -> "tuple[str, bool, int | None, float] | None":
-        """The pending (output_id, selected, volume, stamped_at) tap shown
-        ahead of the appliance's own list, held by the core."""
-        return self._core.outputs_override()
-
-    @_outputs_optimistic.setter
-    def _outputs_optimistic(self, value) -> None:
-        self._core.set_outputs_override(value)
-
-    @property
-    def _eq_optimistic(self) -> "tuple[int | None, int | None, float] | None":
-        """The pending (bass, treble, expires_at) tap shown ahead of the
-        appliance's own reading, held by the core as one gain per band; an
-        element is None when only the other control was stepped."""
-        pairs, expires_at = self._core.eq_override()
-        if not pairs and not expires_at:
-            return None
-        gains = dict(pairs)
-        return gains.get("bass"), gains.get("treble"), expires_at
-
-    @_eq_optimistic.setter
-    def _eq_optimistic(self, value) -> None:
-        if value is None:
-            self._core.set_eq_override((), 0.0)
-            return
-        bass, treble, expires_at = value
-        pairs = tuple(
-            (band, gain) for band, gain in (("bass", bass), ("treble", treble)) if gain is not None
-        )
-        self._core.set_eq_override(pairs, expires_at)
-
-    _outputs_available = _snapshot_property("outputs_available")
-    _eq_available = _snapshot_property("eq_available")
-    _idle_affordance = _snapshot_property("idle_affordance")
-    # The link, SD health, warning and update-source state the core holds.
-    _network = property(lambda self: self._core.snapshot().network)
-    _wifi_ever_connected = property(lambda self: self._core.snapshot().wifi_ever_connected)
-    _sd_health = property(lambda self: self._core.snapshot().sd_health)
-    _wifi_down_streak = property(lambda self: self._core.wifi_down_streak())
-    _sd_low = property(lambda self: self._core.sd_low())
-    _warnings = property(lambda self: self._core.warnings)
-    _update_watcher = property(
-        lambda self: self._core.update_watcher,
-        lambda self, value: setattr(self._core, "update_watcher", value),
-    )
-    _update_seen_path = property(
-        lambda self: self._core.update_seen_path,
-        lambda self, value: setattr(self._core, "update_seen_path", value),
-    )
-    _last_roster = property(
-        lambda self: self._core.roster(),
-        lambda self, value: self._core.set_roster(value),
-    )
-
-    def current_source_service_name(self) -> str | None:
-        """mDNS service name of the display's chosen artwork source, or
-        None when nothing is identified/playing. Plain reference read, safe
-        from any thread; may lag the poll by up to one poll cycle. Used by
-        dial_main's volume-target resolver (see _build_volume_targets_fn) so
-        a touch/encoder press addresses whatever this dial is showing — or,
-        with a manual focus, the focused appliance, see
-        focus_volume_target()."""
-        return self._core.current_source_service_name()
-
-    def focus_volume_target(self):
-        """The roster entry the volume/mute worker should address while a
-        manual focus is set (see DialCore.focus_volume_target): that
-        appliance, playing or idle, when it is on the last-published roster
-        and not confirmed unauthorized; else None. Safe from the worker
-        thread; may lag the poll by one cycle."""
-        return self._core.focus_volume_target()
-
     def persistent_overlay_shown(self) -> bool:
         """True while the display is holding the controls overlay visible
         on its own (always_show_controls on OR the resolved content tier is
@@ -1705,12 +1501,12 @@ class DialDisplay:
         was turned off, or the selector opened), the touch side is forced
         back to reveal-on-touch within one loop tick.
 
-        "A controllable appliance shown" is self._now_playing is not None —
+        "A controllable appliance shown" is the snapshot carrying a now_playing —
         true for both real artwork and the playing-placeholder logo shown
         across a track change, false only when nothing is playing at all.
         The self._showing != "noop" term covers the moment right after the
         panel is cleared (see _clear_locked): the panel is momentarily blank
-        even though self._now_playing may still be set, so nothing is
+        even though the snapshot's now_playing may still be set, so nothing is
         actually on screen for the overlay to be held over until the next
         repaint recomposes a base image. An artwork tap (see hide_controls())
         also drops this to False for its own window, regardless of
@@ -1726,7 +1522,7 @@ class DialDisplay:
                 (self._config.always_show_controls and not self._compact_tier())
                 or (self._compact_tier() and not self._compact_controls_hidden())
             )
-            and self._now_playing is not None
+            and self._core.snapshot().now_playing is not None
             and self._showing != "noop"
             and self._backend_open
             and not self._display_sleeping
@@ -1899,7 +1695,7 @@ class DialDisplay:
                 (self._config.always_show_controls and not self._compact_tier())
                 or (self._compact_tier() and not self._compact_controls_hidden())
             )
-            and self._now_playing is not None
+            and self._core.snapshot().now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
             and not self._controls_hidden(now)
@@ -1918,7 +1714,7 @@ class DialDisplay:
         is shown (there is no appliance for the top-right zone to act on).
 
         name_active is true whenever there is a controllable appliance
-        currently shown (self._now_playing is not None) — unconditional:
+        currently shown (the snapshot carries a now_playing) — unconditional:
         the appliance name and its tap-zone are always active in that
         case, never gated on how many appliances are authorized. It is
         independent of held/hidden: by the time a second press can sample
@@ -1945,7 +1741,7 @@ class DialDisplay:
         name could go stale — see toggle_repeat_screen() and the empty-
         target branch of _apply_idle_tick). A row whose own tuple asks for the
         outputs zone (the repeat screen's own top-right readout) still
-        gates on the live self._outputs_available, same as main; a row
+        gates on the live snapshot's outputs_available, same as main; a row
         that carries False there is unaffected.
 
         A policy row whose own ScreenPolicy.replay_surface is set reports
@@ -1973,8 +1769,9 @@ class DialDisplay:
         """
         if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
             return ("hidden", False, False, False)
+        snap = self._core.snapshot()
         if self._screen == "repeat" and self._controls_hidden():
-            return ("hidden", True, self._dots_active, self._outputs_available)
+            return ("hidden", True, snap.dots_active, snap.outputs_available)
         policy = _policy(self._screen)
         if policy.surface is not None:
             if (
@@ -1985,22 +1782,15 @@ class DialDisplay:
                 s = policy.replay_surface
             else:
                 s = policy.surface
-            return (s[0], s[1], s[2], s[3] and self._outputs_available)
-        if self._now_playing is None:
+            return (s[0], s[1], s[2], s[3] and snap.outputs_available)
+        if snap.now_playing is None:
             return ("idle", False, False, False)
         name_active = True
-        dots_active = self._dots_active
-        outputs_active = self._outputs_available
+        dots_active = snap.dots_active
+        outputs_active = snap.outputs_available
         if self.persistent_overlay_shown():
             return ("held", name_active, dots_active, outputs_active)
         return ("hidden", name_active, dots_active, outputs_active)
-
-    def request_repaint(self) -> None:
-        """Ask the repaint thread to recompose the current base against the
-        latest overlay/now-playing state. Lock-free; used by the volume
-        worker's on_readout_changed callback so a fresh readout appears on
-        screen without waiting for the next poll or touch event."""
-        self._overlay_signal.set()
 
     def noncomposited_generation(self) -> int:
         """Current non-composited-state generation counter.
@@ -2419,7 +2209,7 @@ class DialDisplay:
         frame from a poll.
 
         Whether the overlay is held over *image* is decided in
-        _effective_overlay_locked() from self._now_playing, not from
+        _effective_overlay_locked() from the snapshot's now_playing, not from
         anything about *image* itself — a controllable appliance shown
         (real artwork or the playing-placeholder logo) holds the overlay;
         nothing playing does not. See persistent_overlay_shown() and
@@ -2442,7 +2232,7 @@ class DialDisplay:
         slide_ok = (
             self._screen == "main"
             and self._slide_tier()
-            and self._now_playing is not None
+            and self._core.snapshot().now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
         )
@@ -2548,8 +2338,8 @@ class DialDisplay:
             never gated on how many appliances are authorized.
 
         held-visible (see _held_overlay_locked()): when always_show_controls
-        is on and a controllable appliance is shown (self._now_playing is
-        not None — true for real artwork and for the playing-placeholder
+        is on and a controllable appliance is shown (the snapshot carries a
+        now_playing — true for real artwork and for the playing-placeholder
         logo shown across a track change; false only when nothing is
         playing at all), and the display is not asleep, the overlay is
         forced visible here regardless of what the touch-published snapshot
@@ -2558,7 +2348,7 @@ class DialDisplay:
         (see dial_touch.py's HELD VISIBLE paragraph and set_held_visible()).
         It is also what keeps the overlay drawn across a track change: the
         base image swaps to the placeholder logo and the artist/title clear,
-        but self._now_playing stays non-None throughout, so the held overlay
+        but the snapshot's now_playing stays set throughout, so the held overlay
         is preserved rather than dropped. The self._showing != "noop" term
         mirrors persistent_overlay_shown()'s own guard against the moment
         right after the panel is cleared. An artwork-tap hide window (see
@@ -2587,8 +2377,10 @@ class DialDisplay:
         # even though the snapshot or the hide window says hidden. Same
         # guards as held, so a cleared now-playing or a sleeping panel
         # mid-slide draws nothing.
+        snap = self._core.snapshot()
+        now_playing = snap.now_playing
         revealing = (
-            self._now_playing is not None
+            now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
             and animating
@@ -2601,7 +2393,6 @@ class DialDisplay:
             return _HIDDEN_OVERLAY
         if not (snapshot.visible or held or revealing):
             return snapshot
-        now_playing = self._now_playing
         artist = now_playing.artist if now_playing is not None else ""
         if now_playing is not None and self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE):
             # Rich/large only: base keeps its artist row exactly as before,
@@ -2626,10 +2417,10 @@ class DialDisplay:
         # selector/picker screens anyway (they bypass _display_locked
         # entirely), but the explicit screen check here means a stray call
         # can never show them somewhere they should not appear.
-        dots = self._dots_active and self._screen == "main"
+        dots = snap.dots_active and self._screen == "main"
         return dataclasses.replace(
             snapshot, visible=True, artist=artist, title=title, album=album, volume=volume, muted=muted,
-            name=name, dots=dots, pressed=pressed, eq_pages=self._eq_available,
+            name=name, dots=dots, pressed=pressed, eq_pages=snap.eq_available,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -2748,7 +2539,7 @@ class DialDisplay:
         # Wake first if touch asked for it, so the backlight is on before
         # the frame is pushed rather than one repaint later.
         woke = self._apply_touch_activity_locked()
-        # Fold any pending open_selector()/close_selector()/selector_page()
+        # Fold any pending open_selector()/close_list()/list_page()
         # request into self._screen/self._selector before deciding what to
         # paint — see _apply_screen_requests_locked().
         self._apply_screen_requests_locked()
@@ -2783,17 +2574,17 @@ class DialDisplay:
         to the ordinary reveal-on-touch overlay path (a controls overlay
         over a logo that controlled nothing) — see touch_surface(), whose
         "idle" surface now follows the same rule."""
-        return self._screen == "main" and self._now_playing is None
+        return self._screen == "main" and self._core.snapshot().now_playing is None
 
     # ---- appliance selector, repeat and picker screens ----------------------
     #
     # Touch-thread entry points (open_selector/close_list/list_page/
-    # selector_pick/toggle_repeat_screen/repeat_*_tap/open_picker/
+    # selector_pick/cycle_pages/repeat_*_tap/open_picker/
     # picker_pick) are flag-write-plus-signal only, exactly like
-    # notify_touch_activity()/set_manual_focus() — the actual screen-state
+    # notify_touch_activity() — the actual screen-state
     # change happens on the repeat thread under self._lock
     # (_apply_screen_requests_locked). Rows themselves are built ONLY on the
-    # poll thread (_refresh_selector_rows/_refresh_picker_rows) — the touch
+    # repaint thread (_refresh_selector_rows/_refresh_picker_rows) — the touch
     # thread never builds rows, it only reads the last-published state.
 
     def open_selector(self) -> None:
@@ -2831,13 +2622,11 @@ class DialDisplay:
         reading, as cycle_pages() does on the way in."""
         target = self._back_target(screen)
         if target == "eq":
-            entry = self._eq_target_lockfree()
+            entry = self._capable_target_lockfree("dial_eq")
             if entry is not None:
                 self._core.fetch_eq(entry.appliance_id)
         self._screen_request = target
         self._overlay_signal.set()
-
-    close_selector = close_list  # alias kept for existing direct callers/tests
 
     def list_page(self, delta: int) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_DOWN/
@@ -2846,8 +2635,6 @@ class DialDisplay:
         by _apply_screen_requests_locked()."""
         self._page_request += delta
         self._overlay_signal.set()
-
-    selector_page = list_page  # alias kept for existing direct callers/tests
 
     def selector_pick(self, index: int) -> None:
         """Touch-thread entry: a LIST_ROW tap while the appliance selector
@@ -2929,28 +2716,36 @@ class DialDisplay:
         about which rows are on screen. Safe with or without self._lock."""
         return self._layout_metrics().rows_per_page
 
+    def _rows_of(self, state) -> tuple:
+        """Every row of a list screen's *state*: its own for the selector,
+        picker and info pages, the core's last fetched outputs (less those
+        another appliance has taken) for the outputs list."""
+        if isinstance(state, OutputsState):
+            held = _held_outputs(self._core.snapshot(), state)
+            return _offerable(held.rows) if held is not None else ()
+        return state.rows
+
     def _current_page_rows(self, state) -> tuple:
-        """The current page's slice of *state*.rows, for either a
-        SelectorState or a PickerState (both carry rows and page). Shared by
+        """The current page's slice of *state*'s rows (see _rows_of()), for
+        a SelectorState, PickerState, InfoState or OutputsState. Shared by
         the touch-thread pick entries (lock-free) and the repaint-thread list
         builders so the two can never disagree about which rows are on
         screen; rows_per_page comes from dial_touch_layout, the same source
         the hit-test reads. Takes no lock and writes nothing."""
-        _, page_rows = _page_slice(state.rows, state.page, self._rows_per_page())
+        _, page_rows = _page_slice(self._rows_of(state), state.page, self._rows_per_page())
         return page_rows
 
     def _repeat_page_available(self) -> bool:
         """Whether the repeat page has anything to show right now: a
-        controllable appliance (self._now_playing is not None) whose
+        controllable appliance (the snapshot carries a now_playing) whose
         focused/reporting id has a fresh, available repeat-store record.
-        Reads self._now_playing, self._manual_focus_id and
-        self._reporting_appliance_id (all plain reference reads, same
-        discipline as set_manual_focus()) and the repeat store's own leaf
-        lock — an appliance this dial cannot see repeat state for has
-        nothing to show on the repeat page."""
-        if self._now_playing is None:
+        Plain reference reads of the newest snapshot plus the repeat
+        store's own leaf lock — an appliance this dial cannot see repeat
+        state for has nothing to show on the repeat page."""
+        snap = self._core.snapshot()
+        if snap.now_playing is None:
             return False
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        appliance_id = snap.focused_id()
         if not appliance_id:
             return False
         rec = repeat_store.get(appliance_id, time.monotonic())
@@ -2990,8 +2785,8 @@ class DialDisplay:
                 self._screen_request = "repeat"
                 self._overlay_signal.set()
                 return
-            if candidate == "eq" and self._eq_available:
-                target = self._eq_target_lockfree()
+            if candidate == "eq" and self._core.snapshot().eq_available:
+                target = self._capable_target_lockfree("dial_eq")
                 if target is not None:
                     with self._interest_lock:
                         self._core.watch_eq(target.appliance_id, "spi", True)
@@ -3007,15 +2802,9 @@ class DialDisplay:
                     self._overlay_signal.set()
                 return
 
-    def toggle_repeat_screen(self) -> None:
-        """Alias kept for existing direct callers/tests — see
-        cycle_pages(), which replaced this method's own open/close logic
-        with the three-page cycle."""
-        self.cycle_pages()
-
     def consume_repeat_close_reveal(self) -> bool:
         """Touch-thread-only read-and-clear of the one-shot flag
-        toggle_repeat_screen() sets when the repeat screen closes via a
+        cycle_pages() sets when the repeat screen closes via a
         DOTS tap. Both the setter and this getter run exclusively on the
         touch thread (see the flag's own comment in __init__), so no lock
         is needed here at all."""
@@ -3097,17 +2886,6 @@ class DialDisplay:
         volume readout on main. Lock-free."""
         self.pop_secondary("repeat")
 
-    def set_manual_focus_pending(self, appliance_id: str, service_name: str) -> None:
-        """Pin the focus to *appliance_id* and mark it PENDING for
-        FOCUS_PENDING_GRACE_S, as the core's start_replay() does for a
-        picker-started replay: the ordinary "gone from the roster"
-        focus-clear must not fire before the replay has had a chance to
-        reach the playing set. See the empty-targets branch of
-        DialCore._poll_tick."""
-        now = time.monotonic()
-        self._core.set_focus_pending(appliance_id, service_name, now + FOCUS_PENDING_GRACE_S)
-        self._core.request_poll()
-
     def open_picker(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_REPLAY
         tap). Refuses (plain bool read, no lock) when no replay is actually
@@ -3117,7 +2895,7 @@ class DialDisplay:
         forces an immediate reconcile/poll, the same as open_selector(), so
         a row that just went stale is refreshed within about one poll
         interval of opening."""
-        if not self._idle_affordance:
+        if not self._core.snapshot().idle_affordance:
             return
         self._screen_request = "picker"
         self._core.request_poll(reconcile=True)
@@ -3140,8 +2918,7 @@ class DialDisplay:
     def _gather_info(self, seq: int) -> None:
         """Worker thread (one per open_info() call, never the touch
         thread): call the injected provider and fold the result in under
-        self._lock in one assignment — the on_outputs_result fold-in
-        discipline, no I/O while the lock is held. Never raises: a missing
+        self._lock in one assignment, no I/O while the lock is held. Never raises: a missing
         or failing provider yields the placeholder rows instead. Drops a
         stale result — the page closed and reopened (seq no longer
         matches) or closed outright (self._info is None)."""
@@ -3174,7 +2951,7 @@ class DialDisplay:
         screen follows the appliance through the gap before its replay
         reaches the playing set; a rejected seek (source_active/
         no_recording, or any transport failure) clears it again in
-        on_repeat_result()."""
+        DialCore.on_repeat_result()."""
         picker = self._picker
         if picker is not None and picker.rows:
             page_rows = self._current_page_rows(picker)
@@ -3198,33 +2975,19 @@ class DialDisplay:
         self._replay_timer_frame_at = 0.0
         self._replay_timer_id = appliance_id
 
-    def _outputs_target_lockfree(self):
-        """The roster entry the outputs screens act on: the focused/
-        reporting appliance when it advertises dial_outputs and is not
-        confirmed unauthorized; else None. Plain reads, like
-        focus_volume_target()."""
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        if not appliance_id:
+    def _capable_target_lockfree(self, capability: str):
+        """The appliance entry the outputs or EQ screens act on: the focused/
+        reporting appliance when it advertises *capability* ("dial_outputs"
+        or "dial_eq") and is not confirmed unauthorized; else None. Plain
+        reads of the newest snapshot, like the core's focus_volume_target().
+        The compact-tier veto on EQ lives in the snapshot's eq_available
+        (computed once per poll tick), not here."""
+        snap = self._core.snapshot()
+        appliance_id = snap.focused_id()
+        entry = snap.appliance(appliance_id) if appliance_id else None
+        if entry is None or entry.auth == AUTH_UNAUTHORIZED or not getattr(entry, capability):
             return None
-        for r in self._last_roster:
-            if r.appliance_id == appliance_id:
-                return r if (r.dial_outputs and r.auth != AUTH_UNAUTHORIZED) else None
-        return None
-
-    def _eq_target_lockfree(self):
-        """The roster entry the EQ page acts on: the focused/reporting
-        appliance when it advertises dial_eq and is not confirmed
-        unauthorized; else None. The compact-tier veto lives in
-        self._eq_available (computed once per poll tick), not here — this
-        mirrors _outputs_target_lockfree() exactly, tier-agnostic like every
-        other *_target_lockfree() helper."""
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        if not appliance_id:
-            return None
-        for r in self._last_roster:
-            if r.appliance_id == appliance_id:
-                return r if (r.dial_eq and r.auth != AUTH_UNAUTHORIZED) else None
-        return None
+        return entry
 
     def open_outputs(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an OUTPUTS
@@ -3233,7 +2996,7 @@ class DialDisplay:
         round trip away. Lock-free, like open_selector(); refuses (no
         request at all) when there is no focused/reporting appliance
         advertising the capability."""
-        entry = self._outputs_target_lockfree()
+        entry = self._capable_target_lockfree("dial_outputs")
         if entry is None:
             return
         with self._interest_lock:
@@ -3248,7 +3011,7 @@ class DialDisplay:
         page. A stale index (the row vanished between paint and tap) is
         treated as back, same as selector_pick()/picker_pick()."""
         state = self._outputs
-        if state is not None and state.rows:
+        if state is not None and self._rows_of(state):
             page_rows = self._current_page_rows(state)
             if 0 <= index < len(page_rows):
                 self._output_open_id = page_rows[index].id
@@ -3258,14 +3021,14 @@ class DialDisplay:
         self.close_list()
 
     def _detail_row_lockfree(self) -> "OutputRow | None":
-        """The output the detail page is open for, read from the last
-        fetched outputs snapshot (not the optimistic override — see
+        """The output the detail page is open for, read from the core's last
+        fetched outputs (not the optimistic override — see
         output_toggle_tap()/output_volume_tap()). Plain reads, same
-        discipline as _outputs_target_lockfree()."""
+        discipline as _capable_target_lockfree()."""
         detail, state = self._output_detail, self._outputs
         if detail is None or state is None:
             return None
-        return next((r for r in state.rows if r.id == detail.output_id), None)
+        return next((r for r in self._rows_of(state) if r.id == detail.output_id), None)
 
     def output_toggle_tap(self) -> None:
         """Touch-thread entry (OUTPUT_TOGGLE): enable this output at the
@@ -3278,7 +3041,6 @@ class DialDisplay:
         state = self._outputs
         if row is None or state is None:
             return
-        self._flush_core_state()
         if self._core.set_output(state.appliance_id, row.id, selected=not row.selected).accepted:
             self._overlay_signal.set()
 
@@ -3292,7 +3054,6 @@ class DialDisplay:
         state = self._outputs
         if row is None or state is None:
             return
-        self._flush_core_state()
         if self._core.step_output_volume(state.appliance_id, row.id, delta).accepted:
             self._overlay_signal.set()
 
@@ -3318,26 +3079,22 @@ class DialDisplay:
         self._pressed = None
         self._overlay_signal.set()
 
-    _close_selector_locked = _close_secondary_locked  # alias kept for existing direct callers/tests
-
     def _build_repeat_screen_locked(self) -> "RepeatScreenState | None":
         """Build a RepeatScreenState for the currently focused/reporting
-        appliance from the last-published roster snapshot
-        (self._last_roster). Caller holds self._lock; runs on the repeat
-        thread only. Returns None when there is no focus/reporting
-        appliance right now, or it has since dropped out of the roster —
-        either way the screen request is simply dropped and whatever was
-        on screen before stays there."""
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        if not appliance_id:
+        appliance from the newest snapshot's appliance list. Caller holds
+        self._lock; runs on the repeat thread only. Returns None when
+        there is no focus/reporting appliance right now, or it has since
+        dropped out of the roster — either way the screen request is simply
+        dropped and whatever was on screen before stays there."""
+        snap = self._core.snapshot()
+        appliance_id = snap.focused_id()
+        entry = snap.appliance(appliance_id) if appliance_id else None
+        if entry is None:
             return None
-        for r in self._last_roster:
-            if r.appliance_id == appliance_id:
-                return RepeatScreenState(
-                    appliance_id=appliance_id, service_name=r.service_name,
-                    ip=r.ip, port=r.port, opened_at=time.monotonic(),
-                )
-        return None
+        return RepeatScreenState(
+            appliance_id=appliance_id, service_name=entry.service_name,
+            ip=entry.ip, port=entry.port, opened_at=time.monotonic(),
+        )
 
     def _open_main_locked(self) -> bool:
         """The "main" row's opener: pop to main. Extracted verbatim from
@@ -3427,23 +3184,17 @@ class DialDisplay:
     def _open_eq_locked(self) -> bool:
         """The EQ row's opener: refuse when there is no focused/reporting
         appliance advertising the capability, or the current tier has no EQ
-        page (see self._eq_available); otherwise open, keeping the last
-        fetched bass/treble when re-opening for the SAME appliance (so a
-        quick cycle away and back does not blank the bars), resetting them
-        for a different one."""
-        if not self._eq_available:
+        page (see the snapshot's eq_available); otherwise open. The
+        readings are the core's, which holds the last one while the page is
+        watched, so a quick cycle away and back does not blank the bars."""
+        if not self._core.snapshot().eq_available:
             return False
-        entry = self._eq_target_lockfree()
+        entry = self._capable_target_lockfree("dial_eq")
         if entry is None:
             return False
-        prev = self._eq
-        keep = prev is not None and prev.appliance_id == entry.appliance_id
         self._eq = EqScreenState(
             appliance_id=entry.appliance_id, service_name=entry.service_name,
             ip=entry.ip, port=entry.port, opened_at=time.monotonic(),
-            bass_db=prev.bass_db if keep else None,
-            treble_db=prev.treble_db if keep else None,
-            loaded=keep and prev.loaded,
         )
         self._screen = "eq"
         return True
@@ -3451,11 +3202,11 @@ class DialDisplay:
     def _open_outputs_locked(self) -> bool:
         """The outputs row's opener: refuse when there is no focused/
         reporting appliance advertising the capability (see
-        _outputs_target_lockfree()); otherwise open, keeping the last
-        fetched rows when re-opening for the SAME appliance (so a quick
-        close/reopen does not flash back to "Loading"), resetting them for
-        a different one."""
-        entry = self._outputs_target_lockfree()
+        _capable_target_lockfree()); otherwise open at page 0. The rows are
+        the core's, which holds the last fetched list while the screen is
+        watched, so a quick close/reopen does not flash back to
+        "Loading"."""
+        entry = self._capable_target_lockfree("dial_outputs")
         if entry is None:
             return False
         if self._screen in _PAGE_ORDER:
@@ -3465,13 +3216,9 @@ class DialDisplay:
             self._outputs_return = self._screen
         elif self._screen != "output":
             self._outputs_return = "main"
-        prev = self._outputs
-        keep = prev is not None and prev.appliance_id == entry.appliance_id
         self._outputs = OutputsState(
             appliance_id=entry.appliance_id, service_name=entry.service_name,
-            ip=entry.ip, port=entry.port,
-            rows=prev.rows if keep else (), page=0, opened_at=time.monotonic(),
-            loaded=keep and prev.loaded,
+            ip=entry.ip, port=entry.port, page=0, opened_at=time.monotonic(),
         )
         self._screen = "outputs"
         return True
@@ -3483,7 +3230,7 @@ class DialDisplay:
         current screen (the outputs list) stays showing."""
         state, output_id = self._outputs, self._output_open_id
         self._output_open_id = None
-        if state is None or output_id is None or not any(r.id == output_id for r in state.rows):
+        if state is None or output_id is None or not any(r.id == output_id for r in self._rows_of(state)):
             return False
         self._output_detail = OutputDetailState(
             appliance_id=state.appliance_id, output_id=output_id, opened_at=time.monotonic(),
@@ -3506,7 +3253,7 @@ class DialDisplay:
         if (
             showing is not None and showing.warning_id != warning_id
             and _WARNING_BY_ID[showing.warning_id].priority > desc.priority
-            and self._warnings.is_active(showing.warning_id)
+            and self._core.warnings.is_active(showing.warning_id)
         ):
             return False
         if desc.interrupting:
@@ -3568,7 +3315,7 @@ class DialDisplay:
             # screens) must not carry its wash onto the screen it opens.
             self._pressed = None
             # A screen the user just opened (repeat) or was returned to
-            # (main after DOTS, or after a stop — see on_repeat_result())
+            # (main after DOTS, or after a stop — see _apply_repeat_outcome())
             # shows its own controls for a fresh window on the compact
             # tier; a no-op off it.
             self._show_compact_controls()
@@ -3585,7 +3332,7 @@ class DialDisplay:
             if active is not None:
                 rows_per_page = self._rows_per_page()
                 page_fn = _wrap_page if self._compact_tier() else _clamp_page
-                new_page = page_fn(active.page + delta, len(active.rows), rows_per_page)
+                new_page = page_fn(active.page + delta, len(self._rows_of(active)), rows_per_page)
                 if new_page != active.page:
                     setattr(self, policy.state_attr, dataclasses.replace(active, page=new_page))
 
@@ -3800,31 +3547,6 @@ class DialDisplay:
         self._sync_core_interest()
         self._core.refresh_watched(time.monotonic())
 
-    def _flush_core_state(self) -> None:
-        """Carry the outputs and EQ screen states to the core before it is
-        asked to act on them: rows or readings set on this view's own state
-        replace the core's, and a screen state the core does not hold yet is
-        adopted. Never called with self._lock held (the core takes only its
-        own)."""
-        # The flags are cleared before the state is read, so a change made
-        # in between is seen now or flagged again.
-        outputs_dirty, self._core_outputs_dirty = self._core_outputs_dirty, False
-        eq_dirty, self._core_eq_dirty = self._core_eq_dirty, False
-        outputs, eq = self._outputs_view, self._eq_view
-        snapshot = self._core.snapshot()
-        if outputs is not None:
-            held = snapshot.outputs
-            if outputs_dirty or held is None or held.appliance_id != outputs.appliance_id:
-                self._core.adopt_outputs(
-                    outputs.appliance_id, outputs.rows, outputs.loaded, overwrite=outputs_dirty,
-                )
-        if eq is not None:
-            held = snapshot.eq
-            if eq_dirty or held is None or held.appliance_id != eq.appliance_id:
-                self._core.adopt_eq(
-                    eq.appliance_id, _eq_bands_of(eq), eq.loaded, overwrite=eq_dirty,
-                )
-
     def _sync_core_interest(self) -> None:
         """Make the core's record of what this view watches match the
         screens it has up: the outputs list and the EQ page register as the
@@ -3833,7 +3555,7 @@ class DialDisplay:
         has already registered and fetched; this registration does not
         fetch again. Never called with self._lock held."""
         with self._interest_lock:
-            outputs, eq, request = self._outputs_view, self._eq_view, self._screen_request
+            outputs, eq, request = self._outputs, self._eq, self._screen_request
             if outputs is not None:
                 want_outputs = outputs.appliance_id
             else:
@@ -3916,30 +3638,21 @@ class DialDisplay:
             return 0, 0.0
         return _clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
 
-    def _refresh_selector_rows(self, roster: list, reporting_id: str | None) -> None:
-        """Rebuild the selector's row list from the merged *roster* (idle
-        and playing appliances alike). Runs when a poll tick ends (see
-        _apply_snapshot), in both the playing-targets branch and the empty-
-        targets branch, whether or not the selector screen is actually open
-        right now, so opening it always shows fresh rows without waiting for
-        a poll. The touch thread never builds rows.
-
-        Rows: every roster entry with a non-empty appliance_id whose auth is
-        AUTHORIZED (not just "not unauthorized" — an unknown appliance is
-        controllable but not yet confirmed, so it stays off the list until
-        a probe confirms it) or UNAUTHORIZED (listed, marked "not
-        authorised", never current or playing — see selector_pick). *current* marks the manual focus when one is
-        set, else the reporting-from appliance (*reporting_id*, the playing
-        reporting target or, with nothing playing, the idle focus). *playing*
-        marks a row whose appliance is in the playing set, live or replay —
-        drawn as the play marker (see _build_list_state_locked).
+    def _refresh_selector_rows(self, snapshot) -> None:
+        """Rebuild the selector's row list from *snapshot* (idle and playing
+        appliances alike; see selector_rows() in dial_core_state for the
+        filter). Runs when a poll tick ends (see _apply_snapshot), in both
+        the playing-targets branch and the empty-targets branch, whether or
+        not the selector screen is actually open right now, so opening it
+        always shows fresh rows without waiting for a poll. The touch
+        thread never builds rows.
 
         The page is PRESERVED (clamped to the new row count) across each
         rebuild — resetting it to 0 here would make an open selector jump
         back to its first page every ~6s poll tick. It is reset to 0 only
         by a fresh open_selector() (see _apply_screen_requests_locked).
         """
-        rows = selector_rows(roster, self._manual_focus_id, reporting_id)
+        rows = snapshot.selector_rows()
         with self._lock:
             prev = self._selector
             page, opened_at = self._carried_paging_locked(prev, len(rows))
@@ -3953,14 +3666,15 @@ class DialDisplay:
             # other _overlay_signal.set() site.
             self._overlay_signal.set()
 
-    def _refresh_picker_rows(self, roster: list, now: float) -> None:
-        """Rebuild the replay picker's row list from *roster* — when a poll
-        tick ends (see _apply_snapshot), every tick regardless of whether the picker is actually open,
-        mirroring _refresh_selector_rows(). Rows: every rostered,
-        authorized, repeat-capable appliance currently in Hold — the only
-        daemon state the picker can start a replay from. The page is
-        preserved across rebuilds the same way the selector's is."""
-        rows = picker_rows(roster, repeat_store.get, now)
+    def _refresh_picker_rows(self, snapshot) -> None:
+        """Rebuild the replay picker's row list from *snapshot* — when a
+        poll tick ends (see _apply_snapshot), every tick regardless of
+        whether the picker is actually open, mirroring
+        _refresh_selector_rows(). Rows: every rostered, authorized,
+        repeat-capable appliance currently in Hold — the only daemon state
+        the picker can start a replay from. The page is preserved across
+        rebuilds the same way the selector's is."""
+        rows = snapshot.picker_rows()
         with self._lock:
             prev = self._picker
             page, opened_at = self._carried_paging_locked(prev, len(rows))
@@ -4014,49 +3728,46 @@ class DialDisplay:
         return dataclasses.replace(list_state, title=INFO_TITLE, plain_background=True)
 
     def _row_with_optimistic_locked(self, row: "OutputRow") -> "OutputRow":
-        """*row* with the pending optimistic override folded in when it
-        names this row — paint-time only, never written back to
-        self._outputs. Shared by the outputs list and the per-output
-        detail view, so a toggle/volume step reads the same on both the
-        instant it lands."""
-        override = self._outputs_optimistic
+        """*row* with the core's pending optimistic override folded in when
+        it names this row — paint-time only, never written back. Shared by
+        the outputs list and the per-output detail view, so a toggle/volume
+        step reads the same on both the instant it lands."""
+        override = self._core.outputs_override()
         if override is not None and override[0] == row.id:
             return dataclasses.replace(row, selected=override[1], volume=override[2])
         return row
 
     def _build_outputs_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
         """Build the compositor's ListState for the outputs list's CURRENT
-        page. "Loading" while the first fetch has not landed yet (see
-        OutputsState.loaded), "No outputs" once it has and there is
-        nothing to show. The optimistic override is applied to the row
+        page. "Loading" while the first fetch has not landed yet (the
+        core's outputs are not loaded), "No outputs" once it has and there
+        is nothing to show. The optimistic override is applied to the row
         list before it is turned into row tuples, so the same tap that set
         it reads back immediately without waiting for the worker's
         reconciling fetch."""
         state = self._outputs
-        placeholder = "Loading" if (state is None or not state.loaded) else "No outputs"
-        if state is not None and state.rows:
-            state = dataclasses.replace(
-                state, rows=tuple(self._row_with_optimistic_locked(r) for r in state.rows),
-            )
+        held = _held_outputs(self._core.snapshot(), state)
+        placeholder = "Loading" if (held is None or not held.loaded) else "No outputs"
+        rows = tuple(self._row_with_optimistic_locked(r) for r in _offerable(held.rows)) if held is not None else ()
         return _list_state_for(
             state, _rows_per_page_for(width, height, metrics=metrics), placeholder,
-            _output_list_row, pressed=self._pressed,
+            _output_list_row, pressed=self._pressed, rows=rows,
         )
 
     def _build_output_view_locked(self, now: float) -> "OutputViewState":
         """Build the compositor's OutputViewState for the currently open
-        per-output detail page, reading the output's row fresh from
-        self._outputs (through the optimistic override) at every paint —
+        per-output detail page, reading the output's row fresh from the
+        core's outputs (through the optimistic override) at every paint —
         see OutputDetailState's own docstring. A detail whose row has
-        disappeared (a race before on_outputs_result's fold requests the
-        outputs list back) draws a disabled placeholder rather than
-        raising; the fold is what actually navigates away."""
+        disappeared (a race before the snapshot fold requests the outputs
+        list back) draws a disabled placeholder rather than raising; the
+        fold is what actually navigates away."""
         detail, state = self._output_detail, self._outputs
         name = appliance_display_name(state.service_name) if state is not None else ""
         pressed = self._pressed[0] if self._pressed is not None else None
         row = None
         if detail is not None and state is not None:
-            row = next((r for r in state.rows if r.id == detail.output_id), None)
+            row = next((r for r in self._rows_of(state) if r.id == detail.output_id), None)
         if row is None:
             return OutputViewState(name=name, output_name="", selected=False, level=None, pressed=pressed)
         row = self._row_with_optimistic_locked(row)
@@ -4115,7 +3826,7 @@ class DialDisplay:
             return
         desc = _WARNING_BY_ID[screen.warning_id]
         pressed = self._pressed[0] if self._pressed is not None else None
-        severity = self._warnings.severity(desc.id)
+        severity = self._core.warnings.severity(desc.id)
         message = desc.message_for(severity) if desc.message_for is not None else ""
         title = desc.title_for(severity) if desc.title_for is not None else desc.title
         percent = desc.progress_for(severity) if desc.progress_for is not None else None
@@ -4213,7 +3924,7 @@ class DialDisplay:
         appliance_id = self._replay_timer_id
         if appliance_id is None or self._compact_tier():
             return None
-        if appliance_id != (self._manual_focus_id or self._reporting_appliance_id):
+        if appliance_id != (self._core.snapshot().focus.manual_id or self._core.snapshot().focus.reporting_id):
             return None
         shown_at = self._replay_timer_shown_at
         position = self._repeat_position_line(repeat_store.get(appliance_id, now), now)
@@ -4252,7 +3963,7 @@ class DialDisplay:
         # Feeds the shared top band's third page dot — see
         # OverlayState.eq_pages/_effective_overlay_locked for the identical
         # main-screen computation.
-        eq_pages = self._eq_available
+        eq_pages = self._core.snapshot().eq_available
         if screen is None:
             return RepeatViewState(
                 name="", layout="enable", armed=False, line="",
@@ -4369,16 +4080,17 @@ class DialDisplay:
         self._repeat_painted_second = view.counter_second
 
     def _shown_eq(self, state: "EqScreenState", control: str) -> "int | None":
-        """The bass or treble value *control* should currently show: the
-        pending optimistic override's own slot for *control* when it has
-        not expired and is not None, else the screen's own last-fetched
-        value (None until the first fetch lands for this appliance)."""
-        override = self._eq_optimistic
-        if override is not None and override[2] > time.monotonic():
-            value = override[0] if control == "bass" else override[1]
-            if value is not None:
-                return value
-        return state.bass_db if control == "bass" else state.treble_db
+        """The bass or treble value *control* should currently show on the
+        page *state*: the core's pending optimistic override for *control*
+        when it has not expired, else the core's last reading for the
+        page's appliance (None until the first fetch lands for it)."""
+        pairs, expires_at = self._core.eq_override()
+        if pairs and expires_at > time.monotonic():
+            for band_id, gain in pairs:
+                if band_id == control:
+                    return gain
+        held = _held_eq(self._core.snapshot(), state)
+        return eq_gain(held.bands, control) if held is not None else None
 
     def _build_eq_view_locked(self, screen: "EqScreenState | None", now: float) -> EqViewState:
         """Build the compositor's EqViewState from *screen* — reads
@@ -4394,11 +4106,12 @@ class DialDisplay:
         name = appliance_display_name(screen.service_name)
         muted = shown_muted(screen.service_name)
         volume = shown_volume(screen.service_name)
+        held = _held_eq(self._core.snapshot(), screen)
         return EqViewState(
             name=name,
             bass_db=self._shown_eq(screen, "bass"),
             treble_db=self._shown_eq(screen, "treble"),
-            loaded=screen.loaded,
+            loaded=held is not None and _eq_loaded(held),
             muted=muted, volume=volume, pressed=pressed,
         )
 
@@ -4425,64 +4138,10 @@ class DialDisplay:
         state = self._eq
         if state is None:
             return
-        self._flush_core_state()
         self._core.step_eq(state.appliance_id, control, delta)
         self._overlay_signal.set()
 
-    def on_eq_result(self, kind: str, appliance_id: str, status, body, request) -> None:
-        """Worker-thread entry (dial_eq's start_eq_worker on_result
-        callback): fold a "fetch" result into the core, then into the page's
-        own state under self._lock — a "set" result is not applied here, the
-        worker's own fetch-after-set does that. Mirrors on_outputs_result().
-        Drops a result for another appliance (the EQ page moved on, or
-        closed, while the request was in flight) and any malformed/failed
-        body. The core clears the optimistic override once it has expired —
-        the same discipline on_outputs_result() follows, so a fetch that
-        raced a still-fresh tap never flashes the pre-tap value back onto
-        screen."""
-        if kind != "fetch":
-            return
-        state = self._eq_view
-        if state is None or state.appliance_id != appliance_id:
-            return
-        self._flush_core_state()
-        if not self._core.on_eq_result(kind, appliance_id, status, body, request):
-            return
-        held = self._core.snapshot().eq
-        with self._lock:
-            state = self._eq_view
-            if state is None or state.appliance_id != appliance_id:
-                return
-            if held is not None and held.appliance_id == appliance_id:
-                self._eq_view = dataclasses.replace(
-                    state, bass_db=eq_gain(held.bands, "bass"),
-                    treble_db=eq_gain(held.bands, "treble"),
-                    loaded=_eq_loaded(held),
-                )
-        self._overlay_signal.set()
-
-    # ---- Wi-Fi link: the idle icon and the No-WiFi page -------------------
-
-    # ---- On-screen warnings: the source API and the one request point ------
-
-    def _warning_active(self, warning_id: str, severity=None) -> None:
-        """A source reports its condition present (again). Lock-free, the
-        on_network_view() discipline: the manager records it and the page
-        is requested if it is due right now (main screen, awake, nothing
-        else requested). Calling this on every poll while the condition
-        holds is expected; the manager treats a repeat as a severity
-        refresh. A warning that has just become active may wake a
-        sleeping panel if it is interrupting; a refresh never does."""
-        change = self._core.warning_active(warning_id, severity)
-        self._request_due_warning(wake=change.began)
-
-    def _warning_cleared(self, warning_id: str) -> None:
-        """A source reports its condition gone: the incident ends (any
-        dismissal, in memory or on disk, is forgotten), an open page for
-        it closes on its own and a pending request for it is dropped.
-        Lock-free."""
-        self._core.warning_cleared(warning_id)
-        self._close_warning_request(warning_id)
+    # ---- On-screen warnings and the Wi-Fi link: the one request point ------
 
     def _close_warning_request(self, warning_id: str) -> None:
         """Close the page of a warning whose incident has ended, or drop a
@@ -4521,8 +4180,8 @@ class DialDisplay:
         wake=True into a sleeping panel (the opener wakes it); it is not
         requested again while its own page is up. Callable with or
         without self._lock: plain reads and one plain request write, the
-        same writes on_network_view() makes."""
-        desc = self._warnings.due()
+        same writes the core's source effects make."""
+        desc = self._core.warnings.due()
         if desc is None or desc.id not in _WARNING_BY_ID:
             # A warning with no page of its own (one an appliance supplies)
             # is published to the core's other consumers only.
@@ -4537,39 +4196,10 @@ class DialDisplay:
         self._screen_request = desc.screen
         self._overlay_signal.set()
 
-    def on_network_view(self, view: "NetworkView") -> None:
-        """Callback for the network poller (dial_network.py). Runs on the
-        POLLER thread, never the poll/repaint/touch threads, and takes NO
-        lock of this class's own; every write here is a single attribute
-        assignment, and any screen change goes through the warning
-        manager's request path (see _request_due_warning) for the repaint
-        thread to fold in, exactly like on_repeat_result().
-
-        connected: the streak resets, the ever-connected latch is set and
-        the No-WiFi warning is cleared (the incident is over: an open page
-        closes on its own and a Dismiss is forgotten).
-        down: the streak grows; at NOWIFI_PROMPT_STREAK the warning goes
-        active unless the dial has never been connected since it started
-        (still connecting: the icon flashes grey/blank instead and only a
-        tap on it opens the page). Whether the page then opens is the
-        manager's call: not while dismissed for this incident, already
-        open or requested, another screen is in the way, or the panel is
-        asleep (it comes back on wake).
-        ignored (setup mode, reboot pending): the streak resets but the
-        warning and the latch are kept; only a connected poll ends an
-        incident.
-        unknown (a failed read): nothing changes at all.
-        Never raises."""
-        try:
-            self._core.on_network_view(view)
-            self._drain_effects()
-        except Exception:
-            logging.debug("dial display: on_network_view raised", exc_info=True)
-
     def _wifi_link(self) -> str:
         """The latest link verdict, or "unknown" before the first poll.
         Plain reference read, safe from any thread."""
-        view = self._network
+        view = self._core.snapshot().network
         return view.link if view is not None else "unknown"
 
     def _wifi_flashing(self) -> bool:
@@ -4579,7 +4209,7 @@ class DialDisplay:
         _check_secondary_timeout() discipline (a stale read costs one
         harmless extra repaint)."""
         return (
-            self._screen == "main" and self._now_playing is None
+            self._screen == "main" and self._core.snapshot().now_playing is None
             and self._backend_open and not self._display_sleeping
             and self._wifi_link() == LINK_DOWN
         )
@@ -4599,7 +4229,7 @@ class DialDisplay:
         dial is still connecting, which is not an alarm); and a steady
         all-grey glyph while the link is ignored or unknown. Caller holds
         self._lock."""
-        view = self._network
+        view = self._core.snapshot().network
         if view is None:
             return 0, WIFI_GREY
         if view.link == LINK_CONNECTED:
@@ -4607,7 +4237,7 @@ class DialDisplay:
         if view.link == LINK_DOWN:
             if not self._wifi_alarm_phase(time.monotonic()):
                 return 0, WIFI_GREY
-            return 0, (WIFI_RED if self._wifi_ever_connected else WIFI_OFF)
+            return 0, (WIFI_RED if self._core.snapshot().wifi_ever_connected else WIFI_OFF)
         return 0, WIFI_GREY
 
     def open_nowifi(self) -> None:
@@ -4634,7 +4264,7 @@ class DialDisplay:
         desc = _WARNING_BY_ID.get(showing.warning_id) if showing is not None else None
         button = desc.button_for(zone) if desc is not None else None
         if button is None:
-            owner = self._warnings.button_owner(zone)
+            owner = self._core.warnings.button_owner(zone)
             if owner is None:
                 return
             desc, button = owner
@@ -4658,14 +4288,6 @@ class DialDisplay:
             self._overlay_signal.set()
             self._core.request_dial_reboot()
 
-    def nowifi_dismiss_tap(self) -> None:
-        """Kept for existing direct callers/tests: the No-WiFi Dismiss cell."""
-        self._run_warning_action(_WARNING_BY_ID["nowifi"], ACTION_DISMISS)
-
-    def nowifi_restart_tap(self) -> None:
-        """Kept for existing direct callers/tests: the No-WiFi Restart cell."""
-        self._run_warning_action(_WARNING_BY_ID["nowifi"], ACTION_RESTART)
-
     def _tick_wifi_flash(self) -> None:
         """Wake the repaint loop for the flash's next half-period while the
         idle screen is flashing — called from the repaint thread's own
@@ -4683,62 +4305,6 @@ class DialDisplay:
         writes the snoozes; what that did reaches this view as queued
         effects (see _apply_pending_snapshot)."""
         self._request_due_warning()
-
-    def _tick_warnings(self) -> None:
-        """The core's warning housekeeping run by hand (it runs on the core
-        thread otherwise): clear warnings past their auto_clear_after_s,
-        turn that into screens, raise a warning whose snooze has just run
-        out, and write any snooze a Dismiss changed. Lock-free plain reads;
-        the file write runs with no lock held."""
-        self._apply_source_effects(self._core.expire_warnings())
-        self._request_due_warning()
-        self._core.flush_warnings()
-
-    # ---- Software update: the warning cards ---------------------------------
-
-    def _tick_update_watch(self) -> None:
-        """The core's update watch run by hand (it runs on the core thread
-        otherwise): when the update result file has changed, map it onto the
-        update cards. Lock-free, the on_network_view() discipline. Never
-        raises."""
-        try:
-            effects = self._core.tick_update_watch(time.monotonic())
-            if effects is not None:
-                self._apply_source_effects(effects)
-        except Exception:
-            logging.debug("dial display: update watch raised", exc_info=True)
-
-    def _apply_update_view(self, view: "UpdateView") -> None:
-        """A run in progress shows the progress card, except in the reboot
-        phase (the existing restarting screen, without asking for a reboot:
-        the updater already has) and the verify phase (the boot after the
-        swap: nothing until the verdict). A finished run shows its result
-        card once, recorded in the seen marker."""
-        self._apply_source_effects(self._core.apply_update_view(view))
-
-    # ---- SD card health: the warning page --------------------------------
-
-    def on_sd_health_view(self, view: "SdHealthView") -> None:
-        """Callback for the SD health reader (dial_sdhealth.py). Runs on
-        the network poller's thread; takes NO lock of this class's own,
-        the on_network_view() discipline.
-
-        A reading that is low (dial_sdhealth.is_low, with hysteresis)
-        starts or refreshes the SD warning with the percent as its
-        severity; the manager decides whether the page opens (not while
-        snoozed by a Dismiss, not over another screen, not into a sleeping
-        panel). A reading that is not low ends the incident: the warning
-        clears, an open page closes on its own, and any snooze, including
-        one saved across restarts, is forgotten. Never raises."""
-        try:
-            self._core.on_sd_health_view(view)
-            self._drain_effects()
-        except Exception:
-            logging.debug("dial display: on_sd_health_view raised", exc_info=True)
-
-    def sdhealth_dismiss_tap(self) -> None:
-        """Kept for existing direct callers/tests: the SD warning's Dismiss cell."""
-        self._run_warning_action(_WARNING_BY_ID["sdhealth"], ACTION_DISMISS)
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
@@ -4764,7 +4330,7 @@ class DialDisplay:
         self._reveal_started_at = 0.0
         metrics = self._metrics_locked()
         base = (
-            (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._idle_affordance else None)
+            (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._core.snapshot().idle_affordance else None)
             or self._current_base_image
         )
         wifi_bars, wifi_style = self._idle_wifi_args_locked()
@@ -4784,10 +4350,6 @@ class DialDisplay:
     def core(self) -> DialCore:
         """The appliance model this view paints."""
         return self._core
-
-    def request_poll(self) -> None:
-        """Ask the core to poll now instead of at the next tick. Lock-free."""
-        self._core.request_poll()
 
     def notify_auth_changed(self, appliance_id: str) -> None:
         """Record that appliance_id's auth-changed push arrived (from the
@@ -4809,17 +4371,6 @@ class DialDisplay:
             log_limiter=self._log_limiter,
         )
 
-    def on_repeat_result(self, kind: str, appliance_id: str, status: int | None, body) -> None:
-        """Callback for the repeat-transport worker (dial_repeat.py), for a
-        caller that does not hand the worker's results to the core directly:
-        the core folds the result (see DialCore.on_repeat_result) and queues
-        what it meant, which this view then reacts to (see
-        _apply_repeat_outcome). Runs on the WORKER thread and takes NO lock
-        of this class's own (self._lock is never touched here; repeat_store
-        and auth_map each guard themselves with their own leaf lock)."""
-        self._core.on_repeat_result(kind, appliance_id, status, body)
-        self._drain_effects()
-
     def _apply_repeat_outcome(self, appliance_id: str, outcome) -> None:
         """React to what a repeat transport result meant: a poll at once for
         an accepted replay the dial follows (and for any rejection, with a
@@ -4831,7 +4382,7 @@ class DialDisplay:
                 # show it as playing until its advertisement arrives (see
                 # _with_accepted_replay()), and poll now rather than at the
                 # next tick.
-                self.request_poll()
+                self._core.request_poll()
             if outcome.stop_acked:
                 # This ok ack is for the Stop this appliance's repeat_stop_
                 # tap() just sent — on the compact tier, close the repeat
@@ -4856,66 +4407,9 @@ class DialDisplay:
             self._arm_replay_timer(None)
             self._overlay_signal.set()
 
-    def on_outputs_result(self, kind: str, appliance_id: str, status, body, request) -> None:
-        """Callback for the outputs worker (dial_outputs.py). Runs on the
-        WORKER thread — never the poll/repeat/touch threads.
-
-        A "set" outcome is not applied here at all: the worker already
-        queued the reconciling fetch for the same target right after
-        sending it, and that fetch's own "fetch" callback (this same
-        function, called again) is what the screen actually shows — so a
-        rejected mutation (in use elsewhere, a PIN required, a capacity
-        limit) never needs special-casing here, it simply shows up as the
-        appliance's own truth on the very next fetch.
-
-        A "fetch" outcome is folded by the core, and its rows (less any
-        output another appliance has taken) replace the screen's in one
-        assignment under self._lock. A late result for an appliance the
-        screen has since moved on from is dropped. A malformed/unreachable
-        result leaves the last good snapshot on screen. When the detail page
-        is open and its output has disappeared from the fresh rows (gone
-        remote-in-use, or removed), the screen is asked to fall back to the
-        list.
-        """
-        if kind != "fetch":
-            return
-        state = self._outputs_view
-        if state is None or state.appliance_id != appliance_id:
-            return
-        self._flush_core_state()
-        if not self._core.on_outputs_result(kind, appliance_id, status, body, request):
-            return
-        held = self._core.snapshot().outputs
-        with self._lock:
-            state = self._outputs_view
-            if state is None or state.appliance_id != appliance_id:
-                return
-            if held is None or held.appliance_id != appliance_id:
-                return
-            rows = _offerable(held.rows)
-            page = _clamp_page(state.page, len(rows), self._rows_per_page())
-            self._outputs_view = dataclasses.replace(state, rows=rows, page=page, loaded=True)
-            detail = self._output_detail
-            if (
-                detail is not None and self._screen == "output"
-                and not any(r.id == detail.output_id for r in rows)
-            ):
-                self._screen_request = "outputs"
-        self._overlay_signal.set()
-
-    def set_manual_focus(self, appliance_id: str | None) -> None:
-        """Sticky manual focus: pins the display source to appliance_id
-        (or clears it back to auto-pick with None). Lock-free write plus a
-        poll wake so the source switch lands within milliseconds, not at
-        the next tick. Never persisted."""
-        self._core.set_focus(appliance_id)
-
-    def manual_focus_id(self) -> str | None:
-        return self._core.manual_focus_id()
-
     def _maybe_show_transition(self, previous_reporting_id: "str | None") -> None:
         """Push a brief dark transition frame (_show_transition_locked())
-        when self._reporting_appliance_id has just changed, this tick,
+        when self._core.snapshot().focus.reporting_id has just changed, this tick,
         directly from one appliance to a DIFFERENT one — call once the
         tick's own reporting id is final, in either branch of
         _apply_snapshot (something playing, or an idle focus taking over
@@ -4924,7 +4418,7 @@ class DialDisplay:
         or the first appliance ever seen) has no stale artwork on screen to
         guard against, so it goes straight to that appliance's own logo/
         artwork with no transition flash first."""
-        reporting_id = self._reporting_appliance_id
+        reporting_id = self._core.snapshot().focus.reporting_id
         if (
             reporting_id is not None
             and previous_reporting_id is not None
@@ -4946,7 +4440,7 @@ class DialDisplay:
         if not policy.bound_to_appliance:
             return
         state = getattr(self, policy.state_attr)
-        current_id = self._manual_focus_id or self._reporting_appliance_id
+        current_id = self._core.snapshot().focus.manual_id or self._core.snapshot().focus.reporting_id
         if state is not None and state.appliance_id != current_id:
             with self._lock:
                 self._close_secondary_locked()
@@ -4989,7 +4483,36 @@ class DialDisplay:
             if new is prev:
                 return
             self._applied = new
+            self._follow_screen_data(prev, new)
             self._apply_snapshot(prev, new)
+
+    def _follow_screen_data(self, prev, new) -> None:
+        """What a change in the core's outputs or EQ state means for the
+        pages showing them: a repaint when one is up, the outputs list
+        clamped to the page its rows still reach, and the per-output page
+        sent back to the list when its output has gone (taken by another
+        appliance, or removed). Runs whether or not the core is polling,
+        on the repaint thread (or whoever drives the fold), never with
+        self._lock held."""
+        if new.outputs != prev.outputs:
+            with self._lock:
+                state = self._outputs
+                held = _held_outputs(new, state)
+                if held is not None and held.loaded:
+                    rows = _offerable(held.rows)
+                    page = _clamp_page(state.page, len(rows), self._rows_per_page())
+                    if page != state.page:
+                        self._outputs = dataclasses.replace(state, page=page)
+                    detail = self._output_detail
+                    if (
+                        detail is not None and self._screen == "output"
+                        and not any(r.id == detail.output_id for r in rows)
+                    ):
+                        self._screen_request = "outputs"
+            if state is not None:
+                self._overlay_signal.set()
+        if new.eq != prev.eq and self._eq is not None:
+            self._overlay_signal.set()
 
     def _apply_snapshot(self, prev, new) -> None:
         """What a snapshot means for the screen. Anything that makes the
@@ -5032,11 +4555,10 @@ class DialDisplay:
                 self._core.request_poll(reconcile=True)
         if tick is None:
             return
-        roster = self._core.roster()
         if new.visible_playing:
-            self._apply_playing_tick(tick, new, roster)
+            self._apply_playing_tick(tick, new)
         else:
-            self._apply_idle_tick(tick, new, roster)
+            self._apply_idle_tick(tick, new)
 
     def _close_screens_for_cleared_focus(self) -> None:
         """Close the screen showing when its policy says a cleared focus
@@ -5066,7 +4588,7 @@ class DialDisplay:
         started = self._idle_started_at
         return started is not None and time.monotonic() - started >= DISPLAY_IDLE_SLEEP_SECONDS
 
-    def _apply_playing_tick(self, tick, new, roster: list) -> None:
+    def _apply_playing_tick(self, tick, new) -> None:
         """The end of a tick with something playing: the transition frame
         when the reporting appliance changed, the artwork (or the logo when
         there is none), and the rows."""
@@ -5078,20 +4600,20 @@ class DialDisplay:
             self._show_artwork(new.artwork)
         else:
             self.show_logo()
-        self._refresh_selector_rows(roster, new.focus.reporting_id)
+        self._refresh_selector_rows(new)
         if new.idle_affordance != tick.previous_idle_affordance:
             self._overlay_signal.set()
-        self._refresh_picker_rows(roster, time.monotonic())
+        self._refresh_picker_rows(new)
 
-    def _apply_idle_tick(self, tick, new, roster: list) -> None:
+    def _apply_idle_tick(self, tick, new) -> None:
         """The end of a tick with nothing playing anywhere: the rows, what
         the open screen does about it, the idle clock and sleep, and the
         logo. A panel asleep, asleep by now, or showing a list stays as it
         is (a list's own timeout closes it)."""
         if new.idle_affordance != tick.previous_idle_affordance:
             self._overlay_signal.set()
-        self._refresh_picker_rows(roster, time.monotonic())
-        self._refresh_selector_rows(roster, new.focus.reporting_id)
+        self._refresh_picker_rows(new)
+        self._refresh_selector_rows(new)
 
         with self._lock:
             # Each screen's own row says what a poll finding nothing

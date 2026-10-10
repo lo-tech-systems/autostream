@@ -619,6 +619,11 @@ class TestParseOutputsBody:
     def test_anything_malformed_is_transient(self, body):
         assert cp.parse_outputs_body(200, body) is None
 
+    def test_a_row_with_no_id_key_is_transient(self):
+        assert cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            {"name": "A", "selected": True, "volume": 10, "remote_in_use": False},
+        ]}) is None
+
     def test_a_failed_request_is_transient(self):
         assert cp.parse_outputs_body(412, {"ok": True, "outputs": []}) is None
         assert cp.parse_outputs_body(None, None) is None

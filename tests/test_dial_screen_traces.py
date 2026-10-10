@@ -37,6 +37,8 @@ for _p in (_DIAL, _CORE):
 
 import dial_display as dd
 from dial_config import DialDisplayConfig
+from dial_core import FOCUS_PENDING_GRACE_S
+from dial_core_state import eq_gain
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
@@ -285,7 +287,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "open_info":
         d.open_info()
     elif kind == "toggle_repeat":
-        d.toggle_repeat_screen()
+        d.cycle_pages()
     elif kind == "cycle_pages":
         d.cycle_pages()
     elif kind == "eq_step":
@@ -295,7 +297,8 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # worker's on_eq_result callback directly, the same shape the
         # worker itself calls it with after a fetch.
         _, aid, status, body = step
-        d.on_eq_result("fetch", aid, status, body, {})
+        d.core.on_eq_result("fetch", aid, status, body, {})
+        d._apply_pending_snapshot()
     elif kind == "close_list":
         d.close_list()
     elif kind == "pop_secondary":
@@ -309,9 +312,10 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "picker_pick":
         d.picker_pick(step[1])
     elif kind == "set_manual_focus":
-        d.set_manual_focus(step[1])
+        d.core.set_focus(step[1])
     elif kind == "set_manual_focus_pending":
-        d.set_manual_focus_pending(step[1], step[2])
+        d.core.set_focus_pending(step[1], step[2], ctx.clock.t + FOCUS_PENDING_GRACE_S)
+        d.core.request_poll()
     elif kind == "notify_touch_activity":
         d.notify_touch_activity()
     elif kind == "set_pressed":
@@ -321,12 +325,19 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "repaint":
         with d._lock:
             d._repaint_current_locked()
+        # What a repaint wake does after painting: keep the core's record
+        # of the pages being watched in step with the screens that are up.
+        d._sync_core_interest()
     elif kind == "check_timeout":
         d._check_secondary_timeout()
     elif kind == "tick_repeat_line":
         d._tick_repeat_line()
     elif kind == "tick_warnings":
-        d._tick_warnings()
+        # The core's warning housekeeping, then the view's own tick that
+        # raises a warning whose snooze has just run out.
+        d._apply_source_effects(d.core.expire_warnings())
+        d._tick_due_warning()
+        d.core.flush_warnings()
     elif kind == "advance":
         ctx.clock.t += step[1]
     elif kind == "enable":
@@ -340,7 +351,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         with d._lock:
             d._swap_backend_locked()
     elif kind == "clear_last_roster":
-        d._last_roster = []
+        d.core.set_roster([])
     elif kind == "update_config":
         d.update_config(dataclasses.replace(d._config, **step[1]))
     elif kind == "open_outputs":
@@ -356,7 +367,8 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # outputs worker's on_outputs_result callback directly, the same
         # shape the worker itself calls it with after a fetch.
         _, aid, status, body = step
-        d.on_outputs_result("fetch", aid, status, body, {})
+        d.core.on_outputs_result("fetch", aid, status, body, {})
+        d._apply_pending_snapshot()
     elif kind == "tick_outputs_refresh":
         d._tick_outputs_refresh()
     elif kind == "hide_controls":
@@ -368,13 +380,14 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "network":
         # ("network", link, bars) -- feeds the poller's callback directly,
         # the same shape the worker calls it with after a poll.
-        d.on_network_view(NetworkView(link=step[1], bars=step[2] if len(step) > 2 else 0, updated_at=ctx.clock.t))
+        d.core.on_network_view(NetworkView(link=step[1], bars=step[2] if len(step) > 2 else 0, updated_at=ctx.clock.t))
+        d._drain_effects()
     elif kind == "open_nowifi":
         d.open_nowifi()
     elif kind == "nowifi_dismiss":
-        d.nowifi_dismiss_tap()
+        d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_DISMISS)
     elif kind == "nowifi_restart":
-        d.nowifi_restart_tap()
+        d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_RESTART)
     elif kind == "tick_wifi_flash":
         d._tick_wifi_flash()
     elif kind == "sd_health_view":
@@ -382,9 +395,10 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # reader's callback directly, the same shape dial_sdhealth.tick()
         # calls it with after a read.
         _, status, percent = step
-        d.on_sd_health_view(SdHealthView(status=status, percent=percent, updated_at=ctx.clock.t))
+        d.core.on_sd_health_view(SdHealthView(status=status, percent=percent, updated_at=ctx.clock.t))
+        d._drain_effects()
     elif kind == "sdhealth_dismiss":
-        d.sdhealth_dismiss_tap()
+        d._run_warning_action(dd._WARNING_BY_ID["sdhealth"], dd.ACTION_DISMISS)
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -397,7 +411,8 @@ def _snapshot(ctx: _Ctx) -> dict:
             return None
         return {"page": state.page, "opened_at": state.opened_at, "rows": len(state.rows)}
 
-    now_playing = d._now_playing
+    core_snap = d.core.snapshot()
+    now_playing = core_snap.now_playing
     now_playing_repr = None
     if now_playing is not None:
         now_playing_repr = {
@@ -412,10 +427,17 @@ def _snapshot(ctx: _Ctx) -> dict:
     surface = d.touch_surface()
 
     outputs = d._outputs
+    held_outputs = core_snap.outputs
+    if outputs is None or held_outputs is None or held_outputs.appliance_id != outputs.appliance_id:
+        held_outputs = None
     outputs_repr = None if outputs is None else {
         "appliance_id": outputs.appliance_id, "page": outputs.page,
-        "opened_at": outputs.opened_at, "loaded": outputs.loaded,
-        "rows": [[r.id, r.name, r.selected, r.volume] for r in outputs.rows],
+        "opened_at": outputs.opened_at,
+        "loaded": held_outputs is not None and held_outputs.loaded,
+        "rows": [
+            [r.id, r.name, r.selected, r.volume]
+            for r in (dd._offerable(held_outputs.rows) if held_outputs is not None else ())
+        ],
     }
     detail = d._output_detail
     detail_repr = None if detail is None else {
@@ -423,11 +445,19 @@ def _snapshot(ctx: _Ctx) -> dict:
         "opened_at": detail.opened_at,
     }
     eq = d._eq
+    held_eq = core_snap.eq
+    if eq is None or held_eq is None or held_eq.appliance_id != eq.appliance_id:
+        held_eq = None
     eq_repr = None if eq is None else {
         "appliance_id": eq.appliance_id, "opened_at": eq.opened_at,
-        "bass_db": eq.bass_db, "treble_db": eq.treble_db, "loaded": eq.loaded,
+        "bass_db": eq_gain(held_eq.bands, "bass") if held_eq is not None else None,
+        "treble_db": eq_gain(held_eq.bands, "treble") if held_eq is not None else None,
+        "loaded": held_eq is not None and dd._eq_loaded(held_eq),
     }
-    network = d._network
+    outputs_override = d.core.outputs_override()
+    eq_pairs, eq_expires_at = d.core.eq_override()
+    eq_gains = dict(eq_pairs)
+    network = core_snap.network
 
     return {
         "screen": d._screen,
@@ -440,25 +470,29 @@ def _snapshot(ctx: _Ctx) -> dict:
         "repeat_appliance_id": d._repeat_screen.appliance_id if d._repeat_screen is not None else None,
         "outputs": outputs_repr,
         "output_detail": detail_repr,
-        "outputs_optimistic": list(d._outputs_optimistic) if d._outputs_optimistic is not None else None,
+        "outputs_optimistic": list(outputs_override) if outputs_override is not None else None,
         "eq": eq_repr,
-        "eq_optimistic": list(d._eq_optimistic) if d._eq_optimistic is not None else None,
-        "eq_available": d._eq_available,
+        "eq_optimistic": (
+            [eq_gains.get("bass"), eq_gains.get("treble"), eq_expires_at]
+            if (eq_pairs or eq_expires_at) else None
+        ),
+        "eq_available": core_snap.eq_available,
         "network": None if network is None else {
             "link": network.link, "bars": network.bars,
-            "down_streak": d._wifi_down_streak, "dismissed": d._warnings.is_snoozed("nowifi"),
-            "ever_connected": d._wifi_ever_connected,
+            "down_streak": d.core.wifi_down_streak(),
+            "dismissed": d.core.warnings.is_snoozed("nowifi"),
+            "ever_connected": core_snap.wifi_ever_connected,
         },
         "nowifi_open": d._warning_screen is not None and d._warning_screen.warning_id == "nowifi",
         "restarting_open": d._restarting is not None,
         "sdhealth_open": d._warning_screen is not None and d._warning_screen.warning_id == "sdhealth",
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
-        "reporting_appliance_id": d._reporting_appliance_id,
-        "bound_appliance_id": d._bound_appliance_id,
+        "reporting_appliance_id": core_snap.focus.reporting_id,
+        "bound_appliance_id": core_snap.focus.bound_id,
         "source_artwork_url": d._source_artwork_key[:12],
-        "manual_focus_id": d._manual_focus_id,
-        "focus_pending": d._focus_pending is not None,
+        "manual_focus_id": core_snap.focus.manual_id,
+        "focus_pending": core_snap.focus.pending is not None,
         "display_sleeping": d._display_sleeping,
         "idle_started": d._idle_started_at is not None,
         "touch_surface": [surface[0], surface[1], surface[2], surface[3]],

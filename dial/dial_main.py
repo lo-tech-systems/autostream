@@ -808,17 +808,14 @@ def main() -> None:
 
     # The outputs list/mutation sender: its own thread, queue and HTTP
     # client, entirely separate from the volume and repeat workers above
-    # (see dial_outputs.py's module docstring). A screen keeps its own page
-    # state beside the core's, so its callback (which folds the result into
-    # the core first) takes the results; with no screen they go to the core.
-    start_outputs_worker(
-        cfg, on_result=getattr(display, "on_outputs_result", core.on_outputs_result),
-    )
+    # (see dial_outputs.py's module docstring). Its results go to the core;
+    # a screen showing the list follows the snapshot they change.
+    start_outputs_worker(cfg, on_result=core.on_outputs_result)
 
     # The EQ page's bass/treble sender: its own thread, queue and HTTP
     # client, entirely separate from every other worker above (see
     # dial_eq.py's module docstring). Routed like the outputs worker's.
-    start_eq_worker(cfg, on_result=getattr(display, "on_eq_result", core.on_eq_result))
+    start_eq_worker(cfg, on_result=core.on_eq_result)
 
     # The Wi-Fi link poller: its own thread, one loopback read of the local
     # watcher every 15 s (see dial_network.py's module docstring). Feeds the

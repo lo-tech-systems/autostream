@@ -5,7 +5,7 @@ NETWORK_POLL_INTERVAL_S, classifies the device state into a link verdict
 (connected / down / ignored / unknown), pairs it with the dial's own coarse
 signal category (dial_info.wifi_status), and hands the resulting immutable
 NetworkView to the display manager (on_view, wired to
-DialDisplay.on_network_view by dial_main.py). The latest view is also kept
+DialCore.on_network_view by dial_main.py). The latest view is also kept
 here for lock-free reads (latest()), which is how the info page learns
 whether the dial is offline.
 

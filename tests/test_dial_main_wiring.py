@@ -136,11 +136,11 @@ class TestCoreWiring:
         assert captured["network_worker"].call_args.kwargs["on_view"] == core.on_network_view
         assert captured["sdhealth_start"].call_args.kwargs["on_view"] == core.on_sd_health_view
 
-    def test_a_screen_takes_the_outputs_and_eq_results_and_folds_them_into_the_core(self):
+    def test_the_outputs_and_eq_results_go_straight_to_the_core(self):
         captured = _run_core_wiring()
-        display = captured["display"]
-        assert captured["outputs_worker"].call_args.kwargs["on_result"] == display.on_outputs_result
-        assert captured["eq_worker"].call_args.kwargs["on_result"] == display.on_eq_result
+        core = captured["core"]
+        assert captured["outputs_worker"].call_args.kwargs["on_result"] == core.on_outputs_result
+        assert captured["eq_worker"].call_args.kwargs["on_result"] == core.on_eq_result
 
     def test_the_core_publishes_who_the_dial_is_and_what_inputs_run(self):
         info = _run_core_wiring()["core"].snapshot().dial

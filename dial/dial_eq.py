@@ -12,7 +12,7 @@ Touch-thread entry points (enqueue_fetch/enqueue_set) do no I/O and take
 no lock other than a small pending-fetch set guarded by its own lock — the
 same discipline dial_outputs.enqueue_fetch()/enqueue_set() follows. The
 worker thread never touches dial_display.DialDisplay._lock; its result
-callback (on_result, wired to DialDisplay.on_eq_result by dial_main.py) is
+callback (on_result, wired to DialCore.on_eq_result by dial_main.py) is
 called with no lock held here either.
 
 Every set is followed by an automatic fetch for the same target, so the
@@ -73,7 +73,7 @@ def start_eq_worker(cfg, *, on_result=None) -> None:
 
     on_result, when supplied, is called as
     on_result(kind, appliance_id, http_status, body, request_body) after
-    every send completes — wired to DialDisplay.on_eq_result by
+    every send completes — wired to DialCore.on_eq_result by
     dial_main.py. A raising callback is swallowed by the worker loop, never
     allowed to kill the thread.
     """
