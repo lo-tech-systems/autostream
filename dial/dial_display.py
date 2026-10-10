@@ -2,9 +2,16 @@
 
 Owns threading, fallback policy (logo vs artwork), image identity dedupe,
 error handling, and the no-op path for display-disabled installs. Consumes
-the mDNS display-selection helpers (get_display_targets() /
-mark_display_target_unauthorized()) — never the volume fan-out
-get_playing_targets(), which is unrelated and unaffected by display state.
+the mDNS display-selection helper get_display_targets() — never the volume
+fan-out get_playing_targets(), which is unrelated and unaffected by display
+state.
+
+Authorization gating reads target.auth (stamped by dial_mdns from dial_auth):
+a confirmed 412 (unauthorized) is skipped for display purposes; an unknown or
+authorized row is polled normally. This manager is one of the writers of
+dial_auth's map (via _apply_status_to_auth, from both the sequential poll and
+the concurrent reconcile pass) but never the sole source of truth for it — a
+push notification and the mDNS browser's own sightings write it too.
 
 Display failure must always degrade to a no-op display; it must never affect
 volume control. Backend hardware code lives in dial_display_adafruit.py;
@@ -23,6 +30,14 @@ import threading
 import time
 from dataclasses import dataclass
 
+from dial_auth import (
+    AUTH_AUTHORIZED,
+    AUTH_UNAUTHORIZED,
+    OUTCOME_AUTHORIZED,
+    OUTCOME_TRANSIENT,
+    OUTCOME_UNAUTHORIZED,
+    auth_map,
+)
 from dial_display_compositor import DialDisplayCompositor, OverlayState
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
@@ -34,7 +49,7 @@ from dial_display_profiles import (
     UnknownDisplayProfileError,
     get_profile,
 )
-from dial_target_status import fetch_target_status
+from dial_target_status import enrich_targets, fetch_target_status
 from dial_volume import (
     is_muted,
     note_master_volume_positive,
@@ -67,6 +82,7 @@ DISPLAY_POLL_INTERVAL_SECONDS = 6
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
 DISPLAY_IDLE_SLEEP_SECONDS = 15 * 60
+RECONCILE_INTERVAL_SECONDS = 60
 
 
 def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
@@ -202,7 +218,6 @@ class DialDisplay:
         self,
         config,
         get_display_targets,
-        mark_display_target_unauthorized,
         dial_id: str,
         logo_path: str = DEFAULT_DISPLAY_LOGO_PATH,
         backend_factory=NoOpBackend,
@@ -211,7 +226,6 @@ class DialDisplay:
         self._lock = threading.Lock()
         self._config = config
         self._get_display_targets = get_display_targets
-        self._mark_unauthorized = mark_display_target_unauthorized
         self._dial_id = dial_id
         self._logo_path = logo_path
         self._backend_factory = backend_factory
@@ -303,6 +317,29 @@ class DialDisplay:
         self._noncomposited_event = threading.Event()
         self._noncomposited_generation = 0
 
+        # ---- Auth, focus and push plumbing ----------------------------
+        # Poll-thread wake: replaces the plain _stop_event.wait(6) so a
+        # push or a focus change can run a poll now instead of at the next
+        # tick. Set from any thread; cleared by the poll thread.
+        self._poll_wake = threading.Event()
+        # Push queue: appliance_ids whose auth changed, per the appliance's
+        # advisory POST /auth-changed. Guarded by a LEAF lock (never nested
+        # with self._lock, never held across I/O); drained by the poll
+        # thread. A set, so a burst of pushes for one id collapses to one
+        # probe.
+        self._push_lock = threading.Lock()
+        self._push_pending: set[str] = set()
+        # Reconcile bookkeeping (poll thread only, except for the wake-pass
+        # writes from the repaint thread noted at their call sites).
+        self._last_reconcile_at = 0.0
+        self._reconcile_due = True          # first tick reconciles
+        # Manual focus: appliance_id chosen by the user, or None for
+        # auto-pick. Read and cleared by the poll thread; set by whatever
+        # eventually drives the selector (not wired in this phase). Plain
+        # reference read/write, same discipline as _overlay_snapshot. Never
+        # persisted.
+        self._manual_focus_id: str | None = None
+
     # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
@@ -334,6 +371,8 @@ class DialDisplay:
         # Wake the repaint thread out of its Event.wait() so it notices
         # _repaint_stop_event promptly rather than at its next timeout tick.
         self._overlay_signal.set()
+        # Likewise for the poll thread's _poll_wake.wait().
+        self._poll_wake.set()
         if self._thread is not None:
             try:
                 self._thread.join(timeout=2)
@@ -479,15 +518,24 @@ class DialDisplay:
         self._touch_activity_pending = True
         self._overlay_signal.set()
 
-    def _apply_touch_activity_locked(self) -> None:
+    def _apply_touch_activity_locked(self) -> bool:
         """Apply a pending touch-activity notification. Caller holds
-        self._lock; runs on the repaint thread, not the touch thread."""
+        self._lock; runs on the repaint thread, not the touch thread.
+
+        Returns True when this call actually woke the display from sleep —
+        the caller uses that to run the reconcile-on-wake side effects
+        (auth_map.force_due(), _poll_wake.set()) AFTER releasing self._lock,
+        since those must never be reached while self._lock is held (leaf
+        locks are never nested with it in either direction).
+        """
         if not self._touch_activity_pending:
-            return
+            return False
         self._touch_activity_pending = False
         self._idle_started_at = None
         if self._display_sleeping:
             self._wake_locked()
+            return True
+        return False
 
     def set_overlay(self, state: OverlayState) -> None:
         """Publish a new touch-overlay snapshot and signal the repaint
@@ -894,34 +942,149 @@ class DialDisplay:
             # whichever one triggered this particular wake.
             self._overlay_signal.clear()
             with self._lock:
-                self._repaint_current_locked()
+                woke = self._repaint_current_locked()
+            if woke:
+                # Outside the lock: force_due() takes the leaf dial_auth
+                # lock, which must never nest with self._lock.
+                self._reconcile_due = True
+                auth_map.force_due()
+                self._poll_wake.set()
 
-    def _repaint_current_locked(self) -> None:
+    def _repaint_current_locked(self) -> bool:
         """Recompose the last base frame against the latest overlay snapshot
         and push it — used by the repaint thread when only the overlay
         itself changed (no new poll-driven frame). No-op if the backend is
         closed or nothing has ever been displayed yet.
+
+        Returns True when applying pending touch activity woke the display
+        (see _apply_touch_activity_locked) — propagated to the caller so it
+        can run the wake-pass side effects outside self._lock.
         """
         # Wake first if touch asked for it, so the backlight is on before
         # the overlay frame is pushed rather than one repaint later.
-        self._apply_touch_activity_locked()
+        woke = self._apply_touch_activity_locked()
         if not (self._backend_open and self._backend is not None):
-            return
+            return woke
         if self._current_base_image is None:
-            return
+            return woke
         self._display_locked(self._current_base_image)
+        return woke
 
     # ---- polling loop ----------------------------------------------------
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            self._poll_wake.clear()
             try:
-                self._poll_once()
+                pushed = self._drain_push_probes()
+                if not self._sleeping_lockfree() or pushed == "woke":
+                    self._poll_once()
             except Exception:
                 logging.debug("dial display: poll iteration raised", exc_info=True)
             # Wait from the end of this loop so slow polls never accumulate
-            # into a backlog.
-            self._stop_event.wait(DISPLAY_POLL_INTERVAL_SECONDS)
+            # into a backlog. A push, a focus change or a wake sets
+            # _poll_wake to run this loop again sooner.
+            self._poll_wake.wait(DISPLAY_POLL_INTERVAL_SECONDS)
+
+    def _sleeping_lockfree(self) -> bool:
+        """Plain read of self._display_sleeping — the poll thread is the
+        only writer apart from the repaint thread's wake path, so a stale
+        read here costs at most one harmless extra tick."""
+        return self._display_sleeping
+
+    def request_poll(self) -> None:
+        """Ask the poll thread to run _poll_once now instead of waiting for
+        the next tick. Lock-free."""
+        self._poll_wake.set()
+
+    def notify_auth_changed(self, appliance_id: str) -> None:
+        """Record that appliance_id's auth-changed push arrived (from the
+        HTTP thread). Never probes here — only enqueues and wakes the poll
+        thread, which does the one permitted HTTP call while asleep."""
+        with self._push_lock:
+            self._push_pending.add(appliance_id)
+        auth_map.force_due(appliance_id)
+        self._poll_wake.set()
+
+    def _drain_push_probes(self) -> str:
+        """Probe every appliance_id the push queue holds.
+
+        Returns "woke" when a probe confirmed a NEW authorization while
+        asleep (and the screen was woken), "probed" when anything was
+        probed, "" otherwise.
+        """
+        with self._push_lock:
+            ids = set(self._push_pending)
+            self._push_pending.clear()
+        if not ids:
+            return ""
+        targets = {t.appliance_id: t for t in self._get_display_targets() if t.appliance_id}
+        woke = False
+        for appliance_id in ids:
+            target = targets.get(appliance_id)
+            if target is None or not target.dial_status:
+                continue     # not rostered right now: learn on the next poll
+            before = auth_map.state(appliance_id)
+            self._probe_auth(target)
+            after = auth_map.state(appliance_id)
+            if after == AUTH_AUTHORIZED and before != AUTH_AUTHORIZED:
+                with self._lock:
+                    if self._display_sleeping:
+                        self._idle_started_at = None      # same as _apply_touch_activity_locked
+                        self._wake_locked()
+                        woke = True
+        return "woke" if woke else "probed"
+
+    def _apply_status_to_auth(self, target, result: dict) -> bool:
+        """Map a fetch_target_status/enrich_targets record onto the auth
+        map. Only the two explicit outcomes move state; everything else
+        (including a missing appliance_id) is transient."""
+        err = result.get("status_error")
+        if err is None:
+            outcome = OUTCOME_AUTHORIZED
+        elif err == "unauthorized":
+            outcome = OUTCOME_UNAUTHORIZED
+        else:
+            outcome = OUTCOME_TRANSIENT
+        return auth_map.apply(
+            target.appliance_id, outcome, result.get("appliance_id"), time.monotonic(),
+        )
+
+    def _probe_auth(self, target) -> dict:
+        """Fetch one target's status and apply it to the auth map. Shared
+        by the push-probe path and the reconcile pass."""
+        result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+        self._apply_status_to_auth(target, result)
+        return result
+
+    def _reconcile_pass(self, targets: list, visited: set[str]) -> None:
+        """Concurrent fan-out over rows the sequential poll walk did not
+        already fetch this tick, so an unauthorized row's re-probe backoff
+        and every row's occasional re-confirmation happen without adding
+        sequential latency to the artwork-selection walk."""
+        now = time.monotonic()
+        auth_map.prune(now)
+        pending = [
+            t for t in targets
+            if t.dial_status and t.appliance_id and t.service_name not in visited
+            and auth_map.due_for_probe(t.appliance_id, now)
+        ]
+        if not pending:
+            return
+        for record in enrich_targets(pending, self._dial_id):
+            target = next(t for t in pending if t.service_name == record["name"])
+            self._apply_status_to_auth(target, record)
+
+    def set_manual_focus(self, appliance_id: str | None) -> None:
+        """Sticky manual focus: pins the display source to appliance_id
+        (or clears it back to auto-pick with None). Lock-free write plus a
+        poll wake so the source switch lands within milliseconds, not at
+        the next tick. Never persisted."""
+        self._manual_focus_id = appliance_id
+        self._poll_wake.set()
+
+    def manual_focus_id(self) -> str | None:
+        return self._manual_focus_id
 
     def _poll_once(self) -> None:
         with self._lock:
@@ -933,16 +1096,38 @@ class DialDisplay:
 
         targets = self._get_display_targets()
 
+        # Resolve manual focus before anything else: a focused appliance
+        # that is no longer rostered, or has since been confirmed
+        # unauthorized, reverts silently to auto-pick.
+        focus_id = self._manual_focus_id
+        focus_target = None
+        if focus_id is not None:
+            focus_target = next(
+                (t for t in targets if t.appliance_id == focus_id and t.auth != AUTH_UNAUTHORIZED),
+                None,
+            )
+            if focus_target is None:
+                self._manual_focus_id = None
+                logging.info("dial display: manual focus cleared (appliance gone or unauthorized)")
+
         # Any visible playing target counts as activity — including
         # unauthorized or status-erroring ones — because the mDNS
         # _autostream-playing._tcp presence alone means audio is playing
         # somewhere on the network, regardless of whether this dial's
         # display is allowed to source artwork from it.
         if targets:
+            woke = False
             with self._lock:
                 self._idle_started_at = None
                 if self._display_sleeping:
                     self._wake_locked()
+                    woke = True
+            if woke:
+                # Outside the lock: force_due() takes the leaf dial_auth
+                # lock, which must never nest with self._lock.
+                self._reconcile_due = True
+                auth_map.force_due()
+                self._poll_wake.set()
         else:
             # Nothing playing anywhere: there is no reporting-from target any
             # more, and a stale readout for a target that has since stopped
@@ -970,19 +1155,57 @@ class DialDisplay:
         selected_artist = ""
         selected_title = ""
         records: dict[str, dict] = {}
-        for target in targets:
-            if not target.display_authorized:
+        visited: set[str] = set()
+        # With a focus, it is polled first and pinned to unconditionally —
+        # the walk never falls through to another appliance's artwork.
+        # Without one, today's playing_since-ordered walk is unchanged.
+        ordered = (
+            [focus_target] + [t for t in targets if t is not focus_target]
+            if focus_target is not None else targets
+        )
+        for target in ordered:
+            is_focus = focus_target is not None and target is focus_target
+            if target.auth == AUTH_UNAUTHORIZED:
                 logging.debug("dial display: skip unauthorized row %s", target.service_name)
                 continue
             if not target.dial_status:
                 logging.debug("dial display: skip unsupported target %s", target.service_name)
+                if is_focus:
+                    # No status to poll, but the screen still follows the
+                    # focus for its name/label; there is simply no artwork.
+                    selected_service = target.service_name
+                    break
                 continue
 
             result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
+            visited.add(target.service_name)
+            self._apply_status_to_auth(target, result)
             status_error = result.get("status_error")
-            if status_error == "unauthorized":
-                self._mark_unauthorized(target)
+
+            if is_focus and status_error == "unauthorized":
+                # Revoked mid-tick: clear focus now and fall through to the
+                # normal walk over the remaining targets in this same poll,
+                # so the screen shows the auto-pick target immediately.
+                self._manual_focus_id = None
+                focus_target = None
+                is_focus = False
+                logging.info("dial display: manual focus cleared (appliance now unauthorized)")
                 continue
+
+            if is_focus:
+                # The focus target is pinned regardless of whether it has
+                # identified artwork — never fall through to another
+                # appliance's artwork while a focus is set.
+                selected_service = target.service_name
+                if not status_error:
+                    records[target.service_name] = result
+                    track_id = result.get("track_id")
+                    if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
+                        selected_url = track_id["artwork_url"]
+                        selected_artist = track_id.get("artist", "")
+                        selected_title = track_id.get("title", "")
+                break
+
             if status_error:
                 logging.debug(
                     "dial display: target %s status_error=%s", target.service_name, status_error,
@@ -998,12 +1221,14 @@ class DialDisplay:
                 selected_title = track_id.get("title", "")
                 break
 
-        # Reporting-from target: the identified source, else the oldest
-        # playing target (select_volume_target's fallback). This is the
-        # SAME helper the volume worker's resolver calls, so the poll and
-        # the worker can never disagree about who volume/mute addresses —
-        # see C.1 in the design notes and dial_main._build_volume_targets_fn.
-        reporting = select_volume_target(targets, selected_service)
+        # Reporting-from target: the identified (or focused) source, else
+        # the oldest playing CONTROLLABLE target (select_volume_target's
+        # fallback). Only auth != unauthorized targets are offered, matching
+        # the volume resolver's own filter (dial_main._build_volume_targets_fn)
+        # so the poll and the worker can never disagree about who
+        # volume/mute addresses.
+        targets_controllable = [t for t in targets if t.auth != AUTH_UNAUTHORIZED]
+        reporting = select_volume_target(targets_controllable, selected_service)
         reporting_name = reporting.service_name if reporting is not None else None
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
@@ -1038,6 +1263,12 @@ class DialDisplay:
             self._show_artwork(selected_url)
         else:
             self.show_logo()
+
+        now = time.monotonic()
+        if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
+            self._reconcile_pass(targets, visited)
+            self._last_reconcile_at = now
+            self._reconcile_due = False
 
     # ---- artwork selection -------------------------------------------------
 
@@ -1147,7 +1378,7 @@ def _adafruit_backend_factory_for_screen_type(screen_type: str):
     return lambda: AdafruitDisplayBackend(profile)
 
 
-def create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized) -> DialDisplay:
+def create_dial_display(cfg, get_display_targets) -> DialDisplay:
     """Build the display manager for dial_main.py wiring.
 
     Builds the backend factory from the configured profile (cfg.display.
@@ -1160,7 +1391,6 @@ def create_dial_display(cfg, get_display_targets, mark_display_target_unauthoriz
     return DialDisplay(
         config=cfg.display,
         get_display_targets=get_display_targets,
-        mark_display_target_unauthorized=mark_display_target_unauthorized,
         dial_id=cfg.uuid,
         backend_factory=_adafruit_backend_factory_for_screen_type(cfg.display.screen_type),
         backend_factory_builder=_adafruit_backend_factory_for_screen_type,

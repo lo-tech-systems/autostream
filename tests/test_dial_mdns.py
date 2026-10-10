@@ -24,8 +24,11 @@ for _p in (_DIAL, _CORE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import dial_auth
 import dial_mdns as dm
 from autostream_mdns import parse_avahi_txt
+
+_VALID_ID = "a" * 20
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +146,26 @@ class TestHandleLineAdd:
         targets = dm.get_playing_targets()
         assert targets[0].name == "Kitchen"
 
+    def test_id_txt_parsed_into_appliance_id(self):
+        dm._browser._handle_line(_av_add(txt=f"dial_api=v1 id={_VALID_ID}"))
+        targets = dm.get_playing_targets()
+        assert targets[0].appliance_id == _VALID_ID
+
+    def test_id_txt_absent_gives_empty_appliance_id(self):
+        dm._browser._handle_line(_av_add())
+        targets = dm.get_playing_targets()
+        assert targets[0].appliance_id == ""
+
+    def test_malformed_id_txt_gives_empty_appliance_id(self):
+        dm._browser._handle_line(_av_add(txt="dial_api=v1 id=not-hex-at-all-nope"))
+        targets = dm.get_playing_targets()
+        assert targets[0].appliance_id == ""
+
+    def test_short_id_txt_gives_empty_appliance_id(self):
+        dm._browser._handle_line(_av_add(txt="dial_api=v1 id=abc123"))
+        targets = dm.get_playing_targets()
+        assert targets[0].appliance_id == ""
+
 
 # ---------------------------------------------------------------------------
 # _handle_line: deduplication across interfaces
@@ -224,37 +247,6 @@ class TestPlayingSinceRegistry:
         assert targets[0].playing_since == first_since
         assert targets[0].ip == "10.0.0.2"
 
-    def test_address_change_resets_display_authorized(self):
-        dm._browser._handle_line(_av_add(ip="10.0.0.1"))
-        target = dm.get_display_targets()[0]
-        dm.mark_display_target_unauthorized(target)
-        assert dm.get_display_targets()[0].display_authorized is False
-
-        dm._browser._handle_line(_av_add(ip="10.0.0.2"))
-        targets = dm.get_display_targets()
-        assert targets[0].display_authorized is True
-
-    def test_mark_unauthorized_suppresses_row(self):
-        dm._browser._handle_line(_av_add())
-        target = dm.get_display_targets()[0]
-        dm.mark_display_target_unauthorized(target)
-        assert dm.get_display_targets()[0].display_authorized is False
-
-    def test_mark_unauthorized_ignored_after_address_change(self):
-        dm._browser._handle_line(_av_add(ip="10.0.0.1"))
-        stale_target = dm.get_display_targets()[0]
-        dm._browser._handle_line(_av_add(ip="10.0.0.2"))
-        dm.mark_display_target_unauthorized(stale_target)
-        assert dm.get_display_targets()[0].display_authorized is True
-
-    def test_mark_unauthorized_ignored_after_removal(self):
-        dm._browser._handle_line(_av_add())
-        target = dm.get_display_targets()[0]
-        dm._browser._handle_line(_av_remove())
-        dm.mark_display_target_unauthorized(target)  # must not raise or resurrect state
-        assert dm.get_display_targets() == []
-        assert dm._target_state == {}
-
     def test_removal_clears_target_state(self):
         dm._browser._handle_line(_av_add())
         dm._browser._handle_line(_av_remove())
@@ -263,14 +255,12 @@ class TestPlayingSinceRegistry:
     def test_reappear_after_removal_starts_fresh(self):
         dm._browser._handle_line(_av_add())
         target = dm.get_display_targets()[0]
-        dm.mark_display_target_unauthorized(target)
         first_since = target.playing_since
         dm._browser._handle_line(_av_remove())
         time.sleep(0.005)
         dm._browser._handle_line(_av_add())
         targets = dm.get_display_targets()
         assert targets[0].playing_since > first_since
-        assert targets[0].display_authorized is True
 
     def test_deterministic_sort_by_playing_since_then_name_ip_port(self):
         dm._browser._handle_line(_av_add(name="Earlier", ip="10.0.0.2"))
@@ -293,13 +283,73 @@ class TestPlayingSinceRegistry:
         target = dm.get_display_targets()[0]
         assert target.service_name == "Kitchen"
 
-    def test_get_playing_targets_unaffected_by_display_authorized_marking(self):
-        """Volume fan-out via get_playing_targets() must be unaffected by display marking."""
-        dm._browser._handle_line(_av_add())
-        target = dm.get_display_targets()[0]
-        dm.mark_display_target_unauthorized(target)
+
+# ---------------------------------------------------------------------------
+# appliance_id identity and the dial_auth-backed `auth` field.
+# ---------------------------------------------------------------------------
+
+class TestApplianceIdAndAuth:
+    def setup_method(self):
+        _clear()
+
+    def test_sighting_creates_unknown_auth_entry(self):
+        dm._browser._handle_line(_av_add(txt=f"dial_api=v1 id={_VALID_ID}"))
+        assert dial_auth.auth_map.state(_VALID_ID) == dial_auth.AUTH_UNKNOWN
+
+    def test_get_playing_targets_stamps_auth_from_map(self):
+        dm._browser._handle_line(_av_add(txt=f"dial_api=v1 id={_VALID_ID}"))
+        dial_auth.auth_map.apply(_VALID_ID, dial_auth.OUTCOME_AUTHORIZED, _VALID_ID, time.monotonic())
+        targets = dm.get_playing_targets()
+        assert targets[0].auth == dial_auth.AUTH_AUTHORIZED
+
+    def test_get_display_targets_stamps_auth_from_map(self):
+        dm._browser._handle_line(_av_add(txt=f"dial_api=v1 id={_VALID_ID}"))
+        dial_auth.auth_map.apply(_VALID_ID, dial_auth.OUTCOME_UNAUTHORIZED, _VALID_ID, time.monotonic())
+        targets = dm.get_display_targets()
+        assert targets[0].auth == dial_auth.AUTH_UNAUTHORIZED
+
+    def test_address_change_resets_auth_to_unknown(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.1", txt=f"dial_api=v1 id={_VALID_ID}"))
+        dial_auth.auth_map.apply(_VALID_ID, dial_auth.OUTCOME_AUTHORIZED, _VALID_ID, time.monotonic())
+        assert dial_auth.auth_map.state(_VALID_ID) == dial_auth.AUTH_AUTHORIZED
+
+        dm._browser._handle_line(_av_add(ip="10.0.0.2", txt=f"dial_api=v1 id={_VALID_ID}"))
+        assert dial_auth.auth_map.state(_VALID_ID) == dial_auth.AUTH_UNKNOWN
+
+    def test_raising_map_read_degrades_to_unknown(self):
+        dm._browser._handle_line(_av_add(txt=f"dial_api=v1 id={_VALID_ID}"))
+        with patch.object(dial_auth.auth_map, "state", side_effect=RuntimeError("boom")):
+            targets = dm.get_playing_targets()
+        assert targets[0].auth == dial_auth.AUTH_UNKNOWN
+
+    def test_identityless_target_always_unknown(self):
+        dm._browser._handle_line(_av_add())  # no id= — identity-less appliance
+        dial_auth.auth_map.apply(_VALID_ID, dial_auth.OUTCOME_AUTHORIZED, _VALID_ID, time.monotonic())
+        targets = dm.get_playing_targets()
+        assert targets[0].auth == dial_auth.AUTH_UNKNOWN
+
+    def test_get_playing_targets_unaffected_by_authorization_state(self):
+        """Volume fan-out via get_playing_targets() must include a row regardless
+        of its auth state — filtering is the caller's job, not this module's."""
+        dm._browser._handle_line(_av_add(txt=f"dial_api=v1 id={_VALID_ID}"))
+        dial_auth.auth_map.apply(_VALID_ID, dial_auth.OUTCOME_UNAUTHORIZED, _VALID_ID, time.monotonic())
         vol_targets = dm.get_playing_targets()
         assert len(vol_targets) == 1
+
+
+# ---------------------------------------------------------------------------
+# appliance_display_name()
+# ---------------------------------------------------------------------------
+
+class TestApplianceDisplayName:
+    def test_strips_service_prefix_and_replaces_underscores(self):
+        assert dm.appliance_display_name("autostream on CD_Player") == "CD Player"
+
+    def test_hostname_without_underscores_unchanged(self):
+        assert dm.appliance_display_name("autostream on SL-D303") == "SL-D303"
+
+    def test_name_without_prefix_still_replaces_underscores(self):
+        assert dm.appliance_display_name("Some_Other_Name") == "Some Other Name"
 
 
 # ---------------------------------------------------------------------------

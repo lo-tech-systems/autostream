@@ -18,6 +18,7 @@ import http.client
 import json
 import logging
 import queue
+import re
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -30,6 +31,8 @@ from dial_control_protocol import (
 
 if TYPE_CHECKING:
     from dial_mdns import PlayingTarget
+
+_APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 
 _VALID_TRACK_ID_STATES = frozenset({
     "disabled", "waiting_for_audio", "analysing",
@@ -90,6 +93,23 @@ def _parse_track_id(data: dict) -> tuple[dict | None, bool]:
     return result, True
 
 
+def _lenient_json_object(raw: bytes) -> dict | None:
+    """Decode raw as UTF-8 JSON, returning the dict or None on any failure."""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _parse_appliance_id(data: dict) -> str | None:
+    """Extract a valid appliance_id from a decoded body, else None."""
+    value = data.get("appliance_id")
+    if isinstance(value, str) and _APPLIANCE_ID_RE.match(value):
+        return value
+    return None
+
+
 def _base_record(target: "PlayingTarget") -> dict:
     return {
         "name": target.name,
@@ -103,6 +123,7 @@ def _base_record(target: "PlayingTarget") -> dict:
         "selected_output_count": None,
         "track_id": None,
         "status_error": None,
+        "appliance_id": None,
     }
 
 
@@ -151,9 +172,22 @@ def fetch_target_status(
         record["status_error"] = "unreachable"
         return record
 
-    # Map HTTP 403 → unauthorized
+    # HTTP 412: the deliberate not-authorized rejection. Belt and braces:
+    # require the protocol body too, so a 412 from any other layer (nginx,
+    # a proxy, an unrelated route) stays transient rather than demoting.
+    if http_status == 412:
+        data = _lenient_json_object(raw)
+        if data is not None and data.get("error") == "dial_not_authorized":
+            record["status_error"] = "unauthorized"
+            record["appliance_id"] = _parse_appliance_id(data)
+            return record
+        record["status_error"] = "bad_response"
+        return record
+
+    # HTTP 403: generic forbidden (nginx, CSRF, an older appliance's missing
+    # dial_id guard). Transient by contract: never demotes the auth map.
     if http_status == 403:
-        record["status_error"] = "unauthorized"
+        record["status_error"] = "forbidden"
         return record
 
     # Validate Content-Type: must be application/json (case-insensitive, ignoring params)
@@ -192,7 +226,8 @@ def fetch_target_status(
         if ok is False:
             app_error = data.get("error", "")
             record["status_error"] = (
-                app_error if app_error in ("config_error", "backend_unavailable")
+                app_error
+                if app_error in ("config_error", "backend_unavailable", "auth_unavailable")
                 else "bad_response"
             )
         else:
@@ -234,10 +269,17 @@ def fetch_target_status(
         record["status_error"] = "bad_response"
         return record
 
+    if "appliance_id" in data:
+        raw_appliance_id = data["appliance_id"]
+        if raw_appliance_id is not None and not isinstance(raw_appliance_id, str):
+            record["status_error"] = "bad_response"
+            return record
+
     record["playing"] = playing
     record["master_volume"] = master_volume
     record["selected_output_count"] = selected_output_count
     record["track_id"] = track_id
+    record["appliance_id"] = _parse_appliance_id(data)
     return record
 
 

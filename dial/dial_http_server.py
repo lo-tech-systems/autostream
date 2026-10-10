@@ -8,7 +8,7 @@ facing setup UI; dial configuration is done through the appliance web interface.
 
 Routes: GET /configure, POST /configure, GET /recovery_status,
 GET /update/status, GET /update/check, POST /update,
-POST /recovery/arm, POST /recovery/disarm.
+POST /recovery/arm, POST /recovery/disarm, POST /auth-changed.
 """
 from __future__ import annotations
 
@@ -95,6 +95,50 @@ def _pin_record_failure(ip: str) -> None:
 def _pin_clear_attempts(ip: str) -> None:
     with _pin_lock:
         _pin_attempts.pop(ip, None)
+
+
+# ---- POST /auth-changed: appliance id and push rate limiting ---------------
+
+_APPLIANCE_ID_RE = re.compile(r'^[0-9a-f]{20}$')
+
+# Per source IP, at most one accepted push every _PUSH_IP_INTERVAL_S; per
+# appliance_id, at most one every _PUSH_ID_INTERVAL_S. A refused push is
+# still answered 202 and simply never enqueued — the response must not leak
+# whether the id is known, rostered, or rate-limited.
+_PUSH_IP_INTERVAL_S = 2.0
+_PUSH_ID_INTERVAL_S = 5.0
+_PUSH_ENTRY_MAX_AGE_S = 60.0
+
+
+class _PushLimiter:
+    """Pure rate limiter for POST /auth-changed, with its own leaf lock."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_ip: dict[str, float] = {}
+        self._by_id: dict[str, float] = {}
+
+    def allow(self, ip: str, appliance_id: str, now: float) -> bool:
+        with self._lock:
+            self._prune_locked(now)
+            last_ip = self._by_ip.get(ip)
+            last_id = self._by_id.get(appliance_id)
+            if last_ip is not None and now - last_ip < _PUSH_IP_INTERVAL_S:
+                return False
+            if last_id is not None and now - last_id < _PUSH_ID_INTERVAL_S:
+                return False
+            self._by_ip[ip] = now
+            self._by_id[appliance_id] = now
+            return True
+
+    def _prune_locked(self, now: float) -> None:
+        # Entries older than the longer of the two intervals are stale by
+        # construction; a fixed ceiling keeps both dicts bounded regardless
+        # of how many distinct IPs/ids are ever seen.
+        for d in (self._by_ip, self._by_id):
+            stale = [k for k, t in d.items() if now - t > _PUSH_ENTRY_MAX_AGE_S]
+            for k in stale:
+                del d[k]
 
 
 # ---- Update state -----------------------------------------------------------
@@ -236,7 +280,7 @@ class NoOpDisplayStatusProvider:
 # ---- HTTP server ------------------------------------------------------------
 
 class DialHTTPServer:
-    def __init__(self, cfg, display_status_provider=None) -> None:
+    def __init__(self, cfg, display_status_provider=None, get_rostered_ips=None) -> None:
         self._cfg             = cfg
         self._cfg_lock        = threading.Lock()
         self._recovery_window = RecoveryWindow(self._on_announce)
@@ -252,6 +296,12 @@ class DialHTTPServer:
         self._last_touch_restart_monotonic: float | None = None
         self._display_status  = display_status_provider or NoOpDisplayStatusProvider()
         self._display_status.update_config(cfg.display)
+        self._auth_push_limiter = _PushLimiter()
+        # Zero-arg callable returning {appliance_id: ip} for every currently
+        # rostered playing target — dial_main wires the real mDNS-backed one;
+        # tests pass a dict-returning lambda. None (a display-less/bare test
+        # server) behaves as "nothing rostered".
+        self._get_rostered_ips = get_rostered_ips
         self._server          = http.server.HTTPServer(
             ('', cfg.port), self._make_handler()
         )
@@ -307,6 +357,22 @@ class DialHTTPServer:
         This is what makes GET /screen/settings' runtime.touch_type a real
         signal instead of the persisted config echoed back early."""
         self._touch_runtime = value
+
+    def _rostered_ips(self) -> dict:
+        """appliance_id -> ip for every currently rostered playing target.
+
+        Wraps the injected get_rostered_ips callable so a broken or absent
+        browser can never turn a push into a 500 — a raising or unset
+        callable degrades to "nothing rostered", which just means the push
+        is not enqueued.
+        """
+        if self._get_rostered_ips is None:
+            return {}
+        try:
+            return self._get_rostered_ips()
+        except Exception as e:
+            logging.debug("auth-changed: get_rostered_ips raised: %s", e)
+            return {}
 
     def _touch_restart_allowed(self) -> bool:
         """Rate-gate a touch-type restart trigger: refuses more than one
@@ -480,6 +546,8 @@ class DialHTTPServer:
                     self._handle_recovery_arm()
                 elif self.path == '/recovery/disarm':
                     self._handle_recovery_disarm()
+                elif self.path == '/auth-changed':
+                    self._handle_auth_changed()
                 else:
                     self.send_error(404)
 
@@ -511,6 +579,53 @@ class DialHTTPServer:
                         "recovery disarm: could not remove %s: %s", PIN_RESET_PATH, e
                     )
                 self._send_json(200, {'ok': True})
+
+            def _handle_auth_changed(self) -> None:
+                """Advisory notification from an appliance that appliance_id's
+                authorization changed. Never authenticated (anyone on the LAN
+                can reach port 7842), so this grants nothing by itself — it
+                only causes a probe if the source IP matches a currently
+                rostered sighting of that id, and even then only enqueues the
+                probe on the display; it never fetches inline here on the
+                single-threaded server.
+                """
+                body = self._read_body()
+                if body is None:
+                    return
+                try:
+                    obj = json.loads(body)
+                except (ValueError, TypeError):
+                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
+                    return
+                if not isinstance(obj, dict):
+                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
+                    return
+                appliance_id = obj.get('appliance_id')
+                if not isinstance(appliance_id, str) or not _APPLIANCE_ID_RE.fullmatch(appliance_id):
+                    self._send_json(400, {'ok': False, 'error': 'invalid_appliance_id'})
+                    return
+
+                # Always 202 from here: the push is advisory and grants
+                # nothing, and the response must never leak whether the id is
+                # known, rostered, or rate-limited.
+                self._send_json(202, {'ok': True})
+
+                ip = self.client_address[0]
+                if not dial_server._auth_push_limiter.allow(ip, appliance_id, time.monotonic()):
+                    return
+                rostered = dial_server._rostered_ips()
+                if rostered.get(appliance_id) != ip:
+                    logging.debug(
+                        "auth-changed: %s from %s does not match a rostered sighting",
+                        appliance_id, ip,
+                    )
+                    return
+                notify = getattr(dial_server._display_status, "notify_auth_changed", None)
+                if notify is not None:
+                    try:
+                        notify(appliance_id)
+                    except Exception as e:
+                        logging.debug("auth-changed: enqueue failed: %s", e)
 
             def _handle_configure(self) -> None:
                 body = self._read_body()

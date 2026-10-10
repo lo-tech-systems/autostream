@@ -234,8 +234,67 @@ class TestEnrichSuccess:
         for field in (
             "name", "ip", "port", "dial_api", "audio_status", "dial_status",
             "playing", "master_volume", "selected_output_count", "status_error",
+            "appliance_id",
         ):
             assert field in r, f"Missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# appliance_id on the 200 success path
+# ---------------------------------------------------------------------------
+
+class TestApplianceIdField:
+    def test_valid_appliance_id_string_is_stored(self):
+        aid = "b" * 20
+        t = _target()
+        body = _ok_response()
+        body["appliance_id"] = aid
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["appliance_id"] == aid
+
+    def test_missing_appliance_id_is_none(self):
+        t = _target()
+        with _mock_conn(_ok_response()):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["appliance_id"] is None
+
+    def test_null_appliance_id_is_none(self):
+        t = _target()
+        body = _ok_response()
+        body["appliance_id"] = None
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["appliance_id"] is None
+
+    def test_non_string_appliance_id_is_bad_response(self):
+        t = _target()
+        body = _ok_response()
+        body["appliance_id"] = 12345
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_malformed_hex_appliance_id_degrades_to_none(self):
+        """A string that is present but does not match the 20-lowercase-hex
+        shape is treated as no identity, not as a schema violation — an
+        older or misconfigured appliance must not break the whole response."""
+        t = _target()
+        body = _ok_response()
+        body["appliance_id"] = "not-valid-hex"
+        with _mock_conn(body):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] is None
+        assert result[0]["appliance_id"] is None
+
+    def test_fetch_target_status_direct_call_propagates_appliance_id(self):
+        aid = "c" * 20
+        t = _target()
+        body = _ok_response()
+        body["appliance_id"] = aid
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["appliance_id"] == aid
 
 
 # ---------------------------------------------------------------------------
@@ -243,11 +302,47 @@ class TestEnrichSuccess:
 # ---------------------------------------------------------------------------
 
 class TestEnrichUnauthorized:
-    def test_http_403_returns_unauthorized(self):
+    def test_http_403_is_transient_forbidden(self):
         t = _target()
         with _mock_conn(b"{}", status=403):
             result = enrich_targets([t], "wrong-dial-id")
+        assert result[0]["status_error"] == "forbidden"
+        assert result[0]["playing"] is None
+
+    def test_http_412_with_protocol_body_returns_unauthorized_and_appliance_id(self):
+        aid = "a" * 20
+        t = _target()
+        body = {"error": "dial_not_authorized", "appliance_id": aid}
+        with _mock_conn(body, status=412):
+            result = enrich_targets([t], "wrong-dial-id")
         assert result[0]["status_error"] == "unauthorized"
+        assert result[0]["appliance_id"] == aid
+
+    def test_http_412_with_null_appliance_id_returns_unauthorized_none_id(self):
+        t = _target()
+        body = {"error": "dial_not_authorized", "appliance_id": None}
+        with _mock_conn(body, status=412):
+            result = enrich_targets([t], "wrong-dial-id")
+        assert result[0]["status_error"] == "unauthorized"
+        assert result[0]["appliance_id"] is None
+
+    def test_http_412_without_the_protocol_body_is_bad_response(self):
+        t = _target()
+        with _mock_conn(b"{}", status=412):
+            result = enrich_targets([t], "wrong-dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_http_412_with_wrong_error_token_is_bad_response(self):
+        t = _target()
+        with _mock_conn({"error": "something_else"}, status=412):
+            result = enrich_targets([t], "wrong-dial-id")
+        assert result[0]["status_error"] == "bad_response"
+
+    def test_ok_false_auth_unavailable_is_transient(self):
+        t = _target()
+        with _mock_conn({"ok": False, "error": "auth_unavailable"}, status=200):
+            result = enrich_targets([t], "dial-id")
+        assert result[0]["status_error"] == "auth_unavailable"
         assert result[0]["playing"] is None
 
 

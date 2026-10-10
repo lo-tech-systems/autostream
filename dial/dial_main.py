@@ -28,7 +28,6 @@ from dial_led import DialLED
 from dial_mdns import (
     get_display_targets,
     get_playing_targets,
-    mark_display_target_unauthorized,
     start_playing_browser,
     stop_playing_browser,
 )
@@ -247,11 +246,15 @@ def _build_volume_targets_fn(display, get_targets=get_display_targets):
     never blocks volume (display failure must never affect volume control).
     get_targets defaults to the real dial_mdns.get_display_targets, imported
     at module load time; tests override it directly for a fake target list.
+
+    Rows with a confirmed 412 (auth == "unauthorized") are excluded. Rows
+    whose auth is still "unknown" stay eligible — the encoder must be live
+    from the first second, and only a definitive miss removes a row.
     """
     getter = getattr(display, "current_source_service_name", None)
 
     def resolve():
-        targets = get_targets()
+        targets = [t for t in get_targets() if t.auth != "unauthorized"]
         preferred = None
         if getter is not None:
             try:
@@ -268,10 +271,11 @@ def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_p
     mute_all_playing setting is on, else the same single target volume
     uses. Reads the setting through http_server (not a captured cfg value)
     so a /configure change applies without a restart, exactly like
-    step_percent does for the encoder today."""
+    step_percent does for the encoder today. As with volume, unauthorized
+    rows are excluded from the mute-all fan-out; unknown rows stay eligible."""
     def resolve():
         if http_server.mute_all_playing:
-            return get_all_targets()
+            return [t for t in get_all_targets() if t.auth != "unauthorized"]
         return volume_targets_fn()
     return resolve
 
@@ -479,12 +483,17 @@ def main() -> None:
     # down the whole service — volume control must not depend on Pillow.
     try:
         from dial_display import create_dial_display
-        display = create_dial_display(cfg, get_display_targets, mark_display_target_unauthorized)
+        display = create_dial_display(cfg, get_display_targets)
     except ImportError as e:
         logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
         display = NoOpDisplayStatusProvider()
 
-    http_server = DialHTTPServer(cfg, display_status_provider=display)
+    http_server = DialHTTPServer(
+        cfg, display_status_provider=display,
+        get_rostered_ips=lambda: {
+            t.appliance_id: t.ip for t in get_playing_targets() if t.appliance_id
+        },
+    )
     http_server.start()
 
     if recovery_armed:

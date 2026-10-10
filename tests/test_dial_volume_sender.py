@@ -209,6 +209,31 @@ class TestSendOne403:
         assert not warning_msgs, "403 should not log at WARNING"
         assert debug_msgs, "403 should log at DEBUG"
 
+    def test_412_does_not_increment_fail_count(self, caplog):
+        import logging
+        target = _target(ip="9.9.9.9")
+        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one(target, "uuid", 1, [])
+
+        assert dv._fail_counts.get("9.9.9.9", 0) == 0
+
+    def test_412_logs_at_debug_not_warning(self, caplog):
+        import logging
+        target = _target(ip="9.9.9.9")
+        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one(target, "uuid", 1, [])
+
+        warning_msgs = [r for r in caplog.records
+                        if r.levelno >= logging.WARNING and "9.9.9.9" in r.getMessage()]
+        debug_msgs   = [r for r in caplog.records
+                        if r.levelno == logging.DEBUG and "9.9.9.9" in r.getMessage()]
+        assert not warning_msgs, "412 should not log at WARNING"
+        assert debug_msgs, "412 should log at DEBUG"
+
 
 # ---------------------------------------------------------------------------
 # _send_one: clamp detection
@@ -612,6 +637,37 @@ class TestSendOneMuteFailureHandling:
         """A 403 carries no body to fold in — the belief must be untouched."""
         _reset_belief(True)
         err = urllib.error.HTTPError(url="", code=403, msg="Forbidden", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            dv._send_one_mute(_target(), "uuid", False)
+        assert dv.is_muted() is True
+
+    def test_412_does_not_increment_fail_count(self, caplog):
+        import logging
+        target = _target(ip="9.9.9.7")
+        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one_mute(target, "uuid", True)
+        assert dv._fail_counts.get("9.9.9.7", 0) == 0
+
+    def test_412_logs_at_debug_not_warning(self, caplog):
+        import logging
+        target = _target(ip="9.9.9.7")
+        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            with caplog.at_level(logging.DEBUG):
+                dv._send_one_mute(target, "uuid", True)
+        warning_msgs = [r for r in caplog.records
+                        if r.levelno >= logging.WARNING and "9.9.9.7" in r.getMessage()]
+        debug_msgs = [r for r in caplog.records
+                      if r.levelno == logging.DEBUG and "9.9.9.7" in r.getMessage()]
+        assert not warning_msgs, "412 should not log at WARNING"
+        assert debug_msgs, "412 should log at DEBUG"
+
+    def test_412_does_not_reconcile_belief(self):
+        """A 412 carries no body to fold in — the belief must be untouched."""
+        _reset_belief(True)
+        err = urllib.error.HTTPError(url="", code=412, msg="Precondition Failed", hdrs=None, fp=None)
         with patch("urllib.request.urlopen", side_effect=err):
             dv._send_one_mute(_target(), "uuid", False)
         assert dv.is_muted() is True

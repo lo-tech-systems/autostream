@@ -83,7 +83,7 @@ class TestNoModuleLevelHardwareImports:
         cfg = MagicMock()
         cfg.display = MagicMock(fitted=False)
         cfg.uuid = "uuid"
-        display = dial_display.create_dial_display(cfg, MagicMock(), MagicMock())
+        display = dial_display.create_dial_display(cfg, MagicMock())
         display.start()
         display.stop()  # must not raise even though Adafruit modules are absent
 

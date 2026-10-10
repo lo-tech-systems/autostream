@@ -55,6 +55,11 @@ class FakeDialServer:
         self._touch_restart_lock = threading.Lock()
         self._last_touch_restart_monotonic: float | None = None
         self._announce_calls: list = []
+        self._auth_push_limiter = dhs._PushLimiter()
+        self._get_rostered_ips = None
+
+    def _rostered_ips(self) -> dict:
+        return dhs.DialHTTPServer._rostered_ips(self)
 
     def update_cfg(self, new_cfg: DialConfig) -> None:
         self._cfg = new_cfg
@@ -99,6 +104,7 @@ def _call_handler(
     body: dict | bytes | None = None,
     cfg: DialConfig | None = None,
     setup_server: "FakeDialServer | None" = None,
+    client_ip: str = "127.0.0.1",
 ) -> dict:
     """Build a handler instance, invoke it, and return status/data/server."""
     handler_cls, server = (_make_handler_cls(cfg)
@@ -115,7 +121,7 @@ def _call_handler(
     h = object.__new__(handler_cls)
     h.path           = path
     h.rfile          = io.BytesIO(body_bytes)
-    h.client_address = ("127.0.0.1", 1234)
+    h.client_address = (client_ip, 1234)
     h.headers        = {"Content-Length": str(len(body_bytes))}
 
     result: dict = {}
@@ -1871,3 +1877,173 @@ class TestCanConfirmPresenceAndRemainingMs:
         assert r["save_calls"][0].name == "Test"
         assert r["save_calls"][0].step_percent == 3
         assert r["save_calls"][0].pin == "4321"
+
+
+# ---------------------------------------------------------------------------
+# POST /auth-changed
+# ---------------------------------------------------------------------------
+
+_AID = "a" * 20
+
+
+class _NotifyingDisplayStatusProvider(NoOpDisplayStatusProvider):
+    """Stand-in with a real notify_auth_changed hook to assert on."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.notified: list = []
+
+    def notify_auth_changed(self, appliance_id: str) -> None:
+        self.notified.append(appliance_id)
+
+
+class _RaisingNotifyDisplayStatusProvider(NoOpDisplayStatusProvider):
+    def notify_auth_changed(self, appliance_id: str) -> None:
+        raise RuntimeError("boom")
+
+
+class TestAuthChangedRoute:
+    def test_invalid_json_returns_400(self):
+        r = _call_handler("/auth-changed", body=b"not json")
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_json"
+
+    def test_non_object_body_returns_400(self):
+        r = _call_handler("/auth-changed", body=b"[1,2,3]")
+        assert r["status"] == 400
+        assert r["data"]["error"] == "body_must_be_object"
+
+    def test_missing_appliance_id_returns_400(self):
+        r = _call_handler("/auth-changed", body={})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_appliance_id"
+
+    def test_non_string_appliance_id_returns_400(self):
+        r = _call_handler("/auth-changed", body={"appliance_id": 12345})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_appliance_id"
+
+    def test_malformed_appliance_id_returns_400(self):
+        r = _call_handler("/auth-changed", body={"appliance_id": "not-hex-not-20-chars"})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_appliance_id"
+
+    def test_well_formed_body_returns_202_even_when_id_unknown(self):
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID})
+        assert r["status"] == 202
+        assert r["data"]["ok"] is True
+
+    def test_enqueues_on_display_when_ip_matches_rostered_sighting(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+        server._get_rostered_ips = lambda: {_AID: "127.0.0.1"}
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert display.notified == [_AID]
+
+    def test_does_not_enqueue_when_ip_does_not_match_rostered_sighting(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+        server._get_rostered_ips = lambda: {_AID: "192.168.1.5"}
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="192.168.1.99")
+        assert r["status"] == 202
+        assert display.notified == []
+
+    def test_does_not_enqueue_when_id_not_rostered_at_all(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+        server._get_rostered_ips = lambda: {}
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert display.notified == []
+
+    def test_get_rostered_ips_none_never_enqueues(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+        server._get_rostered_ips = None
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert display.notified == []
+
+    def test_get_rostered_ips_raising_degrades_to_no_enqueue(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+
+        def _raise():
+            raise RuntimeError("mdns browser broke")
+        server._get_rostered_ips = _raise
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert display.notified == []
+
+    def test_noop_display_provider_accepts_without_error(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        server._display_status = NoOpDisplayStatusProvider()
+        server._get_rostered_ips = lambda: {_AID: "127.0.0.1"}
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+
+    def test_notify_raising_does_not_break_the_response(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        server._display_status = _RaisingNotifyDisplayStatusProvider()
+        server._get_rostered_ips = lambda: {_AID: "127.0.0.1"}
+        r = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                          setup_server=server, client_ip="127.0.0.1")
+        assert r["status"] == 202
+        assert r["data"]["ok"] is True
+
+    def test_ip_rate_limit_refuses_second_push_within_window_but_still_202(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+        aid2 = "b" * 20
+        server._get_rostered_ips = lambda: {_AID: "127.0.0.1", aid2: "127.0.0.1"}
+        r1 = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                           setup_server=server, client_ip="127.0.0.1")
+        r2 = _call_handler("/auth-changed", body={"appliance_id": aid2},
+                           setup_server=server, client_ip="127.0.0.1")
+        assert r1["status"] == 202
+        assert r2["status"] == 202
+        # Same source IP, second push within the 2s window: refused
+        # (not enqueued) despite being individually well-formed and rostered.
+        assert display.notified == [_AID]
+
+    def test_id_rate_limit_refuses_second_push_within_window_but_still_202(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        display = _NotifyingDisplayStatusProvider()
+        server._display_status = display
+        server._get_rostered_ips = lambda: {_AID: "10.0.0.1"}
+        r1 = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                           setup_server=server, client_ip="10.0.0.1")
+        server._get_rostered_ips = lambda: {_AID: "10.0.0.2"}
+        r2 = _call_handler("/auth-changed", body={"appliance_id": _AID},
+                           setup_server=server, client_ip="10.0.0.2")
+        assert r1["status"] == 202
+        assert r2["status"] == 202
+        # Same appliance_id, second push within the 5s window (from a
+        # different source IP this time): refused despite matching its roster.
+        assert display.notified == [_AID]
+
+    def test_oversized_body_returns_413(self):
+        handler_cls, server = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path = "/auth-changed"
+        h.client_address = ("127.0.0.1", 1234)
+        h.headers = {"Content-Length": str(dhs.MAX_BODY + 1)}
+        h.rfile = io.BytesIO(b"x" * (dhs.MAX_BODY + 1))
+        result = {}
+        h._send_json = lambda s, d: result.update(status=s, data=d)
+        h.send_error = lambda code, *_: result.update(status=code)
+        h.do_POST()
+        assert result["status"] == 413

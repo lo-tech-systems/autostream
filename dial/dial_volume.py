@@ -67,8 +67,8 @@ mainly as the mute-all-playing path. Targets are pre-deduplicated by mDNS
 service name via get_playing_targets() so no IP-based dedup is needed here.
 
 Failure logging is rate-limited: WARNING on the 1st failure and every 10th
-thereafter per target IP; DEBUG for all intermediate failures.  403 responses
-(unauthorized UUID) are DEBUG-only — expected on mixed-network LAN.
+thereafter per target IP; DEBUG for all intermediate failures.  403 and 412
+responses (unauthorized UUID) are DEBUG-only — expected on mixed-network LAN.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -393,8 +393,8 @@ def _send_one(target, uuid: str, delta: int, clamped: list) -> None:
                     pass
         _fail_counts.pop(target.ip, None)   # clear only on confirmed application success
     except urllib.error.HTTPError as e:
-        if e.code == 403:
-            logging.debug("volume POST %s: 403 unauthorized", target.ip)
+        if e.code in (403, 412):
+            logging.debug("volume POST %s: %d unauthorized", target.ip, e.code)
         else:
             _log_volume_failure(target.ip, "HTTP %d", e.code)
     except Exception as e:
@@ -421,8 +421,8 @@ def _send_one_mute(target, uuid: str, muted: bool) -> None:
         # reports back rather than discarding it — see _reconcile_muted().
         _reconcile_muted(data.get("muted"))
     except urllib.error.HTTPError as e:
-        if e.code == 403:
-            logging.debug("mute POST %s: 403 unauthorized", target.ip)
+        if e.code in (403, 412):
+            logging.debug("mute POST %s: %d unauthorized", target.ip, e.code)
         else:
             _log_mute_failure(target.ip, "HTTP %d", e.code)
     except Exception as e:

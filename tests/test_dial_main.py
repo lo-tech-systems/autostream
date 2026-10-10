@@ -478,6 +478,48 @@ class TestDialFinalCleanup:
         assert callable(vol_kwargs["mute_targets_fn"])
         assert vol_kwargs["on_readout_changed"] == display.request_repaint
 
+        # DialHTTPServer must receive a get_rostered_ips callable — the
+        # /auth-changed route uses it to verify a push's source IP against a
+        # currently rostered sighting before enqueueing a probe.
+        assert callable(kwargs["get_rostered_ips"])
+
+    def test_get_rostered_ips_maps_appliance_id_to_ip_and_drops_identityless(self):
+        """The get_rostered_ips callable passed to DialHTTPServer must build
+        {appliance_id: ip} from get_playing_targets(), skipping rows with no
+        identity (an older or identity-less appliance is never rostered by
+        appliance_id)."""
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        cfg = _make_cfg()
+        cfg.display = MagicMock(fitted=False)
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+
+        with_id = PlayingTarget(ip="10.0.0.1", port=80, name="A", appliance_id="a" * 20)
+        without_id = PlayingTarget(ip="10.0.0.2", port=80, name="B", appliance_id="")
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.DialControlServer", return_value=mock_control), \
+             patch("dial_main.get_playing_targets", return_value=[with_id, without_id]), \
+             patch("threading.Event", _QuickEvent):
+            dm.main()
+            _, kwargs = mock_http_cls.call_args
+            assert kwargs["get_rostered_ips"]() == {"a" * 20: "10.0.0.1"}
+
     def test_display_stack_import_failure_degrades_to_noop(self):
         """If dial_display (e.g. Pillow) is unavailable, main() must degrade to
         NoOpDisplayStatusProvider rather than fail the whole service — volume
@@ -940,9 +982,12 @@ class TestEndToEndDisplaySelection:
         with dm_mdns._state_lock:
             dm_mdns._target_state.clear()
 
-    def _add_playing(self, name="Kitchen", ip="192.168.1.10", port=80):
+    def _add_playing(self, name="Kitchen", ip="192.168.1.10", port=80, appliance_id=None):
         import dial_mdns as dm_mdns
-        line = f"=;eth0;IPv4;{name};_autostream-playing._tcp;local;host;{ip};{port};dial_api=v1 dial_status=v1"
+        txt = "dial_api=v1 dial_status=v1"
+        if appliance_id:
+            txt += f" id={appliance_id}"
+        line = f"=;eth0;IPv4;{name};_autostream-playing._tcp;local;host;{ip};{port};{txt}"
         dm_mdns._browser._handle_line(line)
 
     def _make_real_display(self, fitted=True):
@@ -953,7 +998,6 @@ class TestEndToEndDisplaySelection:
         display = dd.DialDisplay(
             config=cfg_display,
             get_display_targets=dm_mdns.get_display_targets,
-            mark_display_target_unauthorized=dm_mdns.mark_display_target_unauthorized,
             dial_id="dial-uuid",
             logo_path=str(REPO_ROOT / "images" / "autostream-logo-centred-dark.png"),
             backend_factory=dd.NoOpBackend,
@@ -967,16 +1011,20 @@ class TestEndToEndDisplaySelection:
         assert display.get_status()["showing"] == "logo"
 
     def test_unauthorized_status_error_marks_row_via_real_mdns(self):
+        import dial_auth
         import dial_mdns as dm_mdns
 
-        self._add_playing()
+        aid = "a" * 20
+        self._add_playing(appliance_id=aid)
         display = self._make_real_display()
         with patch("dial_display.fetch_target_status",
-                   return_value={"track_id": None, "status_error": "unauthorized"}):
+                   return_value={"track_id": None, "status_error": "unauthorized",
+                                  "appliance_id": aid}):
             display._poll_once()
 
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
         targets = dm_mdns.get_display_targets()
-        assert targets[0].display_authorized is False
+        assert targets[0].auth == dial_auth.AUTH_UNAUTHORIZED
 
     def test_no_artwork_shows_logo(self):
         self._add_playing()
@@ -1042,7 +1090,6 @@ class TestScreenSettingsLiveApply:
         display = DialDisplay(
             config=cfg.display,
             get_display_targets=dm_mdns.get_display_targets,
-            mark_display_target_unauthorized=dm_mdns.mark_display_target_unauthorized,
             dial_id=cfg.uuid,
             backend_factory=NoOpBackend,
         )
@@ -1074,7 +1121,6 @@ class TestScreenSettingsLiveApply:
         display = DialDisplay(
             config=cfg.display,
             get_display_targets=dm_mdns.get_display_targets,
-            mark_display_target_unauthorized=dm_mdns.mark_display_target_unauthorized,
             dial_id=cfg.uuid,
             backend_factory=NoOpBackend,
         )
@@ -1109,7 +1155,6 @@ class TestScreenSettingsLiveApply:
         display = DialDisplay(
             config=cfg.display,
             get_display_targets=dm_mdns.get_display_targets,
-            mark_display_target_unauthorized=dm_mdns.mark_display_target_unauthorized,
             dial_id=cfg.uuid,
             backend_factory=NoOpBackend,
         )
@@ -1658,6 +1703,58 @@ class TestVolumeTargetsResolver:
 
         assert resolve() == []
 
+    def test_unauthorized_target_is_excluded(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        older = PlayingTarget(ip="1.0.0.1", port=80, name="Older", service_name="older",
+                               playing_since=10.0, auth="unauthorized")
+        newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer",
+                               playing_since=20.0, auth="unknown")
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [older, newer])
+
+        assert resolve() == [newer]
+
+    def test_unknown_auth_target_remains_eligible(self):
+        """An appliance not yet confirmed either way must stay controllable —
+        only a confirmed 412 (unauthorized) removes a row."""
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
+                           playing_since=1.0, auth="unknown")
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [t])
+
+        assert resolve() == [t]
+
+    def test_authorized_target_remains_eligible(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
+                           playing_since=1.0, auth="authorized")
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [t])
+
+        assert resolve() == [t]
+
+    def test_all_unauthorized_returns_empty(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
+                           playing_since=1.0, auth="unauthorized")
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [t])
+
+        assert resolve() == []
+
 
 # ---------------------------------------------------------------------------
 # _build_mute_targets_fn(): fleet-wide when mute_all_playing is on (read
@@ -1681,15 +1778,20 @@ class TestMuteTargetsResolver:
 
     def test_mute_all_playing_true_returns_every_playing_target(self):
         import dial_main as dm
+        from dial_mdns import PlayingTarget
 
         http_server = MagicMock()
         http_server.mute_all_playing = True
         volume_targets_fn = MagicMock(return_value=["single-target"])
-        all_targets_fn = MagicMock(return_value=["a", "b", "c"])
+        targets = [
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            for n in ("a", "b", "c")
+        ]
+        all_targets_fn = MagicMock(return_value=targets)
 
         resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=all_targets_fn)
 
-        assert resolve() == ["a", "b", "c"]
+        assert resolve() == targets
         volume_targets_fn.assert_not_called()
 
     def test_setting_is_read_live_not_captured_at_build_time(self):
@@ -1697,18 +1799,38 @@ class TestMuteTargetsResolver:
         next mute press without rebuilding the resolver — the resolver
         reads http_server.mute_all_playing on every call."""
         import dial_main as dm
+        from dial_mdns import PlayingTarget
 
         class _FakeServer:
             mute_all_playing = False
 
         server = _FakeServer()
         volume_targets_fn = MagicMock(return_value=["single-target"])
-        all_targets_fn = MagicMock(return_value=["a", "b"])
+        targets = [
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            for n in ("a", "b")
+        ]
+        all_targets_fn = MagicMock(return_value=targets)
         resolve = dm._build_mute_targets_fn(server, volume_targets_fn, get_all_targets=all_targets_fn)
 
         assert resolve() == ["single-target"]
         server.mute_all_playing = True
-        assert resolve() == ["a", "b"]
+        assert resolve() == targets
+
+    def test_unauthorized_targets_excluded_from_mute_all(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        http_server = MagicMock()
+        http_server.mute_all_playing = True
+        volume_targets_fn = MagicMock(return_value=[])
+        authorized = PlayingTarget(ip="1.0.0.1", port=80, name="A", service_name="a", auth="unknown")
+        blocked = PlayingTarget(ip="1.0.0.2", port=80, name="B", service_name="b", auth="unauthorized")
+        all_targets_fn = MagicMock(return_value=[authorized, blocked])
+
+        resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=all_targets_fn)
+
+        assert resolve() == [authorized]
 
 
 # ---------------------------------------------------------------------------
