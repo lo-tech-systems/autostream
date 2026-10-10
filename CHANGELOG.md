@@ -18,6 +18,9 @@
   HD dial's equaliser page); the small screen keeps bass and treble.
 - new: the dial's Setup card shows Brightness and Sleep after for an HD dial
   in place of the SPI-only rows.
+- improvement: the HD dial's replay row shows only the controls that apply:
+  Repeat Play while playing, Replay once a recording is held, and nothing when
+  idle. Lengths of an hour or more show hours.
 - improvement: an output in use by another autostream appliance now says
   which one (the HD dial shows "In Use by" and its name).
 - improvement: appliances advertise a new dial protocol generation (v3) and

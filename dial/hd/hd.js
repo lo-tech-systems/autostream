@@ -69,9 +69,9 @@
     const INFO_URL = "/api/v1/info";
 
     // The controls the replay row shows for each state of an appliance's
-    // recording, left to right.
+    // recording, left to right. An empty list hides the row.
     const REPLAY_CONTROLS = {
-        idle: ["arm"], recording: ["arm"], pending: ["arm"], hold: ["arm", "start"],
+        idle: [], recording: ["arm"], pending: ["arm"], hold: ["start"],
         replaying: ["counter", "restart", "stop"], fading_out: ["counter", "restart", "stop"]
     };
     const REPLAY_BUTTONS = {
@@ -159,9 +159,11 @@
 
     function formatLength(seconds) {
         const total = Math.max(0, Math.round(seconds || 0));
-        const m = Math.floor(total / 60);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor(total / 60) % 60;
         const s = total % 60;
-        return m + ":" + (s < 10 ? "0" : "") + s;
+        const pad = (n) => (n < 10 ? "0" : "") + n;
+        return (h ? h + ":" + pad(m) : String(m)) + ":" + pad(s);
     }
 
     function signed(value) {

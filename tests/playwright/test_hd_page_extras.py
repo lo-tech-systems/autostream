@@ -96,9 +96,10 @@ def replay_button(page, text):
 
 
 class TestReplayRow:
-    @pytest.mark.parametrize("state", ["idle", "recording", "pending"])
-    def test_nothing_to_replay_shows_the_arm_toggle_only(self, page, hd, state):
-        hd.show(hs.replay_scenario("r", state, armed=state != "idle"))
+    @pytest.mark.parametrize("armed", [True, False])
+    @pytest.mark.parametrize("state", ["recording", "pending"])
+    def test_nothing_to_replay_shows_the_arm_toggle_only(self, page, hd, state, armed):
+        hd.show(hs.replay_scenario("r", state, armed=armed))
         open_page(page, hd)
         toggle = page.locator("#replay-row .repeat-arm")
         expect(toggle).to_be_visible()
@@ -106,13 +107,21 @@ class TestReplayRow:
         assert replay_row(page).locator("button").count() == 0
         assert replay_row(page).locator(".replay-counter").count() == 0
         checked = page.locator("#replay-row .repeat-arm input")
-        if state == "idle":
-            expect(checked).not_to_be_checked()
-        else:
+        if armed:
             expect(checked).to_be_checked()
+        else:
+            expect(checked).not_to_be_checked()
+
+    def test_idle_hides_the_row(self, page, hd):
+        hd.show(hs.replay_scenario("r", "idle"))
+        open_page(page, hd)
+        expect(replay_row(page)).to_be_hidden()
+        assert replay_row(page).locator("*").count() == 0
+        hd.show(hs.replay_scenario("r", "recording"))
+        expect(page.locator("#replay-row .repeat-arm")).to_be_visible()
 
     def test_arm_toggle_sends_and_follows_the_state(self, page, hd):
-        hd.show(hs.replay_scenario("r", "idle"))
+        hd.show(hs.replay_scenario("r", "recording", armed=False))
         sent = watch_actions(page)
         open_page(page, hd)
         box = page.locator("#replay-row .repeat-arm input")
@@ -123,7 +132,7 @@ class TestReplayRow:
         expect(box).to_be_checked()
 
     def test_arm_toggle_rolls_back_when_the_state_never_follows(self, page, hd):
-        hd.show(hs.replay_scenario("r", "idle"))
+        hd.show(hs.replay_scenario("r", "recording", armed=False))
         page.clock.install()
         open_page(page, hd)
         page.locator("#replay-row .repeat-arm").click()
@@ -135,12 +144,27 @@ class TestReplayRow:
         hd.show(hs.SCENARIOS["replay_hold"])
         sent = watch_actions(page)
         open_page(page, hd)
-        expect(page.locator("#replay-row .repeat-arm")).to_be_visible()
         start = replay_button(page, "Replay")
         expect(start).to_have_text("Replay 18:42")
+        assert replay_row(page).locator(".repeat-arm").count() == 0
         start.click()
         page.wait_for_timeout(150)
         assert only(sent, "replay_start") == [("replay_start", {"appliance_id": LOUNGE})]
+
+    def test_a_recording_of_an_hour_or_more_shows_hours(self, page, hd):
+        hd.show(hs.replay_scenario("r", "hold", recording=3725.0))
+        open_page(page, hd)
+        expect(replay_button(page, "Replay")).to_have_text("Replay 1:02:05")
+        hd.show(hs.replay_scenario("r", "replaying", position=3600.0, duration=7384.0))
+        expect(page.locator(".replay-counter")).to_have_text(re.compile(r"^1:00:0[0-9] / 2:03:04$"))
+
+    def test_the_badge_of_an_hour_long_recording_elsewhere_shows_hours(self, page, hd):
+        base = hs.SCENARIOS["replay_elsewhere"]
+        lounge = dataclasses.replace(
+            base.snapshot.appliances[1], playing=False, repeat=hs.repeat_record("hold", recording=3600.0))
+        hd.show(base.with_snapshot(appliances=(base.snapshot.appliances[0], lounge)))
+        open_page(page, hd)
+        expect(rows(page).filter(has_text="Lounge").locator(".badge")).to_have_text("Replay 1:00:00")
 
     def test_replaying_shows_position_restart_and_stop(self, page, hd):
         hd.show(hs.SCENARIOS["replaying"])
@@ -235,6 +259,9 @@ class TestReplayRow:
         hd.show(base.with_snapshot(appliances=appliances))
         open_page(page, hd)
         expect(replay_button(page, "Replay")).to_be_disabled()
+        playing = hs.replay_scenario("r", "recording")
+        appliances = tuple(dataclasses.replace(a, status_error="timeout") for a in playing.snapshot.appliances)
+        hd.show(playing.with_snapshot(appliances=appliances))
         expect(page.locator("#replay-row .repeat-arm input")).to_be_disabled()
 
 

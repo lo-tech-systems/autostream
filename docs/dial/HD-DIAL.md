@@ -97,14 +97,17 @@ stayed.
 ### Replay row
 
 If the followed appliance can repeat and replay, a row above the track shows
-what it is doing:
+only the controls that apply to what it is doing:
 
-- **Repeat Play** is a switch that arms or disarms repeat, as on the small
-  screen.
-- Once a recording is held, **Replay** and its length start it from the
-  beginning.
+- While something is playing live, the row holds the **Repeat Play** switch,
+  which arms or disarms repeat, as on the small screen.
+- Once a recording is held, the row holds **Replay** and its length, which
+  starts it from the beginning.
 - While a replay runs, the row shows the position and length with **Restart**
   and **Stop**. Restart does not ask for confirmation.
+- With nothing playing and nothing held, the row is not shown.
+
+Lengths of an hour or more show hours, for example 1:02:05.
 
 An appliance row that holds a recording shows its length as a badge. Tapping
 that row follows the appliance, and its replay row then offers Replay. See
