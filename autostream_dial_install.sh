@@ -55,12 +55,23 @@ _install_success=false
 trap '_exit_rc=$?
     rm -f "$UPDATING_FLAG"
     if [[ "$_install_success" != true ]] && $UPDATE; then
-        write_update_result "failure" "Installer exited unexpectedly at line $LINENO" || true
+        write_update_result "failure" "$(update_failure_message)" 0 PHASE=failed || true
     fi
     exit $_exit_rc' EXIT
 
 # ---- OS version check (fresh install and update) ----------------------------
 require_trixie_os
+
+# ---- Prepare (update only; a fresh install does its own setup below) --------
+# User, directories and permissions are brought to the current layout first,
+# so every later step finds what it expects (handles first-time install of a
+# fresh release).
+phase prepare 5 "Preparing..."
+if $UPDATE; then
+    create_service_user
+    create_dirs
+    init_service_dirs
+fi
 
 # ---- Fresh-install only steps -----------------------------------------------
 if ! $UPDATE; then
@@ -80,6 +91,35 @@ if ! $UPDATE; then
     fi
 fi
 
+# ---- Packages (fresh install and --update) ----------------------------------
+# --update upgrades the installed system packages first, as the appliance
+# installer does; the per-feature installs follow on both paths.
+# install_recovery_packages() installs fcgiwrap+zip and grants www-data adm
+# group membership so the CGI log-download endpoint can read dial logs.
+# Called unconditionally so --update runs gain these dependencies without
+# requiring a re-image. The same holds for the image, display-hardware and
+# sdmon installs; the venv build packages (Python.h + gcc for sdist-only deps,
+# sysv-ipc on armv7l) must precede both the pip step and the sdmon build.
+if $UPDATE; then
+    phase packages 10 "Upgrading system packages (this may take several minutes)..."
+    system_upgrade
+fi
+phase packages 10 "Installing packages..."
+install_recovery_packages
+install_image_packages
+install_display_hardware_packages
+install_venv_build_packages
+# The binary is always present so SD card health monitoring can be switched on
+# later from the appliance's Setup page without a rebuild; only the wrapper's
+# enable verb ever starts the timer.
+install_sdmon
+
+# ---- Python environment (fresh install and --update) ------------------------
+phase python 45 "Installing Python packages..."
+setup_venv   # pip install gpiozero into /opt/autostream/venv
+
+# ---- Files (fresh install and --update) -------------------------------------
+phase files 70 "Copying files..."
 # ---- Deploy Python files ----------------------------------------------------
 install -m 0644 "$DEPLOY/core/autostream_rpi.py"      /opt/autostream/autostream_rpi.py
 # autostream_rpi.py is now a re-export shim over the four modules its concerns
@@ -138,43 +178,6 @@ sed -i 's/\r$//' /opt/autostream/autostream_wifi_watcher
 
 deploy_admin
 deploy_avahi_template
-install_venv_build_packages   # Python.h + gcc for sdist-only deps (sysv-ipc on armv7l)
-setup_venv   # pip install gpiozero into /opt/autostream/venv
-
-# ---- Recovery infrastructure (fresh install and --update) -------------------
-# install_recovery_packages() installs fcgiwrap+zip and grants www-data adm
-# group membership so the CGI log-download endpoint can read dial logs.
-# Called unconditionally so --update runs gain these dependencies without
-# requiring a re-image.
-install_recovery_packages
-
-# ---- Display image processing (fresh install and --update) ------------------
-install_image_packages
-
-# ---- Display hardware (fresh install and --update) ---------------------------
-# SPI enablement and group membership may require a reboot or service restart
-# before hardware access works. I2C is enabled unconditionally alongside SPI
-# so a capacitive touch panel can be fitted later without re-running the
-# installer — see enable_i2c()'s comment for why this is free when idle.
-install_display_hardware_packages
-add_spi_group
-enable_spi0
-enable_spi1
-set_spidev_bufsiz
-enable_i2c
-
-# ---- Boot-time trim (fresh install and --update) ----------------------------
-# One call on the unconditional path rather than inside the fresh-only block
-# above: the flag file is idempotent, and dials installed before this existed
-# must gain the faster boot on their next --update without a re-image — the
-# same reasoning as install_recovery_packages/install_image_packages.
-disable_cloud_init
-
-# ---- SD card health tool (fresh install and --update) ----------------------
-# The binary is always present so monitoring can be switched on later from
-# the appliance's Setup page without a rebuild; only the wrapper's enable
-# verb ever starts the timer.
-install_sdmon
 
 # ---- Deploy images ----------------------------------------------------------
 mkdir -p /opt/autostream/images
@@ -199,6 +202,27 @@ install -m 0755 "$DEPLOY/dial/cgi/download-logs.cgi"  /opt/autostream/nginx/cgi/
 systemctl enable fcgiwrap
 systemctl restart fcgiwrap
 
+# ---- Configuration ----------------------------------------------------------
+phase configure 80 "Configuring..."
+
+# ---- Display hardware (fresh install and --update) ---------------------------
+# SPI enablement and group membership may require a reboot or service restart
+# before hardware access works. I2C is enabled unconditionally alongside SPI
+# so a capacitive touch panel can be fitted later without re-running the
+# installer — see enable_i2c()'s comment for why this is free when idle.
+add_spi_group
+enable_spi0
+enable_spi1
+set_spidev_bufsiz
+enable_i2c
+
+# ---- Boot-time trim (fresh install and --update) ----------------------------
+# One call on the unconditional path rather than inside the fresh-only block
+# above: the flag file is idempotent, and dials installed before this existed
+# must gain the faster boot on their next --update without a re-image — the
+# same reasoning as install_recovery_packages/install_image_packages.
+disable_cloud_init
+
 # ---- Identity and config handling -------------------------------------------
 if ! $UPDATE; then
     DIAL_UUID=$(generate_dial_id)
@@ -209,12 +233,6 @@ if ! $UPDATE; then
     write_dial_hw_config "$DIAL_UUID"
     write_dial_settings
 else
-    # On --update, ensure user, dirs, and permissions are current-layout before
-    # reading the UUID (handles first-time install of a fresh release).
-    create_service_user
-    create_dirs
-    init_service_dirs
-
     # Parse without source — never execute env file contents.
     DIAL_UUID=$(grep '^DIAL_UUID=' \
         /var/lib/autostream/install-state.env 2>/dev/null | cut -d= -f2-)
@@ -316,7 +334,8 @@ systemctl restart autostream_dial autostream_dial_wifi_watcher
 # Set _install_success AFTER the write — if write_update_result fails, the EXIT trap fires
 # and writes "failure", which is correct.
 # PERCENT_COMPLETE=100 signals the updating.html page to start its restart-and-redirect flow.
-$UPDATE && write_update_result "success" "Installed ${AUTOSTREAM_RELEASE_TAG}" 100
+$UPDATE && write_update_result "success" "Installed ${AUTOSTREAM_RELEASE_TAG}" 100 \
+    PHASE=done "TAG=${AUTOSTREAM_RELEASE_TAG}"
 _install_success=true   # disarm EXIT trap only after status is safely written
 
 echo "autostream dial installation complete."

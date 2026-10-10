@@ -502,6 +502,12 @@ def read_update_status() -> int:
         "stale": False,
         "message": "No update status available",
         "percent": 0,
+        "phase": "",
+        "tag": "",
+        "previous_tag": "",
+        "attempt": 0,
+        "max_attempts": 0,
+        "rolled_back": False,
         "log_tail": "",
     }
 
@@ -532,6 +538,18 @@ def read_update_status() -> int:
     except ValueError:
         percent = 0
     data["percent"] = max(0, min(100, percent))
+
+    # Optional phase/attempt fields: absent on older result files, so each
+    # falls back to a neutral value rather than being omitted.
+    data["phase"] = str(env.get("PHASE") or "")
+    data["tag"] = str(env.get("TAG") or "")
+    data["previous_tag"] = str(env.get("PREVIOUS_TAG") or "")
+    for field, key in (("attempt", "ATTEMPT"), ("max_attempts", "MAX_ATTEMPTS")):
+        try:
+            data[field] = max(0, int(str(env.get(key) or "0")))
+        except ValueError:
+            data[field] = 0
+    data["rolled_back"] = str(env.get("ROLLED_BACK") or "0").strip() == "1"
 
     if data["status"] == "in_progress":
         data["stale"] = _is_stale_in_progress(data["last_run_at"], log_path=log_path)

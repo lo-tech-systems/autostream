@@ -243,6 +243,32 @@ def _read_update_state() -> str:
     )
 
 
+def _read_update_fields() -> dict:
+    """Progress fields of the update result file, for GET /update/status.
+
+    Every field is optional in the file (older result files lack the phase
+    and attempt keys), so each falls back to a neutral value.
+    """
+    env = _read_env_file(_UPDATE_RESULT_PATH)
+
+    def _int(key: str, high: int) -> int:
+        try:
+            return max(0, min(high, int(env.get(key) or '0')))
+        except ValueError:
+            return 0
+
+    return {
+        'percent':      _int('PERCENT_COMPLETE', 100),
+        'message':      env.get('MESSAGE', ''),
+        'phase':        env.get('PHASE', ''),
+        'tag':          env.get('TAG', ''),
+        'previous_tag': env.get('PREVIOUS_TAG', ''),
+        'attempt':      _int('ATTEMPT', 99),
+        'max_attempts': _int('MAX_ATTEMPTS', 99),
+        'rolled_back':  env.get('ROLLED_BACK', '0') == '1',
+    }
+
+
 # ---- Self-announcement ------------------------------------------------------
 
 def _announce_self(cfg) -> None:
@@ -685,10 +711,12 @@ class DialHTTPServer:
                         })
 
                 elif self.path == '/update/status':
-                    self._send_json(200, {
+                    body = {
                         'state':   _read_update_state(),
                         'version': VERSION,
-                    })
+                    }
+                    body.update(_read_update_fields())
+                    self._send_json(200, body)
 
                 elif self.path == '/update/check':
                     self._handle_update_check()

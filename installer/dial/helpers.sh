@@ -24,7 +24,7 @@ install_os_packages() {
     # the single install site, called unconditionally for both fresh and update paths.
     # Venv build dependencies are likewise omitted; install_venv_build_packages()
     # owns those and runs on both paths because setup_venv() does too.
-    apt-get install -y --no-install-recommends \
+    apt_step apt-get install -y --no-install-recommends \
         avahi-daemon avahi-utils nginx dnsmasq curl \
         python3-venv python3-flask python3-lgpio
 }
@@ -37,7 +37,7 @@ install_image_packages() {
     # the display stack, same lifecycle as python3-pil. Called unconditionally
     # on fresh install and --update so existing installs gain both without
     # requiring a re-image.
-    apt-get install -y --no-install-recommends python3-pil fonts-dejavu-core
+    apt_step apt-get install -y --no-install-recommends python3-pil fonts-dejavu-core
 }
 
 install_recovery_packages() {
@@ -45,7 +45,7 @@ install_recovery_packages() {
     # Called unconditionally (fresh install and --update) so that upgraded
     # devices gain fcgiwrap and zip without requiring a re-image, and fresh
     # installs are covered by a single code path.
-    apt-get install -y --no-install-recommends fcgiwrap zip
+    apt_step apt-get install -y --no-install-recommends fcgiwrap zip
     # Dial logs are root:adm 0640; www-data needs adm membership to read them
     # for the CGI log-download endpoint.
     usermod -aG adm www-data
@@ -97,7 +97,7 @@ install_display_hardware_packages() {
     # --system-site-packages, the same mechanism as python3-pil/python3-spidev.
     # Called unconditionally on fresh install and --update so existing dials
     # gain SPI/I2C/fast-display support without requiring a re-image.
-    apt-get install -y --no-install-recommends python3-spidev python3-smbus python3-numpy
+    apt_step apt-get install -y --no-install-recommends python3-spidev python3-smbus python3-numpy
 }
 
 add_spi_group() {
@@ -241,7 +241,7 @@ install_sdmon() {
         return 0
     fi
     # gcc comes from install_venv_build_packages(); make is only needed here.
-    apt-get install -y --no-install-recommends make
+    apt_step apt-get install -y --no-install-recommends make
     local tmpdir
     tmpdir="$(mktemp -d)"
     if curl -fsSL "https://github.com/Ognian/sdmon/archive/${ref}.tar.gz" \
@@ -600,7 +600,7 @@ install_venv_build_packages() {
     # Called unconditionally (fresh install and --update) because setup_venv() is:
     # dials installed from a 32-bit image before this existed must acquire it on
     # their next update, or that update's pip step fails the same way.
-    apt-get install -y --no-install-recommends python3-dev gcc
+    apt_step apt-get install -y --no-install-recommends python3-dev gcc
 }
 
 setup_venv() {
@@ -619,16 +619,179 @@ setup_venv() {
     fi
 }
 
+# Keys the update result file may carry beyond STATUS, PERCENT_COMPLETE,
+# MESSAGE and LAST_RUN_AT, in the order they are written.
+UPDATE_RESULT_KEYS=(PHASE TAG PREVIOUS_TAG ATTEMPT MAX_ATTEMPTS ROLLED_BACK TRANSIENT_RETRY)
+
+_update_result_file() {
+    printf '%s\n' "${UPDATE_RESULT_FILE:-/var/lib/autostream/update-result.env}"
+}
+
+_update_result_value() {
+    # Print the value of KEY in the result file; empty when absent.
+    local file line
+    file="$(_update_result_file)"
+    [[ -r "${file}" ]] || return 0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        if [[ "${line%%=*}" == "$1" && "${line}" == *=* ]]; then
+            printf '%s\n' "${line#*=}"
+            return 0
+        fi
+    done < "${file}"
+    return 0
+}
+
+_installed_release_tag() {
+    # Release tag recorded by the previous install; empty when unknown.
+    local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
+    [[ -r "${state}" ]] || return 0
+    grep '^AUTOSTREAM_RELEASE_TAG=' "${state}" 2>/dev/null | head -n 1 | cut -d= -f2- || true
+}
+
 write_update_result() {
     # Write the canonical update-result.env schema shared with autostream_admin
     # update-status and the offline/updating.html page.
-    # Usage: write_update_result STATUS MESSAGE [PERCENT_COMPLETE]
+    # Usage: write_update_result STATUS MESSAGE [PERCENT_COMPLETE] [KEY=VALUE ...]
+    # Optional KEY=VALUE pairs set UPDATE_RESULT_KEYS entries; an empty value
+    # removes the key. Entries already in the file and not named here are kept
+    # (read-modify-write), so a phase write never drops the tag or attempt.
+    # The file stays 0644 so the dial's own processes can read it.
     local status="$1" message="$2" percent="${3:-0}"
-    local last_run_at
+    shift $(( $# < 3 ? $# : 3 ))
+    local file tmp last_run_at key arg value line
+    local -A kv=()
+    file="$(_update_result_file)"
+    message="${message//$'\n'/ }"
+    if [[ -r "${file}" ]]; then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            [[ "${line}" == *=* && -n "${line#*=}" ]] || continue
+            for key in "${UPDATE_RESULT_KEYS[@]}"; do
+                if [[ "${line%%=*}" == "${key}" ]]; then
+                    kv["${key}"]="${line#*=}"
+                fi
+            done
+        done < "${file}"
+    fi
+    for arg in "$@"; do
+        key="${arg%%=*}"
+        value="${arg#*=}"
+        value="${value//$'\n'/ }"
+        if [[ -z "${value}" ]]; then
+            unset "kv[${key}]"
+        else
+            kv["${key}"]="${value}"
+        fi
+    done
     last_run_at="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
-    printf 'STATUS=%s\nPERCENT_COMPLETE=%s\nMESSAGE=%s\nLAST_RUN_AT=%s\n' \
-        "$status" "$percent" "$message" "$last_run_at" \
-        > /var/lib/autostream/update-result.env
+    tmp="${file}.tmp.$$"
+    {
+        printf 'STATUS=%s\nPERCENT_COMPLETE=%s\nMESSAGE=%s\nLAST_RUN_AT=%s\n' \
+            "${status}" "${percent}" "${message}" "${last_run_at}"
+        for key in "${UPDATE_RESULT_KEYS[@]}"; do
+            if [[ -n "${kv[${key}]+set}" ]]; then
+                printf '%s=%s\n' "${key}" "${kv[${key}]}"
+            fi
+        done
+    } > "${tmp}"
+    chmod 0644 "${tmp}"
+    if [[ -e "${file}" ]]; then
+        chown --reference="${file}" "${tmp}" 2>/dev/null || true
+    fi
+    mv -f "${tmp}" "${file}"
+}
+
+phase() {
+    # Enter an update phase: remember it for the failure message and, on
+    # --update runs, record it in the result file.
+    # Usage: phase NAME PERCENT_COMPLETE MESSAGE
+    # The first phase write of a run also fills PREVIOUS_TAG, ATTEMPT and
+    # MAX_ATTEMPTS when the updater that started the run did not write them.
+    CURRENT_PHASE="$1"
+    CURRENT_PERCENT="$2"
+    CURRENT_MESSAGE="$3"
+    [[ "${UPDATE:-false}" == true ]] || return 0
+    local -a extras=("PHASE=$1" "TAG=${AUTOSTREAM_RELEASE_TAG:-}")
+    local previous
+    if [[ -z "$(_update_result_value PREVIOUS_TAG)" ]]; then
+        previous="$(_installed_release_tag)"
+        if [[ -n "${previous}" ]]; then
+            extras+=("PREVIOUS_TAG=${previous}")
+        fi
+    fi
+    if [[ -z "$(_update_result_value ATTEMPT)" ]]; then
+        extras+=("ATTEMPT=1")
+    fi
+    if [[ -z "$(_update_result_value MAX_ATTEMPTS)" ]]; then
+        extras+=("MAX_ATTEMPTS=4")
+    fi
+    write_update_result "in_progress" "$3" "$2" "${extras[@]}"
+}
+
+update_failure_message() {
+    # Failure text for the phase that was running when the installer stopped.
+    local previous step
+    previous="$(_update_result_value PREVIOUS_TAG)"
+    [[ -n "${previous}" ]] || previous="$(_installed_release_tag)"
+    case "${CURRENT_PHASE:-}" in
+        prepare)   step="preparation" ;;
+        packages)  step="package installation" ;;
+        python)    step="Python setup" ;;
+        files)     step="file installation" ;;
+        configure) step="configuration" ;;
+        *)         step="setup" ;;
+    esac
+    printf 'Update to %s failed during %s - %s kept' \
+        "${AUTOSTREAM_RELEASE_TAG:-unknown}" "${step}" \
+        "${previous:-previous version}"
+}
+
+# Output patterns that mark an apt failure as transient (lock held, or the
+# network failed mid-fetch). Anything else fails at once.
+APT_TRANSIENT_PATTERN='Could not get lock|Unable to acquire the dpkg frontend lock|Failed to fetch|Temporary failure resolving|Connection timed out'
+
+apt_step() {
+    # Run an apt command; retry it once, after a pause, when it fails with
+    # status 100 and its output shows a lock or fetch failure. A second
+    # failure, or any other failure, is returned to the caller.
+    local out rc
+    out="$(mktemp)"
+    if "$@" 2>&1 | tee "${out}"; then
+        rc="${PIPESTATUS[0]}"
+    else
+        rc="${PIPESTATUS[0]}"
+    fi
+    if (( rc == 0 )); then
+        rm -f "${out}"
+        return 0
+    fi
+    if (( rc != 100 )) || ! grep -qE "${APT_TRANSIENT_PATTERN}" "${out}"; then
+        rm -f "${out}"
+        return "${rc}"
+    fi
+    rm -f "${out}"
+    echo "Package step failed, retrying in ${APT_RETRY_DELAY:-30}s: $*" >&2
+    if [[ "${UPDATE:-false}" == true ]]; then
+        write_update_result "in_progress" "Package step failed, retrying..." \
+            "${CURRENT_PERCENT:-0}" "TRANSIENT_RETRY=1" || true
+    fi
+    sleep "${APT_RETRY_DELAY:-30}"
+    rc=0
+    "$@" || rc=$?
+    if (( rc == 0 )) && [[ "${UPDATE:-false}" == true && -n "${CURRENT_MESSAGE:-}" ]]; then
+        write_update_result "in_progress" "${CURRENT_MESSAGE}" \
+            "${CURRENT_PERCENT:-0}" || true
+    fi
+    return "${rc}"
+}
+
+system_upgrade() {
+    # Refresh the package index and upgrade installed packages, as the
+    # appliance installer does; needrestart is told only to list, never to
+    # restart services mid-install. Then trim the downloaded package cache,
+    # since the card is small.
+    apt_step apt-get update
+    apt_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    apt-get autoclean -y
 }
 
 deploy_admin() {

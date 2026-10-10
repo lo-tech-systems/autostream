@@ -17,6 +17,7 @@ import subprocess
 import tarfile
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -584,3 +585,25 @@ def free_repeat_buffer(
 
     ok_overall = all(r.endswith(": ok") for r in results)
     return ok_overall, "; ".join(results)
+
+
+def _is_pre_boot(timestamp_str: str) -> bool:
+    """Return True if timestamp_str represents a time before the current boot.
+
+    An unparseable timestamp counts as pre-boot.  When /proc/uptime is
+    unavailable the check falls back to age: older than 90 minutes (the
+    worst-case update duration) counts as pre-boot.
+    """
+    try:
+        ts = datetime.fromisoformat(timestamp_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True
+
+    try:
+        uptime_s = float(Path("/proc/uptime").read_text().split()[0])
+        boot_time = datetime.now(tz=timezone.utc) - timedelta(seconds=uptime_s)
+        return ts < boot_time
+    except Exception:
+        return (datetime.now(tz=timezone.utc) - ts) > timedelta(minutes=90)

@@ -220,3 +220,65 @@ class TestIsPreBoot:
         mod = load_supervisor_script("autostream_update_retry", "retry_is_pre_boot_test3")
         result = mod._is_pre_boot("not-a-timestamp")
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Phase, tag and attempt fields
+# ---------------------------------------------------------------------------
+
+class TestPhaseFieldsPassthrough:
+    def test_phase_tag_attempt_and_rolled_back_passthrough(self, tmp_path):
+        mod = _load_admin(tmp_path)
+        (tmp_path / "update-result.env").write_text(
+            "STATUS=failure\nPERCENT_COMPLETE=96\nMESSAGE=Update to 1.3.0 failed - restored 1.2.0\n"
+            "LAST_RUN_AT=2026-01-01T00:00:00+00:00\nPHASE=rolled_back\nTAG=1.3.0\n"
+            "PREVIOUS_TAG=1.2.0\nATTEMPT=3\nMAX_ATTEMPTS=4\nROLLED_BACK=1\n",
+            encoding="utf-8")
+        with patch.object(mod, "_read_log_tail", return_value=""):
+            data = _run_and_parse(mod)
+        assert data["phase"] == "rolled_back"
+        assert data["tag"] == "1.3.0"
+        assert data["previous_tag"] == "1.2.0"
+        assert data["attempt"] == 3
+        assert data["max_attempts"] == 4
+        assert data["rolled_back"] is True
+        # The canonical fields are unchanged.
+        assert data["status"] == "failure"
+        assert data["percent"] == 96
+
+    def test_rolled_back_zero_is_false(self, tmp_path):
+        mod = _load_admin(tmp_path)
+        (tmp_path / "update-result.env").write_text(
+            "STATUS=in_progress\nPHASE=packages\nROLLED_BACK=0\n", encoding="utf-8")
+        with patch.object(mod, "_read_log_tail", return_value=""), \
+             patch.object(mod, "_is_stale_in_progress", return_value=False):
+            data = _run_and_parse(mod)
+        assert data["rolled_back"] is False
+        assert data["phase"] == "packages"
+
+    def test_result_file_without_the_new_keys_gets_neutral_values(self, tmp_path):
+        mod = _load_admin(tmp_path)
+        _write_result(tmp_path, status="success", message="Installed 1.2.0", percent="100")
+        with patch.object(mod, "_read_log_tail", return_value=""):
+            data = _run_and_parse(mod)
+        assert data["phase"] == ""
+        assert data["tag"] == ""
+        assert data["previous_tag"] == ""
+        assert data["attempt"] == 0
+        assert data["max_attempts"] == 0
+        assert data["rolled_back"] is False
+
+    def test_missing_file_has_the_new_fields_too(self, tmp_path):
+        mod = _load_admin(tmp_path)
+        data = _run_and_parse(mod)
+        for key in ("phase", "tag", "previous_tag", "attempt", "max_attempts", "rolled_back"):
+            assert key in data
+
+    def test_malformed_attempt_numbers_fall_back_to_zero(self, tmp_path):
+        mod = _load_admin(tmp_path)
+        (tmp_path / "update-result.env").write_text(
+            "STATUS=success\nATTEMPT=two\nMAX_ATTEMPTS=-3\n", encoding="utf-8")
+        with patch.object(mod, "_read_log_tail", return_value=""):
+            data = _run_and_parse(mod)
+        assert data["attempt"] == 0
+        assert data["max_attempts"] == 0

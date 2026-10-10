@@ -2872,3 +2872,70 @@ class TestPersistSdHealthIntent:
         with patch("dial_config.save_config", side_effect=OSError("disk full")):
             server._persist_sd_health_intent(True)
         assert server._cfg.sd_health_monitoring is False
+
+
+class TestUpdateStatusResultFields:
+    """GET /update/status: state mapping plus the result file's progress fields."""
+
+    @staticmethod
+    def _get(result_file: Path) -> dict:
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/update/status"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        with patch.object(dhs, "_UPDATE_RESULT_PATH", result_file):
+            h.do_GET()
+        assert result["status"] == 200
+        return result["data"]
+
+    def test_update_status_includes_result_fields_and_state_mapping(self, tmp_path):
+        f = tmp_path / "update-result.env"
+        f.write_text(
+            "STATUS=in_progress\nPERCENT_COMPLETE=45\nMESSAGE=Installing Python packages...\n"
+            "LAST_RUN_AT=2026-01-01T00:00:00+00:00\nPHASE=python\nTAG=1.3.0\n"
+            "PREVIOUS_TAG=1.2.0\nATTEMPT=2\nMAX_ATTEMPTS=4\nROLLED_BACK=0\n",
+            encoding="utf-8")
+        data = self._get(f)
+        assert data["state"] == "running"
+        assert data["version"] == dhs.VERSION
+        assert data["percent"] == 45
+        assert data["message"] == "Installing Python packages..."
+        assert data["phase"] == "python"
+        assert data["tag"] == "1.3.0"
+        assert data["previous_tag"] == "1.2.0"
+        assert data["attempt"] == 2
+        assert data["max_attempts"] == 4
+        assert data["rolled_back"] is False
+
+        f.write_text("STATUS=success\nPHASE=done\nROLLED_BACK=0\n", encoding="utf-8")
+        assert self._get(f)["state"] == "complete"
+        f.write_text("STATUS=failure\nPHASE=rolled_back\nROLLED_BACK=1\n", encoding="utf-8")
+        data = self._get(f)
+        assert data["state"] == "failed"
+        assert data["rolled_back"] is True
+
+    def test_old_result_file_without_the_new_keys_gets_neutral_values(self, tmp_path):
+        f = tmp_path / "update-result.env"
+        f.write_text("STATUS=in_progress\nPERCENT_COMPLETE=0\nMESSAGE=Installing 1.3.0...\n",
+                     encoding="utf-8")
+        data = self._get(f)
+        assert data["state"] == "running"
+        assert (data["phase"], data["tag"], data["previous_tag"]) == ("", "", "")
+        assert (data["attempt"], data["max_attempts"]) == (0, 0)
+        assert data["rolled_back"] is False
+
+    def test_missing_result_file_is_idle(self, tmp_path):
+        data = self._get(tmp_path / "absent.env")
+        assert data["state"] == "idle"
+        assert data["percent"] == 0
+        assert data["phase"] == ""
+
+    def test_malformed_numbers_fall_back_to_zero(self, tmp_path):
+        f = tmp_path / "update-result.env"
+        f.write_text("STATUS=in_progress\nPERCENT_COMPLETE=abc\nATTEMPT=x\nMAX_ATTEMPTS=\n",
+                     encoding="utf-8")
+        data = self._get(f)
+        assert (data["percent"], data["attempt"], data["max_attempts"]) == (0, 0, 0)

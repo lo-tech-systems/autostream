@@ -26,9 +26,22 @@ update-result.env uses the canonical schema shared with autostream_admin
 update-status and the offline updating.html page:
 
   STATUS          in_progress | success | failure
-  PERCENT_COMPLETE  0 (in_progress/failure) | 100 (success)
+  PERCENT_COMPLETE  0..100, advancing with the update phase
   MESSAGE         human-readable status message
   LAST_RUN_AT     ISO-8601 UTC timestamp
+
+and these optional keys, preserved across writes:
+
+  PHASE           download | prepare | packages | python | files | configure |
+                  done | failed
+  TAG             release tag being installed
+  PREVIOUS_TAG    release tag that was installed before the update
+  ATTEMPT         attempt number, 1 for a first run
+  MAX_ATTEMPTS    4 (the original run plus three retries)
+  ROLLED_BACK     0 | 1
+  TRANSIENT_RETRY 1 when a transient failure was retried in-run (diagnostic)
+
+The file is root-owned 0644 so the dial's own processes can read it.
 
 UPDATING FLAG
 -------------
@@ -44,8 +57,10 @@ import fcntl
 import json
 import logging
 import os
+import socket
 import sys
 import time
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -71,6 +86,20 @@ APMODE_FLAG    = Path("/tmp/autostream-dial-apmode")
 UPDATING_FLAG  = Path("/tmp/autostream-dial-updating")
 STAGING_DIR    = Path("/var/lib/autostream/update-staging")
 
+# Boot-level attempt budget: the original run plus three retries, mirroring
+# the appliance update retry.
+MAX_ATTEMPTS = 4
+
+# Pause before the single in-run retry of a transient staging failure.
+TRANSIENT_RETRY_DELAY_S = 30
+
+# Result-file keys beyond the four canonical ones, in the order they are
+# written.  A write re-emits whichever of these it is not changing.
+_EXTRA_KEYS = (
+    "PHASE", "TAG", "PREVIOUS_TAG", "ATTEMPT", "MAX_ATTEMPTS",
+    "ROLLED_BACK", "TRANSIENT_RETRY",
+)
+
 UA = "autostream-dial-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
 
 # ---- Helpers -----------------------------------------------------------------
@@ -86,23 +115,76 @@ def _log(msg: str) -> None:
     logging.info("%s", msg)
 
 
-def write_update_result(status: str, message: str, percent: int = 0) -> None:
+def write_update_result(status: str, message: str, percent: int = 0, **extra: Any) -> None:
     """Write the canonical update-result.env schema.
 
     Schema shared with autostream_admin update-status and offline/updating.html:
       STATUS          in_progress | success | failure
-      PERCENT_COMPLETE  0 for in_progress/failure, 100 for success
+      PERCENT_COMPLETE  0..100
       MESSAGE         human-readable status message
       LAST_RUN_AT     ISO-8601 UTC timestamp
+
+    Optional keys (phase, tag, previous_tag, attempt, max_attempts,
+    rolled_back, transient_retry) are passed as keyword arguments.  The write
+    is read-modify-write: optional keys already in the file and not named in
+    this call are kept, so a phase write never drops the tag or attempt.  A
+    keyword set to None removes that key.  The file stays root-owned 0644 so
+    the dial's own processes can read it.
     """
+    path = STATE_DIR / "update-result.env"
+    kept: Dict[str, str] = {}
+    try:
+        old = _read_env_file(path)
+    except Exception:
+        old = {}
+    for key in _EXTRA_KEYS:
+        if str(old.get(key) or "") != "":
+            kept[key] = str(old[key])
+    for name, value in extra.items():
+        key = name.upper()
+        if key not in _EXTRA_KEYS:
+            raise TypeError(f"unknown update-result key: {name}")
+        if value is None or str(value) == "":
+            kept.pop(key, None)
+        else:
+            kept[key] = str(value)
+
     last_run_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    content = (
-        f"STATUS={status}\n"
-        f"PERCENT_COMPLETE={percent}\n"
-        f"MESSAGE={message}\n"
-        f"LAST_RUN_AT={last_run_at}\n"
-    )
-    (STATE_DIR / "update-result.env").write_text(content, encoding="utf-8")
+    lines = [
+        f"STATUS={status}",
+        f"PERCENT_COMPLETE={percent}",
+        f"MESSAGE={' '.join(str(message).splitlines())}",
+        f"LAST_RUN_AT={last_run_at}",
+    ]
+    for key in _EXTRA_KEYS:
+        if key in kept:
+            lines.append(f"{key}={' '.join(kept[key].splitlines())}")
+    content = "\n".join(lines) + "\n"
+
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.chmod(str(tmp), 0o644)
+        try:
+            st = path.stat()
+            os.chown(str(tmp), st.st_uid, st.st_gid)
+        except (OSError, AttributeError):
+            pass
+        os.replace(str(tmp), str(path))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _is_transient_staging_error(exc: BaseException) -> bool:
+    """True for a failure worth exactly one in-run retry: network trouble,
+    HTTP 5xx or 429.  Anything else (bad tarball, missing installer) is
+    deterministic and fails at once."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500 or exc.code == 429
+    return isinstance(exc, (urllib.error.URLError, socket.timeout, ConnectionError))
 
 
 def _read_installed_tag() -> str:
@@ -285,19 +367,8 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             _log(f"apply: refused — unable to recheck update unit status after lock: {e}")
             return {"ok": False, "error": "Unable to verify update status. Please try again shortly."}
 
-        _log(f"apply: staging release tag={tag}")
-        try:
-            installer = stage_release(
-                tarball_url, tag, STAGING_DIR,
-                "autostream_dial_install.sh", [], UA,
-            )
-            _log(f"apply: staged release at {installer.parent}")
-        except Exception as e:
-            _log(f"apply: staging failed: {e}")
-            return {"ok": False, "error": "Release staging failed", "details": str(e)}
-
-        # Create the updating flag before writing STATUS=in_progress so nginx
-        # redirects to /offline/updating as soon as the flag appears.
+        # Create the updating flag before the download phase is written so
+        # nginx redirects to /offline/updating as soon as the update starts.
         # Fail closed: if the flag cannot be created we abort rather than
         # proceeding silently without the updating-redirect behaviour.
         try:
@@ -305,6 +376,56 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         except OSError as e:
             _log(f"apply: could not create UPDATING_FLAG — aborting: {e}")
             return {"ok": False, "error": "Failed to create updating marker", "details": str(e)}
+
+        # Download phase: record what is being installed and what it replaces
+        # (the result file's tag fields), starting a fresh first attempt.
+        previous = installed if installed not in ("missing", "unknown") else ""
+        try:
+            write_update_result(
+                "in_progress", f"Downloading {tag}...", percent=0,
+                phase="download", tag=tag.lstrip("v"), previous_tag=previous,
+                attempt=1, max_attempts=MAX_ATTEMPTS,
+                rolled_back=0, transient_retry=None,
+            )
+        except Exception as e:
+            _log(f"apply: could not write download phase — aborting: {e}")
+            UPDATING_FLAG.unlink(missing_ok=True)
+            return {"ok": False, "error": "Failed to write update status", "details": str(e)}
+
+        _log(f"apply: staging release tag={tag}")
+        installer = None
+        for stage_try in (1, 2):
+            try:
+                installer = stage_release(
+                    tarball_url, tag, STAGING_DIR,
+                    "autostream_dial_install.sh", [], UA,
+                )
+                _log(f"apply: staged release at {installer.parent}")
+                break
+            except Exception as e:
+                _log(f"apply: staging failed: {e}")
+                if stage_try == 1 and _is_transient_staging_error(e):
+                    # One retry for a clearly transient failure; never more.
+                    try:
+                        write_update_result(
+                            "in_progress", "Download failed, retrying...",
+                            percent=0, transient_retry=1,
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(TRANSIENT_RETRY_DELAY_S)
+                    continue
+                try:
+                    write_update_result(
+                        "failure",
+                        f"Update to {tag.lstrip('v')} failed during download"
+                        f" - {previous or 'previous version'} kept",
+                        percent=0, phase="failed",
+                    )
+                except Exception:
+                    pass
+                UPDATING_FLAG.unlink(missing_ok=True)
+                return {"ok": False, "error": "Release staging failed", "details": str(e)}
 
         # Treat status-write and scheduling as a single transaction.
         # Any unexpected exception after the flag is created triggers rollback
@@ -324,7 +445,8 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
                 },
             )
             if rc != 0:
-                write_update_result("failure", f"systemd-run failed scheduling {tag}", percent=0)
+                write_update_result("failure", f"systemd-run failed scheduling {tag}", percent=0,
+                                    phase="failed")
                 _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
                 UPDATING_FLAG.unlink(missing_ok=True)
                 return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
@@ -337,7 +459,8 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             # does not redirect to /offline/updating indefinitely.
             _log(f"apply: unexpected error after creating UPDATING_FLAG, rolling back: {e}")
             try:
-                write_update_result("failure", f"Unexpected scheduling error: {e}", percent=0)
+                write_update_result("failure", f"Unexpected scheduling error: {e}", percent=0,
+                                    phase="failed")
             except Exception:
                 pass
             try:
@@ -397,7 +520,7 @@ def cmd_recover() -> Dict[str, Any]:
 
     # Both guards passed: safe to mark as interrupted and remove updating flag.
     write_update_result("failure", "Update was interrupted (power loss or unexpected exit).",
-                        percent=0)
+                        percent=0, phase="failed")
     try:
         UPDATING_FLAG.unlink(missing_ok=True)
     except OSError as e:
