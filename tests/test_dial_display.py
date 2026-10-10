@@ -10531,3 +10531,87 @@ class TestReplayTimer:
         display, fb = self._display()
         display._screen = "repeat"
         assert display._replay_timer_deadline(time.monotonic()) is None
+
+
+class TestAcceptedReplayShowsAsPlaying:
+    """A replay the dial is following counts as playing from the moment its
+    seek is acknowledged until its mDNS playing advertisement arrives."""
+
+    AID = "a" * 20
+
+    def _display(self, state="replaying", auth="authorized", focus=True, rostered=True, accepted=True):
+        import dial_repeat_store as drs
+        entry = _roster_entry(appliance_id=self.AID, auth=auth, repeat_capable=True)
+        display, fb, gt = _make_display(targets=[], roster=[entry] if rostered else [])
+        display.enable()
+        display._last_roster = [entry] if rostered else []
+        if focus:
+            display._manual_focus_id = self.AID
+        now = time.monotonic()
+        drs.repeat_store.update(self.AID, drs.parse_repeat_object(_repeat_obj(state=state), now))
+        if accepted:
+            display._accepted_replay = (self.AID, now + dd.ACCEPTED_REPLAY_GRACE_S)
+        return display
+
+    def test_adds_the_accepted_replaying_appliance(self):
+        display = self._display()
+        targets = display._with_accepted_replay([], time.monotonic())
+        assert [t.appliance_id for t in targets] == [self.AID]
+        assert targets[0].ip == "192.168.1.10"
+        assert targets[0].service_name == "Kitchen"
+        assert display._accepted_replay is not None
+
+    def test_the_real_advertisement_takes_over_and_ends_the_window(self):
+        display = self._display()
+        real = _target(appliance_id=self.AID)
+        assert display._with_accepted_replay([real], time.monotonic()) == [real]
+        assert display._accepted_replay is None
+        # From then on the playing set alone decides, as before.
+        assert display._with_accepted_replay([], time.monotonic()) == []
+
+    def test_window_expires(self):
+        display = self._display()
+        now = time.monotonic()
+        assert display._with_accepted_replay([], now + dd.ACCEPTED_REPLAY_GRACE_S) == []
+        assert display._accepted_replay is None
+
+    def test_a_replaying_record_alone_is_not_enough(self):
+        display = self._display(accepted=False)
+        assert display._with_accepted_replay([], time.monotonic()) == []
+
+    @pytest.mark.parametrize("kwargs", [
+        {"state": "hold"}, {"state": "recording"}, {"focus": False},
+        {"auth": "unauthorized"}, {"rostered": False},
+    ])
+    def test_nothing_added_otherwise(self, kwargs):
+        display = self._display(**kwargs)
+        assert display._with_accepted_replay([], time.monotonic()) == []
+
+    def test_poll_shows_it_as_playing(self):
+        display = self._display()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(appliance_id=self.AID)) as fetch:
+            display._poll_once()
+        assert fetch.call_args[0][0].appliance_id == self.AID
+        assert display._reporting_appliance_id == self.AID
+        assert display._now_playing is not None and display._now_playing.playing
+
+    def test_replaying_ack_for_the_followed_appliance_polls_at_once(self):
+        display = self._display(state="hold", accepted=False)
+        display.request_poll = MagicMock()
+        display.on_repeat_result(
+            "transport", self.AID, 200, {"ok": True, "state": "replaying", "armed": False, "position_seconds": 0.0},
+        )
+        display.request_poll.assert_called_once()
+        assert display._accepted_replay[0] == self.AID
+        targets = display._with_accepted_replay([], time.monotonic())
+        assert [t.appliance_id for t in targets] == [self.AID]
+
+    def test_ack_for_another_appliance_does_not_poll(self):
+        display = self._display(state="hold", focus=False, accepted=False)
+        display.request_poll = MagicMock()
+        display.on_repeat_result(
+            "transport", self.AID, 200, {"ok": True, "state": "replaying", "armed": False, "position_seconds": 0.0},
+        )
+        display.request_poll.assert_not_called()
+        assert display._accepted_replay is None

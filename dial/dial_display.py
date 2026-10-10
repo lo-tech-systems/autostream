@@ -98,7 +98,7 @@ from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
-from dial_mdns import appliance_display_name
+from dial_mdns import PlayingTarget, appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import (
     LINK_CONNECTED,
@@ -194,6 +194,11 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 # the appliance has not yet reached the playing set — see
 # set_manual_focus_pending() and the empty-targets branch of _poll_once.
 FOCUS_PENDING_GRACE_S = 10.0
+
+# How long a replay the appliance has just accepted may be shown as playing
+# before its own playing advertisement reaches the dial (normally a few
+# seconds) — see DialDisplay._with_accepted_replay().
+ACCEPTED_REPLAY_GRACE_S = 20.0
 
 # The fixed inter-loop gap the appliance's replay engine inserts between
 # the end of a buffer and its restart — used only to wrap the locally
@@ -1407,6 +1412,12 @@ class DialDisplay:
         self._replay_timer_shown_at = 0.0
         self._replay_timer_frame_at = 0.0
         self._replay_timer_signal_at = 0.0  # last repaint the timer's own tick asked for
+        # (appliance_id, until): a replay the appliance has just accepted,
+        # shown as playing until its own advertisement arrives. Set by the
+        # repeat worker's ack (on_repeat_result), cleared by the poll
+        # thread (_with_accepted_replay); a plain tuple assignment either
+        # way, the same discipline as self._focus_pending.
+        self._accepted_replay: "tuple[str, float] | None" = None
         # Touch-thread requests (open_selector/close_list/list_page/
         # toggle_repeat_screen/open_picker) are flag writes only — plain
         # str/int, no lock — folded into self._screen/self._selector/
@@ -4932,6 +4943,13 @@ class DialDisplay:
         now = time.monotonic()
         if status == 200 and isinstance(body, dict) and body.get("ok"):
             repeat_store.apply_ack(appliance_id, body, now)
+            if body.get("state") == "replaying" and self._manual_focus_id == appliance_id:
+                # A replay the dial is following has just been accepted:
+                # show it as playing until its advertisement arrives (see
+                # _with_accepted_replay()), and poll now rather than at the
+                # next tick.
+                self._accepted_replay = (appliance_id, now + ACCEPTED_REPLAY_GRACE_S)
+                self.request_poll()
             if self._pending_repeat_stop_id == appliance_id:
                 # This ok ack is for the Stop this appliance's repeat_stop_
                 # tap() just sent (see that method) — on the compact tier,
@@ -5127,6 +5145,48 @@ class DialDisplay:
             with self._lock:
                 self._close_secondary_locked()
 
+    def _with_accepted_replay(self, targets: list, now: float) -> list:
+        """*targets* (the mDNS playing set), plus the appliance whose replay
+        the dial has just had accepted (see on_repeat_result()), until its
+        own playing advertisement arrives. The appliance acknowledges a
+        seek at once, but that advertisement only reaches the dial a few
+        seconds later; in between, the replay the user just started is
+        shown as playing straight away, built from its roster entry, so the
+        ordinary playing path fetches its status and artwork. Only that
+        gap is bridged: the window ends as soon as the advertisement is
+        seen, when the dial stops following the appliance, when its repeat
+        record no longer says a replay is running, or after
+        ACCEPTED_REPLAY_GRACE_S, after which the playing set alone decides
+        again. Poll thread only (the touch/worker side only ever sets the
+        window); reads the roster published by the previous poll (the
+        picker only offers rostered appliances)."""
+        accepted = self._accepted_replay
+        if accepted is None:
+            return targets
+        appliance_id, until = accepted
+        rec = repeat_store.get(appliance_id, now)
+        if (
+            now >= until
+            or self._manual_focus_id != appliance_id
+            or any(t.appliance_id == appliance_id for t in targets)
+            or rec is None or not rec.available or rec.state not in ("replaying", "fading_out")
+        ):
+            self._accepted_replay = None
+            return targets
+        entry = next(
+            (r for r in self._last_roster if r.appliance_id == appliance_id and r.auth != AUTH_UNAUTHORIZED),
+            None,
+        )
+        if entry is None:
+            return targets
+        return [*targets, PlayingTarget(
+            ip=entry.ip, port=entry.port, name=entry.name, dial_api=entry.dial_api,
+            audio_status=entry.audio_status, dial_status=entry.dial_status,
+            dial_outputs=entry.dial_outputs, dial_eq=entry.dial_eq,
+            service_name=entry.service_name, playing_since=now,
+            appliance_id=entry.appliance_id, auth=entry.auth,
+        )]
+
     def _poll_once(self) -> None:
         with self._lock:
             fitted = self._config.fitted
@@ -5144,7 +5204,7 @@ class DialDisplay:
         # sites, one per branch (nothing playing vs. something playing).
         previous_reporting_id = self._reporting_appliance_id
 
-        targets = self._get_display_targets()
+        targets = self._with_accepted_replay(self._get_display_targets(), time.monotonic())
         # A source that WAS playing and has now stopped drops out of the
         # playing set but stays advertised (idle) in the general roster with
         # a retained recording the appliance now reports as "hold". That
