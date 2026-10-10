@@ -990,8 +990,8 @@ class DialDisplay:
     def _sleep_locked(self) -> None:
         # Pop to the main screen before the backlight goes off — the
         # appliance list must never be the last thing left on screen
-        # (I8; see also the empty-target branch in _poll_once, which is
-        # the only path that can reach sleep with a fresh reason to check).
+        # (see also the empty-target branch in _poll_once, which is the
+        # only path that can reach sleep with a fresh reason to check).
         self._close_secondary_locked()
         if self._backend_open and self._backend is not None:
             try:
@@ -2314,21 +2314,45 @@ class DialDisplay:
             self._reporting_appliance_id = None
             self._update_dots_active(now)
             with self._lock:
-                # The list must never be the last thing on screen when
-                # nothing is playing any more — pop to main before the
-                # sleep decision below (I8).
-                self._close_secondary_locked()
-                if self._idle_started_at is None:
-                    self._idle_started_at = time.monotonic()
+                # The replay picker is the idle-state screen for choosing a
+                # held recording to replay, so it MUST stay open while
+                # nothing is playing — its own inactivity timeout
+                # (_check_secondary_timeout), not this branch, closes it.
+                # Every other secondary screen (the appliance selector, the
+                # repeat screen) is meaningless with nothing playing and is
+                # popped to main before the sleep decision below.
+                # A pending "picker" request (open_picker just ran on the
+                # touch thread, the repaint thread has not applied it yet)
+                # counts as open too, so this poll never clobbers a picker
+                # that is opening this very tick.
+                picker_open = self._screen == "picker" or self._screen_request == "picker"
+                if not picker_open:
+                    self._close_secondary_locked()
+                    if self._idle_started_at is None:
+                        self._idle_started_at = time.monotonic()
+                else:
+                    # An open picker counts as activity: never sleep out from
+                    # under it (its timeout returns to main first, after
+                    # which the idle-sleep clock restarts).
+                    self._idle_started_at = None
                 if self._display_sleeping:
                     # Stay dark — no repaint while asleep.
                     return
                 should_sleep = (
-                    time.monotonic() - self._idle_started_at >= DISPLAY_IDLE_SLEEP_SECONDS
+                    not picker_open
+                    and time.monotonic() - self._idle_started_at >= DISPLAY_IDLE_SLEEP_SECONDS
                 )
                 if should_sleep:
                     self._sleep_locked()
                     return
+            if picker_open:
+                # Re-render the picker with the rows just refreshed above:
+                # the on-screen PickerState was built from whatever rows
+                # existed when the open request was applied, which can race
+                # ahead of the reconcile that populates a just-stopped
+                # source's held recording.
+                self._overlay_signal.set()
+                return
             self.show_logo()
             return
 

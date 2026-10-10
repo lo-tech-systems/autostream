@@ -3693,6 +3693,46 @@ class TestIdleReplayLogo:
                 display._display_idle_locked()
 
 
+class TestPickerSurvivesIdle:
+    """The replay picker is the idle-state screen for choosing a held
+    recording, so a poll that finds nothing playing must NOT close it (the
+    appliance selector, by contrast, is closed when nothing plays)."""
+
+    def test_picker_stays_open_when_nothing_playing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "picker"
+        gt.return_value = []
+        with patch.object(display, "_close_secondary_locked") as close:
+            display._poll_once()
+        close.assert_not_called()
+
+    def test_pending_picker_open_not_clobbered_when_nothing_playing(self):
+        # open_picker() ran on the touch thread (request pending) but the
+        # repaint thread has not applied it yet: the idle poll must not close
+        # it out from under the open.
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "main"
+            display._screen_request = "picker"
+        gt.return_value = []
+        with patch.object(display, "_close_secondary_locked") as close:
+            display._poll_once()
+        close.assert_not_called()
+
+    def test_selector_closes_when_nothing_playing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "selector"
+        gt.return_value = []
+        with patch.object(display, "_close_secondary_locked") as close:
+            display._poll_once()
+        close.assert_called()
+
+
 # ---------------------------------------------------------------------------
 # _refresh_idle_affordance: the idle screen's own "should I draw the
 # affordance" computation.
