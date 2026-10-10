@@ -260,18 +260,32 @@ PIN_ERRORS = frozenset({"pin_required", "pin_invalid"})
 OUTPUT_KINDS = frozenset({"output_set", "output_pin"})
 
 
-def awaiting_pin(request, now: float) -> bool:
-    """Whether a PIN may be entered for *request*: a PIN is on its way
-    (a pending output_pin), or within PIN_WINDOW_S the request ended asking
+def pin_wanted(request) -> bool:
+    """Whether *request* wants a PIN on the screen while its window is open:
+    a PIN is on its way (a pending output_pin), or the request ended asking
     for one, or a PIN attempt ended any other way (rate limited, lost) and
-    is owed an answer on the screen."""
+    is owed an answer."""
     if request is None or request.kind not in OUTPUT_KINDS:
         return False
     if request.state == "pending":
         return request.kind == "output_pin"
-    if request.state != "rejected" or now - request.changed_at >= PIN_WINDOW_S:
+    if request.state != "rejected":
         return False
     return request.error in PIN_ERRORS or request.kind == "output_pin"
+
+
+def pin_window_end(request) -> float | None:
+    """The core-clock time after which an outcome of *request* is no longer
+    answered on the screen; None for a request not on the outputs lane."""
+    if request is None or request.kind not in OUTPUT_KINDS:
+        return None
+    return request.changed_at + PIN_WINDOW_S
+
+
+def awaiting_pin(request, now: float) -> bool:
+    """Whether a PIN may be entered for *request*: a pending request waits
+    for its reply, any other until PIN_WINDOW_S after it ended."""
+    return pin_wanted(request) and (request.state == "pending" or now < pin_window_end(request))
 
 
 @dataclass(frozen=True)

@@ -972,6 +972,30 @@ class TestAwaitingPin:
         assert cs.awaiting_pin(_request("seek", "pending"), 101.0) is False
         assert cs.awaiting_pin(None, 101.0) is False
 
+    def test_the_window_ends_a_window_after_the_request_changed_on_the_outputs_lane_only(self):
+        assert cs.pin_window_end(_request("output_set", "rejected", "pin_required")) == 100.0 + cs.PIN_WINDOW_S
+        assert cs.pin_window_end(_request("output_pin", "pending", changed_at=130.0)) == 130.0 + cs.PIN_WINDOW_S
+        assert cs.pin_window_end(_request("seek", "rejected", "pin_required")) is None
+        assert cs.pin_window_end(None) is None
+
+    def test_a_pin_is_wanted_by_kind_state_and_error_whatever_the_time(self):
+        table = [
+            (_request("output_pin", "pending"), True),
+            (_request("output_set", "pending"), False),
+            (_request("output_set", "rejected", "pin_required"), True),
+            (_request("output_set", "rejected", "pin_invalid"), True),
+            (_request("output_set", "rejected", "output_in_use"), False),
+            (_request("output_pin", "rejected", "rate_limited"), True),
+            (_request("output_pin", "accepted"), False),
+            (_request("seek", "rejected", "pin_required"), False),
+            (None, False),
+        ]
+        for request, wanted in table:
+            assert cs.pin_wanted(request) is wanted, request
+
+    def test_a_pending_pin_is_awaited_past_the_window(self):
+        assert cs.awaiting_pin(_request("output_pin", "pending"), 100.0 + cs.PIN_WINDOW_S + 50) is True
+
     def test_the_pin_rule_is_four_to_eight_ascii_digits(self):
         for good in ("1234", "12345678", "0000"):
             assert cs.PIN_RE.match(good)

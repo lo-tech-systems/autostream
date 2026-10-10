@@ -113,7 +113,10 @@ is handed) to a plain dictionary. It does no I/O, takes no lock and reads no
 clock, so the same input is always the same output. The body carries a version
 and only grows: fields are added, never renamed or removed. It carries only
 what the page draws, with artwork as a local key and URL rather than the
-appliance's address. The blurred backdrop behind the artwork is rendered the
+appliance's address. It also carries the core's clock reading when it was
+built, at most about a second before it is sent (`now`), and the deadlines in it are absolute readings on that clock, so
+the page estimates the dial's clock from `now` and the time since the body
+arrived and never compares a deadline with its own wall clock. The blurred backdrop behind the artwork is rendered the
 first time the page asks for it. The render runs on that request's own thread
 under the store's lock and nothing else.
 
@@ -122,7 +125,9 @@ panel all call `ChangeHub.publish()`, which only records the request and wakes
 the hub thread, so a publisher is never delayed. Requests that arrive before the
 hub thread runs become one sequence step. The state body for a sequence is
 built lazily by the first client that asks and cached, so any number of
-clients cost one serialisation per change. The event stream (server-sent
+clients cost one serialisation per change. A cached body is served for about
+a second; one asked for after that is built again under the same sequence
+(nobody is woken), so the clock reading in what a client receives is current. The event stream (server-sent
 events) gives each client its own handler thread, and a client that stops
 reading is dropped after one write timeout, leaving the core, the hub and the
 other clients unaffected. With no page open the hub asks for neither outputs

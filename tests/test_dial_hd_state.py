@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
 from dial_core_state import (
-    ActionResult, validate_appliance_warnings,
+    PIN_WINDOW_S, ActionResult, validate_appliance_warnings,
 )
 from dial_hd_state import STATE_VERSION, STRING_MAX, build_state, dumps
 
@@ -303,11 +303,34 @@ class TestOutputsRequest:
         assert block("pin_required") == {
             "appliance_id": hs.LOUNGE, "kind": "output_set", "state": "rejected",
             "error": "pin_required", "output_id": "o2", "retry_after_s": 0,
-            "requested_at": hs.NOW - 1, "changed_at": hs.NOW - 1, "awaiting_pin": True}
+            "requested_at": hs.NOW - 1, "changed_at": hs.NOW - 1, "awaiting_pin": True,
+            "retry_until": hs.NOW - 1, "awaiting_until": hs.NOW - 1 + PIN_WINDOW_S}
         assert (block("pin_rate_limited")["awaiting_pin"], block("pin_rate_limited")["retry_after_s"]) == (True, 7)
         assert block("pin_expired")["awaiting_pin"] is False
         assert block("pin_busy")["awaiting_pin"] is True and block("pin_busy")["state"] == "pending"
         assert block("pin_invalid")["awaiting_pin"] is True
+
+    def test_the_deadlines_are_absolute_on_the_bodys_clock(self):
+        block = _state("pin_rate_limited")["outputs_request"]
+        assert block["retry_until"] == hs.NOW - 1 + 7
+        assert block["awaiting_until"] == hs.NOW - 1 + PIN_WINDOW_S
+        pending = _state("pin_busy")["outputs_request"]
+        assert pending["retry_until"] == pending["changed_at"]
+        assert pending["awaiting_until"] == pending["changed_at"] + PIN_WINDOW_S
+        # A lapsed outcome keeps its deadline, in the past.
+        expired = _state("pin_expired")
+        assert expired["outputs_request"]["awaiting_pin"] is False
+        assert expired["outputs_request"]["awaiting_until"] <= expired["now"]
+
+    def test_the_transport_block_has_no_pin_window(self):
+        transport = _state("replaying")["transport"]
+        assert transport["awaiting_until"] is None
+        assert transport["retry_until"] == transport["changed_at"]
+
+    def test_the_body_carries_the_clock_it_was_built_at(self):
+        assert _state("pin_required")["now"] == hs.NOW
+        later = dataclasses.replace(hs.SCENARIOS["pin_required"], now=hs.NOW + 12.3456)
+        assert later.state()["now"] == hs.NOW + 12.346
 
     def test_the_transport_block_gained_the_same_keys(self):
         transport = _state("replaying")["transport"]

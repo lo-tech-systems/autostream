@@ -301,12 +301,11 @@
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
         replayClock: null, stopHold: null, press: null, power: Object.assign({}, POWER_IDLE_UI), host: window.location.hostname,
         // The keypad's own buffer (the digits live nowhere else), the request
-        // it was typed for, the request the person turned away, and the
-        // page-clock moment a rate-limit wait ends.
-        pin: { forKey: null, digits: "", dismissedAt: null, waitKey: null, waitUntil: 0 },
+        // it was typed for, and the request the person turned away.
+        pin: { forKey: null, digits: "", dismissedAt: null },
         pinShown: false
     };
-    const PIN_IDLE = { forKey: null, digits: "", waitKey: null, waitUntil: 0 };
+    const PIN_IDLE = { forKey: null, digits: "" };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
 
@@ -596,19 +595,30 @@
         };
     }
 
+    // The dial's clock as this page estimates it: the reading the state came
+    // with plus the time on this page's clock since the state arrived. The
+    // page's own clock only ever measures that elapsed time.
+    function dialNow(s, local) {
+        return s.now + (local.now - local.stateAt) / 1000;
+    }
+
     // The keypad card (or, for an appliance that cannot take a PIN from a
     // dial, the card saying where to enter it) while a speaker's PIN is
     // wanted on the focused appliance and the person has not turned it away.
+    // A state without deadlines (an older dial) shows it while the dial says
+    // a PIN is awaited.
     function derivePinCard(s, focus, local) {
         const r = s.outputs_request;
         if (!r || !focus || r.appliance_id !== focus.id || !r.awaiting_pin) { return null; }
+        const timed = r.state === "rejected" && typeof r.awaiting_until === "number";
+        if (timed && dialNow(s, local) >= r.awaiting_until) { return null; }
         if (local.pin.dismissedAt === r.requested_at) { return null; }
         if (focus.capabilities.outputs < 2) {
             return {
                 kind: "notice", key: "pair", source: focus.webui, title: PAIR_ELSEWHERE.title,
                 message: PAIR_ELSEWHERE.message(focus.name), severity: "info", progress: null,
                 closable: false, buttons: [{ id: "ok", label: "OK", act: "pin_cancel" }],
-                requestedAt: r.requested_at
+                requestedAt: r.requested_at, timed: timed
             };
         }
         const row = s.outputs && s.outputs.rows.find((x) => x.id === r.output_id);
@@ -617,19 +627,18 @@
         const digits = local.pin.forKey === key ? local.pin.digits : "";
         const busy = r.state === "pending";
         const limited = r.state === "rejected" && r.error === "rate_limited";
-        const waitLeft = limited && local.pin.waitKey === key
-            ? Math.max(0, Math.ceil((local.pin.waitUntil - local.now) / 1000)) : 0;
+        const waitLeft = limited && typeof r.retry_until === "number"
+            ? Math.max(0, Math.ceil(r.retry_until - dialNow(s, local))) : 0;
         const line = PIN_LINE_RULES.find((rule) => rule[0](r, waitLeft));
         return {
-            kind: "pin", key: "pin", source: "", severity: "info", progress: null, closable: false,
+            kind: "pin", key: "pin", source: "", severity: "info", progress: null, closable: false, timed: timed,
             title: "Enter PIN for " + name,
             message: busy ? PIN_TEXT.busy : PIN_TEXT.instruction(name),
             buttons: [{ id: "cancel", label: "Cancel", act: "pin_cancel" }],
             pin: {
                 key: key, digits: digits, busy: busy, error: line[1](r, waitLeft), errorIsWait: line[2], waiting: waitLeft > 0,
-                limited: limited && r.retry_after_s > 0,
                 canSubmit: !busy && waitLeft === 0 && digits.length >= CONFIG.pinLength,
-                requestedAt: r.requested_at, outputId: r.output_id, retryAfterS: r.retry_after_s
+                requestedAt: r.requested_at, outputId: r.output_id
             }
         };
     }
@@ -773,7 +782,7 @@
             sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !derivePower(s, local) },
             modal: modal,
             // Something on the page changes with the clock.
-            live: replay.ticking || !!(modal && modal.kind === "pin" && modal.pin.waiting)
+            live: replay.ticking || !!(modal && modal.timed)
         };
     }
 
@@ -1220,13 +1229,6 @@
     function render() {
         const view = () => derive(ui.state || EMPTY_STATE, Object.assign({ now: Date.now() }, ui));
         ui.vm = view();
-        // A rate limit's wait runs on this page's clock from the first time
-        // it is drawn, so redraws and repeated states never restart it.
-        const asked = ui.vm.modal;
-        if (asked && asked.kind === "pin" && asked.pin.limited && ui.pin.waitKey !== asked.pin.key) {
-            ui.pin = Object.assign({}, ui.pin, { waitKey: asked.pin.key, waitUntil: Date.now() + asked.pin.retryAfterS * 1000 });
-            ui.vm = view();
-        }
         // The dial's state takes over from the shut-down request the page sent.
         if (ui.power.sent && ui.state && POWER_TAKEN_OVER(ui.state.power, ui.power)) {
             ui.power = Object.assign({}, ui.power, { sent: false });
@@ -1243,9 +1245,9 @@
             ui.notice = null;
             ui.viewing = null;
         }
-        // The digits and the wait go with the card; what was turned away stays turned away.
+        // The digits go with the card; what was turned away stays turned away.
         const pinNow = !!ui.vm.modal && ui.vm.modal.kind === "pin";
-        if (!pinNow && (ui.pin.digits || ui.pin.forKey || ui.pin.waitKey)) {
+        if (!pinNow && (ui.pin.digits || ui.pin.forKey)) {
             ui.pin = Object.assign({}, ui.pin, PIN_IDLE);
         }
         const request = ui.state && ui.state.outputs_request;

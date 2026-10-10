@@ -48,6 +48,59 @@ def hub(core):
 # ---- the hub on its own ----------------------------------------------------
 
 
+class TestBodyAge:
+    def _hub(self, core, now):
+        builds = []
+
+        def build(seq):
+            builds.append(now[0])
+            return json.dumps({"seq": seq, "now": now[0]}).encode()
+
+        return ChangeHub(core, builder=build, clock=lambda: now[0]), builds
+
+    def test_a_body_asked_for_promptly_is_the_cached_one(self, core):
+        now = [100.0]
+        hub, builds = self._hub(core, now)
+        first = hub.state()
+        now[0] += hde.BODY_MAX_AGE_S - 0.1
+        assert hub.state() == first
+        assert builds == [100.0]
+
+    def test_an_old_body_is_built_again_under_the_same_sequence(self, core):
+        now = [100.0]
+        hub, builds = self._hub(core, now)
+        seq, _ = hub.state()
+        now[0] += 60.0
+        again_seq, body = hub.state()
+        assert again_seq == seq and json.loads(body)["now"] == 160.0
+        assert hub.seq() == seq
+        assert hub.state() == (again_seq, body)
+        assert builds == [100.0, 160.0]
+
+    def test_a_rebuild_wakes_nobody(self, core):
+        now = [100.0]
+        hub, _ = self._hub(core, now)
+        seq, _body = hub.state()
+        now[0] += 60.0
+        hub.state()
+        assert hub.wait_for_change(seq, 0.05) is None
+        assert hub.seq() == seq
+
+    def test_concurrent_askers_of_an_old_body_share_one_build(self, core):
+        now = [100.0]
+        hub, builds = self._hub(core, now)
+        hub.state()
+        now[0] += 60.0
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(hub.state())) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(3)
+        assert len(builds) == 2 and len(set(results)) == 1
+
+
+
 class TestChangeHub:
     def test_the_sequence_starts_at_one(self, hub):
         assert hub.seq() == 1

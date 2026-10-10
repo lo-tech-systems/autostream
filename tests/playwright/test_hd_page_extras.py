@@ -32,7 +32,7 @@ if _PLAYWRIGHT_INSTALLED:
     from playwright.sync_api import expect
 
 import hd_scenarios as hs  # noqa: E402
-from dial_core_state import EqBand, EqState, FocusState, NowPlaying, OutputsState  # noqa: E402
+from dial_core_state import PIN_WINDOW_S, EqBand, EqState, FocusState, NowPlaying, OutputsState  # noqa: E402
 
 LOUNGE, KITCHEN = hs.LOUNGE, hs.KITCHEN
 LOUNGE_STYLUS = f"appliance:{LOUNGE}:stylus_in1"
@@ -1745,6 +1745,9 @@ class TestStreamLifetime:
 
 PIN_CARD = "#card.kind-pin"
 WRONG_PIN = "That PIN was not accepted. Try again."
+# A wait of seven seconds that began a second before the state was built, seen
+# a second or so after the page began its count.
+WAIT_LINE = re.compile(r"^Wait [4-6] seconds before retry$")
 
 
 def pin_key(page, key):
@@ -1898,7 +1901,7 @@ class TestSpeakerPin:
         open_page(page, hd)
         freeze_clock(page)
         error = page.locator("#card-pin-error")
-        expect(error).to_have_text(re.compile(r"^Wait [67] seconds before retry$"))
+        expect(error).to_have_text(WAIT_LINE)
         expect(error).to_have_class(re.compile("wait"))
         left = int(error.inner_text().split()[1])
         assert all(keys_disabled(page).values())
@@ -1906,11 +1909,12 @@ class TestSpeakerPin:
         assert shown_boxes(page) == ["", "", "", ""]
         page.clock.run_for(1000)
         expect(error).to_have_text(f"Wait {left - 1} seconds before retry")
-        # the same outcome arriving again does not restart the count
-        hd.show(hs.SCENARIOS["pin_rate_limited"])
+        # the same outcome arriving again, a second later on the dial's clock, does not restart the count
+        hd.show(dataclasses.replace(hs.SCENARIOS["pin_rate_limited"], now=hs.NOW + 1.0))
+        expect(error).to_have_text("Wait 5 seconds before retry")
         page.clock.run_for(100)
-        expect(error).to_have_text(f"Wait {left - 1} seconds before retry")
-        page.clock.run_for((left - 1) * 1000 - 100)
+        expect(error).to_have_text("Wait 5 seconds before retry")
+        page.clock.run_for(4900)
         expect(error).to_have_text("")
         disabled = keys_disabled(page)
         assert not any(disabled[str(d)] for d in range(10))
@@ -1921,6 +1925,77 @@ class TestSpeakerPin:
         page.wait_for_timeout(100)
         assert [name for name, _ in sent] == ["output"]
         assert sent[0][1]["pin"] == "1234"
+
+    def test_the_wait_is_not_restarted_by_a_repeated_state(self, page, hd):
+        limited = hs.SCENARIOS["pin_rate_limited"]
+        hd.show(limited)
+        page.clock.install()
+        open_page(page, hd)
+        freeze_clock(page)
+        error = page.locator("#card-pin-error")
+        expect(error).to_have_text(WAIT_LINE)
+        # Each repeat names the same end of the wait; the dial's clock has moved on, so the
+        # count carries on from where it is instead of from the full wait.
+        for dial_seconds, shown in ((2, 4), (3, 3), (4, 2)):
+            hd.show(dataclasses.replace(limited, now=hs.NOW + dial_seconds))
+            expect(error).to_have_text(f"Wait {shown} seconds before retry")
+            page.clock.run_for(1000)
+
+    @pytest.mark.parametrize("dial_clock", [5.0, hs.NOW, 3.0e6])
+    def test_the_dials_clock_reading_does_not_matter_to_the_page(self, page, hd, dial_clock):
+        request = hs.pin_request("rejected", "rate_limited", "output_pin", at=dial_clock - 1, retry_after_s=7)
+        hd.show(dataclasses.replace(pin_scenario(request), now=dial_clock))
+        open_page(page, hd)
+        expect(page.locator("#card-pin-error")).to_have_text(WAIT_LINE)
+
+    def test_a_wait_that_ended_before_the_state_arrived_shows_no_wait(self, page, hd):
+        request = hs.pin_request("rejected", "rate_limited", "output_pin", at=hs.NOW - 30, retry_after_s=7)
+        hd.show(pin_scenario(request))
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-pin-error")).to_have_text("")
+        assert not any(keys_disabled(page)[str(d)] for d in range(10))
+
+    def test_the_window_lapses_on_the_pages_own_clock(self, page, hd):
+        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required", at=hs.NOW - PIN_WINDOW_S + 3)))
+        page.clock.install()
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        tap_keys(page, "12")
+        page.clock.run_for(2000)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        page.clock.run_for(1100)
+        expect(modal_card(page)).to_be_hidden()
+        assert "12" not in "".join(page.locator("#card-pin-boxes .pin-box").all_text_contents())
+
+    def test_the_pair_in_autostream_card_closes_with_its_window(self, page, hd):
+        shown = hs.SCENARIOS["pin_required_v1"]
+        hd.show(shown.with_snapshot(outputs_request=hs.pin_request(
+            "rejected", "pin_required", at=hs.NOW - PIN_WINDOW_S + 3)))
+        page.clock.install()
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("Pair in Autostream")
+        page.clock.run_for(3100)
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_a_state_without_the_dials_clock_falls_back_to_the_awaited_flag(self, page, hd):
+        page.add_init_script(
+            "(() => { const parse = JSON.parse; JSON.parse = (text) => { const v = parse(text);"
+            " if (v && v.v === 1 && v.outputs_request) { delete v.now;"
+            " delete v.outputs_request.retry_until; delete v.outputs_request.awaiting_until; } return v; }; })()")
+        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required", at=hs.NOW - PIN_WINDOW_S + 3)))
+        page.clock.install()
+        open_page(page, hd)
+        freeze_clock(page)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        page.clock.run_for(int(PIN_WINDOW_S * 1000 * 2))
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        hd.show(hs.SCENARIOS["pin_expired"])
+        expect(modal_card(page)).to_be_hidden()
+        hd.show(hs.SCENARIOS["pin_rate_limited"])
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-pin-error")).to_have_text("")
+        assert not any(keys_disabled(page)[str(d)] for d in range(10))
 
     def test_a_paired_outcome_closes_the_card_and_toasts(self, page, hd):
         hd.show(hs.SCENARIOS["pin_busy"])

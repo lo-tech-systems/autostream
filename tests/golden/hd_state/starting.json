@@ -1,6 +1,7 @@
 {
   "v": 1,
   "seq": 4821,
+  "now": 1000.0,
   "core_seq": 4790,
   "started": false,
   "polling": true,

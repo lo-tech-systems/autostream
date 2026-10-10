@@ -22,7 +22,9 @@ import json
 from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
-from dial_core_state import DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, six_band
+from dial_core_state import (
+    DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, pin_window_end, six_band,
+)
 from dial_warning_text import appliance_warning_key
 
 # The body's version. Bumped only for a change an older page could not read;
@@ -276,6 +278,7 @@ def _eq_block(snapshot, now: float) -> dict | None:
 def _request_block(held, now: float) -> dict | None:
     if held is None:
         return None
+    window_end = pin_window_end(held)
     return {
         "appliance_id": held.appliance_id,
         "kind": held.kind,
@@ -288,6 +291,11 @@ def _request_block(held, now: float) -> dict | None:
         # When the request reached its current state, on the same clock.
         "changed_at": _round(held.changed_at, 3),
         "awaiting_pin": awaiting_pin(held, now),
+        # Absolute times on the body's "now" clock: when a rate-limit wait
+        # ends, and when an outcome stops being answered on the screen (null
+        # for a request that takes no PIN).
+        "retry_until": _round(held.changed_at + held.retry_after_s, 3),
+        "awaiting_until": None if window_end is None else _round(window_end, 3),
     }
 
 
@@ -429,6 +437,9 @@ def build_state(
     body = {
         "v": STATE_VERSION,
         "seq": hub_seq,
+        # The core's clock when the body was built; the request deadlines and
+        # the replay's observed_at are readings on it.
+        "now": _round(now, 3),
         "core_seq": snapshot.seq,
         "started": snapshot.ticks > 0,
         "polling": bool(snapshot.polling),

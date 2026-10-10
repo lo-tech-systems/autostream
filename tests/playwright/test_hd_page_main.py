@@ -54,6 +54,7 @@ class Driver:
         """Make *scenario* the state the dial reports now."""
         if self.kind == "real":
             self.backend.muted[0] = scenario.muted
+            self.backend.dial_clock[0] = scenario.now
             for descriptor in scenario.descriptors:
                 self.backend.core.warnings.register(descriptor)
             window = self.backend.management._recovery_window

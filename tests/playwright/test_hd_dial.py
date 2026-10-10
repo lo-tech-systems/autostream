@@ -103,6 +103,8 @@ def hd_real():
     saved_cap = hds.SSE_MAX_CLIENTS
     hds.SSE_MAX_CLIENTS = 1000
     muted = [False]
+    # The dial's clock reading for the next state; Driver.show sets it from the scenario.
+    dial_clock = [hd_scenarios.NOW]
     core = FakeCore(hd_scenarios.SCENARIOS["playing_artwork"].snapshot)
     management = management_server()
     hub = ChangeHub(core)
@@ -112,7 +114,7 @@ def hd_real():
         SimpleNamespace(), core, http_server=management, hub=hub, port=0, panel=panel,
         info_fn=lambda: FakePanel.INFO_ROWS, muted_fn=lambda service: muted[0],
         # The scenarios carry fixed readings, so the server reads fixed clocks.
-        clock=lambda: hd_scenarios.NOW, wall_clock=lambda: hd_scenarios.WALL_NOW,
+        clock=lambda: dial_clock[0], wall_clock=lambda: hd_scenarios.WALL_NOW,
     )
     hub.start()
     server.start()
@@ -121,6 +123,7 @@ def hd_real():
     saver.start()
     yield SimpleNamespace(
         core=core, server=server, hub=hub, muted=muted, panel=panel, management=management,
+        dial_clock=dial_clock,
         url=f"http://127.0.0.1:{server.port}",
     )
     saver.stop()

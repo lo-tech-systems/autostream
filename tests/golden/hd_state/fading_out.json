@@ -1,6 +1,7 @@
 {
   "v": 1,
   "seq": 4821,
+  "now": 1000.0,
   "core_seq": 4790,
   "started": true,
   "polling": true,
@@ -159,7 +160,9 @@
     "retry_after_s": 0,
     "requested_at": 998.0,
     "changed_at": 999.0,
-    "awaiting_pin": false
+    "awaiting_pin": false,
+    "retry_until": 999.0,
+    "awaiting_until": null
   },
   "outputs_request": null,
   "warnings": {

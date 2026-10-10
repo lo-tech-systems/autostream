@@ -6,7 +6,9 @@ callback does, as do the config listener and the panel): it only records the
 request and wakes the hub thread, so a publisher is never delayed, and several
 requests before the hub thread runs become one step. The state body for a
 sequence is built lazily by the first client that asks and cached, so any
-number of clients cost one serialisation per change.
+number of clients cost one serialisation per change (a body that has sat
+for more than a second is built again when next asked for, under the same
+sequence, so its clock readings are current).
 
 The event stream gives each client its own handler thread. A client holds only
 its own socket (under a short write timeout) and the hub's condition while it
@@ -45,10 +47,18 @@ WATCHER = "hd"
 # without a publish is noticed.
 HUB_POLL_S = 1.0
 
+# A cached body older than this when it is served is built again (same
+# sequence), so the clock readings in it are current when they are sent.
+BODY_MAX_AGE_S = 1.0
+
 
 class ChangeHub:
-    def __init__(self, core, *, builder: "Callable[[int], bytes] | None" = None) -> None:
+    def __init__(
+        self, core, *, builder: "Callable[[int], bytes] | None" = None,
+        clock: "Callable[[], float]" = time.monotonic,
+    ) -> None:
         self._core = core
+        self._clock = clock
         self._builder = builder
         self._client_count: Callable[[], int] = lambda: 0
         self._event = threading.Event()
@@ -58,7 +68,7 @@ class ChangeHub:
         self._seq = 1
         self._stopped = False
         self._build_lock = threading.Lock()
-        self._cache: tuple[int, bytes] | None = None
+        self._cache: tuple[int, bytes, float] | None = None   # (sequence, body, built at)
         self._thread: threading.Thread | None = None
         self._handle = None
         self._watched: str | None = None
@@ -124,15 +134,21 @@ class ChangeHub:
             return self._seq
 
     def state(self) -> tuple[int, bytes]:
-        """(sequence, state body) for the current sequence, built once."""
+        """(sequence, state body) for the current sequence. The body is built
+        once per sequence and served again while it is younger than
+        BODY_MAX_AGE_S; an older one is built again under the same sequence,
+        which wakes nobody. Builds are serialised by the build lock, which
+        only this method takes, so concurrent callers share one build."""
         seq = self._seq
         with self._build_lock:
-            if self._cache is not None and self._cache[0] == seq:
-                return self._cache
+            cached = self._cache
+            if cached is not None and cached[0] == seq and self._clock() - cached[2] < BODY_MAX_AGE_S:
+                return cached[0], cached[1]
             if self._builder is None:
                 raise RuntimeError("no state builder")
-            self._cache = (seq, self._builder(seq))
-            return self._cache
+            built_at = self._clock()
+            self._cache = (seq, self._builder(seq), built_at)
+            return self._cache[0], self._cache[1]
 
     # ---- the hub thread ----------------------------------------------------
 
