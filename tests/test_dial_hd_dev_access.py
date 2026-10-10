@@ -441,7 +441,7 @@ class TestLogin:
     def test_the_cookie_opens_everything(self, dev, core):
         cookie = signed_in(dev)
         assert api(dev, "/", cookie)[0].status == 200
-        for name in ("hd.js", "hd-tables.js", "hd-dom.js", "hd-state.js", "hd-eq.js", "hd-derive.js"):
+        for name in ("hd.js", "hd-tables.js", "hd-dom.js", "hd-state.js", "hd-eq.js", "hd-derive.js", "hd-requests.js"):
             assert api(dev, "/static/" + name, cookie)[0].status == 200
         key = core.snapshot().artwork.key
         assert api(dev, "/api/v1/artwork/%s" % key, cookie)[0].status == 200
