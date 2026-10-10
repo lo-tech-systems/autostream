@@ -78,7 +78,7 @@ def _target(
 def _roster_entry(
     name="Kitchen", ip="192.168.1.10", port=80,
     dial_status=True, appliance_id="a" * 20, auth="unknown",
-    service_name=None, playing=False, repeat_capable=False,
+    service_name=None, playing=False, repeat_capable=False, dial_outputs=False,
 ):
     """A merged-roster entry — the RosterEntry counterpart to _target(),
     for tests that need an idle (playing=False) or explicitly playing row
@@ -87,7 +87,8 @@ def _roster_entry(
     return RosterEntry(
         appliance_id=appliance_id, service_name=service_name or name, name=name,
         ip=ip, port=port, playing=playing, repeat_capable=repeat_capable,
-        dial_api=True, audio_status=True, dial_status=dial_status, auth=auth,
+        dial_api=True, audio_status=True, dial_status=dial_status, dial_outputs=dial_outputs,
+        auth=auth,
     )
 
 
@@ -4754,6 +4755,240 @@ class TestOnRepeatResult:
         with display._lock:
             display.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold",
                                                               "armed": False, "position_seconds": 0.0})
+
+
+# ---------------------------------------------------------------------------
+# _parse_outputs_body: validate/convert a POST /api/dial/outputs response.
+# ---------------------------------------------------------------------------
+
+class TestParseOutputsBody:
+    def test_valid_body_returns_rows(self):
+        rows = dd._parse_outputs_body(200, {"ok": True, "outputs": [
+            {"id": "1", "name": "Bedroom", "selected": True, "volume": 40, "remote_in_use": False},
+            {"id": "2", "name": "Kitchen", "selected": False, "volume": 0, "remote_in_use": False},
+        ]})
+        assert rows == (
+            dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),
+            dd.OutputRow(id="2", name="Kitchen", selected=False, volume=0),
+        )
+
+    def test_remote_in_use_row_dropped(self):
+        rows = dd._parse_outputs_body(200, {"ok": True, "outputs": [
+            {"id": "1", "name": "Bedroom", "selected": False, "volume": 0, "remote_in_use": True},
+            {"id": "2", "name": "Kitchen", "selected": True, "volume": 50, "remote_in_use": False},
+        ]})
+        assert [r.id for r in rows] == ["2"]
+
+    def test_volume_clamped_into_0_100(self):
+        rows = dd._parse_outputs_body(200, {"ok": True, "outputs": [
+            {"id": "1", "name": "A", "selected": True, "volume": 500, "remote_in_use": False},
+            {"id": "2", "name": "B", "selected": True, "volume": -5, "remote_in_use": False},
+        ]})
+        assert rows[0].volume == 100
+        assert rows[1].volume == 0
+
+    def test_empty_outputs_list_is_empty_tuple(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": []}) == ()
+
+    def test_non_200_status_is_none(self):
+        assert dd._parse_outputs_body(412, {"ok": True, "outputs": []}) is None
+
+    def test_none_status_is_none(self):
+        assert dd._parse_outputs_body(None, None) is None
+
+    def test_ok_false_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": False, "error": "backend_unavailable"}) is None
+
+    def test_non_dict_body_is_none(self):
+        assert dd._parse_outputs_body(200, None) is None
+
+    def test_outputs_not_a_list_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": "nope"}) is None
+
+    def test_malformed_row_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": [{"id": "1"}]}) is None
+
+    def test_row_not_a_dict_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": ["bad"]}) is None
+
+    def test_missing_id_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": [
+            {"name": "A", "selected": True, "volume": 10, "remote_in_use": False},
+        ]}) is None
+
+    def test_non_bool_selected_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": [
+            {"id": "1", "name": "A", "selected": "yes", "volume": 10, "remote_in_use": False},
+        ]}) is None
+
+    def test_non_int_volume_is_none(self):
+        assert dd._parse_outputs_body(200, {"ok": True, "outputs": [
+            {"id": "1", "name": "A", "selected": True, "volume": "10", "remote_in_use": False},
+        ]}) is None
+
+
+# ---------------------------------------------------------------------------
+# on_outputs_result: fold a fetch result into the outputs snapshot.
+# ---------------------------------------------------------------------------
+
+class TestOnOutputsResult:
+    def _outputs_state(self, appliance_id="a" * 20, rows=(), page=0, loaded=False):
+        return dd.OutputsState(
+            appliance_id=appliance_id, service_name="Kitchen", ip="10.0.0.1", port=80,
+            rows=rows, page=page, opened_at=time.monotonic(), loaded=loaded,
+        )
+
+    def test_non_fetch_kind_is_a_no_op(self):
+        display, fb, gt = _make_display(targets=[])
+        state = self._outputs_state()
+        display._outputs = state
+        display.on_outputs_result("set", "a" * 20, 200, {"ok": True}, {"id": "1"})
+        assert display._outputs is state
+
+    def test_fetch_folds_rows_and_sets_loaded(self):
+        display, fb, gt = _make_display(targets=[])
+        display._outputs = self._outputs_state()
+        display._overlay_signal.clear()
+        body = {"ok": True, "outputs": [
+            {"id": "1", "name": "Bedroom", "selected": True, "volume": 40, "remote_in_use": False},
+        ]}
+        display.on_outputs_result("fetch", "a" * 20, 200, body, {})
+        assert display._outputs.loaded is True
+        assert display._outputs.rows == (dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),)
+        assert display._overlay_signal.is_set()
+
+    def test_late_result_for_a_different_appliance_is_dropped(self):
+        display, fb, gt = _make_display(targets=[])
+        state = self._outputs_state(appliance_id="a" * 20)
+        display._outputs = state
+        display.on_outputs_result("fetch", "b" * 20, 200, {"ok": True, "outputs": []}, {})
+        assert display._outputs is state
+
+    def test_no_outputs_screen_open_is_a_no_op(self):
+        display, fb, gt = _make_display(targets=[])
+        display._outputs = None
+        display.on_outputs_result("fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {})
+        assert display._outputs is None
+
+    def test_malformed_result_keeps_the_last_snapshot(self):
+        display, fb, gt = _make_display(targets=[])
+        prior_rows = (dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),)
+        display._outputs = self._outputs_state(rows=prior_rows, loaded=True)
+        display.on_outputs_result("fetch", "a" * 20, 500, None, {})
+        assert display._outputs.rows == prior_rows
+        assert display._outputs.loaded is True
+
+    def test_page_clamped_when_row_count_shrinks(self):
+        display, fb, gt = _make_display(targets=[])
+        display._outputs = self._outputs_state(page=5, loaded=True)
+        body = {"ok": True, "outputs": [
+            {"id": "1", "name": "A", "selected": False, "volume": 0, "remote_in_use": False},
+        ]}
+        display.on_outputs_result("fetch", "a" * 20, 200, body, {})
+        assert display._outputs.page == 0
+
+    def test_stale_optimistic_override_cleared(self):
+        display, fb, gt = _make_display(targets=[])
+        display._outputs = self._outputs_state(loaded=True)
+        display._outputs_optimistic = ("1", True, 40, time.monotonic() - 1.0)
+        display.on_outputs_result("fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {})
+        assert display._outputs_optimistic is None
+
+    def test_future_stamped_optimistic_override_kept(self):
+        """An optimistic override stamped for a moment still in the future
+        (relative to when the fold runs) is not yet superseded."""
+        display, fb, gt = _make_display(targets=[])
+        display._outputs = self._outputs_state(loaded=True)
+        override = ("1", True, 40, time.monotonic() + 10.0)
+        display._outputs_optimistic = override
+        display.on_outputs_result("fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {})
+        assert display._outputs_optimistic == override
+
+    def test_detail_row_vanishing_requests_the_outputs_list(self):
+        display, fb, gt = _make_display(targets=[])
+        display._outputs = self._outputs_state(
+            rows=(dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40),), loaded=True,
+        )
+        display._output_detail = dd.OutputDetailState(
+            appliance_id="a" * 20, output_id="1", opened_at=time.monotonic(),
+        )
+        display._screen = "output"
+        display.on_outputs_result("fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {})
+        assert display._screen_request == "outputs"
+
+    def test_detail_row_still_present_leaves_screen_request_alone(self):
+        display, fb, gt = _make_display(targets=[])
+        row = dd.OutputRow(id="1", name="Bedroom", selected=True, volume=40)
+        display._outputs = self._outputs_state(rows=(row,), loaded=True)
+        display._output_detail = dd.OutputDetailState(
+            appliance_id="a" * 20, output_id="1", opened_at=time.monotonic(),
+        )
+        display._screen = "output"
+        display._screen_request = None
+        body = {"ok": True, "outputs": [
+            {"id": "1", "name": "Bedroom", "selected": True, "volume": 45, "remote_in_use": False},
+        ]}
+        display.on_outputs_result("fetch", "a" * 20, 200, body, {})
+        assert display._screen_request is None
+
+
+# ---------------------------------------------------------------------------
+# _outputs_available: whether the top-right OUTPUTS zone is currently live.
+# ---------------------------------------------------------------------------
+
+class TestOutputsAvailable:
+    def test_reporting_appliance_advertises_dial_outputs(self):
+        aid = "a" * 20
+        t = _target(appliance_id=aid)
+        roster = [_roster_entry(appliance_id=aid, playing=True, dial_outputs=True)]
+        display, fb, gt = _make_display(targets=[t], roster=roster)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        assert display._reporting_appliance_id == aid
+        assert display._outputs_available is True
+
+    def test_reporting_appliance_without_dial_outputs(self):
+        aid = "a" * 20
+        t = _target(appliance_id=aid)
+        roster = [_roster_entry(appliance_id=aid, playing=True, dial_outputs=False)]
+        display, fb, gt = _make_display(targets=[t], roster=roster)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        assert display._reporting_appliance_id == aid
+        assert display._outputs_available is False
+
+    def test_manual_focus_on_an_idle_appliance_with_dial_outputs(self):
+        aid = "a" * 20
+        roster = [_roster_entry(appliance_id=aid, playing=False, dial_outputs=True)]
+        display, fb, gt = _make_display(targets=[], roster=roster)
+        display.enable()
+        display.set_manual_focus(aid)
+        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        assert display._outputs_available is True
+
+    def test_nothing_playing_no_focus_is_false(self):
+        display, fb, gt = _make_display(targets=[], roster=[])
+        display.enable()
+        display._poll_once()
+        assert display._outputs_available is False
+
+    def test_unfitted_display_is_false(self):
+        display, fb, gt = _make_display(fitted=False)
+        display._outputs_available = True
+        display._poll_once()
+        assert display._outputs_available is False
+
+    def test_unauthorized_reporting_entry_is_false(self):
+        t = _target(appliance_id="a" * 20, auth="unauthorized")
+        roster = [_roster_entry(appliance_id="a" * 20, playing=True, dial_outputs=True,
+                                 auth="unauthorized")]
+        display, fb, gt = _make_display(targets=[t], roster=roster)
+        display.enable()
+        display._poll_once()
+        assert display._outputs_available is False
 
 
 # ---------------------------------------------------------------------------

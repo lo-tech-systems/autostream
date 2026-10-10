@@ -72,6 +72,7 @@ from dial_display_profiles import (
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
+from dial_outputs import _OutputsTarget, enqueue_fetch
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
@@ -118,6 +119,12 @@ RECONCILE_INTERVAL_SECONDS = 60
 # picker uses the same timeout; the repeat screen has none of its own — see
 # _check_secondary_timeout.
 SELECTOR_TIMEOUT_SECONDS = 18
+
+# How often the outputs list refetches while an outputs screen is showing —
+# see _tick_outputs_refresh(). The same round trip also runs once, right
+# away, whenever an outputs screen opens (open_outputs()), so this cadence
+# only covers staying open past that first fetch.
+OUTPUTS_REFRESH_S = 2.0
 
 # How long a picker-started replay's manual focus is held "pending" while
 # the appliance has not yet reached the playing set — see
@@ -365,6 +372,41 @@ class PickerState:
     opened_at: float
 
 
+@dataclass(frozen=True)
+class OutputRow:
+    """One row of the outputs list, or the output shown on the detail page."""
+    id: str
+    name: str
+    selected: bool
+    volume: int          # 0..100, meaningful when selected
+
+
+@dataclass(frozen=True)
+class OutputsState:
+    """The outputs list screen: which appliance it is showing, its last
+    fetched rows (remote-in-use outputs already dropped by the worker's
+    result parsing), paging and the inactivity clock. rows is () until the
+    first fetch lands (loaded False draws the loading placeholder)."""
+    appliance_id: str
+    service_name: str
+    ip: str
+    port: int
+    rows: "tuple[OutputRow, ...]"
+    page: int
+    opened_at: float
+    loaded: bool = False
+
+
+@dataclass(frozen=True)
+class OutputDetailState:
+    """The per-output page: the output it was opened for. Its row is read
+    from the outputs state at every paint, so a level change or a
+    disappearance shows without this being rebuilt."""
+    appliance_id: str
+    output_id: str
+    opened_at: float
+
+
 # ---------------------------------------------------------------------------
 # List-chassis paging (shared by the appliance selector and the replay
 # picker, which page the same way over different row types)
@@ -410,6 +452,35 @@ def _selector_list_row(row: SelectorRow) -> tuple:
 
 def _picker_list_row(row: PickerRow) -> tuple:
     return (row.label, False, format_mmss(row.seconds))
+
+
+def _parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
+    """Validate and convert a POST /api/dial/outputs response body into the
+    manager's own row type. None on anything malformed, non-200 or
+    unreachable — transient, so the caller keeps showing the last good
+    snapshot, the same discipline _apply_status_to_repeat uses for a bad
+    body. An output the appliance reports as in use by another autostream
+    instance is dropped entirely, matching the Home page's own filtering."""
+    if status != 200 or not isinstance(body, dict) or body.get("ok") is not True:
+        return None
+    raw = body.get("outputs")
+    if not isinstance(raw, list):
+        return None
+    rows = []
+    for o in raw:
+        if not isinstance(o, dict):
+            return None
+        if o.get("remote_in_use"):
+            continue
+        out_id, name, selected, volume = o.get("id"), o.get("name"), o.get("selected"), o.get("volume")
+        if not isinstance(out_id, str) or not out_id or not isinstance(name, str):
+            return None
+        if not isinstance(selected, bool):
+            return None
+        if not isinstance(volume, int) or isinstance(volume, bool):
+            return None
+        rows.append(OutputRow(id=out_id, name=name, selected=selected, volume=max(0, min(100, volume))))
+    return tuple(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +734,31 @@ class DialDisplay:
         # The replay picker's own rows/paging — refreshed every poll tick
         # regardless of whether it is open, mirroring self._selector.
         self._picker: PickerState | None = None
+        # The outputs list screen's own state — written under self._lock by
+        # its opener and by on_outputs_result's fold (worker thread); read
+        # lock-free by the touch thread's outputs_row_tap()/output_toggle_
+        # tap()/output_volume_tap() entries, mirroring self._repeat_screen's
+        # discipline.
+        self._outputs: OutputsState | None = None
+        # The per-output detail page's own state — same write/read
+        # discipline as self._outputs.
+        self._output_detail: OutputDetailState | None = None
+        # Touch-thread plain write: the row a LIST_ROW tap on the outputs
+        # list chose, consumed by the detail page's opener.
+        self._output_open_id: str | None = None
+        # Touch-thread plain write: an optimistic (output_id, selected,
+        # volume, stamped-time) override shown immediately after a toggle or
+        # volume step, before the worker's reconciling fetch lands — same
+        # plain-reference discipline as self._pressed/self._overlay_snapshot.
+        # Cleared once a fetch result stamped after it lands (on_outputs_
+        # result) or once a stale one is superseded.
+        self._outputs_optimistic: "tuple[str, bool, int | None, float] | None" = None
+        # Repeat-thread-only: when an outputs screen last asked for a
+        # refresh — see _tick_outputs_refresh().
+        self._outputs_refresh_at: float = 0.0
+        # Whether the top-right OUTPUTS zone is currently live — poll thread
+        # only (_update_outputs_available); read lock-free by touch_surface().
+        self._outputs_available = False
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -1477,6 +1573,7 @@ class DialDisplay:
                 # overlay signal ever arrives.
                 self._check_secondary_timeout()
                 self._tick_repeat_line()
+                self._tick_outputs_refresh()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -1933,6 +2030,24 @@ class DialDisplay:
         if rec is not None and rec.state == "replaying":
             self._overlay_signal.set()
 
+    def _tick_outputs_refresh(self) -> None:
+        """Enqueue a fresh outputs-list fetch every OUTPUTS_REFRESH_S while
+        an outputs screen is showing — called from the repeat thread's own
+        1s timeout branch, the same cadence _tick_repeat_line() uses for the
+        repeat screen's live position. self._screen/self._outputs are read
+        lock-free here: one stale tick is harmless, the same argument
+        _check_secondary_timeout() makes."""
+        if self._screen not in ("outputs", "output"):
+            return
+        state = self._outputs
+        if state is None:
+            return
+        now = time.monotonic()
+        if now - self._outputs_refresh_at < OUTPUTS_REFRESH_S:
+            return
+        self._outputs_refresh_at = now
+        enqueue_fetch(_OutputsTarget(state.appliance_id, state.ip, state.port))
+
     def _carried_paging_locked(self, prev, row_count: int) -> tuple[int, float]:
         """(page, opened_at) to keep across a row rebuild: the previous page
         clamped to the new row count, and the previous opened_at, or (0, 0.0)
@@ -2349,6 +2464,50 @@ class DialDisplay:
             self._focus_pending = None
             self._manual_focus_id = None
 
+    def on_outputs_result(self, kind: str, appliance_id: str, status, body, request) -> None:
+        """Callback for the outputs worker (dial_outputs.py). Runs on the
+        WORKER thread — never the poll/repeat/touch threads.
+
+        A "set" outcome is not applied here at all: the worker already
+        queued the reconciling fetch for the same target right after
+        sending it, and that fetch's own "fetch" callback (this same
+        function, called again) is what the screen actually shows — so a
+        rejected mutation (in use elsewhere, a PIN required, a capacity
+        limit) never needs special-casing here, it simply shows up as the
+        appliance's own truth on the very next fetch.
+
+        A "fetch" outcome folds the parsed row list into the outputs
+        snapshot in one assignment, under self._lock (a leaf-lock-free
+        section — this class's own lock is the only one taken here, exactly
+        as _clear_focus() takes it from the poll thread). A late result for
+        an appliance the screen has since moved on from is dropped. A
+        malformed/unreachable result (rows is None) leaves the last good
+        snapshot on screen. When the detail page is open and its output has
+        disappeared from the fresh rows (gone remote-in-use, or removed),
+        the screen is asked to fall back to the list.
+        """
+        if kind != "fetch":
+            return
+        rows = _parse_outputs_body(status, body)
+        with self._lock:
+            state = self._outputs
+            if state is None or state.appliance_id != appliance_id:
+                return
+            if rows is None:
+                return
+            page = _clamp_page(state.page, len(rows), self._rows_per_page())
+            self._outputs = dataclasses.replace(state, rows=rows, page=page, loaded=True)
+            optimistic = self._outputs_optimistic
+            if optimistic is not None and optimistic[3] <= time.monotonic():
+                self._outputs_optimistic = None
+            detail = self._output_detail
+            if (
+                detail is not None and self._screen == "output"
+                and not any(r.id == detail.output_id for r in rows)
+            ):
+                self._screen_request = "outputs"
+        self._overlay_signal.set()
+
     def set_manual_focus(self, appliance_id: str | None) -> None:
         """Sticky manual focus: pins the display source to appliance_id
         (or clears it back to auto-pick with None). Lock-free write plus a
@@ -2388,6 +2547,20 @@ class DialDisplay:
         rec = repeat_store.get(appliance_id, now) if appliance_id else None
         self._dots_active = rec is not None and rec.available
 
+    def _update_outputs_available(self) -> None:
+        """Recompute whether the top-right OUTPUTS zone is currently live,
+        from the currently focused/reporting appliance's fresh roster row —
+        poll thread only; read lock-free by touch_surface(). Mirrors
+        _update_dots_active(), one tick behind the same focus/reporting
+        resolution."""
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        entry = next(
+            (r for r in self._last_roster if r.appliance_id == appliance_id), None,
+        ) if appliance_id else None
+        self._outputs_available = (
+            entry is not None and entry.dial_outputs and entry.auth != AUTH_UNAUTHORIZED
+        )
+
     def _poll_once(self) -> None:
         with self._lock:
             fitted = self._config.fitted
@@ -2396,6 +2569,7 @@ class DialDisplay:
             self._now_playing = None
             self._reporting_appliance_id = None
             self._dots_active = False
+            self._outputs_available = False
             return
 
         targets = self._get_display_targets()
@@ -2576,6 +2750,7 @@ class DialDisplay:
                     self._source_service_name = idle_focus.service_name
                     self._now_playing = NowPlaying(idle_focus.service_name, "", "", master_volume)
                     self._update_dots_active(now)
+                    self._update_outputs_available()
             if idle_focus is None:
                 if self._focus_pending is not None:
                     # A picker-started replay hasn't reached the playing set
@@ -2588,10 +2763,12 @@ class DialDisplay:
                     self._now_playing = NowPlaying(pending[1], "", "", None)
                     self._reporting_appliance_id = pending[0]
                     self._update_dots_active(now)
+                    self._update_outputs_available()
                 else:
                     self._now_playing = None
                     self._reporting_appliance_id = None
                     self._update_dots_active(now)
+                    self._update_outputs_available()
 
             self.show_logo()
             return
@@ -2706,6 +2883,7 @@ class DialDisplay:
         reporting_id = reporting.appliance_id if reporting is not None else None
         self._reporting_appliance_id = reporting_id
         self._update_dots_active(time.monotonic())
+        self._update_outputs_available()
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
         # Free reconciliation for the dial mute belief (dial_volume.py),

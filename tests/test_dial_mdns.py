@@ -141,6 +141,16 @@ class TestHandleLineAdd:
         targets = dm.get_playing_targets()
         assert targets[0].audio_status is False
 
+    def test_dial_outputs_flag_parsed(self):
+        dm._browser._handle_line(_av_add(txt="dial_api=v1 dial_outputs=v1"))
+        targets = dm.get_playing_targets()
+        assert targets[0].dial_outputs is True
+
+    def test_dial_outputs_absent_is_false(self):
+        dm._browser._handle_line(_av_add(txt="dial_api=v1"))
+        targets = dm.get_playing_targets()
+        assert targets[0].dial_outputs is False
+
     def test_service_name_stored(self):
         dm._browser._handle_line(_av_add(name="Kitchen"))
         targets = dm.get_playing_targets()
@@ -458,6 +468,15 @@ class TestGeneralBrowserParsing:
         dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1"))
         assert dm._general_browser.get_snapshot()[_VALID_ID].repeat is False
 
+    def test_dial_outputs_v1_sets_dial_outputs_true(self):
+        dm._general_browser._handle_line(
+            _gen_add(txt=f"id={_VALID_ID} dial_api=v1 dial_outputs=v1"))
+        assert dm._general_browser.get_snapshot()[_VALID_ID].dial_outputs is True
+
+    def test_dial_outputs_absent_sets_dial_outputs_false(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1"))
+        assert dm._general_browser.get_snapshot()[_VALID_ID].dial_outputs is False
+
     def test_valid_entry_fields_parsed(self):
         dm._general_browser._handle_line(_gen_add(
             name="Kitchen", host="kitchen.local", ip="10.0.0.5", port="8080",
@@ -538,9 +557,9 @@ class TestGeneralBrowserConflict:
 
     def test_on_general_change_resolves_conflict_when_one_side_removed(self):
         sighting_a = dm.GeneralSighting(_VALID_ID, "SvcA", "host-a.local",
-                                         "10.0.0.1", 80, "", False)
+                                         "10.0.0.1", 80, "", False, False)
         sighting_b = dm.GeneralSighting(_VALID_ID, "SvcB", "host-b.local",
-                                         "10.0.0.2", 80, "", False)
+                                         "10.0.0.2", 80, "", False, False)
         dm._general_svc["SvcA"] = (_VALID_ID, "host-a.local")
         dm._general_svc["SvcB"] = (_VALID_ID, "host-b.local")
         dm._general_conflicts.add(_VALID_ID)
@@ -567,17 +586,22 @@ class TestGetRoster:
         _clear_general()
         dial_auth.auth_map.reset()
 
-    def _add_playing(self, name="Kitchen", ip="10.0.0.1", port=80, appliance_id=""):
+    def _add_playing(self, name="Kitchen", ip="10.0.0.1", port=80, appliance_id="",
+                      dial_outputs=False):
         txt = "dial_api=v1 dial_status=v1"
+        if dial_outputs:
+            txt += " dial_outputs=v1"
         if appliance_id:
             txt += f" id={appliance_id}"
         dm._browser._handle_line(_av_add(name=name, ip=ip, port=str(port), txt=txt))
 
     def _add_general(self, name="Kitchen", host="kitchen.local", ip="10.0.0.1",
-                      port=80, appliance_id=_VALID_ID, repeat=False):
+                      port=80, appliance_id=_VALID_ID, repeat=False, dial_outputs=False):
         txt = f"id={appliance_id} dial_api=v1"
         if repeat:
             txt += " repeat=v1"
+        if dial_outputs:
+            txt += " dial_outputs=v1"
         dm._general_browser._handle_line(
             _gen_add(name=name, host=host, ip=ip, port=str(port), txt=txt))
 
@@ -613,6 +637,27 @@ class TestGetRoster:
         roster = dm.get_roster()
         assert len(roster) == 1
         assert roster[0].repeat_capable is True
+
+    def test_dial_outputs_taken_from_playing_target_for_playing_rows(self):
+        """A playing row's dial_outputs comes from the playing sighting's own
+        flag, not the general sighting's (even when they disagree)."""
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1", port=80, dial_outputs=True)
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.1", port=80, dial_outputs=False)
+        roster = dm.get_roster()
+        assert len(roster) == 1
+        assert roster[0].dial_outputs is True
+
+    def test_dial_outputs_false_when_playing_target_lacks_it(self):
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1", port=80, dial_outputs=False)
+        roster = dm.get_roster()
+        assert roster[0].dial_outputs is False
+
+    def test_dial_outputs_taken_from_general_sighting_for_idle_rows(self):
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.9", port=9999, dial_outputs=True)
+        roster = dm.get_roster()
+        assert len(roster) == 1
+        assert roster[0].playing is False
+        assert roster[0].dial_outputs is True
 
     def test_playing_address_is_canonical_and_general_never_refeeds_it(self):
         """The playing sighting is the canonical (ip, port) for an id present

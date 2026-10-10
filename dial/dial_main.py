@@ -33,6 +33,7 @@ from dial_mdns import (
     stop_general_browser,
     stop_playing_browser,
 )
+from dial_outputs import start_outputs_worker
 from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
 from dial_volume import (
@@ -591,6 +592,12 @@ def main() -> None:
     # module docstring for why). on_result degrades to a no-op for a
     # NoOpDisplayStatusProvider (no on_repeat_result method).
     start_repeat_worker(cfg, on_result=getattr(display, "on_repeat_result", None))
+
+    # The outputs list/mutation sender: its own thread, queue and HTTP
+    # client, entirely separate from the volume and repeat workers above
+    # (see dial_outputs.py's module docstring). on_result degrades to a
+    # no-op for a NoOpDisplayStatusProvider (no on_outputs_result method).
+    start_outputs_worker(cfg, on_result=getattr(display, "on_outputs_result", None))
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch
