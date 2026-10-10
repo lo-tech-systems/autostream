@@ -44,7 +44,8 @@
         "armed": false,
         "recording_s": 1122.0,
         "position_s": 0.0,
-        "duration_s": 0.0
+        "duration_s": 0.0,
+        "latency_s": 2.0
       },
       "warnings": [],
       "webui": "http://192.0.2.20:80/"

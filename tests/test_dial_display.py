@@ -6225,6 +6225,39 @@ class TestRepeatCounterFloors:
                 view = display._build_repeat_view_locked(screen, 1000.0)
             assert view.line.startswith(expected + " / "), (position, view.line)
 
+    def test_the_counter_follows_the_records_own_latency(self):
+        import dial_repeat_store as drs
+        aid = "22" * 10
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        screen = dd.RepeatScreenState(
+            appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+        )
+        # (latency, reported position, expected counter)
+        for latency, position, expected in [
+            (0.3, 0.2, "0:00"), (0.3, 1.2, "0:00"), (0.3, 1.3, "0:01"), (0.3, 2.4, "0:02"),
+            (3.5, 3.4, "0:00"), (3.5, 4.4, "0:00"), (3.5, 4.5, "0:01"), (3.5, 6.5, "0:03"),
+            (3.5, 0.0, "0:00"),
+        ]:
+            drs.repeat_store.update(aid, drs.RepeatRecord(
+                available=True, state="replaying", armed=True,
+                recording_seconds=30.0, position_seconds=position,
+                duration_seconds=30.0, observed_at=1000.0, latency_seconds=latency,
+            ))
+            with display._lock:
+                view = display._build_repeat_view_locked(screen, 1000.0)
+            assert view.line.startswith(expected + " / "), (latency, position, view.line)
+
+    def test_the_counter_value_is_the_heard_position(self):
+        import dial_repeat_store as drs
+        rec = drs.RepeatRecord(
+            available=True, state="replaying", armed=True, recording_seconds=30.0,
+            position_seconds=1.0, duration_seconds=30.0, observed_at=1000.0,
+            latency_seconds=3.5,
+        )
+        assert dd._repeat_counter_value(rec, 1000.0) == pytest.approx(-2.5)
+        assert dd._repeat_counter_value(rec, 1005.0) == pytest.approx(2.5)
+
 
 class TestRepeatCounterPaintedReference:
     """The replaying counter advances against the second last painted, not

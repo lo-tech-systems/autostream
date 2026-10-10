@@ -78,10 +78,14 @@ def appliance(
     )
 
 
-def repeat_record(state, *, armed=False, recording=1122.0, position=0.0, duration=0.0):
+def repeat_record(state, *, armed=False, recording=1122.0, position=0.0, duration=0.0,
+                  latency=None):
+    """A repeat record; *latency* (seconds the heard audio trails the
+    reported position) is the record's default when left out."""
+    extra = {} if latency is None else {"latency_seconds": latency}
     return RepeatRecord(
         available=True, state=state, armed=armed, recording_seconds=recording,
-        position_seconds=position, duration_seconds=duration, observed_at=NOW - 1.0,
+        position_seconds=position, duration_seconds=duration, observed_at=NOW - 1.0, **extra,
     )
 
 

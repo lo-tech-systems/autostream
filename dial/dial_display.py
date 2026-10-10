@@ -88,7 +88,13 @@ from dial_network import (
     LINK_DOWN,
 )
 from dial_network import request_reboot as _request_reboot
-from dial_repeat_store import repeat_store
+from dial_repeat_store import (
+    DEFAULT_LATENCY_S,
+    REPEAT_LOOP_GAP_S,
+    heard_position,
+    interpolated_position,
+    repeat_store,
+)
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_warning_text import (  # re-exported: the warning table and its text live there
     APPLIANCE_WARNING_SCREEN,
@@ -177,18 +183,19 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 # interpolated Replaying-line position between polls (see
 # _interpolate_repeat_position()). Purely cosmetic: the next status poll
 # always corrects any drift this produces.
-_REPEAT_LOOP_GAP_S = 1.5
+_REPEAT_LOOP_GAP_S = REPEAT_LOOP_GAP_S
 
-# The repeat screen's position counter is deliberately shown this far
-# behind the true (interpolated or daemon-reported) playback position —
-# there is roughly this much latency in the audio chain between a
-# restart/seek landing and sound actually reaching the listener, so
-# showing the raw position would read as running ahead of what is heard.
-# Applied to the "replaying" layout's line only (clamped at zero — see
-# _build_repeat_view_locked); the "hold" layout already reads "0:00" with
-# nothing further to subtract, and the duration side of "m:ss / m:ss" is
-# never touched by this.
-REPEAT_COUNTER_LATENCY_S = 2.0
+# The repeat screen's position counter is deliberately shown behind the
+# true (interpolated or daemon-reported) playback position by the
+# appliance's audio start buffer (RepeatRecord.latency_seconds): that much
+# latency sits in the audio chain between a restart/seek landing and sound
+# reaching the listener, so showing the raw position would read as running
+# ahead of what is heard. This constant is the figure used when the
+# appliance does not report one. Applied to the "replaying" layout's line
+# only (clamped at zero — see _build_repeat_view_locked); the "hold" layout
+# already reads "0:00" with nothing further to subtract, and the duration
+# side of "m:ss / m:ss" is never touched by this.
+REPEAT_COUNTER_LATENCY_S = DEFAULT_LATENCY_S
 
 # A status re-sync can move the locally interpolated counter back by up to
 # the appliance's own status-cache age plus jitter: well under a second.
@@ -404,24 +411,20 @@ def _interpolate_repeat_position(rec, now: float) -> float:
     wall time and wraps at the loop boundary (the buffer's duration plus
     the fixed inter-loop gap). No network call is added for this — the
     next status poll always corrects any drift. Never negative."""
-    pos = rec.position_seconds + (now - rec.observed_at)
-    dur = rec.duration_seconds
-    if dur > 0:
-        pos = pos % (dur + _REPEAT_LOOP_GAP_S)
-        pos = min(pos, dur)
-    return max(0.0, pos)
+    return interpolated_position(rec, now)
 
 
 def _repeat_counter_value(rec, now: float) -> float:
     """The replaying counter's unfloored value at *now*: the interpolated
-    position less REPEAT_COUNTER_LATENCY_S. Deliberately not clamped: it
-    runs negative for the first couple of seconds after a (re)start or a
+    position less the record's latency (the appliance's audio start buffer,
+    REPEAT_COUNTER_LATENCY_S when it did not say). Deliberately not
+    clamped: it runs negative for the first moments after a (re)start or a
     loop wrap, which lets the repaint deadline aim at the true moment the
     counter reaches 0:01 rather than waking a second early. Readers that
     need an integer go through DialDisplay._repeat_counter_second(), which
     clamps. The one expression the tick, the deadline and the view builder
     all share."""
-    return _interpolate_repeat_position(rec, now) - REPEAT_COUNTER_LATENCY_S
+    return heard_position(rec, now)
 
 
 # ---------------------------------------------------------------------------
@@ -4017,7 +4020,7 @@ class DialDisplay:
             )
         if rec.state == "hold":
             # Already reads 0:00 — there is nothing running yet for the
-            # counter-latency clamp (REPEAT_COUNTER_LATENCY_S) to apply to.
+            # counter-latency clamp to apply to.
             line, _ = self._repeat_position_line(rec, now)
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
@@ -4025,7 +4028,7 @@ class DialDisplay:
                 muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state == "replaying":
-            # The counter reads REPEAT_COUNTER_LATENCY_S behind the true
+            # The counter reads the record's latency behind the true
             # position, floored (never rounded, so the displayed second
             # cannot advance before the full second has elapsed), clamped
             # at zero so a fresh (re)start reads "0:00" for the first

@@ -43,8 +43,9 @@
         "state": "replaying",
         "armed": true,
         "recording_s": 1122.0,
-        "position_s": 121.0,
-        "duration_s": 1100.0
+        "position_s": 119.0,
+        "duration_s": 1100.0,
+        "latency_s": 2.0
       },
       "warnings": [],
       "webui": "http://192.0.2.20:80/"

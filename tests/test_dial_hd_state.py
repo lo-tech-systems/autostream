@@ -189,16 +189,47 @@ class TestShape:
 class TestRepeat:
     def test_a_replay_position_runs_on_between_readings(self):
         repeat = _state("replaying")["appliances"][0]["repeat"]
-        assert repeat["position_s"] == 121.0 and repeat["duration_s"] == 1100.0
+        assert repeat["position_s"] == 119.0 and repeat["duration_s"] == 1100.0
         assert repeat["armed"] is True
 
     def test_the_position_stops_at_the_duration(self):
         scenario = hs.SCENARIOS["replaying"]
         assert dataclasses.replace(scenario, now=hs.NOW + 5000).state()[
-            "appliances"][0]["repeat"]["position_s"] == 1100.0
+            "appliances"][0]["repeat"]["position_s"] == 1098.0
 
     def test_a_fading_replay_is_not_extrapolated(self):
-        assert _state("fading_out")["appliances"][0]["repeat"]["position_s"] == 1099.0
+        assert _state("fading_out")["appliances"][0]["repeat"]["position_s"] == 1097.0
+
+    @staticmethod
+    def _with_latency(name, latency, **scenario_kw):
+        scenario = hs.SCENARIOS[name]
+        appliance = scenario.snapshot.appliances[0]
+        repeat = dataclasses.replace(appliance.repeat, latency_seconds=latency)
+        snapshot = dataclasses.replace(
+            scenario.snapshot, appliances=(dataclasses.replace(appliance, repeat=repeat),)
+            + scenario.snapshot.appliances[1:])
+        return dataclasses.replace(scenario, snapshot=snapshot, **scenario_kw).state()[
+            "appliances"][0]["repeat"]
+
+    def test_the_block_carries_the_latency(self):
+        assert _state("replaying")["appliances"][0]["repeat"]["latency_s"] == 2.0
+        assert self._with_latency("replaying", 0.3)["latency_s"] == 0.3
+
+    def test_the_position_is_the_heard_position(self):
+        # Reported 120.0 s at the reading, one second old: 121.0 on, less latency.
+        assert self._with_latency("replaying", 0.3)["position_s"] == 120.7
+        assert self._with_latency("replaying", 3.5)["position_s"] == 117.5
+
+    def test_the_heard_position_is_never_negative(self):
+        scenario = hs.SCENARIOS["replaying"]
+        appliance = scenario.snapshot.appliances[0]
+        record = dataclasses.replace(
+            appliance.repeat, position_seconds=0.0, observed_at=hs.NOW, latency_seconds=3.5)
+        snapshot = dataclasses.replace(
+            scenario.snapshot, appliances=(dataclasses.replace(appliance, repeat=record),)
+            + scenario.snapshot.appliances[1:])
+        out = dataclasses.replace(scenario, snapshot=snapshot).state()
+        assert out["appliances"][0]["repeat"]["position_s"] == 0.0
 
     def test_replaying_covers_replay_and_fade(self):
         assert _state("replaying")["appliances"][0]["replaying"] is True

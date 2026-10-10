@@ -337,3 +337,79 @@ class TestPrune:
         store.update("a", parse_repeat_object(_valid_obj(), now=1.0))
         store.prune({"a", "b"})
         assert store.get("a", now=1.0) is not None
+
+
+# ---------------------------------------------------------------------------
+# latency_ms -> latency_seconds, and the shared heard-position functions.
+# ---------------------------------------------------------------------------
+
+from dial_repeat_store import (
+    DEFAULT_LATENCY_S,
+    heard_position,
+    heard_position_clamped,
+    interpolated_position,
+)
+
+
+class TestLatencyParsing:
+    def test_absent_means_the_default(self):
+        assert parse_repeat_object(_valid_obj(), now=1.0).latency_seconds == 2.0
+        assert DEFAULT_LATENCY_S == 2.0
+
+    def test_valid_value_is_converted_to_seconds(self):
+        assert parse_repeat_object(_valid_obj(latency_ms=2250), now=1.0).latency_seconds == 2.25
+        assert parse_repeat_object(_valid_obj(latency_ms=300), now=1.0).latency_seconds == 0.3
+        assert parse_repeat_object(_valid_obj(latency_ms=1500.0), now=1.0).latency_seconds == 1.5
+
+    def test_the_range_edges_are_accepted(self):
+        assert parse_repeat_object(_valid_obj(latency_ms=0), now=1.0).latency_seconds == 0.0
+        assert parse_repeat_object(_valid_obj(latency_ms=10000), now=1.0).latency_seconds == 10.0
+
+    @pytest.mark.parametrize("bad", [
+        -1, -0.5, 10001, 1e12, float("inf"), float("-inf"), float("nan"),
+        True, False, "2250", None, [2250], {"ms": 2250},
+    ])
+    def test_anything_else_means_the_default(self, bad):
+        rec = parse_repeat_object(_valid_obj(latency_ms=bad), now=1.0)
+        assert rec is not None and rec.latency_seconds == 2.0
+
+    def test_a_bad_latency_never_rejects_the_object(self):
+        assert parse_repeat_object(_valid_obj(latency_ms="x"), now=1.0) is not None
+
+    def test_the_field_is_the_last_one_and_defaulted(self):
+        rec = RepeatRecord(True, "hold", False, 1.0, 0.0, 0.0, 5.0)
+        assert rec.latency_seconds == 2.0
+
+    def test_an_ack_keeps_the_latency(self):
+        store = RepeatStore()
+        store.update("a" * 20, parse_repeat_object(_valid_obj(latency_ms=900), now=1.0))
+        store.apply_ack("a" * 20, {"state": "replaying", "armed": True,
+                                   "position_seconds": 0.0}, now=2.0)
+        assert store.get("a" * 20, 2.0).latency_seconds == 0.9
+
+
+def _rec(position=10.0, duration=100.0, observed_at=50.0, latency=2.0):
+    return RepeatRecord(True, "replaying", True, 100.0, position, duration,
+                        observed_at, latency_seconds=latency)
+
+
+class TestHeardPosition:
+    def test_interpolation_advances_with_wall_time(self):
+        assert interpolated_position(_rec(), 53.0) == pytest.approx(13.0)
+
+    def test_interpolation_wraps_at_the_loop_boundary(self):
+        # duration 100 + 1.5 s gap
+        assert interpolated_position(_rec(position=99.0), 53.0) == pytest.approx(0.5)
+
+    def test_the_heard_position_trails_by_the_latency(self):
+        assert heard_position(_rec(latency=0.3), 53.0) == pytest.approx(12.7)
+        assert heard_position(_rec(latency=3.5), 53.0) == pytest.approx(9.5)
+
+    def test_the_heard_position_runs_negative_just_after_a_start(self):
+        rec = _rec(position=0.0, latency=3.5)
+        assert heard_position(rec, 51.0) == pytest.approx(-2.5)
+
+    def test_the_clamped_variant_never_goes_below_zero(self):
+        rec = _rec(position=0.0, latency=3.5)
+        assert heard_position_clamped(rec, 51.0) == 0.0
+        assert heard_position_clamped(rec, 54.5) == pytest.approx(1.0)

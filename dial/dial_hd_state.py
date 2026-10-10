@@ -126,13 +126,17 @@ def _repeat_block(record, now: float) -> dict | None:
         position += max(0.0, now - record.observed_at)
         if record.duration_seconds > 0:
             position = min(position, record.duration_seconds)
+    # What the listener hears trails the reported position by the
+    # appliance's audio start buffer; the page's timer follows this figure.
+    heard = max(0.0, position - record.latency_seconds)
     return {
         "available": record.available,
         "state": record.state,
         "armed": record.armed,
         "recording_s": _round(record.recording_seconds),
-        "position_s": _round(position),
+        "position_s": _round(heard),
         "duration_s": _round(record.duration_seconds),
+        "latency_s": _round(record.latency_seconds),
     }
 
 
