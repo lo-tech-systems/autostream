@@ -1627,6 +1627,56 @@ class TestSuperseededFrameRaceGuard:
 
 
 # ---------------------------------------------------------------------------
+# A fresh artwork URL arriving on the poll thread must not replace an open
+# secondary screen (repeat/EQ/selector/...) with the main volume surface: it
+# refreshes the base that screen draws over and asks for a repaint of that
+# same screen. Regression: the repeat screen used to pop back to the volume
+# screen (its page dots vanishing) whenever new artwork landed.
+# ---------------------------------------------------------------------------
+
+class TestArtworkDoesNotStompSecondaryScreen:
+    def _to_artwork_on_main(self, fb):
+        display, _, gt = _make_display(targets=[_target()], backend=fb)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))):
+            display._poll_once()
+        assert display.get_status()["showing"] == "artwork"
+        return display
+
+    def test_fresh_artwork_keeps_the_secondary_screen(self):
+        fb = FakeBackend()
+        display = self._to_artwork_on_main(fb)
+        # A secondary screen is now up.
+        display._screen = "repeat"
+        fb.displayed.clear()
+        display._overlay_signal.clear()
+
+        with patch("dial_display._fetch_artwork", return_value=(b"jpegdata2", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (301, 301))):
+            display._show_artwork("https://provider.example/fresh.jpg")
+
+        # Stays on the repeat screen; no main-surface frame pushed here.
+        assert display._screen == "repeat"
+        assert fb.displayed == []
+        # The base is refreshed and a repaint of the current screen requested.
+        assert display._current_base_image is not None
+        assert display._overlay_signal.is_set()
+        assert display._source_artwork_url == "https://provider.example/fresh.jpg"
+
+    def test_fresh_artwork_on_main_still_paints(self):
+        fb = FakeBackend()
+        display = self._to_artwork_on_main(fb)
+        fb.displayed.clear()
+        with patch("dial_display._fetch_artwork", return_value=(b"jpegdata2", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (301, 301))):
+            display._show_artwork("https://provider.example/fresh.jpg")
+        assert display._screen == "main"
+        assert fb.displayed  # the main surface is still painted
+
+
+# ---------------------------------------------------------------------------
 # Threading: start/stop and loop delay from loop end
 # ---------------------------------------------------------------------------
 

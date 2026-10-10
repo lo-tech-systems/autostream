@@ -4076,12 +4076,8 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
-      "frame_count": 2,
+      "frame_count": 1,
       "frame_sizes": [
-        [
-          128,
-          160
-        ],
         [
           128,
           160
@@ -28449,12 +28445,8 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
-      "frame_count": 2,
+      "frame_count": 1,
       "frame_sizes": [
-        [
-          128,
-          160
-        ],
         [
           128,
           160
@@ -36399,12 +36391,8 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
-      "frame_count": 2,
+      "frame_count": 1,
       "frame_sizes": [
-        [
-          128,
-          160
-        ],
         [
           128,
           160
@@ -62563,12 +62551,8 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
-      "frame_count": 2,
+      "frame_count": 1,
       "frame_sizes": [
-        [
-          128,
-          160
-        ],
         [
           128,
           160
@@ -63848,12 +63832,8 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
-      "frame_count": 2,
+      "frame_count": 1,
       "frame_sizes": [
-        [
-          128,
-          160
-        ],
         [
           128,
           160

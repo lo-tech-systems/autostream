@@ -1884,6 +1884,30 @@ class DialDisplay:
             metrics=metrics,
         ))
 
+    def _repaint_base_locked(self, image, *, idle_ok: bool) -> None:
+        """Publish a freshly chosen base image (artwork or logo) from the
+        poll thread, without ever switching away from a secondary screen.
+
+        On the main screen this composes the base straight to hardware — the
+        idle-chassis path when *idle_ok* and nothing plays (the
+        replay-available logo with no controls overlay), otherwise the
+        ordinary overlay compose. While a secondary screen is up it only
+        refreshes the cached base and signals a repaint: the repeat, EQ and
+        No-WiFi screens draw the base behind them and recompose over the new
+        image on the next repaint, and the flat list/info screens ignore it
+        and repaint unchanged. Either way the screen the user is on stays on
+        screen — fresh artwork lands behind it rather than popping it back to
+        the volume screen. Caller holds self._lock.
+        """
+        self._current_base_image = image
+        if self._screen != "main":
+            self._overlay_signal.set()
+            return
+        if idle_ok and self._idle_chassis_due_locked():
+            self._display_idle_locked()
+        else:
+            self._display_locked(image)
+
     def _show_transition_locked(self) -> None:
         """A plain dark base while the newly-shown appliance's own artwork
         or logo is fetched/rendered: the previous appliance's artwork must
@@ -2025,15 +2049,11 @@ class DialDisplay:
             self._clear_locked()
             return
         was_showing = self._showing
-        if self._idle_chassis_due_locked():
-            # A replay is available: the idle screen's own compose path
-            # (the replay-available logo, no volume/mute controls overlay —
-            # there is nothing to control) in place of a plain logo. The
-            # plain logo is still stored as the base for the fallback path.
-            self._current_base_image = image
-            self._display_idle_locked()
-        else:
-            self._display_locked(image)
+        # On the main screen this uses the idle-chassis path when a replay is
+        # available (the replay-available logo, no controls overlay) and the
+        # ordinary path otherwise; while a secondary screen is up it refreshes
+        # the base behind that screen without switching away from it.
+        self._repaint_base_locked(image, idle_ok=True)
         self._source_artwork_url = ""
         self._current_rendered_image = None
         self._showing = "logo"
@@ -4429,7 +4449,7 @@ class DialDisplay:
             )
             if cached_reusable:
                 was_showing = self._showing
-                self._display_locked(self._current_rendered_image)
+                self._repaint_base_locked(self._current_rendered_image, idle_ok=False)
                 self._showing = "artwork"
                 if was_showing == "logo":
                     logging.info("dial display: showing artwork")
@@ -4492,7 +4512,7 @@ class DialDisplay:
                 )
                 return
             was_showing = self._showing
-            self._display_locked(transformed)
+            self._repaint_base_locked(transformed, idle_ok=False)
             self._source_artwork_url = url
             self._current_rendered_image = transformed
             self._showing = "artwork"
