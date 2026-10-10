@@ -6,7 +6,7 @@ Covers the band layout across all profile sizes in dial_display_profiles.py
 policy (leftover pixels never land in a control rectangle), zone_at()
 hit-testing at zone centres and in dead-zone/artist/middle-band gaps, the
 selector surface's list_layout_for()/list_zone_at(), and the pinned 160x128
-reference geometry from the low-level design.
+reference geometry.
 """
 from __future__ import annotations
 
@@ -217,7 +217,7 @@ class TestBandLayout:
 
 
 def test_reference_geometry_exact():
-    """Pin the 160x128 numbers from the low-level design so any future
+    """Pin the 160x128 numbers so any future
     drift in the band-layout arithmetic is deliberate, not accidental."""
     layout = layout_for(160, 128)
     assert layout.volume_cluster == (99, 0, 160, 29)
@@ -302,7 +302,7 @@ class TestListLayout:
 
 
 # ---------------------------------------------------------------------------
-# DOTS zone (dial phase 2, D3).
+# DOTS zone.
 # ---------------------------------------------------------------------------
 
 class TestDotsZone:
@@ -339,36 +339,34 @@ class TestDotsZone:
 
 
 # ---------------------------------------------------------------------------
-# The N2 repeat surface: repeat_layout_for()/repeat_zone_at() (dial phase 2, D3).
+# The repeat surface: repeat_layout_for()/repeat_zone_at().
 # ---------------------------------------------------------------------------
 
 class TestRepeatSurface:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_dots_and_name_match_the_main_surface(self, width, height):
+    def test_dots_name_and_volume_cluster_match_the_main_surface(self, width, height):
         main = layout_for(width, height)
         repeat = repeat_layout_for(width, height)
         assert repeat.dots == main.dots
         assert repeat.name == main.name
+        assert repeat.volume_cluster == main.volume_cluster
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_ring_is_a_centred_square_of_side_two_band_heights(self, width, height):
+    def test_row_is_a_full_width_strip_of_two_band_heights(self, width, height):
         repeat = repeat_layout_for(width, height)
-        x0, y0, x1, y1 = repeat.ring
+        x0, y0, x1, y1 = repeat.row
         band_h = height // 4
-        assert (x1 - x0) == 2 * band_h
+        margin = _dead_zone_margin(width, height)
         assert (y1 - y0) == 2 * band_h
-        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        assert cx == width // 2
+        assert x0 == margin
+        assert x1 == width - margin
+        cy = (y0 + y1) // 2
         assert cy == height // 2
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_line_shares_the_rings_vertical_band_full_width_minus_margins(self, width, height):
+    def test_line_shares_the_rows_geometry(self, width, height):
         repeat = repeat_layout_for(width, height)
-        margin = _dead_zone_margin(width, height)
-        assert repeat.line[1] == repeat.ring[1]
-        assert repeat.line[3] == repeat.ring[3]
-        assert repeat.line[0] == margin
-        assert repeat.line[2] == width - margin
+        assert repeat.line == repeat.row
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_start_stop_reuse_down_up(self, width, height):
@@ -383,11 +381,26 @@ class TestRepeatSurface:
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.DOTS
 
-    def test_repeat_zone_at_resolves_ring(self):
+    def test_repeat_zone_at_resolves_name(self):
         layout = repeat_layout_for(160, 128)
-        x0, y0, x1, y1 = layout.ring
+        x0, y0, x1, y1 = layout.name
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_RING
+        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.NAME
+
+    def test_repeat_zone_at_resolves_row(self):
+        layout = repeat_layout_for(160, 128)
+        x0, y0, x1, y1 = layout.row
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_PLAY
+
+    def test_repeat_zone_at_volume_cluster_is_not_a_zone(self):
+        """The top band's mute/volume readout is display-only on the
+        repeat screen — a tap there must not resolve to MUTE or anything
+        else (it simply misses, same as any other dead zone)."""
+        layout = repeat_layout_for(160, 128)
+        x0, y0, x1, y1 = layout.volume_cluster
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert repeat_zone_at(cx, cy, 160, 128) is None
 
     def test_repeat_zone_at_resolves_start_and_stop(self):
         layout = repeat_layout_for(160, 128)
@@ -408,7 +421,7 @@ class TestRepeatSurface:
 
 
 # ---------------------------------------------------------------------------
-# The N4 idle surface: idle_layout_for()/idle_zone_at() (dial phase 2, D3).
+# The idle surface: idle_layout_for()/idle_zone_at().
 # ---------------------------------------------------------------------------
 
 class TestIdleSurface:

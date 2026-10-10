@@ -1590,6 +1590,13 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, *_):
             assert captured["kwargs"]["get_touch_surface"] is display.touch_surface
 
+    def test_repeat_close_reveal_getter_wired_to_display(self):
+        with self._built() as (cfg, display, result, captured, *_):
+            assert (
+                captured["kwargs"]["consume_repeat_close_reveal"]
+                is display.consume_repeat_close_reveal
+            )
+
     def test_volume_up_enqueues_step_percent_and_notifies_activity(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_volume_up"]()
@@ -1817,12 +1824,12 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.DOTS, None)
             display.toggle_repeat_screen.assert_called_once()
 
-    def test_on_zone_tap_repeat_ring_taps_the_ring(self):
+    def test_on_zone_tap_repeat_play_toggles_arm(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_RING, None)
-            display.repeat_ring_tap.assert_called_once()
+            captured["kwargs"]["on_zone_tap"](TouchZone.REPEAT_PLAY, None)
+            display.repeat_toggle_tap.assert_called_once()
 
     def test_on_zone_tap_repeat_start_taps_start(self):
         from dial_touch_layout import TouchZone
@@ -1845,12 +1852,12 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_REPLAY, None)
             display.open_picker.assert_called_once()
 
-    def test_set_pressed_zone_repeat_ring_routes_to_secondary_pressed(self):
+    def test_set_pressed_zone_repeat_play_routes_to_secondary_pressed(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
-            captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_RING)
-            display.set_secondary_pressed.assert_called_once_with(TouchZone.REPEAT_RING)
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_PLAY)
+            display.set_secondary_pressed.assert_called_once_with(TouchZone.REPEAT_PLAY)
             display.set_overlay.assert_not_called()
 
     def test_set_pressed_zone_idle_replay_routes_to_secondary_pressed(self):

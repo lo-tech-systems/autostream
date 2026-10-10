@@ -2825,7 +2825,7 @@ class TestTouchSurface:
         ))
         with display._lock:
             display._screen = "repeat"
-        assert display.touch_surface() == ("repeat", False, True)
+        assert display.touch_surface() == ("repeat", True, True)
 
     def test_picker_while_open(self):
         display, fb, gt = _make_display(targets=[])
@@ -2982,6 +2982,27 @@ class TestToggleRepeatScreen:
         assert display._screen == "main"
         assert display._repeat_screen is None
 
+    def test_close_arms_the_reveal_flag_open_does_not(self):
+        """Item 1: closing the repeat screen via toggle_repeat_screen()
+        (the DOTS tap) must arm the one-shot reveal flag the touch side
+        consumes to bring back the main screen's volume overlay; opening
+        it must not."""
+        aid = "11" * 10
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+
+        display.toggle_repeat_screen()  # open
+        assert display.consume_repeat_close_reveal() is False
+
+        with display._lock:
+            display._repaint_current_locked()
+        display.toggle_repeat_screen()  # close
+        assert display.consume_repeat_close_reveal() is True
+        # Read-and-clear: a second read finds nothing left to consume.
+        assert display.consume_repeat_close_reveal() is False
+
 
 class TestRepeatScreenTouchEntries:
     def _opened(self, state="idle", armed=False, appliance_id="5" * 20):
@@ -2995,27 +3016,27 @@ class TestRepeatScreenTouchEntries:
         assert display._screen == "repeat"
         return display, appliance_id
 
-    def test_ring_tap_arms_in_idle(self):
+    def test_toggle_tap_arms_in_idle(self):
         display, aid = self._opened(state="idle", armed=False)
         with patch("dial_display.enqueue_arm") as mock_arm:
-            display.repeat_ring_tap()
+            display.repeat_toggle_tap()
         mock_arm.assert_called_once()
         target, armed = mock_arm.call_args[0]
         assert target.appliance_id == aid
         assert armed is True
 
-    def test_ring_tap_disarms_when_already_armed(self):
+    def test_toggle_tap_disarms_when_already_armed(self):
         display, aid = self._opened(state="recording", armed=True)
         with patch("dial_display.enqueue_arm") as mock_arm:
-            display.repeat_ring_tap()
+            display.repeat_toggle_tap()
         mock_arm.assert_called_once()
         _, armed = mock_arm.call_args[0]
         assert armed is False
 
-    def test_ring_tap_ignored_while_replaying(self):
+    def test_toggle_tap_ignored_while_replaying(self):
         display, aid = self._opened(state="replaying")
         with patch("dial_display.enqueue_arm") as mock_arm:
-            display.repeat_ring_tap()
+            display.repeat_toggle_tap()
         mock_arm.assert_not_called()
 
     def test_start_tap_seeks_zero_while_hold(self):
@@ -3060,7 +3081,7 @@ class TestRepeatScreenTouchEntries:
         display.enable()
         with patch("dial_display.enqueue_arm") as mock_arm, \
              patch("dial_display.enqueue_transport") as mock_transport:
-            display.repeat_ring_tap()
+            display.repeat_toggle_tap()
             display.repeat_start_tap()
             display.repeat_stop_tap()
         mock_arm.assert_not_called()
@@ -3156,6 +3177,94 @@ class TestRepeatScreenComposePath:
             display._sleep_locked()
         assert display._screen == "main"
         assert display._picker is None
+
+
+class TestRepeatViewTopBandAndBaseImage:
+    """Item 3 (the top band's muted/volume readout) and item 6 (the
+    replaying layout's artwork/logo base image), as fed by
+    _build_repeat_view_locked()/_display_repeat_locked()."""
+
+    def _opened(self, state="idle", appliance_id="12" * 10):
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, appliance_id, _repeat_obj(state=state))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, appliance_id
+
+    def test_muted_and_volume_fed_from_the_repeat_screens_own_appliance(self):
+        display, aid = self._opened(state="idle")
+        with patch("dial_display.is_muted", return_value=True), \
+             patch("dial_display.shown_volume", return_value=37) as mock_shown_volume:
+            with display._lock:
+                view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
+        assert view.muted is True
+        assert view.volume == 37
+        mock_shown_volume.assert_called_once_with("Kitchen")
+
+    def test_base_image_passed_through_to_compose_repeat(self):
+        display, aid = self._opened(state="hold")
+        sentinel_image = object()
+        with display._lock:
+            display._current_base_image = sentinel_image
+        with patch.object(display._compositor, "compose_repeat", wraps=display._compositor.compose_repeat) as mock:
+            with display._lock:
+                display._display_repeat_locked()
+        assert mock.call_args.kwargs["base"] is sentinel_image
+
+
+class TestRepeatCounterLatency:
+    """Item 8: the replaying position counter lags the true position by
+    REPEAT_COUNTER_LATENCY_S, clamped at zero."""
+
+    def _opened_replaying(self, position_seconds, appliance_id="13" * 10):
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(
+            display, fb, appliance_id,
+            _repeat_obj(
+                state="replaying", armed=True,
+                replay={"active": True, "position_seconds": position_seconds, "duration_seconds": 30.0},
+            ),
+        )
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, appliance_id
+
+    def test_reads_zero_for_the_first_latency_window_after_a_restart(self):
+        display, aid = self._opened_replaying(position_seconds=1.0)
+        with display._lock:
+            view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
+        assert view.line.startswith("0:00 / ")
+
+    def test_lags_the_true_position_once_past_the_latency_window(self):
+        display, aid = self._opened_replaying(position_seconds=10.0)
+        with display._lock:
+            view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
+        # 10.0 true seconds in, minus the REPEAT_COUNTER_LATENCY_S lag —
+        # allow the interpolation's own elapsed-time nudge either side of
+        # the expected second by comparing the parsed minutes:seconds
+        # rather than the exact string.
+        shown = view.line.split(" / ")[0]
+        minutes, seconds = (int(p) for p in shown.split(":"))
+        shown_seconds = minutes * 60 + seconds
+        assert shown_seconds == pytest.approx(10.0 - dd.REPEAT_COUNTER_LATENCY_S, abs=1)
+
+    def test_hold_layout_already_reads_zero(self):
+        aid = "14" * 10
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="hold"))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+            view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
+        assert view.line.startswith("0:00 / ")
 
 
 class TestRepeatLineInterpolation:
@@ -3526,6 +3635,38 @@ class TestOnRepeatResult:
         with display._lock:
             display.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold",
                                                               "armed": False, "position_seconds": 0.0})
+
+
+# ---------------------------------------------------------------------------
+# Playing-set shrink: a source that stops playing forces an immediate
+# reconcile so its retained recording reaches the idle screen and picker.
+# ---------------------------------------------------------------------------
+
+class TestReconcileOnPlayingSetShrink:
+    def test_shrinking_playing_set_forces_reconcile(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._prev_playing_ids = {"a" * 20}
+        display._reconcile_due = False
+        display._last_reconcile_at = time.monotonic()  # cadence alone would NOT fire
+        gt.return_value = []  # the source that was playing has stopped
+        with patch.object(display, "_reconcile_pass") as rp:
+            display._poll_once()
+        rp.assert_called_once()
+
+    def test_unchanged_playing_set_respects_cadence(self):
+        aid = "a" * 20
+        t = _target(appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        display._prev_playing_ids = {aid}
+        display._reconcile_due = False
+        display._last_reconcile_at = time.monotonic()  # cadence alone would NOT fire
+        with patch.object(display, "_reconcile_pass") as rp, \
+             patch("dial_display.fetch_target_status",
+                   return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        rp.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

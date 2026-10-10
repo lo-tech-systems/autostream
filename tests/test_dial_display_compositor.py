@@ -34,6 +34,7 @@ from dial_display_compositor import (  # noqa: E402
     LOOP_GLYPH,
     OverlayState,
     RepeatViewState,
+    _pad_px,
     _reset_font_cache,
     _scaled_px,
     _truncate_to_width,
@@ -998,17 +999,29 @@ class TestFormatMmss:
 
 
 # ---------------------------------------------------------------------------
-# compose_repeat — the repeat screen: enable layout (ring, armed) and the
-# replaying layout (Start/Stop, position line).
+# compose_repeat — the repeat screen: enable layout ("Repeat Play" row,
+# armed) and the replaying layout (Restart/Stop, position line over the
+# current artwork/logo base image). Both layouts share the main screen's
+# top band (dots, name, mute/volume readout).
 # ---------------------------------------------------------------------------
 
 def _repeat_state(**overrides) -> RepeatViewState:
     base = dict(
         name="Kitchen", layout="enable", armed=False, line="",
-        start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=None,
+        start_enabled=False, stop_enabled=False, stop_pressed=False,
+        muted=None, volume=None, pressed=None,
     )
     base.update(overrides)
     return RepeatViewState(**base)
+
+
+def _repeat_dot_rect(layout, width=160, height=128):
+    """The enable layout's "Repeat Play" row dot marker rect — mirrors the
+    geometry _draw_repeat() itself computes."""
+    pad = _pad_px(width, height)
+    row = layout.row
+    dot_box = row[3] - row[1]
+    return (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
 
 
 class TestComposeRepeatEnableLayout:
@@ -1022,21 +1035,22 @@ class TestComposeRepeatEnableLayout:
         result = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
         assert result.size == (160, 128)
 
-    def test_ring_centre_white_when_unarmed(self, compositor):
+    def test_row_dot_hollow_when_unarmed(self, compositor):
         layout = repeat_layout_for(160, 128)
-        cx = (layout.ring[0] + layout.ring[2]) // 2
-        cy = (layout.ring[1] + layout.ring[3]) // 2
+        x0, y0, x1, y1 = _repeat_dot_rect(layout)
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         result = compositor.compose_repeat(160, 128, _repeat_state(armed=False), rotate=False, bgr=False)
+        # Hollow: the centre stays background, only the outline is drawn.
+        assert result.getpixel((cx, cy)) == (16, 16, 16)
+
+    def test_row_dot_solid_when_armed(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        x0, y0, x1, y1 = _repeat_dot_rect(layout)
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        result = compositor.compose_repeat(160, 128, _repeat_state(armed=True), rotate=False, bgr=False)
         assert result.getpixel((cx, cy)) == (255, 255, 255)
 
-    def test_ring_centre_black_when_armed(self, compositor):
-        layout = repeat_layout_for(160, 128)
-        cx = (layout.ring[0] + layout.ring[2]) // 2
-        cy = (layout.ring[1] + layout.ring[3]) // 2
-        result = compositor.compose_repeat(160, 128, _repeat_state(armed=True), rotate=False, bgr=False)
-        assert result.getpixel((cx, cy)) == (0, 0, 0)
-
-    def test_ring_only_drawn_in_enable_layout(self, compositor):
+    def test_row_content_differs_between_layouts(self, compositor):
         layout = repeat_layout_for(160, 128)
         enable = compositor.compose_repeat(160, 128, _repeat_state(layout="enable"), rotate=False, bgr=False)
         replaying = compositor.compose_repeat(
@@ -1044,7 +1058,7 @@ class TestComposeRepeatEnableLayout:
             _repeat_state(layout="replaying", line="0:00 / 1:00", start_enabled=True, stop_enabled=False),
             rotate=False, bgr=False,
         )
-        assert list(enable.crop(layout.ring).getdata()) != list(replaying.crop(layout.ring).getdata())
+        assert list(enable.crop(layout.row).getdata()) != list(replaying.crop(layout.row).getdata())
 
     def test_name_drawn(self, compositor):
         layout = repeat_layout_for(160, 128)
@@ -1060,19 +1074,65 @@ class TestComposeRepeatEnableLayout:
         blank = Image.new("RGB", (160, 128), (16, 16, 16))
         assert list(result.crop(layout.dots).getdata()) != list(blank.crop(layout.dots).getdata())
 
-    def test_pressed_ring_highlight(self, compositor):
+    def test_pressed_row_highlight(self, compositor):
         layout = repeat_layout_for(160, 128)
         unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
         pressed = compositor.compose_repeat(
-            160, 128, _repeat_state(pressed=TouchZone.REPEAT_RING), rotate=False, bgr=False,
+            160, 128, _repeat_state(pressed=TouchZone.REPEAT_PLAY), rotate=False, bgr=False,
         )
-        assert list(unpressed.crop(layout.ring).getdata()) != list(pressed.crop(layout.ring).getdata())
+        assert list(unpressed.crop(layout.row).getdata()) != list(pressed.crop(layout.row).getdata())
+
+    def test_no_volume_buttons_drawn(self, compositor):
+        """The enable layout has no bottom +/- volume controls — the top
+        band's mute/volume readout is display-only on this screen."""
+        layout = repeat_layout_for(160, 128)
+        flat_bg = Image.new("RGB", (160, 128), (16, 16, 16))
+        result = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
+        assert list(result.crop(layout.start).getdata()) == list(flat_bg.crop(layout.start).getdata())
+        assert list(result.crop(layout.stop).getdata()) == list(flat_bg.crop(layout.stop).getdata())
 
     def test_never_raises_with_no_font(self, compositor):
         with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
              patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_repeat(160, 128, _repeat_state(armed=True), rotate=False, bgr=False)
         assert result.size == (160, 128)
+
+
+class TestComposeRepeatTopBand:
+    """The top band (dots, name, mute/volume readout) is shared verbatim by
+    both layouts — see _draw_top_band_content(). Exercised once here at the
+    default ("enable") layout rather than duplicated in both layout test
+    classes."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_volume_number_drawn_when_present(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        blank = compositor.compose_repeat(160, 128, _repeat_state(volume=None), rotate=False, bgr=False)
+        with_volume = compositor.compose_repeat(160, 128, _repeat_state(volume=42), rotate=False, bgr=False)
+        assert list(blank.crop(layout.volume_cluster).getdata()) != list(
+            with_volume.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_muted_glyph_differs_from_unmuted(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        unmuted = compositor.compose_repeat(160, 128, _repeat_state(muted=False), rotate=False, bgr=False)
+        muted = compositor.compose_repeat(160, 128, _repeat_state(muted=True), rotate=False, bgr=False)
+        assert list(unmuted.crop(layout.volume_cluster).getdata()) != list(
+            muted.crop(layout.volume_cluster).getdata()
+        )
+
+    def test_name_pressed_highlight(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
+        pressed = compositor.compose_repeat(
+            160, 128, _repeat_state(pressed=TouchZone.NAME), rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(layout.name).getdata()) != list(pressed.crop(layout.name).getdata())
 
 
 class TestComposeRepeatReplayingLayout:
@@ -1145,6 +1205,55 @@ class TestComposeRepeatReplayingLayout:
         assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
         swapped = compositor.compose_repeat(160, 128, state, rotate=False, bgr=True)
         assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
+
+    def test_start_label_reads_restart_not_start(self, compositor):
+        with patch("dial_display_compositor._draw_label_centered") as mock_label_centered:
+            compositor.compose_repeat(160, 128, self._state(), rotate=False, bgr=False)
+        texts = [call.args[2] for call in mock_label_centered.call_args_list]
+        assert "Restart" in texts
+        assert "Start" not in texts
+
+    def test_base_image_drawn_behind_the_position_line(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        base = Image.new("RGB", (160, 128), (200, 50, 50))
+        result = compositor.compose_repeat(160, 128, self._state(), base=base, rotate=False, bgr=False)
+        # A point inside the row rect but well clear of the centred text —
+        # neither band is dimmed there, so the base colour must survive
+        # untouched.
+        probe = (layout.row[0] + 2, (layout.row[1] + layout.row[3]) // 2)
+        assert result.getpixel(probe) == (200, 50, 50)
+
+    def test_base_image_ignored_in_enable_layout(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        base = Image.new("RGB", (160, 128), (200, 50, 50))
+        state = _repeat_state(layout="enable")
+        result = compositor.compose_repeat(160, 128, state, base=base, rotate=False, bgr=False)
+        probe = (layout.row[0] + 2, (layout.row[1] + layout.row[3]) // 2)
+        assert result.getpixel(probe) == (16, 16, 16)
+
+    def test_top_and_bottom_bands_dim_the_base_image(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        raw = (200, 50, 50)
+        base = Image.new("RGB", (160, 128), raw)
+        result = compositor.compose_repeat(160, 128, self._state(), base=base, rotate=False, bgr=False)
+        gap_x = (layout.name[2] + layout.volume_cluster[0]) // 2
+        gap_y = (layout.top_band[1] + layout.top_band[3]) // 2
+        pixel = result.getpixel((gap_x, gap_y))
+        # Darkened, not merely different — every channel moves toward
+        # black, same discipline test_dim_darkens_bands_leaves_middle_
+        # unchanged uses for the main overlay's own bands.
+        assert pixel != raw
+        assert all(c <= r for c, r in zip(pixel, raw))
+
+    def test_no_base_image_falls_back_to_flat_background(self, compositor):
+        result = compositor.compose_repeat(160, 128, self._state(), base=None, rotate=False, bgr=False)
+        assert result.size == (160, 128)
+
+    def test_never_raises_with_unusable_base_image(self, compositor):
+        result = compositor.compose_repeat(
+            160, 128, self._state(), base=object(), rotate=False, bgr=False,
+        )
+        assert result.size == (160, 128)
 
     def test_never_raises_with_no_font(self, compositor):
         with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \

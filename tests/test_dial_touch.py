@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1174,9 +1175,8 @@ class TestZoneTapDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Phase-2 surfaces (dial phase 2, D3): REPEAT, IDLE, PICKER; DOTS gating;
-# the five new zones' single-shot/zone-tap behaviour; touch_surface() 2-
-# and 3-tuple polling.
+# The REPEAT, IDLE and PICKER surfaces; DOTS/NAME gating; the new zones'
+# single-shot/zone-tap behaviour; touch_surface() 2- and 3-tuple polling.
 # ---------------------------------------------------------------------------
 
 _REPEAT_LAYOUT = repeat_layout_for(WIDTH, HEIGHT)
@@ -1188,7 +1188,8 @@ def _rect_center(rect) -> tuple[int, int]:
 
 
 DOTS_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.DOTS])
-REPEAT_RING_XY = _rect_center(_REPEAT_LAYOUT.ring)
+NAME_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.NAME])
+REPEAT_PLAY_XY = _rect_center(_REPEAT_LAYOUT.row)
 REPEAT_START_XY = _rect_center(_REPEAT_LAYOUT.start)
 REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
 IDLE_XY = (WIDTH // 2, HEIGHT - 1)
@@ -1206,10 +1207,10 @@ class TestNewSurfacesArmImmediately:
         assert sm.overlay_visible is True
         assert sm.held_visible is True
 
-    def test_repeat_ring_arms_immediately_without_reveal(self):
+    def test_repeat_play_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_REPEAT, False, now=0.0)
-        actions = sm.on_filter_event(press_event(REPEAT_RING_XY), now=0.1)
+        actions = sm.on_filter_event(press_event(REPEAT_PLAY_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
 
     def test_idle_replay_arms_immediately_without_reveal(self):
@@ -1242,8 +1243,8 @@ class TestNewSurfacesArmImmediately:
 
 
 class TestDotsGating:
-    """DOTS is gated by dots_active on BOTH the main surface and the
-    repeat surface, exactly the way NAME is gated by name_active."""
+    """DOTS and NAME are each gated by their own "is it currently
+    tappable" flag on BOTH the main surface and the repeat surface."""
 
     def test_dots_inactive_on_main_is_a_dead_zone(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1280,12 +1281,25 @@ class TestDotsGating:
         actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
         assert any(a.kind == ACTION_ZONE_TAP for a in actions)
 
+    def test_name_inactive_on_repeat_is_a_dead_zone(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(NAME_XY), now=0.0)
+        assert actions == []
+
+    def test_name_active_on_repeat_emits_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, True, now=0.0)
+        actions = sm.on_filter_event(press_event(NAME_XY), now=0.0)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.NAME
+
 
 class TestRepeatAndIdleZoneTaps:
-    def test_repeat_ring_start_stop_taps(self):
+    def test_repeat_play_start_stop_taps(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         for xy, expected_zone in (
-            (REPEAT_RING_XY, TouchZone.REPEAT_RING),
+            (REPEAT_PLAY_XY, TouchZone.REPEAT_PLAY),
             (REPEAT_START_XY, TouchZone.REPEAT_START),
             (REPEAT_STOP_XY, TouchZone.REPEAT_STOP),
         ):
@@ -1305,7 +1319,7 @@ class TestRepeatAndIdleZoneTaps:
 
     def test_repeat_and_idle_taps_are_single_shot_no_repeat(self):
         for surface, xy, zone in (
-            (SURFACE_REPEAT, REPEAT_RING_XY, TouchZone.REPEAT_RING),
+            (SURFACE_REPEAT, REPEAT_PLAY_XY, TouchZone.REPEAT_PLAY),
             (SURFACE_IDLE, IDLE_XY, TouchZone.IDLE_REPLAY),
         ):
             sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1319,7 +1333,7 @@ class TestRepeatAndIdleZoneTaps:
 
 
 class TestTouchSurfacePollingTupleContracts:
-    """_poll_surface() accepts either the pre-phase-2 2-tuple or a 3-tuple
+    """_poll_surface() accepts either the older 2-tuple or a 3-tuple
     that adds dots_active — see dial_touch.py's TouchEventSource._poll_
     surface docstring."""
 
@@ -1387,7 +1401,7 @@ class TestTouchSurfacePollingTupleContracts:
 
 
 class TestExistingPollingSuiteUnaffected:
-    """The pre-phase-2 polling tests (TestTouchEventSourceSurfacePolling)
+    """The existing polling tests (TestTouchEventSourceSurfacePolling)
     already cover 2-tuple-only wiring end to end; this class only pins the
     2-tuple contract still works when a bare non-tuple string is somehow
     returned (defensive; not expected from any real caller)."""
@@ -1401,4 +1415,118 @@ class TestExistingPollingSuiteUnaffected:
             get_touch_surface=lambda: SURFACE_HIDDEN,
         )
         source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
+
+
+# ---------------------------------------------------------------------------
+# force_overlay_visible() and the repeat-close reveal-on-return-to-main
+# mechanism: closing the repeat screen via a DOTS tap must bring back the
+# main screen's volume overlay rather than leaving bare artwork on screen.
+# ---------------------------------------------------------------------------
+
+class TestForceOverlayVisible:
+    def test_makes_overlay_visible_and_returns_reveal_action(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        actions = sm.force_overlay_visible(now=0.0)
+        assert actions == [TouchAction(ACTION_REVEAL_OVERLAY)]
+        assert sm.overlay_visible is True
+
+    def test_undoes_a_surface_change_dismiss_within_the_same_tick(self):
+        """The exact sequence _poll_surface() drives: the repeat surface's
+        set_surface(..., SURFACE_HIDDEN) dismisses the overlay first (the
+        repeat screen counted as held); force_overlay_visible() right
+        after must bring it straight back."""
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, True, now=0.0, dots_active=True)
+        assert sm.overlay_visible is True
+        dismiss_actions = sm.set_surface(SURFACE_HIDDEN, False, now=1.0)
+        assert any(a.kind == ACTION_DISMISS_OVERLAY for a in dismiss_actions)
+        assert sm.overlay_visible is False
+
+        reveal_actions = sm.force_overlay_visible(now=1.0)
+        assert reveal_actions == [TouchAction(ACTION_REVEAL_OVERLAY)]
+        assert sm.overlay_visible is True
+
+    def test_auto_dismisses_normally_afterwards(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.force_overlay_visible(now=0.0)
+        actions = sm.tick(now=DISMISS_S + 1.0)
+        assert any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
+
+    def test_does_not_arm_a_dismiss_clock_while_held(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+        sm.force_overlay_visible(now=0.0)
+        actions = sm.tick(now=DISMISS_S * 10)
+        assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
+        assert sm.overlay_visible is True
+
+
+class TestRepeatCloseRevealWiring:
+    """TouchEventSource._poll_surface(): a transition away from
+    SURFACE_REPEAT consumes the display's one-shot repeat-close-reveal
+    flag and, when it was set, reveals the overlay on the way back to
+    main."""
+
+    def test_reveals_on_transition_away_from_repeat_when_flag_set(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_HIDDEN, True, False)])
+        reveal_calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=lambda: True,
+            on_reveal_overlay=lambda: reveal_calls.append(True),
+        )
+        source._poll_surface()  # -> SURFACE_REPEAT (held visible, no reveal action)
+        source._poll_surface()  # -> SURFACE_HIDDEN: dismissed, then force-revealed
+        assert len(reveal_calls) == 1
+        assert sm.overlay_visible is True
+
+    def test_no_extra_reveal_when_flag_not_set(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_HIDDEN, True, False)])
+        reveal_calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=lambda: False,
+            on_reveal_overlay=lambda: reveal_calls.append(True),
+        )
+        source._poll_surface()  # -> SURFACE_REPEAT (held visible, no reveal action)
+        source._poll_surface()  # -> SURFACE_HIDDEN, flag clear: dismissed, stays hidden
+        assert reveal_calls == []
+        assert sm.overlay_visible is False
+
+    def test_not_consulted_for_a_transition_that_is_not_away_from_repeat(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_SELECTOR, False, False), (SURFACE_HIDDEN, True, False)])
+        consume = MagicMock(return_value=True)
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=consume,
+        )
+        source._poll_surface()  # -> SURFACE_SELECTOR
+        source._poll_surface()  # -> SURFACE_HIDDEN (not away from repeat)
+        consume.assert_not_called()
+
+    def test_none_getter_is_a_safe_no_op(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_HIDDEN, True, False)])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=None,
+        )
+        source._poll_surface()
+        source._poll_surface()  # must not raise with no getter supplied
         assert sm.surface == SURFACE_HIDDEN

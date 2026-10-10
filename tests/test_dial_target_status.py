@@ -712,7 +712,7 @@ class TestTrackIdValidation:
 
 
 # ---------------------------------------------------------------------------
-# repeat object passthrough (dial phase 2, D2). This module only checks
+# repeat object passthrough. This module only checks
 # "is it a dict" — the strict parse lives in
 # dial_repeat_store.parse_repeat_object(), tested separately.
 # ---------------------------------------------------------------------------

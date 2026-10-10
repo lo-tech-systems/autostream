@@ -4,8 +4,8 @@ Owns one thing: what this dial currently believes about each rostered
 appliance's repeat/replay state, keyed by appliance_id. It never performs
 I/O and never decides what to do with that knowledge — it is written to by
 whoever learns something (a status poll's repeat object, a transport/arm
-ack) and read by whoever needs to draw it (the N2 repeat screen, the N4 idle
-affordance, the N5 replay picker). No imports beyond `threading` and
+ack) and read by whoever needs to draw it (the repeat screen, the idle
+affordance, the replay picker). No imports beyond `threading` and
 `dataclasses` — no hardware, no HTTP, no display.
 
 Lock discipline: `RepeatStore._lock` is a leaf lock. It is held only for the

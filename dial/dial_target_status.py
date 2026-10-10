@@ -282,7 +282,7 @@ def fetch_target_status(
             record["status_error"] = "bad_response"
             return record
 
-    # The optional `repeat` object (phase-2 protocol). Nothing here
+    # The optional `repeat` object. Nothing here
     # validates its shape beyond "is it a dict" — dial_repeat_store's
     # parser is the strict one, and an absent or malformed object must
     # never fail an otherwise-good 200 (an older appliance simply omits

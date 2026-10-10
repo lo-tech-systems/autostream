@@ -387,7 +387,7 @@ class TestPlayingBrowserWrappers:
 
 
 # ---------------------------------------------------------------------------
-# The _autostream._tcp general browser (dial phase 2, D1).
+# The _autostream._tcp general browser.
 # ---------------------------------------------------------------------------
 
 _VALID_ID2 = "b" * 20

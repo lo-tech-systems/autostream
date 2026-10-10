@@ -69,24 +69,27 @@ now-playing screen, reveal-on-touch or always-shown respectively, unchanged
 from HELD VISIBLE above. "selector" and "picker" are both the list chassis
 (dial_touch_layout.list_zone_at/list_layout_for): a press arms immediately
 regardless of held state (the list is either fully on screen or not shown
-at all — there is no reveal-only phase for it). "repeat" is the N2 repeat
+at all — there is no reveal-only phase for it). "repeat" is the repeat
 screen (dial_touch_layout.repeat_zone_at/repeat_layout_for); "idle" is the
-N4 idle screen (dial_touch_layout.idle_zone_at/idle_layout_for) — both held
+idle screen (dial_touch_layout.idle_zone_at/idle_layout_for) — both held
 like the selector. Every zone any of these can arm (NAME/DOTS on the main
 surface; LIST_ROW/LIST_BACK/LIST_DOWN/LIST_UP on the selector/picker
-surface; DOTS/REPEAT_RING/REPEAT_START/REPEAT_STOP on the repeat surface;
-IDLE_REPLAY on the idle surface) is single-shot — it flashes once and never
-repeats, and its tap is reported as ACTION_ZONE_TAP for the caller to
-dispatch. DOTS is gated by a separate "is it currently tappable" flag
-(_dots_active) exactly as NAME is gated by _name_active — the main and
-repeat surfaces share this one gate. A surface CHANGE while a finger is
+surface; DOTS/NAME/REPEAT_PLAY/REPEAT_START/REPEAT_STOP on the repeat
+surface; IDLE_REPLAY on the idle surface) is single-shot — it flashes once
+and never repeats, and its tap is reported as ACTION_ZONE_TAP for the
+caller to dispatch. DOTS and NAME are each gated by their own "is it
+currently tappable" flag (_dots_active/_name_active) — the main and
+repeat surfaces share both gates. A surface CHANGE while a finger is
 down drops the zone latch exactly as set_held_visible(False) does, because
 the geometry under the finger just changed. TouchEventSource polls the
 display's touch_surface() (injected; falls back to the legacy
 get_persistent_overlay when that is all that is supplied, so existing
 "held"/"hidden" wiring behaves byte for byte) once per loop iteration; it
-accepts either the pre-phase-2 2-tuple (surface, name_active) or the
-3-tuple (surface, name_active, dots_active) touch_surface() may now return.
+accepts either a 2-tuple (surface, name_active) or the 3-tuple (surface,
+name_active, dots_active) touch_surface() may return. Closing the repeat
+screen via a DOTS tap also reveals the main screen's volume overlay on
+return — see TouchStateMachine.force_overlay_visible() and
+TouchEventSource._poll_surface().
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -140,7 +143,7 @@ _SINGLE_SHOT_ZONES = frozenset((
     TouchZone.LIST_UP,
     TouchZone.LIST_ROW,
     TouchZone.DOTS,
-    TouchZone.REPEAT_RING,
+    TouchZone.REPEAT_PLAY,
     TouchZone.REPEAT_START,
     TouchZone.REPEAT_STOP,
     TouchZone.IDLE_REPLAY,
@@ -155,7 +158,7 @@ _ZONE_TAP_ZONES = frozenset((
     TouchZone.LIST_UP,
     TouchZone.LIST_ROW,
     TouchZone.DOTS,
-    TouchZone.REPEAT_RING,
+    TouchZone.REPEAT_PLAY,
     TouchZone.REPEAT_START,
     TouchZone.REPEAT_STOP,
     TouchZone.IDLE_REPLAY,
@@ -211,14 +214,15 @@ class TouchStateMachine:
         # the module docstring's SURFACES paragraph. Starts "hidden": the
         # main now-playing screen, reveal on touch.
         self._surface = SURFACE_HIDDEN
-        # Whether the NAME zone is currently tappable — only meaningful on
-        # the main surface (the selector surface never consults it: every
-        # one of its zones is always active). See set_surface().
+        # Whether the NAME zone is currently tappable — meaningful on BOTH
+        # the main surface and the repeat surface (both open the appliance
+        # selector); the selector surface itself never consults it: every
+        # one of its zones is always active. See set_surface().
         self._name_active = False
         # Whether the DOTS zone is currently tappable — meaningful on BOTH
-        # the main surface (opens N2) and the repeat surface (pops back to
-        # main); gated the same way _name_active gates NAME. See
-        # set_surface() and _arm().
+        # the main surface (opens the repeat screen) and the repeat surface
+        # (pops back to main); gated the same way _name_active gates NAME.
+        # See set_surface() and _arm().
         self._dots_active = False
 
     # -- read-only state, for a compositor/UI to consult -------------------
@@ -359,11 +363,11 @@ class TouchStateMachine:
         SURFACE_SELECTOR: the appliance list; hit-tests use list_zone_at,
         presses arm immediately (held=True in effect), and there is no
         dismiss clock to disable beyond what held already disables.
-        SURFACE_PICKER: the N5 replay picker — same list_zone_at hit-test
+        SURFACE_PICKER: the replay picker — same list_zone_at hit-test
         and held behaviour as SURFACE_SELECTOR.
-        SURFACE_REPEAT: the N2 repeat screen; hit-tests use repeat_zone_at,
+        SURFACE_REPEAT: the repeat screen; hit-tests use repeat_zone_at,
         held like the selector.
-        SURFACE_IDLE: the N4 idle screen; hit-tests use idle_zone_at, held
+        SURFACE_IDLE: the idle screen; hit-tests use idle_zone_at, held
         like the selector.
 
         name_active and dots_active are recorded either way — even on a
@@ -397,6 +401,32 @@ class TouchStateMachine:
             actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
         actions.extend(self.set_held_visible(surface != SURFACE_HIDDEN, now))
         return actions
+
+    def force_overlay_visible(self, now: float) -> list[TouchAction]:
+        """Force the overlay into the same visible state a fresh touch-down
+        reveal would produce, without an actual touch triggering it.
+
+        Used when the repeat screen closes via a DOTS tap: the surface
+        change back to the main screen already forces the overlay hidden
+        (see set_surface()'s set_held_visible(False) delegation, which
+        fires a DISMISS the moment the repeat screen's "held" surface goes
+        away) — this call, made right afterwards, brings it straight back
+        so the user sees the volume controls rather than bare artwork. See
+        TouchEventSource._poll_surface() for the call site and the
+        module docstring's SURFACES paragraph.
+
+        Skips resetting the dismiss deadline while the overlay is already
+        held visible on its own (always_show_controls) — matching
+        set_held_visible(True)'s own handling — since there is no
+        touch-driven session there for a deadline to time out.
+        """
+        self._overlay_visible = True
+        self._phase = _PHASE_IDLE
+        if self._held:
+            self._dismiss_deadline = None
+        else:
+            self._reset_dismiss(now)
+        return [TouchAction(ACTION_REVEAL_OVERLAY)]
 
     def tick(self, now: float) -> list[TouchAction]:
         """Periodic check for repeat-due and dismiss-due, independent of any
@@ -484,6 +514,8 @@ class TouchStateMachine:
         elif self._surface == SURFACE_REPEAT:
             zone = repeat_zone_at(x, y, self._width, self._height)
             if zone == TouchZone.DOTS and not self._dots_active:
+                zone = None
+            if zone == TouchZone.NAME and not self._name_active:
                 zone = None
         elif self._surface == SURFACE_IDLE:
             zone = idle_zone_at(x, y, self._width, self._height)
@@ -576,6 +608,7 @@ class TouchEventSource:
         get_noncomposited_generation=None,
         get_persistent_overlay=None,
         get_touch_surface=None,
+        consume_repeat_close_reveal=None,
         axis_signs=None,
     ) -> None:
         self._driver = driver
@@ -616,6 +649,16 @@ class TouchEventSource:
         # _poll_surface(). Kept injected, never imported, for the same
         # reason as every other display-facing callback here.
         self._get_touch_surface = get_touch_surface
+        # Injected read-and-clear of dial_display.DialDisplay.
+        # consume_repeat_close_reveal — a one-shot flag set only when the
+        # repeat screen closes via a DOTS tap (never any other way it can
+        # close), consumed here right after the resulting surface change is
+        # applied to reveal the main screen's volume overlay instead of
+        # leaving bare artwork on screen — see _poll_surface() and
+        # TouchStateMachine.force_overlay_visible(). None disables it
+        # entirely (e.g. tests that don't care, or a display stand-in that
+        # predates this feature).
+        self._consume_repeat_close_reveal = consume_repeat_close_reveal
         self._last_held: bool | None = None
         self._last_surface: tuple[str, bool, bool] | None = None
         # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
@@ -743,12 +786,20 @@ class TouchEventSource:
         "held"/"hidden"-only wiring is unaffected by this method's
         existence.
 
-        Accepts either a 2-tuple (surface, name_active) — the pre-phase-2
-        contract, dots_active defaults to False — or a 3-tuple (surface,
-        name_active, dots_active). Either way self._last_surface is kept
-        as a 3-tuple so a dots_active-only change (main screen's dots
-        appearing/disappearing with no surface or name_active change)
-        still triggers a set_surface() call.
+        Accepts either a 2-tuple (surface, name_active) — dots_active
+        defaults to False — or a 3-tuple (surface, name_active,
+        dots_active). Either way self._last_surface is kept as a 3-tuple
+        so a dots_active-only change (main screen's dots appearing/
+        disappearing with no surface or name_active change) still
+        triggers a set_surface() call.
+
+        A transition AWAY from SURFACE_REPEAT additionally consumes the
+        display's one-shot repeat-close-reveal flag (see
+        consume_repeat_close_reveal in __init__): when it is set — which
+        only happens when the repeat screen just closed via a DOTS tap,
+        never any other way — this brings the main screen's volume
+        overlay straight back up after set_surface()'s own DISMISS, via
+        TouchStateMachine.force_overlay_visible().
         """
         if self._get_touch_surface is None:
             self._poll_held_visible()
@@ -767,10 +818,17 @@ class TouchEventSource:
             surface, name_active, dots_active = result, False, False
         current = (surface, bool(name_active), bool(dots_active))
         if current != self._last_surface:
+            previous_surface = self._last_surface[0] if self._last_surface is not None else None
             self._last_surface = current
             self._dispatch(self._state_machine.set_surface(
                 surface, bool(name_active), self._clock(), dots_active=bool(dots_active),
             ))
+            if (
+                previous_surface == SURFACE_REPEAT and surface != SURFACE_REPEAT
+                and self._consume_repeat_close_reveal is not None
+                and self._consume_repeat_close_reveal()
+            ):
+                self._dispatch(self._state_machine.force_overlay_visible(self._clock()))
 
     # -- main loop -----------------------------------------------------
 

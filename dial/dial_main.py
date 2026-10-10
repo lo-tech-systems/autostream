@@ -386,17 +386,17 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     # activity/presence are still recorded either way, since a list tap is
     # a genuine touch.
     #
-    # The repeat screen's own zones (REPEAT_RING/REPEAT_START/REPEAT_STOP)
+    # The repeat screen's own zones (REPEAT_PLAY/REPEAT_START/REPEAT_STOP)
     # and the idle screen's IDLE_REPLAY are rendered through their own
     # compose paths too, so the same suppression applies — but their
     # pressed-wash feedback IS wired, through display.set_secondary_pressed()
-    # rather than the main OverlayState. DOTS is deliberately NOT in either
-    # group: it is one of zones_for()'s own main-surface zones (drawn via
-    # the ordinary OverlayState.pressed path on both the main and repeat
-    # screens), so it needs no special handling here.
+    # rather than the main OverlayState. DOTS and NAME are deliberately NOT
+    # in either group: they are zones_for()'s own main-surface zones (drawn
+    # via the ordinary OverlayState.pressed path on both the main and
+    # repeat screens), so they need no special handling here.
     _LIST_ZONES = (TouchZone.LIST_BACK, TouchZone.LIST_DOWN, TouchZone.LIST_UP, TouchZone.LIST_ROW)
     _SECONDARY_ZONES = (
-        TouchZone.REPEAT_RING, TouchZone.REPEAT_START, TouchZone.REPEAT_STOP, TouchZone.IDLE_REPLAY,
+        TouchZone.REPEAT_PLAY, TouchZone.REPEAT_START, TouchZone.REPEAT_STOP, TouchZone.IDLE_REPLAY,
     )
     _list_zone_pressed = [False]
     _secondary_zone_pressed = [False]
@@ -449,12 +449,14 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         display.set_overlay(OverlayState(visible=True, pressed=TouchZone.MUTE, muted=muted))
 
     def on_zone_tap(zone, index) -> None:
-        # NAME opens the appliance selector; the LIST_* zones act on
-        # whichever list-chassis screen (selector or picker) is open; DOTS
-        # opens/closes the repeat screen; REPEAT_* act on it; IDLE_REPLAY
-        # opens the replay picker — see dial_touch.py's SURFACES paragraph
-        # for how a press ever reaches one of these zones in the first
-        # place.
+        # NAME opens the appliance selector (from either the main or the
+        # repeat screen); the LIST_* zones act on whichever list-chassis
+        # screen (selector or picker) is open; DOTS opens/closes the repeat
+        # screen (closing it also reveals the main screen's volume overlay
+        # on return — see display.toggle_repeat_screen()); REPEAT_* act on
+        # the repeat screen; IDLE_REPLAY opens the replay picker — see
+        # dial_touch.py's SURFACES paragraph for how a press ever reaches
+        # one of these zones in the first place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
@@ -469,8 +471,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
             display.list_row_tap(index)
         elif zone == TouchZone.DOTS:
             display.toggle_repeat_screen()
-        elif zone == TouchZone.REPEAT_RING:
-            display.repeat_ring_tap()
+        elif zone == TouchZone.REPEAT_PLAY:
+            display.repeat_toggle_tap()
         elif zone == TouchZone.REPEAT_START:
             display.repeat_start_tap()
         elif zone == TouchZone.REPEAT_STOP:
@@ -495,6 +497,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         # exactly as before — see dial_touch.TouchEventSource._poll_surface.
         get_touch_surface=getattr(display, "touch_surface", None),
         get_persistent_overlay=getattr(display, "persistent_overlay_shown", None),
+        consume_repeat_close_reveal=getattr(display, "consume_repeat_close_reveal", None),
         axis_signs=(
             profile.touch_swap_xy, profile.touch_invert_x, profile.touch_invert_y
         ),

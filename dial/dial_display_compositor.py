@@ -275,18 +275,25 @@ class RepeatViewState:
     repeat-screen compose path; this module has no idea what a daemon state
     is, only a layout name and the fields that layout draws.
 
-    name: the appliance's display name, drawn plain (no halo — there is no
-        artwork behind it on this screen).
-    layout: "enable" (a live source is playing or about to; draws the ring
-        and the "Repeat" label) or "replaying" (draws the Start/Stop row
-        and the position line).
+    Both layouts share the same top band the main screen's now-playing
+    overlay uses (dots, name, mute/volume readout — see _draw_top_band_
+    content()); `name`, `muted` and `volume` feed that shared piece, drawn
+    without the main screen's halo (there is no arbitrary album art behind
+    it in the enable layout, and the replaying layout's own base image is
+    already dimmed there — see compose_repeat()'s `base` argument).
+
+    name: the appliance's display name.
+    layout: "enable" (a live source is playing or about to; draws the
+        "Repeat Play" row) or "replaying" (draws the Restart/Stop row and
+        the position line, over the current artwork/logo base image).
     armed: whether the daemon will auto-start a replay on its own — read by
-        the enable layout's ring (a solid disc when False, a black centre
-        punched out of it when True). Meaningful in either layout, but only
-        drawn in "enable".
+        the enable layout's row marker (a hollow dot when False, solid when
+        True). Meaningful in either layout, but only drawn in "enable".
+    muted, volume: the top band's mute/volume readout — display-only on
+        this screen (no touch zone), mirroring OverlayState.muted/volume.
     line: the centre text for the "replaying" layout ("0:00 / 3:12" style);
         ignored (nothing drawn) in "enable".
-    start_enabled, stop_enabled: whether the Start/Stop label is drawn at
+    start_enabled, stop_enabled: whether the Restart/Stop label is drawn at
         full brightness (True) or dimmed (False) — "replaying" layout only.
     stop_pressed: whether Stop is drawn with a pressed wash regardless of
         an actual touch — used while a fade-out is already in flight, so
@@ -303,6 +310,8 @@ class RepeatViewState:
     start_enabled: bool
     stop_enabled: bool
     stop_pressed: bool
+    muted: bool | None = None
+    volume: int | None = None
     pressed: "TouchZone | None" = None
 
 
@@ -379,22 +388,24 @@ class DialDisplayCompositor:
         return frame
 
     def compose_repeat(
-        self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool,
+        self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool, base=None,
     ):
         """Build one display-ready frame for the repeat screen.
 
-        A flat dark background (_LIST_BG_RGB, the same chassis colour as
-        compose_list()) — there is no artwork here either. Draws the pager
-        dots (right dot filled — this is the second of the two screens) and
-        the appliance name, then either the enable layout (the "Repeat"
-        label and a ring, filled solid white and punched with a black
-        centre disc when armed) or the replaying layout (a dimmed bottom
-        band, the Start/Stop labels with a divider between them, and the
-        centred position line). rotate/bgr are applied last, in the same
-        order compose() uses. Never raises: a font or glyph failure
-        degrades to a plainer frame, matching compose()'s own discipline.
+        Draws the shared top band (dots, name, mute/volume readout — see
+        _draw_top_band_content()) over either a flat dark background
+        (_LIST_BG_RGB, the same chassis colour as compose_list()) for the
+        enable layout — the "Repeat Play" row, with a hollow or solid dot
+        marker depending on `state.armed` — or, for the replaying layout,
+        *base* (the current artwork frame or the logo, already panel-sized;
+        None falls back to the same flat background), dimmed the same way
+        compose()'s overlay dims the main screen's bands, with the
+        Restart/Stop labels and the centred position line drawn on top.
+        rotate/bgr are applied last, in the same order compose() uses.
+        Never raises: a font, glyph or base-image failure degrades to a
+        plainer frame, matching compose()'s own discipline.
         """
-        frame = _draw_repeat(width, height, state)
+        frame = _draw_repeat(width, height, state, base)
 
         if rotate:
             frame = frame.transpose(Image.ROTATE_180)
@@ -500,6 +511,54 @@ def _reset_font_cache() -> None:
     _load_font.cache_clear()
 
 
+def _draw_top_band_content(
+    frame: Image.Image,
+    *,
+    dots_rect,
+    dots_filled: int | None,
+    name_rect,
+    name_text: str,
+    volume_cluster_rect,
+    volume: int | None,
+    muted: bool | None,
+    width: int,
+    height: int,
+    halo: bool,
+) -> None:
+    """Draw the top band's pager dots, appliance name and mute/volume
+    readout into *frame* in place — the piece of the top band shared
+    verbatim by the main screen's now-playing overlay (_draw_overlay,
+    halo=True: the name is drawn over arbitrary album art) and the repeat
+    screen's own top band (_draw_repeat, halo=False: a flat chassis
+    background in the enable layout, or an already band-dimmed artwork/
+    logo base in the replaying layout — see the module docstring's halo
+    paragraph for why only text drawn directly over undimmed artwork needs
+    it).
+
+    Caller is responsible for dimming the band (and drawing any
+    pressed-zone highlight) before calling this, same discipline as every
+    other draw-onto-frame helper here — text/glyphs always land on top of
+    both. dots_rect=None (or dots_filled=None) omits the dots entirely —
+    used when the caller's overlay snapshot says they should not be drawn.
+    """
+    name_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+    volume_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
+    name_font = _load_font(name_px)
+    volume_font = _load_font(volume_px)
+
+    draw = ImageDraw.Draw(frame)
+    _draw_volume_cluster(draw, volume_cluster_rect, volume, muted, volume_font, width, height)
+    if halo:
+        _draw_text_with_halo(frame, name_rect, name_text, name_font, width, height)
+    else:
+        pad = _pad_px(width, height)
+        _draw_label(ImageDraw.Draw(frame), name_rect, name_text, name_font, pad)
+    if dots_rect is not None and dots_filled is not None:
+        _draw_glyph_supersampled(
+            frame, dots_rect, lambda d, w, h: _draw_two_dots(d, w, h, filled=dots_filled),
+        )
+
+
 def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayState) -> Image.Image:
     """Return a new frame: *image* with its top/bottom bands dimmed, the
     appliance name, artist line, volume readout, minus/plus glyphs and a
@@ -523,27 +582,27 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
         # frame.
         draw = ImageDraw.Draw(frame)
 
-    volume_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
-    artist_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
-    volume_font = _load_font(volume_px)
-    artist_font = _load_font(artist_px)
+    # The name (top-left) is drawn over arbitrary album art, so it gets the
+    # soft halo — see the module docstring and _draw_text_with_halo(). The
+    # dots (also part of the top band) share this same helper with the
+    # repeat screen's own top band — see _draw_top_band_content().
+    _draw_top_band_content(
+        frame,
+        dots_rect=layout.dots if overlay.dots else None,
+        dots_filled=0 if overlay.dots else None,
+        name_rect=layout.name, name_text=overlay.name,
+        volume_cluster_rect=layout.volume_cluster, volume=overlay.volume, muted=overlay.muted,
+        width=width, height=height, halo=True,
+    )
 
-    _draw_volume_cluster(draw, layout.volume_cluster, overlay.volume, overlay.muted, volume_font, width, height)
-    # Both the name (top-left) and the artist line (centre-low) are drawn
-    # over arbitrary album art, so both get the soft halo — see the module
-    # docstring and _draw_text_with_halo(). Each call mutates frame in
-    # place (a paste, not a new object), so the draw handle is re-created
-    # afterwards, the same discipline the pressed-highlight branch above
-    # uses.
-    _draw_text_with_halo(frame, layout.name, overlay.name, artist_font, width, height)
+    # The artist/title lines are main-screen-only (the repeat screen has no
+    # equivalent), so they stay here rather than in the shared helper. Both
+    # are drawn over arbitrary album art too, so both get the same halo.
+    artist_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+    artist_font = _load_font(artist_px)
     _draw_text_with_halo(frame, layout.title, overlay.title, artist_font, width, height)
     _draw_text_with_halo(frame, layout.artist, overlay.artist, artist_font, width, height)
     draw = ImageDraw.Draw(frame)
-    if overlay.dots:
-        _draw_glyph_supersampled(
-            frame, layout.dots, lambda d, w, h: _draw_two_dots(d, w, h, filled=0),
-        )
-        draw = ImageDraw.Draw(frame)
     _draw_minus_glyph(draw, layout.down)
     _draw_plus_glyph(draw, layout.up)
     _draw_band_divider(draw, layout, width, height)
@@ -778,11 +837,15 @@ def _draw_text_with_halo(
     font,
     width: int,
     height: int,
+    *,
+    align: str = "left",
 ) -> None:
-    """Draw *text* left-aligned inside *rect*, legible over arbitrary album
-    art: a soft, Gaussian-blurred dark glow is composited behind the text
-    before the text itself is drawn in the glyph colour. Used for both the
-    appliance name (top-left) and the artist line (centre-low) — see the
+    """Draw *text* inside *rect* (left-aligned, or centred when
+    align="center"), legible over arbitrary album art: a soft,
+    Gaussian-blurred dark glow is composited behind the text before the
+    text itself is drawn in the glyph colour. Used for the appliance name
+    and artist line (left-aligned) and the repeat screen's replaying-layout
+    position line (centred, over its own artwork/logo base image) — see the
     module docstring's halo paragraph.
 
     A blank *text*, a missing *font*, truncation-to-nothing, or any Pillow
@@ -811,7 +874,10 @@ def _draw_text_with_halo(
     text_w, text_h, bbox = measured
     left, top, _, _ = bbox
     cy = (rect[1] + rect[3]) // 2
-    x = rect[0] + pad
+    if align == "center":
+        x = rect[0] + max(0, (rect[2] - rect[0] - text_w) // 2)
+    else:
+        x = rect[0] + pad
     y = cy - text_h // 2
     xy = (x - left, y - top)
 
@@ -928,17 +994,19 @@ def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int) -> No
             draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
 
 
-def _draw_ring(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
-    """The repeat screen's enable-layout affordance: a solid white disc,
-    with a black centre disc punched out of it when *armed* — so a pixel
-    probe at the exact centre reads white unarmed, black armed. Rendered
-    into a (w, h) canvas — see _draw_glyph_supersampled."""
+def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
+    """The enable layout's "Repeat Play" row marker: solid white when
+    *armed* (the appliance will auto-start a replay on its own), hollow
+    (outline only) when disarmed — the same dot size _draw_selected_dot
+    uses for the appliance-selector's row marker. Rendered into a (w, h)
+    canvas — see _draw_glyph_supersampled."""
+    r = max(2, round(min(w, h) * 0.16))
     cx, cy = w / 2.0, h / 2.0
-    r_outer = min(w, h) * 0.45
-    draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer], fill=_GLYPH_RGB)
+    box = [cx - r, cy - r, cx + r, cy + r]
     if armed:
-        r_inner = r_outer * 0.55
-        draw.ellipse([cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner], fill=(0, 0, 0))
+        draw.ellipse(box, fill=_GLYPH_RGB)
+    else:
+        draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
 
 
 def _draw_label(
@@ -989,18 +1057,37 @@ def _draw_label_centered(
     _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
 
 
-def _draw_repeat(width: int, height: int, state: RepeatViewState) -> Image.Image:
+def _draw_repeat(width: int, height: int, state: RepeatViewState, base=None) -> Image.Image:
     """Render the repeat-screen chassis (compose-space, pre rotate/BGR) —
     see DialDisplayCompositor.compose_repeat()."""
     layout = repeat_layout_for(width, height)
-    frame = Image.new("RGB", (width, height), _LIST_BG_RGB)
+
+    frame = None
+    if state.layout == "replaying" and base is not None:
+        try:
+            candidate = base.convert("RGB")
+            if candidate.size != (width, height):
+                candidate = candidate.resize((width, height))
+            frame = candidate
+        except Exception:
+            frame = None  # degrade to the flat chassis background below
+    if frame is None:
+        frame = Image.new("RGB", (width, height), _LIST_BG_RGB)
+
+    # The top band is dimmed on both layouts — the enable layout's flat
+    # chassis background is already dark, so this is cosmetically a no-op
+    # there, but it means the shared top-band content (see
+    # _draw_top_band_content) never needs to know which layout it is
+    # drawn over. The bottom band is only ever occupied in "replaying".
+    _dim_rect(frame, layout.top_band)
     if state.layout == "replaying":
         _dim_rect(frame, layout.bottom_band)
 
     draw = ImageDraw.Draw(frame)
     zones = {
         TouchZone.DOTS: layout.dots,
-        TouchZone.REPEAT_RING: layout.ring,
+        TouchZone.NAME: layout.name,
+        TouchZone.REPEAT_PLAY: layout.row,
         TouchZone.REPEAT_START: layout.start,
         TouchZone.REPEAT_STOP: layout.stop,
     }
@@ -1012,25 +1099,38 @@ def _draw_repeat(width: int, height: int, state: RepeatViewState) -> Image.Image
         draw = ImageDraw.Draw(frame)
 
     pad = _pad_px(width, height)
-    name_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
+    row_px = _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8)
     line_px = _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9)
-    name_font = _load_font(name_px)
+    row_font = _load_font(row_px)
     line_font = _load_font(line_px)
 
-    _draw_label(draw, layout.name, state.name, name_font, pad)
-    _draw_glyph_supersampled(frame, layout.dots, lambda d, w, h: _draw_two_dots(d, w, h, filled=1))
+    # The dots draw the RIGHT dot filled (this is the second of the two
+    # screens) and are never omitted here — see _draw_top_band_content;
+    # halo=False since the enable layout has no arbitrary artwork behind
+    # it, and the replaying layout's base image is already band-dimmed.
+    _draw_top_band_content(
+        frame,
+        dots_rect=layout.dots, dots_filled=1,
+        name_rect=layout.name, name_text=state.name,
+        volume_cluster_rect=layout.volume_cluster, volume=state.volume, muted=state.muted,
+        width=width, height=height, halo=False,
+    )
     draw = ImageDraw.Draw(frame)
 
     if state.layout == "enable":
-        _draw_label_centered(draw, layout.label, "Repeat", name_font)
-        _draw_glyph_supersampled(frame, layout.ring, lambda d, w, h: _draw_ring(d, w, h, state.armed))
+        row = layout.row
+        dot_box = row[3] - row[1]
+        dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
+        label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
+        _draw_label(draw, label_rect, "Repeat Play", row_font, pad)
+        _draw_glyph_supersampled(frame, dot_rect, lambda d, w, h: _draw_arm_dot(d, w, h, state.armed))
     else:
         start_color = _GLYPH_RGB if state.start_enabled else _DIMMED_GLYPH_RGB
         stop_color = _GLYPH_RGB if state.stop_enabled else _DIMMED_GLYPH_RGB
-        _draw_label_centered(draw, layout.start, "Start", line_font, color=start_color)
+        _draw_label_centered(draw, layout.start, "Restart", line_font, color=start_color)
         _draw_label_centered(draw, layout.stop, "Stop", line_font, color=stop_color)
         _draw_band_divider(draw, layout, width, height)
-        _draw_label_centered(draw, layout.line, state.line, line_font)
+        _draw_text_with_halo(frame, layout.line, state.line, line_font, width, height, align="center")
 
     return frame
 

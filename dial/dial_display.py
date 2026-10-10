@@ -123,6 +123,17 @@ FOCUS_PENDING_GRACE_S = 10.0
 # always corrects any drift this produces.
 _REPEAT_LOOP_GAP_S = 1.5
 
+# The repeat screen's position counter is deliberately shown this far
+# behind the true (interpolated or daemon-reported) playback position —
+# there is roughly this much latency in the audio chain between a
+# restart/seek landing and sound actually reaching the listener, so
+# showing the raw position would read as running ahead of what is heard.
+# Applied to the "replaying" layout's line only (clamped at zero — see
+# _build_repeat_view_locked); the "hold" layout already reads "0:00" with
+# nothing further to subtract, and the duration side of "m:ss / m:ss" is
+# never touched by this.
+REPEAT_COUNTER_LATENCY_S = 2.0
+
 
 def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
     """Fetch artwork for the panel, at the dial's own size ceiling."""
@@ -470,6 +481,13 @@ class DialDisplay:
         # writes from the repaint thread noted at their call sites).
         self._last_reconcile_at = 0.0
         self._reconcile_due = True          # first tick reconciles
+        # The appliance_ids that were playing on the previous poll tick, so
+        # the poll can notice when one stops and reconcile immediately (poll
+        # thread only). See _poll_once: a shrinking playing set forces a
+        # reconcile so a just-ended source's retained-recording ("hold")
+        # state and now-idle authorization reach the idle screen and replay
+        # picker within one tick, not at the next 60s reconcile.
+        self._prev_playing_ids: set[str] = set()
         # Manual focus: appliance_id chosen by the user, or None for
         # auto-pick. Read and cleared by the poll thread; set by
         # selector_pick() below (the touch thread, via dial_main's
@@ -524,7 +542,7 @@ class DialDisplay:
         # The repeat screen's own state — built once when it opens (see
         # RepeatScreenState); None while the main/selector/picker screen is
         # showing. Written by the repeat thread under self._lock, read
-        # lock-free by the touch thread's repeat_ring_tap()/repeat_start_
+        # lock-free by the touch thread's repeat_toggle_tap()/repeat_start_
         # tap()/repeat_stop_tap() entries.
         self._repeat_screen: RepeatScreenState | None = None
         # The replay picker's own rows/paging — refreshed every poll tick
@@ -536,6 +554,17 @@ class DialDisplay:
         # _build_repeat_view_locked(). Plain attribute, same discipline as
         # dial_touch's own pressed-zone tracking.
         self._secondary_pressed: "TouchZone | None" = None
+        # One-shot: set (by toggle_repeat_screen(), when the repeat screen
+        # closes via a DOTS tap) and consumed (by TouchEventSource._poll_
+        # surface(), via consume_repeat_close_reveal() below) exclusively
+        # on the touch thread — both the setter and the getter run there,
+        # so this needs no lock at all, unlike almost everything else this
+        # class shares between threads. Tells the touch side to reveal the
+        # main screen's volume overlay on return, instead of leaving bare
+        # artwork on screen (item 1 of the repeat screen's touch design —
+        # see toggle_repeat_screen() and dial_touch.TouchStateMachine.
+        # force_overlay_visible()).
+        self._repeat_close_reveal = False
         # Touch-thread requests (open_selector/close_list/list_page/
         # toggle_repeat_screen/open_picker) are flag writes only — plain
         # str/int, no lock — folded into self._screen/self._selector/
@@ -814,7 +843,14 @@ class DialDisplay:
         if self._screen == "picker":
             return ("picker", False, False)
         if self._screen == "repeat":
-            return ("repeat", False, True)
+            # name_active is unconditionally True here: the repeat screen
+            # only ever opens for a focused/reporting appliance (see
+            # toggle_repeat_screen()) and closes before that appliance's
+            # name could go stale (the empty-target branch of _poll_once
+            # always pops the screen before clearing _now_playing), so its
+            # own top-band NAME zone is always meaningful while this screen
+            # is showing.
+            return ("repeat", True, True)
         if self._now_playing is None:
             return ("idle" if self._idle_affordance else "hidden", False, False)
         name_active = True
@@ -1377,17 +1413,23 @@ class DialDisplay:
         """Touch-thread entry (dial_main's on_zone_tap, for a DOTS tap):
         open or close the repeat screen.
 
-        Closing is unconditional. Opening reads self._now_playing,
-        self._manual_focus_id and self._reporting_appliance_id (all plain
-        reference reads, same discipline as set_manual_focus()) and the
-        repeat store's own leaf lock — it only opens when the focused/
-        reporting appliance has a fresh, available record; an appliance
-        this dial cannot see repeat state for has nothing to show on the
-        repeat screen. No poll/reconcile is forced here: unlike
-        open_selector()/open_picker(), the repeat screen's own content is
-        entirely driven by whatever the repeat store already holds.
+        Closing is unconditional, and also arms self._repeat_close_reveal
+        — a one-shot flag consumed by TouchEventSource._poll_surface() to
+        bring the main screen back showing its volume overlay rather than
+        bare artwork (see the flag's own comment in __init__ and
+        dial_touch.TouchStateMachine.force_overlay_visible()). Opening
+        reads self._now_playing, self._manual_focus_id and
+        self._reporting_appliance_id (all plain reference reads, same
+        discipline as set_manual_focus()) and the repeat store's own leaf
+        lock — it only opens when the focused/reporting appliance has a
+        fresh, available record; an appliance this dial cannot see repeat
+        state for has nothing to show on the repeat screen. No poll/
+        reconcile is forced here: unlike open_selector()/open_picker(), the
+        repeat screen's own content is entirely driven by whatever the
+        repeat store already holds.
         """
         if self._screen == "repeat":
+            self._repeat_close_reveal = True
             self._screen_request = "main"
             self._overlay_signal.set()
             return
@@ -1402,13 +1444,23 @@ class DialDisplay:
         self._screen_request = "repeat"
         self._overlay_signal.set()
 
-    def repeat_ring_tap(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_RING
+    def consume_repeat_close_reveal(self) -> bool:
+        """Touch-thread-only read-and-clear of the one-shot flag
+        toggle_repeat_screen() sets when the repeat screen closes via a
+        DOTS tap. Both the setter and this getter run exclusively on the
+        touch thread (see the flag's own comment in __init__), so no lock
+        is needed here at all."""
+        value = self._repeat_close_reveal
+        self._repeat_close_reveal = False
+        return value
+
+    def repeat_toggle_tap(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_PLAY
         tap): toggle arm/disarm — only meaningful in the enable layout
         (a live source recording/pending, or idle with the daemon still
         enabled); a tap here while the replaying/hold layout is showing
-        (no ring drawn) is a no-op. Enqueues on the repeat worker's own
-        queue — no lock, no I/O on this thread."""
+        (no "Repeat Play" row drawn) is a no-op. Enqueues on the repeat
+        worker's own queue — no lock, no I/O on this thread."""
         screen = self._repeat_screen
         if screen is None:
             return
@@ -1804,11 +1856,20 @@ class DialDisplay:
         """Build the compositor's RepeatViewState from the repeat store's
         CURRENT record for *screen* — the daemon-state-to-layout mapping:
         no/unavailable record or a live source (recording/pending/idle)
-        draws the enable layout (dots, name, the "Repeat" label and the
-        ring); hold/replaying/fading_out draw the replaying layout (the
-        Start/Stop row and the position line). The ring reads `armed`,
-        never `state` — armed can be true while a live source is playing.
-        Caller holds self._lock (called from _display_repeat_locked)."""
+        draws the enable layout (the top band, plus the "Repeat Play" row);
+        hold/replaying/fading_out draw the replaying layout (the top band,
+        plus the Restart/Stop row and the position line). The row's dot
+        marker reads `armed`, never `state` — armed can be true while a
+        live source is playing. Caller holds self._lock (called from
+        _display_repeat_locked).
+
+        muted/volume feed the top band's display-only readout — the same
+        belief/reading the main screen's overlay shows (dial_volume.
+        is_muted()/shown_volume()), addressed at *screen*'s own appliance
+        rather than whatever the main overlay would currently show, since
+        the two screens can disagree about which appliance is focused for
+        as long as it takes the next poll to notice a manual focus change.
+        """
         pressed = self._secondary_pressed
         if screen is None:
             return RepeatViewState(
@@ -1816,29 +1877,42 @@ class DialDisplay:
                 start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
             )
         name = appliance_display_name(screen.service_name)
+        muted = is_muted()
+        volume = shown_volume(screen.service_name)
         rec = repeat_store.get(screen.appliance_id, now)
         if rec is None or not rec.available:
             return RepeatViewState(
                 name=name, layout="enable", armed=False, line="",
-                start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
+                start_enabled=False, stop_enabled=False, stop_pressed=False,
+                muted=muted, volume=volume, pressed=pressed,
             )
         if rec.state in ("recording", "pending", "idle"):
             return RepeatViewState(
                 name=name, layout="enable", armed=rec.armed, line="",
-                start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
+                start_enabled=False, stop_enabled=False, stop_pressed=False,
+                muted=muted, volume=volume, pressed=pressed,
             )
         if rec.state == "hold":
+            # Already reads 0:00 — there is nothing running yet for the
+            # counter-latency clamp (REPEAT_COUNTER_LATENCY_S) to apply to.
             line = f"0:00 / {format_mmss(rec.recording_seconds)}"
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
-                start_enabled=True, stop_enabled=False, stop_pressed=False, pressed=pressed,
+                start_enabled=True, stop_enabled=False, stop_pressed=False,
+                muted=muted, volume=volume, pressed=pressed,
             )
         if rec.state == "replaying":
             pos = _interpolate_repeat_position(rec, now)
+            # The counter reads this far behind the true position — see
+            # REPEAT_COUNTER_LATENCY_S — clamped at zero so a fresh
+            # (re)start reads "0:00" for the first couple of seconds
+            # instead of a small negative-turned-huge wrapped value.
+            pos = max(0.0, pos - REPEAT_COUNTER_LATENCY_S)
             line = f"{format_mmss(pos)} / {format_mmss(rec.duration_seconds)}"
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
-                start_enabled=True, stop_enabled=True, stop_pressed=False, pressed=pressed,
+                start_enabled=True, stop_enabled=True, stop_pressed=False,
+                muted=muted, volume=volume, pressed=pressed,
             )
         # fading_out: the line freezes at the last observed position (no
         # interpolation — the fade is a fixed-length event, not a running
@@ -1847,7 +1921,8 @@ class DialDisplay:
         line = f"{format_mmss(rec.position_seconds)} / {format_mmss(rec.duration_seconds)}"
         return RepeatViewState(
             name=name, layout="replaying", armed=rec.armed, line=line,
-            start_enabled=False, stop_enabled=True, stop_pressed=True, pressed=pressed,
+            start_enabled=False, stop_enabled=True, stop_pressed=True,
+            muted=muted, volume=volume, pressed=pressed,
         )
 
     def _display_repeat_locked(self) -> None:
@@ -1855,12 +1930,15 @@ class DialDisplay:
         counterpart to _display_locked(). Bypasses _display_locked()
         entirely, like _display_selector_locked(): this screen has its own
         compose path and must never pick up the main now-playing overlay.
-        Caller holds self._lock."""
+        Passes self._current_base_image through as compose_repeat()'s
+        `base` — the replaying layout draws it (dimmed) behind the
+        position counter; the enable layout ignores it. Caller holds
+        self._lock."""
         view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
         width, height = self._active_panel_dims()
         try:
             composed = self._compositor.compose_repeat(
-                width, height, view,
+                width, height, view, base=self._current_base_image,
                 rotate=self._config.rotate, bgr=self._config.bgr,
             )
             self._backend.display(composed)
@@ -2118,6 +2196,20 @@ class DialDisplay:
             return
 
         targets = self._get_display_targets()
+        # A source that WAS playing and has now stopped drops out of the
+        # playing set but stays advertised (idle) in the general roster with
+        # a retained recording the appliance now reports as "hold". That
+        # transition must reach the idle screen's replay affordance and the
+        # replay picker promptly, not up to a full reconcile interval later,
+        # so force an immediate reconcile whenever the playing set shrinks.
+        # (Growing or unchanged sets need nothing here — the ordinary
+        # cadence already covers them.) force_due() takes the leaf dial_auth
+        # lock, so it is called here, before self._lock is taken below.
+        playing_ids = {t.appliance_id for t in targets if t.appliance_id}
+        if self._prev_playing_ids - playing_ids:
+            self._reconcile_due = True
+            auth_map.force_due()
+        self._prev_playing_ids = playing_ids
         # The merged playing+idle roster — this is where general (idle)
         # sightings get noted into the auth map (dial_mdns.get_roster()'s
         # docstring). Computed unconditionally, whether or not anything is
