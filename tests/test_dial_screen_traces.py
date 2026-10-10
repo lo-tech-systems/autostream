@@ -456,7 +456,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
         "bound_appliance_id": d._bound_appliance_id,
-        "source_artwork_url": dd._url_log_key(d._source_artwork_url) if d._source_artwork_url else "",
+        "source_artwork_url": d._source_artwork_key[:12],
         "manual_focus_id": d._manual_focus_id,
         "focus_pending": d._focus_pending is not None,
         "display_sleeping": d._display_sleeping,

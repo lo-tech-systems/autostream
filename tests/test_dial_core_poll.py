@@ -14,6 +14,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
         sys.path.insert(0, _p)
 
 import dial_core_poll as cp  # noqa: E402
+from dial_core_state import artwork_key  # noqa: E402
 import dial_repeat_store as drs  # noqa: E402
 from dial_auth import (  # noqa: E402
     AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, OUTCOME_AUTHORIZED, auth_map,
@@ -541,7 +542,8 @@ class TestFetchArtworkBytes:
         assert art.url == self.URL and art.data == b"jpeg" and art.fetched_at == 12.0
         assert len(art.key) == 16 and self.URL not in art.key
         again = cp.fetch_artwork_bytes(self.URL, _Limiter(), fetch=fetch)
-        assert again.key == art.key
+        assert again.key == art.key == artwork_key(self.URL)
+        assert artwork_key("https://provider.example/b.jpg") != art.key
 
     def test_failure_reports_logs_and_returns_none(self):
         errors, limiter = [], _Limiter()

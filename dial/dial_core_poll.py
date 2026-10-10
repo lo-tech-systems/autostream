@@ -31,7 +31,7 @@ from dial_auth import (
     OUTCOME_UNAUTHORIZED,
     auth_map,
 )
-from dial_core_state import Artwork, Selection, walk_fallback, walk_step
+from dial_core_state import Artwork, Selection, artwork_key, walk_fallback, walk_step
 from dial_mdns import appliance_display_name
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
@@ -401,7 +401,7 @@ def fetch_artwork_bytes(
     now_fn = now_fn or time.monotonic
     return Artwork(
         url=url,
-        key=hashlib.sha256(url.encode("utf-8")).hexdigest()[:16],
+        key=artwork_key(url),
         data=data,
         content_type="",
         fetched_at=now_fn(),

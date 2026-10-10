@@ -42,6 +42,7 @@ import dial_auth
 import dial_display as dd
 import dial_repeat_store as drs
 import dial_volume as dv
+from dial_core_state import artwork_key
 from dial_display import PLAYING_ARTIST_TEXT, SCREEN_POLICIES
 from dial_touch_layout import TouchZone
 from dial_warnings import WarningManager, WarningStore
@@ -246,7 +247,7 @@ class TestAcceptedReplayWindow:
         assert playing.title == ""
         assert playing.artist == ""
         assert display.get_status()["showing"] == "logo"
-        assert display._source_artwork_url == ""
+        assert display._source_artwork_key == ""
 
     def test_accepted_replay_window_boundary_under_fake_clock(self):
         """Kept just inside the grace, dropped just past it."""
@@ -610,9 +611,9 @@ class TestArtworkLogging:
         assert len(records) == 2
 
     def test_artwork_url_never_stored_or_logged(self, caplog):
-        """Pins current behaviour: status and every log record carry only the
-        short URL key. The display itself does keep the URL, in
-        _source_artwork_url (the cache-reuse key), and nowhere else."""
+        """Status, every log record and every attribute of the display carry
+        only the short artwork key: the URL is never stored on the display
+        (the cache-reuse key is a hash), nor held by the core."""
         display, result = _artwork_display()
         fake_image = Image.new("RGB", (128, 160))
         with patch("dial_display.fetch_target_status", return_value=result), \
@@ -635,7 +636,10 @@ class TestArtworkLogging:
             k for k, v in vars(display).items()
             if isinstance(v, str) and "art-token-7731" in v
         ]
-        assert holders == ["_source_artwork_url"]
+        assert holders == []
+        assert display._source_artwork_key == artwork_key(_SECRET_URL)
+        held = display._core.snapshot().artwork
+        assert held is not None and held.url == "" and held.key == artwork_key(_SECRET_URL)
 
 
 # ---------------------------------------------------------------------------

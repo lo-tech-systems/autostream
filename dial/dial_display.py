@@ -92,7 +92,7 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    NowPlaying, OutputRow, PickerRow, SelectorRow, availability, choose_pin,
+    NowPlaying, OutputRow, PickerRow, SelectorRow, artwork_key, availability, choose_pin,
     dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
     reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
     walk_order, with_accepted_replay,
@@ -1101,7 +1101,7 @@ class DialDisplay:
 
         # Artwork identity dedupe state — only the current rendered image is
         # kept in memory; nothing persists across restart.
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         self._current_rendered_image = None
 
         # The frame most recently pushed to the panel (post-compose,
@@ -1622,7 +1622,7 @@ class DialDisplay:
                         # it. Drop the caches, pop to main, show the logo at
                         # the new size at once, and let the next poll refetch
                         # artwork at that size.
-                        self._source_artwork_url = ""
+                        self._source_artwork_key = ""
                         self._current_rendered_image = None
                         self._current_base_image = None
                         self._close_secondary_locked()
@@ -2232,7 +2232,7 @@ class DialDisplay:
         # on a failed open the stale frame and URL would otherwise survive
         # into the degraded state and be reused by the next poll.
         self._showing = "noop"
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         self._current_rendered_image = None
         self._last_frame = None
         # A reopen after a screen_type swap starts on the main screen, not
@@ -2253,7 +2253,7 @@ class DialDisplay:
         self._backend_name = "noop"
         self._active_screen_type = ""
         self._showing = "noop"
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         self._current_rendered_image = None
         self._last_frame = None
         self._idle_started_at = None
@@ -2285,7 +2285,7 @@ class DialDisplay:
                 logging.debug("dial display: backend sleep raised: %s", e)
         self._display_sleeping = True
         self._showing = "sleeping"
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         self._current_rendered_image = None
         self._last_frame = None
         logging.info("dial display: idle %ds — sleeping", DISPLAY_IDLE_SLEEP_SECONDS)
@@ -2339,7 +2339,7 @@ class DialDisplay:
         # url and setting a showing value neither path treats as "already
         # shown".
         self._showing = "waking"
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         logging.info("dial display: activity resumed — waking")
         # A warning that was popped by sleep, or became due while asleep,
         # comes straight back: the request lands before the repaint that
@@ -2656,7 +2656,7 @@ class DialDisplay:
         if not (self._backend_open and self._backend is not None):
             return
         width, height = self._logical_dims()
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         self._current_rendered_image = None
         self._showing = "waiting"
         self._display_locked(Image.new("RGB", (width, height), _TRANSITION_RGB))
@@ -2808,7 +2808,7 @@ class DialDisplay:
         # ordinary path otherwise; while a secondary screen is up it refreshes
         # the base behind that screen without switching away from it.
         self._repaint_base_locked(image, idle_ok=True)
-        self._source_artwork_url = ""
+        self._source_artwork_key = ""
         self._current_rendered_image = None
         self._showing = "logo"
         if was_showing == "artwork":
@@ -5454,6 +5454,7 @@ class DialDisplay:
             self._bound_appliance_id = focus_id if focus_id is not None else self._reporting_appliance_id
             self._maybe_show_transition(previous_reporting_id)
             self._close_bound_screen_if_unfocused()
+            self._core.clear_artwork()
             self.show_logo()
             return
 
@@ -5592,6 +5593,7 @@ class DialDisplay:
         if selected_url:
             self._show_artwork(selected_url)
         else:
+            self._core.clear_artwork()
             self.show_logo()
 
         now = time.monotonic()
@@ -5606,14 +5608,15 @@ class DialDisplay:
     # ---- artwork selection -------------------------------------------------
 
     def _show_artwork(self, url: str) -> None:
+        key = artwork_key(url)
         with self._lock:
             if not (self._backend_open and self._backend is not None):
                 return
-            if url == self._source_artwork_url and self._showing == "artwork":
+            if key == self._source_artwork_key and self._showing == "artwork":
                 logging.debug("dial display: unchanged artwork url reuse")
                 return
             cached_reusable = (
-                url == self._source_artwork_url and self._current_rendered_image is not None
+                key == self._source_artwork_key and self._current_rendered_image is not None
             )
             if cached_reusable:
                 was_showing = self._showing
@@ -5623,29 +5626,35 @@ class DialDisplay:
                     logging.info("dial display: showing artwork")
                 return
 
-        if not artwork_url_eligible(url):
-            logging.debug("dial display: unsupported artwork url candidate")
-            self.show_logo()
-            return
-
-        # Fetch, decode, and transform happen outside the lock so a slow
-        # network round-trip never blocks a settings change. This is the only
-        # thread that changes which artwork is SELECTED, so no mid-fetch
-        # cancellation is needed — but it is not the only thread touching
-        # display state: the HTTP thread can swap or close the backend
-        # underneath this work via update_config. The re-check below, taken
-        # under the lock, is what makes that safe.
-        url_key = _url_log_key(url)
-        artwork = dial_core_poll.fetch_artwork_bytes(
-            url, self._log_limiter, fetch=_fetch_artwork,
-            timeout=ARTWORK_FETCH_TIMEOUT_SECONDS, on_error=self._record_error,
+        # The core downloads the bytes (or hands back the copy it already
+        # holds for this track) outside the lock, so a slow network
+        # round-trip never blocks a settings change. This is the only thread
+        # that changes which artwork is SELECTED, so no mid-fetch
+        # cancellation is needed. Decoding and fitting follow in
+        # _apply_artwork().
+        artwork = self._core.fetch_artwork(
+            url, fetch=_fetch_artwork, log_limiter=self._log_limiter,
+            eligible=artwork_url_eligible, timeout=ARTWORK_FETCH_TIMEOUT_SECONDS,
+            on_error=self._record_error,
         )
+        self._apply_artwork(artwork)
+
+    def _apply_artwork(self, artwork) -> None:
+        """Decode, fit and paint the core's artwork, or the logo when there
+        is none. The decode and fit run outside the lock, so the HTTP thread
+        can swap or close the backend underneath this work via
+        update_config; the re-check below, taken under the lock, is what
+        makes that safe."""
         if artwork is None:
             self.show_logo()
             return
-
+        key = artwork.key
+        url_key = key[:12]      # the same short form _url_log_key gives the URL
         image = decode_artwork(artwork.data)
         if image is None:
+            # Drop the undecodable bytes so the next poll downloads them
+            # again: a truncated transfer then heals instead of repeating.
+            self._core.clear_artwork(key)
             self._record_error("artwork_decode_failed")
             self._log_limiter.log(
                 logging.WARNING, f"artwork_decode:{url_key}",
@@ -5679,7 +5688,7 @@ class DialDisplay:
                 return
             was_showing = self._showing
             self._repaint_base_locked(transformed, idle_ok=False)
-            self._source_artwork_url = url
+            self._source_artwork_key = key
             self._current_rendered_image = transformed
             self._showing = "artwork"
             self._last_error = ""

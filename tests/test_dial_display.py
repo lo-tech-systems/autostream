@@ -54,6 +54,7 @@ from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_V
 from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for, repeat_layout_for
 import dial_display as dd
 import dial_display_compositor as dd_compositor
+from dial_core_state import artwork_key
 from dial_display import (
     NOWIFI_PROMPT_STREAK,
     SCREEN_POLICIES,
@@ -822,6 +823,30 @@ class TestArtworkRendering:
             display._poll_once()
         assert display.get_status()["showing"] == "logo"
         assert display.get_status()["last_error"] == "artwork_decode_failed"
+
+    def test_decode_failure_downloads_the_artwork_again_next_poll(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())),              patch("dial_display._fetch_artwork", return_value=(b"bad", "")) as mock_fetch_art,              patch("dial_display.decode_artwork", return_value=None):
+            display._poll_once()
+            assert display._core.snapshot().artwork is None
+            display._poll_once()
+        assert mock_fetch_art.call_count == 2
+
+    def test_the_core_holds_one_artwork_copy_and_releases_it_at_the_logo(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        fake_image = Image.new("RGB", (128, 160))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())),              patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")),              patch("dial_display.decode_artwork", return_value=fake_image),              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        held = display._core.snapshot().artwork
+        assert held is not None and held.data == b"jpegdata"
+        assert display._source_artwork_key == held.key
+        gt.return_value = []
+        display._poll_once()
+        assert display._core.snapshot().artwork is None
 
     def test_fetch_failure_falls_back_to_logo(self):
         t = _target()
@@ -2124,7 +2149,7 @@ class TestScreenTypeSwap:
         display.update_config(DialDisplayConfig(fitted=True, screen_type="st7789_240x240"))
 
         assert display._current_rendered_image is None
-        assert display._source_artwork_url == ""
+        assert display._source_artwork_key == ""
         assert display.get_status()["showing"] == "logo"
 
     def test_combined_screen_type_and_rotate_change_never_redisplays_stale_dims(self):
@@ -2425,7 +2450,7 @@ class TestArtworkDoesNotStompSecondaryScreen:
         # The base is refreshed and a repaint of the current screen requested.
         assert display._current_base_image is not None
         assert display._overlay_signal.is_set()
-        assert display._source_artwork_url == "https://provider.example/fresh.jpg"
+        assert display._source_artwork_key == artwork_key("https://provider.example/fresh.jpg")
 
     def test_fresh_artwork_on_main_still_paints(self):
         fb = FakeBackend()
@@ -5813,7 +5838,7 @@ class TestUpdateConfigLayoutChange:
         ))
 
         assert display._current_rendered_image is None
-        assert display._source_artwork_url == ""
+        assert display._source_artwork_key == ""
         assert display._screen == "main"
         assert len(fb.displayed) == 1
         assert display._current_base_image.size == (640, 480)

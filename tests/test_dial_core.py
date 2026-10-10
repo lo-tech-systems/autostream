@@ -1,16 +1,18 @@
 """Tests for dial/dial_core.py: snapshot, publish and subscribe."""
 import dataclasses
+import gc
 import os
 import sys
 import threading
 import time
+import weakref
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import pytest
 
 from dial_core import DialCore, create_dial_core
-from dial_core_state import CoreSnapshot, FocusState, NowPlaying
+from dial_core_state import CoreSnapshot, FocusState, NowPlaying, artwork_key
 
 
 def _core(clock=None):
@@ -676,3 +678,85 @@ class TestDisplayDelegates:
         assert display._core._subscribers == {}
         display._poll_once()
         assert display._core._subscribers == {}
+
+
+class _Limiter:
+    def __init__(self):
+        self.entries = []
+
+    def log(self, level, key, msg, *args):
+        self.entries.append((level, key, msg % args))
+
+
+class TestArtworkBytes:
+    URL = "https://provider.example/a.jpg"
+    OTHER = "https://provider.example/b.jpg"
+
+    def _fetch(self, core, url, results, calls, errors=None):
+        def fetch(u, timeout):
+            calls.append(u)
+            return results.pop(0)
+        return core.fetch_artwork(
+            url, fetch=fetch, log_limiter=_Limiter(), eligible=lambda u: u.startswith("https://"),
+            timeout=1.0, on_error=None if errors is None else errors.append,
+        )
+
+    def test_a_success_is_cached_by_key_and_fetched_once(self):
+        core = _core(clock=lambda: 7.0)
+        calls = []
+        first = self._fetch(core, self.URL, [(b"jpeg", "")], calls)
+        again = self._fetch(core, self.URL, [], calls)
+        assert calls == [self.URL]
+        assert again is first is core.snapshot().artwork
+        assert first.data == b"jpeg" and first.fetched_at == 7.0
+        assert first.key == artwork_key(self.URL) and len(first.key) == 16
+
+    def test_the_core_never_holds_the_url(self):
+        core = _core()
+        art = self._fetch(core, self.URL, [(b"jpeg", "")], [])
+        assert art.url == ""
+        assert self.URL not in repr(core.snapshot().artwork)
+
+    def test_a_failed_fetch_is_retried_on_the_next_call(self):
+        core = _core()
+        calls, errors = [], []
+        assert self._fetch(core, self.URL, [(None, "timeout")], calls, errors) is None
+        assert core.snapshot().artwork is None
+        art = self._fetch(core, self.URL, [(b"jpeg", "")], calls, errors)
+        assert calls == [self.URL, self.URL]
+        assert errors == ["artwork_fetch_failed"]
+        assert art is core.snapshot().artwork
+
+    def test_an_ineligible_url_is_not_fetched(self):
+        core = _core()
+        calls = []
+        assert self._fetch(core, "http://provider.example/a.jpg", [], calls) is None
+        assert calls == []
+
+    def test_the_bytes_are_released_when_the_url_changes(self):
+        core = _core()
+        first = self._fetch(core, self.URL, [(b"one", "")], [])
+        ref = weakref.ref(first)
+        del first
+        second = self._fetch(core, self.OTHER, [(None, "boom")], [])
+        assert second is None
+        gc.collect()
+        assert ref() is None and core.snapshot().artwork is None
+
+    def test_a_new_track_replaces_the_held_copy(self):
+        core = _core()
+        self._fetch(core, self.URL, [(b"one", "")], [])
+        art = self._fetch(core, self.OTHER, [(b"two", "")], [])
+        assert core.snapshot().artwork is art and art.data == b"two"
+
+    def test_clear_by_key_only_drops_that_copy(self):
+        core = _core()
+        art = self._fetch(core, self.URL, [(b"one", "")], [])
+        seq = core.snapshot().seq
+        core.clear_artwork(artwork_key(self.OTHER))
+        assert core.snapshot().artwork is art and core.snapshot().seq == seq
+        core.clear_artwork(art.key)
+        assert core.snapshot().artwork is None
+        seq = core.snapshot().seq
+        core.clear_artwork()
+        assert core.snapshot().seq == seq

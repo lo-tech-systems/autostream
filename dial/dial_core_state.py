@@ -14,6 +14,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -124,9 +125,16 @@ class FocusState:
     idle_focus: bool          # the reporting appliance is a focus with nothing playing under it
 
 
+def artwork_key(url: str) -> str:
+    """A stable, non-reversible local handle for an artwork URL: what the
+    core and the views compare, cache and serve by, so the URL itself is
+    never kept or logged."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class Artwork:
-    url: str                  # never logged; consumers use `key`
+    url: str                  # the fetch handle, never logged; "" once the core holds it
     key: str                  # sha256(url)[:16]: a stable local handle to serve or cache by
     data: bytes               # the bytes as fetched (undecoded), bounded by the fetch limit
     content_type: str         # from the fetch, "" if unknown

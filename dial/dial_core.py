@@ -27,9 +27,11 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+import dial_core_poll
 from dial_auth import AUTH_UNAUTHORIZED
 from dial_core_state import (
-    CoreSnapshot, DialInfo, FocusState, NowPlaying, appliance_states, with_accepted_replay,
+    Artwork, CoreSnapshot, DialInfo, FocusState, NowPlaying, appliance_states, artwork_key,
+    with_accepted_replay,
 )
 from dial_mdns import get_roster as _default_get_roster
 from dial_repeat_store import repeat_store
@@ -273,6 +275,50 @@ class DialCore:
         else:
             raise KeyError(name)
         return self._publish(mutate)
+
+    # ---- artwork -----------------------------------------------------------
+
+    def fetch_artwork(
+        self, url: str, *, fetch: Callable, log_limiter, eligible: Callable[[str], bool],
+        timeout: float, on_error: Callable[[str], None] | None = None,
+    ) -> "Artwork | None":
+        """The artwork bytes for *url*, downloaded once per track: the held
+        copy when it is already for this URL, else a fresh fetch on the
+        calling (poll) thread, outside the lock. Only one buffer is ever
+        live: the previous one is released before the next is downloaded.
+        The held `Artwork` carries no URL, only its `key`. A URL that is
+        not eligible, or a failed fetch, leaves nothing held and returns
+        None, so a failed fetch is tried again on the next call."""
+        key = artwork_key(url)
+        held = self._snapshot.artwork
+        if held is not None and held.key == key:
+            return held
+        self.clear_artwork()
+        if not eligible(url):
+            logging.debug("dial display: unsupported artwork url candidate")
+            return None
+        art = dial_core_poll.fetch_artwork_bytes(
+            url, log_limiter, fetch=fetch, timeout=timeout, on_error=on_error, now_fn=self._clock,
+        )
+        if art is None:
+            return None
+        art = dataclasses.replace(art, url="")
+
+        def mutate(state: _CoreState) -> None:
+            state.artwork = art
+        self._publish(mutate)
+        return art
+
+    def clear_artwork(self, key: str | None = None) -> None:
+        """Release the held artwork bytes: always, or only when they are the
+        copy named by *key* (so a view dropping an undecodable image cannot
+        discard a newer track's)."""
+        def mutate(state: _CoreState) -> "bool | None":
+            held = state.artwork
+            if held is None or (key is not None and held.key != key):
+                return False
+            state.artwork = None
+        self._publish(mutate)
 
     # ---- focus -------------------------------------------------------------
 
