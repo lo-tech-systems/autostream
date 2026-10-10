@@ -1815,6 +1815,12 @@ class DialDisplay:
         self._show_compact_controls()
         self._overlay_signal.set()
 
+    def is_sleeping(self) -> bool:
+        """True while the panel is asleep. Takes NO lock: a plain attribute
+        read for the touch thread, which must never block on self._lock. A
+        stale read costs at most one harmless extra tick."""
+        return self._display_sleeping
+
     def _apply_touch_activity_locked(self) -> bool:
         """Apply a pending touch-activity notification. Caller holds
         self._lock; runs on the repaint thread, not the touch thread.

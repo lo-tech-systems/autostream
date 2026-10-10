@@ -2407,3 +2407,104 @@ class TestTouchSurfaceFourTupleContract:
         sm._overlay_visible = True
         actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
         assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+
+# ---------------------------------------------------------------------------
+# A touch while the panel is asleep only wakes it: nothing arms, flashes,
+# steps, mutes, taps a zone or reveals, for the whole of that contact.
+# ---------------------------------------------------------------------------
+
+from dial_touch import ACTION_WAKE  # noqa: E402
+
+
+class _Sleep:
+    def __init__(self, asleep=True):
+        self.asleep = asleep
+
+    def __call__(self):
+        return self.asleep
+
+
+_ALL_SURFACES = sorted(_GEOMETRY_FOR_SURFACE) + [SURFACE_HIDDEN, SURFACE_HELD]
+_PROBE_XY = [(WIDTH // 2, HEIGHT // 2), UP_XY, DOWN_XY, MUTE_XY, (5, 5), (WIDTH - 5, HEIGHT - 5), (WIDTH - 5, 5)]
+
+
+class TestAsleepTouchOnlyWakes:
+    def _sm(self, surface, overlay_visible, sleep):
+        sm = TouchStateMachine(WIDTH, HEIGHT, is_asleep=sleep)
+        sm.set_surface(surface, True, 0.0, dots_active=True, outputs_active=True)
+        sm._overlay_visible = overlay_visible
+        return sm
+
+    @pytest.mark.parametrize("surface", _ALL_SURFACES)
+    @pytest.mark.parametrize("overlay_visible", [False, True])
+    @pytest.mark.parametrize("xy", _PROBE_XY)
+    def test_press_emits_only_wake_and_contact_is_inert(self, surface, overlay_visible, xy):
+        sleep = _Sleep(True)
+        sm = self._sm(surface, overlay_visible, sleep)
+        visible_before = sm.overlay_visible
+        assert kinds(sm.on_filter_event(press_event(xy), now=1.0)) == [ACTION_WAKE]
+        assert sm.pressed_zone is None
+        assert sm.overlay_visible == visible_before
+        # Held well past the repeat delay and the dismiss time, dragging,
+        # even if the panel wakes mid-contact: nothing acts.
+        t = 1.0
+        for i in range(30):
+            t += REPEAT_INTERVAL_S
+            if i == 3:
+                sleep.asleep = False
+            assert sm.on_filter_event(repeat_event((xy[0], xy[1])), now=t) == []
+            assert kinds(sm.tick(t)) in ([], [ACTION_DISMISS_OVERLAY])
+        assert sm.pressed_zone is None
+        assert sm.on_filter_event(release_event(xy), now=t) == []
+        assert kinds(sm.tick(t + DISMISS_S + 1)) in ([], [ACTION_DISMISS_OVERLAY])
+
+    @pytest.mark.parametrize("surface", _ALL_SURFACES)
+    def test_cap_ends_the_contact_silently(self, surface):
+        sm = self._sm(surface, True, _Sleep(True))
+        assert kinds(sm.on_filter_event(press_event(UP_XY), now=1.0)) == [ACTION_WAKE]
+        assert sm.on_filter_event(cap_event(), now=1.5) == []
+
+    @pytest.mark.parametrize("surface", _ALL_SURFACES)
+    @pytest.mark.parametrize("overlay_visible", [False, True])
+    def test_next_contact_after_waking_behaves_as_before(self, surface, overlay_visible):
+        sleep = _Sleep(True)
+        asleep_sm = self._sm(surface, overlay_visible, sleep)
+        awake_sm = self._sm(surface, overlay_visible, None)
+        asleep_sm.on_filter_event(press_event(UP_XY), now=1.0)
+        asleep_sm.on_filter_event(release_event(UP_XY), now=1.1)
+        sleep.asleep = False
+        got = asleep_sm.on_filter_event(press_event(UP_XY), now=2.0)
+        want = awake_sm.on_filter_event(press_event(UP_XY), now=2.0)
+        assert got == want
+        assert kinds(got) != [ACTION_WAKE]
+
+    def test_idle_waking_tap_does_not_open_replay_but_next_tap_does(self):
+        sleep = _Sleep(True)
+        sm = self._sm(SURFACE_IDLE, True, sleep)
+        centre = (WIDTH // 2, HEIGHT // 2)
+        assert kinds(sm.on_filter_event(press_event(centre), now=1.0)) == [ACTION_WAKE]
+        sm.on_filter_event(release_event(centre), now=1.1)
+        sleep.asleep = False
+        actions = sm.on_filter_event(press_event(centre), now=2.0)
+        assert any(a.kind == ACTION_ZONE_TAP and a.zone == TouchZone.IDLE_REPLAY for a in actions)
+
+    def test_default_predicate_leaves_behaviour_unchanged(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        assert kinds(sm.on_filter_event(press_event(UP_XY), now=0.0)) == [ACTION_REVEAL_OVERLAY]
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+        assert ACTION_VOLUME_UP in kinds(sm.on_filter_event(press_event(UP_XY), now=0.0))
+
+    def test_wake_action_dispatches_to_on_wake_only(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT, is_asleep=_Sleep(True))
+        woke = MagicMock()
+        others = {k: MagicMock() for k in (
+            "on_reveal_overlay", "on_volume_up", "on_volume_down", "on_mute_toggle",
+            "on_dismiss_overlay", "on_set_pressed_zone", "on_zone_tap",
+        )}
+        source = TouchEventSource(MagicMock(), MagicMock(), sm, on_wake=woke, clock=lambda: 0.0, **others)
+        source._dispatch(sm.on_filter_event(press_event(UP_XY), now=0.0))
+        woke.assert_called_once_with()
+        for m in others.values():
+            m.assert_not_called()

@@ -435,7 +435,17 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         layout.logical_width, layout.logical_height,
         mm_per_px=layout.mm_per_px, size_chosen=layout.size_chosen,
     )
-    state_machine = TouchStateMachine(layout.logical_width, layout.logical_height, metrics=touch_metrics)
+    state_machine = TouchStateMachine(
+        layout.logical_width, layout.logical_height, metrics=touch_metrics,
+        is_asleep=getattr(display, "is_sleeping", None),
+    )
+
+    def on_wake() -> None:
+        # A touch on a sleeping panel only wakes it (see
+        # TouchStateMachine._on_press). It is still a human touch, so it
+        # confirms presence; the repaint thread applies the wake.
+        _confirm_presence()
+        display.notify_touch_activity()
 
     def on_reveal_overlay() -> None:
         _confirm_presence()
@@ -570,6 +580,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,
         on_reveal_overlay=on_reveal_overlay,
+        on_wake=on_wake,
         on_volume_up=on_volume_up,
         on_volume_down=on_volume_down,
         on_mute_toggle=on_mute_toggle,

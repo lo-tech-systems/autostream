@@ -11646,3 +11646,45 @@ class TestUpdateWarnings:
         display._apply_update_view(self._finished())
         _fold(display)
         assert display._screen == "update_result"
+
+
+class TestAsleepIdleTouchDoesNotPressAnything:
+    """Real display plus real touch state machine: the touch that wakes a
+    sleeping idle screen must not open the replay picker; the next one does."""
+
+    def _tap(self, display, sm, xy, now):
+        import dial_touch as dt
+        from dial_touch_filter import TouchEvent, TouchEventType
+
+        sm.set_surface(*display.touch_surface(), now)
+        actions = sm.on_filter_event(TouchEvent(TouchEventType.PRESS, xy[0], xy[1], None), now)
+        for a in actions:
+            if a.kind == dt.ACTION_WAKE:
+                display.notify_touch_activity()
+            elif a.kind == dt.ACTION_ZONE_TAP and a.zone == TouchZone.IDLE_REPLAY:
+                display.open_picker()
+        sm.on_filter_event(TouchEvent(TouchEventType.RELEASE, xy[0], xy[1], None), now + 0.05)
+        return actions
+
+    def test_waking_touch_does_not_open_the_picker_next_touch_does(self):
+        import dial_touch as dt
+
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._idle_affordance = True
+        with display._lock:
+            display._sleep_locked()
+        assert display.is_sleeping() is True
+        width, height = display._active_panel_dims()
+        sm = dt.TouchStateMachine(width, height, is_asleep=display.is_sleeping)
+        centre = (width // 2, height // 2)
+
+        actions = self._tap(display, sm, centre, 1.0)
+        assert [a.kind for a in actions] == [dt.ACTION_WAKE]
+        with display._lock:
+            display._apply_touch_activity_locked()
+        assert display.is_sleeping() is False
+        assert display._screen_request is None
+
+        self._tap(display, sm, centre, 2.0)
+        assert display._screen_request is not None

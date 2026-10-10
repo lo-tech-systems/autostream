@@ -200,7 +200,8 @@ dial has next checked in with it.
 
 The screen goes to sleep after 5 minutes with nothing playing on any
 appliance the dial may control. It wakes when one of those appliances starts
-playing, or when you touch it.
+playing, or when you touch it. A touch on the sleeping screen only wakes it and
+never presses anything; touch again to use the control under your finger.
 
 An appliance that has not authorised the dial no longer wakes the screen.
 Playing on it does not turn a sleeping panel on, does not keep an idle panel

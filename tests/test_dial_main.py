@@ -3366,3 +3366,39 @@ class TestConfigureLogging:
     def test_garbage_falls_back_to_warning(self):
         basic_config = self._run({"APP_LOG_LEVEL": "NOT_A_LEVEL"})
         assert basic_config.call_args.kwargs["level"] == 30  # logging.WARNING
+
+
+class TestAsleepTouchWiring:
+    """A touch on a sleeping panel only wakes it (see
+    dial_touch.TouchStateMachine._on_press)."""
+
+    def test_state_machine_gets_the_displays_lock_free_sleep_predicate(self):
+        import dial_main as dm
+        from dial_config import DialDisplayConfig
+
+        cfg = MagicMock()
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        display = MagicMock()
+        with patch("dial_touch_drivers.open_driver"), \
+             patch("dial_touch.TouchEventSource"), \
+             patch("dial_touch.TouchStateMachine") as sm_cls:
+            dm._build_touch_source(cfg, display)
+        assert sm_cls.call_args.kwargs["is_asleep"] is display.is_sleeping
+
+    def test_on_wake_notifies_activity_and_confirms_presence_only(self):
+        t = TestBuildTouchSourceWiring()
+        confirm = MagicMock()
+        with t._built(confirm_presence=confirm) as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            captured["kwargs"]["on_wake"]()
+            confirm.assert_called_once_with()
+            display.notify_touch_activity.assert_called_once_with()
+            display.set_overlay.assert_not_called()
+            display.set_pressed.assert_not_called()
+            display.open_picker.assert_not_called()
+            mock_delta.assert_not_called()
+            mock_mute.assert_not_called()
+
+    def test_on_wake_without_confirm_presence_does_not_raise(self):
+        t = TestBuildTouchSourceWiring()
+        with t._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_wake"]()

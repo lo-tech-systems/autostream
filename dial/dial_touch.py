@@ -165,6 +165,7 @@ ACTION_MUTE_TOGGLE = "mute-toggle"
 ACTION_DISMISS_OVERLAY = "dismiss-overlay"
 ACTION_SET_PRESSED_ZONE = "set-pressed-zone"
 ACTION_ZONE_TAP = "zone-tap"
+ACTION_WAKE = "wake"
 
 # The only zones that auto-repeat while held: the volume steppers (main and
 # repeat screens) and the per-output volume steppers on the detail page.
@@ -193,6 +194,9 @@ _ZONE_TAP_ZONES = frozenset(TouchZone) - _FIXED_ACTION_ZONES
 _PHASE_IDLE = "idle"
 _PHASE_REVEAL_PENDING = "reveal_pending"
 _PHASE_ARMED = "armed"
+# A contact that began while the panel was asleep: it only wakes the screen
+# and does nothing more until it lifts.
+_PHASE_WAKE_ONLY = "wake_only"
 
 # Surfaces set_surface()/TouchEventSource understand — see the module
 # docstring's SURFACES paragraph.
@@ -291,7 +295,10 @@ class TouchStateMachine:
     """Pure press-session policy. No thread, no clock reads — every method
     takes an explicit *now*, so tests drive it deterministically."""
 
-    def __init__(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> None:
+    def __init__(
+        self, width: int, height: int, metrics: "LayoutMetrics | None" = None,
+        is_asleep=None,
+    ) -> None:
         self._width = width
         self._height = height
         # Set at construction from the profile/layout size in force at
@@ -300,6 +307,9 @@ class TouchStateMachine:
         # A live geometry change replaces all three together — see
         # set_geometry() below.
         self._metrics = metrics
+        # Lock-free "is the panel asleep right now" predicate, read once per
+        # press (see _on_press). Default: never asleep.
+        self._is_asleep = is_asleep or (lambda: False)
         self._phase = _PHASE_IDLE
         self._overlay_visible = False
         self._contact_down = False
@@ -625,6 +635,17 @@ class TouchStateMachine:
     def _on_press(self, event, now: float) -> list[TouchAction]:
         self._contact_down = True
         self._pending_xy = (event.x, event.y)
+        if self._is_asleep():
+            # The panel is dark: this contact only wakes it. Nothing is on
+            # screen to press, so it must not arm, flash, step or reveal,
+            # and the overlay state is left exactly as it was. The phase
+            # holds the contact inert until release. A stale read costs at
+            # most one wake-only or one ordinary touch, both harmless.
+            self._phase = _PHASE_WAKE_ONLY
+            self._armed_zone = None
+            self._armed_index = None
+            self._next_repeat_time = None
+            return [TouchAction(ACTION_WAKE)]
         if not self._overlay_visible:
             self._overlay_visible = True
             self._phase = _PHASE_REVEAL_PENDING
@@ -637,12 +658,17 @@ class TouchStateMachine:
         # Any contact sample holds the overlay open, armed or not — a finger
         # resting after a reveal-only touch must not have the zones vanish
         # from under it.
+        if self._phase == _PHASE_WAKE_ONLY:
+            return []
         self._reset_dismiss(now)
         return []
 
     def _on_release(self, now: float) -> list[TouchAction]:
         self._contact_down = False
         actions: list[TouchAction] = []
+        if self._phase == _PHASE_WAKE_ONLY:
+            self._phase = _PHASE_IDLE
+            return actions
         if self._phase in (_PHASE_ARMED, _PHASE_REVEAL_PENDING):
             self._phase = _PHASE_IDLE
             self._armed_zone = None
@@ -757,6 +783,7 @@ class TouchEventSource:
         on_dismiss_overlay=None,
         on_set_pressed_zone=None,
         on_zone_tap=None,
+        on_wake=None,
         on_cap=None,
         clock=None,
         irq=None,
@@ -772,6 +799,7 @@ class TouchEventSource:
         self._filter = touch_filter
         self._state_machine = state_machine
         self._on_reveal_overlay = on_reveal_overlay
+        self._on_wake = on_wake
         self._on_volume_up = on_volume_up
         self._on_volume_down = on_volume_down
         self._on_mute_toggle = on_mute_toggle
@@ -1101,6 +1129,8 @@ class TouchEventSource:
         for action in actions:
             if action.kind == ACTION_REVEAL_OVERLAY and self._on_reveal_overlay:
                 self._on_reveal_overlay()
+            elif action.kind == ACTION_WAKE and self._on_wake:
+                self._on_wake()
             elif action.kind == ACTION_VOLUME_UP and self._on_volume_up:
                 self._on_volume_up()
             elif action.kind == ACTION_VOLUME_DOWN and self._on_volume_down:
