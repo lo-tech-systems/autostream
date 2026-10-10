@@ -789,9 +789,15 @@ def _rearm_replay_identification(origin_input: Optional[int], in_session: bool) 
     Called from apply_repeat_ack on the API thread. in_session is False when
     the ack starts a replay from Hold (the coordinator's session_started
     will publish the session's now-playing) and True for a seek within a
-    running replay. Currently a no-op.
+    running replay. Does nothing when the origin monitor is not known.
     """
-    return None
+    if origin_input is None:
+        return
+    with _monitors_lock:
+        target = next(
+            (m for m in all_monitors if m.input_index == origin_input), None)
+    if target is not None:
+        target.on_replay_seek_accepted(in_session)
 
 
 def _announce_replay_playing() -> None:
@@ -3230,28 +3236,33 @@ class AudioMonitor:
             svc.analysis_lead_in_seconds, svc.snapshot_seconds,
         )
         self._schedule_track_id_after(now, delay, "track_change")
-        # DETECTING-INTERSTITIAL policy: a detected track boundary is a
-        # visible moment for the receiver, not just a status change. Reset
-        # _current_nowplaying to the input-label default (with the bundled
-        # placeholder logo as its artwork, decided explicitly rather than
-        # left as None) and publish it immediately, so the receiver drops
-        # the just-finished track's title/cover and shows "<input label> /
-        # autostream" + the autostream logo while re-identification runs --
-        # the same look a session start gets from _reset_nowplaying_for_new_
-        # session() / _session_nowplaying_start(). When the pending
-        # identification lands, _ti_worker() compares its result against
-        # this now-reset _current_nowplaying: for a *different* track the
-        # comparison obviously differs; for the *same* track it still
-        # differs (this interstitial's placeholder artwork vs. the
-        # identified cover), so either way _ti_worker() publishes real
-        # metadata and the receiver's display "restores" on its own -- no
-        # special-casing needed here for the same-track case. Note this
-        # path is reached only from a monitor-reported gap event
-        # (track_change_seq advancing); the periodic re-identification
-        # timer (_ti_worker() scheduling itself via _schedule_track_id_
-        # after()) never calls back into this method, so a routine refresh
-        # of an already-identified track does not re-trigger the
-        # interstitial.
+        self._publish_interstitial_nowplaying()
+
+    def _publish_interstitial_nowplaying(self) -> None:
+        """Reset the now-playing metadata to the input-label default and publish it.
+
+        DETECTING-INTERSTITIAL policy: a detected track boundary (or a seek
+        within a replay) is a visible moment for the receiver, not just a
+        status change. Reset _current_nowplaying to the input-label default
+        (with the bundled placeholder logo as its artwork, decided
+        explicitly rather than left as None) and publish it immediately, so
+        the receiver drops the just-finished track's title/cover and shows
+        "<input label> / autostream" + the autostream logo while
+        re-identification runs -- the same look a session start gets from
+        _reset_nowplaying_for_new_session() / _session_nowplaying_start().
+        When the pending identification lands, _ti_worker() compares its
+        result against this now-reset _current_nowplaying: for a *different*
+        track the comparison obviously differs; for the *same* track it
+        still differs (this interstitial's placeholder artwork vs. the
+        identified cover), so either way _ti_worker() publishes real
+        metadata and the receiver's display "restores" on its own -- no
+        special-casing needed for the same-track case. Callers are a
+        monitor-reported gap event (track_change_seq advancing) and an
+        accepted seek within a running replay; the periodic
+        re-identification timer (_ti_worker() scheduling itself via
+        _schedule_track_id_after()) never calls this, so a routine refresh
+        of an already-identified track does not re-trigger the interstitial.
+        """
         self._current_nowplaying = self._default_nowplaying_metadata()
         self._current_nowplaying = replace(
             self._current_nowplaying, artwork=_load_placeholder_artwork()
@@ -3442,22 +3453,48 @@ class AudioMonitor:
         steady-state seq check requires actively-sourcing on BOTH sides of
         an ingest and so deliberately does not fire (and does not baseline)
         on the same cycle this transition is first observed.
+
+        Takes _ti_state_lock, because the arm can also run on the API thread
+        (on_replay_seek_accepted) and must not interleave with the
+        coordinator's dispatch section.
+        """
+        with self._ti_state_lock:
+            self._arm_identification_cycle_locked("initial")
+
+        logging.info(
+            "Input %d (%s): identification armed for session source.",
+            self.input_index, self.input_device,
+        )
+
+    def _arm_identification_cycle_locked(self, reason: str) -> None:
+        """Restart this monitor's identification cycle; caller holds _ti_state_lock.
+
+        Baselines track_change_seq, bumps _ti_generation (a worker still in
+        flight discards its result on the generation check), clears the
+        in-flight state, schedules the first attempt one lead-in plus one
+        snapshot window away and publishes a waiting (or disabled) snapshot.
+        *reason* labels the scheduled attempt. Only a "seek" arm keeps a
+        rate-limit or upstream-rejection deadline that lies further out than
+        the new attempt: a provider backoff outranks a seek, whereas a new
+        session source starts from a clean schedule.
         """
         self._track_change_seq_baseline = self.track_change_seq
-        self._ti_generation += 1  # invalidate any worker queued before this session source began
+        self._ti_generation += 1  # invalidate any worker queued before this cycle began
         self._ti_inflight = False
         self._ti_inflight_token = None
-        self._ti_next_attempt = 0.0
-        self._ti_next_attempt_reason = ""
+        if reason != "seek":
+            self._ti_next_attempt = 0.0
+            self._ti_next_attempt_reason = ""
         self._ti_last_identified_at = 0.0
         if _track_id_service is not None:
             svc = _track_id_service
             delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
-            self._schedule_track_id_after(time.time(), delay, "initial")
+            self._schedule_track_id_after(time.time(), delay, reason)
             logging.debug(
-                "track_id[%d]: initial attempt scheduled in %.0fs (session source "
-                "armed; lead-in=%.0fs window=%.0fs).",
-                self.input_index, delay, svc.analysis_lead_in_seconds, svc.snapshot_seconds,
+                "track_id[%d]: %s attempt scheduled in %.0fs (lead-in=%.0fs "
+                "window=%.0fs).",
+                self.input_index, reason, delay,
+                svc.analysis_lead_in_seconds, svc.snapshot_seconds,
             )
             from track_id.models import waiting_snapshot
             self._ti_snapshot = waiting_snapshot(
@@ -3466,10 +3503,30 @@ class AudioMonitor:
             )
         else:
             from track_id.models import disabled_snapshot
+            self._ti_next_attempt = 0.0
+            self._ti_next_attempt_reason = ""
             self._ti_snapshot = disabled_snapshot()
 
+    def on_replay_seek_accepted(self, in_session: bool) -> None:
+        """Re-arm identification after an accepted replay start or seek.
+
+        Called on the API thread from apply_repeat_ack for the replay origin
+        monitor. A seek resets the daemon's reader and decoder but not its
+        track_change_seq, so no gap event would ever tell the coordinator
+        that the audio moved. *in_session* is True for a seek within a
+        running replay: the receiver still shows the pre-seek track, so the
+        interstitial is published now. It is False for a start from Hold:
+        the coordinator's session_started publishes the session's now-playing
+        on its next poll, and a refresh ahead of that session's start would be
+        out of order. The later session_started arm repeats this one
+        harmlessly (nothing can be in flight yet).
+        """
+        with self._ti_state_lock:
+            self._arm_identification_cycle_locked("seek")
+        if in_session:
+            self._publish_interstitial_nowplaying()
         logging.info(
-            "Input %d (%s): identification armed for session source.",
+            "Input %d (%s): identification re-armed for a replay seek.",
             self.input_index, self.input_device,
         )
 

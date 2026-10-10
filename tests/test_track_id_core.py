@@ -2105,6 +2105,283 @@ class TestTrackIdentificationDuringReplay:
 
 
 # ---------------------------------------------------------------------------
+# Replay seek / start: identification re-armed at the transport ack
+#
+# A seek within a running replay resets the daemon's reader and decoder but
+# does not advance track_change_seq, and the session tracker sees "replay"
+# both before and after, so nothing would otherwise re-arm identification
+# for the new position. apply_repeat_ack() does it on the API thread through
+# AudioMonitor.on_replay_seek_accepted().
+# ---------------------------------------------------------------------------
+
+def _identified_snapshot():
+    from track_id.models import TrackIdentificationSnapshot
+    return TrackIdentificationSnapshot(
+        enabled=True,
+        state=STATE_IDENTIFIED,
+        status_text="Identified",
+        title="Old Track",
+        artist="Old Artist",
+        artwork_url="https://example.invalid/old.jpg",
+        updated_at=time.time(),
+    )
+
+
+def _repeat_block(*, replaying, origin_input=1, armed=False):
+    return {
+        "enabled": True,
+        "armed": armed,
+        "recording": {"active": False, "seconds": 342.0, "origin_input": origin_input},
+        "replay": {
+            "active": replaying, "fading_out": False,
+            "position_seconds": 100.0 if replaying else 0.0,
+            "duration_seconds": 342.0 if replaying else 0.0,
+        },
+    }
+
+
+def _repeat_ack(command, state, *, ok=True, armed=True, position=0.0):
+    return {"type": "ack", "command": command, "ok": ok, "state": state,
+            "armed": armed, "position_seconds": position}
+
+
+class TestReplaySeekRearm:
+
+    @pytest.fixture(autouse=True)
+    def _isolate_caches(self):
+        core._set_repeat_status(None)
+        core._set_session_state(False, None)
+        yield
+        core._set_repeat_status(None)
+        core._set_session_state(False, None)
+
+    @staticmethod
+    def _armed_origin(lead_in=10, snapshot=15, **monitor_kw):
+        svc = _make_service(analysis_lead_in=lead_in, snapshot=snapshot)
+        mon = _make_monitor(**monitor_kw)
+        mon.is_capturing = False
+        core._track_id_service = svc
+        mon._apply_track_id_service(svc)
+        mon._ti_snapshot = _identified_snapshot()
+        return mon, svc
+
+    def test_seek_resets_identified_snapshot_to_waiting(self):
+        mon, _ = self._armed_origin()
+        mon.on_replay_seek_accepted(in_session=True)
+        assert mon._ti_snapshot.state == STATE_WAITING
+        assert mon._ti_snapshot.artwork_url == ""
+
+    def test_seek_bumps_generation_and_clears_inflight(self):
+        mon, _ = self._armed_origin()
+        gen_before = mon._ti_generation
+        mon._ti_inflight = True
+        mon._ti_inflight_token = object()
+        mon.on_replay_seek_accepted(in_session=True)
+        assert mon._ti_generation == gen_before + 1
+        assert mon._ti_inflight is False
+        assert mon._ti_inflight_token is None
+
+    def test_seek_schedules_attempt_after_lead_in_plus_window_with_reason_seek(self):
+        mon, _ = self._armed_origin(lead_in=10, snapshot=15)
+        before = time.time()
+        mon.on_replay_seek_accepted(in_session=True)
+        assert mon._ti_next_attempt >= before + 25
+        assert mon._ti_next_attempt_reason == "seek"
+        assert mon._ti_snapshot.next_attempt_reason == "seek"
+
+    def test_seek_keeps_a_protected_rate_limit_deadline(self):
+        mon, _ = self._armed_origin(lead_in=10, snapshot=15)
+        deadline = time.time() + 600
+        mon._ti_next_attempt = deadline
+        mon._ti_next_attempt_reason = "rate_limit"
+        mon.on_replay_seek_accepted(in_session=True)
+        assert mon._ti_next_attempt == deadline
+        assert mon._ti_next_attempt_reason == "rate_limit"
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+    def test_seek_replaces_an_unprotected_earlier_deadline(self):
+        mon, _ = self._armed_origin(lead_in=10, snapshot=15)
+        mon._ti_next_attempt = time.time() + 5
+        mon._ti_next_attempt_reason = "retry"
+        before = time.time()
+        mon.on_replay_seek_accepted(in_session=True)
+        assert mon._ti_next_attempt >= before + 25
+        assert mon._ti_next_attempt_reason == "seek"
+
+    def test_seek_with_service_disabled_publishes_disabled_snapshot(self):
+        mon = _make_monitor()
+        mon.is_capturing = False
+        core._track_id_service = None
+        mon._ti_snapshot = _identified_snapshot()
+        mon.on_replay_seek_accepted(in_session=True)
+        assert mon._ti_snapshot.state == STATE_DISABLED
+        assert mon._ti_next_attempt == 0.0
+
+    def test_stale_worker_result_after_seek_is_discarded(self):
+        mon, svc = self._armed_origin()
+        pre_seek_gen = mon._ti_generation
+        mon.on_replay_seek_accepted(in_session=True)
+        _run_worker_sync(mon, dispatch_gen=pre_seek_gen)
+        assert mon._ti_snapshot.state == STATE_WAITING
+        # The worker released the process-wide gate on its way out.
+        assert core._track_id_request_gate.acquire(blocking=False)
+        core._track_id_request_gate.release()
+
+    def test_in_session_seek_publishes_interstitial_nowplaying(self):
+        mon, _ = self._armed_origin()
+        sentinel = object()
+        with patch.object(core, "_load_placeholder_artwork", return_value=sentinel):
+            mon.on_replay_seek_accepted(in_session=True)
+        mon._nowplaying_publisher.publish_refresh.assert_called_once()
+        published = mon._nowplaying_publisher.publish_refresh.call_args[0][0]
+        assert published.title == mon._default_nowplaying_metadata().title
+        assert published.artwork is sentinel
+
+    def test_start_from_hold_does_not_publish_before_session_start(self):
+        mon, _ = self._armed_origin()
+        mon.on_replay_seek_accepted(in_session=False)
+        mon._nowplaying_publisher.publish_refresh.assert_not_called()
+        mon._nowplaying_publisher.publish_start.assert_not_called()
+        assert mon._ti_snapshot.state == STATE_WAITING
+
+    def test_session_started_after_a_seek_ack_arms_again_without_harm(self):
+        from autostream_core import _dispatch_session_event
+        mon, _ = self._armed_origin(lead_in=10, snapshot=15)
+        mon.on_replay_seek_accepted(in_session=False)
+        before = time.time()
+        with patch.object(core, "_start_session_owntone"), \
+             patch.object(mon, "_nowplaying_publisher"):
+            _dispatch_session_event(
+                "session_started", None, mon, "", new_source="replay",
+            )
+        assert mon._ti_snapshot.state == STATE_WAITING
+        assert mon._ti_next_attempt >= before + 25
+        assert mon._ti_inflight is False
+
+    def test_arm_for_session_takes_the_ti_state_lock(self):
+        mon, _ = self._armed_origin()
+        done = threading.Event()
+
+        def arm():
+            mon._arm_track_identification_for_session()
+            done.set()
+
+        with mon._ti_state_lock:
+            t = threading.Thread(target=arm, daemon=True)
+            t.start()
+            assert not done.wait(0.3)
+        assert done.wait(5)
+        t.join(5)
+
+    def test_seek_takes_the_ti_state_lock(self):
+        mon, _ = self._armed_origin()
+        done = threading.Event()
+
+        def seek():
+            mon.on_replay_seek_accepted(in_session=False)
+            done.set()
+
+        with mon._ti_state_lock:
+            t = threading.Thread(target=seek, daemon=True)
+            t.start()
+            assert not done.wait(0.3)
+        assert done.wait(5)
+        t.join(5)
+
+    # -- through apply_repeat_ack -------------------------------------------
+
+    def test_apply_repeat_ack_rearms_the_cached_origin_only(self):
+        origin, _ = self._armed_origin(input_index=2)
+        other = _make_monitor(input_index=1)
+        other._ti_snapshot = _identified_snapshot()
+        other_gen = other._ti_generation
+        core._set_repeat_status(_repeat_block(replaying=True, origin_input=2))
+        with patch.object(core, "all_monitors", [other, origin]):
+            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=30.0))
+        assert origin._ti_snapshot.state == STATE_WAITING
+        assert origin._ti_next_attempt_reason == "seek"
+        assert other._ti_snapshot.state == STATE_IDENTIFIED
+        assert other._ti_generation == other_gen
+
+    def test_in_session_seek_ack_publishes_interstitial_on_the_origin(self):
+        origin, _ = self._armed_origin()
+        core._set_repeat_status(_repeat_block(replaying=True))
+        with patch.object(core, "all_monitors", [origin]), \
+             patch.object(core, "_load_placeholder_artwork", return_value=None):
+            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
+        origin._nowplaying_publisher.publish_refresh.assert_called_once()
+
+    def test_apply_repeat_ack_without_cached_block_does_not_touch_monitors(self):
+        origin, _ = self._armed_origin()
+        gen_before = origin._ti_generation
+        with patch.object(core, "all_monitors", [origin]):
+            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
+        assert origin._ti_generation == gen_before
+        assert origin._ti_snapshot.state == STATE_IDENTIFIED
+
+    @pytest.mark.parametrize("ack", [
+        _repeat_ack("repeat_stop", "fading_out", armed=False, position=100.0),
+        _repeat_ack("repeat_seek", "replaying", ok=False),
+        _repeat_ack("set_repeat_armed", "hold", armed=False),
+        None,
+    ])
+    def test_stop_and_rejected_acks_do_not_rearm(self, ack):
+        origin, _ = self._armed_origin()
+        gen_before = origin._ti_generation
+        core._set_repeat_status(_repeat_block(replaying=True))
+        with patch.object(core, "all_monitors", [origin]):
+            core.apply_repeat_ack(ack)
+        assert origin._ti_generation == gen_before
+        assert origin._ti_snapshot.state == STATE_IDENTIFIED
+        origin._nowplaying_publisher.publish_refresh.assert_not_called()
+
+    def test_arm_ack_starting_from_hold_rearms_but_arm_while_replaying_does_not(self):
+        origin, _ = self._armed_origin()
+        gen_before = origin._ti_generation
+        ack = _repeat_ack("set_repeat_armed", "replaying", position=217.5)
+
+        core._set_repeat_status(_repeat_block(replaying=False))
+        with patch.object(core, "all_monitors", [origin]):
+            core.apply_repeat_ack(ack)
+        assert origin._ti_generation == gen_before + 1
+        assert origin._ti_snapshot.state == STATE_WAITING
+        # Started from Hold: the session start publishes, not the ack.
+        origin._nowplaying_publisher.publish_refresh.assert_not_called()
+
+        origin._ti_snapshot = _identified_snapshot()
+        core._set_repeat_status(_repeat_block(replaying=True))
+        with patch.object(core, "all_monitors", [origin]):
+            core.apply_repeat_ack(ack)
+        assert origin._ti_generation == gen_before + 1
+        assert origin._ti_snapshot.state == STATE_IDENTIFIED
+
+    def test_active_snapshot_is_waiting_from_the_ack_through_the_next_ingest(self):
+        """The stale-artwork window: before the coordinator's next poll marks
+        the origin as replaying, the active snapshot must already be the
+        armed waiting one, and stay so once the ingest exposes the origin's
+        own snapshot."""
+        origin, _ = self._armed_origin()
+        origin._replay_origin = False
+        origin.track_change_seq = 0
+        origin._track_change_seq_baseline = 0
+        core._set_repeat_status(_repeat_block(replaying=False))
+        with patch.object(core, "all_monitors", [origin]):
+            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
+            assert core.get_active_track_identification_snapshot().state == STATE_WAITING
+
+            status = {
+                "capturing": False, "silent": True,
+                "level_dbfs": -90.0, "poll_peak_dbfs": -90.0,
+                "detected_hz": 0.0, "track_change_seq": 0,
+            }
+            origin._ingest_status(status, replay_origin=True)
+            assert origin._replay_origin is True
+            snap = core.get_active_track_identification_snapshot()
+            assert snap.state == STATE_WAITING
+            assert snap.artwork_url == ""
+
+
+# ---------------------------------------------------------------------------
 # _apply_track_id_service: replay-origin scheduling
 #
 # Before this fix, _apply_track_id_service() only scheduled an initial
