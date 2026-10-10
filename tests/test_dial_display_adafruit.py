@@ -861,3 +861,167 @@ class TestDisplayWindow:
                 backend.display_window(region, 0, 0, 3, 3)
 
         fake_display._block.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _fast_block_writer: the driver's _block() in one bus acquisition, sending
+# the same bytes with the same data/command states in the same order.
+# ---------------------------------------------------------------------------
+
+class _BusLog:
+    def __init__(self):
+        self.events = []
+
+
+class _FakeDC:
+    def __init__(self, log):
+        self._log = log
+
+    @property
+    def value(self):
+        return None
+
+    @value.setter
+    def value(self, v):
+        self._log.events.append(("dc", v))
+
+
+class _FakeRawSpi:
+    def __init__(self, log):
+        self._log = log
+
+    def writebytes(self, data):
+        self._log.events.append(("bytes", bytes(data)))
+
+
+class _FakeBusio:
+    def __init__(self, log, raw=True):
+        self._log = log
+        self._spi = types.SimpleNamespace(_spi=_FakeRawSpi(log) if raw else None)
+
+    def write(self, buf):
+        self._log.events.append(("bytes", bytes(buf)))
+
+
+class _FakeSpiDevice:
+    def __init__(self, log, busio):
+        self._log = log
+        self.spi = busio
+
+    def __enter__(self):
+        self._log.events.append(("acquire",))
+        return self.spi
+
+    def __exit__(self, *exc):
+        self._log.events.append(("release",))
+        return False
+
+
+class _FakeDriver:
+    """Shaped like the pinned driver where the fast writer looks."""
+
+    _COLUMN_SET = 0x2A
+    _PAGE_SET = 0x2B
+    _RAM_WRITE = 0x2C
+    _X_START = 0
+    _Y_START = 0
+
+    def __init__(self, log=None, raw=True):
+        self.log = log or _BusLog()
+        self.dc_pin = _FakeDC(self.log)
+        self.spi_device = _FakeSpiDevice(self.log, _FakeBusio(self.log, raw=raw))
+        self.block_calls = []
+
+    def _encode_pos(self, a, b):
+        import struct
+        return struct.pack(">HH", a, b)
+
+    def _block(self, *args):
+        self.block_calls.append(args)
+        self.log.events.append(("block",) + args)
+
+    def write(self, command=None, data=None):
+        pass
+
+
+def _expected_window(x0, y0, x1, y1, data, x_start=0, y_start=0):
+    import struct
+    return [
+        ("dc", 0), ("bytes", bytes([0x2A])),
+        ("dc", 1), ("bytes", struct.pack(">HH", x0 + x_start, x1 + x_start)),
+        ("dc", 0), ("bytes", bytes([0x2B])),
+        ("dc", 1), ("bytes", struct.pack(">HH", y0 + y_start, y1 + y_start)),
+        ("dc", 0), ("bytes", bytes([0x2C])),
+        ("dc", 1), ("bytes", data),
+    ]
+
+
+class TestFastBlockWriter:
+    def test_one_acquisition_carries_the_whole_window(self):
+        driver = _FakeDriver()
+        write = dda._fast_block_writer(driver)
+        assert write is not None
+        write(10, 20, 13, 22, b"\x12\x34" * 12)
+        events = driver.log.events
+        assert events[0] == ("acquire",) and events[-1] == ("release",)
+        assert events.count(("acquire",)) == 1
+        assert events[1:-1] == _expected_window(10, 20, 13, 22, b"\x12\x34" * 12)
+        assert driver.block_calls == []
+
+    def test_gram_offsets_are_applied_like_block(self):
+        driver = _FakeDriver()
+        driver._X_START, driver._Y_START = 2, 3
+        write = dda._fast_block_writer(driver)
+        write(0, 0, 9, 9, b"\x00\x00")
+        assert driver.log.events[1:-1] == _expected_window(0, 0, 9, 9, b"\x00\x00", 2, 3)
+
+    def test_a_test_double_driver_keeps_block(self):
+        assert dda._fast_block_writer(MagicMock(name="driver")) is None
+
+    def test_a_driver_missing_a_piece_keeps_block(self):
+        driver = _FakeDriver()
+        del driver.dc_pin
+        assert dda._fast_block_writer(driver) is None
+
+    @pytest.mark.parametrize("attr, value", [("_COLUMN_SET", True), ("_X_START", "0"), ("_RAM_WRITE", 44.0)])
+    def test_non_integer_constants_keep_block(self, attr, value):
+        driver = _FakeDriver()
+        setattr(driver, attr, value)
+        assert dda._fast_block_writer(driver) is None
+
+    def test_no_byte_writer_underneath_keeps_block(self):
+        assert dda._fast_block_writer(_FakeDriver(raw=False)) is None
+
+    def test_byte_writer_gone_at_call_time_hands_the_window_to_block(self):
+        driver = _FakeDriver()
+        write = dda._fast_block_writer(driver)
+        driver.spi_device.spi._spi = None
+        write(1, 2, 3, 4, b"\xff\xff")
+        # Nothing sent on the fast path, and the bus released before
+        # _block() takes it itself.
+        assert driver.log.events == [("acquire",), ("release",), ("block", 1, 2, 3, 4, b"\xff\xff")]
+
+    def test_backend_windows_and_frames_use_the_fast_writer(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, _ = _install_fake_hardware_modules()
+        driver = _FakeDriver()
+        st7735_ctor.return_value = driver
+        packed = b"\x12\x34" * 12
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565", return_value=packed):
+                backend = AdafruitST7735SBackend()
+                backend.open()
+                assert backend.display_window(Image.new("RGB", (4, 3)), 10, 20, 13, 22) is True
+                backend.display(Image.new("RGB", (backend.width, backend.height)))
+        assert driver.block_calls == []
+        assert driver.log.events.count(("acquire",)) == 2
+        assert ("bytes", packed) in driver.log.events
+
+    def test_close_drops_the_fast_writer(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, _ = _install_fake_hardware_modules()
+        st7735_ctor.return_value = _FakeDriver()
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            assert backend._write_block is not None
+            backend.close()
+        assert backend._write_block is None

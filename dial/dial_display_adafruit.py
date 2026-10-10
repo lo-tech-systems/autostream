@@ -178,6 +178,81 @@ def _pack_rgb565(image) -> bytes | None:
         return None
 
 
+def _raw_writebytes(spi):
+    """The byte-writer underneath a Blinka busio.SPI on Linux
+    (Adafruit_PureIO's SPI.writebytes), or None when *spi* is not shaped
+    that way."""
+    raw = getattr(getattr(getattr(spi, "_spi", None), "_spi", None), "writebytes", None)
+    return raw if callable(raw) else None
+
+
+def _fast_block_writer(display):
+    """A window writer equivalent to *display*._block(x0, y0, x1, y1, data)
+    that sends the whole window in one bus acquisition, or None when the
+    driver is not shaped the way it relies on.
+
+    The pinned driver's _block() makes three write() calls, and each
+    write() acquires the bus twice (once for the command byte, once for
+    its data); every acquisition reconfigures and reselects the bus, and
+    every Blinka write re-applies speed, mode and word size before
+    transferring. For a window that is six acquisitions and six rounds of
+    reconfiguration, most of a small window's cost. This writer holds the
+    bus once, sends the first command through Blinka (which applies the
+    settings, and they persist on the device), then sends the remaining
+    five transfers straight to the byte-writer underneath: the same bytes
+    in the same order with the same data/command line states, so the panel
+    sees exactly what _block() would have sent.
+
+    Everything it uses is private to the pinned driver and Blinka, so each
+    piece is checked here, once, when the display opens: the command
+    constants and GRAM offsets must be real integers and the helpers
+    callable. Anything else (another driver version, a test double) gets
+    None and keeps _block(). The byte-writer is looked up again on every
+    call, before anything is sent, and a missing one hands that window to
+    _block() instead."""
+    try:
+        spi_device = display.spi_device
+        dc_pin = display.dc_pin
+        column_set = display._COLUMN_SET
+        page_set = display._PAGE_SET
+        ram_write = display._RAM_WRITE
+        x_start = display._X_START
+        y_start = display._Y_START
+        encode_pos = display._encode_pos
+        block = display._block
+    except AttributeError:
+        return None
+    constants = (column_set, page_set, ram_write, x_start, y_start)
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in constants):
+        return None
+    if not (callable(encode_pos) and callable(block)):
+        return None
+    if _raw_writebytes(getattr(spi_device, "spi", None)) is None:
+        return None
+
+    def write(x0: int, y0: int, x1: int, y1: int, data) -> None:
+        with spi_device as spi:
+            raw = _raw_writebytes(spi)
+            if raw is not None:
+                dc_pin.value = 0
+                spi.write(bytearray([column_set]))
+                dc_pin.value = 1
+                raw(encode_pos(x0 + x_start, x1 + x_start))
+                dc_pin.value = 0
+                raw(bytes([page_set]))
+                dc_pin.value = 1
+                raw(encode_pos(y0 + y_start, y1 + y_start))
+                dc_pin.value = 0
+                raw(bytes([ram_write]))
+                dc_pin.value = 1
+                raw(data)
+                return
+        # The bus is released again before _block() acquires it itself.
+        block(x0, y0, x1, y1, data)
+
+    return write
+
+
 class AdafruitDisplayBackend(DisplayBackend):
     supports_window_write = True
 
@@ -189,6 +264,9 @@ class AdafruitDisplayBackend(DisplayBackend):
         self._display = None
         self._backlight = None
         self._spi = None
+        # The driver's _block() in one bus acquisition when the driver is
+        # shaped for it, else None (see _fast_block_writer()).
+        self._write_block = None
 
     def open(self) -> None:
         profile = self._profile
@@ -246,6 +324,7 @@ class AdafruitDisplayBackend(DisplayBackend):
             backlight.switch_to_output(value=True)
 
         self._backlight = backlight
+        self._write_block = _fast_block_writer(self._display)
 
     def close(self) -> None:
         # Deliberately does NOT deinit or release self._spi: the bus is
@@ -266,6 +345,7 @@ class AdafruitDisplayBackend(DisplayBackend):
                 pass
             self._backlight = None
         self._display = None
+        self._write_block = None
         self._spi = None
 
     def _push_frame(self, image) -> None:
@@ -284,7 +364,7 @@ class AdafruitDisplayBackend(DisplayBackend):
         """
         fitted = _fit_image_to_panel(image, self.width, self.height)
         packed = _pack_rgb565(fitted)
-        block = getattr(self._display, "_block", None)
+        block = self._write_block or getattr(self._display, "_block", None)
         if packed is not None and block is not None:
             block(0, 0, self.width - 1, self.height - 1, packed)
         else:
@@ -310,7 +390,7 @@ class AdafruitDisplayBackend(DisplayBackend):
         """
         if self._display is None:
             return False
-        block = getattr(self._display, "_block", None)
+        block = self._write_block or getattr(self._display, "_block", None)
         if block is None:
             return False
         if not (0 <= x0 <= x1 < self.width and 0 <= y0 <= y1 < self.height):
