@@ -44,11 +44,14 @@ from dial_touch_layout import (  # noqa: E402
     SUPERSAMPLE_LARGE,
     TOUCH_MIN_MM,
     TOUCH_SHORT_BELOW_BAND_MM,
+    COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
+    CompactPickerLayout,
     TouchZone,
     ZoneRect,
     _dead_zone_margin,
     compact_layout_for,
+    compact_picker_layout_for,
     hit_test,
     idle_layout_for,
     idle_zone_at,
@@ -1476,6 +1479,82 @@ class TestCompactLayoutFor:
         assert (x1 - x0) != (y1 - y0)
 
 
+class TestCompactPickerLayoutFor:
+    """Pinned fields for compact_picker_layout_for() at both shipped
+    compact sizes, plus the shape rules that must hold everywhere."""
+
+    def test_pinned_fields_at_240x240(self):
+        p = compact_picker_layout_for(240, 240, metrics=_COMPACT_240x240)
+        assert p.title == (0, 0, 240, 32)
+        assert p.title_divider_y == 32
+        assert p.cancel == (0, 38, 78, 133)
+        assert p.more == (0, 145, 78, 240)
+        assert p.row0 == (90, 38, 240, 133)
+        assert p.row1 == (90, 145, 240, 240)
+        assert (p.divider_x, p.divider_y) == (84, 139)
+
+    def test_pinned_fields_at_128x128(self):
+        p = compact_picker_layout_for(128, 128, metrics=_COMPACT_128x128)
+        assert p.title == (0, 0, 128, 17)
+        assert p.title_divider_y == 17
+        assert p.cancel == (0, 20, 42, 71)
+        assert p.more == (0, 77, 42, 128)
+        assert p.row0 == (48, 20, 128, 71)
+        assert p.row1 == (48, 77, 128, 128)
+        assert (p.divider_x, p.divider_y) == (45, 74)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_title_height_is_font_body_plus_pad(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert p.title == (0, 0, metrics.width, metrics.font_body + metrics.pad)
+        assert p.title_divider_y == metrics.font_body + metrics.pad
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_divider_x_is_the_left_fraction_of_width_rounded(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert p.divider_x == round(metrics.width * COMPACT_PICKER_LEFT_FRACTION)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_left_column_narrower_than_the_right(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        left_w = p.cancel[2] - p.cancel[0]
+        right_w = p.row0[2] - p.row0[0]
+        assert 0 < left_w < right_w
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_row_heights_are_equal_on_both_columns(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert (p.cancel[3] - p.cancel[1]) == (p.more[3] - p.more[1])
+        assert (p.row0[3] - p.row0[1]) == (p.row1[3] - p.row1[1])
+        assert (p.cancel[3] - p.cancel[1]) == (p.row0[3] - p.row0[1])
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_cells_plus_dead_gaps_exactly_tile_below_the_title(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        m = metrics.margin
+        grid_y0 = p.title[3] + m
+        covered = [[False] * metrics.width for _ in range(metrics.height)]
+        for rect in (p.cancel, p.more, p.row0, p.row1):
+            x0, y0, x1, y1 = rect
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    assert not covered[y][x]
+                    covered[y][x] = True
+        for y in range(grid_y0, metrics.height):
+            for x in range(metrics.width):
+                if covered[y][x]:
+                    continue
+                near_v = abs(x - p.divider_x) <= m
+                near_h = abs(y - p.divider_y) <= m
+                assert near_v or near_h, (x, y)
+
+    def test_pure(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            a = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+            b = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+            assert a == b
+
+
 class TestCompactZoneTables:
     """Pinned zone tables at both shipped compact sizes, plus an exhaustive
     per-pixel hit-test proving every pixel maps to exactly one entry or a
@@ -1494,26 +1573,30 @@ class TestCompactZoneTables:
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_list_table(self, metrics):
         entries = zone_rects_for(GEOMETRY_LIST, metrics.width, metrics.height, metrics=metrics)
-        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert [(e.zone, e.rect, e.index) for e in entries] == [
-            (TouchZone.LIST_ROW, c.tl, 0), (TouchZone.LIST_ROW, c.bl, 1),
-            (TouchZone.LIST_DOWN, c.tr, None), (TouchZone.LIST_BACK, c.br, None),
+            (TouchZone.LIST_ROW, p.row0, 0), (TouchZone.LIST_ROW, p.row1, 1),
+            (TouchZone.LIST_BACK, p.cancel, None), (TouchZone.LIST_DOWN, p.more, None),
         ]
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_repeat_enable_table(self, metrics):
+        # Back top-left, "Repeat Play" spanning the full bottom row; the
+        # top-right cell carries no entry at all (dead).
         entries = zone_rects_for(GEOMETRY_REPEAT, metrics.width, metrics.height, metrics=metrics)
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert [(e.zone, e.rect) for e in entries] == [
-            (TouchZone.REPEAT_PLAY, c.top_row), (TouchZone.DOTS, c.bottom_row),
+            (TouchZone.DOTS, c.tl), (TouchZone.REPEAT_PLAY, c.bottom_row),
         ]
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_repeat_replay_table(self, metrics):
+        # Back top-left, Restart bottom-left, Stop bottom-right; the
+        # top-right time cell is display-only, no entry at all (dead).
         entries = zone_rects_for(GEOMETRY_REPEAT_REPLAY, metrics.width, metrics.height, metrics=metrics)
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert [(e.zone, e.rect) for e in entries] == [
-            (TouchZone.DOTS, c.top_row),
+            (TouchZone.DOTS, c.tl),
             (TouchZone.REPEAT_START, c.bl), (TouchZone.REPEAT_STOP, c.br),
         ]
 
@@ -1532,11 +1615,15 @@ class TestCompactZoneTables:
 
     @pytest.mark.parametrize(
         "geometry,metrics", [
-            (g, m) for g in (GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE)
+            (g, m) for g in (GEOMETRY_MAIN, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE)
             for m in (_COMPACT_240x240, _COMPACT_128x128)
         ],
     )
     def test_every_pixel_hits_exactly_one_entry_or_a_dead_gap(self, geometry, metrics):
+        # Shared by every compact geometry still built straight from the
+        # compact grid (MAIN, REPEAT, REPEAT_REPLAY, IDLE) — GEOMETRY_LIST
+        # gets its own picker-shaped version below, since it no longer uses
+        # the grid's cells directly.
         w, h = metrics.width, metrics.height
         entries = zone_rects_for(geometry, w, h, metrics=metrics)
         c = compact_layout_for(w, h, metrics=metrics)
@@ -1552,13 +1639,47 @@ class TestCompactZoneTables:
                 if hits:
                     assert result is not None and (result.zone, result.index) == hits[0]
                 elif geometry != GEOMETRY_IDLE:
-                    # A dead pixel must sit in the grid's own margin gap
-                    # around one of the two dividers — idle has no gap at
-                    # all (its one zone covers the whole panel).
+                    # A dead pixel must sit either in the grid's own margin
+                    # gap around one of the two dividers, or (on the REPEAT/
+                    # REPEAT_REPLAY enable and replaying tables, which carry
+                    # no entry for the top-right cell at all) inside that
+                    # cell itself — idle has no gap at all (its one zone
+                    # covers the whole panel).
                     near_v = abs(x - c.divider_x) <= m
                     near_h = abs(y - c.divider_y) <= m
-                    assert near_v or near_h, (geometry, x, y)
+                    tx0, ty0, tx1, ty1 = c.tr
+                    in_tr = tx0 <= x < tx1 and ty0 <= y < ty1
+                    assert near_v or near_h or in_tr, (geometry, x, y)
                     assert result is None
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_picker_table_every_pixel_hits_exactly_one_entry_or_a_dead_gap(self, metrics):
+        # GEOMETRY_LIST's own version of the exhaustive hit-test: the picker
+        # layout's cells, not the plain compact grid — a dead pixel is
+        # either the title band plus the one-margin gap under its line, or
+        # the usual margin gap around one of the picker's own two dividers.
+        w, h = metrics.width, metrics.height
+        entries = zone_rects_for(GEOMETRY_LIST, w, h, metrics=metrics)
+        p = compact_picker_layout_for(w, h, metrics=metrics)
+        m = metrics.margin
+        grid_y0 = p.title[3] + m
+        for y in range(h):
+            for x in range(w):
+                hits = [
+                    (e.zone, e.index) for e in entries
+                    if e.rect[0] <= x < e.rect[2] and e.rect[1] <= y < e.rect[3]
+                ]
+                assert len(hits) <= 1, (x, y, hits)
+                result = hit_test(GEOMETRY_LIST, x, y, w, h, metrics=metrics)
+                if hits:
+                    assert result is not None and (result.zone, result.index) == hits[0]
+                else:
+                    assert result is None
+                    if y < grid_y0:
+                        continue  # the title band and the gap under its line
+                    near_v = abs(x - p.divider_x) <= m
+                    near_h = abs(y - p.divider_y) <= m
+                    assert near_v or near_h, (x, y)
 
     def test_repeat_replay_equals_repeat_off_compact(self):
         for width, height in PROFILE_SIZES:

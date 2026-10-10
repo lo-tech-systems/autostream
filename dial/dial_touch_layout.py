@@ -496,16 +496,17 @@ def _list_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
     if metrics is None:
         metrics = metrics_for(width, height)
     if metrics.content_tier == CONTENT_COMPACT:
-        # The replay picker's 2x2: the two visible rows on the left, "more"
-        # (next page, wrapping — see the manager's paging) top-right, cancel
-        # bottom-right. No LIST_UP: compact never shows a previous-page
-        # control of its own — wrapping makes one unnecessary.
-        c = compact_layout_for(width, height, metrics=metrics)
+        # The replay picker: a title band over a 35/65 split — cancel and
+        # "more" (next page, wrapping — see the manager's paging) in the
+        # left column, the two visible rows in the right column. No LIST_UP:
+        # compact never shows a previous-page control of its own — wrapping
+        # makes one unnecessary.
+        p = compact_picker_layout_for(width, height, metrics=metrics)
         return (
-            ZoneRect(TouchZone.LIST_ROW, c.tl, 0),
-            ZoneRect(TouchZone.LIST_ROW, c.bl, 1),
-            ZoneRect(TouchZone.LIST_DOWN, c.tr),
-            ZoneRect(TouchZone.LIST_BACK, c.br),
+            ZoneRect(TouchZone.LIST_ROW, p.row0, 0),
+            ZoneRect(TouchZone.LIST_ROW, p.row1, 1),
+            ZoneRect(TouchZone.LIST_BACK, p.cancel),
+            ZoneRect(TouchZone.LIST_DOWN, p.more),
         )
     layout = list_layout_for(width, height, metrics=metrics)
     rows = tuple(ZoneRect(TouchZone.LIST_ROW, rect, i) for i, rect in enumerate(layout.rows))
@@ -527,14 +528,15 @@ def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
     if metrics is None:
         metrics = metrics_for(width, height)
     if metrics.content_tier == CONTENT_COMPACT:
-        # The repeat screen's enable layout: the "Repeat Play" row on top,
-        # cancel (the pager dots, same as opening it) on the bottom. No
-        # NAME/OUTPUTS: appliance selection and the volume readout are
-        # unreachable on compact.
+        # The repeat screen's enable layout: the back control (the pager
+        # dots, same as opening it) top-left, the "Repeat Play" row spanning
+        # the full bottom row — no separate cancel. The top-right cell is
+        # absent from the table (dead): No NAME/OUTPUTS either — appliance
+        # selection and the volume readout are unreachable on compact.
         c = compact_layout_for(width, height, metrics=metrics)
         return (
-            ZoneRect(TouchZone.REPEAT_PLAY, c.top_row),
-            ZoneRect(TouchZone.DOTS, c.bottom_row),
+            ZoneRect(TouchZone.DOTS, c.tl),
+            ZoneRect(TouchZone.REPEAT_PLAY, c.bottom_row),
         )
     layout = repeat_layout_for(width, height, metrics=metrics)
     return (
@@ -555,13 +557,14 @@ def _repeat_replay_zone_rects(
     for byte — the large tiers share one row/start/stop table between the
     enable and replaying layouts, so there is nothing of its own to
     describe there; only compact gives the replaying layout different
-    rectangles (time/back on top, Restart/Stop on the bottom)."""
+    rectangles, its own 2x2: back top-left, time top-right (display-only —
+    absent from the table), Restart bottom-left, Stop bottom-right."""
     if metrics is None:
         metrics = metrics_for(width, height)
     if metrics.content_tier == CONTENT_COMPACT:
         c = compact_layout_for(width, height, metrics=metrics)
         return (
-            ZoneRect(TouchZone.DOTS, c.top_row),
+            ZoneRect(TouchZone.DOTS, c.tl),
             ZoneRect(TouchZone.REPEAT_START, c.bl),
             ZoneRect(TouchZone.REPEAT_STOP, c.br),
         )
@@ -794,6 +797,54 @@ def compact_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" 
         bl=(x0, y2, x1, y3), br=(x2, y2, x3, y3),
         top_row=(0, y0, width, y1), bottom_row=(0, y2, width, height),
         divider_x=(x1 + x2) // 2, divider_y=(y1 + y2) // 2,
+    )
+
+
+COMPACT_PICKER_LEFT_FRACTION = 0.35  # the controls column's share of the width
+
+
+@dataclass(frozen=True)
+class CompactPickerLayout:
+    """The compact replay picker: a title band across the top, then a 2x2
+    grid whose left column (COMPACT_PICKER_LEFT_FRACTION of the width) holds
+    the cancel and "more" controls and whose right column holds the two
+    visible replay targets."""
+
+    title: Rect            # full width, rows [0, title_h)
+    title_divider_y: int   # the white line under the title, centred here
+    cancel: Rect            # left column, upper cell  (== LIST_BACK)
+    more: Rect              # left column, lower cell  (== LIST_DOWN)
+    row0: Rect              # right column, upper cell (== LIST_ROW 0)
+    row1: Rect              # right column, lower cell (== LIST_ROW 1)
+    divider_x: int          # the column line separating the two columns
+    divider_y: int          # the line between the two grid rows
+
+
+def compact_picker_layout_for(
+    width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> CompactPickerLayout:
+    """Compute the compact-tier replay picker's geometry: a tight title
+    band (the label's own line height plus half a pad above and below) over
+    a two-column grid, split left/right at COMPACT_PICKER_LEFT_FRACTION of
+    the width with the usual 2*margin dead gap, and top/bottom with the same
+    _split(total, margin, [1, 1]) rule the rest of the compact tier uses.
+    The grid starts one dead margin below the title's own divider line, so a
+    tap on that line hits nothing. metrics=None means metrics_for(width,
+    height)."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    m = metrics.margin
+    title_h = metrics.font_body + metrics.pad
+    grid_y0 = title_h + m
+    (r0a, r0b), (r1a, r1b) = _split(height - grid_y0, m, [1, 1])
+    y0, y1, y2, y3 = grid_y0 + r0a, grid_y0 + r0b, grid_y0 + r1a, grid_y0 + r1b
+    divider_x = round(width * COMPACT_PICKER_LEFT_FRACTION)
+    lx1, rx0 = divider_x - m, divider_x + m
+    return CompactPickerLayout(
+        title=(0, 0, width, title_h), title_divider_y=title_h,
+        cancel=(0, y0, lx1, y1), more=(0, y2, lx1, y3),
+        row0=(rx0, y0, width, y1), row1=(rx0, y2, width, y3),
+        divider_x=divider_x, divider_y=(y1 + y2) // 2,
     )
 
 
