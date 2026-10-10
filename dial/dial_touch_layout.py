@@ -126,17 +126,34 @@ def scale_px(reference_px: int, width: int, height: int, floor: int) -> int:
     return max(floor, round(min(width, height) * reference_px / REFERENCE_SHORT_SIDE))
 
 
-# Size tiers, reported by metrics_for() from the physical (mm) height of a
-# quarter-height band. Purely informational in this stage — nothing reads
-# `tier` to change rendering or geometry yet.
-TIER_COMPACT = "compact"
-TIER_REGULAR = "regular"
-TIER_LARGE = "large"
-_TIERS = (TIER_COMPACT, TIER_REGULAR, TIER_LARGE)
+# Content tiers, decided by metrics_for() from the panel's logical pixel
+# size (its short side) rather than its physical size: a panel's pixel
+# count is what decides whether there is room to lay out more than a dot-
+# matrix's worth of chrome, independent of how physically large those
+# pixels are. Physical size (mm_per_px) still gates two things: an unknown
+# density never guesses a richer layout (falls back to base), and a panel
+# whose quarter-height band would be too short to hold a floor-sized touch
+# target vetoes a richer tier back to base unless the size was chosen
+# deliberately rather than picked automatically (see metrics_for()).
+CONTENT_BASE = "base"
+CONTENT_RICH = "rich"
+CONTENT_LARGE = "large"
+_CONTENT_TIERS = (CONTENT_BASE, CONTENT_RICH, CONTENT_LARGE)
 
-TOUCH_MIN_MM = 8.0           # fingertip floor, resistive and capacitive alike
-COMPACT_BELOW_BAND_MM = 6.0  # a quarter-height band shorter than this cannot hold a floor-sized control
-LARGE_ABOVE_BAND_MM = 11.0   # a quarter-height band taller than this is wasting height on chrome
+RICH_MIN_SHORT_SIDE_PX = 200   # logical short side at/above which the rich tier applies
+LARGE_MIN_SHORT_SIDE_PX = 400  # logical short side at/above which the large tier applies
+
+TOUCH_MIN_MM = 8.0                # fingertip floor, resistive and capacitive alike
+TOUCH_SHORT_BELOW_BAND_MM = 6.0   # a quarter-height band shorter than this cannot hold a floor-sized control
+BAND_MAX_MM = 12.0                # on rich/large panels, chrome stops growing past this physical band height
+
+# Glyph supersample factor fed to _draw_glyph() in dial_display_compositor —
+# carried here because it is a property of the content tier, decided
+# alongside every other tier-derived quantity. SUPERSAMPLE_DEFAULT is what
+# every screen has always used; on the large tier the panel's own pixel
+# density means a smaller supersample factor is already antialiased enough.
+SUPERSAMPLE_DEFAULT = 4
+SUPERSAMPLE_LARGE = 2
 
 # Reference pixel quantities at 160x128 (short side 128) and their floors —
 # (reference_px, floor) pairs fed to scale_px() by metrics_for() below.
@@ -157,14 +174,17 @@ class LayoutMetrics:
     the compositor need, computed once per compose from a panel size and
     (optionally) its physical density. Passing metrics=None anywhere one of
     these is accepted is exactly equivalent to metrics_for(width, height) —
-    today's regular-tier, density-unaware geometry."""
+    today's base-tier, density-unaware geometry."""
 
     width: int
     height: int
     mm_per_px: float | None      # None: physical size unknown (tests, bare callers)
-    tier: str                    # reported only in this stage; no consumer branches on it yet
-    band_mm: float | None        # (height // 4) * mm_per_px, the tier input
+    content_tier: str            # CONTENT_BASE | CONTENT_RICH | CONTENT_LARGE
+    band_mm: float | None        # (height // 4) * mm_per_px, one of the tier inputs
     touch_min_px: int | None     # ceil(TOUCH_MIN_MM / mm_per_px)
+    touch_short: bool            # band_mm known and below TOUCH_SHORT_BELOW_BAND_MM
+    list_rail: bool              # the list uses the right rail (rich/large) rather than the bottom bar
+    supersample: int             # glyph tile supersample factor (see _draw_glyph in the compositor)
     margin: int                  # dead-zone margin
     band_h: int                  # header/footer height
     row_h: int                   # list row height
@@ -181,43 +201,68 @@ class LayoutMetrics:
 
 
 def metrics_for(
-    width: int, height: int, mm_per_px: float | None = None, tier_override: str | None = None,
+    width: int, height: int, mm_per_px: float | None = None, *, size_chosen: bool = False,
 ) -> LayoutMetrics:
     """Compute every size-dependent quantity for a *width* x *height* panel.
 
-    mm_per_px=None (the default) means "physical size unknown" — every field
-    is computed exactly as it always was, and tier reads "regular". Passing
-    a real mm_per_px derives band_mm/touch_min_px/tier from it, but the
-    pixel geometry itself (margin, bands, fonts, ...) is unaffected — this
-    stage reports density, it does not act on it.
+    The content tier follows the panel's logical pixel size (its short
+    side): CONTENT_BASE below RICH_MIN_SHORT_SIDE_PX, CONTENT_RICH from
+    there up to LARGE_MIN_SHORT_SIDE_PX, CONTENT_LARGE above that. Physical
+    size (mm_per_px) can only ever pull a panel back down to base, never
+    push it up: mm_per_px=None ("physical size unknown") always resolves to
+    base, and a panel whose quarter-height band is physically too short to
+    hold a floor-sized touch target (touch_short) is vetoed back to base
+    too — unless *size_chosen* is True, meaning the logical size was picked
+    deliberately (a settings override) rather than resolved automatically,
+    in which case the veto does not apply but touch_short is still reported
+    so the caller can warn about it.
 
-    tier_override, when given, must be one of TIER_COMPACT/TIER_REGULAR/
-    TIER_LARGE and is returned as-is instead of the mm_per_px-derived tier —
-    a hook for a future settings override; nothing supplies it yet.
+    mm_per_px=None also means every pixel quantity is computed exactly as it
+    always was (the base-tier formulas), so every existing caller that never
+    passes a density is completely unaffected by any of this.
     """
-    if tier_override is not None and tier_override not in _TIERS:
-        raise ValueError(f"tier_override must be one of {_TIERS} or None, got {tier_override!r}")
-    band_h = height // BAND_DIVISOR
-    band_mm = band_h * mm_per_px if mm_per_px is not None else None
-    if tier_override is not None:
-        tier = tier_override
-    elif band_mm is None:
-        tier = TIER_REGULAR
-    elif band_mm < COMPACT_BELOW_BAND_MM:
-        tier = TIER_COMPACT
-    elif band_mm > LARGE_ABOVE_BAND_MM:
-        tier = TIER_LARGE
+    short = min(width, height)
+    quarter = height // BAND_DIVISOR
+    band_mm = quarter * mm_per_px if mm_per_px is not None else None
+    touch_short = band_mm is not None and band_mm < TOUCH_SHORT_BELOW_BAND_MM
+
+    if short >= LARGE_MIN_SHORT_SIDE_PX:
+        content_tier = CONTENT_LARGE
+    elif short >= RICH_MIN_SHORT_SIDE_PX:
+        content_tier = CONTENT_RICH
     else:
-        tier = TIER_REGULAR
+        content_tier = CONTENT_BASE
+    if content_tier != CONTENT_BASE and mm_per_px is None:
+        content_tier = CONTENT_BASE           # density unknown: never guess a richer layout
+    if content_tier != CONTENT_BASE and touch_short and not size_chosen:
+        content_tier = CONTENT_BASE           # the veto: automatic tiering only
+
     touch_min_px = ceil(TOUCH_MIN_MM / mm_per_px) if mm_per_px else None
-    # Regular-tier quantities. The compact and large branches are a later
-    # stage; until then every tier resolves to these.
-    row_h = band_h
+
+    if content_tier == CONTENT_BASE:
+        band_h = quarter
+        row_h = band_h
+        rows_per_page = (height - band_h) // row_h    # today's formula, unchanged
+        list_rail = False
+        supersample = SUPERSAMPLE_DEFAULT
+    else:
+        # On a wider panel the chrome bands stop growing physically past
+        # BAND_MAX_MM — past that point extra height buys nothing but empty
+        # chrome — and the list drops its bottom bar for a right-hand rail,
+        # so its rows fill the whole panel height instead of leaving room
+        # for one.
+        band_h = min(quarter, ceil(BAND_MAX_MM / mm_per_px))
+        rows_per_page = height // band_h
+        row_h = height // rows_per_page               # rows tile the height exactly
+        list_rail = True
+        supersample = SUPERSAMPLE_LARGE if content_tier == CONTENT_LARGE else SUPERSAMPLE_DEFAULT
+
     return LayoutMetrics(
-        width=width, height=height, mm_per_px=mm_per_px, tier=tier,
-        band_mm=band_mm, touch_min_px=touch_min_px,
+        width=width, height=height, mm_per_px=mm_per_px, content_tier=content_tier,
+        band_mm=band_mm, touch_min_px=touch_min_px, touch_short=touch_short,
+        list_rail=list_rail, supersample=supersample,
         margin=scale_px(MARGIN_PX_AT_REFERENCE[0], width, height, MARGIN_PX_AT_REFERENCE[1]),
-        band_h=band_h, row_h=row_h, rows_per_page=(height - band_h) // row_h,
+        band_h=band_h, row_h=row_h, rows_per_page=rows_per_page,
         divider_w=scale_px(DIVIDER_PX_AT_REFERENCE[0], width, height, DIVIDER_PX_AT_REFERENCE[1]),
         blur_radius=scale_px(BLUR_RADIUS_AT_REFERENCE[0], width, height, BLUR_RADIUS_AT_REFERENCE[1]),
         font_body=scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1]),
@@ -312,12 +357,18 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
 
 def _list_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
     layout = list_layout_for(width, height, metrics=metrics)
-    return tuple(
-        ZoneRect(TouchZone.LIST_ROW, rect, i) for i, rect in enumerate(layout.rows)
-    ) + (
-        ZoneRect(TouchZone.LIST_BACK, layout.back),
-        ZoneRect(TouchZone.LIST_DOWN, layout.down),
-        ZoneRect(TouchZone.LIST_UP, layout.up),
+    rows = tuple(ZoneRect(TouchZone.LIST_ROW, rect, i) for i, rect in enumerate(layout.rows))
+    if layout.rail is None:
+        return rows + (
+            ZoneRect(TouchZone.LIST_BACK, layout.back),
+            ZoneRect(TouchZone.LIST_DOWN, layout.down),
+            ZoneRect(TouchZone.LIST_UP, layout.up),
+        )
+    # On the rail, top to bottom: previous page, back/cancel, next page.
+    return rows + (
+        ZoneRect(TouchZone.LIST_UP, layout.rail_up),
+        ZoneRect(TouchZone.LIST_BACK, layout.rail_cancel),
+        ZoneRect(TouchZone.LIST_DOWN, layout.rail_down),
     )
 
 
@@ -423,18 +474,33 @@ class IdleLayout:
 class ListLayout:
     """Full selector-screen geometry for one panel size — the single source
     of truth for both where the compositor draws the appliance list and
-    where the selector's touch zones sit. `back`, `down` and `up` are
-    exactly the LIST_BACK/LIST_DOWN/LIST_UP zone rectangles list_zone_at()
-    resolves to; `rows` are the LIST_ROW rectangles for the CURRENT page,
-    top to bottom, full width."""
+    where the selector's touch zones sit. `rows` are the LIST_ROW rectangles
+    for the CURRENT page, top to bottom.
 
-    rows: tuple[Rect, ...]   # rows_per_page rectangles, full width, top to bottom
-    bar: Rect                # bottom band (undivided) — back|down|up live here
-    back: Rect               # bar, left third (== LIST_BACK zone)
-    down: Rect               # bar, middle third (== LIST_DOWN zone)
-    up: Rect                 # bar, right third (== LIST_UP zone)
+    On the base tier the list's navigation lives in a bottom bar, split
+    three ways: `back`, `down` and `up` are exactly the LIST_BACK/LIST_DOWN/
+    LIST_UP zone rectangles list_zone_at() resolves to, and `bar` is the
+    undivided band they live in. On a wider panel the navigation instead
+    moves to a right-hand rail running the full height, so the rows can use
+    the freed-up width: `bar`/`back`/`down`/`up` are then None, and `rail`/
+    `rail_up`/`rail_cancel`/`rail_down` (exactly the LIST_UP/LIST_BACK/
+    LIST_DOWN zone rectangles) carry the same three controls stacked
+    top to bottom instead of side by side. Exactly one of the two chrome
+    groups is populated for a given panel; the other is all None."""
+
+    rows: tuple[Rect, ...]   # rows_per_page rectangles, top to bottom
     row_h: int
     rows_per_page: int
+    # bottom-bar chrome (base tier); None when the rail is in use.
+    bar: Rect | None                 # undivided band — back|down|up live here
+    back: Rect | None                # bar, left third (== LIST_BACK zone)
+    down: Rect | None                # bar, middle third (== LIST_DOWN zone)
+    up: Rect | None                  # bar, right third (== LIST_UP zone)
+    # right-rail chrome (rich/large tiers); None on base.
+    rail: Rect | None = None         # the full-height rail column
+    rail_up: Rect | None = None      # previous page  (== LIST_UP zone)
+    rail_cancel: Rect | None = None  # back / cancel  (== LIST_BACK zone)
+    rail_down: Rect | None = None    # next page      (== LIST_DOWN zone)
 
 
 def _dead_zone_margin(width: int, height: int) -> int:
@@ -568,30 +634,53 @@ def zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
 
 def list_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListLayout:
     """Compute the full selector-screen geometry for a *width* x *height*
-    panel: rows_per_page rows tiling [0, height - bar_h), full width, plus a
-    bottom bar split three ways (back|down|up) with the usual dead-zone
-    margins. Row height equals the bar height (never below 32px on any
-    shipped profile), which is what makes rows_per_page exactly 3 on every
-    profile listed in dial_display_profiles.py.
+    panel.
+
+    On the base tier (metrics.list_rail is False): rows_per_page rows tiling
+    [0, height - bar_h), full width, plus a bottom bar split three ways
+    (back|down|up) with the usual dead-zone margins. Row height equals the
+    bar height (never below 32px on any shipped profile), which is what
+    makes rows_per_page exactly 3 on every base-tier profile listed in
+    dial_display_profiles.py.
+
+    On the rich/large tiers (metrics.list_rail is True): the navigation
+    moves to a right-hand rail as wide as one band, so rows tile
+    [0, width - rail_w - 2*margin) instead of the full width — the same 2m
+    dead gap the header's own name/cluster split and DOWN/UP split use. The
+    rail itself is split three ways top to bottom, inset by margin on the
+    left the same way the bottom bar is inset by margin at the top.
     """
     if metrics is None:
         metrics = metrics_for(width, height)
     m = metrics.margin
-    bar_h = metrics.band_h
     row_h = metrics.row_h
     rows_per_page = metrics.rows_per_page
-    rows = tuple((0, i * row_h, width, (i + 1) * row_h) for i in range(rows_per_page))
 
-    (bx0, bx1), (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1, 1])
-    by0 = height - bar_h + m
+    if not metrics.list_rail:
+        bar_h = metrics.band_h
+        rows = tuple((0, i * row_h, width, (i + 1) * row_h) for i in range(rows_per_page))
+        (bx0, bx1), (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1, 1])
+        by0 = height - bar_h + m
+        return ListLayout(
+            rows=rows, row_h=row_h, rows_per_page=rows_per_page,
+            bar=(0, height - bar_h, width, height),
+            back=(bx0, by0, bx1, height),
+            down=(dx0, by0, dx1, height),
+            up=(ux0, by0, ux1, height),
+        )
+
+    rail_w = metrics.band_h
+    rows_x1 = width - rail_w - 2 * m
+    rows = tuple((0, i * row_h, rows_x1, (i + 1) * row_h) for i in range(rows_per_page))
+    (uy0, uy1), (cy0, cy1), (dy0, dy1) = _split(height, m, [1, 1, 1])
+    rx0 = width - rail_w + m
     return ListLayout(
-        rows=rows,
-        bar=(0, height - bar_h, width, height),
-        back=(bx0, by0, bx1, height),
-        down=(dx0, by0, dx1, height),
-        up=(ux0, by0, ux1, height),
-        row_h=row_h,
-        rows_per_page=rows_per_page,
+        rows=rows, row_h=row_h, rows_per_page=rows_per_page,
+        bar=None, back=None, down=None, up=None,
+        rail=(width - rail_w, 0, width, height),
+        rail_up=(rx0, uy0, width, uy1),
+        rail_cancel=(rx0, cy0, width, cy1),
+        rail_down=(rx0, dy0, width, dy1),
     )
 
 

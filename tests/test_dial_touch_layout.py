@@ -21,17 +21,21 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 from dial_touch_layout import (  # noqa: E402
-    COMPACT_BELOW_BAND_MM,
+    BAND_MAX_MM,
+    CONTENT_BASE,
+    CONTENT_LARGE,
+    CONTENT_RICH,
     GEOMETRIES,
     GEOMETRY_IDLE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
-    LARGE_ABOVE_BAND_MM,
-    TIER_COMPACT,
-    TIER_LARGE,
-    TIER_REGULAR,
+    LARGE_MIN_SHORT_SIDE_PX,
+    RICH_MIN_SHORT_SIDE_PX,
+    SUPERSAMPLE_DEFAULT,
+    SUPERSAMPLE_LARGE,
     TOUCH_MIN_MM,
+    TOUCH_SHORT_BELOW_BAND_MM,
     TouchZone,
     _dead_zone_margin,
     hit_test,
@@ -670,47 +674,57 @@ class TestMetricsForReferenceEquivalence:
 
 
 # Confirmed mm_per_px per PROFILE_SIZES entry, in order — see the density
-# table in the profiles module's design notes.
+# table in the profiles module's design notes. The two 320x240 entries
+# (indices 3 and 4) are confirmed but resolve to the rich content tier (the
+# panel's short side clears RICH_MIN_SHORT_SIDE_PX and its quarter-height
+# band is physically tall enough to escape the touch_short veto) — see
+# TestRichAndLargeGeometry for their pins. Only the first three stay base.
 _CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
-# Densities chosen to resolve to compact/large respectively, proving tier is
-# reported-only: geometry must stay regular-tier regardless.
-_OUT_OF_TIER_MM_PER_PX = [0.05, 0.5]
+_BASE_RESOLVING_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))[:3]
+
+# A density fine enough that the touch_short veto fires regardless of a
+# panel's pixel size — proves the veto, not the tier boundary, decides
+# geometry here.
+_TOUCH_SHORT_VETO_MM_PER_PX = 0.05
 
 
 class TestDensityHasNoEffectOnGeometry:
     """Passing a real mm_per_px must never change a single pixel of layout
-    or hit-test geometry in this stage — only metrics_for()'s own reported
-    fields (band_mm, tier, touch_min_px) are density-dependent."""
+    or hit-test geometry for a panel that resolves to the base content
+    tier — only metrics_for()'s own reported fields (band_mm, content_tier,
+    touch_min_px, ...) are density-dependent there. A panel whose pixel size
+    and density resolve to a richer tier is a deliberate, pinned geometry
+    change instead — see TestRichAndLargeGeometry."""
 
-    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_layout_for_unaffected(self, size, mm):
         width, height = size
         assert layout_for(width, height) == layout_for(
             width, height, metrics=metrics_for(width, height, mm)
         )
 
-    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_list_layout_for_unaffected(self, size, mm):
         width, height = size
         assert list_layout_for(width, height) == list_layout_for(
             width, height, metrics=metrics_for(width, height, mm)
         )
 
-    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_repeat_layout_for_unaffected(self, size, mm):
         width, height = size
         assert repeat_layout_for(width, height) == repeat_layout_for(
             width, height, metrics=metrics_for(width, height, mm)
         )
 
-    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_idle_layout_for_unaffected(self, size, mm):
         width, height = size
         assert idle_layout_for(width, height) == idle_layout_for(
             width, height, metrics=metrics_for(width, height, mm)
         )
 
-    @pytest.mark.parametrize("size,mm", list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)))
+    @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_zone_rects_for_unaffected(self, size, mm):
         width, height = size
         metrics = metrics_for(width, height, mm)
@@ -720,14 +734,19 @@ class TestDensityHasNoEffectOnGeometry:
             )
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    @pytest.mark.parametrize("mm", _OUT_OF_TIER_MM_PER_PX)
-    def test_out_of_tier_density_still_leaves_geometry_unchanged(self, width, height, mm):
-        metrics = metrics_for(width, height, mm)
-        assert metrics.tier != TIER_REGULAR
+    def test_touch_short_veto_still_leaves_geometry_at_base(self, width, height):
+        metrics = metrics_for(width, height, _TOUCH_SHORT_VETO_MM_PER_PX)
+        assert metrics.content_tier == CONTENT_BASE
         assert layout_for(width, height, metrics=metrics) == layout_for(width, height)
         assert list_layout_for(width, height, metrics=metrics) == list_layout_for(width, height)
         assert repeat_layout_for(width, height, metrics=metrics) == repeat_layout_for(width, height)
         assert idle_layout_for(width, height, metrics=metrics) == idle_layout_for(width, height)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_mm_per_px_none_matches_the_bare_call(self, width, height):
+        metrics = metrics_for(width, height)
+        assert metrics.content_tier == CONTENT_BASE
+        assert list_layout_for(width, height, metrics=metrics) == list_layout_for(width, height)
 
 
 class TestScalePxConsolidation:
@@ -755,14 +774,29 @@ class TestScalePxConsolidation:
         assert scale_px(10, width, height, 0) == _blur_radius_for(width, height)
 
 
-# (size, mm_per_px, expected tier) for the five confirmed profiles, in
-# PROFILE_SIZES order — the 1.3 inch 240x240 is the one honestly compact.
+# (size, mm_per_px, expected content_tier) for six confirmed profiles: the
+# five shipped sizes plus one representative large panel. The two 320x240
+# entries resolve rich (the band cap does not bite at that density); the
+# 240x240 entry is vetoed back to base by its own physical touch floor.
 _CONFIRMED_TIERS = [
-    ((160, 128), 0.2231, TIER_REGULAR),
-    ((128, 128), 0.2021, TIER_REGULAR),
-    ((240, 240), 0.0973, TIER_COMPACT),
-    ((320, 240), 0.1778, TIER_REGULAR),
-    ((320, 240), 0.1778, TIER_REGULAR),
+    ((160, 128), 0.2231, CONTENT_BASE),
+    ((128, 128), 0.2021, CONTENT_BASE),
+    ((240, 240), 0.0973, CONTENT_BASE),
+    ((320, 240), 0.1778, CONTENT_RICH),
+    ((320, 240), 0.1778, CONTENT_RICH),
+    ((640, 480), 0.127, CONTENT_LARGE),
+]
+
+# (size, mm, tier, band_h, rows_per_page, row_h, touch_min_px, list_rail,
+# supersample) — the confirmed-panel table, one row per _CONFIRMED_TIERS
+# entry, above.
+_CONFIRMED_PANEL_TABLE = [
+    ((160, 128), 0.2231, CONTENT_BASE, 32, 3, 32, 36, False, SUPERSAMPLE_DEFAULT),
+    ((128, 128), 0.2021, CONTENT_BASE, 32, 3, 32, 40, False, SUPERSAMPLE_DEFAULT),
+    ((240, 240), 0.0973, CONTENT_BASE, 60, 3, 60, 83, False, SUPERSAMPLE_DEFAULT),
+    ((320, 240), 0.1778, CONTENT_RICH, 60, 4, 60, 45, True, SUPERSAMPLE_DEFAULT),
+    ((320, 240), 0.1778, CONTENT_RICH, 60, 4, 60, 45, True, SUPERSAMPLE_DEFAULT),
+    ((640, 480), 0.127, CONTENT_LARGE, 95, 5, 96, 63, True, SUPERSAMPLE_LARGE),
 ]
 
 
@@ -770,22 +804,29 @@ class TestTierReporting:
     @pytest.mark.parametrize("size,mm,expected_tier", _CONFIRMED_TIERS)
     def test_confirmed_profiles_report_expected_tier(self, size, mm, expected_tier):
         width, height = size
-        assert metrics_for(width, height, mm).tier == expected_tier
+        assert metrics_for(width, height, mm).content_tier == expected_tier
 
-    def test_mm_per_px_none_gives_regular(self):
-        assert metrics_for(160, 128).tier == TIER_REGULAR
-        assert metrics_for(240, 240).tier == TIER_REGULAR
+    @pytest.mark.parametrize(
+        "size,mm,tier,band_h,rows_per_page,row_h,touch_min_px,list_rail,supersample",
+        _CONFIRMED_PANEL_TABLE,
+    )
+    def test_confirmed_panel_table(
+        self, size, mm, tier, band_h, rows_per_page, row_h, touch_min_px, list_rail, supersample,
+    ):
+        width, height = size
+        m = metrics_for(width, height, mm)
+        assert m.content_tier == tier
+        assert m.band_h == band_h
+        assert m.rows_per_page == rows_per_page
+        assert m.row_h == row_h
+        assert m.touch_min_px == touch_min_px
+        assert m.list_rail == list_rail
+        assert m.supersample == supersample
 
-    def test_tier_override_is_returned_as_given(self):
-        assert metrics_for(160, 128, tier_override=TIER_COMPACT).tier == TIER_COMPACT
-        assert metrics_for(160, 128, tier_override=TIER_LARGE).tier == TIER_LARGE
-        # An override wins even against a density that would otherwise
-        # resolve differently.
-        assert metrics_for(160, 128, mm_per_px=0.0973, tier_override=TIER_LARGE).tier == TIER_LARGE
-
-    def test_invalid_tier_override_raises(self):
-        with pytest.raises(ValueError):
-            metrics_for(160, 128, tier_override="huge")
+    def test_mm_per_px_none_gives_base_at_every_size(self):
+        assert metrics_for(160, 128).content_tier == CONTENT_BASE
+        assert metrics_for(240, 240).content_tier == CONTENT_BASE
+        assert metrics_for(640, 480).content_tier == CONTENT_BASE
 
     def test_touch_min_px_matches_confirmed_table(self):
         from math import ceil
@@ -797,19 +838,227 @@ class TestTierReporting:
     def test_touch_min_px_none_when_density_unknown(self):
         assert metrics_for(160, 128).touch_min_px is None
 
-    def test_boundary_at_exactly_compact_threshold_is_regular(self):
-        # band_mm == COMPACT_BELOW_BAND_MM exactly must NOT read compact —
-        # the comparison is strict '<'.
-        band_h = 128 // 4
-        mm = COMPACT_BELOW_BAND_MM / band_h
-        assert metrics_for(160, 128, mm).tier == TIER_REGULAR
+    # -- pixel-size tier boundaries: short side 199/200/399/400 ------------
+    # Densities are chosen well clear of the touch_short veto, so only the
+    # pixel-size boundary itself is under test.
 
-    def test_boundary_at_exactly_large_threshold_is_regular(self):
-        # band_mm == LARGE_ABOVE_BAND_MM exactly must NOT read large — the
-        # comparison is strict '>'.
-        band_h = 128 // 4
-        mm = LARGE_ABOVE_BAND_MM / band_h
-        assert metrics_for(160, 128, mm).tier == TIER_REGULAR
+    def test_boundary_just_below_rich_threshold_is_base(self):
+        side = RICH_MIN_SHORT_SIDE_PX - 1
+        assert metrics_for(side, side, 0.2).content_tier == CONTENT_BASE
+
+    def test_boundary_at_rich_threshold_is_rich(self):
+        side = RICH_MIN_SHORT_SIDE_PX
+        assert metrics_for(side, side, 0.2).content_tier == CONTENT_RICH
+
+    def test_boundary_just_below_large_threshold_is_rich(self):
+        side = LARGE_MIN_SHORT_SIDE_PX - 1
+        assert metrics_for(side, side, 0.1).content_tier == CONTENT_RICH
+
+    def test_boundary_at_large_threshold_is_large(self):
+        side = LARGE_MIN_SHORT_SIDE_PX
+        assert metrics_for(side, side, 0.1).content_tier == CONTENT_LARGE
+
+    def test_mm_per_px_none_is_base_regardless_of_pixel_size(self):
+        assert metrics_for(200, 200).content_tier == CONTENT_BASE
+        assert metrics_for(640, 480).content_tier == CONTENT_BASE
+
+    # -- the touch_short veto ------------------------------------------------
+
+    def test_touch_short_veto_downgrades_an_automatic_size(self):
+        m = metrics_for(240, 240, 0.0973)
+        assert m.touch_short is True
+        assert m.content_tier == CONTENT_BASE
+
+    def test_touch_short_veto_does_not_apply_to_a_chosen_size(self):
+        m = metrics_for(240, 240, 0.0973, size_chosen=True)
+        assert m.touch_short is True
+        assert m.content_tier == CONTENT_RICH
+
+    def test_touch_short_is_reported_on_the_base_tier_too(self):
+        m = metrics_for(160, 128, 0.05)
+        assert m.touch_short is True
+        assert m.content_tier == CONTENT_BASE
+
+    def test_touch_short_boundary_is_strict_less_than(self):
+        # band_mm exactly at the threshold must NOT read touch_short — the
+        # comparison is strict '<'.
+        quarter = 240 // 4
+        mm = TOUCH_SHORT_BELOW_BAND_MM / quarter
+        m = metrics_for(240, 240, mm)
+        assert m.touch_short is False
+        assert m.content_tier == CONTENT_RICH
+
+    # -- the band cap ----------------------------------------------------------
+
+    def test_band_cap_bites_on_a_large_panel(self):
+        from math import ceil
+
+        mm = 0.127
+        expected = min(480 // 4, ceil(BAND_MAX_MM / mm))
+        assert metrics_for(640, 480, mm).band_h == expected == 95
+
+    def test_band_cap_does_not_bite_at_the_shipped_320x240_density(self):
+        assert metrics_for(320, 240, 0.1778).band_h == 60
+
+    def test_band_cap_bites_at_a_coarser_320x240_density(self):
+        # Same pixel count, physically bigger pixels (a 3.5 inch panel): the
+        # cap now bites where it did not at the shipped density.
+        assert metrics_for(320, 240, 0.2778).band_h == 44
+
+
+# ---------------------------------------------------------------------------
+# The right-rail list: geometry, its zone table and its hit-test on the
+# rich/large tiers — the counterpart to TestListLayout/TestListZoneAtExhaustive
+# above, which stay on the base tier (metrics=None) and are unaffected.
+# ---------------------------------------------------------------------------
+
+_RICH_320x240 = metrics_for(320, 240, 0.1778)
+_LARGE_640x480 = metrics_for(640, 480, 0.127)
+
+
+class TestRailListLayout:
+    def test_pinned_geometry_at_320x240(self):
+        layout = list_layout_for(320, 240, metrics=_RICH_320x240)
+        assert layout.rows == (
+            (0, 0, 248, 60), (0, 60, 248, 120), (0, 120, 248, 180), (0, 180, 248, 240),
+        )
+        assert layout.rail == (260, 0, 320, 240)
+        assert layout.rail_up == (266, 0, 320, 72)
+        assert layout.rail_cancel == (266, 84, 320, 156)
+        assert layout.rail_down == (266, 168, 320, 240)
+        assert layout.bar is None
+        assert layout.back is None
+        assert layout.down is None
+        assert layout.up is None
+
+    def test_pinned_geometry_at_640x480(self):
+        layout = list_layout_for(640, 480, metrics=_LARGE_640x480)
+        assert layout.row_h == 96
+        assert layout.rows_per_page == 5
+        assert layout.rows[0] == (0, 0, 523, 96)
+        assert layout.rail == (545, 0, 640, 480)
+        assert layout.rail_up == (556, 0, 640, 145)
+        assert layout.rail_cancel == (556, 167, 640, 312)
+        assert layout.rail_down == (556, 335, 640, 480)
+        assert layout.bar is None
+        assert layout.back is None
+        assert layout.down is None
+        assert layout.up is None
+
+    def test_base_layout_on_a_rich_capable_size_without_density(self):
+        # No mm_per_px means base regardless of pixel size — today's bottom
+        # bar and three rows of 60, not the rail.
+        layout = list_layout_for(320, 240)
+        assert layout.rail is None
+        assert layout.rows_per_page == 3
+        assert layout.row_h == 60
+
+    @pytest.mark.parametrize("metrics", [_RICH_320x240, _LARGE_640x480])
+    def test_touch_floor_is_respected(self, metrics):
+        layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
+        for rect in layout.rows:
+            assert rect[3] - rect[1] >= metrics.touch_min_px
+        for rect in (layout.rail_up, layout.rail_cancel, layout.rail_down):
+            assert rect[3] - rect[1] >= metrics.touch_min_px
+        assert metrics.band_h - metrics.margin >= metrics.touch_min_px
+
+
+class TestRailZoneTable:
+    def test_order_is_rows_then_up_back_down(self):
+        entries = zone_rects_for(GEOMETRY_LIST, 320, 240, metrics=_RICH_320x240)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.LIST_ROW, 0),
+            (TouchZone.LIST_ROW, 1),
+            (TouchZone.LIST_ROW, 2),
+            (TouchZone.LIST_ROW, 3),
+            (TouchZone.LIST_UP, None),
+            (TouchZone.LIST_BACK, None),
+            (TouchZone.LIST_DOWN, None),
+        ]
+
+    def test_base_order_is_unaffected(self):
+        entries = zone_rects_for(GEOMETRY_LIST, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.LIST_ROW, 0),
+            (TouchZone.LIST_ROW, 1),
+            (TouchZone.LIST_ROW, 2),
+            (TouchZone.LIST_BACK, None),
+            (TouchZone.LIST_DOWN, None),
+            (TouchZone.LIST_UP, None),
+        ]
+
+    def test_every_rect_is_a_layout_field(self):
+        layout = list_layout_for(320, 240, metrics=_RICH_320x240)
+        entries = list(zone_rects_for(GEOMETRY_LIST, 320, 240, metrics=_RICH_320x240))
+        row_entries = [e for e in entries if e.zone == TouchZone.LIST_ROW]
+        assert [e.rect for e in row_entries] == list(layout.rows)
+        by_zone = {e.zone: e.rect for e in entries if e.zone != TouchZone.LIST_ROW}
+        assert by_zone[TouchZone.LIST_UP] == layout.rail_up
+        assert by_zone[TouchZone.LIST_BACK] == layout.rail_cancel
+        assert by_zone[TouchZone.LIST_DOWN] == layout.rail_down
+
+    def test_union_of_geometries_still_covers_every_zone(self):
+        covered = set()
+        for geometry in GEOMETRIES:
+            covered.update(
+                entry.zone for entry in zone_rects_for(geometry, 320, 240, metrics=_RICH_320x240)
+            )
+        assert covered == set(TouchZone)
+
+
+class TestRailListHitTestExhaustive:
+    def test_every_pixel_matches_a_hand_written_reference(self):
+        metrics = _RICH_320x240
+        width, height = metrics.width, metrics.height
+        layout = list_layout_for(width, height, metrics=metrics)
+
+        def reference(x, y):
+            for i, (x0, y0, x1, y1) in enumerate(layout.rows):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return (TouchZone.LIST_ROW, i)
+            for zone, (x0, y0, x1, y1) in (
+                (TouchZone.LIST_UP, layout.rail_up),
+                (TouchZone.LIST_BACK, layout.rail_cancel),
+                (TouchZone.LIST_DOWN, layout.rail_down),
+            ):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return (zone, None)
+            return None
+
+        for y in range(height):
+            for x in range(width):
+                hit = hit_test(GEOMETRY_LIST, x, y, width, height, metrics=metrics)
+                got = (hit.zone, hit.index) if hit is not None else None
+                assert got == reference(x, y)
+
+    def test_rail_zone_centres_resolve_correctly(self):
+        metrics = _RICH_320x240
+        layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
+        for zone, rect in (
+            (TouchZone.LIST_UP, layout.rail_up),
+            (TouchZone.LIST_BACK, layout.rail_cancel),
+            (TouchZone.LIST_DOWN, layout.rail_down),
+        ):
+            x0, y0, x1, y1 = rect
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            hit = hit_test(GEOMETRY_LIST, cx, cy, metrics.width, metrics.height, metrics=metrics)
+            assert (hit.zone, hit.index) == (zone, None)
+
+    def test_gap_between_cross_and_down_chevron_is_dead(self):
+        metrics = _RICH_320x240
+        layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
+        gap_y = (layout.rail_cancel[3] + layout.rail_down[1]) // 2
+        gap_x = (layout.rail_cancel[0] + layout.rail_cancel[2]) // 2
+        assert hit_test(GEOMETRY_LIST, gap_x, gap_y, metrics.width, metrics.height, metrics=metrics) is None
+
+    def test_row_right_edge_leaves_the_dead_gap_before_the_rail(self):
+        # The gap between a row's right edge and the rail is chassis-
+        # coloured dead space: a point there resolves to neither.
+        metrics = _RICH_320x240
+        layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
+        gap_x = (layout.rows[0][2] + layout.rail[0]) // 2
+        gap_y = layout.rows[0][1]
+        assert hit_test(GEOMETRY_LIST, gap_x, gap_y, metrics.width, metrics.height, metrics=metrics) is None
 
 
 # ---------------------------------------------------------------------------
