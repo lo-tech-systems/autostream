@@ -304,6 +304,7 @@ class TestOutputsRequest:
             "appliance_id": hs.LOUNGE, "kind": "output_set", "state": "rejected",
             "error": "pin_required", "output_id": "o2", "retry_after_s": 0,
             "requested_at": hs.NOW - 1, "changed_at": hs.NOW - 1, "awaiting_pin": True,
+            "pin_accepted": True,
             "retry_until": hs.NOW - 1, "awaiting_until": hs.NOW - 1 + PIN_WINDOW_S}
         assert (block("pin_rate_limited")["awaiting_pin"], block("pin_rate_limited")["retry_after_s"]) == (True, 7)
         assert block("pin_expired")["awaiting_pin"] is False
@@ -321,6 +322,11 @@ class TestOutputsRequest:
         expired = _state("pin_expired")
         assert expired["outputs_request"]["awaiting_pin"] is False
         assert expired["outputs_request"]["awaiting_until"] <= expired["now"]
+
+    def test_the_block_says_whether_the_appliance_takes_a_pin_from_a_dial(self):
+        assert _state("pin_required")["outputs_request"]["pin_accepted"] is True
+        assert _state("pin_required_v1")["outputs_request"]["pin_accepted"] is False
+        assert _state("replaying")["transport"]["pin_accepted"] is False
 
     def test_the_transport_block_has_no_pin_window(self):
         transport = _state("replaying")["transport"]

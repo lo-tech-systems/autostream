@@ -23,7 +23,8 @@ from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
-    DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, pin_window_end, six_band,
+    DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, pin_capable_outputs, pin_window_end,
+    six_band,
 )
 from dial_warning_text import appliance_warning_key
 
@@ -275,7 +276,12 @@ def _eq_block(snapshot, now: float) -> dict | None:
     }
 
 
-def _request_block(held, now: float) -> dict | None:
+def _pin_accepted(snapshot, held) -> bool:
+    appliance = None if held is None else snapshot.appliance(held.appliance_id)
+    return appliance is not None and pin_capable_outputs(appliance.dial_outputs_version)
+
+
+def _request_block(held, now: float, pin_accepted: bool) -> dict | None:
     if held is None:
         return None
     window_end = pin_window_end(held)
@@ -291,6 +297,8 @@ def _request_block(held, now: float) -> dict | None:
         # When the request reached its current state, on the same clock.
         "changed_at": _round(held.changed_at, 3),
         "awaiting_pin": awaiting_pin(held, now),
+        # Whether the appliance takes a PIN from this dial.
+        "pin_accepted": pin_accepted,
         # Absolute times on the body's "now" clock: when a rate-limit wait
         # ends, and when an outcome stops being answered on the screen (null
         # for a request that takes no PIN).
@@ -453,8 +461,8 @@ def build_state(
         "outputs_available": bool(snapshot.outputs_available),
         "eq": _eq_block(snapshot, now),
         "eq_available": bool(snapshot.eq_available),
-        "transport": _request_block(snapshot.transport, now),
-        "outputs_request": _request_block(snapshot.outputs_request, now),
+        "transport": _request_block(snapshot.transport, now, _pin_accepted(snapshot, snapshot.transport)),
+        "outputs_request": _request_block(snapshot.outputs_request, now, _pin_accepted(snapshot, snapshot.outputs_request)),
         "warnings": _warnings_block(snapshot, descriptors, wall_now),
         "network": _network_block(snapshot.network),
         "sd_health": _sd_health_block(snapshot.sd_health),

@@ -2103,6 +2103,32 @@ class TestSpeakerPin:
         expect(modal_card(page)).to_be_hidden()
         assert sent == []
 
+    STRIP_PIN_ACCEPTED = (
+        "(() => { const parse = JSON.parse; JSON.parse = (text) => { const v = parse(text);"
+        " if (v && v.v === 1 && v.outputs_request) { delete v.outputs_request.pin_accepted; } return v; }; })()")
+
+    def test_a_state_without_pin_accepted_falls_back_to_the_version_for_a_version_two_appliance(self, page, hd):
+        page.add_init_script(self.STRIP_PIN_ACCEPTED)
+        hd.show(hs.SCENARIOS["pin_required"])
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
+
+    def test_a_state_without_pin_accepted_falls_back_to_the_version_for_a_version_one_appliance(self, page, hd):
+        page.add_init_script(self.STRIP_PIN_ACCEPTED)
+        hd.show(hs.SCENARIOS["pin_required_v1"])
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("Pair in Autostream")
+        expect(page.locator("#card-pin-pad")).to_be_hidden()
+
+    def test_the_key_decides_over_the_capability_version(self, page, hd):
+        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required"), outputs_version=1))
+        page.add_init_script(
+            "(() => { const parse = JSON.parse; JSON.parse = (text) => { const v = parse(text);"
+            " if (v && v.v === 1 && v.outputs_request) { v.outputs_request.pin_accepted = true; } return v; }; })()")
+        open_page(page, hd)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+
     def test_the_presence_card_outranks_the_keypad_and_the_keypad_outranks_a_warning(self, page, hd):
         hd.show(with_recovery(hs.SCENARIOS["pin_required"]))
         open_page(page, hd)

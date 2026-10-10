@@ -1020,3 +1020,7 @@ class TestAwaitingTitle:
 
 def test_six_band():
     assert [cs.six_band(v) for v in (0, 1, 2, 3)] == [False, False, True, True]
+
+
+def test_pin_capable_outputs():
+    assert [cs.pin_capable_outputs(v) for v in (0, 1, 2, 3)] == [False, False, True, True]

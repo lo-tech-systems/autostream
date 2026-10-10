@@ -157,6 +157,7 @@
     "requested_at": 999.0,
     "changed_at": 999.0,
     "awaiting_pin": true,
+    "pin_accepted": false,
     "retry_until": 999.0,
     "awaiting_until": 1089.0
   },

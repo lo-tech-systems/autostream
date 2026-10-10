@@ -44,11 +44,17 @@ EQ_OPTIMISTIC_WINDOW_S = 2.0
 # own bands before them.
 DERIVED_EQ_IDS = ("bass", "treble")
 SIX_BAND_EQ_VERSION = 2
+PIN_OUTPUTS_VERSION = 2
 
 
 def six_band(version: int) -> bool:
     """Whether an EQ capability version lists six bands of its own."""
     return version >= SIX_BAND_EQ_VERSION
+
+
+def pin_capable_outputs(version: int) -> bool:
+    """Whether an outputs capability version accepts a PIN from a dial."""
+    return version >= PIN_OUTPUTS_VERSION
 
 
 # How long a replay the appliance has just accepted may be shown as playing

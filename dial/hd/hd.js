@@ -692,7 +692,10 @@
         const timed = r.state === "rejected" && typeof r.awaiting_until === "number";
         if (timed && dialNow(s, local) >= r.awaiting_until) { return null; }
         if (local.pin.dismissedAt === r.requested_at) { return null; }
-        if (focus.capabilities.outputs < 2) {
+        // A dial that predates pin_accepted reports only versions; read them
+        // until the state version next changes.
+        const accepts = r.pin_accepted !== undefined ? r.pin_accepted : focus.capabilities.outputs >= 2;
+        if (!accepts) {
             return {
                 kind: "notice", key: "pair", source: focus.webui, title: PAIR_ELSEWHERE.title,
                 message: PAIR_ELSEWHERE.message(focus.name), severity: "info", progress: null,
