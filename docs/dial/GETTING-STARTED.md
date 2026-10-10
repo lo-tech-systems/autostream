@@ -45,6 +45,9 @@ Until authorized, that's the only control shown on the card. Turning the
 toggle off later (after a confirmation prompt) revokes access. Full details
 are in [Setup: Dials](../SETUP-DIALS.md).
 
+An authorized dial can also switch the appliance's speakers on and off and,
+from an HD screen, pair a speaker that asks for a PIN.
+
 ## Configuring the dial
 
 Once authorized, the dial's card expands to show its settings. If a PIN is

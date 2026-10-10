@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- new: an HD dial can pair a speaker that asks for a PIN. Switching the
+  speaker on opens a keypad on the dial; enter the code the device shows. The
+  appliance's Home page leaves the prompt to the dial while it is doing this.
+  The small screen tells you to pair in the appliance's web UI instead.
+- improved: the Home page's PIN dialog pairs and switches the speaker on in
+  one go, says when a code was not accepted, and asks you to wait a few
+  seconds after several quick attempts. A speaker switch the appliance
+  refuses now springs back on the dial at once.
 - improved: the replay timer on the dial's screens now runs behind the
   appliance's reported position by the appliance's audio start buffer, so it
   matches what you hear (it was a fixed two seconds on the small screens and
