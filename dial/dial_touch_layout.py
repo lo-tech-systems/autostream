@@ -55,15 +55,23 @@ keeps the dead-zone band feeling the same physical size across profiles
 rather than shrinking to nothing on a big panel or ballooning on a small
 one.
 
-SURFACES: this module describes geometry for TWO surfaces, never mixed. The
-MAIN surface (`zone_at`/`zones_for`/`layout_for`) is the now-playing
-screen: NAME, MUTE, DOWN, UP, plus the non-actuating artist label. The
-SELECTOR surface (`list_zone_at`/`list_layout_for`) is the appliance list:
-LIST_ROW (one per visible row), LIST_BACK, LIST_DOWN and LIST_UP. A caller
-never mixes the two — which surface to hit-test against is decided
-elsewhere (dial_touch.TouchStateMachine.set_surface) — but both are pure
-functions of (x, y, width, height) and both are the ONLY hit-test functions
-any state machine calls.
+SURFACES: this module describes geometry for FOUR surfaces, never mixed.
+The MAIN surface (`zone_at`/`zones_for`/`layout_for`) is the now-playing
+screen: DOTS, NAME, MUTE, DOWN, UP, plus the non-actuating artist and
+title labels. DOTS is carved from the left of the NAME zone (whose x0
+therefore starts one band-height plus a 2*margin gap later than before);
+it opens the N2 repeat screen. The SELECTOR/PICKER surface
+(`list_zone_at`/`list_layout_for`) is the appliance list (also reused,
+unchanged, for the N5 replay picker): LIST_ROW (one per visible row),
+LIST_BACK, LIST_DOWN and LIST_UP. The REPEAT surface
+(`repeat_zone_at`/`repeat_layout_for`) is the N2 screen: DOTS (reused, pops
+back to main), REPEAT_RING, REPEAT_START, REPEAT_STOP. The IDLE surface
+(`idle_zone_at`/`idle_layout_for`) is the N4 idle screen: IDLE_REPLAY,
+covering the whole panel below the top band. A caller never mixes surfaces
+— which one to hit-test against is decided elsewhere
+(dial_touch.TouchStateMachine.set_surface) — but all four are pure
+functions of (x, y, width, height) and are the ONLY hit-test functions any
+state machine calls.
 
 REMAINDER POLICY: an active width does not always divide evenly between the
 two zones sharing a split (DOWN and UP, after the dead-zone gap between
@@ -101,18 +109,28 @@ class TouchZone(str, Enum):
     SURFACES paragraph). Compares equal to its own string value, so callers
     may use TouchZone.MUTE or the literal "mute" interchangeably.
 
-    MUTE, DOWN, UP, NAME: the main (now-playing) surface.
-    LIST_BACK, LIST_DOWN, LIST_UP, LIST_ROW: the selector surface.
+    MUTE, DOWN, UP, NAME, DOTS: the main (now-playing) surface. DOTS opens
+    the N2 repeat screen; it is carved from the left of the NAME zone.
+    LIST_BACK, LIST_DOWN, LIST_UP, LIST_ROW: the selector/picker surface.
+    REPEAT_RING, REPEAT_START, REPEAT_STOP: the N2 repeat-screen surface
+    (plus DOTS, reused there to pop back to main).
+    IDLE_REPLAY: the N4 idle-screen surface (the whole panel below the top
+    band, when the idle affordance is showing).
     """
 
     MUTE = "mute"
     DOWN = "down"
     UP = "up"
     NAME = "name"
+    DOTS = "dots"
     LIST_BACK = "list_back"
     LIST_DOWN = "list_down"
     LIST_UP = "list_up"
     LIST_ROW = "list_row"
+    REPEAT_RING = "repeat_ring"
+    REPEAT_START = "repeat_start"
+    REPEAT_STOP = "repeat_stop"
+    IDLE_REPLAY = "idle_replay"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -122,12 +140,14 @@ Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 class OverlayLayout:
     """Full overlay geometry for one panel size — the single source of truth
     for both where the compositor dims/draws and where the touch zones sit.
-    `name`, `volume_cluster`, `down` and `up` are exactly the NAME/MUTE/
-    DOWN/UP zone rectangles zones_for() returns; `artist` and the two band
-    rectangles have no corresponding TouchZone because they never actuate."""
+    `dots`, `name`, `volume_cluster`, `down` and `up` are exactly the
+    DOTS/NAME/MUTE/DOWN/UP zone rectangles zones_for() returns; `artist` and
+    the two band rectangles have no corresponding TouchZone because they
+    never actuate."""
 
     top_band: Rect        # full-width dim region, rows [0, band_h)
     bottom_band: Rect     # full-width dim region, rows [height-band_h, height)
+    dots: Rect            # the two repeat-screen dots, left of the name (== DOTS zone)
     name: Rect            # appliance name, left part of top band (== NAME zone)
     artist: Rect          # centre-low text line, just above the bottom band (non-actuating)
     title: Rect           # track title line, directly above the artist line (non-actuating)
@@ -135,6 +155,40 @@ class OverlayLayout:
     down: Rect            # bottom band, left half (== DOWN zone)
     up: Rect              # bottom band, right half (== UP zone)
     divider_x: int        # x of the vertical divider centre in the bottom band
+
+
+@dataclass(frozen=True)
+class RepeatLayout:
+    """Full N2 (repeat screen) geometry for one panel size. `dots` and
+    `name` are the identical rectangles OverlayLayout uses (same geometry,
+    same touch behaviour — the dots and the name label are drawn on N2
+    too). `ring` is a centred square (the enable-layout ring); `label` is
+    the "Repeat" text above it (reuses the title line); `line` is the
+    centre "Replaying m:ss / m:ss" text, sharing the ring's vertical band
+    but spanning the full width minus margins; `start`/`stop` are exactly
+    the DOWN/UP zone rectangles, relabelled Start/Stop text glyphs for the
+    replaying layout."""
+
+    dots: Rect
+    name: Rect
+    ring: Rect
+    label: Rect
+    line: Rect
+    start: Rect
+    stop: Rect
+    divider_x: int
+    top_band: Rect
+    bottom_band: Rect
+
+
+@dataclass(frozen=True)
+class IdleLayout:
+    """N4 (idle screen) geometry: a single non-actuating affordance line
+    (reusing the same centre-low rect the main surface's artist line
+    occupies) — the tappable area itself is the whole panel below the top
+    band, returned by idle_zone_at(), not a rectangle on this dataclass."""
+
+    affordance: Rect
 
 
 @dataclass(frozen=True)
@@ -219,10 +273,16 @@ def layout_for(width: int, height: int) -> OverlayLayout:
     # Inset by m on the left and bottom so the pressed wash never touches the
     # band edge or the name area.
     volume_cluster: Rect = (width - cluster_w + m, 0, width, band_h - m)
+    # DOTS is carved from the left of the name zone, square with the band
+    # height, followed by the same 2m dead-zone gap the name/cluster split
+    # already used — so this is a pure subdivision of the old name rect,
+    # not a size change to the overall top band.
+    dots_w = band_h
+    dots: Rect = (m, 0, m + dots_w, band_h)
     # The gap between the name zone and cluster is 2m, the same dead-zone
     # width used between DOWN and UP. This is the same rectangle the artist
     # text occupied before it moved centre-low.
-    name: Rect = (m, 0, width - cluster_w - m, band_h)
+    name: Rect = (m + dots_w + 2 * m, 0, width - cluster_w - m, band_h)
 
     # Centre-low line, just above the bottom band — half the band height,
     # inset by m on each side. Non-actuating: no TouchZone, no dead-zone gap.
@@ -240,6 +300,7 @@ def layout_for(width: int, height: int) -> OverlayLayout:
     return OverlayLayout(
         top_band=top_band,
         bottom_band=bottom_band,
+        dots=dots,
         name=name,
         artist=artist,
         title=title,
@@ -261,6 +322,7 @@ def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
     """
     layout = layout_for(width, height)
     return {
+        TouchZone.DOTS: layout.dots,
         TouchZone.NAME: layout.name,
         TouchZone.MUTE: layout.volume_cluster,
         TouchZone.DOWN: layout.down,
@@ -322,3 +384,71 @@ def list_zone_at(x: int, y: int, width: int, height: int) -> tuple[TouchZone, in
         if x0 <= x < x1 and y0 <= y < y1:
             return (zone, None)
     return None
+
+
+def repeat_layout_for(width: int, height: int) -> RepeatLayout:
+    """Compute the N2 repeat-screen geometry for a *width* x *height*
+    panel. `ring` is a centred square of side 2*band_h (64px at the
+    reference 160x128 profile), sharing the panel's centre point. `line`
+    is the same vertical band as `ring` but spans the full width minus the
+    usual dead-zone margin, since it draws text rather than being tapped.
+    """
+    layout = layout_for(width, height)
+    m = _dead_zone_margin(width, height)
+    band_h = height // BAND_DIVISOR
+    side = band_h * 2
+    cx, cy = width // 2, height // 2
+    ring: Rect = (cx - side // 2, cy - side // 2, cx + side // 2, cy + side // 2)
+    line: Rect = (m, ring[1], width - m, ring[3])
+    return RepeatLayout(
+        dots=layout.dots,
+        name=layout.name,
+        ring=ring,
+        label=layout.title,
+        line=line,
+        start=layout.down,
+        stop=layout.up,
+        divider_x=layout.divider_x,
+        top_band=layout.top_band,
+        bottom_band=layout.bottom_band,
+    )
+
+
+def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
+    """Hit-test the N2 repeat-screen surface: DOTS first (pops back to
+    main), then the ring, then START, then STOP, else None (a dead zone).
+    State-agnostic like every other hit-test here — the display decides
+    whether a hit means anything in the CURRENT N2 layout (the ring is
+    drawn only in the "enable" layout, START/STOP only in "replaying";
+    see dial_display_compositor.compose_repeat)."""
+    layout = repeat_layout_for(width, height)
+    for zone, (x0, y0, x1, y1) in (
+        (TouchZone.DOTS, layout.dots),
+        (TouchZone.REPEAT_RING, layout.ring),
+        (TouchZone.REPEAT_START, layout.start),
+        (TouchZone.REPEAT_STOP, layout.stop),
+    ):
+        if x0 <= x < x1 and y0 <= y < y1:
+            return zone
+    return None
+
+
+def idle_layout_for(width: int, height: int) -> IdleLayout:
+    """Compute the N4 idle-screen geometry: the affordance line is the same
+    centre-low rectangle the main surface's (non-actuating) artist line
+    occupies."""
+    layout = layout_for(width, height)
+    return IdleLayout(affordance=layout.artist)
+
+
+def idle_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
+    """Return IDLE_REPLAY for any point below the top band, else None. The
+    top band is excluded so an accidental brush up there — where the name
+    and volume cluster live on the main surface — does nothing on N4."""
+    if not (0 <= x < width and 0 <= y < height):
+        return None
+    layout = layout_for(width, height)
+    _, top_y0, _, top_y1 = layout.top_band
+    if top_y0 <= y < top_y1:
+        return None
+    return TouchZone.IDLE_REPLAY

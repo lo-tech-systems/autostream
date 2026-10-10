@@ -23,9 +23,13 @@ if _DIAL not in sys.path:
 from dial_touch_layout import (  # noqa: E402
     TouchZone,
     _dead_zone_margin,
+    idle_layout_for,
+    idle_zone_at,
     layout_for,
     list_layout_for,
     list_zone_at,
+    repeat_layout_for,
+    repeat_zone_at,
     zone_at,
     zones_for,
 )
@@ -42,7 +46,7 @@ PROFILE_SIZES = [
     (320, 240),  # ili9341_320x240 (duplicate size, both must work)
 ]
 
-ALL_ZONES = {TouchZone.NAME, TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP}
+ALL_ZONES = {TouchZone.DOTS, TouchZone.NAME, TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP}
 
 
 class TestExactTiling:
@@ -156,6 +160,7 @@ class TestZonesForCompleteness:
     def test_zones_for_matches_layout_for(self, width, height):
         zones = zones_for(width, height)
         layout = layout_for(width, height)
+        assert zones[TouchZone.DOTS] == layout.dots
         assert zones[TouchZone.NAME] == layout.name
         assert zones[TouchZone.MUTE] == layout.volume_cluster
         assert zones[TouchZone.DOWN] == layout.down
@@ -216,7 +221,10 @@ def test_reference_geometry_exact():
     drift in the band-layout arithmetic is deliberate, not accidental."""
     layout = layout_for(160, 128)
     assert layout.volume_cluster == (99, 0, 160, 29)
-    assert layout.name == (3, 0, 93, 32)
+    assert layout.dots == (3, 0, 35, 32)
+    # DOTS (m=3, band_h=32 wide) plus the 2m gap pushes name's x0 from the
+    # earlier value of 3 to 41.
+    assert layout.name == (41, 0, 93, 32)
     assert layout.artist == (3, 80, 157, 96)
     assert layout.title == (3, 64, 157, 80)
     assert layout.down == (0, 99, 77, 128)
@@ -291,3 +299,156 @@ class TestListLayout:
         assert layout.row_h == 32
         assert layout.rows == ((0, 0, 160, 32), (0, 32, 160, 64), (0, 64, 160, 96))
         assert layout.bar == (0, 96, 160, 128)
+
+
+# ---------------------------------------------------------------------------
+# DOTS zone (dial phase 2, D3).
+# ---------------------------------------------------------------------------
+
+class TestDotsZone:
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_dots_is_square_with_the_band_height(self, width, height):
+        layout = layout_for(width, height)
+        x0, y0, x1, y1 = layout.dots
+        band_h = height // 4
+        assert (x1 - x0) == band_h
+        assert (y1 - y0) == band_h
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_dots_sits_left_of_name_with_a_two_margin_gap(self, width, height):
+        layout = layout_for(width, height)
+        margin = _dead_zone_margin(width, height)
+        gap = layout.name[0] - layout.dots[2]
+        assert gap == 2 * margin
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_dots_starts_at_the_left_margin(self, width, height):
+        layout = layout_for(width, height)
+        margin = _dead_zone_margin(width, height)
+        assert layout.dots[0] == margin
+
+    def test_dots_centre_hits_dots_zone(self):
+        layout = layout_for(160, 128)
+        x0, y0, x1, y1 = layout.dots
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert zone_at(cx, cy, 160, 128) == TouchZone.DOTS
+
+    def test_dots_reference_geometry_exact(self):
+        layout = layout_for(160, 128)
+        assert layout.dots == (3, 0, 35, 32)
+
+
+# ---------------------------------------------------------------------------
+# The N2 repeat surface: repeat_layout_for()/repeat_zone_at() (dial phase 2, D3).
+# ---------------------------------------------------------------------------
+
+class TestRepeatSurface:
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_dots_and_name_match_the_main_surface(self, width, height):
+        main = layout_for(width, height)
+        repeat = repeat_layout_for(width, height)
+        assert repeat.dots == main.dots
+        assert repeat.name == main.name
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_ring_is_a_centred_square_of_side_two_band_heights(self, width, height):
+        repeat = repeat_layout_for(width, height)
+        x0, y0, x1, y1 = repeat.ring
+        band_h = height // 4
+        assert (x1 - x0) == 2 * band_h
+        assert (y1 - y0) == 2 * band_h
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert cx == width // 2
+        assert cy == height // 2
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_line_shares_the_rings_vertical_band_full_width_minus_margins(self, width, height):
+        repeat = repeat_layout_for(width, height)
+        margin = _dead_zone_margin(width, height)
+        assert repeat.line[1] == repeat.ring[1]
+        assert repeat.line[3] == repeat.ring[3]
+        assert repeat.line[0] == margin
+        assert repeat.line[2] == width - margin
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_start_stop_reuse_down_up(self, width, height):
+        main = layout_for(width, height)
+        repeat = repeat_layout_for(width, height)
+        assert repeat.start == main.down
+        assert repeat.stop == main.up
+
+    def test_repeat_zone_at_resolves_dots(self):
+        layout = repeat_layout_for(160, 128)
+        x0, y0, x1, y1 = layout.dots
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.DOTS
+
+    def test_repeat_zone_at_resolves_ring(self):
+        layout = repeat_layout_for(160, 128)
+        x0, y0, x1, y1 = layout.ring
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_RING
+
+    def test_repeat_zone_at_resolves_start_and_stop(self):
+        layout = repeat_layout_for(160, 128)
+        sx0, sy0, sx1, sy1 = layout.start
+        assert repeat_zone_at((sx0 + sx1) // 2, (sy0 + sy1) // 2, 160, 128) == TouchZone.REPEAT_START
+        tx0, ty0, tx1, ty1 = layout.stop
+        assert repeat_zone_at((tx0 + tx1) // 2, (ty0 + ty1) // 2, 160, 128) == TouchZone.REPEAT_STOP
+
+    def test_repeat_zone_at_dead_zone_returns_none(self):
+        layout = repeat_layout_for(160, 128)
+        # The divider between start and stop is a dead zone, same geometry
+        # as the main surface's DOWN/UP divider.
+        assert repeat_zone_at(layout.divider_x, layout.start[1], 160, 128) is None
+
+    def test_repeat_zone_at_out_of_bounds_returns_none(self):
+        assert repeat_zone_at(-1, 0, 160, 128) is None
+        assert repeat_zone_at(1000, 1000, 160, 128) is None
+
+
+# ---------------------------------------------------------------------------
+# The N4 idle surface: idle_layout_for()/idle_zone_at() (dial phase 2, D3).
+# ---------------------------------------------------------------------------
+
+class TestIdleSurface:
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_affordance_is_the_artist_rect(self, width, height):
+        main = layout_for(width, height)
+        idle = idle_layout_for(width, height)
+        assert idle.affordance == main.artist
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_top_band_excluded(self, width, height):
+        layout = layout_for(width, height)
+        ty0, ty1 = layout.top_band[1], layout.top_band[3]
+        for y in range(ty0, ty1):
+            assert idle_zone_at(width // 2, y, width, height) is None
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_everything_below_top_band_is_idle_replay(self, width, height):
+        layout = layout_for(width, height)
+        for y in (layout.top_band[3], height - 1):
+            assert idle_zone_at(width // 2, y, width, height) == TouchZone.IDLE_REPLAY
+
+    def test_out_of_bounds_returns_none(self):
+        assert idle_zone_at(-1, 50, 160, 128) is None
+        assert idle_zone_at(160, 50, 160, 128) is None
+        assert idle_zone_at(50, -1, 160, 128) is None
+        assert idle_zone_at(50, 128, 160, 128) is None
+
+
+# ---------------------------------------------------------------------------
+# Purity: this module must import nothing new (no hardware, no Pillow, no
+# display coupling) — the same guarantee the module docstring makes.
+# ---------------------------------------------------------------------------
+
+class TestPurity:
+    def test_module_imports_are_unchanged(self):
+        import dial_touch_layout as m
+        import types
+        module_names = {
+            name for name, val in vars(m).items()
+            if isinstance(val, types.ModuleType)
+        }
+        assert module_names == set()

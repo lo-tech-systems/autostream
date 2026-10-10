@@ -66,19 +66,27 @@ SURFACES: which screen is currently on the panel decides which geometry a
 press hit-tests against — see TouchStateMachine.set_surface(). "hidden" and
 "held" are both the MAIN surface (dial_touch_layout.zone_at/zones_for): the
 now-playing screen, reveal-on-touch or always-shown respectively, unchanged
-from HELD VISIBLE above. "selector" is the appliance list
+from HELD VISIBLE above. "selector" and "picker" are both the list chassis
 (dial_touch_layout.list_zone_at/list_layout_for): a press arms immediately
 regardless of held state (the list is either fully on screen or not shown
-at all — there is no reveal-only phase for it), and every zone it can arm
-(NAME on the main surface; LIST_ROW/LIST_BACK/LIST_DOWN/LIST_UP on the
-selector surface) is single-shot — it flashes once and never repeats, and
-its tap is reported as ACTION_ZONE_TAP for the caller to dispatch (open the
-selector, page it, or pick a row). A surface CHANGE while a finger is down
-drops the zone latch exactly as set_held_visible(False) does, because the
-geometry under the finger just changed. TouchEventSource polls the
+at all — there is no reveal-only phase for it). "repeat" is the N2 repeat
+screen (dial_touch_layout.repeat_zone_at/repeat_layout_for); "idle" is the
+N4 idle screen (dial_touch_layout.idle_zone_at/idle_layout_for) — both held
+like the selector. Every zone any of these can arm (NAME/DOTS on the main
+surface; LIST_ROW/LIST_BACK/LIST_DOWN/LIST_UP on the selector/picker
+surface; DOTS/REPEAT_RING/REPEAT_START/REPEAT_STOP on the repeat surface;
+IDLE_REPLAY on the idle surface) is single-shot — it flashes once and never
+repeats, and its tap is reported as ACTION_ZONE_TAP for the caller to
+dispatch. DOTS is gated by a separate "is it currently tappable" flag
+(_dots_active) exactly as NAME is gated by _name_active — the main and
+repeat surfaces share this one gate. A surface CHANGE while a finger is
+down drops the zone latch exactly as set_held_visible(False) does, because
+the geometry under the finger just changed. TouchEventSource polls the
 display's touch_surface() (injected; falls back to the legacy
 get_persistent_overlay when that is all that is supplied, so existing
-"held"/"hidden" wiring behaves byte for byte) once per loop iteration.
+"held"/"hidden" wiring behaves byte for byte) once per loop iteration; it
+accepts either the pre-phase-2 2-tuple (surface, name_active) or the
+3-tuple (surface, name_active, dots_active) touch_surface() may now return.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -88,7 +96,13 @@ import time
 from dataclasses import dataclass
 
 from dial_touch_filter import TouchEvent, TouchEventType
-from dial_touch_layout import TouchZone, list_zone_at, zone_at
+from dial_touch_layout import (
+    TouchZone,
+    idle_zone_at,
+    list_zone_at,
+    repeat_zone_at,
+    zone_at,
+)
 
 # Overlay auto-dismisses this long after the last contact sample / release /
 # cap-stop, whichever is most recent.
@@ -116,7 +130,8 @@ ACTION_ZONE_TAP = "zone-tap"
 
 # Zones that flash once and never repeat, regardless of how long the finger
 # stays down — re-actuating them on a timer would be meaningless (a mute
-# toggle, an open/close/page of the selector, or picking a row).
+# toggle, an open/close/page of the selector, picking a row, opening/
+# closing the repeat screen, or tapping the idle affordance).
 _SINGLE_SHOT_ZONES = frozenset((
     TouchZone.MUTE,
     TouchZone.NAME,
@@ -124,6 +139,11 @@ _SINGLE_SHOT_ZONES = frozenset((
     TouchZone.LIST_DOWN,
     TouchZone.LIST_UP,
     TouchZone.LIST_ROW,
+    TouchZone.DOTS,
+    TouchZone.REPEAT_RING,
+    TouchZone.REPEAT_START,
+    TouchZone.REPEAT_STOP,
+    TouchZone.IDLE_REPLAY,
 ))
 
 # Zones whose tap is reported as ACTION_ZONE_TAP for the caller to dispatch,
@@ -134,6 +154,11 @@ _ZONE_TAP_ZONES = frozenset((
     TouchZone.LIST_DOWN,
     TouchZone.LIST_UP,
     TouchZone.LIST_ROW,
+    TouchZone.DOTS,
+    TouchZone.REPEAT_RING,
+    TouchZone.REPEAT_START,
+    TouchZone.REPEAT_STOP,
+    TouchZone.IDLE_REPLAY,
 ))
 
 _PHASE_IDLE = "idle"
@@ -145,6 +170,12 @@ _PHASE_ARMED = "armed"
 SURFACE_HIDDEN = "hidden"
 SURFACE_HELD = "held"
 SURFACE_SELECTOR = "selector"
+# The repeat, idle and picker surfaces. All three behave as
+# "held" exactly like SURFACE_SELECTOR: a press arms immediately, there is
+# no reveal step and no dismiss clock — see set_surface() and _arm() below.
+SURFACE_REPEAT = "repeat"
+SURFACE_IDLE = "idle"
+SURFACE_PICKER = "picker"
 
 
 @dataclass(frozen=True)
@@ -184,6 +215,11 @@ class TouchStateMachine:
         # the main surface (the selector surface never consults it: every
         # one of its zones is always active). See set_surface().
         self._name_active = False
+        # Whether the DOTS zone is currently tappable — meaningful on BOTH
+        # the main surface (opens N2) and the repeat surface (pops back to
+        # main); gated the same way _name_active gates NAME. See
+        # set_surface() and _arm().
+        self._dots_active = False
 
     # -- read-only state, for a compositor/UI to consult -------------------
 
@@ -312,7 +348,9 @@ class TouchStateMachine:
             actions.append(TouchAction(ACTION_DISMISS_OVERLAY))
         return actions
 
-    def set_surface(self, surface: str, name_active: bool, now: float) -> list[TouchAction]:
+    def set_surface(
+        self, surface: str, name_active: bool, now: float, dots_active: bool = False,
+    ) -> list[TouchAction]:
         """External sync from the display: which screen is on the panel
         right now — see the module docstring's SURFACES paragraph.
 
@@ -321,11 +359,17 @@ class TouchStateMachine:
         SURFACE_SELECTOR: the appliance list; hit-tests use list_zone_at,
         presses arm immediately (held=True in effect), and there is no
         dismiss clock to disable beyond what held already disables.
+        SURFACE_PICKER: the N5 replay picker — same list_zone_at hit-test
+        and held behaviour as SURFACE_SELECTOR.
+        SURFACE_REPEAT: the N2 repeat screen; hit-tests use repeat_zone_at,
+        held like the selector.
+        SURFACE_IDLE: the N4 idle screen; hit-tests use idle_zone_at, held
+        like the selector.
 
-        name_active is recorded either way — even on a same-surface call —
-        since it can change on the main surface alone (see
-        _effective_overlay_locked/OverlayState.name) without the surface
-        itself changing.
+        name_active and dots_active are recorded either way — even on a
+        same-surface call — since either can change on the main surface
+        alone (see _effective_overlay_locked/OverlayState) without the
+        surface itself changing.
 
         A surface CHANGE while a finger is down drops the zone latch, same
         as set_held_visible(False): the geometry under the finger just
@@ -337,6 +381,7 @@ class TouchStateMachine:
         """
         if surface == self._surface:
             self._name_active = name_active
+            self._dots_active = dots_active
             return []
         was_lit = self._pressed_lit
         self._armed_zone = None
@@ -346,6 +391,7 @@ class TouchStateMachine:
         self._pressed_until = None
         self._surface = surface
         self._name_active = name_active
+        self._dots_active = dots_active
         actions: list[TouchAction] = []
         if was_lit:
             actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
@@ -432,12 +478,20 @@ class TouchStateMachine:
 
     def _arm(self, x: int, y: int, now: float) -> list[TouchAction]:
         index: int | None = None
-        if self._surface == SURFACE_SELECTOR:
+        if self._surface in (SURFACE_SELECTOR, SURFACE_PICKER):
             hit = list_zone_at(x, y, self._width, self._height)
             zone, index = hit if hit is not None else (None, None)
+        elif self._surface == SURFACE_REPEAT:
+            zone = repeat_zone_at(x, y, self._width, self._height)
+            if zone == TouchZone.DOTS and not self._dots_active:
+                zone = None
+        elif self._surface == SURFACE_IDLE:
+            zone = idle_zone_at(x, y, self._width, self._height)
         else:
             zone = zone_at(x, y, self._width, self._height)
             if zone == TouchZone.NAME and not self._name_active:
+                zone = None
+            if zone == TouchZone.DOTS and not self._dots_active:
                 zone = None
         if zone is None:
             # Landed/arrived in a dead zone — nothing to actuate; still
@@ -563,7 +617,7 @@ class TouchEventSource:
         # reason as every other display-facing callback here.
         self._get_touch_surface = get_touch_surface
         self._last_held: bool | None = None
-        self._last_surface: tuple[str, bool] | None = None
+        self._last_surface: tuple[str, bool, bool] | None = None
         # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
         # kept so a live rotate toggle can re-derive the mapping. None when
         # the caller did not supply them (e.g. tests constructing directly).
@@ -680,13 +734,21 @@ class TouchEventSource:
         iteration — see TouchStateMachine.set_surface() and the module
         docstring's SURFACES paragraph.
 
-        Prefers get_touch_surface (surface + name_active in one call) when
-        it was supplied; a raising getter is treated as SURFACE_HIDDEN,
-        same discipline as _poll_held_visible's raise-is-False. Falls back
-        to _poll_held_visible entirely (byte-for-byte, including its own
-        None-getter no-op) when only the legacy get_persistent_overlay was
-        supplied — existing "held"/"hidden"-only wiring is unaffected by
-        this method's existence.
+        Prefers get_touch_surface (surface + name_active[+ dots_active] in
+        one call) when it was supplied; a raising getter is treated as
+        SURFACE_HIDDEN, same discipline as _poll_held_visible's
+        raise-is-False. Falls back to _poll_held_visible entirely
+        (byte-for-byte, including its own None-getter no-op) when only the
+        legacy get_persistent_overlay was supplied — existing
+        "held"/"hidden"-only wiring is unaffected by this method's
+        existence.
+
+        Accepts either a 2-tuple (surface, name_active) — the pre-phase-2
+        contract, dots_active defaults to False — or a 3-tuple (surface,
+        name_active, dots_active). Either way self._last_surface is kept
+        as a 3-tuple so a dots_active-only change (main screen's dots
+        appearing/disappearing with no surface or name_active change)
+        still triggers a set_surface() call.
         """
         if self._get_touch_surface is None:
             self._poll_held_visible()
@@ -696,13 +758,19 @@ class TouchEventSource:
         except Exception:
             result = (SURFACE_HIDDEN, False)
         if isinstance(result, tuple):
-            surface, name_active = result
+            if len(result) >= 3:
+                surface, name_active, dots_active = result[0], result[1], result[2]
+            else:
+                surface, name_active = result
+                dots_active = False
         else:
-            surface, name_active = result, False
-        current = (surface, bool(name_active))
+            surface, name_active, dots_active = result, False, False
+        current = (surface, bool(name_active), bool(dots_active))
         if current != self._last_surface:
             self._last_surface = current
-            self._dispatch(self._state_machine.set_surface(surface, bool(name_active), self._clock()))
+            self._dispatch(self._state_machine.set_surface(
+                surface, bool(name_active), self._clock(), dots_active=bool(dots_active),
+            ))
 
     # -- main loop -----------------------------------------------------
 

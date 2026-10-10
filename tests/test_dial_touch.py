@@ -29,13 +29,22 @@ from dial_touch import (  # noqa: E402
     REPEAT_INTERVAL_S,
     SURFACE_HELD,
     SURFACE_HIDDEN,
+    SURFACE_IDLE,
+    SURFACE_PICKER,
+    SURFACE_REPEAT,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
     TouchStateMachine,
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
-from dial_touch_layout import TouchZone, list_layout_for, list_zone_at, zones_for  # noqa: E402
+from dial_touch_layout import (  # noqa: E402
+    TouchZone,
+    list_layout_for,
+    list_zone_at,
+    repeat_layout_for,
+    zones_for,
+)
 
 WIDTH, HEIGHT = 160, 128
 _ZONES = zones_for(WIDTH, HEIGHT)
@@ -1162,3 +1171,234 @@ class TestZoneTapDispatch:
         source = TouchEventSource(driver, touch_filter, sm)
         # Must not raise even though on_zone_tap was never supplied.
         source._dispatch(sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0))
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 surfaces (dial phase 2, D3): REPEAT, IDLE, PICKER; DOTS gating;
+# the five new zones' single-shot/zone-tap behaviour; touch_surface() 2-
+# and 3-tuple polling.
+# ---------------------------------------------------------------------------
+
+_REPEAT_LAYOUT = repeat_layout_for(WIDTH, HEIGHT)
+
+
+def _rect_center(rect) -> tuple[int, int]:
+    x0, y0, x1, y1 = rect
+    return ((x0 + x1) // 2, (y0 + y1) // 2)
+
+
+DOTS_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.DOTS])
+REPEAT_RING_XY = _rect_center(_REPEAT_LAYOUT.ring)
+REPEAT_START_XY = _rect_center(_REPEAT_LAYOUT.start)
+REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
+IDLE_XY = (WIDTH // 2, HEIGHT - 1)
+
+
+class TestNewSurfacesArmImmediately:
+    """SURFACE_REPEAT, SURFACE_IDLE and SURFACE_PICKER all behave as
+    "held": a press arms immediately, no reveal step, no dismiss clock —
+    the same contract SURFACE_SELECTOR already has."""
+
+    @pytest.mark.parametrize("surface", [SURFACE_REPEAT, SURFACE_IDLE, SURFACE_PICKER])
+    def test_surface_counts_as_visible_and_held(self, surface):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(surface, False, now=0.0, dots_active=True)
+        assert sm.overlay_visible is True
+        assert sm.held_visible is True
+
+    def test_repeat_ring_arms_immediately_without_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(REPEAT_RING_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+
+    def test_idle_replay_arms_immediately_without_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0)
+        actions = sm.on_filter_event(press_event(IDLE_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+
+    def test_picker_row_arms_immediately_without_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_PICKER, False, now=0.0)
+        actions = sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+
+    def test_picker_list_row_reports_its_index(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_PICKER, False, now=0.0)
+        actions = sm.on_filter_event(press_event(_list_row_center(2)), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_ROW
+        assert tap.index == 2
+
+    def test_dismiss_clock_disabled_on_repeat_and_idle(self):
+        for surface in (SURFACE_REPEAT, SURFACE_IDLE):
+            sm = TouchStateMachine(WIDTH, HEIGHT)
+            sm.set_surface(surface, False, now=0.0)
+            actions = sm.tick(now=DISMISS_S * 10)
+            assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
+            assert sm.overlay_visible is True
+
+
+class TestDotsGating:
+    """DOTS is gated by dots_active on BOTH the main surface and the
+    repeat surface, exactly the way NAME is gated by name_active."""
+
+    def test_dots_inactive_on_main_is_a_dead_zone(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0, dots_active=False)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        assert actions == []
+
+    def test_dots_active_on_main_emits_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0, dots_active=True)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.DOTS
+
+    def test_dots_inactive_on_repeat_is_a_dead_zone(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0, dots_active=False)
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        assert actions == []
+
+    def test_dots_active_on_repeat_emits_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0, dots_active=True)
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.DOTS
+
+    def test_same_surface_call_updates_dots_active(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0, dots_active=False)
+        assert sm.set_surface(SURFACE_REPEAT, False, now=0.0, dots_active=True) == []
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+
+class TestRepeatAndIdleZoneTaps:
+    def test_repeat_ring_start_stop_taps(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        for xy, expected_zone in (
+            (REPEAT_RING_XY, TouchZone.REPEAT_RING),
+            (REPEAT_START_XY, TouchZone.REPEAT_START),
+            (REPEAT_STOP_XY, TouchZone.REPEAT_STOP),
+        ):
+            sm.set_surface(SURFACE_REPEAT, False, now=0.0)
+            sm.on_filter_event(release_event(), now=0.0)
+            actions = sm.on_filter_event(press_event(xy), now=0.1)
+            tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+            assert tap.zone == expected_zone
+            assert tap.index is None
+
+    def test_idle_replay_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0)
+        actions = sm.on_filter_event(press_event(IDLE_XY), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.IDLE_REPLAY
+
+    def test_repeat_and_idle_taps_are_single_shot_no_repeat(self):
+        for surface, xy, zone in (
+            (SURFACE_REPEAT, REPEAT_RING_XY, TouchZone.REPEAT_RING),
+            (SURFACE_IDLE, IDLE_XY, TouchZone.IDLE_REPLAY),
+        ):
+            sm = TouchStateMachine(WIDTH, HEIGHT)
+            sm.set_surface(surface, False, now=0.0)
+            sm.on_filter_event(press_event(xy), now=0.0)
+            assert sm.pressed_zone == zone
+            actions = sm.tick(now=PRESSED_FLASH_S)
+            assert actions == [TouchAction(ACTION_SET_PRESSED_ZONE, None)]
+            actions = sm.tick(now=FIRST_REPEAT_S + 1.0)
+            assert actions == []
+
+
+class TestTouchSurfacePollingTupleContracts:
+    """_poll_surface() accepts either the pre-phase-2 2-tuple or a 3-tuple
+    that adds dots_active — see dial_touch.py's TouchEventSource._poll_
+    surface docstring."""
+
+    def test_two_tuple_still_accepted_dots_active_defaults_false(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: (SURFACE_HIDDEN, True),
+        )
+        source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        assert actions == []  # dots_active defaulted to False
+
+    def test_three_tuple_carries_dots_active_through(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: (SURFACE_HIDDEN, True, True),
+        )
+        source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+    def test_dots_only_change_still_triggers_set_surface(self):
+        """Same surface, same name_active, only dots_active flips — must
+        still be detected and applied (not swallowed by a 2-tuple-shaped
+        equality check)."""
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([
+            (SURFACE_HIDDEN, True, False),
+            (SURFACE_HIDDEN, True, True),
+        ])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+        )
+        source._poll_surface()
+        source._poll_surface()
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+    def test_raising_getter_still_treated_as_hidden_with_a_2_or_3_tuple_fallback(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0)
+
+        def boom():
+            raise RuntimeError("display gone")
+
+        source = TouchEventSource(driver, touch_filter, sm, get_touch_surface=boom)
+        source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
+
+
+class TestExistingPollingSuiteUnaffected:
+    """The pre-phase-2 polling tests (TestTouchEventSourceSurfacePolling)
+    already cover 2-tuple-only wiring end to end; this class only pins the
+    2-tuple contract still works when a bare non-tuple string is somehow
+    returned (defensive; not expected from any real caller)."""
+
+    def test_bare_string_result_still_handled(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: SURFACE_HIDDEN,
+        )
+        source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
