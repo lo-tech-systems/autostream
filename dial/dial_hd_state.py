@@ -23,8 +23,8 @@ from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
-    DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, pin_capable_outputs, pin_window_end,
-    six_band,
+    DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, outputs_tap, pin_capable_outputs,
+    pin_window_end, six_band,
 )
 from dial_warning_text import appliance_warning_key
 
@@ -231,7 +231,7 @@ def _outputs_block(snapshot) -> dict | None:
     held = snapshot.outputs
     if held is None:
         return None
-    pending = held.optimistic
+    pending = outputs_tap(snapshot)
     rows = []
     for row in held.rows:
         selected, volume = row.selected, row.volume

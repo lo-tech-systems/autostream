@@ -203,7 +203,6 @@ class OutputsState:
     rows: tuple[OutputRow, ...]          # as fetched, INCLUDING remote_in_use rows
     loaded: bool
     fetched_at: float
-    optimistic: tuple[str, bool, int | None, float] | None  # (output_id, selected, volume, stamped_at)
 
 
 @dataclass(frozen=True)
@@ -244,6 +243,7 @@ class TransportRequest:
     error: str | None         # the daemon's error string on rejection, or a reply id (see dial_core_poll.reply_error_id), else None
     output_id: str | None = None   # the output an output request was for
     retry_after_s: int = 0         # seconds a rate-limited reply asked the sender to wait
+    shown: tuple[bool, int | None] | None = None   # (selected, volume) an output request shows for its output until a later reading or a rejection
 
 
 @dataclass(frozen=True)
@@ -292,6 +292,16 @@ def awaiting_pin(request, now: float) -> bool:
     """Whether a PIN may be entered for *request*: a pending request waits
     for its reply, any other until PIN_WINDOW_S after it ended."""
     return pin_wanted(request) and (request.state == "pending" or now < pin_window_end(request))
+
+
+def outputs_tap(snapshot) -> tuple | None:
+    """What the latest output request shows meanwhile, (output_id, selected,
+    volume, requested_at), or None: nothing is shown once a later reading or a
+    rejection has taken it, or when the outputs held are another appliance's."""
+    request, held = snapshot.outputs_request, snapshot.outputs
+    if request is None or request.shown is None or held is None or request.appliance_id != held.appliance_id:
+        return None
+    return (request.output_id, request.shown[0], request.shown[1], request.requested_at)
 
 
 @dataclass(frozen=True)

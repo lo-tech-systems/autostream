@@ -61,7 +61,7 @@ from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
-    NowPlaying, OutputsState, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
+    NowPlaying, OutputsState, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, reporting_for, resolve_focus,
     six_band, started_refused, validate_appliance_warnings, visible_targets, walk_order,
@@ -168,10 +168,11 @@ class _CoreState:
     auth_promotions: int        # appliances a pushed auth change confirmed as newly authorised
     roster: object          # the merged roster as last published (a read-only list)
     repeats: dict           # appliance id -> repeat record as of the last tick
-    # Kept apart from the outputs and EQ states because a tap's value stays
-    # shown (until a reading stamped after it lands) even when nobody is
-    # watching the page any more; the snapshot carries them on the states.
-    outputs_optimistic: tuple | None    # (output_id, selected, volume, stamped_at)
+    # Kept apart from the EQ state because a tap's value stays shown (until a
+    # reading stamped after the window lands) even when nobody is watching the
+    # page any more; the snapshot carries it on the state. A slider sends many
+    # sets with no outcome to act on, so the EQ has one window, not a request
+    # per set; the outputs tap lives on the output request instead.
     eq_optimistic: tuple                # (((band_id, gain_db), ...), expires_at); ((), 0.0) when none
     outputs_refresh_at: float           # when the watched list was last asked for
     outputs_watch: dict                 # watcher -> appliance id it follows
@@ -184,7 +185,7 @@ class _CoreState:
 
 # Held in the state for the core's own use, never published as such.
 _PRIVATE_FIELDS = (
-    "roster", "repeats", "outputs_optimistic", "eq_optimistic",
+    "roster", "repeats", "eq_optimistic",
     "outputs_refresh_at", "outputs_watch", "eq_watch",
     "wifi_down_streak", "sd_low", "appliance_warnings", "statuses",
 )
@@ -321,7 +322,6 @@ def _initial_state(dial_id: str) -> _CoreState:
         auth_promotions=0,
         roster=[],
         repeats={},
-        outputs_optimistic=None,
         eq_optimistic=((), 0.0),
         outputs_refresh_at=0.0,
         outputs_watch={},
@@ -470,10 +470,6 @@ class DialCore:
 
     def _build_snapshot_locked(self) -> CoreSnapshot:
         fields = {name: getattr(self._state, name) for name in _SNAPSHOT_FIELDS}
-        if fields["outputs"] is not None:
-            fields["outputs"] = dataclasses.replace(
-                fields["outputs"], optimistic=self._state.outputs_optimistic,
-            )
         if fields["eq"] is not None:
             fields["eq"] = dataclasses.replace(
                 fields["eq"], optimistic=self._state.eq_optimistic[0],
@@ -833,7 +829,7 @@ class DialCore:
                 changed = True
             if on and appliance_id == self._focused_id():
                 if held is None or held.appliance_id != appliance_id:
-                    state.outputs = OutputsState(appliance_id, (), False, 0.0, None)
+                    state.outputs = OutputsState(appliance_id, (), False, 0.0)
                     changed = True
                 if fetch and appliance_id not in before:
                     fetch_now.append(appliance_id)
@@ -889,7 +885,7 @@ class DialCore:
                 return False
             held = state.outputs
             if held is None or held.appliance_id != focused:
-                state.outputs = OutputsState(focused, (), False, 0.0, None)
+                state.outputs = OutputsState(focused, (), False, 0.0)
                 state.outputs_refresh_at = now
                 fetch_now.append(focused)
                 return None
@@ -915,7 +911,7 @@ class DialCore:
                     return False
                 state.outputs = dataclasses.replace(held, rows=rows, loaded=loaded)
                 return None
-            state.outputs = OutputsState(appliance_id, rows, loaded, 0.0, None)
+            state.outputs = OutputsState(appliance_id, rows, loaded, 0.0)
         self._publish(mutate)
 
     def adopt_eq(
@@ -937,16 +933,10 @@ class DialCore:
     # -- optimistic values --
 
     def outputs_override(self) -> tuple | None:
-        """The pending outputs tap, (output_id, selected, volume,
-        stamped_at), or None. A reference read."""
-        return self._state.outputs_optimistic
-
-    def set_outputs_override(self, value: tuple | None) -> None:
-        def mutate(state: _CoreState) -> "bool | None":
-            if state.outputs_optimistic == value:
-                return False
-            state.outputs_optimistic = value
-        self._publish(mutate)
+        """The outputs tap the latest output request shows, (output_id,
+        selected, volume, requested_at), or None. Derived from the current
+        snapshot."""
+        return outputs_tap(self._snapshot)
 
     def eq_override(self) -> tuple:
         """The pending EQ tap, (((band_id, gain_db), ...), expires_at); no
@@ -995,7 +985,7 @@ class DialCore:
         pin: str | None = None, pin_entry: bool = False,
     ) -> ActionResult:
         """Enable or disable an output, or set its level. The change shows
-        at once (as the pending tap) and is reconciled by the reading the
+        at once (as the request's shown value) and is reconciled by the reading the
         worker asks for after the send. Refused when the appliance is
         unknown, lacks the capability or has refused this dial, when the
         output is not among the rows held, or when another appliance has
@@ -1008,8 +998,8 @@ class DialCore:
         the caller can show a keypad, so the appliance may ask this dial for
         a PIN; it is declared only to an appliance that understands it.
 
-        The request is recorded on `outputs_request` in the same publish as
-        the pending tap. Its outcome is published there when the reply
+        The request is recorded on `outputs_request`, carrying the value
+        it shows meanwhile. Its outcome is published there when the reply
         lands, and queued as an `OutputsEffect`."""
         refusal = self._refusal(appliance_id, "dial_outputs")
         if refusal is not None:
@@ -1024,18 +1014,11 @@ class DialCore:
         if pin is not None and not pin_ready:
             return ActionResult(False, "no_capability")
         shown_selected = True if pin is not None else (row.selected if selected is None else selected)
-        override = (
-            output_id, shown_selected, row.volume if volume is None else volume, self._clock(),
-        )
         begin, token = self._begin_request(
             "outputs_request", appliance_id, "output_set" if pin is None else "output_pin",
-            output_id=output_id,
+            output_id=output_id, shown=(shown_selected, row.volume if volume is None else volume),
         )
-
-        def mutate(state: _CoreState) -> None:
-            state.outputs_optimistic = override
-            begin(state)
-        self._publish(mutate)
+        self._publish(begin)
         enqueue_set(
             _OutputsTarget(appliance_id, entry.ip, entry.port), output_id,
             selected=shown_selected, volume=volume, pin=pin, pin_capable=bool(pin_entry and pin_ready),
@@ -1052,7 +1035,7 @@ class DialCore:
         row = self._output_row(appliance_id, output_id)
         if row is None or row.remote_in_use:
             return ActionResult(False, "wrong_state")
-        override = self._state.outputs_optimistic
+        override = self.outputs_override()
         if override is not None and override[0] == row.id and override[1]:
             shown = override[2]
         else:
@@ -1134,7 +1117,8 @@ class DialCore:
     def on_outputs_result(self, kind: str, appliance_id: str, status, body, request=None) -> bool:
         """Fold an outputs worker result: a fetch becomes the held rows (an
         output another appliance has taken among them, marked), and clears
-        the pending tap when the reading was requested after the tap. A set
+        the request's shown value when the reading was requested after the
+        request. A set
         result resolves the pending output request (see `_fold_set_result`); the
         worker's own reading after it is what updates the rows. A result for
         an appliance other than the one held, or one that is malformed or
@@ -1154,16 +1138,16 @@ class DialCore:
             if held is None or held.appliance_id != appliance_id:
                 return False
             state.outputs = dataclasses.replace(held, rows=rows, loaded=True, fetched_at=now)
-            override = state.outputs_optimistic
-            if override is not None and started is not None and started > override[3]:
-                state.outputs_optimistic = None
+            request = state.outputs_request
+            if request is not None and request.shown is not None and started is not None and started > request.requested_at:
+                state.outputs_request = dataclasses.replace(request, shown=None)
         return self._changed(mutate)
 
     def _fold_set_result(self, appliance_id: str, status, body, token: float | None) -> bool:
         """Resolve the pending output request that carries *token* from a set
         reply: accepted on a 200 with ok true, else rejected with the reply
         id (and, for a rate limit, the seconds asked for). A rejection drops
-        the pending tap in the same publish, so the switch rolls back at
+        the request's shown value in the same publish, so the switch rolls back at
         once; the outcome is queued as an `OutputsEffect`. A reply whose
         token is not the pending request's (one answering a request since
         replaced, or carrying none) changes nothing. True when a request
@@ -1171,15 +1155,8 @@ class DialCore:
         error = dial_core_poll.reply_error_id(status, body)
         outcome = "accepted" if error is None else "rejected"
         wait = dial_core_poll.reply_retry_after(body) if error == "rate_limited" else 0
-        rejected = outcome == "rejected"
-
-        def drop_tap(state: _CoreState, held: TransportRequest) -> None:
-            tap = state.outputs_optimistic
-            if rejected and tap is not None and tap[0] == held.output_id:
-                state.outputs_optimistic = None
         resolved = self._resolve_request(
             "outputs_request", appliance_id, token, outcome, error, self._clock(), wait,
-            also=drop_tap,
         )
         if resolved is None:
             return False
@@ -1225,17 +1202,19 @@ class DialCore:
 
     def _begin_request(
         self, lane: str, appliance_id: str, kind: str, *, output_id: str | None = None,
+        shown: tuple | None = None,
     ) -> tuple[Callable[[_CoreState], None], float]:
         """The mutate function that records a pending request of *kind* on
         *lane* ("transport" or "outputs_request"), so a caller can fold it
         into a publish of its own, and the request's token: the monotonic
         time it began, which the worker hands back with the reply. The next
-        request on the lane replaces it."""
+        request on the lane replaces it. *shown* is what the request shows for
+        its output until a later reading or a rejection takes it."""
         now = self._clock()
 
         def mutate(state: _CoreState) -> None:
             setattr(state, lane, TransportRequest(
-                appliance_id, kind, now, "pending", now, None, output_id,
+                appliance_id, kind, now, "pending", now, None, output_id, 0, shown,
             ))
         return mutate, now
 
@@ -1316,15 +1295,13 @@ class DialCore:
     def _resolve_request(
         self, lane: str, appliance_id: str, token: float | None, outcome: str, error: str | None,
         now: float, retry_after_s: int = 0,
-        also: Callable[[_CoreState, TransportRequest], object] | None = None,
     ) -> TransportRequest | None:
         """Move the pending request on *lane* that carries *token* to
         *outcome*; the request as it was, or None when the lane holds no
         pending request with that token (a reply to a request since replaced
         matches nothing). *appliance_id* is for the caller's effect; the
-        token alone selects. *also*,
-        when given, runs in the same publish with the request as it was, for
-        a change that must land in the same snapshot."""
+        token alone selects. A rejection takes the request's shown value in
+        the same publish."""
         pending = []
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -1334,9 +1311,8 @@ class DialCore:
             pending.append(held)
             setattr(state, lane, dataclasses.replace(
                 held, state=outcome, changed_at=now, error=error, retry_after_s=retry_after_s,
+                shown=None if outcome == "rejected" else held.shown,
             ))
-            if also is not None:
-                also(state, held)
         self._publish(mutate)
         return pending[0] if pending else None
 

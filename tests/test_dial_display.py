@@ -85,6 +85,7 @@ from dial_test_support import (
     run_warning_action,
     seed_eq,
     seed_outputs,
+    tap_output,
     set_eq_optimistic,
     set_focus_pending,
     tick_update_watch,
@@ -7074,19 +7075,29 @@ class TestOnOutputsResult:
         on_outputs_result(display, "fetch", "a" * 20, 200, body, {})
         assert display._outputs.page == 0
 
+    def _tapped_display(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        seed_outputs(display, (OutputRow(id="1", name="Bedroom", selected=False, volume=0),))
+        tap_output(display, "1", True, 40)
+        return display
+
     def test_stale_optimistic_override_cleared(self):
-        display = self._outputs_display(loaded=True)
-        display.core.set_outputs_override(("1", True, 40, time.monotonic() - 1.0))
-        on_outputs_result(display, "fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {"started_at": time.monotonic()})
+        display = self._tapped_display()
+        on_outputs_result(
+            display, "fetch", "a" * 20, 200, {"ok": True, "outputs": []},
+            {"started_at": time.monotonic() + 1.0},
+        )
         assert display.core.outputs_override() is None
 
-    def test_future_stamped_optimistic_override_kept(self):
-        """An optimistic override stamped for a moment still in the future
-        (relative to when the fold runs) is not yet superseded."""
-        display = self._outputs_display(loaded=True)
-        override = ("1", True, 40, time.monotonic() + 10.0)
-        display.core.set_outputs_override(override)
-        on_outputs_result(display, "fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {})
+    def test_optimistic_override_for_a_later_moment_kept(self):
+        """A reading requested before the tap does not yet supersede it."""
+        display = self._tapped_display()
+        override = display.core.outputs_override()
+        on_outputs_result(
+            display, "fetch", "a" * 20, 200, {"ok": True, "outputs": []},
+            {"started_at": time.monotonic() - 10.0},
+        );
         assert display.core.outputs_override() == override
 
     def test_detail_row_vanishing_requests_the_outputs_list(self):
@@ -7448,7 +7459,7 @@ class TestOutputsTouchEntries:
 
     def test_output_volume_tap_steps_from_optimistic_value(self):
         display = self._opened_detail(selected=True, volume=40)
-        display.core.set_outputs_override(("1", True, 42, 1000.0))
+        tap_output(display, "1", True, 42)
         with patch("dial_core.enqueue_set"):
             display.output_volume_tap(+2)
         assert display.core.outputs_override()[2] == 44
@@ -7867,7 +7878,7 @@ class TestOutputsPaintBuilders:
         display._open_outputs_locked()
         row = OutputRow(id="1", name="Bedroom", selected=False, volume=0)
         seed_outputs(display, (row,))
-        display.core.set_outputs_override(("1", True, 55, 1000.0))
+        tap_output(display, "1", True, 55)
         with display._lock:
             state = display._build_outputs_list_state_locked(160, 128)
         assert state.rows == (("Bedroom", False, "55", ""),)
@@ -7876,7 +7887,7 @@ class TestOutputsPaintBuilders:
 
     def test_output_view_reads_level_through_the_override(self):
         display = self._opened_with_row(selected=False, volume=0)
-        display.core.set_outputs_override(("1", True, 60, 1000.0))
+        tap_output(display, "1", True, 60)
         with display._lock:
             view = display._build_output_view_locked(1000.0)
         assert view.selected is True
@@ -10552,9 +10563,12 @@ class TestOutputsHeldByTheCore:
 
     def test_the_override_lives_in_the_core(self):
         display = _make_outputs_display()
-        display.core.set_outputs_override(("1", True, 40, 1000.0))
-        assert display._core.outputs_override() == ("1", True, 40, 1000.0)
-        display._core.set_outputs_override(None)
+        display._open_outputs_locked()
+        seed_outputs(display, (OutputRow(id="1", name="Bedroom", selected=False, volume=0),))
+        assert display.core.outputs_override() is None
+        tap_output(display, "1", True, 40)
+        assert display._core.outputs_override()[:3] == ("1", True, 40)
+        on_outputs_result(display, "set", "a" * 20, 200, {"ok": False, "error": "output_in_use"})
         assert display.core.outputs_override() is None
 
 

@@ -102,7 +102,7 @@ class TestTheDialReadsTheRoutesReplies:
         assert core.on_outputs_result("set", AID, 200, body, {"token": token})
         held = core.snapshot().outputs_request
         assert (held.state, held.error, held.retry_after_s) == ("rejected", error_id, wait)
-        assert core.snapshot().outputs.optimistic is None
+        assert core.snapshot().outputs_request.shown is None
         assert core.take_effects() == [
             OutputsEffect(AID, "1", "output_set", "rejected", error_id, token)]
 

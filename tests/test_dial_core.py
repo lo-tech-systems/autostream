@@ -965,6 +965,7 @@ class TestOutputsResult:
         done = core.snapshot().outputs_request
         assert (done.state, done.error, done.changed_at, done.requested_at) == ("accepted", None, 1002.0, 1000.0)
         assert core.outputs_override() == ("2", True, 0, 1000.0)    # kept until a fetch reads it back
+        assert done.shown == (True, 0)
 
     def test_a_refused_set_clears_the_pending_tap_at_once(self):
         core = self._sent()
@@ -972,16 +973,22 @@ class TestOutputsResult:
         core.subscribe(lambda: seen.append(core.snapshot()))
         _set_reply(core, AID, 200, {"ok": False, "error": "output_in_use", "owner": "Den"})
         snap = core.snapshot()
-        assert snap.outputs.optimistic is None and core.outputs_override() is None
+        assert snap.outputs_request.shown is None and core.outputs_override() is None
         assert (snap.outputs_request.state, snap.outputs_request.error) == ("rejected", "output_in_use")
-        # The request and the dropped tap land in one snapshot.
-        assert seen[0].outputs.optimistic is None and seen[0].outputs_request.state == "rejected"
+        # The outcome and the dropped tap land in one snapshot.
+        assert seen[0].outputs_request.shown is None and seen[0].outputs_request.state == "rejected"
 
-    def test_a_refusal_leaves_a_tap_for_another_output_alone(self):
+    def test_a_refusal_for_a_replaced_request_leaves_the_newer_tap_alone(self):
+        core, first, second = self._two_sets()
+        core.on_outputs_result("set", AID, 200, {"ok": False, "error": "encoder_capacity"}, {"token": first})
+        assert core.outputs_override() == ("1", False, 40, 1001.0)
+        assert core.snapshot().outputs_request.shown == (False, 40)
+
+    def test_an_accepted_set_keeps_the_tap_on_its_record(self):
         core = self._sent()
-        core.set_outputs_override(("1", False, 40, 1000.0))
-        _set_reply(core, AID, 200, {"ok": False, "error": "encoder_capacity"})
-        assert core.outputs_override() == ("1", False, 40, 1000.0)
+        _set_reply(core, AID, 200, {"ok": True})
+        request = core.snapshot().outputs_request
+        assert (request.state, request.shown) == ("accepted", (True, 0))
 
     def test_a_set_reply_with_nothing_pending_changes_nothing(self):
         core = _loaded_outputs()
@@ -1134,22 +1141,27 @@ class TestOutputsResult:
         assert not core.on_outputs_result("fetch", AID, 200, {"ok": True, "outputs": [{"id": "1"}]})
         assert core.snapshot().outputs.rows == rows
 
+    def _tapped(self, clock, at):
+        """A core holding the rows with a set for output 1 made at *at*."""
+        core = _loaded_outputs(clock)
+        clock.t = at
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "1", selected=True, volume=40)
+        return core
+
     def test_a_stale_tap_is_cleared_by_a_later_fetch_and_a_future_one_kept(self):
         clock = _Clock(1000.0)
-        core = self._watching(clock)
-        core.set_outputs_override(("1", True, 40, 999.0))
+        core = self._tapped(clock, 999.0)
         core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1000.0})
         assert core.outputs_override() is None
-        core.set_outputs_override(("1", True, 40, 1010.0))
+        core = self._tapped(clock, 1010.0)
         core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1000.0})
         assert core.outputs_override() == ("1", True, 40, 1010.0)
-        assert core.snapshot().outputs.optimistic == ("1", True, 40, 1010.0)
+        assert core.snapshot().outputs_request.shown == (True, 40)
 
     def test_a_fetch_requested_before_a_tap_leaves_it(self):
         clock = _Clock(1000.0)
-        core = self._watching(clock)
-        clock.t = 1001.0
-        core.set_outputs_override(("1", True, 40, 1001.0))
+        core = self._tapped(clock, 1001.0)
         clock.t = 1002.0
         assert core.on_outputs_result(
             "fetch", AID, 200, _outputs_body(("1", "Kitchen", False, 10, False, "")), {"started_at": 1000.0},
@@ -1157,20 +1169,23 @@ class TestOutputsResult:
         held = core.snapshot().outputs
         assert held.rows[0].selected is False
         assert core.outputs_override() == ("1", True, 40, 1001.0)
-        assert held.optimistic == ("1", True, 40, 1001.0)
+        assert core.snapshot().outputs_request.shown == (True, 40)
 
     def test_a_fetch_requested_after_a_tap_clears_it(self):
         clock = _Clock(1000.0)
-        core = self._watching(clock)
-        core.set_outputs_override(("1", True, 40, 1001.0))
+        core = self._tapped(clock, 1001.0)
+        seen = []
+        core.subscribe(lambda: seen.append(core.snapshot()))
         clock.t = 1002.0
         core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1001.5})
         assert core.outputs_override() is None
+        # The reading and the cleared tap land in one snapshot, the request itself untouched.
+        assert len(seen) == 1 and seen[0].outputs_request.shown is None
+        assert (seen[0].outputs_request.state, seen[0].outputs_request.requested_at) == ("pending", 1001.0)
 
     def test_a_fetch_requested_at_the_instant_of_a_tap_leaves_it(self):
         clock = _Clock(1000.0)
-        core = self._watching(clock)
-        core.set_outputs_override(("1", True, 40, 1001.0))
+        core = self._tapped(clock, 1001.0)
         clock.t = 1002.0
         core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1001.0})
         assert core.outputs_override() == ("1", True, 40, 1001.0)
@@ -1178,8 +1193,7 @@ class TestOutputsResult:
     @pytest.mark.parametrize("request_body", [None, {}, {"started_at": None}, {"started_at": "1001.5"}, {"started_at": True}])
     def test_a_fetch_with_no_stamp_leaves_the_tap(self, request_body):
         clock = _Clock(1000.0)
-        core = self._watching(clock)
-        core.set_outputs_override(("1", True, 40, 999.0))
+        core = self._tapped(clock, 999.0)
         clock.t = 1002.0
         core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), request_body)
         assert core.outputs_override() == ("1", True, 40, 999.0)
@@ -1211,7 +1225,8 @@ class TestSetOutput:
         with patch("dial_core.enqueue_set") as send:
             result = core.set_output(AID, "2", selected=True)
         assert result == ActionResult(True, token=1000.0)
-        assert core.snapshot().outputs.optimistic == ("2", True, 0, 1000.0)
+        assert core.outputs_override() == ("2", True, 0, 1000.0)
+        assert core.snapshot().outputs_request.shown == (True, 0)
         target, output_id = send.call_args[0]
         assert (target.appliance_id, target.ip, output_id) == (AID, "192.0.2.10", "2")
         assert send.call_args[1] == {
@@ -1231,11 +1246,25 @@ class TestSetOutput:
         with patch("dial_core.enqueue_set") as send:
             assert core.step_output_volume(AID, "1", +70).accepted
             assert send.call_args[1]["volume"] == 100
-            core.set_outputs_override(("1", True, 42, 1000.0))
+            core.set_output(AID, "1", selected=True, volume=42)
             core.step_output_volume(AID, "1", +2)
             assert send.call_args[1]["volume"] == 44
             core.step_output_volume(AID, "1", -99)
             assert send.call_args[1]["volume"] == 0
+
+    def test_a_level_alone_keeps_the_selection_shown(self):
+        core = self._loaded(_Clock(1000.0))
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "1", volume=55)
+        assert core.snapshot().outputs_request.shown == (True, 55)
+
+    def test_a_tap_is_not_shown_on_another_appliances_outputs(self):
+        core = self._loaded(_Clock(1000.0))
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "1", selected=False)
+        assert core.outputs_override() is not None
+        core.adopt_outputs(BID, (OutputRow("1", "Den", True, 10),), True)
+        assert core.snapshot().outputs.appliance_id == BID and core.outputs_override() is None
 
     def test_a_disabled_output_has_no_level_to_step(self):
         core = self._loaded()
@@ -1269,6 +1298,11 @@ class TestSetOutput:
             core.set_output(AID, "1", selected=False)
         core.watch_outputs(AID, "spi", False)
         assert core.snapshot().outputs is None
+        assert core.snapshot().outputs_request.shown == (False, 40)
+        assert core.outputs_override() is None          # nothing held to show it on
+        with patch("dial_core.enqueue_fetch"):
+            core.watch_outputs(AID, "spi", True)
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 999.0})
         assert core.outputs_override() == ("1", False, 40, 1000.0)
 
 
@@ -1284,6 +1318,7 @@ class TestSetOutputPin:
         assert send.call_args[1] == {
             "selected": True, "volume": None, "pin": "1234", "pin_capable": False, "token": 1000.0}
         assert core.outputs_override() == ("2", True, 0, 1000.0)
+        assert core.snapshot().outputs_request.shown == (True, 0)
         assert core.snapshot().outputs_request.kind == "output_pin"
 
     def test_a_pin_overrides_a_false_selected(self):
@@ -1340,8 +1375,8 @@ class TestSetOutputPin:
         with patch("dial_core.enqueue_set"):
             core.set_output(AID, "2", selected=True)
         assert len(seen) == 1 and seen[0].seq == seq + 1
-        assert seen[0].outputs.optimistic == ("2", True, 0, 1000.0)
         request = seen[0].outputs_request
+        assert request.shown == (True, 0)
         assert (request.appliance_id, request.kind, request.state, request.output_id) == (
             AID, "output_set", "pending", "2")
         assert (request.requested_at, request.error, request.retry_after_s) == (1000.0, None, 0)
@@ -1379,6 +1414,7 @@ class TestSetOutputPin:
         request = core.snapshot().outputs_request
         assert (request.output_id, request.state) == ("1", "pending")
         assert core.outputs_override()[:2] == ("1", False)
+        assert request.shown == (False, 40) and request.output_id == "1"
 
     def test_a_rejection_of_a_pin_keeps_the_request_owed_an_answer(self):
         core = self._core()

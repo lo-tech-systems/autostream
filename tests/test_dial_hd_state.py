@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
 from dial_core_state import (
-    PIN_WINDOW_S, ActionResult, validate_appliance_warnings,
+    PIN_WINDOW_S, ActionResult, TransportRequest, validate_appliance_warnings,
 )
 from dial_hd_state import STATE_VERSION, STRING_MAX, build_state, dumps
 
@@ -380,22 +380,30 @@ class TestOutputs:
         rows = _state("playing_artwork")["outputs"]["rows"]
         assert [r["default"] for r in rows] == [True, False, False]
 
-    def test_the_optimistic_tap_overrides_the_row(self):
+    def _rows_with(self, output_id, shown, appliance_id=None, state="pending"):
+        """The rows block for a scenario whose output request shows *shown*."""
         scenario = hs.SCENARIOS["playing_artwork"]
-        held = scenario.snapshot.outputs
-        snapshot = dataclasses.replace(scenario.snapshot, outputs=dataclasses.replace(
-            held, optimistic=("o2", True, 60, hs.NOW)))
-        rows = dataclasses.replace(scenario, snapshot=snapshot).state()["outputs"]["rows"]
+        request = TransportRequest(
+            appliance_id or scenario.snapshot.outputs.appliance_id, "output_set", hs.NOW, state,
+            hs.NOW, None, output_id, 0, shown,
+        )
+        snapshot = dataclasses.replace(scenario.snapshot, outputs_request=request)
+        return dataclasses.replace(scenario, snapshot=snapshot).state()["outputs"]["rows"]
+
+    def test_the_optimistic_tap_overrides_the_row(self):
+        rows = self._rows_with("o2", (True, 60))
         assert rows[1]["selected"] is True and rows[1]["volume"] == 60
         assert rows[0]["selected"] is True and rows[0]["volume"] == 45
 
     def test_an_optimistic_selection_keeps_the_row_volume(self):
-        scenario = hs.SCENARIOS["playing_artwork"]
-        held = dataclasses.replace(scenario.snapshot.outputs, optimistic=("o1", False, None, hs.NOW))
-        rows = dataclasses.replace(
-            scenario, snapshot=dataclasses.replace(scenario.snapshot, outputs=held)
-        ).state()["outputs"]["rows"]
+        rows = self._rows_with("o1", (False, None))
         assert rows[0]["selected"] is False and rows[0]["volume"] == 45
+
+    def test_a_request_with_nothing_shown_leaves_the_rows(self):
+        assert self._rows_with("o1", None, state="accepted") == _state("playing_artwork")["outputs"]["rows"]
+
+    def test_a_request_for_another_appliance_shows_nothing(self):
+        assert self._rows_with("o1", (False, 10), appliance_id="b" * 20) == _state("playing_artwork")["outputs"]["rows"]
 
     def test_nothing_held_is_null(self):
         assert _state("nothing_playing")["outputs"] is None

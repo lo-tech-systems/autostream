@@ -139,7 +139,7 @@ def drag_input(page, selector, values, final=None):
 
 
 def outputs_with(*rows_):
-    return OutputsState(LOUNGE, tuple(rows_), True, hs.NOW - 1, None)
+    return OutputsState(LOUNGE, tuple(rows_), True, hs.NOW - 1)
 
 
 # ---------------------------------------------------------------------------

@@ -322,6 +322,15 @@ def seed_outputs(display, rows, loaded=True) -> None:
     display.core.adopt_outputs(display._outputs.appliance_id, tuple(rows), loaded, overwrite=True)
 
 
+def tap_output(display, output_id, selected, volume) -> None:
+    """Make the core show *selected* and *volume* for a held output, as a set
+    just made would; nothing is sent."""
+    with patch("dial_core.enqueue_set"):
+        display.core.set_output(
+            display._outputs.appliance_id, output_id, selected=selected, volume=volume,
+        )
+
+
 def seed_eq(display, bass_db=None, treble_db=None, loaded=True) -> None:
     """Make the core hold a bass/treble reading for the appliance the EQ
     page shows."""

@@ -156,7 +156,7 @@ def _playing(artwork=True, **overrides) -> CoreSnapshot:
             artwork_url=ARTWORK_URL if artwork else "",
         ),
         artwork=held, volume_readout=("Lounge", 42), visible_playing=(LOUNGE,),
-        outputs=OutputsState(LOUNGE, rows(), True, NOW - 1, None), outputs_available=True,
+        outputs=OutputsState(LOUNGE, rows(), True, NOW - 1), outputs_available=True,
         eq=EqState(LOUNGE, 2, SIX_BANDS + DERIVED_BANDS, True, (), 0.0), eq_available=True,
     )
     values.update(overrides)
@@ -267,11 +267,11 @@ def _build() -> dict:
         focus=_focus(reporting=KITCHEN, service="Kitchen"),
         now_playing=NowPlaying("Kitchen", "Joni Mitchell", "Blue", 35, album="Blue"),
         artwork=None, volume_readout=("Kitchen", 35), visible_playing=(KITCHEN, LOUNGE),
-        outputs=OutputsState(KITCHEN, rows(), True, NOW - 1, None),
+        outputs=OutputsState(KITCHEN, rows(), True, NOW - 1),
         eq=EqState(KITCHEN, 1, DERIVED_BANDS, True, (), 0.0),
     )))
     add(Scenario("in_use_speaker", _playing(
-        outputs=OutputsState(LOUNGE, rows(in_use=True), True, NOW - 1, None),
+        outputs=OutputsState(LOUNGE, rows(in_use=True), True, NOW - 1),
     )))
     add(Scenario("unreachable", _playing(
         appliances=(appliance(playing=True, status_error="timeout"),), artwork=None,

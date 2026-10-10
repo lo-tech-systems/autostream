@@ -2149,7 +2149,7 @@ class TestSpeakerPin:
         appliances = tuple(
             dataclasses.replace(a, dial_outputs_version=2) for a in base.snapshot.appliances)
         hd.show(base.with_snapshot(
-            appliances=appliances, outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1, None)))
+            appliances=appliances, outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1)))
         sent = watch_actions(page)
         open_page(page, hd)
         patio = card(page, "Patio")
@@ -2177,7 +2177,7 @@ class TestSpeakerPin:
         evil = "<img src=x onerror=alert(1)>"
         rows_ = tuple(dataclasses.replace(r, name=evil) if r.id == "o2" else r for r in hs.rows())
         hd.show(hs.SCENARIOS["pin_required"].with_snapshot(
-            outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1, None)))
+            outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1)))
         open_page(page, hd)
         expect(page.locator("#card-title")).to_have_text("Enter PIN for " + evil)
         assert page.locator("#modal img").count() == 0
