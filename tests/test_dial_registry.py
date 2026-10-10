@@ -315,6 +315,22 @@ class TestHandleLineDialScanner:
         s = dials._browser.get_snapshot().get("uuid-pr")
         assert s is not None and s.pin_recovery is True
 
+    def test_dial_sdmon_flag_parsed(self, tmp_path):
+        with _redirect(tmp_path) as p:
+            _write_dials(p, {})
+            with patch("autostream_dials.update_dial_sighting"):
+                dials._browser._handle_line(_av_add_dial(txt="id=uuid-sdmon name=X dial_sdmon=v1"))
+        s = dials._browser.get_snapshot().get("uuid-sdmon")
+        assert s is not None and s.sdmon is True
+
+    def test_dial_sdmon_flag_absent_is_false(self, tmp_path):
+        with _redirect(tmp_path) as p:
+            _write_dials(p, {})
+            with patch("autostream_dials.update_dial_sighting"):
+                dials._browser._handle_line(_av_add_dial(txt="id=uuid-nosdmon name=X"))
+        s = dials._browser.get_snapshot().get("uuid-nosdmon")
+        assert s is not None and s.sdmon is False
+
     def test_remove_event_clears_sighting(self, tmp_path):
         with _redirect(tmp_path) as p:
             _write_dials(p, {})

@@ -15,7 +15,7 @@ then the footer, then rotate/BGR. What differs between screens is
 only the data — a frozen Frame descriptor made of a background choice plus
 a Header/Body/Footer triple — never the drawing order. Each of the public
 entry points (compose(), compose_list(), compose_repeat(), compose_output(),
-compose_idle(), compose_nowifi(), compose_restarting()) is a thin adapter that turns its own state snapshot
+compose_idle(), compose_nowifi(), compose_sdhealth(), compose_restarting()) is a thin adapter that turns its own state snapshot
 (OverlayState, ListState, RepeatViewState, OutputViewState, or nothing at
 all) into a Frame and hands it to the pipeline. The outputs list reuses
 compose_list() outright (it is just another row list); only the detail
@@ -120,6 +120,7 @@ from dial_touch_layout import (
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
+    GEOMETRY_SDHEALTH,
     CompactLayout,
     CompactPickerLayout,
     LayoutMetrics,
@@ -137,6 +138,7 @@ from dial_touch_layout import (
     nowifi_layout_for,
     repeat_layout_for,
     scale_px,
+    sdhealth_layout_for,
     zone_rects_for,
 )
 
@@ -262,6 +264,12 @@ _COMPACT_PICKER_TITLE = "Replay"
 NOWIFI_MESSAGE_TEXT = "No WiFi"
 NOWIFI_DISMISS_TEXT = "Dismiss"
 NOWIFI_RESTART_TEXT = "Restart"
+# The SD card warning's fixed strings: a title at readout size and a body
+# line at body size (the percent is filled in), over one Dismiss cell.
+SDHEALTH_TITLE_TEXT = "SD card low"
+SDHEALTH_BODY_TEXT = "{percent}% left, replace soon"
+SDHEALTH_BODY_TEXT_NO_PERCENT = "Replace it soon"
+SDHEALTH_DISMISS_TEXT = "Dismiss"
 RESTARTING_TEXT = "Restarting..."
 STARTING_TEXT = "Starting..."
 
@@ -535,6 +543,16 @@ class NoWifiView:
     pressed: "TouchZone | None" = None
 
 
+@dataclass(frozen=True)
+class SdHealthView:
+    """Immutable snapshot of what the SD card warning should show: the
+    remaining-life percent to print (None prints the body line without
+    one) and the pressed cell, if any."""
+
+    percent: "int | None" = None
+    pressed: "TouchZone | None" = None
+
+
 # Background sources for _new_frame(): where a frame's base image comes
 # from before anything is drawn on top of it.
 BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
@@ -557,6 +575,7 @@ BODY_COMPACT_REPLAY = "compact_replay"      # the repeat screen's time line + Re
 BODY_INFO_VALUE = "info_value"              # the compact info page's own drill-in: label + wrapped value
 BODY_EQ_BARS = "eq_bars"                    # the EQ page's own bass/treble bar rows
 BODY_NOWIFI = "nowifi"                      # the No-WiFi page: message row + Dismiss | Restart cells + crosshair dividers
+BODY_SDHEALTH = "sdhealth"                  # the SD card warning: title + body lines over one Dismiss cell
 BODY_CENTRED_LABEL = "centred_label"        # one string centred on the whole panel (the "Restarting..." screen)
 
 # The EQ bars' own +/-6 dB range — how far the marker can travel each way
@@ -622,6 +641,7 @@ class Body:
     treble_db: "int | None" = None  # BODY_EQ_BARS
     wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3) under WIFI_SIGNAL; 0 draws it all grey
     wifi_style: str = WIFI_SIGNAL # BODY_IDLE_BADGE: WIFI_SIGNAL / WIFI_GREY / WIFI_RED / WIFI_OFF — see the constants
+    sd_percent: "int | None" = None  # BODY_SDHEALTH
 
 
 @dataclass(frozen=True)
@@ -934,6 +954,22 @@ class DialDisplayCompositor:
             metrics = metrics_for(width, height)
         return _compose_frame(
             base, width, height, _nowifi_frame(view, width, height, metrics),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
+    def compose_sdhealth(
+        self, base, width: int, height: int, view: SdHealthView, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """The SD card warning: the No-WiFi page's dimmed base and card,
+        the fixed title over a body line carrying the percent, and one
+        Dismiss cell (see BODY_SDHEALTH). rotate/bgr last, as always.
+        Never raises: a font failure leaves the dividers and card without
+        text. metrics: see compose()."""
+        if metrics is None:
+            metrics = metrics_for(width, height)
+        return _compose_frame(
+            base, width, height, _sdhealth_frame(view, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -2410,6 +2446,28 @@ def _body_nowifi(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     draw.line([(layout.divider_x, layout.dismiss[1]), (layout.divider_x, cy1 - 1)], fill=_DIVIDER_RGB, width=w)
 
 
+def _body_sdhealth(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The SD card warning's content on every tier: the title in the upper
+    part of the message row (readout size), the body line under it (body
+    size), Dismiss centred in the single bottom cell, then the horizontal
+    divider across the card's full width. No vertical divider: there is
+    only one cell."""
+    layout = sdhealth_layout_for(metrics.width, metrics.height, metrics=metrics)
+    draw = ImageDraw.Draw(img)
+    mx0, my0, mx1, my1 = layout.message
+    split = my0 + (my1 - my0) * 3 // 5
+    _draw_label_centered(draw, (mx0, my0, mx1, split), SDHEALTH_TITLE_TEXT, _load_font(metrics.font_readout))
+    body_font = _load_font(metrics.font_body)
+    line = (
+        SDHEALTH_BODY_TEXT.format(percent=body.sd_percent)
+        if body.sd_percent is not None else SDHEALTH_BODY_TEXT_NO_PERCENT
+    )
+    _draw_label_centered(draw, (mx0, split, mx1, my1), line, body_font)
+    _draw_label_centered(draw, layout.dismiss, SDHEALTH_DISMISS_TEXT, body_font)
+    cx0, cy0, cx1, cy1 = layout.card
+    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=metrics.divider_w)
+
+
 def _body_centred_label(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """One string (body.line) centred on the whole panel at the readout
     size — the "Restarting..." and "Starting..." screens."""
@@ -2432,6 +2490,7 @@ _BODY_RENDERERS = {
     BODY_INFO_VALUE: _body_info_value,
     BODY_EQ_BARS: _body_eq_bars,
     BODY_NOWIFI: _body_nowifi,
+    BODY_SDHEALTH: _body_sdhealth,
     BODY_CENTRED_LABEL: _body_centred_label,
 }
 
@@ -2797,6 +2856,29 @@ def _nowifi_frame(view: NoWifiView, width: int, height: int, metrics: LayoutMetr
         pressed=_nowifi_pressed_rects(view.pressed, width, height, metrics),
         header=None,
         body=Body(BODY_NOWIFI),
+        footer=Footer(FOOTER_NONE),
+    )
+
+
+def _sdhealth_pressed_rects(
+    pressed: "TouchZone | None", width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
+    rect = _zone_rect(GEOMETRY_SDHEALTH, pressed, None, width, height, metrics)
+    return (rect,) if rect is not None else ()
+
+
+def _sdhealth_frame(view: SdHealthView, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    """Same dressing as _nowifi_frame: dimmed base everywhere, the card
+    only off compact."""
+    layout = sdhealth_layout_for(width, height, metrics=metrics)
+    compact = metrics.content_tier == CONTENT_COMPACT
+    return Frame(
+        background=BG_BASE,
+        dim_all=True,
+        card=None if compact else layout.card,
+        pressed=_sdhealth_pressed_rects(view.pressed, width, height, metrics),
+        header=None,
+        body=Body(BODY_SDHEALTH, sd_percent=view.percent),
         footer=Footer(FOOTER_NONE),
     )
 

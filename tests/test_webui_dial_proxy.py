@@ -31,6 +31,8 @@ from autostream_webui_dials import (
     handle_dial_screen_settings_get,
     handle_dial_screen_settings_post,
     handle_dial_screen_image_get,
+    handle_dial_sdcard_health_get,
+    handle_dial_sdcard_health_post,
     handle_dial_recovery_arm_post,
     handle_dial_recovery_disarm_post,
     _proxy_get,
@@ -1119,6 +1121,74 @@ class TestHandleDialScreenSettings:
             },
         }
         assert "uuid" not in sent_body
+
+
+# ---------------------------------------------------------------------------
+# SD card health proxy (GET/POST) — no appliance-side persistence
+# ---------------------------------------------------------------------------
+
+class TestHandleDialSdcardHealth:
+    def test_get_proxies_to_sdcard_health_path(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"state":{"tool_present":true,"timer_enabled":true,'
+                 b'"check":"passed","health_percent":87},"requested":true,'
+                 b'"probe":{"running":false,"outcome":"passed","reason":"","finished_at":null}}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json") as mock_send, \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_sdcard_health_get(MagicMock(), "uuid")
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/sdcard-health"
+        code, data = mock_send.call_args[0][1], mock_send.call_args[0][2]
+        assert code == 200
+        assert data["requested"] is True
+        assert data["state"]["health_percent"] == 87
+
+    def test_get_offline_tunneled(self):
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+            sent = _capture_sent(handle_dial_sdcard_health_get, MagicMock(), "unknown")
+        code, data = sent[0]
+        assert code == 200
+        assert data["error"] == "dial_offline"
+
+    def test_post_missing_uuid_returns_400(self):
+        sent = _capture_sent(handle_dial_sdcard_health_post, MagicMock(), {"enabled": True})
+        code, data = sent[0]
+        assert code == 400
+        assert data["error"] == "missing_uuid"
+
+    def test_post_proxies_uuid_stripped_body(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(body=b'{"ok":true,"probe":{"running":true}}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_sdcard_health_post(
+                MagicMock(),
+                {"uuid": "my-uuid", "enabled": True, "method": "auto", "current_pin": "1234"},
+            )
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/sdcard-health"
+        _, call_kwargs = conn.request.call_args
+        sent_body = json.loads(call_kwargs["body"])
+        assert sent_body == {"enabled": True, "method": "auto", "current_pin": "1234"}
+        assert "uuid" not in sent_body
+
+    def test_post_dial_tool_missing_passes_through_natively(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(body=b'{"ok":false,"error":"tool_missing"}', status=200)
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            sent = _capture_sent(
+                handle_dial_sdcard_health_post,
+                MagicMock(),
+                {"uuid": "x", "enabled": True},
+            )
+        code, data = sent[0]
+        assert code == 200
+        assert data["error"] == "tool_missing"
 
 
 # ---------------------------------------------------------------------------

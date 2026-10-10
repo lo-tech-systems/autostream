@@ -492,6 +492,16 @@ class TestParseSDCardHealthPercent:
             result = su.get_sdcard_health_percent()
         assert result is None
 
+    def test_public_alias_is_same_function(self):
+        assert su.parse_sdcard_health_percent is su._parse_sdcard_health_percent
+
+
+class TestSdHealthThresholds:
+    def test_thresholds_exist(self):
+        assert su.SD_HEALTH_LOW_THRESHOLD == 20
+        assert su.SD_HEALTH_RECOVER_THRESHOLD == 25
+        assert su.SD_HEALTH_STALE_HOURS == 36
+
 
 # ---------------------------------------------------------------------------
 # set_journald_persistent: DIAG-tier journald coupling

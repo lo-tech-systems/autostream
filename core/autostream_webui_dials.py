@@ -433,3 +433,20 @@ def handle_dial_screen_settings_post(handler, json_obj: dict) -> None:
 
 def handle_dial_screen_image_get(handler, uuid: str) -> None:
     _proxy_get_bytes(handler, uuid, "/screen/image", accept_type="image/png")
+
+
+# ---------------------------------------------------------------------------
+# SD card health (proxy to the dial's /sdcard-health endpoint)
+# ---------------------------------------------------------------------------
+
+def handle_dial_sdcard_health_get(handler, uuid: str) -> None:
+    _proxy_get(handler, uuid, "/sdcard-health")
+
+
+def handle_dial_sdcard_health_post(handler, json_obj: dict) -> None:
+    uuid = json_obj.get("uuid", "")
+    if not isinstance(uuid, str) or not uuid:
+        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        return
+    body = {k: v for k, v in json_obj.items() if k != "uuid"}
+    _proxy_post(handler, uuid, "/sdcard-health", body)

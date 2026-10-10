@@ -77,7 +77,8 @@ detail page); "info" maps to GEOMETRY_INFO (the idle screen's read-only
 info page — the list table with every row entry removed, so a row tap
 lands in no zone); "eq" maps to GEOMETRY_EQ (the EQ page, rich/large only);
 "nowifi" maps to GEOMETRY_NOWIFI (the No-WiFi page's Dismiss/Restart
-cells); "restarting" maps to GEOMETRY_NONE (nothing tappable, so no press
+cells); "sdhealth" maps to GEOMETRY_SDHEALTH (the SD card warning's one
+Dismiss cell); "restarting" maps to GEOMETRY_NONE (nothing tappable, so no press
 can arm anything while the reboot is pending)
 — all held like the selector. The map is many-to-one on purpose: which surfaces share a geometry is a policy decision (reveal
 timing, what a row tap does), never a geometric one —
@@ -132,6 +133,7 @@ from dial_touch_layout import (
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
+    GEOMETRY_SDHEALTH,
     LayoutMetrics,
     TouchZone,
     hit_test,
@@ -234,6 +236,9 @@ SURFACE_NOWIFI = "nowifi"
 # visible surface, not a reveal-on-touch one) but with an EMPTY geometry —
 # no press anywhere can arm anything until the reboot takes the panel down.
 SURFACE_RESTARTING = "restarting"
+# The SD card warning: held like every other secondary surface; its
+# geometry (GEOMETRY_SDHEALTH) is the one Dismiss cell.
+SURFACE_SDHEALTH = "sdhealth"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -254,6 +259,7 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_EQ: GEOMETRY_EQ,
     SURFACE_NOWIFI: GEOMETRY_NOWIFI,
     SURFACE_RESTARTING: GEOMETRY_NONE,
+    SURFACE_SDHEALTH: GEOMETRY_SDHEALTH,
 }
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close

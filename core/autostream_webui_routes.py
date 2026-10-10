@@ -1835,6 +1835,17 @@ register(
 
 register(
     Route(
+        path="/api/dial/sdcard-health",
+        methods=("POST",),
+        handler="_route_post_dial_sdcard_health",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+    )
+)
+
+register(
+    Route(
         prefix="/api/dial/configure/",
         methods=("GET",),
         handler="_route_get_dial_configure",
@@ -1882,6 +1893,17 @@ register(
         prefix="/api/dial/screen/image/",
         methods=("GET",),
         handler="_route_get_dial_screen_image",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+    )
+)
+
+register(
+    Route(
+        prefix="/api/dial/sdcard-health/",
+        methods=("GET",),
+        handler="_route_get_dial_sdcard_health",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,

@@ -8,5 +8,6 @@
     <txt-record>id=__DIAL_UUID__</txt-record>
     <txt-record>name=__DIAL_NAME__</txt-record>
     <txt-record>version=__AUTOSTREAM_RELEASE_TAG__</txt-record>
+    <txt-record>dial_sdmon=v1</txt-record>
   </service>
 </service-group>

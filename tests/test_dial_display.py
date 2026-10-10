@@ -45,6 +45,7 @@ from dial_display_profiles import (
 )
 from dial_mdns import PlayingTarget
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
+from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
 from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for
 import dial_display as dd
 from dial_display import (
@@ -7655,10 +7656,10 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_eleven_screens(self):
+    def test_table_has_exactly_the_twelve_screens(self):
         assert set(SCREEN_POLICIES) == {
             "main", "selector", "picker", "info", "info_value", "repeat", "eq", "outputs", "output",
-            "nowifi", "restarting",
+            "nowifi", "restarting", "sdhealth",
         }
 
     def test_nowifi_and_restarting_rows(self):
@@ -7669,6 +7670,12 @@ class TestScreenPolicyTable:
         assert SCREEN_POLICIES["restarting"].inactivity_timeout_s == dd.RESTARTING_TIMEOUT_SECONDS
         assert SCREEN_POLICIES["restarting"].touch_extends_timeout is False
         assert SCREEN_POLICIES["restarting"].surface == ("restarting", False, False, False)
+
+    def test_sdhealth_row(self):
+        assert SCREEN_POLICIES["sdhealth"].inactivity_timeout_s == dd.SDHEALTH_TIMEOUT_SECONDS
+        assert SCREEN_POLICIES["sdhealth"].defers_sleep is False
+        assert SCREEN_POLICIES["sdhealth"].back_to == "main"
+        assert SCREEN_POLICIES["sdhealth"].surface == ("sdhealth", False, False, False)
 
     def test_info_value_back_to_is_info(self):
         # The compact info page's own drill-in returns to the list it
@@ -8345,7 +8352,7 @@ class TestInfoPage:
 
 
 class TestInfoPagePaging:
-    def test_rich_five_plus_one_across_two_pages(self):
+    def test_rich_five_plus_two_across_two_pages(self):
         fb = FakeBackend()
         fb.width, fb.height = 320, 240
         display, fb, gt = _make_display(screen_type="ili9341_320x240", backend=fb, targets=[])
@@ -8367,11 +8374,13 @@ class TestInfoPagePaging:
             display._repaint_current_locked()
         with display._lock:
             page1 = display._build_info_list_state_locked(metrics.width, metrics.height, metrics=metrics)
-        assert len(page1.rows) == 1
+        assert len(page1.rows) == 2  # the seventh field ("SD health") spills onto page 1
         assert page1.has_prev is True
         assert page1.has_next is False
 
-    def test_compact_two_per_page_across_three_pages_wraps(self):
+    def test_compact_two_per_page_across_four_pages_wraps(self):
+        # Seven info fields at two per compact page: ceil(7/2) == 4 pages
+        # (the seventh, "SD health", alone on the last page).
         display, fb, gt = _make_compact_display(targets=[])
         display.enable()
         with patch("dial_display.threading.Thread"):
@@ -8389,6 +8398,11 @@ class TestInfoPagePaging:
         with display._lock:
             display._repaint_current_locked()
         assert display._info.page == 2
+
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 3
 
         display.list_page(+1)  # wraps back to page 0 on compact
         with display._lock:
@@ -8492,7 +8506,7 @@ class TestInfoRowTap:
         display, fb, gt = _make_compact_display(targets=[])
         display.enable()
         self._opened(display)
-        for _ in range(3):  # 3 compact pages (6 rows / 2 per page): wraps
+        for _ in range(4):  # 4 compact pages (7 rows / 2 per page): wraps
             display.list_page(+1)
             with display._lock:
                 display._repaint_current_locked()
@@ -9039,6 +9053,159 @@ class TestNoWifiStateMachine:
         before = len(fb.displayed)
         _fold(display)
         assert display._screen == "nowifi" and len(fb.displayed) == before + 1
+
+
+# ---------------------------------------------------------------------------
+# The SD card warning: opened by on_sd_health_view(), same discipline as
+# the No-WiFi page (see dial_sdhealth.py for is_low()'s hysteresis rule).
+# ---------------------------------------------------------------------------
+
+def _sd_view(status, percent=None, check="passed"):
+    return SdHealthView(status=status, percent=percent, check=check, updated_at=1.0)
+
+
+class TestSdHealthStateMachine:
+    def _idle_display(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        _fold(display)
+        return display, fb
+
+    def test_low_view_on_main_requests_sdhealth(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        assert display._screen_request == "sdhealth"
+
+    def test_folding_opens_it(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        assert display._screen == "sdhealth"
+        assert display._sdhealth is not None
+        assert display.touch_surface() == ("sdhealth", False, False, False)
+        assert display._sd_shown is True
+
+    def test_second_low_view_does_not_re_request(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        display._screen_request = None
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=14))
+        assert display._screen_request is None
+
+    def test_dismiss_tap_requests_main(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        display.sdhealth_dismiss_tap()
+        assert display._screen_request == "main"
+
+    def test_recovered_view_closes_open_page_and_clears_latch(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        assert display._screen == "sdhealth"
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=26))
+        assert display._screen_request == "main"
+        assert display._sd_low is False
+        _fold(display)
+        assert display._screen == "main" and display._sd_shown is False
+
+    def test_hysteresis_zone_after_recovery_does_not_reopen(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=26))
+        _fold(display)
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=23))
+        assert display._screen_request is None
+
+    def test_low_view_while_selector_open_does_not_request(self):
+        display, fb = self._idle_display()
+        display.open_selector()
+        _fold(display)
+        assert display._screen == "selector"
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=10))
+        assert display._screen_request is None
+
+    def test_low_view_while_info_open_does_not_request(self):
+        display, fb = self._idle_display()
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        _fold(display)
+        assert display._screen == "info"
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=10))
+        assert display._screen_request is None
+
+    def test_low_view_while_nowifi_open_does_not_request(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "nowifi"
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=10))
+        assert display._screen_request is None
+
+    def test_opener_refuses_while_nowifi(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "nowifi"
+        with display._lock:
+            assert display._open_sdhealth_locked() is False
+
+    def test_timeout_closes_it(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        opened_at = display._sdhealth.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + dd.SDHEALTH_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
+        assert display._screen == "main"
+
+    def test_sleep_pops_it_and_it_does_not_reraise(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        with display._lock:
+            display._sleep_locked()
+        assert display._screen == "main" and display._sdhealth is None
+        # Still latched low: a later poll must not re-raise on its own
+        # (dismiss/sleep both count as shown; only a fresh on_sd_health_view
+        # decides, and the latch is untouched by sleeping).
+        assert display._sd_low is True
+
+    def test_unsupported_view_ends_the_incident(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        display.on_sd_health_view(_sd_view(STATUS_UNSUPPORTED, check="failed"))
+        assert display._sd_low is False
+        assert display._screen_request == "main"
+
+    def test_off_view_ends_the_incident(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        display.on_sd_health_view(_sd_view(STATUS_OFF, check="none"))
+        assert display._sd_low is False
+        assert display._screen_request == "main"
+
+    def test_painter_calls_compose_sdhealth_with_current_percent(self):
+        display, fb = self._idle_display()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=17))
+        _fold(display)
+        assert display._screen == "sdhealth"
+        with patch.object(
+            display._compositor, "compose_sdhealth", wraps=display._compositor.compose_sdhealth,
+        ) as mock_compose:
+            with display._lock:
+                display._display_sdhealth_locked()
+        assert mock_compose.call_args.args[3].percent == 17
 
 
 # ---------------------------------------------------------------------------

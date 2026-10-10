@@ -16,7 +16,18 @@ CLI modes:
                         update lock; never touches cleanup. Driven by the
                         dedicated autostream_log_policy.timer (every 30 min)
                         so the de-escalation expiry boundaries get crisp
-                        resolution regardless of playback.
+                        resolution regardless of playback. Appliance only:
+                        a dial install exits 0 without doing anything.
+  --dial / --appliance  Force the install kind instead of detecting it from
+                        the install state file (tests and manual runs).
+
+Install kinds:
+  The same script and units run on both products. On an appliance the run
+  is gated on playback and drives the log-level policy through the local
+  API. On a dial there is no playback API and no log-level API, so both
+  are skipped and only the generic cleanup, the logrotate timer check and
+  the diagnostic scans run. Detection: AUTOSTREAM_PRODUCT in the install
+  state file, else the presence of the dial hardware config file.
 
 Exit codes:
   0  normal run, safe skip, or best-effort action failure
@@ -51,6 +62,14 @@ DIAL_UPDATE_LOCK_PATH = Path("/run/autostream-dial-update.lock")
 
 STATE_PATH = Path("/var/lib/autostream/storage-guard.json")
 SDCARD_HEALTH_PATH = Path("/var/lib/autostream/sdcardhealth.json")
+
+# Install-kind detection. Both installers write AUTOSTREAM_PRODUCT as their
+# product declaration; the hardware config file is the fallback for a
+# hand-edited state file.
+INSTALL_STATE_PATH = Path("/var/lib/autostream/install-state.env")
+DIAL_HW_CONFIG_PATH = Path("/etc/autostream/autostream-dial.json")
+KIND_APPLIANCE = "appliance"
+KIND_DIAL = "dial"
 
 API_BASE = "http://127.0.0.1:8080"
 API_TIMEOUT = 3.0
@@ -90,6 +109,10 @@ EXPIRY_TIER2_HOURS = 168
 # true) but a target (monitor/owntone/journald) reported False (e.g. mid-restart).
 PENDING_REAPPLY_MAX_ATTEMPTS = 5
 
+# Mirrored in core/autostream_sysutils.py (SD_HEALTH_LOW_THRESHOLD,
+# SD_HEALTH_RECOVER_THRESHOLD, SD_HEALTH_STALE_HOURS) for the web UI and the
+# dial, which cannot import this stdlib-only root script. A test keeps the
+# two copies equal; change both together.
 SD_HEALTH_LOW_THRESHOLD = 20
 SD_HEALTH_RECOVER_THRESHOLD = 25
 SD_HEALTH_STALE_HOURS = 36
@@ -322,6 +345,57 @@ def _parse_utc_ts(ts: object) -> Optional[datetime]:
         return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Install kind
+# ---------------------------------------------------------------------------
+
+def _read_env_value(path: Path, key: str) -> str:
+    """One KEY=VALUE from a plain env file, outer quotes stripped; "" when
+    absent or unreadable. Never executes the file."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        return v
+    return ""
+
+
+def detect_install_kind(argv: list) -> str:
+    """KIND_DIAL or KIND_APPLIANCE.
+
+    Precedence: an explicit --dial/--appliance flag, then AUTOSTREAM_PRODUCT
+    in the install state file, then the dial hardware config file's
+    presence. Anything unrecognised is an appliance, which is the
+    conservative side: an appliance run gated on a playing check that
+    fails closed does less than a dial run that skips it.
+    """
+    if "--dial" in argv:
+        return KIND_DIAL
+    if "--appliance" in argv:
+        return KIND_APPLIANCE
+    product = _read_env_value(INSTALL_STATE_PATH, "AUTOSTREAM_PRODUCT").strip().lower()
+    if product == "autostream-dial":
+        return KIND_DIAL
+    if product == "autostream":
+        return KIND_APPLIANCE
+    try:
+        if DIAL_HW_CONFIG_PATH.is_file():
+            return KIND_DIAL
+    except OSError:
+        pass
+    return KIND_APPLIANCE
 
 
 # ---------------------------------------------------------------------------
@@ -1467,11 +1541,17 @@ def main() -> int:
     log_policy: dict = {}
 
     guard_state = load_state()
+    kind = detect_install_kind(sys.argv[1:])
+    logging.info("storage guard: install kind %s", kind)
 
     # --log-policy-only: dedicated 30-min timer mode. Runs only
     # storage-measure + SD-health + run_log_level_policy, ungated from the
-    # playing/update-lock checks and skipping cleanup entirely.
+    # playing/update-lock checks and skipping cleanup entirely. A dial has
+    # no log-level API to drive, so the mode is a no-op there.
     if "--log-policy-only" in sys.argv[1:]:
+        if kind == KIND_DIAL:
+            logging.info("storage guard: log-policy-only is appliance-only; nothing to do")
+            return 0
         return _run_log_policy_only(guard_state, now, started_at)
 
     # 1. Singleton guard lock.
@@ -1493,8 +1573,9 @@ def main() -> int:
             _save_partial_state(guard_state, started_at, result, skipped_reason, actions, log_policy)
             return 0
 
-        # 3. Playing check.
-        playing = get_playing_status()
+        # 3. Playing check (appliance only: a dial has no playback API, and
+        # treating its absence as "unknown" would be a permanent skip).
+        playing = get_playing_status() if kind == KIND_APPLIANCE else None
         if playing is True:
             logging.info("storage guard: appliance is playing; skipping run")
             skipped_reason = "playing"
@@ -1520,14 +1601,19 @@ def main() -> int:
         # 7. SD-card health.
         sd_health = read_sdcard_health()
 
-        # 8. Log-level policy (expiry and ceiling).
-        log_policy = run_log_level_policy(
-            disk_state=initial_state,
-            sd_health=sd_health,
-            guard_state=guard_state,
-            actions=actions,
-            now=now,
-        )
+        # 8. Log-level policy (expiry and ceiling). Appliance only: the dial
+        # has no runtime log-level API, so its level is fixed by its own
+        # service environment and nothing here can move it.
+        if kind == KIND_APPLIANCE:
+            log_policy = run_log_level_policy(
+                disk_state=initial_state,
+                sd_health=sd_health,
+                guard_state=guard_state,
+                actions=actions,
+                now=now,
+            )
+        else:
+            log_policy = {}
 
         # 9-10. Diagnostic scan.
         largest_files = scan_largest_files(LARGE_FILE_SCAN_ROOTS, root_dev=root_dev)
@@ -1554,6 +1640,7 @@ def main() -> int:
         state_to_save = dict(guard_state)
         state_to_save.update({
             "schema_version": 1,
+            "install_kind": kind,
             "last_run_started_at": started_at,
             "last_run_completed_at": completed_at,
             "result": result,

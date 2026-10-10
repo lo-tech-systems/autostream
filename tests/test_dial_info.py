@@ -56,10 +56,10 @@ class TestGatherShape:
             _disk_free=MagicMock(side_effect=defaults["disk"]),
         )
 
-    def test_returns_six_pairs_in_order_with_fixed_labels(self):
+    def test_returns_seven_pairs_in_order_with_fixed_labels(self):
         with self._patched():
-            rows = gather_dial_info("Kitchen Dial", "1.4.0")
-        assert len(rows) == 6
+            rows = gather_dial_info("Kitchen Dial", "1.4.0", sd_health="87% Good")
+        assert len(rows) == 7
         assert tuple(label for label, _ in rows) == INFO_LABELS
         assert rows[0] == ("Dial name", "Kitchen Dial")
         assert rows[1] == ("Firmware", "1.4.0")
@@ -67,6 +67,12 @@ class TestGatherShape:
         assert rows[3] == ("WiFi", "HomeNet")
         assert rows[4] == ("Signal", SIGNAL_STRONG)
         assert rows[5] == ("Disk free", "14.2 GB")
+        assert rows[6] == ("SD health", "87% Good")
+
+    def test_sd_health_defaults_to_dash_when_none(self):
+        with self._patched():
+            rows = gather_dial_info("Kitchen Dial", "1.4.0")
+        assert dict(rows)["SD health"] == _BLANK
 
     def test_blank_name_and_version_become_dash(self):
         with self._patched():

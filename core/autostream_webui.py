@@ -137,6 +137,8 @@ from autostream_webui_dials import (
     handle_dial_screen_image_get,
     handle_dial_screen_settings_get,
     handle_dial_screen_settings_post,
+    handle_dial_sdcard_health_get,
+    handle_dial_sdcard_health_post,
     handle_dial_update_post,
     handle_dial_update_status,
 )
@@ -881,6 +883,11 @@ def _route_post_dial_screen_settings(handler, state, body_str):
     handle_dial_screen_settings_post(handler, json_obj if isinstance(json_obj, dict) else {})
 
 
+def _route_post_dial_sdcard_health(handler, state, body_str):
+    json_obj = _route_post_json_obj(handler)
+    handle_dial_sdcard_health_post(handler, json_obj if isinstance(json_obj, dict) else {})
+
+
 def _route_get_dial_configure(handler, state):
     handle_dial_configure_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
 
@@ -899,6 +906,10 @@ def _route_get_dial_screen_settings(handler, state):
 
 def _route_get_dial_screen_image(handler, state):
     handle_dial_screen_image_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_sdcard_health(handler, state):
+    handle_dial_sdcard_health_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
 
 
 # send_html() (matching send_json()'s shape) now lives in

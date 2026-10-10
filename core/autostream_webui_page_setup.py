@@ -541,6 +541,7 @@ def _dial_card_html(
     needs_update: bool = False,
     pin_recovery: bool = False,
     ip: str = "",
+    sdmon: bool = False,
 ) -> str:
     """Normalised dial card for any authorization/online state.
 
@@ -560,6 +561,9 @@ def _dial_card_html(
 
     ip is the live mDNS-resolved address, shown under "Current name" only
     while the dial is online; display-only, no persisted copy.
+
+    sdmon renders the SD card health monitoring row; True only for a live
+    sighting that advertises `dial_sdmon=v1`.
     """
     su = html.escape(uuid)
     nv = html.escape(name or "")
@@ -605,6 +609,21 @@ def _dial_card_html(
         f'<div style="margin-top:0.25rem;font-size:0.8rem;color:var(--color-text-muted);">'
         f'IP: <span class="dial-current-ip">{html.escape(ip)}</span></div>'
     ) if (online and ip) else ""
+
+    sd_method_options = "".join(
+        f'<option value="{m}"{" selected" if m == "auto" else ""}>{m}</option>'
+        for m in sorted(SDCARD_HEALTH_METHODS)
+    )
+    sd_health_row = (f"""
+                  <div class="dial-sdhealth-row" style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border-nav);">
+                    <p style="margin:0 0 0.25rem;font-weight:600;">SD card health monitoring</p>
+                    <p class="dial-sdhealth-status" style="margin:0 0 0.35rem;font-size:0.85em;">Loading...</p>
+                    <div style="display:flex;align-items:center;gap:0.5rem;">
+                      <select class="dial-sdhealth-method" disabled>{sd_method_options}</select>
+                      <button type="button" class="pill-btn small dial-sdhealth-btn" style="flex:0 0 auto;"
+                              data-dial-action="sdhealth-toggle" disabled>Enable</button>
+                    </div>
+                  </div>""") if sdmon else ""
 
     card_html = settings_card_html(f"""
           <div class="dial-card" data-dial-uuid="{su}"
@@ -734,6 +753,7 @@ def _dial_card_html(
                       <option value="all">All Appliances</option>
                     </select>
                   </div>
+                  {sd_health_row}
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
@@ -1703,6 +1723,7 @@ def _setup_dial_cards_html() -> tuple:
             needs_update=_needs_upd,
             pin_recovery=_pin_recovery,
             ip=(_sighting.ip if _sighting else ""),
+            sdmon=bool(getattr(_sighting, "sdmon", False)) if _sighting is not None else False,
         )
     for _sighting in _all_sightings:
         if _sighting.uuid not in _authorized_uuids:
@@ -1717,6 +1738,7 @@ def _setup_dial_cards_html() -> tuple:
                 needs_update=_new_needs_upd,
                 pin_recovery=bool(_sighting.pin_recovery),
                 ip=_sighting.ip,
+                sdmon=bool(getattr(_sighting, "sdmon", False)) if _sighting is not None else False,
             )
     if not _dial_cards_html:
         _dial_cards_html = (
@@ -1725,7 +1747,7 @@ def _setup_dial_cards_html() -> tuple:
         )
     _dial_onload_js = (
         'document.querySelectorAll(\'.dial-card[data-authorized="true"]\').forEach(function(card) { '
-        "dialLoadConfig(card); dialLoadScreenSettings(card); });"
+        "dialLoadConfig(card); dialLoadScreenSettings(card); dialLoadSdHealth(card); });"
     )
     return _dial_cards_html, _dials_summary, _dial_onload_js
 
@@ -3985,6 +4007,9 @@ def send_setup_page(
             'too_many_attempts': 'Too many attempts; try again later',
             'screen_apply_failed': 'Screen settings could not be applied',
             'no_frame': 'The dial is not showing anything right now',
+            'probe_running': 'The dial is already checking its card',
+            'tool_missing': 'The SD card health tool is not installed on the dial',
+            'invalid_method': 'Unknown probe method',
           }};
           return map[String(error || '')] || String(error || 'Unknown error');
         }}
@@ -4696,6 +4721,103 @@ def send_setup_page(
           }} catch(e) {{ dialMsg(card, 'Network error', false); }}
         }}
 
+        // ── Dial SD card health monitoring row ─────────────────────────────
+        // Present only for a dial advertising dial_sdmon=v1 (rendered
+        // server-side). The dial runs its probe on its own thread, so an
+        // enable is: POST, then poll GET until probe.running is false.
+        function _dialSdHealthLine(j) {{
+          var s = (j && j.state) || {{}};
+          if (!s.tool_present) return 'Tool not installed on the dial';
+          if (!s.timer_enabled) {{
+            if (j && j.requested) return 'Requested but not running (the last probe may have hung)';
+            return 'Not monitored';
+          }}
+          if (s.check === 'passed' && typeof s.health_percent === 'number') {{
+            return 'Monitored, ' + s.health_percent + ' % endurance remaining' +
+              (s.last_sampled_at ? ', last checked ' + s.last_sampled_at : '');
+          }}
+          return 'Monitored, no reading yet';
+        }}
+
+        function _dialSdHealthRender(card, j) {{
+          var row = card.querySelector('.dial-sdhealth-row');
+          if (!row) return;
+          var s = (j && j.state) || {{}};
+          var line = row.querySelector('.dial-sdhealth-status');
+          var sel = row.querySelector('.dial-sdhealth-method');
+          var btn = row.querySelector('.dial-sdhealth-btn');
+          if (line) line.textContent = _dialSdHealthLine(j);
+          var running = !!(j && j.probe && j.probe.running);
+          if (sel) {{
+            if (s.method && !s.timer_enabled) sel.value = s.method;
+            sel.disabled = running || !!s.timer_enabled || !s.tool_present;
+          }}
+          if (btn) {{
+            btn.textContent = running ? 'Checking card...' : (s.timer_enabled ? 'Disable' : 'Enable');
+            btn.disabled = running || !s.tool_present;
+          }}
+          card.dataset.sdHealthEnabled = s.timer_enabled ? '1' : '0';
+        }}
+
+        async function dialLoadSdHealth(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid || !card.querySelector('.dial-sdhealth-row')) return;
+          try {{
+            var r = await _dialGet('/api/dial/sdcard-health/' + encodeURIComponent(uuid));
+            if (r.ok) _dialSdHealthRender(card, r.body);
+          }} catch(e) {{}}
+        }}
+
+        async function _dialSdHealthPoll(card, uuid, deadlineMs) {{
+          while (Date.now() < deadlineMs) {{
+            await new Promise(function(res) {{ setTimeout(res, 3000); }});
+            var r;
+            try {{ r = await _dialGet('/api/dial/sdcard-health/' + encodeURIComponent(uuid)); }}
+            catch(e) {{ continue; }}
+            if (!r.ok) continue;
+            _dialSdHealthRender(card, r.body);
+            var p = r.body && r.body.probe;
+            if (p && !p.running) return p;
+          }}
+          return null;
+        }}
+
+        async function dialSdHealthToggle(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid) return;
+          var enabling = card.dataset.sdHealthEnabled !== '1';
+          var sel = card.querySelector('.dial-sdhealth-method');
+          var method = sel ? sel.value : 'auto';
+          if (enabling) {{
+            if (!window.confirm("Querying the card's health uses a manufacturer command that may cause unsupported cards to become unresponsive. If the card stops responding, the system will restart automatically. Continue?")) return;
+          }} else {{
+            if (!window.confirm("Stop monitoring this dial's card health?")) return;
+          }}
+          var body = {{uuid: uuid, enabled: enabling, method: method}};
+          if (card.dataset.pinSet === 'true') {{
+            var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
+            if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
+            body.current_pin = unlockedPin;
+          }}
+          try {{
+            var result = await _dialPost('/api/dial/sdcard-health', body);
+            if (!result.ok) {{ dialMsg(card, _dialErrorMessage(result.error), false); return; }}
+            _dialSdHealthRender(card, {{state: {{tool_present: true, timer_enabled: !enabling}}, probe: {{running: true}}}});
+            var probe = await _dialSdHealthPoll(card, uuid, Date.now() + 150000);
+            if (!probe) {{ dialMsg(card, 'The dial did not report a result in time', false); return; }}
+            if (probe.outcome === 'passed') {{
+              dialMsg(card, enabling ? 'Monitoring enabled' : 'Monitoring disabled', true);
+              setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
+            }} else {{
+              var msg = probe.outcome === 'unsupported' ? ('This card is not supported' + (probe.reason ? ': ' + probe.reason : ''))
+                : probe.outcome === 'hung' ? 'A query of this card did not complete; the card may not be supported'
+                : probe.outcome === 'tool_missing' ? 'The SD card health tool is not installed on the dial'
+                : 'The card health check failed' + (probe.reason ? ': ' + probe.reason : '');
+              dialMsg(card, msg, false);
+            }}
+          }} catch(e) {{ dialMsg(card, 'Network error', false); }}
+        }}
+
         function _openDialPinModal(card, mode, title, message) {{
           _dialPinModalCard = card;
           _dialPinModalMode = mode;
@@ -5216,6 +5338,7 @@ def send_setup_page(
               var action = target.dataset.dialAction;
               if (action === 'revoke') dialRevoke(card);
               if (action === 'show-screen') dialShowScreen(card);
+              if (action === 'sdhealth-toggle') dialSdHealthToggle(card);
               if (action === 'update') dialUpdateFirmware(card);
               if (action === 'change-pin') dialChangePIN(card);
               if (action === 'recover-pin') openDialPinRecoveryModal(card);

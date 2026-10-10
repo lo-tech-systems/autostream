@@ -40,6 +40,7 @@ from dial_touch import (  # noqa: E402
     SURFACE_REPEAT,
     SURFACE_REPEAT_REPLAY,
     SURFACE_RESTARTING,
+    SURFACE_SDHEALTH,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
@@ -59,6 +60,7 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_NOWIFI,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT_REPLAY,
+    GEOMETRY_SDHEALTH,
     TouchZone,
     compact_layout_for,
     compact_picker_layout_for,
@@ -71,6 +73,7 @@ from dial_touch_layout import (  # noqa: E402
     nowifi_layout_for,
     output_layout_for,
     repeat_layout_for,
+    sdhealth_layout_for,
     zones_for,
 )
 
@@ -2033,6 +2036,17 @@ class TestNoWifiAndRestartingSurfaces:
         for xy in (UP_XY, DOWN_XY, MUTE_XY, (WIDTH // 2, HEIGHT // 2)):
             assert sm.on_filter_event(press_event(xy), now=0.1) == []
             sm.on_filter_event(release_event(), now=0.2)
+
+    def test_sdhealth_surface_map(self):
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_SDHEALTH] == GEOMETRY_SDHEALTH
+
+    def test_sdhealth_dismiss_cell_arms_as_zone_tap(self):
+        l = sdhealth_layout_for(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SDHEALTH, False, now=0.0)
+        actions = sm.on_filter_event(press_event(_rect_center(l.dismiss)), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        assert actions[-1].zone == TouchZone.SDHEALTH_DISMISS
 
 
 # ---------------------------------------------------------------------------

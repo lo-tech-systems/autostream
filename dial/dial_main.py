@@ -37,6 +37,7 @@ from dial_mdns import (
 )
 from dial_network import latest as network_latest
 from dial_network import start_network_worker
+import dial_sdhealth
 from dial_outputs import start_outputs_worker
 from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
@@ -50,11 +51,17 @@ from dial_volume import (
 )
 
 
+# The dial's log file lives on the SD card. Warnings and errors are what a
+# field diagnosis needs first; the lifecycle chatter at INFO is available on
+# demand by setting APP_LOG_LEVEL=INFO (or DEBUG) in the service environment.
+DEFAULT_LOG_LEVEL = 'WARNING'
+
+
 def _configure_logging() -> None:
-    level_name = os.environ.get('APP_LOG_LEVEL', 'INFO').strip().upper()
-    level = getattr(logging, level_name, logging.INFO)
+    level_name = os.environ.get('APP_LOG_LEVEL', DEFAULT_LOG_LEVEL).strip().upper()
+    level = getattr(logging, level_name, logging.WARNING)
     if not isinstance(level, int):
-        level = logging.INFO
+        level = logging.WARNING
     log_file = "/var/log/autostream/autostream-dial.log"
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logging.basicConfig(
@@ -487,7 +494,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
         # bars; IDLE_REPLAY opens the replay picker; IDLE_INFO opens the
         # idle screen's read-only info page; IDLE_WIFI opens the No-WiFi
-        # page while the link is down; NOWIFI_* act on that page; OUTPUTS
+        # page while the link is down; NOWIFI_* act on that page;
+        # SDHEALTH_DISMISS closes the SD card warning; OUTPUTS
         # opens the outputs list; OUTPUT_* act on the per-output detail
         # page; ARTWORK hides the main screen's own bands for a few
         # seconds — see dial_touch.py's SURFACES paragraph for how a press
@@ -530,6 +538,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.nowifi_dismiss_tap()
         elif zone == TouchZone.NOWIFI_RESTART:
             display.nowifi_restart_tap()
+        elif zone == TouchZone.SDHEALTH_DISMISS:
+            display.sdhealth_dismiss_tap()
         elif zone == TouchZone.OUTPUTS:
             display.open_outputs()
         elif zone == TouchZone.OUTPUT_BACK:
@@ -681,7 +691,8 @@ def main() -> None:
     if hasattr(display, "set_info_provider"):
         display.set_info_provider(
             lambda: gather_dial_info(
-                http_server.get_runtime_status()["name"], VERSION, network=network_latest(),
+                http_server.get_runtime_status()["name"], VERSION,
+                network=network_latest(), sd_health=dial_sdhealth.info_value(),
             )
         )
     display.start()
@@ -730,7 +741,13 @@ def main() -> None:
     # watcher every 15 s (see dial_network.py's module docstring). Feeds the
     # idle screen's status glyph and the No-WiFi page; on_view degrades to a
     # no-op for a NoOpDisplayStatusProvider (no on_network_view method).
-    start_network_worker(on_view=getattr(display, "on_network_view", None))
+    # The SD card health reader rides the same thread through on_tick,
+    # reading its files at most every ten minutes (see dial_sdhealth.py).
+    dial_sdhealth.start(on_view=getattr(display, "on_sd_health_view", None))
+    start_network_worker(
+        on_view=getattr(display, "on_network_view", None),
+        on_tick=dial_sdhealth.tick,
+    )
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch

@@ -194,6 +194,39 @@ disable_cloud_init() {
     fi
 }
 
+install_sdmon() {
+    # Build and install the sdmon binary at the pinned revision, the same
+    # revision the appliance installer builds, so both products probe the
+    # card with identical code. The binary is always installed; whether
+    # the health timer ever runs is decided later by the wrapper's enable
+    # verb, which only enables after a guarded probe has passed. A build
+    # failure warns and continues: the dial must install without it.
+    local ref="8a70aed673f4b319972b3a2cfac043e3b171653a"
+    local marker="/var/lib/autostream/sdmon-version"
+    if [[ -x /usr/local/sbin/sdmon && -f "${marker}" && "$(cat "${marker}")" == "${ref}" ]]; then
+        echo "sdmon binary already at ${ref}"
+        return 0
+    fi
+    # gcc comes from install_venv_build_packages(); make is only needed here.
+    apt-get install -y --no-install-recommends make
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    if curl -fsSL "https://github.com/Ognian/sdmon/archive/${ref}.tar.gz" \
+            | tar -xz -C "${tmpdir}" \
+       && make -s -C "${tmpdir}/sdmon-${ref}/src"; then
+        install -m 0755 -o root -g root "${tmpdir}/sdmon-${ref}/src/sdmon" /usr/local/sbin/sdmon
+        printf '%s\n' "${ref}" > "${marker}"
+        chmod 0644 "${marker}"
+    else
+        if [[ -x /usr/local/sbin/sdmon ]]; then
+            echo "WARNING: sdmon build failed; keeping the existing binary" >&2
+        else
+            echo "WARNING: sdmon build failed and no binary is installed; SD card health monitoring cannot be enabled" >&2
+        fi
+    fi
+    rm -rf "${tmpdir}"
+}
+
 generate_dial_id() {
     # Derive the Dial identity from the CPU serial (SHA-256 hash, 20 hex chars)
     # or create and store a cryptographically secure random fallback identity.
@@ -272,7 +305,7 @@ import json, os
 path = '/var/lib/autostream/dial-settings.json'
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, 'w') as f:
-    json.dump({'step_percent': 2, 'name': '', 'pin': '', 'auto_update': False, 'update_channel': 'stable'}, f, indent=2)
+    json.dump({'step_percent': 2, 'name': '', 'pin': '', 'auto_update': False, 'update_channel': 'stable', 'sd_health_monitoring': False}, f, indent=2)
 "
     chown autostream:autostream /var/lib/autostream/dial-settings.json
 }
@@ -575,6 +608,17 @@ deploy_admin() {
     install -m 0755 -o root -g root \
         "$DEPLOY/supervisor/autostream_dial_updater" \
         /usr/local/libexec/autostream/autostream_dial_updater
+    # Shared storage-care scripts: the same storage guard and SD card
+    # health wrapper the appliance runs. The guard detects a dial install
+    # from install-state.env and skips the appliance-only steps itself.
+    install -m 0755 -o root -g root \
+        "$DEPLOY/supervisor/autostream_storage_guard" \
+        /usr/local/libexec/autostream/autostream_storage_guard
+    install -m 0755 -o root -g root \
+        "$DEPLOY/supervisor/autostream_sdcardhealth" \
+        /usr/local/libexec/autostream/autostream_sdcardhealth
+    sed -i 's/\r$//' /usr/local/libexec/autostream/autostream_storage_guard \
+                     /usr/local/libexec/autostream/autostream_sdcardhealth
 }
 
 deploy_avahi_template() {
@@ -585,12 +629,23 @@ deploy_avahi_template() {
 
 write_install_state() {
     local uuid="$1"
+    local path=/var/lib/autostream/install-state.env
+    # The SD card health wrapper records its method and last outcome in
+    # this file. Carry those lines over so an update keeps monitoring
+    # enabled with the method the user chose.
+    local sdmon_lines=""
+    if [[ -f "${path}" ]]; then
+        sdmon_lines="$(grep -E '^SDMON_[A-Z_]+=' "${path}" 2>/dev/null || true)"
+    fi
     # root-owned 0644: root writes, all can read (including autostream for UUID fallback).
-    cat > /var/lib/autostream/install-state.env <<EOF
+    {
+        cat <<EOF
 AUTOSTREAM_PRODUCT=autostream-dial
 DIAL_UUID=${uuid}
 AUTOSTREAM_RELEASE_TAG=${AUTOSTREAM_RELEASE_TAG}
 EOF
-    chown root:root /var/lib/autostream/install-state.env
-    chmod 0644 /var/lib/autostream/install-state.env
+        [[ -n "${sdmon_lines}" ]] && printf '%s\n' "${sdmon_lines}"
+    } > "${path}"
+    chown root:root "${path}"
+    chmod 0644 "${path}"
 }

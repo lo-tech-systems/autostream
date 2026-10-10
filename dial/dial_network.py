@@ -101,6 +101,7 @@ UNKNOWN_VIEW = NetworkView()
 
 _latest: NetworkView = UNKNOWN_VIEW
 _on_view = None
+_on_tick = None
 _stop_event = threading.Event()
 
 _reboot_lock = threading.Lock()
@@ -133,12 +134,16 @@ def latest() -> NetworkView:
     return _latest
 
 
-def start_network_worker(*, on_view=None) -> None:
+def start_network_worker(*, on_view=None, on_tick=None) -> None:
     """Start the background poll thread. on_view(view) is called after
-    every poll with no lock held; a raising callback is swallowed by the
-    loop, never allowed to kill the thread."""
-    global _on_view
+    every poll with no lock held; on_tick(now) is called after that on the
+    same thread, a housekeeping hook for slow readers that piggyback on
+    this cadence rather than owning a thread (dial_sdhealth.tick). Either
+    callback raising is swallowed by the loop, never allowed to kill the
+    thread."""
+    global _on_view, _on_tick
     _on_view = on_view
+    _on_tick = on_tick
     _stop_event.clear()
     threading.Thread(target=_worker, daemon=True, name="network-worker").start()
 
@@ -229,6 +234,11 @@ def _worker() -> None:
                 _on_view(view)
             except Exception:
                 logging.debug("dial network: on_view callback raised", exc_info=True)
+        if _on_tick is not None:
+            try:
+                _on_tick(time.monotonic())
+            except Exception:
+                logging.debug("dial network: on_tick callback raised", exc_info=True)
         _stop_event.wait(NETWORK_POLL_INTERVAL_S)
 
 

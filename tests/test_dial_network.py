@@ -175,6 +175,46 @@ class TestWorker:
         assert views == [dn.UNKNOWN_VIEW]
         assert calls["n"] == 2
 
+    def test_on_tick_called_after_on_view_with_a_monotonic_float(self):
+        order: list = []
+
+        def on_view(view):
+            order.append(("view", view))
+
+        def on_tick(now):
+            order.append(("tick", now))
+            dn.stop_network_worker()
+
+        with patch("dial_network.poll_once", return_value=dn.UNKNOWN_VIEW), \
+             patch("dial_network.NETWORK_POLL_INTERVAL_S", 0.01):
+            dn.start_network_worker(on_view=on_view, on_tick=on_tick)
+            deadline = threading.Event()
+            for _ in range(200):
+                if order:
+                    break
+                deadline.wait(0.01)
+        assert [kind for kind, _ in order] == ["view", "tick"]
+        assert isinstance(order[1][1], float)
+
+    def test_raising_on_tick_does_not_kill_the_loop(self):
+        calls = {"n": 0}
+
+        def on_tick(now):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            dn.stop_network_worker()
+
+        with patch("dial_network.poll_once", return_value=dn.UNKNOWN_VIEW), \
+             patch("dial_network.NETWORK_POLL_INTERVAL_S", 0.01):
+            dn.start_network_worker(on_tick=on_tick)
+            deadline = threading.Event()
+            for _ in range(200):
+                if calls["n"] >= 2:
+                    break
+                deadline.wait(0.01)
+        assert calls["n"] == 2
+
 
 class TestRequestReboot:
     def test_posts_with_the_same_origin_header(self):

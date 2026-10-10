@@ -6,7 +6,7 @@
 [Unit]
 Description=Detect a SD Card Health Probe That Did Not Complete Before This Boot
 After=local-fs.target
-Before=timers.target autostream.service
+Before=timers.target autostream.service autostream_dial.service
 
 [Service]
 Type=oneshot

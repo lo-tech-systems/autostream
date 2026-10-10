@@ -1418,3 +1418,95 @@ echo "EXIT:$?"
         second, flag_path2 = self._run_disable_cloud_init(tmp_path, present_pkgs={"cloud-init"})
         assert "EXIT:0" in first.stdout and "EXIT:0" in second.stdout
         assert flag_path.exists() and flag_path2.exists()
+
+
+# ---------------------------------------------------------------------------
+# SD card health parity (D8, sudoers, dial settings)
+# ---------------------------------------------------------------------------
+
+class TestWriteInstallStatePreservesSdmon:
+    @bash_capable
+    def test_sdmon_lines_survive_rewrite(self, tmp_path):
+        state_path = tmp_path / "install-state.env"
+        state_path.write_text(
+            "AUTOSTREAM_PRODUCT=autostream-dial\n"
+            "DIAL_UUID=old-uuid\n"
+            "AUTOSTREAM_RELEASE_TAG=v0.0.0\n"
+            'SDMON_METHOD="auto"\n'
+            "SDMON_LAST_CHECK=passed\n",
+            encoding="utf-8",
+        )
+
+        func_src = _extract_function(HELPERS_SH.read_text(encoding="utf-8"), "write_install_state")
+        func_src_local = func_src.replace(
+            "/var/lib/autostream/install-state.env", state_path.as_posix()
+        )
+
+        script = f'''
+set -uo pipefail
+chown() {{ :; }}
+chmod() {{ :; }}
+AUTOSTREAM_RELEASE_TAG="v1.2.3"
+{func_src_local}
+write_install_state "new-uuid"
+echo "EXIT:$?"
+'''
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True, text=True, timeout=20,
+        )
+        assert "EXIT:0" in result.stdout, result.stdout + result.stderr
+
+        lines = state_path.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == "AUTOSTREAM_PRODUCT=autostream-dial"
+        assert 'SDMON_METHOD="auto"' in lines
+        assert "SDMON_LAST_CHECK=passed" in lines
+        assert "DIAL_UUID=new-uuid" in lines
+
+    @bash_capable
+    def test_no_sdmon_lines_when_file_absent(self, tmp_path):
+        state_path = tmp_path / "install-state.env"
+
+        func_src = _extract_function(HELPERS_SH.read_text(encoding="utf-8"), "write_install_state")
+        func_src_local = func_src.replace(
+            "/var/lib/autostream/install-state.env", state_path.as_posix()
+        )
+
+        script = f'''
+set -uo pipefail
+chown() {{ :; }}
+chmod() {{ :; }}
+AUTOSTREAM_RELEASE_TAG="v1.2.3"
+{func_src_local}
+write_install_state "new-uuid"
+echo "EXIT:$?"
+'''
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True, text=True, timeout=20,
+        )
+        assert "EXIT:0" in result.stdout, result.stdout + result.stderr
+        text = state_path.read_text(encoding="utf-8")
+        assert "SDMON_" not in text
+
+
+class TestSudoersSdcardHealthVerbs:
+    def test_three_sdcard_health_verbs_present(self):
+        text = SUDOERS.read_text(encoding="utf-8")
+        assert "autostream_admin sdcard-health-check *" in text
+        assert "autostream_admin sdcard-health-enable *" in text
+        assert "autostream_admin sdcard-health-disable" in text
+
+    def test_sdcard_health_verbs_run_as_autostream(self):
+        text = SUDOERS.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "sdcard-health-" in line:
+                assert line.startswith("autostream ALL=(root) NOPASSWD:"), line
+
+
+def test_write_dial_settings_includes_sd_health_monitoring():
+    text = HELPERS_SH.read_text(encoding="utf-8")
+    start = text.find("write_dial_settings()")
+    assert start != -1
+    body = text[start:start + 600]
+    assert "'sd_health_monitoring': False" in body

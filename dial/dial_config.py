@@ -148,6 +148,11 @@ class DialConfig:
     pin:            str        = ''
     auto_update:    bool       = False
     update_channel: str        = 'stable'
+    # Whether the user asked for SD card health monitoring. Intent only: the
+    # scheduled timer is the truth, and the wrapper can switch it off on its
+    # own after a hung probe. Reported alongside the live state so the card
+    # can show "requested but off" without guessing.
+    sd_health_monitoring: bool = False
     display:        DialDisplayConfig = field(default_factory=DialDisplayConfig)
 
 
@@ -426,6 +431,7 @@ def load_config() -> DialConfig:
         cfg.pin            = s.get('pin',            cfg.pin)
         cfg.auto_update    = s.get('auto_update',    cfg.auto_update)
         cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
+        cfg.sd_health_monitoring = bool(s.get('sd_health_monitoring', False))
         # A persisted mute_all_playing (retired — see DialDisplayConfig's
         # mute_scope) is migrated onto mute_scope ONCE below, only when the
         # settings file has no display.mute_scope key yet; the legacy key
@@ -497,6 +503,7 @@ def save_config(cfg: DialConfig) -> None:
         'pin':            cfg.pin,
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
+        'sd_health_monitoring': cfg.sd_health_monitoring,
         'display':        {
             'fitted':      cfg.display.fitted,
             'rotate':      cfg.display.rotate,

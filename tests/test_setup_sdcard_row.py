@@ -6,6 +6,11 @@ Unit tests for the two small formatting helpers behind the Setup page's
 `autostream_sysutils.sdcard_health_state()` and never touch the network,
 disk, or systemd -- so they're exercised directly here rather than through
 a full page render.
+
+Also covers _dial_card_html()'s own SD card health monitoring row (the
+dial's card on the same Setup page), gated on the `sdmon` flag (true only
+for a live sighting advertising dial_sdmon=v1 in its mDNS TXT record, see
+core/autostream_dials.py's DialSighting).
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_webui_page_setup as setup
+from autostream_webui_page_setup import _dial_card_html
 
 
 class TestSdcardHealthStatusLine:
@@ -61,3 +67,26 @@ class TestSdcardHealthCardLine:
     def test_missing_card_identity(self):
         sd_health = {"card": {"name": "", "manfid": None, "likely_supported": False}}
         assert setup._sdcard_health_card_line(sd_health) == "support unknown"
+
+
+class TestDialCardSdHealthRow:
+    def test_sdmon_true_renders_row_and_method_options(self):
+        result = _dial_card_html(
+            uuid="dial-uuid", name="Kitchen", authorized=True, online=True, sdmon=True,
+        )
+        assert "dial-sdhealth-row" in result
+        assert "dial-sdhealth-method" in result
+        assert "dial-sdhealth-btn" in result
+        assert '<option value="auto"' in result
+
+    def test_sdmon_false_omits_row(self):
+        result = _dial_card_html(
+            uuid="dial-uuid", name="Kitchen", authorized=True, online=True, sdmon=False,
+        )
+        assert "dial-sdhealth-row" not in result
+
+    def test_sdmon_defaults_false(self):
+        result = _dial_card_html(
+            uuid="dial-uuid", name="Kitchen", authorized=True, online=True,
+        )
+        assert "dial-sdhealth-row" not in result

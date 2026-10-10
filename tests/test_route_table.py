@@ -363,6 +363,7 @@ class TestSpecialSchemeRouteParity:
             "/api/dial/update/status/",
             "/api/dial/screen/settings/",
             "/api/dial/screen/image/",
+            "/api/dial/sdcard-health/",
         }
         actual = {
             r.prefix for r in routes_mod.ROUTES
@@ -426,6 +427,7 @@ _STATEFUL_POST_EXPECTED = [
     ("/api/dial/recovery/arm",        AuthRequirement.FULL, False, False),
     ("/api/dial/recovery/disarm",     AuthRequirement.FULL, False, False),
     ("/api/dial/screen/settings",     AuthRequirement.FULL, False, False),
+    ("/api/dial/sdcard-health",       AuthRequirement.FULL, False, False),
 ]
 
 

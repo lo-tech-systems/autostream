@@ -211,6 +211,7 @@ class DialSighting:
     ip: str
     port: int
     pin_recovery: bool
+    sdmon: bool = False   # dial_sdmon=v1 in the TXT record: the dial has the SD health endpoint
 
 
 def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
@@ -234,6 +235,7 @@ def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
         ip=parts[7],
         port=port,
         pin_recovery=(txt.get("pin_recovery") == "1"),
+        sdmon=(txt.get("dial_sdmon") == "v1"),
     )
     # Update last_seen / current_name in dials.json (throttled write, outside lock).
     update_dial_sighting(uuid, sighting.name)

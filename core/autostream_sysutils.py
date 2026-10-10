@@ -86,6 +86,13 @@ SDCARD_HEALTH_STATUS_FILE = Path("/var/lib/autostream/sdcardhealth-status.json")
 SDCARD_SYSFS_DEVICE = Path("/sys/block/mmcblk0/device")
 SDMON_BIN = Path("/usr/local/sbin/sdmon")
 
+# SD card health bands, shared by the web UI and the dial. The storage guard
+# supervisor script keeps its own copy of these three (it is stdlib-only and
+# runs as root outside the app tree); a test keeps the copies equal.
+SD_HEALTH_LOW_THRESHOLD = 20        # a reading below this raises the warning
+SD_HEALTH_RECOVER_THRESHOLD = 25    # a warning clears only once strictly above this
+SD_HEALTH_STALE_HOURS = 36          # a health file older than this is not a current reading
+
 # Manufacturer-id families that appear in the health tool's own support
 # table. Advisory only: a consumer card from the same manufacturer shares
 # the id, so this says "worth trying", not "known to work" -- only an
@@ -510,6 +517,10 @@ def _parse_sdcard_health_percent(data: dict) -> int | None:
         return None
 
     return max(0, min(100, int(round(remaining))))
+
+
+# Public name for the dial's reader; the underscore name stays for existing callers.
+parse_sdcard_health_percent = _parse_sdcard_health_percent
 
 
 def get_sdcard_health_percent() -> int | None:

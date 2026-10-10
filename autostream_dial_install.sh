@@ -169,6 +169,12 @@ enable_i2c
 # same reasoning as install_recovery_packages/install_image_packages.
 disable_cloud_init
 
+# ---- SD card health tool (fresh install and --update) ----------------------
+# The binary is always present so monitoring can be switched on later from
+# the appliance's Setup page without a rebuild; only the wrapper's enable
+# verb ever starts the timer.
+install_sdmon
+
 # ---- Deploy images ----------------------------------------------------------
 mkdir -p /opt/autostream/images
 install -m 0644 "$DEPLOY/images/autostream-dial-badge.png" /opt/autostream/images/
@@ -224,9 +230,23 @@ install -m 0644 "$DEPLOY"/system/systemd/autostream_dial_dnsmasq.service        
 install -m 0644 "$DEPLOY"/system/systemd/autostream_dial_updater.service          /etc/systemd/system/
 install -m 0644 "$DEPLOY"/system/systemd/autostream_dial_updater.timer            /etc/systemd/system/
 install -m 0644 "$DEPLOY"/system/systemd/autostream_dial_update_recover.service   /etc/systemd/system/
+# Shared storage-care units, identical to the appliance's. The storage
+# guard script detects the dial install itself; the SD health units run
+# the same wrapper the appliance uses.
+install -m 0644 "$DEPLOY"/system/systemd/autostream_storage_guard.service         /etc/systemd/system/
+install -m 0644 "$DEPLOY"/system/systemd/autostream_storage_guard.timer           /etc/systemd/system/
+install -m 0644 "$DEPLOY"/system/systemd/autostream_sdcardhealth.service          /etc/systemd/system/
+install -m 0644 "$DEPLOY"/system/systemd/autostream_sdcardhealth.timer            /etc/systemd/system/
+install -m 0644 "$DEPLOY"/system/systemd/autostream_sdcardhealth_boot.service     /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable autostream_dial autostream_dial_wifi_watcher autostream_dial_update_recover
 # autostream_dial_updater.timer is not enabled by default; users opt in via the Setup page.
+systemctl enable --now autostream_storage_guard.timer
+# The boot-check unit only acts on a marker left by a probe that never
+# completed, so it is always enabled; the health timer itself is enabled
+# only by the wrapper's enable verb (from the Setup page) and its state is
+# left alone here so an update never switches monitoring on or off.
+systemctl enable autostream_sdcardhealth_boot.service
 
 # ---- nginx ------------------------------------------------------------------
 rm -f /etc/nginx/sites-enabled/default
@@ -269,6 +289,13 @@ install -m 0440 "$DEPLOY/system/sudoers/autostream_dial" \
     /etc/sudoers.d/autostream_dial
 install -m 0644 "$DEPLOY/system/logrotate/autostream-dial" \
     /etc/logrotate.d/autostream-dial
+
+# journald storage drop-in, shared with the appliance: volatile at rest with
+# size/retention/rate-limit bounds.
+mkdir -p /etc/systemd/journald.conf.d
+install -m 0644 -o root -g root "$DEPLOY/system/journald/99-autostream-storage.conf" \
+    /etc/systemd/journald.conf.d/99-autostream-storage.conf
+systemctl restart systemd-journald || echo "WARNING: systemctl restart systemd-journald failed" >&2
 
 write_install_state "$DIAL_UUID"
 

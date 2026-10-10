@@ -11,11 +11,12 @@ every source is read defensively and any failure degrades that one field to
 are ever spawned by one call, each capped at _CMD_TIMEOUT_S, so a hung
 network tool can never leave the gather thread running indefinitely.
 
-Six fields, in display order: the dial's own name and firmware version
+Seven fields, in display order: the dial's own name and firmware version
 (passed in by the caller — see dial_main.py's wiring), its IPv4 address, the
 Wi-Fi network it is joined to — or, while it is not joined, the network it
 is configured for — and a coarse signal category (Disconnected while not
-joined), and the free space on its root filesystem.
+joined), the free space on its root filesystem, and the SD card's remaining
+health (passed in by the caller, see dial_sdhealth.info_value()).
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -27,7 +28,7 @@ import re
 import socket
 import subprocess
 
-INFO_LABELS = ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free")
+INFO_LABELS = ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free", "SD health")
 
 SIGNAL_WEAK = "Weak"
 SIGNAL_NORMAL = "Normal"
@@ -270,12 +271,12 @@ def _disk_free() -> "str | None":
     return f"{int(mb)} MB"
 
 
-def gather_dial_info(name: str, version: str, network=None) -> "tuple[tuple[str, str], ...]":
+def gather_dial_info(name: str, version: str, network=None, sd_health=None) -> "tuple[tuple[str, str], ...]":
     """(label, value) pairs in display order — the info page's own content,
     gathered fresh on every open. Every source is guarded separately (a
     single bad source degrades only its own field to "-"), and the whole
     function is guarded again besides: a wholly broken environment still
-    returns six "-" rows rather than raising into the caller's worker
+    returns seven "-" rows rather than raising into the caller's worker
     thread. Bounded: at most three subprocesses, each capped at
     _CMD_TIMEOUT_S (see _ipv4()/wifi_status()/configured_ssid()).
 
@@ -287,7 +288,11 @@ def gather_dial_info(name: str, version: str, network=None) -> "tuple[tuple[str,
     CONFIGURED network's SSID and "Disconnected", so a dial that has lost
     its network still names the network it is trying to reach. Probes that
     fail outright with no watcher verdict keep the "-" pair: unknown is not
-    the same as disconnected."""
+    the same as disconnected.
+
+    *sd_health* is the already formatted SD health value (a plain string,
+    or None for "-"); the caller formats it so this module keeps no
+    dependency on the reader."""
     try:
         try:
             ipv4 = _ipv4() or _BLANK
@@ -308,6 +313,7 @@ def gather_dial_info(name: str, version: str, network=None) -> "tuple[tuple[str,
             (INFO_LABELS[3], wifi[0]),
             (INFO_LABELS[4], wifi[1]),
             (INFO_LABELS[5], disk),
+            (INFO_LABELS[6], (sd_health or "").strip() or _BLANK),
         )
     except Exception:
         return tuple((label, _BLANK) for label in INFO_LABELS)

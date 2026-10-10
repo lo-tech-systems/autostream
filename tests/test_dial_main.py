@@ -1832,6 +1832,13 @@ class TestBuildTouchSourceWiring:
             display.open_selector.assert_called_once()
             display.notify_touch_activity.assert_called_once()
 
+    def test_on_zone_tap_sdhealth_dismiss_closes_the_warning(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.SDHEALTH_DISMISS, None)
+            display.sdhealth_dismiss_tap.assert_called_once()
+
     def test_on_zone_tap_list_back_closes_the_list_screen(self):
         from dial_touch_layout import TouchZone
 
@@ -2812,12 +2819,13 @@ class TestInfoProviderWiring:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
-             patch("dial_main.start_eq_worker"), patch("dial_main.start_network_worker"), \
+             patch("dial_main.start_eq_worker"), patch("dial_main.start_network_worker") as mock_net_worker, \
              patch("dial_main.DialControlServer"), \
              patch.object(dd, "create_dial_display", side_effect=spy_create_dial_display), \
              patch("threading.Event", _QuickEvent):
             dm.main()
 
+        captured["start_network_worker"] = mock_net_worker
         return captured
 
     def test_provider_wired_and_calls_gather_dial_info_with_live_name_and_version(self):
@@ -2828,9 +2836,12 @@ class TestInfoProviderWiring:
         assert display._get_info_rows is not None
 
         with patch("dial_main.gather_dial_info", return_value=(("Dial name", "Kitchen Dial"),)) as mock_gather, \
-             patch("dial_main.network_latest", return_value="sentinel-view"):
+             patch("dial_main.network_latest", return_value="sentinel-view"), \
+             patch("dial_main.dial_sdhealth.info_value", return_value="87% Good"):
             rows = display._get_info_rows()
-        mock_gather.assert_called_once_with("Kitchen Dial", dm.VERSION, network="sentinel-view")
+        mock_gather.assert_called_once_with(
+            "Kitchen Dial", dm.VERSION, network="sentinel-view", sd_health="87% Good",
+        )
         assert rows == (("Dial name", "Kitchen Dial"),)
 
     def test_provider_reads_the_live_runtime_name_not_a_stale_snapshot(self):
@@ -2847,6 +2858,15 @@ class TestInfoProviderWiring:
             display._get_info_rows()
         assert mock_gather.call_args_list[0].args[0] == "Kitchen Dial"
         assert mock_gather.call_args_list[1].args[0] == "Renamed Dial"
+
+    def test_network_worker_started_with_sdhealth_tick(self):
+        import dial_main as dm
+        import dial_sdhealth
+
+        captured = self._run()
+        captured["start_network_worker"].assert_called_once()
+        kwargs = captured["start_network_worker"].call_args.kwargs
+        assert kwargs["on_tick"] is dial_sdhealth.tick
 
     def test_not_wired_for_a_noop_display(self):
         """set_info_provider is only ever called when the display stack
@@ -3237,3 +3257,32 @@ class TestPresenceConfirmationWiring:
         self._run(cfg, server, tmp_path, build_mock=build_mock)
 
         assert server._can_confirm_presence is False
+
+
+class TestConfigureLogging:
+    """The dial's log file lives on the SD card, so the default level is
+    WARNING rather than INFO; APP_LOG_LEVEL raises it back up."""
+
+    def _run(self, env):
+        import dial_main as dm
+
+        with patch.dict(os.environ, env, clear=False), \
+             patch("dial_main.os.makedirs"), \
+             patch("dial_main.logging.basicConfig") as basic_config, \
+             patch("dial_main.logging.FileHandler"), \
+             patch("dial_main.logging.StreamHandler"):
+            dm._configure_logging()
+        return basic_config
+
+    def test_default_is_warning(self):
+        os.environ.pop("APP_LOG_LEVEL", None)
+        basic_config = self._run({})
+        assert basic_config.call_args.kwargs["level"] == 30  # logging.WARNING
+
+    def test_app_log_level_debug_is_honoured(self):
+        basic_config = self._run({"APP_LOG_LEVEL": "DEBUG"})
+        assert basic_config.call_args.kwargs["level"] == 10  # logging.DEBUG
+
+    def test_garbage_falls_back_to_warning(self):
+        basic_config = self._run({"APP_LOG_LEVEL": "NOT_A_LEVEL"})
+        assert basic_config.call_args.kwargs["level"] == 30  # logging.WARNING

@@ -14,6 +14,9 @@ systemctl disable --now \
     autostream_dial_dnsmasq \
     autostream_dial_updater.timer \
     autostream_dial_update_recover \
+    autostream_storage_guard.timer \
+    autostream_sdcardhealth.timer \
+    autostream_sdcardhealth_boot \
     2>/dev/null || true
 systemctl stop autostream_dial_dnsmasq 2>/dev/null || true
 
@@ -23,6 +26,11 @@ rm -f /etc/systemd/system/autostream_dial_dnsmasq.service
 rm -f /etc/systemd/system/autostream_dial_updater.service
 rm -f /etc/systemd/system/autostream_dial_updater.timer
 rm -f /etc/systemd/system/autostream_dial_update_recover.service
+rm -f /etc/systemd/system/autostream_storage_guard.service
+rm -f /etc/systemd/system/autostream_storage_guard.timer
+rm -f /etc/systemd/system/autostream_sdcardhealth.service
+rm -f /etc/systemd/system/autostream_sdcardhealth.timer
+rm -f /etc/systemd/system/autostream_sdcardhealth_boot.service
 systemctl daemon-reload
 
 rm -f /etc/nginx/sites-enabled/autostream-dial
@@ -36,6 +44,10 @@ rm -f /etc/logrotate.d/autostream-dial
 
 # Restore system dnsmasq (masked during install)
 systemctl unmask dnsmasq.service 2>/dev/null || true
+
+rm -f /etc/systemd/journald.conf.d/99-autostream-storage.conf
+systemctl restart systemd-journald 2>/dev/null || true
+rm -f /usr/local/sbin/sdmon
 
 # Shared admin infrastructure — safe to remove on dial-only device
 rm -rf /usr/local/libexec/autostream

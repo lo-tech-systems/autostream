@@ -50,6 +50,34 @@ its next boot before its main service starts, marking the update as failed
 rather than leaving it stuck. Simply retry the update once the dial is back
 online.
 
+## SD card care
+
+The dial runs the same storage-care routines as the main appliance:
+
+- A daily background task cleans up its own log archives and checks the
+  logrotate timer, keeping the SD card from filling up over time.
+- Optional SD card health monitoring: turn it on from the appliance's Setup
+  page, on the dial's own card, once its firmware advertises the capability.
+  Enabling it runs a one-time guarded check first; if the card does not
+  support the check or does not respond, monitoring is not turned on. Once
+  running, it checks the card's remaining endurance once a day and reports
+  it back on the Setup page. The dial itself has a hardware watchdog, so if
+  a check against an unsupported card ever hangs the system, it restarts
+  automatically rather than needing a manual power-cycle.
+- The dial's own system log stays in memory rather than being written to
+  the SD card, which is the same volatile-journal approach the main
+  appliance uses.
+- The dial's log file defaults to a quieter level (warnings and errors
+  only) to reduce writes to the SD card. To see the fuller lifecycle log
+  for troubleshooting, run `sudo systemctl edit autostream_dial` and add:
+
+  ```
+  [Service]
+  Environment=APP_LOG_LEVEL=INFO
+  ```
+
+  then restart the service with `sudo systemctl restart autostream_dial`.
+
 ## Recovery pages
 
 The dial's web server hosts a small set of **recovery pages** at

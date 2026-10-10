@@ -14,6 +14,8 @@ Covers:
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -619,3 +621,125 @@ class TestArchiveSafety:
     def test_autostream_dir_no_active_base(self):
         # Any plain file in /var/log/autostream without numeric/dated suffix is not eligible
         assert sg._is_eligible_archive("/var/log/autostream", "autostream.log") is False
+
+
+# ---------------------------------------------------------------------------
+# detect_install_kind: dial vs appliance detection
+# ---------------------------------------------------------------------------
+
+class TestDetectInstallKind:
+    def test_dial_flag_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", tmp_path / "no-such-file.env")
+        monkeypatch.setattr(sg, "DIAL_HW_CONFIG_PATH", tmp_path / "no-such-file.json")
+        assert sg.detect_install_kind(["--dial"]) == sg.KIND_DIAL
+
+    def test_appliance_flag_wins(self, tmp_path, monkeypatch):
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\n", encoding="utf-8")
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", state)
+        assert sg.detect_install_kind(["--appliance"]) == sg.KIND_APPLIANCE
+
+    def test_product_key_dial(self, tmp_path, monkeypatch):
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\n", encoding="utf-8")
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", state)
+        monkeypatch.setattr(sg, "DIAL_HW_CONFIG_PATH", tmp_path / "absent.json")
+        assert sg.detect_install_kind([]) == sg.KIND_DIAL
+
+    def test_product_key_appliance(self, tmp_path, monkeypatch):
+        state = tmp_path / "install-state.env"
+        state.write_text("AUTOSTREAM_PRODUCT=autostream\n", encoding="utf-8")
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", state)
+        assert sg.detect_install_kind([]) == sg.KIND_APPLIANCE
+
+    def test_missing_state_falls_back_to_hw_config(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", tmp_path / "absent.env")
+        hw = tmp_path / "autostream-dial.json"
+        hw.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(sg, "DIAL_HW_CONFIG_PATH", hw)
+        assert sg.detect_install_kind([]) == sg.KIND_DIAL
+
+    def test_nothing_present_is_appliance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", tmp_path / "absent.env")
+        monkeypatch.setattr(sg, "DIAL_HW_CONFIG_PATH", tmp_path / "absent.json")
+        assert sg.detect_install_kind([]) == sg.KIND_APPLIANCE
+
+    def test_quoted_value_parses(self, tmp_path, monkeypatch):
+        state = tmp_path / "install-state.env"
+        state.write_text('AUTOSTREAM_PRODUCT="autostream-dial"\n', encoding="utf-8")
+        monkeypatch.setattr(sg, "INSTALL_STATE_PATH", state)
+        assert sg.detect_install_kind([]) == sg.KIND_DIAL
+
+
+# ---------------------------------------------------------------------------
+# main(): dial mode skips playing/log-level policy; appliance mode keeps them
+# ---------------------------------------------------------------------------
+
+class TestMainDialMode:
+    def _patch_common(self, monkeypatch, tmp_path):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(sg, "STATE_PATH", tmp_path / "storage-guard.json")
+        monkeypatch.setattr(sg, "_acquire_lock", lambda *a, **k: os.open(
+            str(tmp_path / f"lock-{len(os.listdir(tmp_path))}"), os.O_RDWR | os.O_CREAT
+        ))
+        monkeypatch.setattr(sg, "measure_storage", lambda: {
+            "total_bytes": 100 * 1024 ** 3,
+            "free_bytes": 50 * 1024 ** 3,
+            "used_bytes": 50 * 1024 ** 3,
+            "free_percent": 50.0,
+            "free_inodes_percent": 50.0,
+            "total_inodes": 1000000,
+            "free_inodes": 500000,
+        })
+        monkeypatch.setattr(sg, "_logrotate_timer_status", lambda: {
+            "exists": False, "enabled": False, "active": False,
+        })
+        monkeypatch.setattr(sg, "scan_largest_files", lambda *a, **k: [])
+        monkeypatch.setattr(sg, "scan_deleted_open_files", lambda: [])
+        monkeypatch.setattr(sg, "run_cleanup", lambda **k: "normal")
+        playing_mock = MagicMock(return_value=None)
+        policy_mock = MagicMock(return_value={})
+        monkeypatch.setattr(sg, "get_playing_status", playing_mock)
+        monkeypatch.setattr(sg, "run_log_level_policy", policy_mock)
+        return playing_mock, policy_mock
+
+    def test_dial_mode_skips_playing_and_log_policy(self, tmp_path, monkeypatch):
+        playing_mock, policy_mock = self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(sys, "argv", ["autostream_storage_guard", "--dial"])
+        assert sg.main() == 0
+        playing_mock.assert_not_called()
+        policy_mock.assert_not_called()
+        saved = json.loads((tmp_path / "storage-guard.json").read_text(encoding="utf-8"))
+        assert saved["install_kind"] == "dial"
+        assert saved["log_policy"] == {}
+
+    def test_appliance_mode_calls_playing_and_log_policy(self, tmp_path, monkeypatch):
+        playing_mock, policy_mock = self._patch_common(monkeypatch, tmp_path)
+        playing_mock.return_value = False
+        monkeypatch.setattr(sys, "argv", ["autostream_storage_guard", "--appliance"])
+        assert sg.main() == 0
+        playing_mock.assert_called_once()
+        policy_mock.assert_called_once()
+        saved = json.loads((tmp_path / "storage-guard.json").read_text(encoding="utf-8"))
+        assert saved["install_kind"] == "appliance"
+
+
+def test_log_policy_only_is_noop_on_dial(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(sg, "STATE_PATH", tmp_path / "storage-guard.json")
+    policy_only_mock = MagicMock(return_value=0)
+    monkeypatch.setattr(sg, "_run_log_policy_only", policy_only_mock)
+    monkeypatch.setattr(sys, "argv", ["autostream_storage_guard", "--log-policy-only", "--dial"])
+    assert sg.main() == 0
+    policy_only_mock.assert_not_called()
+
+
+def test_sd_health_thresholds_match_sysutils():
+    sys.path.insert(0, str(REPO_ROOT / "core"))
+    import autostream_sysutils as su
+
+    assert sg.SD_HEALTH_LOW_THRESHOLD == su.SD_HEALTH_LOW_THRESHOLD
+    assert sg.SD_HEALTH_RECOVER_THRESHOLD == su.SD_HEALTH_RECOVER_THRESHOLD
+    assert sg.SD_HEALTH_STALE_HOURS == su.SD_HEALTH_STALE_HOURS

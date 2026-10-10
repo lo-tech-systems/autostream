@@ -40,6 +40,7 @@ from dial_display import DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_repeat_store import parse_repeat_object, repeat_store
+from dial_sdhealth import SdHealthView, STATUS_VALID
 from dial_touch_layout import TouchZone
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -355,6 +356,14 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.nowifi_restart_tap()
     elif kind == "tick_wifi_flash":
         d._tick_wifi_flash()
+    elif kind == "sd_health_view":
+        # ("sd_health_view", status, percent) -- feeds the SD health
+        # reader's callback directly, the same shape dial_sdhealth.tick()
+        # calls it with after a read.
+        _, status, percent = step
+        d.on_sd_health_view(SdHealthView(status=status, percent=percent, updated_at=ctx.clock.t))
+    elif kind == "sdhealth_dismiss":
+        d.sdhealth_dismiss_tap()
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -421,6 +430,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         },
         "nowifi_open": d._nowifi is not None,
         "restarting_open": d._restarting is not None,
+        "sdhealth_open": d._sdhealth is not None,
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
@@ -863,9 +873,9 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("poll",),
         ("repaint",),  # touch_surface == "idle" (reachable with no replay held)
         ("open_info",),
-        ("repaint",),  # info page opens with six placeholder rows
+        ("repaint",),  # info page opens with seven placeholder rows
         ("list_page", 1),
-        ("repaint",),  # second page (base: 3 rows/page, clamped at page 1)
+        ("repaint",),  # second page (base: 3 rows/page, 3 pages total)
         ("close_list",),
         ("repaint",),  # back to idle
     ])
@@ -1533,6 +1543,72 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
+    # ---- SD card health warning: opened by the health reader, closed by
+    # Dismiss/timeout/a recovered reading; never opens over the No-WiFi page.
+
+    add("sdhealth_low_opens_then_recovered_closes", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 26),
+        ("repaint",),
+    ])
+
+    add("sdhealth_dismiss_suppresses_until_recovered", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("sdhealth_dismiss",),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 14),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 26),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 10),
+        ("repaint",),
+    ])
+
+    add("sdhealth_hysteresis_holds_between_thresholds", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 26),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 23),
+        ("repaint",),
+    ])
+
+    add("sdhealth_never_opens_over_the_nowifi_page", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_CONNECTED, 3),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 10),
+        ("repaint",),
+        ("nowifi_dismiss",),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 9),
+        ("repaint",),
+    ])
+
+    add("sdhealth_timeout_closes_and_does_not_reraise", [
+        ("targets", []),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("advance", dd.SDHEALTH_TIMEOUT_SECONDS + 1),
+        ("check_timeout",),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 14),
+        ("repaint",),
+    ])
+
     return scenarios
 
 
@@ -1617,9 +1693,9 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
     ))
 
     # The idle screen's own "i" affordance on compact: open the info page,
-    # page through all three (2-rows-per-page) pages, wrapping back to the
-    # first, tap a row to open its own drill-in value view, tap anywhere to
-    # return to the list (at the same page), then X back to idle.
+    # page through all four (2-rows-per-page, seven fields) pages, wrapping
+    # back to the first, tap a row to open its own drill-in value view, tap
+    # anywhere to return to the list (at the same page), then X back to idle.
     cfg3, fb3 = _compact_display_args()
     scenarios.append((
         "compact_idle_info_page_view_and_close",
@@ -1628,7 +1704,9 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("poll",),
             ("repaint",),  # touch_surface == "idle"
             ("open_info",),
-            ("repaint",),  # info page opens; compact shows 2 rows/page across 3 pages
+            ("repaint",),  # info page opens; compact shows 2 rows/page across 4 pages (7 fields)
+            ("list_page", 1),
+            ("repaint",),
             ("list_page", 1),
             ("repaint",),
             ("list_page", 1),
@@ -1665,6 +1743,23 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
         {"cfg": cfg4, "backend": fb4},
     ))
 
+    # The SD card warning on compact (the full-screen card, no vertical
+    # divider): a low reading opens it, Dismiss returns to idle.
+    cfg5, fb5 = _compact_display_args()
+    scenarios.append((
+        "compact_sdhealth_warning_and_dismiss",
+        [
+            ("targets", []),
+            ("poll",),
+            ("repaint",),  # touch_surface == "idle"
+            ("sd_health_view", STATUS_VALID, 12),
+            ("repaint",),  # opens the SD warning, full-screen card
+            ("sdhealth_dismiss",),
+            ("repaint",),  # back to idle
+        ],
+        {"cfg": cfg5, "backend": fb5},
+    ))
+
     return scenarios
 
 
@@ -1682,7 +1777,7 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
     scenarios: list[tuple[str, list[tuple], dict]] = []
 
     # The idle screen's own "i" affordance on the rich tier: open the info
-    # page (5 rows on page 0, 1 on page 1 -- the rail chevrons, not a bottom
+    # page (5 rows on page 0, 2 on page 1 -- the rail chevrons, not a bottom
     # bar), page to the second, then X back to idle.
     cfg, fb = _rich_display_args()
     scenarios.append((
@@ -1692,9 +1787,9 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("poll",),
             ("repaint",),  # touch_surface == "idle"
             ("open_info",),
-            ("repaint",),  # info page opens with six placeholder rows
+            ("repaint",),  # info page opens with seven placeholder rows
             ("list_page", 1),
-            ("repaint",),  # second page: the sixth row alone
+            ("repaint",),  # second page: the sixth and seventh rows
             ("close_list",),
             ("repaint",),  # back to idle
         ],
@@ -1752,6 +1847,23 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("repaint",),  # falls back to main
         ],
         {"cfg": cfg3, "backend": fb3},
+    ))
+
+    # The SD card warning on the rich tier (a centred card): a low reading
+    # opens it, Dismiss returns to main.
+    cfg4, fb4 = _rich_display_args()
+    scenarios.append((
+        "rich_sdhealth_warning_and_dismiss",
+        [
+            ("targets", []),
+            ("poll",),
+            ("repaint",),  # touch_surface == "idle"
+            ("sd_health_view", STATUS_VALID, 12),
+            ("repaint",),  # opens the SD warning, centred card
+            ("sdhealth_dismiss",),
+            ("repaint",),  # back to idle
+        ],
+        {"cfg": cfg4, "backend": fb4},
     ))
 
     return scenarios
@@ -1966,6 +2078,14 @@ _CONTENT_CHANGED_SCENARIOS = {
         "scenario's roster/repeat_store_seed alone was never enough to "
         "survive the reconcile pass's own re-fetch (a latent gap this "
         "change surfaces); a matching status entry now keeps it held",
+    "compact_idle_info_page_view_and_close":
+        "the info page gained a seventh field (SD health), so compact "
+        "paging (2 rows/page) now takes four pages instead of three to "
+        "wrap; the scenario adds one more list_page/repaint pair to keep "
+        "exercising the wrap",
+    "rich_idle_info_page_view_and_close":
+        "the info page gained a seventh field (SD health), so the rich "
+        "tier's second page now holds two rows instead of one",
 }
 
 
@@ -1986,6 +2106,7 @@ def _strip_new_fields(step: dict) -> dict:
     stripped.pop("network", None)
     stripped.pop("nowifi_open", None)
     stripped.pop("restarting_open", None)
+    stripped.pop("sdhealth_open", None)
     if "touch_surface" in stripped:
         stripped["touch_surface"] = stripped["touch_surface"][:3]
     return stripped
@@ -2081,6 +2202,7 @@ def _strip_binding_fields(step: dict) -> dict:
     stripped.pop("network", None)
     stripped.pop("nowifi_open", None)
     stripped.pop("restarting_open", None)
+    stripped.pop("sdhealth_open", None)
     return stripped
 
 

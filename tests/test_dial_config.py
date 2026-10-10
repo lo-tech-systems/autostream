@@ -238,7 +238,10 @@ class TestSaveConfigMutableFieldsOnly:
         finally:
             dc.SETTINGS_PATH = orig
 
-        assert set(data.keys()) == {"step_percent", "name", "pin", "auto_update", "update_channel", "display"}
+        assert set(data.keys()) == {
+            "step_percent", "name", "pin", "auto_update", "update_channel",
+            "sd_health_monitoring", "display",
+        }
         assert "uuid" not in data
         assert "clk_gpio" not in data
         assert "port" not in data
@@ -266,6 +269,43 @@ class TestSaveConfigMutableFieldsOnly:
 
         assert reloaded.name == "Round Trip"
         assert reloaded.step_percent == 7
+
+
+class TestSdHealthMonitoringSetting:
+    def test_round_trip(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            cfg = DialConfig(uuid="hw-uuid-1234", sd_health_monitoring=True)
+            save_config(cfg)
+            data = json.loads(s.read_text())
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+
+        assert data["sd_health_monitoring"] is True
+        assert reloaded.sd_health_monitoring is True
+
+    def test_missing_key_loads_false(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s.write_text(json.dumps({"step_percent": 2, "name": "", "pin": ""}), encoding="utf-8")
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+
+        assert reloaded.sd_health_monitoring is False
 
 
 # ---------------------------------------------------------------------------

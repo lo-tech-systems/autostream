@@ -399,10 +399,12 @@ class TestConfigureLogging:
             dial_main._configure_logging()
         return mock_cfg, mock_file, mock_stream, mock_makedirs, file_handler, stream_handler
 
-    def test_default_level_is_info(self):
+    def test_default_level_is_warning(self):
+        # The dial's log file lives on the SD card, so the default level is
+        # WARNING (raised from the pre-SD-card-care INFO default).
         mock_cfg, *_ = self._call_configure({})
         _, kwargs = mock_cfg.call_args
-        assert kwargs["level"] == logging.INFO
+        assert kwargs["level"] == logging.WARNING
 
     def test_debug_level_from_env(self):
         mock_cfg, *_ = self._call_configure({"APP_LOG_LEVEL": "DEBUG"})
@@ -412,7 +414,7 @@ class TestConfigureLogging:
     def test_invalid_level_from_env_does_not_crash(self):
         mock_cfg, *_ = self._call_configure({"APP_LOG_LEVEL": "NOTLEVEL"})
         _, kwargs = mock_cfg.call_args
-        assert kwargs["level"] == logging.INFO
+        assert kwargs["level"] == logging.WARNING
 
     def test_matches_main_autostream_format_and_handlers(self):
         mock_cfg, mock_file, mock_stream, mock_makedirs, file_handler, stream_handler = \

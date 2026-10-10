@@ -31,6 +31,18 @@ def _uninstaller() -> str:
     return _read("autostream_uninstall.sh")
 
 
+def _dial_installer() -> str:
+    return _read("autostream_dial_install.sh")
+
+
+def _dial_uninstaller() -> str:
+    return _read("autostream_dial_uninstall.sh")
+
+
+def _dial_helpers() -> str:
+    return _read("installer/dial/helpers.sh")
+
+
 # ── 1. Supervisor script present ─────────────────────────────────────────────
 
 def test_storage_guard_supervisor_script_exists():
@@ -318,3 +330,90 @@ def test_uninstaller_stops_before_removes():
     remove_pos = text.find("remove_path /etc/systemd/system/autostream_storage_guard")
     assert stop_pos != -1 and remove_pos != -1
     assert stop_pos < remove_pos
+
+
+# ── 8. Dial installer: reuses the appliance's storage-care units verbatim ────
+
+def test_dial_installer_installs_all_five_units():
+    text = _dial_installer()
+    for unit in (
+        "autostream_storage_guard.service",
+        "autostream_storage_guard.timer",
+        "autostream_sdcardhealth.service",
+        "autostream_sdcardhealth.timer",
+        "autostream_sdcardhealth_boot.service",
+    ):
+        assert unit in text, unit
+
+
+def test_dial_installer_enables_storage_guard_timer_now():
+    text = _dial_installer()
+    assert "systemctl enable --now autostream_storage_guard.timer" in text
+
+
+def test_dial_installer_enables_sdcardhealth_boot_service():
+    text = _dial_installer()
+    assert "systemctl enable autostream_sdcardhealth_boot.service" in text
+
+
+def test_dial_installer_does_not_enable_sdcardhealth_timer():
+    text = _dial_installer()
+    enable_lines = [
+        ln for ln in text.splitlines()
+        if "systemctl enable" in ln and "autostream_sdcardhealth.timer" in ln
+    ]
+    assert enable_lines == []
+
+
+def test_dial_installer_installs_journald_dropin_and_restarts():
+    text = _dial_installer()
+    assert "99-autostream-storage.conf" in text
+    assert "journald.conf.d" in text
+    assert "systemctl restart systemd-journald" in text
+
+
+def test_dial_installer_calls_install_sdmon_outside_update_block():
+    text = _dial_installer()
+    idx = text.find("install_sdmon")
+    assert idx != -1
+    before = text[:idx]
+    # The nearest preceding "if ! $UPDATE" must already be closed by a "fi"
+    # that appears before install_sdmon's own line.
+    last_if = before.rfind("if ! $UPDATE")
+    if last_if != -1:
+        assert before.rfind("\nfi", last_if) > last_if
+
+
+def test_deploy_admin_installs_both_supervisor_scripts():
+    text = _dial_helpers()
+    assert "autostream_storage_guard" in text
+    assert "autostream_sdcardhealth" in text
+
+
+def test_install_sdmon_exists_and_ref_matches_appliance():
+    dial_text = _dial_helpers()
+    assert "install_sdmon()" in dial_text
+    dial_ref_match = re.search(r'local ref="([0-9a-f]{40})"', dial_text)
+    assert dial_ref_match is not None
+    appliance_text = _installer()
+    appliance_ref_match = re.search(r'SDMON_GIT_REF="([0-9a-f]{40})"', appliance_text)
+    assert appliance_ref_match is not None
+    assert dial_ref_match.group(1) == appliance_ref_match.group(1)
+
+
+def test_sdcardhealth_boot_unit_before_dial_service():
+    text = _read("system/systemd/autostream_sdcardhealth_boot.service")
+    assert re.search(r"Before=.*autostream_dial\.service", text)
+
+
+def test_dial_uninstaller_removes_five_units_and_dropin():
+    text = _dial_uninstaller()
+    for unit in (
+        "autostream_storage_guard.service",
+        "autostream_storage_guard.timer",
+        "autostream_sdcardhealth.service",
+        "autostream_sdcardhealth.timer",
+        "autostream_sdcardhealth_boot.service",
+    ):
+        assert unit in text, unit
+    assert "99-autostream-storage.conf" in text

@@ -403,6 +403,7 @@ class TouchZone(str, Enum):
     the mirror image of IDLE_INFO — a tap opens the No-WiFi page while the
     link is down (inert while connected; see DialDisplay.open_nowifi).
     NOWIFI_DISMISS, NOWIFI_RESTART: the No-WiFi page's two cells.
+    SDHEALTH_DISMISS: the SD card warning's one cell.
     ARTWORK: the main surface's inter-band strip (between the top and
     bottom bands); a tap hides the bands for a few seconds.
     EQ_BASS_DOWN, EQ_BASS_UP, EQ_TREBLE_DOWN, EQ_TREBLE_UP: the EQ page's
@@ -437,6 +438,7 @@ class TouchZone(str, Enum):
     IDLE_WIFI = "idle_wifi"
     NOWIFI_DISMISS = "nowifi_dismiss"
     NOWIFI_RESTART = "nowifi_restart"
+    SDHEALTH_DISMISS = "sdhealth_dismiss"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -476,13 +478,17 @@ GEOMETRY_EQ = "eq"
 # nowifi_layout_for() (a centred card off compact, the 2x2's bottom row on
 # it). The message row is display-only and has no entry.
 GEOMETRY_NOWIFI = "nowifi"
+# The SD card warning's own table: one Dismiss cell under the message row,
+# laid out by sdhealth_layout_for() (the No-WiFi card with its bottom row
+# undivided).
+GEOMETRY_SDHEALTH = "sdhealth"
 # An empty table: the "Restarting..." screen has nothing tappable at all, and
 # a surface mapped here can never arm a zone. Kept as a named geometry (not
 # an absent one) so the surface map never has to fall back to MAIN.
 GEOMETRY_NONE = "none"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_NOWIFI, GEOMETRY_NONE,
+    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_NOWIFI, GEOMETRY_SDHEALTH, GEOMETRY_NONE,
 )
 
 
@@ -698,6 +704,13 @@ def _nowifi_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
     )
 
 
+def _sdhealth_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_SDHEALTH: the one Dismiss cell. The message row is
+    display-only."""
+    layout = sdhealth_layout_for(width, height, metrics=metrics)
+    return (ZoneRect(TouchZone.SDHEALTH_DISMISS, layout.dismiss),)
+
+
 def _none_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
     """GEOMETRY_NONE: nothing is tappable."""
     return ()
@@ -714,6 +727,7 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_INFO_VALUE: _info_value_zone_rects,
     GEOMETRY_EQ: _eq_zone_rects,
     GEOMETRY_NOWIFI: _nowifi_zone_rects,
+    GEOMETRY_SDHEALTH: _sdhealth_zone_rects,
     GEOMETRY_NONE: _none_zone_rects,
 }
 
@@ -1059,6 +1073,27 @@ def nowifi_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
         divider_x=x0 + (c0b + c1a) // 2,
         divider_y=y0 + (r0b + r1a) // 2,
     )
+
+
+@dataclass(frozen=True)
+class SdHealthLayout:
+    """The SD card warning: the No-WiFi card's own rectangle and message
+    row, with the bottom row left undivided as one Dismiss cell (there is
+    no second action: a worn card cannot be repaired from here)."""
+
+    card: Rect
+    message: Rect
+    dismiss: Rect
+    divider_y: int
+
+
+def sdhealth_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> SdHealthLayout:
+    """Derived from nowifi_layout_for(): same card, same message row, same
+    horizontal divider; dismiss spans from the No-WiFi Dismiss cell's left
+    edge to its Restart cell's right edge."""
+    n = nowifi_layout_for(width, height, metrics=metrics)
+    dismiss = (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
+    return SdHealthLayout(card=n.card, message=n.message, dismiss=dismiss, divider_y=n.divider_y)
 
 
 def _dead_zone_margin(width: int, height: int) -> int:

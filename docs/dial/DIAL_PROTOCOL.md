@@ -51,6 +51,7 @@ Announced continuously by a dial device.
 | `name` | string | Human-readable display name |
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |
+| `dial_sdmon` | `v1` | The dial exposes `GET`/`POST /sdcard-health` (section 4) and can run the guarded SD card health probe |
 
 Port: **7842** (dial HTTP server).
 
@@ -1259,9 +1260,11 @@ newly-saved `screen`, and the `screen_apply_failed` path reflects the still-pers
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
   support them - see the capability gates above) returns HTTP `400`:
-  ```json
-  {"ok": false, "error": "invalid_screen_settings"}
-  ```
+
+```json
+{"ok": false, "error": "invalid_screen_settings"}
+```
+
 - A wrong or missing `current_pin` when a PIN is set follows existing `POST /configure`
   PIN failure behavior (HTTP `403`/`429`).
 - Persistence failures return HTTP `500`.
@@ -1284,21 +1287,23 @@ written to disk, and is persisted only if the apply succeeded:
   all-or-nothing until this is verified.
 - If a `screen_type` change is requested while `fitted` is true and the new panel driver
   fails to open, the response is:
-  ```json
-  {
-    "ok": false,
-    "error": "screen_apply_failed",
-    "screen": {
-      "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false,
-      "touch_type": "none", "always_show_controls": false, "screen_size_inches": null,
-      "layout_size": null, "volume_scope": "current", "mute_scope": "current"
-    },
-    "layout_sizes": [ "..." ],
-    "layout": { "...": "..." },
-    "scope": { "volume": "all", "mute": "all" },
-    "runtime": { "...": "..." }
-  }
-  ```
+
+```json
+{
+  "ok": false,
+  "error": "screen_apply_failed",
+  "screen": {
+    "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false,
+    "touch_type": "none", "always_show_controls": false, "screen_size_inches": null,
+    "layout_size": null, "volume_scope": "current", "mute_scope": "current"
+  },
+  "layout_sizes": [ "..." ],
+  "layout": { "...": "..." },
+  "scope": { "volume": "all", "mute": "all" },
+  "runtime": { "...": "..." }
+}
+```
+
   with HTTP `200`. The `screen` object in this response echoes the **still-effective**
   (previous, on-disk) settings, not the rejected request. The on-disk configuration is
   left unchanged, so a reboot returns to the last working profile rather than booting into
@@ -1310,6 +1315,59 @@ written to disk, and is persisted only if the apply succeeded:
   change can never fail to "apply" in this sense, since it does nothing live at all; it is
   always persisted, and its effect is deferred to the next restart - see `restart_required`
   above).
+
+### `GET /sdcard-health`
+
+Reports the dial's own SD card health state, the same shape the appliance's
+`autostream_sysutils.sdcard_health_state()` produces, plus whether the user has
+asked for monitoring and whether a probe is currently running:
+
+```json
+{
+  "ok": true,
+  "state": {
+    "tool_present": true, "timer_enabled": true, "method": "auto",
+    "check": "passed", "serial": "...", "at": "...", "reason": "",
+    "card": { "manfid": 3, "oemid": "...", "name": "...", "serial": "...", "likely_supported": true },
+    "health_percent": 87, "last_sampled_at": "2026-01-01T00:00:00Z"
+  },
+  "requested": true,
+  "probe": { "running": false, "outcome": "passed", "reason": "", "finished_at": "2026-01-01T00:00:00Z" }
+}
+```
+
+`requested` reflects the dial's persisted intent (`dial-settings.json`'s
+`sd_health_monitoring`); it can differ from `state.timer_enabled` when a probe
+is in flight or a previous enable failed. `probe` is the same shape `POST
+/sdcard-health` returns, kept for the appliance to poll after starting a
+change.
+
+### `POST /sdcard-health`
+
+Starts (or asks the dial to stop) the guarded SD card health probe. The probe
+runs on its own thread; this returns at once and the appliance polls `GET
+/sdcard-health` for the outcome.
+
+Request body:
+
+```json
+{ "enabled": true, "method": "auto", "current_pin": "1234" }
+```
+
+- `enabled` (required, boolean): true to enable monitoring, false to disable it.
+- `method` (optional, default `"auto"`): one of the dial's supported probe methods.
+- `current_pin` (required only when the dial has a PIN set): matches the
+  PIN check on `POST /screen/settings`.
+
+Responses:
+
+- `200 {"ok": true, "probe": {...}}` - the change was accepted and started (or,
+  for a disable, applied).
+- `400 {"ok": false, "error": "invalid_json" | "body_must_be_object" | "invalid_enabled" | "invalid_method"}`
+- `403 {"ok": false, "error": "wrong_pin"}` / `429` rate limit, as on `POST /screen/settings`.
+- `200 {"ok": false, "error": "tool_missing"}` - the SD card health tool is not
+  installed on the dial (enable only).
+- `200 {"ok": false, "error": "probe_running"}` - a probe is already in flight.
 
 ---
 
@@ -1323,6 +1381,7 @@ written to disk, and is persisted only if the apply succeeded:
 | `dial_outputs=v1` | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume |
 | `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
+| `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
 UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API

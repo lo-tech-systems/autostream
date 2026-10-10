@@ -9,7 +9,8 @@ facing setup UI; dial configuration is done through the appliance web interface.
 Routes: GET /configure, POST /configure, GET /recovery_status,
 GET /update/status, GET /update/check, POST /update,
 POST /recovery/arm, POST /recovery/disarm, POST /auth-changed,
-GET /screen/settings, POST /screen/settings, GET /screen/image.
+GET /screen/settings, POST /screen/settings, GET /screen/image,
+GET /sdcard-health, POST /sdcard-health.
 """
 from __future__ import annotations
 
@@ -41,6 +42,28 @@ from dial_display_profiles import (
 )
 from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
+
+# autostream_sysutils is deployed flat into /opt/autostream beside the dial
+# package; in the repo it lives in core/.
+try:
+    from autostream_sysutils import (
+        SDCARD_HEALTH_METHODS,
+        sdcard_health_check,
+        sdcard_health_disable,
+        sdcard_health_enable,
+        sdcard_health_state,
+    )
+except ImportError:
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..', 'core')))
+    from autostream_sysutils import (
+        SDCARD_HEALTH_METHODS,
+        sdcard_health_check,
+        sdcard_health_disable,
+        sdcard_health_enable,
+        sdcard_health_state,
+    )
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
@@ -374,6 +397,11 @@ class DialHTTPServer:
         # tests pass a dict-returning lambda. None (a display-less/bare test
         # server) behaves as "nothing rostered".
         self._get_rostered_ips = get_rostered_ips
+        # The SD card health probe runs on its own short-lived thread (the
+        # guarded wrapper can take 90 s and the appliance proxy waits 4 s),
+        # so a POST only starts it and GET reports on it. One at a time.
+        self._sdmon_lock = threading.Lock()
+        self._sdmon_probe: dict = {"running": False, "outcome": None, "reason": "", "finished_at": None}
         self._server          = http.server.HTTPServer(
             ('', cfg.port), self._make_handler()
         )
@@ -487,6 +515,75 @@ class DialHTTPServer:
             logging.info("dial touch: restart triggered (touch_type changed)")
         except Exception as e:
             logging.warning("dial touch: restart trigger failed: %s", e)
+
+    def sdmon_probe_snapshot(self) -> dict:
+        with self._sdmon_lock:
+            return dict(self._sdmon_probe)
+
+    def start_sdmon_change(self, enabled: bool, method: str) -> bool:
+        """Start the enable (probe, then enable) or disable run on a daemon
+        thread. Returns False without starting when one is already running."""
+        with self._sdmon_lock:
+            if self._sdmon_probe["running"]:
+                return False
+            self._sdmon_probe = {"running": True, "outcome": None, "reason": "", "finished_at": None}
+        threading.Thread(
+            target=self._sdmon_change_thread, args=(enabled, method),
+            daemon=True, name="dial-sdmon-probe",
+        ).start()
+        return True
+
+    def _sdmon_change_thread(self, enabled: bool, method: str) -> None:
+        """Enable: the wrapper's check verb first (it never enables), then
+        its enable verb only on a pass. Disable: the disable verb. Either
+        way the persisted intent follows the outcome, and the on-screen
+        reader is refreshed so a fresh reading shows without waiting for
+        its next scheduled read."""
+        outcome, reason = "passed", ""
+        try:
+            if enabled:
+                ok, code, payload = sdcard_health_check(method)
+                if not ok:
+                    outcome = {3: "unsupported", 4: "hung", 2: "tool_missing"}.get(code, "check_failed")
+                    reason = str(payload.get("reason") or payload.get("output") or "")[:200]
+                else:
+                    ok, code, payload = sdcard_health_enable(method)
+                    if not ok:
+                        outcome, reason = "enable_failed", str(payload.get("output") or "")[:200]
+            else:
+                ok, code, payload = sdcard_health_disable()
+                if not ok:
+                    outcome, reason = "disable_failed", str(payload.get("output") or "")[:200]
+            if outcome == "passed":
+                self._persist_sd_health_intent(enabled)
+        except Exception as e:
+            outcome, reason = "check_failed", str(e)[:200]
+        finally:
+            with self._sdmon_lock:
+                self._sdmon_probe = {
+                    "running": False, "outcome": outcome, "reason": reason,
+                    "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            try:
+                import dial_sdhealth
+                dial_sdhealth.refresh_now()
+            except Exception:
+                pass
+
+    def _persist_sd_health_intent(self, enabled: bool) -> None:
+        from dial_config import save_config
+        with self._cfg_lock:
+            cfg = self._cfg
+        if cfg.sd_health_monitoring == enabled:
+            return
+        new_cfg = copy.copy(cfg)
+        new_cfg.sd_health_monitoring = enabled
+        try:
+            save_config(new_cfg)
+        except Exception as e:
+            logging.warning("sd health: save_config failed: %s", e)
+            return
+        self.update_cfg(new_cfg)
 
     def get_runtime_status(self) -> dict:
         """Return a fresh snapshot of runtime state without exposing secrets.
@@ -636,6 +733,21 @@ class DialHTTPServer:
                     else:
                         self._send_bytes(200, 'image/png', frame_png)
 
+                elif self.path == '/sdcard-health':
+                    with dial_server._cfg_lock:
+                        cfg = dial_server._cfg
+                    try:
+                        state = sdcard_health_state()
+                    except Exception as e:
+                        logging.debug("sd health: state read raised: %s", e)
+                        state = {}
+                    self._send_json(200, {
+                        'ok': True,
+                        'state': state,
+                        'requested': cfg.sd_health_monitoring,
+                        'probe': dial_server.sdmon_probe_snapshot(),
+                    })
+
                 else:
                     self.send_error(404)
 
@@ -646,6 +758,8 @@ class DialHTTPServer:
                     self._handle_update()
                 elif self.path == '/screen/settings':
                     self._handle_screen_settings()
+                elif self.path == '/sdcard-health':
+                    self._handle_sdcard_health()
                 elif self.path == '/recovery/arm':
                     self._handle_recovery_arm()
                 elif self.path == '/recovery/disarm':
@@ -1059,6 +1173,64 @@ class DialHTTPServer:
                 self._send_json(200, response)
                 if restarting:
                     dial_server.fire_touch_restart()
+
+            def _handle_sdcard_health(self) -> None:
+                body = self._read_body()
+                if body is None:
+                    return
+                try:
+                    obj = json.loads(body)
+                except (ValueError, TypeError):
+                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
+                    return
+                if not isinstance(obj, dict):
+                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
+                    return
+
+                ip = self.client_address[0]
+                with dial_server._cfg_lock:
+                    cfg = dial_server._cfg
+
+                # PIN auth: same rule as POST /screen/settings.
+                if cfg.pin:
+                    blocked, wait_secs = _pin_check_rate_limit(ip)
+                    if blocked:
+                        self._send_429(wait_secs)
+                        return
+                    current_pin = obj.get('current_pin', '')
+                    if not isinstance(current_pin, str) or current_pin != cfg.pin:
+                        _pin_record_failure(ip)
+                        blocked, wait_secs = _pin_check_rate_limit(ip)
+                        if blocked:
+                            self._send_429(wait_secs)
+                        else:
+                            self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
+                        return
+                    _pin_clear_attempts(ip)
+
+                enabled = obj.get('enabled')
+                if not isinstance(enabled, bool):
+                    self._send_json(400, {'ok': False, 'error': 'invalid_enabled'})
+                    return
+                method = obj.get('method', 'auto')
+                if not isinstance(method, str) or method not in SDCARD_HEALTH_METHODS:
+                    self._send_json(400, {'ok': False, 'error': 'invalid_method'})
+                    return
+
+                if enabled:
+                    try:
+                        tool_present = bool(sdcard_health_state().get('tool_present'))
+                    except Exception:
+                        tool_present = False
+                    if not tool_present:
+                        self._send_json(200, {'ok': False, 'error': 'tool_missing'})
+                        return
+
+                if not dial_server.start_sdmon_change(enabled, method):
+                    self._send_json(200, {'ok': False, 'error': 'probe_running'})
+                    return
+                logging.info("sd health: %s requested (method %s)", "enable" if enabled else "disable", method)
+                self._send_json(200, {'ok': True, 'probe': dial_server.sdmon_probe_snapshot()})
 
             def _handle_update_check(self) -> None:
                 try:

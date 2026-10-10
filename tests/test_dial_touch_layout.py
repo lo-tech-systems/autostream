@@ -42,6 +42,7 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
+    GEOMETRY_SDHEALTH,
     HALO_MAX_PX,
     LARGE_MIN_SHORT_SIDE_PX,
     RICH_MIN_SHORT_SIDE_PX,
@@ -72,6 +73,7 @@ from dial_touch_layout import (  # noqa: E402
     nowifi_layout_for,
     output_layout_for,
     repeat_layout_for,
+    sdhealth_layout_for,
     repeat_zone_at,
     scale_px,
     zone_at,
@@ -945,6 +947,47 @@ class TestNoWifiLayout:
         l = nowifi_layout_for(160, 128)
         cx, cy = (l.message[0] + l.message[2]) // 2, (l.message[1] + l.message[3]) // 2
         assert hit_test(GEOMETRY_NOWIFI, cx, cy, 160, 128) is None
+
+
+class TestSdHealthLayout:
+    """sdhealth_layout_for(): the No-WiFi card's own rectangle and message
+    row, with the bottom row merged into one Dismiss cell."""
+
+    def test_base_matches_nowifi_card_and_message(self):
+        n = nowifi_layout_for(160, 128)
+        s = sdhealth_layout_for(160, 128)
+        assert s.card == n.card
+        assert s.message == n.message
+        assert s.divider_y == n.divider_y
+
+    def test_base_dismiss_spans_both_nowifi_cells(self):
+        n = nowifi_layout_for(160, 128)
+        s = sdhealth_layout_for(160, 128)
+        assert s.dismiss == (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
+
+    def test_compact_equals_the_two_by_two_with_bottom_row_merged(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            n = nowifi_layout_for(metrics.width, metrics.height, metrics=metrics)
+            s = sdhealth_layout_for(metrics.width, metrics.height, metrics=metrics)
+            assert s.card == n.card == (0, 0, metrics.width, metrics.height)
+            assert s.message == n.message
+            assert s.dismiss == (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
+
+    def test_sdhealth_table_is_one_dismiss_cell(self):
+        entries = zone_rects_for(GEOMETRY_SDHEALTH, 160, 128)
+        s = sdhealth_layout_for(160, 128)
+        assert entries == (ZoneRect(TouchZone.SDHEALTH_DISMISS, s.dismiss),)
+
+    def test_message_row_is_dead(self):
+        s = sdhealth_layout_for(160, 128)
+        cx, cy = (s.message[0] + s.message[2]) // 2, (s.message[1] + s.message[3]) // 2
+        assert hit_test(GEOMETRY_SDHEALTH, cx, cy, 160, 128) is None
+
+    def test_dismiss_cell_hits(self):
+        s = sdhealth_layout_for(160, 128)
+        cx, cy = (s.dismiss[0] + s.dismiss[2]) // 2, (s.dismiss[1] + s.dismiss[3]) // 2
+        entry = hit_test(GEOMETRY_SDHEALTH, cx, cy, 160, 128)
+        assert entry is not None and entry.zone == TouchZone.SDHEALTH_DISMISS
 
 
 # ---------------------------------------------------------------------------

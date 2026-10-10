@@ -29,6 +29,9 @@ Every dial discovered on the network, authorized or not, gets its own card:
 - **UUID**: a unique identity code so you can tell two dials apart, even
   before either has a name. It stays the same across reboots and firmware
   updates.
+- **SD card health monitoring**, on dials whose firmware supports it: the
+  same enable/disable control as the System page, with the dial's last
+  reading.
 
 A brand new, unauthorized dial's card shows only its status and the **Allow
 dial to control this appliance** toggle. Its settings are hidden until it is

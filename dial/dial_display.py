@@ -67,6 +67,7 @@ from dial_display_compositor import (
     OutputViewState,
     OverlayState,
     RepeatViewState,
+    SdHealthView as SdHealthFrameView,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
@@ -97,6 +98,7 @@ from dial_network import (
 )
 from dial_network import request_reboot as _request_reboot
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
+from dial_sdhealth import SdHealthView, is_low as _sd_is_low
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
@@ -253,6 +255,13 @@ NOWIFI_PROMPT_STREAK = 3
 # fall back to main after this long so the dial is never stuck on it; the
 # poller then raises the No-WiFi page again if the link is still down.
 RESTARTING_TIMEOUT_SECONDS = 90.0
+
+# The SD card warning closes on its own after this long with no touch: it
+# can sit over a playing screen, so it must not block it indefinitely if
+# nobody is there to tap Dismiss. Opening it at all counts as shown for
+# the incident (see _open_sdhealth_locked), so it does not come back until
+# the reading recovers or the dial restarts.
+SDHEALTH_TIMEOUT_SECONDS = 60.0
 
 # A plain dark base pushed for the moment between the display switching to
 # show a different appliance and that appliance's own artwork/logo actually
@@ -577,7 +586,7 @@ class InfoRow:
 
 @dataclass(frozen=True)
 class InfoState:
-    """Immutable snapshot of the info page's rows and paging. rows: all six
+    """Immutable snapshot of the info page's rows and paging. rows: all seven
     fields, ALL pages (the same "every row, sliced at paint time" shape
     PickerState/SelectorState use); page: the current page; opened_at: what
     SELECTOR_TIMEOUT_SECONDS counts down from; gather_seq: which gather
@@ -590,12 +599,12 @@ class InfoState:
     gather_seq: int
 
 
-# The six info fields, shown at once and filled in within about a second of
-# opening — see DialDisplay.open_info()/_gather_info().
+# The seven info fields, shown at once and filled in within about a second
+# of opening — see DialDisplay.open_info()/_gather_info().
 INFO_TITLE = "Info"
 INFO_PLACEHOLDER_ROWS: tuple[InfoRow, ...] = tuple(
     InfoRow(label=label, value="-")
-    for label in ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free")
+    for label in ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free", "SD health")
 )
 
 
@@ -675,6 +684,14 @@ class RestartingState:
     """The "Restarting..." screen shown from a Restart tap until the reboot
     takes the panel down — or until RESTARTING_TIMEOUT_SECONDS, whichever
     comes first."""
+    opened_at: float
+
+
+@dataclass(frozen=True)
+class SdHealthState:
+    """The SD card warning: the percent it opened with (repainted from
+    self._sd_health at every paint, so a later reading shows) and the
+    clock every screen state carries."""
     opened_at: float
 
 
@@ -1079,6 +1096,7 @@ class DialDisplay:
         # "main": the now-playing screen. "selector": the appliance list.
         # "repeat": the repeat screen. "picker": the replay picker.
         # "nowifi": the No-WiFi page. "restarting": the reboot screen.
+        # "sdhealth": the SD card warning.
         self._screen = "main"
         # Last-built rows, refreshed every poll tick regardless of whether
         # the selector is actually open (_refresh_selector_rows) so opening
@@ -1215,6 +1233,21 @@ class DialDisplay:
         # _close_secondary_locked via the policy table).
         self._nowifi: "NoWifiState | None" = None
         self._restarting: "RestartingState | None" = None
+        # ---- SD card health (the warning page and the info row) ---------
+        # The latest reader view: written by the network poller's thread in
+        # on_sd_health_view() (plain reference assignment, no lock), read
+        # at paint time under self._lock.
+        self._sd_health: "SdHealthView | None" = None
+        # The incident latch: True from the first reading below the low
+        # threshold until one strictly above the recover threshold, or
+        # until monitoring is off. Poller thread only.
+        self._sd_low = False
+        # Set when the warning opens (repaint thread, under the lock) and
+        # cleared when the incident ends (poller thread): while True the
+        # poller never re-requests the page for this incident. Plain bool,
+        # both writers are single assignments.
+        self._sd_shown = False
+        self._sdhealth: "SdHealthState | None" = None
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -3172,6 +3205,17 @@ class DialDisplay:
         self._screen = "restarting"
         return True
 
+    def _open_sdhealth_locked(self) -> bool:
+        """The SD card warning's opener: refuse while restarting or while
+        the No-WiFi page is up (a lost link is the more urgent alarm);
+        otherwise open with a fresh clock and mark the incident as shown."""
+        if self._screen in ("restarting", "nowifi"):
+            return False
+        self._sdhealth = SdHealthState(opened_at=time.monotonic())
+        self._sd_shown = True
+        self._screen = "sdhealth"
+        return True
+
     def _apply_screen_requests_locked(self) -> None:
         """Fold pending open_selector()/close_list()/list_page()/
         toggle_repeat_screen()/open_picker() touch-thread requests into
@@ -3531,7 +3575,7 @@ class DialDisplay:
 
     def _build_info_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
         """Build the compositor's ListState for the info page's CURRENT
-        page — six read-only rows, ALL pages held in self._info.rows the
+        page — seven read-only rows, ALL pages held in self._info.rows the
         same way SelectorState/PickerState hold theirs. title/
         plain_background mark this as the read-only variant: the compact
         tier's own title band reads "Info" instead of "Replay", and the
@@ -3659,6 +3703,19 @@ class DialDisplay:
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_restarting(
             metrics.width, metrics.height,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+
+    def _display_sdhealth_locked(self) -> None:
+        """Compose and push the SD card warning over the current base
+        image, the No-WiFi page's own dressing. Caller holds self._lock."""
+        pressed = self._pressed[0] if self._pressed is not None else None
+        view = self._sd_health
+        percent = view.percent if view is not None else None
+        metrics = self._metrics_locked()
+        base = self._current_base_image
+        self._push_frame_locked(lambda: self._compositor.compose_sdhealth(
+            base, metrics.width, metrics.height, SdHealthFrameView(percent=percent, pressed=pressed),
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
@@ -4055,6 +4112,51 @@ class DialDisplay:
         deadline() has already sized onto the boundary."""
         if self._wifi_flashing():
             self._overlay_signal.set()
+
+    # ---- SD card health: the warning page --------------------------------
+
+    def on_sd_health_view(self, view: "SdHealthView") -> None:
+        """Callback for the SD health reader (dial_sdhealth.py). Runs on
+        the network poller's thread; takes NO lock of this class's own,
+        the on_network_view() discipline: plain assignments and a screen
+        request the repaint thread folds in.
+
+        A reading that is low (dial_sdhealth.is_low, with hysteresis)
+        starts or continues an incident; the page is requested once per
+        incident, and only while the main screen is showing with nothing
+        else requested (never over a list, the info page, the No-WiFi page
+        or the restart screen). A reading that is not low ends the
+        incident: the latch and the shown flag reset, and an open warning
+        closes on its own. Never raises."""
+        try:
+            self._sd_health = view
+            low = _sd_is_low(view, self._sd_low)
+            if low:
+                self._sd_low = True
+                if (
+                    not self._sd_shown
+                    and self._screen == "main"
+                    and self._screen_request is None
+                ):
+                    self._screen_request = "sdhealth"
+            else:
+                self._sd_low = False
+                self._sd_shown = False
+                if self._screen == "sdhealth":
+                    self._screen_request = "main"
+                elif self._screen_request == "sdhealth":
+                    self._screen_request = None
+            self._overlay_signal.set()
+        except Exception:
+            logging.debug("dial display: on_sd_health_view raised", exc_info=True)
+
+    def sdhealth_dismiss_tap(self) -> None:
+        """Touch-thread entry (SDHEALTH_DISMISS): close the page. The
+        opener already marked the incident as shown, so it stays closed
+        until the reading recovers or the dial restarts; the info page
+        keeps showing the value meanwhile."""
+        self._screen_request = _policy("sdhealth").back_to
+        self._overlay_signal.set()
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
@@ -5076,6 +5178,17 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         open=DialDisplay._open_restarting_locked, paint=DialDisplay._display_restarting_locked, paged=False,
         inactivity_timeout_s=RESTARTING_TIMEOUT_SECONDS, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    # The SD card warning: opened by the health reader once per incident
+    # (a reading below the low threshold, with hysteresis up to the recover
+    # threshold); closed by Dismiss, by its own timeout, or by a recovered
+    # reading. defers_sleep=False like the No-WiFi page.
+    "sdhealth": ScreenPolicy(
+        name="sdhealth", state_attr="_sdhealth", surface=("sdhealth", False, False, False),
+        open=DialDisplay._open_sdhealth_locked, paint=DialDisplay._display_sdhealth_locked, paged=False,
+        inactivity_timeout_s=SDHEALTH_TIMEOUT_SECONDS, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=False,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
 }

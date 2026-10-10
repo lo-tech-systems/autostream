@@ -57,6 +57,20 @@ class FakeDialServer:
         self._announce_calls: list = []
         self._auth_push_limiter = dhs._PushLimiter()
         self._get_rostered_ips = None
+        self._sdmon_lock = threading.Lock()
+        self._sdmon_probe: dict = {"running": False, "outcome": None, "reason": "", "finished_at": None}
+
+    def sdmon_probe_snapshot(self) -> dict:
+        return dhs.DialHTTPServer.sdmon_probe_snapshot(self)
+
+    def start_sdmon_change(self, enabled: bool, method: str) -> bool:
+        return dhs.DialHTTPServer.start_sdmon_change(self, enabled, method)
+
+    def _sdmon_change_thread(self, enabled: bool, method: str) -> None:
+        dhs.DialHTTPServer._sdmon_change_thread(self, enabled, method)
+
+    def _persist_sd_health_intent(self, enabled: bool) -> None:
+        dhs.DialHTTPServer._persist_sd_health_intent(self, enabled)
 
     def _rostered_ips(self) -> dict:
         return dhs.DialHTTPServer._rostered_ips(self)
@@ -2670,3 +2684,191 @@ class TestAuthChangedRoute:
         h.send_error = lambda code, *_: result.update(status=code)
         h.do_POST()
         assert result["status"] == 413
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /sdcard-health — the dial's SD card health monitoring endpoint
+# ---------------------------------------------------------------------------
+
+class TestSdCardHealthGet:
+    def test_returns_state_requested_and_probe(self):
+        cfg = DialConfig(uuid="x")
+        cfg.sd_health_monitoring = True
+        server = FakeDialServer(cfg)
+        state = {"tool_present": True, "timer_enabled": True, "check": "passed", "health_percent": 87}
+        with patch.object(dhs, "sdcard_health_state", return_value=state):
+            r = _call_handler("/sdcard-health", method="GET", cfg=cfg, setup_server=server)
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert r["data"]["state"] == state
+        assert r["data"]["requested"] is True
+        assert r["data"]["probe"] == {"running": False, "outcome": None, "reason": "", "finished_at": None}
+
+    def test_state_read_exception_yields_empty_state(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_state", side_effect=RuntimeError("boom")):
+            r = _call_handler("/sdcard-health", method="GET", cfg=cfg, setup_server=server)
+        assert r["status"] == 200
+        assert r["data"]["state"] == {}
+
+
+class TestSdCardHealthPost:
+    def test_non_bool_enabled_is_400(self):
+        r = _call_handler("/sdcard-health", body={"enabled": "yes"})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_enabled"
+
+    def test_unknown_method_is_400(self):
+        r = _call_handler("/sdcard-health", body={"enabled": True, "method": "not-a-method"})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_method"
+
+    def test_wrong_pin_is_403(self):
+        cfg = DialConfig(uuid="x", pin="1234")
+        server = FakeDialServer(cfg)
+        r = _call_handler(
+            "/sdcard-health", body={"enabled": True, "current_pin": "0000"},
+            cfg=cfg, setup_server=server,
+        )
+        assert r["status"] == 403
+        assert r["data"]["error"] == "wrong_pin"
+
+    def test_repeated_wrong_pin_is_429(self):
+        cfg = DialConfig(uuid="x", pin="1234")
+        server = FakeDialServer(cfg)
+        r = {"status": None}
+        for _ in range(dhs._PIN_MAX_ATTEMPTS + 1):
+            r = _call_handler(
+                "/sdcard-health", body={"enabled": True, "current_pin": "0000"},
+                cfg=cfg, setup_server=server,
+            )
+        assert r["status"] == 429
+
+    def test_tool_missing_when_state_reports_absent(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_state", return_value={"tool_present": False}):
+            r = _call_handler("/sdcard-health", body={"enabled": True}, cfg=cfg, setup_server=server)
+        assert r["status"] == 200
+        assert r["data"] == {"ok": False, "error": "tool_missing"}
+
+    def test_probe_running_refuses_second_request(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        server._sdmon_probe = {"running": True, "outcome": None, "reason": "", "finished_at": None}
+        with patch.object(dhs, "sdcard_health_state", return_value={"tool_present": True}):
+            r = _call_handler("/sdcard-health", body={"enabled": True}, cfg=cfg, setup_server=server)
+        assert r["status"] == 200
+        assert r["data"] == {"ok": False, "error": "probe_running"}
+
+    def test_enable_starts_probe_and_returns_ok(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_state", return_value={"tool_present": True}), \
+             patch.object(server, "start_sdmon_change", return_value=True) as start_mock:
+            r = _call_handler("/sdcard-health", body={"enabled": True}, cfg=cfg, setup_server=server)
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        start_mock.assert_called_once_with(True, "auto")
+
+    def test_disable_does_not_require_tool_present_check(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(server, "start_sdmon_change", return_value=True) as start_mock:
+            r = _call_handler("/sdcard-health", body={"enabled": False}, cfg=cfg, setup_server=server)
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        start_mock.assert_called_once_with(False, "auto")
+
+
+# ---------------------------------------------------------------------------
+# _sdmon_change_thread — outcome mapping and enable/disable sequencing
+# ---------------------------------------------------------------------------
+
+class TestSdmonChangeThread:
+    def test_enable_check_pass_then_enable_pass_persists_true(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_check", return_value=(True, 0, {})) as check_mock, \
+             patch.object(dhs, "sdcard_health_enable", return_value=(True, 0, {})) as enable_mock, \
+             patch.object(server, "_persist_sd_health_intent") as persist_mock, \
+             patch("dial_config.save_config"):
+            server._sdmon_change_thread(True, "auto")
+        check_mock.assert_called_once_with("auto")
+        enable_mock.assert_called_once_with("auto")
+        persist_mock.assert_called_once_with(True)
+        assert server._sdmon_probe["outcome"] == "passed"
+        assert server._sdmon_probe["running"] is False
+
+    @pytest.mark.parametrize("code,expected", [
+        (3, "unsupported"), (4, "hung"), (2, "tool_missing"), (99, "check_failed"),
+    ])
+    def test_enable_check_fail_maps_wrapper_codes(self, code, expected):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_check", return_value=(False, code, {"reason": "nope"})), \
+             patch.object(dhs, "sdcard_health_enable") as enable_mock, \
+             patch.object(server, "_persist_sd_health_intent") as persist_mock:
+            server._sdmon_change_thread(True, "auto")
+        enable_mock.assert_not_called()
+        persist_mock.assert_not_called()
+        assert server._sdmon_probe["outcome"] == expected
+        assert server._sdmon_probe["reason"] == "nope"
+
+    def test_enable_failed_after_check_pass(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_check", return_value=(True, 0, {})), \
+             patch.object(dhs, "sdcard_health_enable", return_value=(False, 1, {"output": "no"})), \
+             patch.object(server, "_persist_sd_health_intent") as persist_mock:
+            server._sdmon_change_thread(True, "auto")
+        persist_mock.assert_not_called()
+        assert server._sdmon_probe["outcome"] == "enable_failed"
+
+    def test_disable_pass_persists_false(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_disable", return_value=(True, 0, {})), \
+             patch.object(server, "_persist_sd_health_intent") as persist_mock:
+            server._sdmon_change_thread(False, "auto")
+        persist_mock.assert_called_once_with(False)
+        assert server._sdmon_probe["outcome"] == "passed"
+
+    def test_disable_failed_does_not_persist(self):
+        cfg = DialConfig(uuid="x")
+        server = FakeDialServer(cfg)
+        with patch.object(dhs, "sdcard_health_disable", return_value=(False, 1, {"output": "no"})), \
+             patch.object(server, "_persist_sd_health_intent") as persist_mock:
+            server._sdmon_change_thread(False, "auto")
+        persist_mock.assert_not_called()
+        assert server._sdmon_probe["outcome"] == "disable_failed"
+
+
+class TestPersistSdHealthIntent:
+    def test_saves_and_updates_cfg_when_changed(self):
+        cfg = DialConfig(uuid="x")
+        cfg.sd_health_monitoring = False
+        server = FakeDialServer(cfg)
+        with patch("dial_config.save_config") as save_mock:
+            server._persist_sd_health_intent(True)
+        save_mock.assert_called_once()
+        saved_cfg = save_mock.call_args[0][0]
+        assert saved_cfg.sd_health_monitoring is True
+        assert server._cfg.sd_health_monitoring is True
+
+    def test_noop_when_unchanged(self):
+        cfg = DialConfig(uuid="x")
+        cfg.sd_health_monitoring = True
+        server = FakeDialServer(cfg)
+        with patch("dial_config.save_config") as save_mock:
+            server._persist_sd_health_intent(True)
+        save_mock.assert_not_called()
+
+    def test_save_failure_does_not_update_cfg(self):
+        cfg = DialConfig(uuid="x")
+        cfg.sd_health_monitoring = False
+        server = FakeDialServer(cfg)
+        with patch("dial_config.save_config", side_effect=OSError("disk full")):
+            server._persist_sd_health_intent(True)
+        assert server._cfg.sd_health_monitoring is False

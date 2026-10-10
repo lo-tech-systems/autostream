@@ -287,8 +287,8 @@ control on this page.*
 
 Reachable from the idle screen's "i" badge on every tier. Shows a handful
 of read-only diagnostic fields about the dial itself: its configured name,
-firmware version, IP address, Wi-Fi network and signal, and free disk
-space.
+firmware version, IP address, Wi-Fi network and signal, free disk space,
+and its SD card's remaining health, where monitoring is turned on.
 
 ![Info list showing field names and values side by side, e.g. Dial name / Firmware / IPv4](images/info-list-rich.png)
 
@@ -338,6 +338,20 @@ for the reboot in the background:
 
 *Shown from the moment you tap Restart until the reboot actually takes the
 screen down. Identical on every tier.*
+
+## SD card warning
+
+Shown when SD card health monitoring is turned on (from the appliance's
+Setup page) and the card's remaining endurance drops low. Like the No-WiFi
+page, it can appear over now-playing as well as the idle screen, and looks
+the same way on both tiers: a title, a body line with the remaining
+percentage, and one **Dismiss** button spanning the width of the card.
+
+**Dismiss** closes the warning without doing anything else. It stays closed
+until the reading recovers or the dial restarts; if you don't tap it at
+all, the page closes on its own after a minute so it never sits over
+now-playing indefinitely. Either way, the current reading stays visible on
+the [info page](#info-page).
 
 ## Gaps I couldn't confirm from the code
 

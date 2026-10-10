@@ -47,6 +47,7 @@ from dial_display_compositor import (  # noqa: E402
     BODY_NOWIFI,
     BODY_REPEAT_LINE,
     BODY_REPEAT_ROW,
+    BODY_SDHEALTH,
     BODY_TOGGLE_ROW,
     EQ_LIMIT_DB,
     Body,
@@ -78,6 +79,7 @@ from dial_display_compositor import (  # noqa: E402
     OverlayState,
     RepeatViewState,
     RESTARTING_TEXT,
+    SdHealthView,
     STARTING_TEXT,
     WIFI_GREY,
     WIFI_OFF,
@@ -149,6 +151,7 @@ from dial_touch_layout import (  # noqa: E402
     metrics_for,
     nowifi_layout_for,
     repeat_layout_for,
+    sdhealth_layout_for,
     zone_rects_for,
     zones_for,
 )
@@ -439,6 +442,15 @@ class TestStatelessness:
         compositor.compose_starting(160, 128, rotate=False, bgr=False)
         compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=2, wifi_style=WIFI_RED)
         compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF)
+        after = dict(vars(compositor))
+        assert before == after == {}
+
+    def test_compose_sdhealth_holds_no_attributes_that_change_between_calls(self, compositor):
+        before = dict(vars(compositor))
+        base = Image.new("RGB", (160, 128), (32, 32, 32))
+        compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=12), rotate=False, bgr=False)
+        compositor.compose_sdhealth(None, 240, 240, SdHealthView(pressed=TouchZone.SDHEALTH_DISMISS),
+                                    rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973))
         after = dict(vars(compositor))
         assert before == after == {}
 
@@ -2115,6 +2127,114 @@ class TestComposeNoWifi:
 
 
 # ---------------------------------------------------------------------------
+# compose_sdhealth — the SD card warning: the No-WiFi page's own dressing,
+# a fixed title/body over one Dismiss cell, no vertical divider.
+# ---------------------------------------------------------------------------
+
+class TestComposeSdHealth:
+    """compose_sdhealth(): dimmed base, card off compact, one Dismiss cell,
+    press wash, no vertical divider (mirrors TestComposeNoWifi)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _base(self, size):
+        return Image.new("RGB", size, (200, 200, 200))
+
+    def test_backdrop_outside_the_card_is_dimmed_base(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
+                                            rotate=False, bgr=False, metrics=metrics)
+        dimmed = round(200 * OVERLAY_DIM_FACTOR)
+        for xy in ((2, 2), (317, 2), (2, 237), (20, 120)):
+            assert frame.getpixel(xy) == (dimmed, dimmed, dimmed)
+
+    def test_card_fill_present_off_compact(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
+                                            rotate=False, bgr=False, metrics=metrics)
+        card = sdhealth_layout_for(320, 240, metrics=metrics).card
+        assert frame.getpixel((card[0] + 6, card[1] + 6)) == _CARD_FILL_RGB
+
+    def test_compact_is_full_screen_no_card(self, compositor):
+        metrics = metrics_for(240, 240, 0.0973)
+        frame = compositor.compose_sdhealth(self._base((240, 240)), 240, 240, SdHealthView(percent=15),
+                                            rotate=False, bgr=False, metrics=metrics)
+        dimmed = round(200 * OVERLAY_DIM_FACTOR)
+        assert frame.getpixel((2, 2)) == (dimmed, dimmed, dimmed)   # no card fill on compact
+
+    def test_no_vertical_divider(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
+                                            rotate=False, bgr=False, metrics=metrics)
+        l = sdhealth_layout_for(320, 240, metrics=metrics)
+        # The horizontal divider spans the card; no vertical line exists at
+        # any x through the dismiss row (unlike No-WiFi's two-cell split).
+        assert frame.getpixel((l.card[0] + 1, l.divider_y)) == (255, 255, 255)
+        mid_x = (l.dismiss[0] + l.dismiss[2]) // 2
+        assert frame.getpixel((mid_x, l.dismiss[1] + 2)) != (255, 255, 255)
+
+    def test_pressed_dismiss_washes_its_cell(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        plain = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
+                                            rotate=False, bgr=False, metrics=metrics)
+        pressed = compositor.compose_sdhealth(
+            self._base((320, 240)), 320, 240,
+            SdHealthView(percent=15, pressed=TouchZone.SDHEALTH_DISMISS),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        l = sdhealth_layout_for(320, 240, metrics=metrics)
+        p_in = pressed.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3))
+        assert p_in[0] > _CARD_FILL_RGB[0]
+        assert plain.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3)) == _CARD_FILL_RGB
+
+    def test_foreign_pressed_zone_washes_nothing(self, compositor):
+        a = compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=15),
+                                        rotate=False, bgr=False)
+        b = compositor.compose_sdhealth(self._base((160, 128)), 160, 128,
+                                        SdHealthView(percent=15, pressed=TouchZone.MUTE),
+                                        rotate=False, bgr=False)
+        assert list(a.getdata()) == list(b.getdata())
+
+    def test_none_base_falls_back_to_chassis(self, compositor):
+        frame = compositor.compose_sdhealth(None, 160, 128, SdHealthView(percent=15), rotate=False, bgr=False)
+        dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        assert frame.getpixel((1, 1)) == dimmed
+
+    def test_rotate_and_bgr_applied_last(self, compositor):
+        base = self._base((160, 128))
+        plain = compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=15), rotate=False, bgr=False)
+        rotated = compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=15), rotate=True, bgr=False)
+        assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
+        swapped = compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=15), rotate=False, bgr=True)
+        assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
+
+    def test_percent_none_uses_the_no_percent_line(self, compositor):
+        with patch("dial_display_compositor._draw_label_centered") as mock_draw:
+            compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=None),
+                                        rotate=False, bgr=False)
+        texts = [call.args[2] for call in mock_draw.call_args_list]
+        assert "Replace it soon" in texts
+        assert not any("% left" in t for t in texts)
+
+    def test_percent_fills_the_body_line(self, compositor):
+        with patch("dial_display_compositor._draw_label_centered") as mock_draw:
+            compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=12),
+                                        rotate=False, bgr=False)
+        texts = [call.args[2] for call in mock_draw.call_args_list]
+        assert "12% left, replace soon" in texts
+
+    def test_never_raises_without_a_font(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=15),
+                                                rotate=False, bgr=False)
+        assert frame.size == (160, 128)
+
+
+# ---------------------------------------------------------------------------
 # compose_restarting — the "Restarting..." screen: flat chassis, centred text.
 # ---------------------------------------------------------------------------
 
@@ -2617,6 +2737,19 @@ def _render_cache_corpus(width, height, metrics=None):
         "nowifi_pressed",
         lambda c: c.compose_nowifi(
             logo, width, height, NoWifiView(pressed=TouchZone.NOWIFI_DISMISS),
+            rotate=False, bgr=False, metrics=metrics,
+        ),
+    ))
+    cases.append((
+        "sdhealth",
+        lambda c: c.compose_sdhealth(
+            logo, width, height, SdHealthView(percent=15), rotate=False, bgr=False, metrics=metrics,
+        ),
+    ))
+    cases.append((
+        "sdhealth_pressed",
+        lambda c: c.compose_sdhealth(
+            logo, width, height, SdHealthView(percent=15, pressed=TouchZone.SDHEALTH_DISMISS),
             rotate=False, bgr=False, metrics=metrics,
         ),
     ))
