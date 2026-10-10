@@ -38,7 +38,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +47,7 @@ if _HERE not in sys.path:
 
 from autostream_update_support import (
     FLOCK_BIN,
-    _find_systemd_run, _read_env_file, _run,
+    _find_systemd_run, _is_pre_boot, _read_env_file, _run,
     free_repeat_buffer, stop_owntone_playback,
 )
 
@@ -74,26 +74,6 @@ def _log(msg: str) -> None:
 
 
 # ---- State helpers -----------------------------------------------------------
-
-def _is_pre_boot(timestamp_str: str) -> bool:
-    """Return True if timestamp_str represents a time before the current boot."""
-    try:
-        ts = datetime.fromisoformat(timestamp_str)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return True  # unparseable timestamp → treat as pre-boot
-
-    try:
-        uptime_s = float(Path("/proc/uptime").read_text().split()[0])
-        boot_time = datetime.now(tz=timezone.utc) - timedelta(seconds=uptime_s)
-        return ts < boot_time
-    except Exception:
-        # /proc/uptime unavailable; fall back to age-based check.
-        # 90 min matches STALE_MINUTES in autostream_admin — covers the worst-case
-        # update duration (apt-get upgrade + OwnTone mini build on SD card).
-        return (datetime.now(tz=timezone.utc) - ts) > timedelta(minutes=90)
-
 
 def _find_installer() -> Path | None:
     """Return the staged autostream_install.sh if present and executable."""

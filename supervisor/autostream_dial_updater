@@ -16,9 +16,27 @@ COMMANDS
            Outputs JSON: {ok, staged_tag} on success, {ok:false, error} on failure.
            The installer owns success/failure status reporting via update-result.env.
 
-  recover  Safely recover an interrupted update (STATUS=in_progress left by a
-           power-loss or unexpected exit).  Invoked only by the boot-time
-           autostream_dial_update_recover.service — never from cmd_apply.
+  boot     Early-boot step, run by autostream_dial_update_recover.service
+           under the system python before the dial services start:
+             - a staged update (update-swap.env PHASE=staged) is swapped in:
+               the new code tree and virtualenv replace the live ones, then
+               `verify` is scheduled as a transient unit;
+             - a swap that never reached its verdict (PHASE=swapped,
+               verifying or rollback) is rolled back;
+             - otherwise an interrupted run (STATUS=in_progress left by a
+               power loss or unexpected exit) is retried from the staged
+               installer, up to MAX_ATTEMPTS in all, then marked failed.
+           Never invoked from cmd_apply.
+
+  recover  Alias of boot.
+
+  verify   Health check of a freshly swapped release (the dial service active
+           with no restarts, answering with the expected version).  Passing
+           records success and cleans up; failing rolls back.  Scheduled by
+           boot.
+
+  rollback Restore the previous code tree, virtualenv and owned files, record
+           the failure, and reboot.  Never retried.
 
 UPDATE STATUS SCHEMA
 --------------------
@@ -33,7 +51,7 @@ update-status and the offline updating.html page:
 and these optional keys, preserved across writes:
 
   PHASE           download | prepare | packages | python | files | configure |
-                  done | failed
+                  staged | reboot | verify | done | failed | rolled_back
   TAG             release tag being installed
   PREVIOUS_TAG    release tag that was installed before the update
   ATTEMPT         attempt number, 1 for a first run
@@ -48,7 +66,25 @@ UPDATING FLAG
 /tmp/autostream-dial-updating is created immediately before writing
 STATUS=in_progress and removed on every exit (success, failure, or boot
 recovery). nginx uses this flag to redirect requests to /offline/updating
-while an update is in progress.
+while an update is in progress.  The flag does not survive a reboot, so the
+boot step creates it again while a swapped release is being verified.
+
+SWAP HAND-OFF
+-------------
+The installer stages a release without touching the live code tree
+(/opt/autostream/.next with a MANIFEST of MODE<TAB>OWNER<TAB>PATH lines, a
+versioned venv.<tag> directory, and a backup of every owned file in
+update-prev) and writes update-swap.env.  PHASE in that file is this
+module's own state machine:
+
+  staged     written by the installer; boot performs the swap
+  swapped    the swap is complete; verify has been scheduled
+  verifying  verify is running its health check
+  rollback   a rollback has started and must be completed
+  done       the health check passed; only cleanup remains
+
+Every step is idempotent, so a power cut at any point leaves a state the
+next boot completes or reverts.
 """
 from __future__ import annotations
 
@@ -57,13 +93,15 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import socket
 import sys
 import time
 import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -71,20 +109,25 @@ if _HERE not in sys.path:
 
 from autostream_update_support import (
     FLOCK_BIN,
-    _find_systemd_run, _github_latest_release,
-    _normalise_update_channel, _read_env_file, _version_key,
+    _find_systemd_run, _github_latest_release, _is_pre_boot,
+    _normalise_update_channel, _read_env_file, _run, _semver_re, _version_key,
     is_active_transient_unit, schedule_locked_installer, stage_release,
 )
 
 # ---- Paths / constants -------------------------------------------------------
 
+# Roots the boot step works under.  Each can be redirected (tests use a
+# scratch tree): FS_ROOT prefixes the absolute paths of the owned-file backup,
+# OPT_DIR is the code tree, STATE_DIR holds the result, swap and backup files.
+FS_ROOT        = os.environ.get("AUTOSTREAM_FS_ROOT", "").rstrip("/")
+OPT_DIR        = Path(os.environ.get("AUTOSTREAM_OPT_DIR", FS_ROOT + "/opt/autostream"))
 LOG_PATH       = Path("/var/log/autostream/dial-update.log")
-STATE_DIR      = Path("/var/lib/autostream")
+STATE_DIR      = Path(os.environ.get("AUTOSTREAM_STATE_DIR", FS_ROOT + "/var/lib/autostream"))
 CONFIG_PATH    = Path("/etc/autostream/autostream-dial.json")
 LOCK_PATH      = Path("/run/autostream-dial-update.lock")
 APMODE_FLAG    = Path("/tmp/autostream-dial-apmode")
 UPDATING_FLAG  = Path("/tmp/autostream-dial-updating")
-STAGING_DIR    = Path("/var/lib/autostream/update-staging")
+STAGING_DIR    = STATE_DIR / "update-staging"
 
 # Boot-level attempt budget: the original run plus three retries, mirroring
 # the appliance update retry.
@@ -92,6 +135,27 @@ MAX_ATTEMPTS = 4
 
 # Pause before the single in-run retry of a transient staging failure.
 TRANSIENT_RETRY_DELAY_S = 30
+
+# Health check of a freshly swapped release: how long the dial gets to come up
+# (a Pi Zero cold start to HTTP takes 20-40 s), and the poll interval.
+VERIFY_DEADLINE_S = 120
+VERIFY_POLL_S = 2
+VERIFY_START_DELAY_S = 5
+DIAL_UNIT = "autostream_dial"
+WATCHER_UNIT = "autostream_dial_wifi_watcher"
+STATUS_URL = "http://127.0.0.1:7842/update/status"
+
+# The boot unit runs before the virtualenv is trusted, so the transient verify
+# unit uses the system interpreter too.
+SYSTEM_PYTHON = "/usr/bin/python3"
+REBOOT_BIN = "/sbin/reboot"
+
+# PHASE values of update-swap.env.
+SWAP_STAGED = "staged"
+SWAP_SWAPPED = "swapped"
+SWAP_VERIFYING = "verifying"
+SWAP_ROLLBACK = "rollback"
+SWAP_DONE = "done"
 
 # Result-file keys beyond the four canonical ones, in the order they are
 # written.  A write re-emits whichever of these it is not changing.
@@ -474,36 +538,629 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         os.close(lock_fd)
 
 
-def cmd_recover() -> Dict[str, Any]:
-    """Safe interrupted-update recovery — invoked at boot before dial services start.
+# ---- Boot step: swap, verify, rollback, interrupted-run retry ----------------
 
-    Writes STATUS=failure only after confirming both that no update unit is active
-    AND the lock file is free.  After a clean reboot both conditions are always
-    true (LOCK_PATH and UPDATING_FLAG are in /tmp or /run, cleared on every boot).
-    Also removes any stale UPDATING_FLAG so nginx does not redirect to the updating
-    page after an interrupted update is resolved.  Fail-closed on any check failure.
-    """
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _sync() -> None:
+    """Flush file system buffers so a completed step survives a power cut."""
+    sync = getattr(os, "sync", None)
+    if sync is not None:
+        try:
+            sync()
+        except OSError:
+            pass
+
+
+def _clean_tag(raw: str) -> str:
+    tag = str(raw or "").strip()
+    if tag.startswith("refs/tags/"):
+        tag = tag[len("refs/tags/"):]
+    return tag.lstrip("v")
+
+
+def _subject(tag: str) -> str:
+    return f"Update to {tag}" if tag else "Update"
+
+
+def _kept(previous: str) -> str:
+    return f"{previous} kept" if previous else "previous version kept"
+
+
+def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
+    """Write *content* to *path* through a temporary sibling, then rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     try:
-        env = _read_env_file(STATE_DIR / "update-result.env")
-    except FileNotFoundError:
-        return {"ok": True}
+        tmp.write_text(content, encoding="utf-8")
+        os.chmod(str(tmp), mode)
+        os.replace(str(tmp), str(path))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _swap_file() -> Path:
+    return STATE_DIR / "update-swap.env"
+
+
+def _backup_dir(swap: Dict[str, str]) -> Path:
+    named = str(swap.get("BACKUP_DIR") or "").strip()
+    return Path(named) if named else STATE_DIR / "update-prev"
+
+
+def _read_swap() -> Optional[Dict[str, str]]:
+    """The hand-off file as a dict, or None when there is no swap pending."""
+    path = _swap_file()
+    if not path.exists():
+        return None
+    return _read_env_file(path)
+
+
+def _set_swap_phase(swap: Dict[str, str], phase: str) -> None:
+    """Record *phase* in the hand-off file, keeping every other key."""
+    swap["PHASE"] = phase
+    lines = [f"{key}={' '.join(str(value).splitlines())}" for key, value in swap.items()]
+    _atomic_write(_swap_file(), "\n".join(lines) + "\n")
+
+
+def _remove_quietly(path: Path) -> None:
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(str(path), ignore_errors=True)
+    except OSError as e:
+        _log(f"could not remove {path}: {e}")
+
+
+def _read_manifest_paths(path: Path) -> List[str]:
+    """Relative paths listed by a code manifest (MODE, OWNER, PATH per line).
+
+    An unreadable or absent manifest lists nothing.  A path that is absolute
+    or climbs out of the tree is ignored.
+    """
+    out: List[str] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        rel = parts[2].strip()
+        if not rel or rel.startswith("/") or ".." in Path(rel).parts:
+            continue
+        out.append(rel)
+    return out
+
+
+def _move(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(str(src), str(dst))
+
+
+def _exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+# -- Code tree --
+
+def _swap_code_tree() -> None:
+    """Move the staged code set into place; the displaced files go to .prev.
+
+    Resumable: a file is moved only while its staged copy is still in .next,
+    so a run interrupted at any point continues where it stopped.
+    """
+    next_dir = OPT_DIR / ".next"
+    prev_dir = OPT_DIR / ".prev"
+    live_manifest = OPT_DIR / ".manifest"
+    staged_manifest = next_dir / "MANIFEST"
+    if not staged_manifest.is_file():
+        if (prev_dir / "MANIFEST.prev").is_file():
+            return  # the swap already completed
+        raise RuntimeError("the staged code tree is missing")
+    new_paths = _read_manifest_paths(staged_manifest)
+    old_paths = _read_manifest_paths(live_manifest)
+    new_set = set(new_paths)
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    saved = prev_dir / "MANIFEST.prev"
+    if not saved.exists():
+        # Empty when there was no manifest (the first update of an old install).
+        try:
+            previous_text = live_manifest.read_text(encoding="utf-8")
+        except OSError:
+            previous_text = ""
+        _atomic_write(saved, previous_text)
+    for rel in dict.fromkeys(old_paths + new_paths):
+        live = OPT_DIR / rel
+        staged = next_dir / rel
+        displaced = prev_dir / rel
+        if rel in new_set:
+            if not staged.exists():
+                continue  # already installed by an earlier run
+            if _exists(live):
+                _move(live, displaced)
+            _move(staged, live)
+        elif _exists(live):
+            _move(live, displaced)  # dropped by the new release
+    _sync()
+    os.replace(str(staged_manifest), str(live_manifest))
+    shutil.rmtree(str(next_dir), ignore_errors=True)
+    _sync()
+
+
+def _rollback_code_tree() -> None:
+    """Undo _swap_code_tree: put the displaced files back, drop the new ones.
+
+    A no-op once .prev is gone, so it is safe to repeat.  What is new (listed
+    by the new manifest, displaced nothing, not still waiting in .next) is
+    fixed once in a marker file before anything moves, so a repeat does not
+    mistake a file already restored for a new one.
+    """
+    prev_dir = OPT_DIR / ".prev"
+    next_dir = OPT_DIR / ".next"
+    if not prev_dir.is_dir():
+        shutil.rmtree(str(next_dir), ignore_errors=True)
+        return
+    marker = prev_dir / "NEWONLY"
+    if not marker.exists():
+        source = next_dir / "MANIFEST"
+        if not source.is_file():
+            source = OPT_DIR / ".manifest"
+        fresh = [
+            rel for rel in _read_manifest_paths(source)
+            if not _exists(prev_dir / rel) and not _exists(next_dir / rel)
+        ]
+        _atomic_write(marker, "".join(rel + "\n" for rel in fresh))
+    try:
+        fresh = [r for r in marker.read_text(encoding="utf-8").splitlines() if r]
+    except OSError:
+        fresh = []
+    for rel in fresh:
+        _remove_quietly(OPT_DIR / rel)
+    restore = []
+    for found in prev_dir.rglob("*"):
+        if found.is_dir() and not found.is_symlink():
+            continue
+        rel = found.relative_to(prev_dir).as_posix()
+        if rel in ("MANIFEST.prev", "NEWONLY"):
+            continue
+        restore.append((found, rel))
+    for found, rel in restore:
+        _move(found, OPT_DIR / rel)
+    saved = prev_dir / "MANIFEST.prev"
+    live_manifest = OPT_DIR / ".manifest"
+    if saved.exists():
+        text = saved.read_text(encoding="utf-8")
+        if text:
+            _atomic_write(live_manifest, text)
+        else:
+            _remove_quietly(live_manifest)
+    shutil.rmtree(str(next_dir), ignore_errors=True)
+    _sync()
+    # The rename is the point of no return: after it a repeat skips the tree.
+    done = OPT_DIR / ".prev.done"
+    shutil.rmtree(str(done), ignore_errors=True)
+    os.replace(str(prev_dir), str(done))
+    shutil.rmtree(str(done), ignore_errors=True)
+
+
+# -- Virtualenv --
+
+def _swap_venv(swap: Dict[str, str]) -> None:
+    """Point the `venv` symlink at the new release's environment.
+
+    The first update of an old install finds `venv` a real directory: it is
+    renamed to the previous version's name first.  An environment kept
+    because its requirements did not change (VENV is `venv`) needs nothing.
+    """
+    target = str(swap.get("VENV") or "").strip()
+    if not target or target == "venv":
+        return
+    venv = OPT_DIR / "venv"
+    if not (OPT_DIR / target).is_dir():
+        raise RuntimeError(f"the new virtualenv {target} is missing")
+    if swap.get("VENV_MIGRATE") == "1" and venv.is_dir() and not venv.is_symlink():
+        previous = str(swap.get("PREVIOUS_VENV") or "").strip()
+        if not previous or previous == target or _exists(OPT_DIR / previous):
+            raise RuntimeError("no free name to keep the previous virtualenv under")
+        os.replace(str(venv), str(OPT_DIR / previous))
+    _point_venv(target)
+
+
+def _point_venv(target: str) -> None:
+    """Atomically make the `venv` symlink point at the directory *target*."""
+    link = OPT_DIR / "venv"
+    tmp = OPT_DIR / "venv.tmp"
+    _remove_quietly(tmp)
+    os.symlink(target, str(tmp))
+    os.replace(str(tmp), str(link))
+
+
+def _rollback_venv(swap: Dict[str, str]) -> None:
+    previous = str(swap.get("PREVIOUS_VENV") or "").strip()
+    new = str(swap.get("VENV") or "").strip()
+    venv = OPT_DIR / "venv"
+    if previous and previous != "venv":
+        if not (OPT_DIR / previous).is_dir():
+            _log(f"rollback: previous virtualenv {previous} is missing")
+        elif venv.is_symlink():
+            if os.readlink(str(venv)) != previous:
+                _point_venv(previous)
+        elif not venv.exists():
+            _point_venv(previous)  # interrupted between the rename and the link
+        else:
+            _log(f"rollback: venv is a real directory; leaving it ({previous} unused)")
+    if new and new not in ("venv", previous) and _active_venv_name() != new:
+        shutil.rmtree(str(OPT_DIR / new), ignore_errors=True)
+
+
+def _active_venv_name() -> str:
+    venv = OPT_DIR / "venv"
+    if venv.is_symlink():
+        return os.path.basename(os.readlink(str(venv)))
+    return ""
+
+
+def _prune_venvs(keep: List[str]) -> None:
+    """Remove every venv.* directory other than the names in *keep*."""
+    active = _active_venv_name()
+    if not active:
+        return
+    wanted = set(keep) | {active, "venv"}
+    try:
+        entries = sorted(OPT_DIR.glob("venv.*"))
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name in wanted:
+            continue
+        _log(f"pruning old virtualenv {entry.name}")
+        _remove_quietly(entry)
+
+
+def _prune_venvs_idle() -> None:
+    """Keep the active environment and the newest other one."""
+    active = _active_venv_name()
+    if not active:
+        return
+    others = [e for e in OPT_DIR.glob("venv.*") if e.name != active and e.name != "venv.tmp"]
+    others.sort(key=lambda e: e.lstat().st_mtime, reverse=True)
+    _prune_venvs([e.name for e in others[:1]])
+
+
+# -- Owned files outside the code tree --
+
+def _under_root(path: str) -> Path:
+    return Path(FS_ROOT + path)
+
+
+def _copy_preserving(src: Path, dst: Path) -> None:
+    """Copy *src* over *dst* keeping mode, owner and symlinks (cp -a)."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f".{dst.name}.restore")
+    _remove_quietly(tmp)
+    if src.is_symlink():
+        os.symlink(os.readlink(str(src)), str(tmp))
+    else:
+        shutil.copy2(str(src), str(tmp))
+        try:
+            st = src.stat()
+            os.chown(str(tmp), st.st_uid, st.st_gid)
+        except (OSError, AttributeError):
+            pass
+    os.replace(str(tmp), str(dst))
+
+
+def _restore_owned_files(backup: Path) -> None:
+    """Python twin of the installer's restore_owned_files.
+
+    Puts back every PRESENT path from the backup, removes every ABSENT one,
+    then has systemd and nginx pick the restored files up.  Best effort: one
+    failed copy does not stop the rest.  Repeating it is harmless.
+    """
+    manifest = backup / "MANIFEST"
+    if not manifest.is_file():
+        return
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        state, _, path = line.partition("\t")
+        if not path or not path.startswith("/"):
+            continue
+        target = _under_root(path)
+        try:
+            if state == "PRESENT":
+                saved = backup / "files" / path.lstrip("/")
+                if _exists(saved):
+                    _copy_preserving(saved, target)
+                else:
+                    _log(f"restore: no saved copy of {path}")
+            elif state == "ABSENT":
+                _remove_quietly(target)
+        except OSError as e:
+            _log(f"restore: could not restore {path}: {e}")
+    _sync()
+    _systemctl_best_effort(["systemctl", "daemon-reload"])
+    # --no-block: at boot this unit is ordered before nginx, so waiting for
+    # the restart job here would wait for ourselves.
+    try:
+        rc, _out, _err = _run(["nginx", "-t"], timeout=30)
     except Exception as e:
-        _log(f"recover: could not read update-result.env ({e}) — leaving unchanged")
-        return {"ok": False, "error": str(e)}
+        _log(f"restore: nginx -t could not run: {e}")
+        rc = 1
+    if rc == 0:
+        _systemctl_best_effort(["systemctl", "restart", "--no-block", "nginx"])
 
-    if env.get("STATUS", "").lower() != "in_progress":
-        return {"ok": True}
 
-    # Confirm no update unit is active (fail-closed)
+def _systemctl_best_effort(cmd: List[str]) -> None:
+    try:
+        rc, _out, err = _run(cmd, timeout=30)
+        if rc != 0:
+            _log(f"{' '.join(cmd)} failed rc={rc}: {err!r}")
+    except Exception as e:
+        _log(f"{' '.join(cmd)} could not run: {e}")
+
+
+# -- Verify scheduling and the health check --
+
+def _schedule_verify() -> bool:
+    systemd_run = _find_systemd_run()
+    if systemd_run is None:
+        _log("verify: systemd-run not found")
+        return False
+    unit_name = f"autostream-dial-verify-{int(time.time())}-{os.getpid()}"
+    cmd = [
+        systemd_run, "--quiet", "--collect", f"--unit={unit_name}",
+        f"--on-active={VERIFY_START_DELAY_S}", "--property=Type=oneshot",
+        "--", SYSTEM_PYTHON, os.path.abspath(__file__), "verify",
+    ]
+    try:
+        rc, _out, err = _run(cmd, timeout=15)
+    except Exception as e:
+        _log(f"verify: could not schedule: {e}")
+        return False
+    if rc != 0:
+        _log(f"verify: systemd-run failed rc={rc} stderr={err!r}")
+        return False
+    _log(f"verify scheduled as {unit_name}")
+    return True
+
+
+def _unit_state(unit: str) -> Tuple[str, int]:
+    """(ActiveState, NRestarts) of a unit; ('', 0) when it cannot be read."""
+    try:
+        rc, out, _err = _run(
+            ["systemctl", "show", "-p", "ActiveState", "-p", "NRestarts", unit],
+            timeout=10,
+        )
+    except Exception as e:
+        _log(f"verify: systemctl show {unit} failed: {e}")
+        return "", 0
+    values: Dict[str, str] = {}
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    try:
+        restarts = int(values.get("NRestarts") or "0")
+    except ValueError:
+        restarts = 0
+    return values.get("ActiveState", ""), restarts
+
+
+def _fetch_status() -> Tuple[int, Dict[str, Any]]:
+    """GET the dial's update status; (0, {}) when it does not answer."""
+    try:
+        with urllib.request.urlopen(STATUS_URL, timeout=5) as resp:
+            code = getattr(resp, "status", 200)
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+        return code, body if isinstance(body, dict) else {}
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    except Exception:
+        return 0, {}
+
+
+def _tag_parses(tag: str) -> bool:
+    return bool(tag) and _semver_re.match(tag.strip()) is not None
+
+
+def _health_check(tag: str) -> Tuple[str, str]:
+    """One pass of the post-boot health check.
+
+    Returns ("ok", ""), ("wait", reason) for a condition that may yet come
+    right, or ("fail", reason) for one that cannot.
+    """
+    for unit in (DIAL_UNIT, WATCHER_UNIT):
+        state, restarts = _unit_state(unit)
+        if restarts > 0:
+            return "fail", f"{unit} restarted {restarts} time(s)"
+        if state == "failed":
+            return "fail", f"{unit} failed"
+        if state != "active":
+            return "wait", f"{unit} is {state or 'not active'}"
+    code, body = _fetch_status()
+    if code != 200:
+        return "wait", f"status endpoint answered {code or 'nothing'}"
+    if _tag_parses(tag):
+        reported = str(body.get("version") or "")
+        if _version_key(reported) != _version_key(tag):
+            return "fail", f"running version {reported or 'unknown'}, expected {tag}"
+    return "ok", ""
+
+
+def cmd_verify() -> Dict[str, Any]:
+    """Health-check the swapped release; record success or roll back."""
+    swap = _read_swap()
+    if swap is None:
+        return {"ok": True, "verified": False}
+    phase = swap.get("PHASE", "")
+    if phase == SWAP_DONE:
+        return _finish_success(swap)
+    if phase not in (SWAP_SWAPPED, SWAP_VERIFYING):
+        _log(f"verify: nothing to verify (swap phase {phase!r})")
+        return {"ok": True, "verified": False}
+    _set_swap_phase(swap, SWAP_VERIFYING)
+    tag = _clean_tag(swap.get("TAG", ""))
+    deadline = _monotonic() + VERIFY_DEADLINE_S
+    reason = ""
+    while True:
+        verdict, reason = _health_check(tag)
+        if verdict == "ok":
+            return _finish_success(swap)
+        if verdict == "fail":
+            break
+        if _monotonic() >= deadline:
+            reason = f"timed out: {reason}"
+            break
+        _sleep(VERIFY_POLL_S)
+    _log(f"verify: health check failed ({reason}); rolling back")
+    return _rollback(swap, stop_services=True)
+
+
+def _finish_success(swap: Dict[str, str]) -> Dict[str, Any]:
+    """Record a verified update and clean up.  Repeatable."""
+    tag = _clean_tag(swap.get("TAG", ""))
+    if swap.get("PHASE") != SWAP_DONE:
+        _set_swap_phase(swap, SWAP_DONE)
+    write_update_result(
+        "success", f"Updated to {tag}" if tag else "Updated", percent=100,
+        phase="done", tag=tag or None, rolled_back=0,
+    )
+    _prune_venvs([str(swap.get("PREVIOUS_VENV") or "").strip()])
+    _remove_quietly(_backup_dir(swap))
+    _remove_quietly(STAGING_DIR)
+    _remove_quietly(OPT_DIR / ".prev.done")
+    _remove_quietly(UPDATING_FLAG)
+    _remove_quietly(_swap_file())
+    _log(f"update to {tag or 'new release'} verified")
+    return {"ok": True, "verified": True}
+
+
+def _rollback(swap: Dict[str, str], stop_services: bool) -> Dict[str, Any]:
+    """Restore the previous software and reboot.  Every step is repeatable.
+
+    *stop_services* is for a call made while the dial is running; at boot the
+    services have not started and a stop job would only disturb the boot.
+    """
+    tag = _clean_tag(swap.get("TAG", ""))
+    previous = _clean_tag(swap.get("PREVIOUS_TAG", ""))
+    if swap.get("PHASE") != SWAP_ROLLBACK:
+        _set_swap_phase(swap, SWAP_ROLLBACK)
+    if stop_services:
+        _systemctl_best_effort(["systemctl", "stop", DIAL_UNIT, WATCHER_UNIT])
+    errors: List[str] = []
+    for step in (
+        _rollback_code_tree,
+        lambda: _rollback_venv(swap),
+        lambda: _restore_owned_files(_backup_dir(swap)),
+    ):
+        try:
+            step()
+        except Exception as e:
+            _log(f"rollback: step failed: {e}")
+            errors.append(str(e))
+    message = f"{_subject(tag)} failed - restored {previous}" if previous \
+        else f"{_subject(tag)} failed - previous version restored"
+    write_update_result(
+        "failure", message, percent=0, phase="rolled_back",
+        tag=tag or None, previous_tag=previous or None, rolled_back=1,
+    )
+    _remove_quietly(_backup_dir(swap))
+    _remove_quietly(UPDATING_FLAG)
+    _remove_quietly(_swap_file())
+    _sync()
+    _log(f"rolled back: {message}")
+    _reboot()
+    return {"ok": True, "rolled_back": True, "errors": errors}
+
+
+def _reboot() -> None:
+    """Reboot directly: the restored admin may predate the reboot reason set,
+    and a reboot after a rollback is not something to rate-limit."""
+    try:
+        rc, _out, err = _run([REBOOT_BIN], timeout=30)
+        if rc == 0:
+            return
+        _log(f"{REBOOT_BIN} failed rc={rc}: {err!r}")
+    except Exception as e:
+        _log(f"{REBOOT_BIN} could not run: {e}")
+    _systemctl_best_effort(["systemctl", "--no-block", "reboot"])
+
+
+def cmd_rollback() -> Dict[str, Any]:
+    """Roll back a swapped release now (a direct invocation)."""
+    swap = _read_swap()
+    if swap is None:
+        return {"ok": True, "rolled_back": False}
+    return _rollback(swap, stop_services=True)
+
+
+def _boot_swap(swap: Dict[str, str]) -> Dict[str, Any]:
+    """Swap the staged release in, then schedule its health check."""
+    tag = _clean_tag(swap.get("TAG", ""))
+    previous = _clean_tag(swap.get("PREVIOUS_TAG", ""))
+    try:
+        _swap_code_tree()
+        _swap_venv(swap)
+    except Exception as e:
+        _log(f"boot: swap failed ({e}); rolling back")
+        return _rollback(swap, stop_services=False)
+    _sync()
+    _set_swap_phase(swap, SWAP_SWAPPED)
+    try:
+        UPDATING_FLAG.touch()
+    except OSError as e:
+        _log(f"boot: could not create the updating flag: {e}")
+    write_update_result(
+        "in_progress", f"Starting {tag}..." if tag else "Starting...", percent=96,
+        phase="verify", tag=tag or None, previous_tag=previous or None,
+    )
+    if not _schedule_verify():
+        _log("boot: could not schedule verify; rolling back")
+        return _rollback(swap, stop_services=False)
+    _log(f"boot: swapped to {tag or 'new release'}; verify scheduled")
+    return {"ok": True, "swapped": True}
+
+
+def _find_staged_installer() -> Optional[Path]:
+    """The staged autostream_dial_install.sh, if present and executable."""
+    src = STAGING_DIR / "src"
+    if not src.is_dir():
+        return None
+    candidates = [child for child in sorted(src.iterdir()) if child.is_dir()] + [src]
+    for directory in candidates:
+        installer = directory / "autostream_dial_install.sh"
+        if installer.is_file() and os.access(str(installer), os.X_OK):
+            return installer
+    return None
+
+
+def _int_value(raw: Any, default: int) -> int:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _no_update_running() -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """(True, None) when no installer unit is active and the update lock is
+    free; otherwise (False, the result to return).  Fail-closed."""
     try:
         if _dial_update_unit_active():
-            _log("recover: STATUS=in_progress and update unit is active — leaving unchanged")
-            return {"ok": True}
+            _log("boot: STATUS=in_progress and update unit is active - leaving unchanged")
+            return False, {"ok": True}
     except Exception as e:
-        _log(f"recover: unit check failed ({e}) — leaving STATUS unchanged")
-        return {"ok": False, "error": str(e)}
-
-    # Confirm lock is free (non-blocking probe; immediately released)
+        _log(f"boot: unit check failed ({e}) - leaving STATUS unchanged")
+        return False, {"ok": False, "error": str(e)}
     try:
         fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
         try:
@@ -511,22 +1168,140 @@ def cmd_recover() -> Dict[str, Any]:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except OSError:
             os.close(fd)
-            _log("recover: STATUS=in_progress and lock is held — leaving unchanged")
-            return {"ok": True}
+            _log("boot: STATUS=in_progress and lock is held - leaving unchanged")
+            return False, {"ok": True}
         os.close(fd)
     except OSError as e:
-        _log(f"recover: lock open failed ({e}) — leaving STATUS unchanged")
-        return {"ok": False, "error": str(e)}
+        _log(f"boot: lock open failed ({e}) - leaving STATUS unchanged")
+        return False, {"ok": False, "error": str(e)}
+    return True, None
 
-    # Both guards passed: safe to mark as interrupted and remove updating flag.
-    write_update_result("failure", "Update was interrupted (power loss or unexpected exit).",
-                        percent=0, phase="failed")
-    try:
-        UPDATING_FLAG.unlink(missing_ok=True)
-    except OSError as e:
-        _log(f"recover: warning — could not remove UPDATING_FLAG: {e}")
-    _log("recover: STATUS was 'in_progress' with no active unit or lock — written 'failure'")
+
+def _retry_interrupted(env: Dict[str, str]) -> Dict[str, Any]:
+    """An update run was cut short before it staged anything for the swap, so
+    the live software is untouched: retry it from the staged installer while
+    attempts remain, otherwise record the failure."""
+    tag = _clean_tag(env.get("TAG", ""))
+    previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
+    attempt = max(1, _int_value(env.get("ATTEMPT"), 1))
+    installer = _find_staged_installer()
+    backup = STATE_DIR / "update-prev"
+    if (backup / "MANIFEST").is_file():
+        # The configure step had started: put the owned files back first.
+        _restore_owned_files(backup)
+        _remove_quietly(backup)
+    if installer is not None and attempt < MAX_ATTEMPTS:
+        return _schedule_retry(env, installer, tag, attempt + 1)
+    if installer is None:
+        message = f"{_subject(tag)} was interrupted and recovery files are unavailable - {_kept(previous)}"
+    else:
+        message = f"{_subject(tag)} failed after {MAX_ATTEMPTS} attempts - {_kept(previous)}"
+    write_update_result(
+        "failure", message, percent=0, phase="failed",
+        tag=tag or None, previous_tag=previous or None,
+    )
+    _remove_quietly(UPDATING_FLAG)
+    _remove_quietly(OPT_DIR / ".next")
+    _remove_quietly(STAGING_DIR)
+    _log(f"boot: {message}")
     return {"ok": True}
+
+
+def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int) -> Dict[str, Any]:
+    release_tag = ""
+    try:
+        release_tag = (STAGING_DIR / "release_tag").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    release_tag = release_tag or tag or "unknown"
+    previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
+
+    def fail(message: str) -> Dict[str, Any]:
+        write_update_result(
+            "failure", message, percent=0, phase="failed",
+            tag=tag or None, previous_tag=previous or None,
+        )
+        _remove_quietly(UPDATING_FLAG)
+        return {"ok": False, "error": message}
+
+    systemd_run = _find_systemd_run()
+    if systemd_run is None:
+        _log("boot: systemd-run not found; cannot schedule retry")
+        return fail("Cannot retry: systemd-run not found")
+    if not (os.path.isfile(FLOCK_BIN) and os.access(FLOCK_BIN, os.X_OK)):
+        _log(f"boot: {FLOCK_BIN} not found or not executable; cannot schedule retry")
+        return fail("Cannot retry: flock not found")
+    try:
+        UPDATING_FLAG.touch()
+    except OSError as e:
+        _log(f"boot: could not create the updating flag: {e}")
+    # Count the attempt before the installer is fired, so a second power cut
+    # during the retry is counted too.
+    write_update_result(
+        "in_progress", f"Retrying update (attempt {attempt} of {MAX_ATTEMPTS})",
+        percent=0, phase="download", attempt=attempt, max_attempts=MAX_ATTEMPTS,
+        tag=tag or None,
+    )
+    unit_name = f"autostream-update-dial-retry-{int(time.time())}-{os.getpid()}"
+    try:
+        rc, out, err = schedule_locked_installer(
+            systemd_run, unit_name, LOCK_PATH, installer, ["--update"],
+            delay=2,
+            extra_env={
+                "AUTOSTREAM_RELEASE_TAG": release_tag,
+                "AUTOSTREAM_DIAL_LOCKED": "1",
+            },
+            extra_properties=[
+                "After=NetworkManager.service", "Wants=NetworkManager.service",
+            ],
+        )
+    except Exception as e:
+        _log(f"boot: could not schedule retry: {e}")
+        return fail("Failed to schedule retry")
+    if rc != 0:
+        _log(f"boot: systemd-run failed rc={rc} stderr={err!r}")
+        return fail("Failed to schedule retry installer")
+    _log(f"boot: retry {attempt}/{MAX_ATTEMPTS} scheduled as {unit_name}")
+    return {"ok": True, "retry": attempt}
+
+
+def cmd_boot() -> Dict[str, Any]:
+    """Early-boot step, run before the dial services start.
+
+    A pending swap file decides everything: staged is swapped in; a swap that
+    never reached its verdict is rolled back.  Without one, an interrupted
+    update run is retried or failed; anything else is left alone.
+    """
+    swap = _read_swap()
+    if swap is not None:
+        phase = swap.get("PHASE", "")
+        if phase == SWAP_STAGED:
+            return _boot_swap(swap)
+        if phase == SWAP_DONE:
+            return _finish_success(swap)
+        _log(f"boot: swap phase {phase or 'unknown'} never reached a verdict; rolling back")
+        return _rollback(swap, stop_services=False)
+
+    env = _read_env_file(STATE_DIR / "update-result.env")
+    if env.get("STATUS", "").lower() != "in_progress":
+        _remove_quietly(OPT_DIR / ".prev.done")
+        try:
+            _prune_venvs_idle()
+        except OSError as e:
+            _log(f"boot: venv housekeeping skipped: {e}")
+        return {"ok": True}
+    if not _is_pre_boot(env.get("LAST_RUN_AT", "")):
+        _log("boot: STATUS=in_progress but not from before this boot - leaving unchanged")
+        return {"ok": True}
+    idle, early = _no_update_running()
+    if not idle:
+        return early
+    return _retry_interrupted(env)
+
+
+def cmd_recover() -> Dict[str, Any]:
+    """Alias of cmd_boot, kept for the original command name."""
+    return cmd_boot()
 
 
 # ---- Entrypoint --------------------------------------------------------------
@@ -545,7 +1320,10 @@ def main() -> int:
     apply_p = sub.add_parser("apply")
     apply_p.add_argument("--auto", action="store_true",
                          help="Honour auto_update setting; skip if disabled")
+    sub.add_parser("boot")
     sub.add_parser("recover")
+    sub.add_parser("verify")
+    sub.add_parser("rollback")
     args = ap.parse_args()
 
     if args.cmd != "check" and os.geteuid() != 0:
@@ -562,8 +1340,12 @@ def main() -> int:
         print(json.dumps(result))
         return 0 if result.get("ok") else 1
 
-    if args.cmd == "recover":
-        result = cmd_recover()
+    if args.cmd in ("boot", "recover", "verify", "rollback"):
+        handler = {
+            "boot": cmd_boot, "recover": cmd_recover,
+            "verify": cmd_verify, "rollback": cmd_rollback,
+        }[args.cmd]
+        result = handler()
         print(json.dumps(result))
         return 0 if result.get("ok") else 1
 

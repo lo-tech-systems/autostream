@@ -1,28 +1,34 @@
 # /etc/systemd/system/autostream_dial_update_recover.service
 #
-# Boot-time oneshot that checks for a STATUS=running left by an interrupted
-# update (power loss or unexpected exit).  Runs before autostream_dial.service
-# and autostream_dial_updater.service so a stale running status is corrected
-# before the HTTP server or a new update attempt can see it.
+# Boot-time oneshot for the update lifecycle.  It runs before the dial, the
+# Wi-Fi watcher, the updater and nginx so that, before any of them starts:
+#   - a staged update is swapped in (new code tree and virtualenv), and its
+#     health check is scheduled;
+#   - a swap that never reached a verdict is rolled back;
+#   - an update run cut short by a power loss is retried, or marked failed.
 #
-# After=local-fs.target ensures /var/lib/autostream/ is mounted.
-# Enabled unconditionally by the installer.
+# It runs under the system interpreter, not the virtualenv: the virtualenv is
+# one of the things it switches, and it must work whichever one the symlink
+# points at.
+#
+# After=local-fs.target ensures /var/lib/autostream/ and /opt/autostream are
+# mounted.  Enabled unconditionally by the installer.
 #
 # This file is part of autostream dial.
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 #
 
 [Unit]
-Description=Recover any interrupted autostream dial update
+Description=Swap in, verify, roll back or retry an autostream dial update
 DefaultDependencies=no
 After=local-fs.target
-Before=autostream_dial.service autostream_dial_updater.service
+Before=autostream_dial.service autostream_dial_wifi_watcher.service autostream_dial_updater.service nginx.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/autostream/venv/bin/python \
-    /usr/local/libexec/autostream/autostream_dial_updater recover
+TimeoutStartSec=300
+ExecStart=/usr/bin/python3 /usr/local/libexec/autostream/autostream_dial_updater boot
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=autostream-dial-recover
