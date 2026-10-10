@@ -720,6 +720,20 @@ def _dial_card_html(
                     </label>
                     <span>Always show on-screen controls</span>
                   </div>
+                  <div class="dial-screen-scope-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Volume action:</span>
+                    <select class="dial-volume-scope" data-dial-action="save-screen" disabled>
+                      <option value="current">Current Appliance</option>
+                      <option value="all">All Appliances</option>
+                    </select>
+                  </div>
+                  <div class="dial-screen-scope-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Mute action:</span>
+                    <select class="dial-mute-scope" data-dial-action="save-screen" disabled>
+                      <option value="current">Current Appliance</option>
+                      <option value="all">All Appliances</option>
+                    </select>
+                  </div>
                   <button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
@@ -3814,6 +3828,17 @@ def send_setup_page(
           var noTouch = !touchEl || touchEl.value === '' || touchEl.value === 'none';
           if (ctlEl) ctlEl.disabled = off || noTouch;
           if (ctlRow) ctlRow.classList.toggle('is-disabled', off || noTouch);
+          // Volume/mute scope: without a screen the dial cannot pick an
+          // appliance, so both actions reach every playing appliance. Show
+          // that (forced to All Appliances, disabled) while the screen is
+          // off; the dial enforces the same rule itself, and the stored
+          // choice (dataset.stored) is kept for when the screen comes back.
+          ['dial-volume-scope', 'dial-mute-scope'].forEach(function(cls) {{
+            var el = card.querySelector('.' + cls);
+            if (!el) return;
+            el.disabled = off;
+            el.value = off ? 'all' : (el.dataset.stored || 'current');
+          }});
         }}
 
         // Freezes every control on one card for an in-flight operation
@@ -4422,6 +4447,25 @@ def send_setup_page(
             // to, from the dial's own report. Hidden entirely on an older
             // dial that publishes no `layout`.
             dialRenderLayoutNotes(card, j.layout);
+            // `volume_scope`/`mute_scope` are a SIXTH, independent
+            // capability gate -- same reasoning as layoutCaps above: a dial
+            // can support everything else while still predating broadcast
+            // scope, and must never receive either field in the save body
+            // until its own GET has advertised BOTH. dataset.stored is what
+            // dialSaveScreenSettings posts even while the row below forces
+            // the select to "all" -- see dialSyncScreenControlsEnabled.
+            var scopeRows = card.querySelectorAll('.dial-screen-scope-row');
+            if (j.screen && j.screen.volume_scope !== undefined && j.screen.mute_scope !== undefined) {{
+              card.dataset.scopeCaps = '1';
+              [['dial-volume-scope', j.screen.volume_scope], ['dial-mute-scope', j.screen.mute_scope]].forEach(function(p) {{
+                var el = card.querySelector('.' + p[0]);
+                if (el) {{ el.dataset.stored = p[1]; el.value = p[1]; }}
+              }});
+              scopeRows.forEach(function(r) {{ r.style.display = 'flex'; }});
+            }} else {{
+              delete card.dataset.scopeCaps;
+              scopeRows.forEach(function(r) {{ r.style.display = 'none'; }});
+            }}
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
@@ -4568,6 +4612,18 @@ def send_setup_page(
             var layoutEl = card.querySelector('.dial-screen-layout');
             screen.layout_size = (layoutEl && layoutEl.value !== '') ? layoutEl.value : null;
           }}
+          // Independent capability gate, same reasoning as the others above.
+          // Posts the STORED choice (dataset.stored), never the forced
+          // display -- while the screen is off the selects show "All
+          // Appliances" and are disabled, but the dial's own value must
+          // stay whatever the user last chose, so turning the screen back
+          // on restores it rather than silently resetting to "all".
+          if (card.dataset.scopeCaps === '1') {{
+            var volEl = card.querySelector('.dial-volume-scope');
+            var muteEl = card.querySelector('.dial-mute-scope');
+            screen.volume_scope = (volEl && volEl.dataset.stored) || 'current';
+            screen.mute_scope = (muteEl && muteEl.dataset.stored) || 'current';
+          }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
@@ -4609,6 +4665,8 @@ def send_setup_page(
               if (changedEl) {{
                 if (changedEl.tagName === 'SELECT' || changedEl.type === 'number') changedEl.value = prevValue;
                 else changedEl.checked = prevValue;
+                if (changedEl.classList.contains('dial-volume-scope')
+                    || changedEl.classList.contains('dial-mute-scope')) changedEl.dataset.stored = prevValue;
               }}
               dialSyncScreenControlsEnabled(card);
             }}
@@ -4617,6 +4675,8 @@ def send_setup_page(
             if (changedEl) {{
               if (changedEl.tagName === 'SELECT' || changedEl.type === 'number') changedEl.value = prevValue;
               else changedEl.checked = prevValue;
+              if (changedEl.classList.contains('dial-volume-scope')
+                  || changedEl.classList.contains('dial-mute-scope')) changedEl.dataset.stored = prevValue;
             }}
             dialSyncScreenControlsEnabled(card);
           }}
@@ -5123,6 +5183,10 @@ def send_setup_page(
                   // type (see dialSaveScreenSettings's success path).
                   var layoutEl = card.querySelector('.dial-screen-layout');
                   if (card.dataset.layoutCaps === '1' && layoutEl) layoutEl.value = '';
+                }}
+                if (ev.target.classList.contains('dial-volume-scope')
+                    || ev.target.classList.contains('dial-mute-scope')) {{
+                  ev.target.dataset.stored = ev.target.value;
                 }}
                 dialSaveScreenSettings(card, ev.target);
               }}

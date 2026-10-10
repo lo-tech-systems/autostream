@@ -1495,6 +1495,127 @@ class TestDialCardHtmlStructure:
         assert "ev.target.classList.contains('dial-screen-fitted')" in body
         assert "ev.target.classList.contains('dial-screen-touch')" in body
 
+    # ── Screen settings (broadcast scope: Volume/Mute action selects) ───────
+
+    def test_scope_selects_present_in_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'class="dial-volume-scope"' in result
+        assert 'class="dial-mute-scope"' in result
+        assert "Volume action:" in result
+        assert "Mute action:" in result
+        assert 'value="current">Current Appliance' in result
+        assert 'value="all">All Appliances' in result
+
+    def test_scope_rows_after_controls_row_before_pin_button(self):
+        """Both new rows must live in the locked section, after the
+        controls row, and before the Change Dial PIN button."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        locked_idx = result.find("dial-locked-section")
+        controls_idx = result.find("dial-screen-controls-row")
+        scope_idx = result.find("dial-screen-scope-row")
+        second_scope_idx = result.find("dial-screen-scope-row", scope_idx + 1)
+        pin_btn_idx = result.find('data-dial-action="change-pin"')
+        assert locked_idx >= 0 and controls_idx >= 0 and scope_idx >= 0 and pin_btn_idx >= 0
+        assert second_scope_idx > scope_idx
+        assert locked_idx < controls_idx < scope_idx < second_scope_idx < pin_btn_idx
+
+    def test_scope_rows_hidden_by_default(self):
+        """Both rows must be hidden until the dial publishes BOTH
+        volume_scope and mute_scope in GET /screen/settings."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        idx = 0
+        seen = 0
+        while True:
+            idx = result.find("dial-screen-scope-row", idx)
+            if idx < 0:
+                break
+            row_tag = result[idx - 10:idx + 100]
+            assert "display:none" in row_tag
+            seen += 1
+            idx += 1
+        assert seen == 2
+
+    def test_scope_rows_carry_shared_dim_class(self):
+        src = _setup_page_src()
+        assert src.count("dial-screen-scope-row dial-screen-ctl-row") == 2
+
+    def test_dial_load_screen_settings_sets_scope_caps(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("function dialFillLayoutSizes", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "j.screen.volume_scope !== undefined && j.screen.mute_scope !== undefined" in body
+        assert "card.dataset.scopeCaps = '1'" in body
+        assert "delete card.dataset.scopeCaps" in body
+        assert "el.dataset.stored = p[1]" in body
+
+    def test_scope_save_body_gated_by_scope_caps_and_reads_stored(self):
+        """The save body must include volume_scope/mute_scope only when the
+        scopeCaps gate flag is set, and must post the STORED value, never
+        the (possibly forced) live select value -- see fork 2 in the design:
+        turning the screen back on must restore the user's earlier choice."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "card.dataset.scopeCaps === '1'" in body
+        assert "screen.volume_scope = " in body
+        assert "screen.mute_scope = " in body
+        assert "volEl.dataset.stored" in body
+        assert "muteEl.dataset.stored" in body
+
+    def test_dial_sync_screen_controls_enabled_forces_all_and_disables_when_off(self):
+        """Without a screen the dial cannot pick an appliance, so both
+        selects must be forced to "all" and disabled -- and restored from
+        dataset.stored once the screen is fitted again."""
+        src = _setup_page_src()
+        fn_idx = src.find("function dialSyncScreenControlsEnabled(card)")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn]
+        assert "'dial-volume-scope', 'dial-mute-scope'" in body
+        assert "el.disabled = off;" in body
+        assert "el.value = off ? 'all' : (el.dataset.stored || 'current');" in body
+
+    def test_init_dials_card_updates_dataset_stored_on_scope_change(self):
+        """Picking a new option must update dataset.stored before saving, so
+        the forced-"all" display (while unfitted) never overwrites the
+        user's real choice."""
+        src = _setup_page_src()
+        fn_idx = src.find("function _initDialsCard()")
+        assert fn_idx >= 0
+        next_fn = src.find("\n      </script>", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "ev.target.classList.contains('dial-volume-scope')" in body
+        assert "ev.target.classList.contains('dial-mute-scope')" in body
+        assert "ev.target.dataset.stored = ev.target.value;" in body
+
+    def test_scope_select_revert_on_failure_restores_dataset_stored(self):
+        """The existing SELECT revert-on-failure path must also restore
+        dataset.stored, not just .value, so a rejected change does not leave
+        the stored choice pointing at the value that failed to save."""
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        assert fn_idx >= 0
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert body.count("changedEl.dataset.stored = prevValue;") == 2
+
+    def test_legacy_mute_all_row_left_untouched(self):
+        """fork 1: the legacy 'Mute all playing devices' row stays in the
+        markup as is -- it self-hides on a new dial because GET /configure
+        no longer reports mute_all_playing at all."""
+        src = _setup_page_src()
+        assert "Mute all playing devices" in src
+        assert 'class="dial-mute-all"' in src
+
     # ── Screen settings (Screen Size number input) ─────────────────────────────
 
     def test_screen_size_input_present_in_card(self):
