@@ -2115,8 +2115,17 @@ class TestOverlaySetAndRepaintExecutor:
         assert display._idle_started_at is None
 
     def test_rapid_signals_coalesce_to_one_repaint_of_newest_snapshot(self):
-        display, fb, gt = _make_display(targets=[])
+        # A playing target, not an idle one: the idle screen has its own
+        # compose_idle() path with no pressed-overlay content at
+        # all, so this coalescing check needs the ordinary now-playing
+        # overlay path to have a pressed zone worth asserting on.
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
         display.enable()
+        _poll_with_artwork(display, fb)
+        # Start the coalescing measurement from a clean slate: the poll
+        # above may itself have left a signal pending for its own new frame.
+        display._overlay_signal.clear()
 
         done = threading.Event()
         call_count = {"n": 0}
@@ -4107,11 +4116,15 @@ class TestTouchSurface:
         _poll_with_artwork(display, fb)
         assert display.touch_surface() == ("held", True, False, False)
 
-    def test_hidden_with_name_inactive_when_nothing_playing(self):
+    def test_idle_with_name_inactive_when_nothing_playing(self):
+        # The idle screen is one screen whenever nothing plays: the "i"
+        # affordance must be reachable even with no replay held, so
+        # the surface is "idle" here, not "hidden" — the pre-unification
+        # behaviour this test used to pin.
         display, fb, gt = _make_display(targets=[])
         display.enable()
         display._poll_once()
-        assert display.touch_surface() == ("hidden", False, False, False)
+        assert display.touch_surface() == ("idle", False, False, False)
 
     def test_idle_when_affordance_drawn(self):
         display, fb, gt = _make_display(targets=[])
@@ -4121,12 +4134,12 @@ class TestTouchSurface:
             display._idle_affordance = True
         assert display.touch_surface() == ("idle", False, False, False)
 
-    def test_hidden_not_idle_when_nothing_playing_and_no_affordance(self):
+    def test_idle_regardless_of_affordance_when_nothing_playing(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         display._idle_affordance = False
         display._poll_once()
-        assert display.touch_surface()[0] == "hidden"
+        assert display.touch_surface()[0] == "idle"
 
     def test_repeat_screen_reports_repeat_with_dots_active(self):
         aid = "1" * 20
@@ -4191,15 +4204,17 @@ class TestTouchSurface:
             display._poll_once()
         assert display._dots_active is False
 
-    def test_hidden_and_name_inactive_with_an_idle_roster_entry_but_nothing_shown(self):
+    def test_idle_and_name_inactive_with_an_idle_roster_entry_but_nothing_shown(self):
         # An authorised idle appliance existing on the roster is not, by
         # itself, an entry point into the selector — the NAME zone stays
         # inert until something is actually shown (playing, or focused).
+        # The surface itself is still "idle" (reachable regardless of
+        # replay availability).
         idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
         display, fb, gt = _make_display(targets=[], roster=[idle_entry])
         display.enable()
         display._poll_once()
-        assert display.touch_surface() == ("hidden", False, False, False)
+        assert display.touch_surface() == ("idle", False, False, False)
 
     def test_idle_affordance_still_drawn_with_an_idle_roster_entry(self):
         idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
@@ -4541,6 +4556,7 @@ class TestRepeatScreenComposePath:
     def test_sleep_pops_picker(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -4902,6 +4918,7 @@ class TestPressedChannelFeedsEachScreen:
     def test_picker_back_wash_confined_to_the_bar(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -5203,14 +5220,27 @@ class TestReplayPickerRows:
     def test_open_picker_sets_screen_request(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
         assert display._screen == "picker"
 
+    def test_open_picker_refuses_without_a_held_replay(self):
+        # The one deliberate behaviour change the idle-screen unification
+        # requires: a replay tap on a plain logo with nothing held stays
+        # inert, exactly as it was before the idle screen became reachable
+        # on every idle dial.
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        assert display._idle_affordance is False
+        display.open_picker()
+        assert display._screen_request is None
+
     def test_picker_shows_placeholder_when_empty(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -5233,6 +5263,7 @@ class TestPickerPick:
         now = time.monotonic()
         drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=12.0), now))
         display._refresh_picker_rows([row], now)
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -5274,6 +5305,7 @@ class TestPickerTimeout:
     def test_closes_after_timeout(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -5285,6 +5317,7 @@ class TestPickerTimeout:
     def test_stays_open_before_timeout(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -5658,12 +5691,15 @@ class TestReconcileOnPlayingSetShrink:
 
 class TestIdleReplayLogo:
     """When a replay is available the idle screen renders the replay-logo
-    (the arrows-on-disc image), not the plain logo or any text."""
+    (the arrows-on-disc image), not the plain logo or any text. Reached
+    whenever nothing is playing, not only while a replay is available —
+    see TestIdlePlainLogo for the no-affordance case."""
 
     def test_idle_render_requests_the_replay_logo(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         with display._lock:
+            display._idle_affordance = True
             display._current_base_image = MagicMock()
             with patch("dial_display.load_logo", return_value=MagicMock()) as ll:
                 display._display_idle_locked()
@@ -5674,10 +5710,41 @@ class TestIdleReplayLogo:
         display.enable()
         base = MagicMock()
         with display._lock:
+            display._idle_affordance = True
             display._current_base_image = base
             with patch("dial_display.load_logo", return_value=None):
                 # Must not raise when the replay image cannot be loaded.
                 display._display_idle_locked()
+
+
+class TestIdlePlainLogo:
+    """Fork 1: the idle screen's own compose path is reached whenever
+    nothing is playing, not only while a replay is available — a dial with
+    no repeat-capable appliance still gets the "i" badge (see
+    TestComposeIdle in the compositor suite), just over the plain logo
+    rather than the replay-available one."""
+
+    def test_plain_base_used_and_replay_logo_never_loaded_without_affordance(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        base = MagicMock()
+        with display._lock:
+            display._idle_affordance = False
+            display._current_base_image = base
+            with patch("dial_display.load_logo") as ll:
+                display._display_idle_locked()
+        ll.assert_not_called()
+
+    def test_idle_chassis_due_whenever_nothing_plays_regardless_of_affordance(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "main"
+            display._now_playing = None
+            display._idle_affordance = False
+            assert display._idle_chassis_due_locked() is True
+            display._idle_affordance = True
+            assert display._idle_chassis_due_locked() is True
 
 
 class TestPickerSurvivesIdle:
@@ -6108,9 +6175,9 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_six_screens(self):
+    def test_table_has_exactly_the_seven_screens(self):
         assert set(SCREEN_POLICIES) == {
-            "main", "selector", "picker", "repeat", "outputs", "output",
+            "main", "selector", "picker", "info", "repeat", "outputs", "output",
         }
 
     def test_state_attr_is_an_attribute_of_a_fresh_display(self):
@@ -6131,9 +6198,9 @@ class TestScreenPolicyTable:
         for policy in SCREEN_POLICIES.values():
             assert policy.back_to in SCREEN_POLICIES
 
-    def test_exactly_selector_picker_and_outputs_are_paged(self):
+    def test_exactly_selector_picker_info_and_outputs_are_paged(self):
         paged = {name for name, policy in SCREEN_POLICIES.items() if policy.paged}
-        assert paged == {"selector", "picker", "outputs"}
+        assert paged == {"selector", "picker", "info", "outputs"}
 
     def test_picker_touch_extends_timeout_is_pinned_true(self):
         # Touch activity extends every list screen's clock — the picker's
@@ -6637,6 +6704,7 @@ class TestCompactPickerPick:
         drs.repeat_store.update("a" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=12.0), now))
         drs.repeat_store.update("b" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=34.0), now))
         display._refresh_picker_rows(rows, now)
+        display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6649,3 +6717,216 @@ class TestCompactPickerPick:
         assert action == "seek"
         assert position == 0.0
         assert display.manual_focus_id() == "b" * 20
+
+
+# ---------------------------------------------------------------------------
+# The idle screen's read-only info page: open_info()/_gather_info()/
+# set_info_provider(), paging, lifetime, and the dead-row guard.
+# ---------------------------------------------------------------------------
+
+class TestInfoPage:
+    def _opened(self, display) -> int:
+        """open_info() with the gather thread never actually started (it is
+        exercised directly, synchronously, by the tests that need it — the
+        same discipline TestOnOutputsResult uses for its own worker-thread
+        callback), then fold the pending screen request in. Returns the
+        gather_seq this open captured."""
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        with display._lock:
+            display._repaint_current_locked()
+        return display._info_gather_seq
+
+    def test_open_info_requests_the_screen_and_starts_one_gather_thread(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch("dial_display.threading.Thread") as mock_thread_cls:
+            display.open_info()
+        assert display._screen_request == "info"
+        assert display._info_gather_seq == 1
+        _, kwargs = mock_thread_cls.call_args
+        assert kwargs["target"] == display._gather_info
+        assert kwargs["args"] == (1,)
+        assert kwargs["daemon"] is True
+        mock_thread_cls.return_value.start.assert_called_once()
+
+    def test_first_paint_shows_six_placeholder_rows(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        assert display._screen == "info"
+        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+
+    def test_gather_fills_in_the_providers_rows(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        provided = (
+            ("Dial name", "Kitchen"), ("Firmware", "1.0"), ("IPv4", "10.0.0.5"),
+            ("WiFi", "HomeNet"), ("Signal", "Strong"), ("Disk free", "14.2 GB"),
+        )
+        display.set_info_provider(lambda: provided)
+        seq = self._opened(display)
+        display._gather_info(seq)
+        assert tuple((r.label, r.value) for r in display._info.rows) == provided
+
+    def test_provider_raising_leaves_the_placeholders(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.set_info_provider(MagicMock(side_effect=RuntimeError("boom")))
+        seq = self._opened(display)
+        display._gather_info(seq)
+        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+
+    def test_missing_provider_yields_placeholders(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        seq = self._opened(display)
+        display._gather_info(seq)
+        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+
+    def test_stale_gather_after_close_reopen_is_dropped(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        stale_seq = self._opened(display)
+        display.close_list()
+        with display._lock:
+            display._repaint_current_locked()
+        display.set_info_provider(lambda: (("Dial name", "Fresh open"),) * 1)
+        fresh_seq = self._opened(display)
+        assert fresh_seq != stale_seq
+        display._gather_info(stale_seq)
+        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+
+    def test_result_after_close_is_dropped(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        seq = self._opened(display)
+        display.close_list()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info is None
+        display.set_info_provider(lambda: (("Dial name", "Too late"),))
+        display._gather_info(seq)  # must not raise, must not resurrect _info
+        assert display._info is None
+
+    def test_list_row_tap_on_info_is_a_no_op(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        with patch.object(display, "selector_pick") as sp, \
+             patch.object(display, "picker_pick") as pp, \
+             patch.object(display, "outputs_row_tap") as op:
+            display.list_row_tap(0)
+        sp.assert_not_called()
+        pp.assert_not_called()
+        op.assert_not_called()
+        assert display._screen == "info"
+
+
+class TestInfoPagePaging:
+    def test_rich_five_plus_one_across_two_pages(self):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        display, fb, gt = _make_display(screen_type="ili9341_320x240", backend=fb, targets=[])
+        display.enable()
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        with display._lock:
+            display._repaint_current_locked()
+        with display._lock:
+            metrics = display._metrics_locked()
+            page0 = display._build_info_list_state_locked(metrics.width, metrics.height, metrics=metrics)
+        assert metrics.rows_per_page == 5  # richer tier on this 2.8-inch 320x240 panel
+        assert len(page0.rows) == 5
+        assert page0.has_prev is False
+        assert page0.has_next is True
+
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        with display._lock:
+            page1 = display._build_info_list_state_locked(metrics.width, metrics.height, metrics=metrics)
+        assert len(page1.rows) == 1
+        assert page1.has_prev is True
+        assert page1.has_next is False
+
+    def test_compact_two_per_page_across_three_pages_wraps(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 0
+
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 1
+
+        display.list_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 2
+
+        display.list_page(+1)  # wraps back to page 0 on compact
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._info.page == 0
+
+
+class TestInfoPageLifetime:
+    def _opened(self, display) -> None:
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        with display._lock:
+            display._repaint_current_locked()
+
+    def test_x_closes_to_main(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        assert display._screen == "info"
+        display.close_list()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_closes_after_timeout(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        opened_at = display._info.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
+        assert display._screen == "main"
+
+    def test_stays_open_before_timeout(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        opened_at = display._info.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS - 1):
+            display._check_secondary_timeout()
+        assert display._screen == "info"
+
+    def test_touch_activity_extends_the_timeout(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        old_opened_at = display._info.opened_at
+        display.notify_touch_activity()
+        with patch("dial_display.time.monotonic", return_value=old_opened_at + 1):
+            with display._lock:
+                display._apply_touch_activity_locked()
+        assert display._info.opened_at > old_opened_at
+
+    def test_sleep_is_deferred_while_open(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        self._opened(display)
+        gt.return_value = []
+        with patch.object(display, "_close_secondary_locked") as close:
+            display._poll_once()
+        close.assert_not_called()
+        assert display._idle_started_at is None

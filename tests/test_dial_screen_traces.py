@@ -261,6 +261,8 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.open_selector()
     elif kind == "open_picker":
         d.open_picker()
+    elif kind == "open_info":
+        d.open_info()
     elif kind == "toggle_repeat":
         d.toggle_repeat_screen()
     elif kind == "close_list":
@@ -373,6 +375,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "page_request": d._page_request,
         "selector": _list_state(d._selector),
         "picker": _list_state(d._picker),
+        "info": _list_state(d._info),
         "repeat_appliance_id": d._repeat_screen.appliance_id if d._repeat_screen is not None else None,
         "outputs": outputs_repr,
         "output_detail": detail_repr,
@@ -547,8 +550,18 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     ])
 
     # Any screen change clears the unified pressed channel.
+    aid = _aid("c10b")
     add("screen_change_clears_pressed", [
         ("targets", []),
+        # A held, authorized, repeat-capable roster row so the idle
+        # affordance is due (open_picker() refuses without one —
+        # see dial_display.DialDisplay.open_picker()); the matching status
+        # entry keeps the reconcile pass's own re-fetch from clearing the
+        # seeded hold record straight back out.
+        ("roster", [_idle_row("C10B", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True))}),
+        ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True)),
+        ("poll",),
         ("set_pressed", TouchZone.UP, None),
         ("repaint",),
         ("open_picker",),
@@ -587,8 +600,18 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     # Touch activity restarts the picker's timeout clock, the same as the
     # selector's own — see the picker row's touch_extends_timeout field
     # (flipped to True: touch now extends every list screen's clock).
+    aid = _aid("c13b")
     add("picker_touch_restarts_timeout", [
         ("targets", []),
+        # A held, authorized, repeat-capable roster row so the idle
+        # affordance is due (open_picker() refuses without one —
+        # see dial_display.DialDisplay.open_picker()); the matching status
+        # entry keeps the reconcile pass's own re-fetch from clearing the
+        # seeded hold record straight back out.
+        ("roster", [_idle_row("C13B", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True))}),
+        ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True)),
+        ("poll",),
         ("open_picker",),
         ("repaint",),
         ("advance", 17.0),
@@ -630,8 +653,18 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
 
     # A picker open REQUEST that has not yet been applied still counts as
     # "a list is open" for the nothing-playing poll branch.
+    aid = _aid("c17b")
     add("nothing_plays_picker_request_pending_not_clobbered", [
         ("targets", []),
+        # A held, authorized, repeat-capable roster row so the idle
+        # affordance is due (open_picker() refuses without one —
+        # see dial_display.DialDisplay.open_picker()); the matching status
+        # entry keeps the reconcile pass's own re-fetch from clearing the
+        # seeded hold record straight back out.
+        ("roster", [_idle_row("C17B", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True))}),
+        ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True)),
+        ("poll",),
         ("open_picker",),
         ("poll",),
         ("repaint",),
@@ -733,8 +766,18 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
         ("sleep_locked",),
     ])
+    aid = _aid("c24b")
     add("lifecycle_disable_pops_picker", [
         ("targets", []),
+        # A held, authorized, repeat-capable roster row so the idle
+        # affordance is due (open_picker() refuses without one —
+        # see dial_display.DialDisplay.open_picker()); the matching status
+        # entry keeps the reconcile pass's own re-fetch from clearing the
+        # seeded hold record straight back out.
+        ("roster", [_idle_row("C24B", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True))}),
+        ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True)),
+        ("poll",),
         ("open_picker",),
         ("repaint",),
         ("disable",),
@@ -770,6 +813,21 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
+    # The idle screen's own "i" affordance is reachable regardless of
+    # whether a replay is held: open the read-only info page, page to its
+    # second (base tier: 3 rows/page, clamped) page, then X back to idle.
+    add("idle_info_page_view_and_close", [
+        ("targets", []),
+        ("poll",),
+        ("repaint",),  # touch_surface == "idle" (reachable with no replay held)
+        ("open_info",),
+        ("repaint",),  # info page opens with six placeholder rows
+        ("list_page", 1),
+        ("repaint",),  # second page (base: 3 rows/page, clamped at page 1)
+        ("close_list",),
+        ("repaint",),  # back to idle
+    ])
+
     # The idle "tap to replay" affordance appears on main once a held,
     # authorized, repeat-capable appliance is on the roster.
     aid = _aid("c28")
@@ -785,7 +843,12 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     aid = _aid("c29")
     add("picker_pick_sets_pending_focus_then_main", [
         ("targets", []),
+        # The matching status entry keeps the reconcile pass's own
+        # re-fetch from clearing the seeded hold record straight back out
+        # (open_picker() now refuses without a genuinely-held
+        # affordance, so this scenario's own point needs it to survive).
         ("roster", [_idle_row("C29", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True, recording_seconds=12.0))}),
         ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True, recording_seconds=12.0)),
         ("poll",),
         ("open_picker",),
@@ -797,6 +860,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("picker_pick_stale_index_back_to_main", [
         ("targets", []),
         ("roster", [_idle_row("C30", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True, recording_seconds=12.0))}),
         ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True, recording_seconds=12.0)),
         ("poll",),
         ("open_picker",),
@@ -808,13 +872,19 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     # The picker survives repeated nothing-playing polls; only its own
     # timeout closes it.
     aid = _aid("c31")
-    t = _target("C31", aid)
     add("picker_survives_repeated_idle_polls", [
-        ("targets", [t]),
+        ("targets", []),
+        # A held, authorized, repeat-capable roster row so the idle
+        # affordance is due (open_picker() refuses without one —
+        # see dial_display.DialDisplay.open_picker()); the matching status
+        # entry keeps the reconcile pass's own re-fetch from clearing the
+        # seeded hold record straight back out.
+        ("roster", [_idle_row("C31", aid, repeat_capable=True)]),
+        ("status", {aid: _status_result(repeat=_repeat_obj(state="hold", available=True))}),
+        ("repeat_store_seed", aid, _repeat_obj(state="hold", available=True)),
         ("poll",),
         ("open_picker",),
         ("repaint",),
-        ("targets", []),
         ("poll",),
         ("poll",),
         ("advance", 5.0),
@@ -1340,6 +1410,66 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
         {"cfg": cfg2, "backend": fb2},
     ))
 
+    # The idle screen's own "i" affordance on compact: open the info page,
+    # page through all three (2-rows-per-page) pages, wrapping back to the
+    # first, then X back to idle.
+    cfg3, fb3 = _compact_display_args()
+    scenarios.append((
+        "compact_idle_info_page_view_and_close",
+        [
+            ("targets", []),
+            ("poll",),
+            ("repaint",),  # touch_surface == "idle"
+            ("open_info",),
+            ("repaint",),  # info page opens; compact shows 2 rows/page across 3 pages
+            ("list_page", 1),
+            ("repaint",),
+            ("list_page", 1),
+            ("repaint",),
+            ("list_page", 1),  # wraps back to page 0, not clamped
+            ("repaint",),
+            ("close_list",),
+            ("repaint",),  # back to idle
+        ],
+        {"cfg": cfg3, "backend": fb3},
+    ))
+
+    return scenarios
+
+
+def _rich_display_args() -> tuple[DialDisplayConfig, "FakeBackend"]:
+    """A 320x240 panel at its shipped density, resolving the rich content
+    tier (the right-hand rail list chassis, 5 rows/page) — mirrors
+    _compact_display_args()'s own shape for the richer tier."""
+    fb = FakeBackend()
+    fb.width, fb.height = 320, 240
+    cfg = DialDisplayConfig(fitted=True, screen_type="ili9341_320x240")
+    return cfg, fb
+
+
+def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
+    scenarios: list[tuple[str, list[tuple], dict]] = []
+
+    # The idle screen's own "i" affordance on the rich tier: open the info
+    # page (5 rows on page 0, 1 on page 1 -- the rail chevrons, not a bottom
+    # bar), page to the second, then X back to idle.
+    cfg, fb = _rich_display_args()
+    scenarios.append((
+        "rich_idle_info_page_view_and_close",
+        [
+            ("targets", []),
+            ("poll",),
+            ("repaint",),  # touch_surface == "idle"
+            ("open_info",),
+            ("repaint",),  # info page opens with six placeholder rows
+            ("list_page", 1),
+            ("repaint",),  # second page: the sixth row alone
+            ("close_list",),
+            ("repaint",),  # back to idle
+        ],
+        {"cfg": cfg, "backend": fb},
+    ))
+
     return scenarios
 
 
@@ -1465,7 +1595,7 @@ class TestScreenTraceCorpus:
         result = {}
         for name, steps in _scripted_scenarios() + _random_walk_scenarios():
             result[name] = _run_scenario(steps)
-        for name, steps, kwargs in _compact_scenarios():
+        for name, steps, kwargs in _compact_scenarios() + _rich_scenarios():
             result[name] = _run_scenario(steps, **kwargs)
 
         payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
@@ -1522,6 +1652,36 @@ _RENAMED_SCENARIOS = {
 _CONTENT_CHANGED_SCENARIOS = {
     "outputs_closes_when_reporting_appliance_changes":
         "now also pushes the transition frame on its direct appliance-to-appliance switch",
+    "lifecycle_disable_pops_picker":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario now seeds one first so its own point (disable() pops an "
+        "open picker) still holds",
+    "nothing_plays_picker_request_pending_not_clobbered":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario now seeds one first so its own point (a pending picker "
+        "request survives an idle poll) still holds",
+    "screen_change_clears_pressed":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario now seeds one first so its own point (a screen change "
+        "clears the pressed channel) still holds",
+    "picker_touch_restarts_timeout":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario now seeds one first so its own point (touch activity "
+        "restarts the picker's timeout) still holds",
+    "picker_survives_repeated_idle_polls":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario now seeds one first so its own point (the picker "
+        "survives repeated nothing-playing polls) still holds",
+    "picker_pick_sets_pending_focus_then_main":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario's roster/repeat_store_seed alone was never enough to "
+        "survive the reconcile pass's own re-fetch (a latent gap this "
+        "change surfaces); a matching status entry now keeps it held",
+    "picker_pick_stale_index_back_to_main":
+        "open_picker() now refuses without a held replay -- the "
+        "scenario's roster/repeat_store_seed alone was never enough to "
+        "survive the reconcile pass's own re-fetch (a latent gap this "
+        "change surfaces); a matching status entry now keeps it held",
 }
 
 
@@ -1535,8 +1695,31 @@ def _strip_new_fields(step: dict) -> dict:
     stripped.pop("showing", None)
     stripped.pop("bound_appliance_id", None)
     stripped.pop("source_artwork_url", None)
+    stripped.pop("info", None)
     if "touch_surface" in stripped:
         stripped["touch_surface"] = stripped["touch_surface"][:3]
+    return stripped
+
+
+def _normalize_idle_unification(stripped: dict, old_step: dict) -> dict:
+    """The idle screen is now one screen whenever nothing plays: a step
+    whose surface used to read "hidden" (nothing playing, no replay held)
+    now reads "idle" instead, so the info page's own "i" affordance is
+    reachable there too — see dial_display._idle_chassis_due_locked()/
+    touch_surface(). Normalizes *stripped*'s touch_surface back to the old
+    "hidden" value for comparison ONLY when that is the exact, whole
+    change (surface "hidden" -> "idle", every other element identical) —
+    any other kind of touch_surface change still fails the comparison
+    normally."""
+    old_ts = old_step.get("touch_surface")
+    new_ts = stripped.get("touch_surface")
+    if (
+        old_ts is not None and new_ts is not None
+        and old_ts[0] == "hidden" and new_ts[0] == "idle"
+        and old_ts[1:] == new_ts[1:]
+    ):
+        stripped = dict(stripped)
+        stripped["touch_surface"] = old_ts
     return stripped
 
 
@@ -1557,7 +1740,8 @@ class TestPreOutputsScenariosUnchanged:
             new_trace = new[name]
             assert len(new_trace) == len(old_trace), f"{name!r}: step count changed"
             for i, (old_step, new_step) in enumerate(zip(old_trace, new_trace)):
-                assert _strip_new_fields(new_step) == old_step, (
+                stripped = _normalize_idle_unification(_strip_new_fields(new_step), old_step)
+                assert stripped == old_step, (
                     f"{name!r} step {i}: a pre-existing scenario's recorded "
                     f"fields changed beyond the new outputs/output_detail/"
                     f"outputs_optimistic keys and the touch_surface tuple's "
@@ -1583,12 +1767,16 @@ class TestPreOutputsScenariosUnchanged:
 # only the two keys this change adds (bound_appliance_id, source_artwork_url
 # -- "showing" was already present in that baseline).
 #
-# No scenario needs excluding here: every pre-existing scripted scenario
-# plays at most one appliance at a time (binding only ever changes behaviour
-# with a second SIMULTANEOUSLY playing appliance, or a track change on one
-# that is not the shown appliance -- see the fourteen new "binding_*"
-# scenarios above, all of which are new names, not exclusions). Random walks
-# are excluded as always: their own step sequence did not change, but the
+# No scenario needed excluding here for binding itself: every pre-existing
+# scripted scenario plays at most one appliance at a time (binding only ever
+# changes behaviour with a second SIMULTANEOUSLY playing appliance, or a
+# track change on one that is not the shown appliance -- see the fourteen
+# new "binding_*" scenarios above, all of which are new names, not
+# exclusions). _CONTENT_CHANGED_SCENARIOS is still consulted, though: a
+# later, unrelated deliberate content change (e.g. the idle screen
+# unification) can still touch a scenario old enough to predate binding.
+# Random walks are excluded as always: their own step sequence did not
+# change, but the
 # manager's behaviour along it legitimately did.
 # ---------------------------------------------------------------------------
 
@@ -1596,6 +1784,7 @@ def _strip_binding_fields(step: dict) -> dict:
     stripped = dict(step)
     stripped.pop("bound_appliance_id", None)
     stripped.pop("source_artwork_url", None)
+    stripped.pop("info", None)
     return stripped
 
 
@@ -1608,11 +1797,14 @@ class TestPreBindingScenariosUnchanged:
         for name, old_trace in old.items():
             if name.startswith("random_walk_"):
                 continue
+            if name in _CONTENT_CHANGED_SCENARIOS:
+                continue
             assert name in new, f"scenario {name!r} present in the pre-binding golden is missing from the current one"
             new_trace = new[name]
             assert len(new_trace) == len(old_trace), f"{name!r}: step count changed"
             for i, (old_step, new_step) in enumerate(zip(old_trace, new_trace)):
-                assert _strip_binding_fields(new_step) == old_step, (
+                stripped = _normalize_idle_unification(_strip_binding_fields(new_step), old_step)
+                assert stripped == old_step, (
                     f"{name!r} step {i}: a pre-existing scenario's recorded "
                     f"fields changed beyond the new bound_appliance_id/"
                     f"source_artwork_url keys"

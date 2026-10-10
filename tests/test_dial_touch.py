@@ -31,6 +31,7 @@ from dial_touch import (  # noqa: E402
     SURFACE_HELD,
     SURFACE_HIDDEN,
     SURFACE_IDLE,
+    SURFACE_INFO,
     SURFACE_OUTPUT,
     SURFACE_OUTPUTS,
     SURFACE_PICKER,
@@ -40,6 +41,7 @@ from dial_touch import (  # noqa: E402
     TouchAction,
     TouchEventSource,
     TouchStateMachine,
+    _GEOMETRY_FOR_SURFACE,
     _REPEAT_SURFACES,
     _REPEATING_ZONES,
     _SINGLE_SHOT_ZONES,
@@ -47,12 +49,14 @@ from dial_touch import (  # noqa: E402
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
+    GEOMETRY_INFO,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT_REPLAY,
     TouchZone,
     compact_layout_for,
     hit_test,
+    idle_layout_for,
     layout_for,
     list_layout_for,
     list_zone_at,
@@ -1431,6 +1435,7 @@ REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
 # mute control of its own.
 REPEAT_OUTPUTS_XY = _rect_center(_REPEAT_LAYOUT.volume_cluster)
 IDLE_XY = (WIDTH // 2, HEIGHT - 1)
+IDLE_INFO_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).info)
 
 
 class TestNewSurfacesArmImmediately:
@@ -1438,7 +1443,7 @@ class TestNewSurfacesArmImmediately:
     "held": a press arms immediately, no reveal step, no dismiss clock —
     the same contract SURFACE_SELECTOR already has."""
 
-    @pytest.mark.parametrize("surface", [SURFACE_REPEAT, SURFACE_IDLE, SURFACE_PICKER])
+    @pytest.mark.parametrize("surface", [SURFACE_REPEAT, SURFACE_IDLE, SURFACE_PICKER, SURFACE_INFO])
     def test_surface_counts_as_visible_and_held(self, surface):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(surface, False, now=0.0, dots_active=True)
@@ -1473,6 +1478,12 @@ class TestNewSurfacesArmImmediately:
         actions = sm.on_filter_event(press_event(IDLE_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
 
+    def test_idle_info_arms_immediately_without_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0)
+        actions = sm.on_filter_event(press_event(IDLE_INFO_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+
     def test_picker_row_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_PICKER, False, now=0.0)
@@ -1494,6 +1505,36 @@ class TestNewSurfacesArmImmediately:
             actions = sm.tick(now=DISMISS_S * 10)
             assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
             assert sm.overlay_visible is True
+
+
+class TestInfoSurface:
+    """SURFACE_INFO: the idle screen's own read-only info page. Held like
+    every other list surface (see TestNewSurfacesArmImmediately's own
+    SURFACE_INFO cases), but its own geometry (GEOMETRY_INFO) carries no
+    LIST_ROW entries at all — a tap in a row cell lands in no zone."""
+
+    def test_maps_to_geometry_info(self):
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_INFO] == GEOMETRY_INFO
+
+    def test_row_press_produces_no_action(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_INFO, False, now=0.0)
+        actions = sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.1)
+        assert actions == []
+        assert sm.pressed_zone is None
+
+    def test_back_and_down_still_resolve(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_INFO, False, now=0.0)
+        actions = sm.on_filter_event(press_event(LIST_BACK_XY), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_BACK
+
+        sm2 = TouchStateMachine(WIDTH, HEIGHT)
+        sm2.set_surface(SURFACE_INFO, False, now=0.0)
+        actions = sm2.on_filter_event(press_event(LIST_DOWN_XY), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_DOWN
 
 
 class TestDotsGating:
@@ -1570,6 +1611,17 @@ class TestRepeatAndIdleZoneTaps:
         actions = sm.on_filter_event(press_event(IDLE_XY), now=0.1)
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
         assert tap.zone == TouchZone.IDLE_REPLAY
+
+    def test_idle_info_tap(self):
+        # The "i" affordance's own zone, top-right of the idle screen —
+        # reachable regardless of whether IDLE_XY (elsewhere on the idle
+        # surface) would resolve to a replay tap.
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0)
+        actions = sm.on_filter_event(press_event(IDLE_INFO_XY), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.IDLE_INFO
+        assert tap.index is None
 
     def test_repeat_and_idle_taps_are_single_shot_no_repeat(self):
         for surface, xy, zone in (

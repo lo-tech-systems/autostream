@@ -1886,6 +1886,13 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_REPLAY, None)
             display.open_picker.assert_called_once()
 
+    def test_on_zone_tap_idle_info_opens_the_info_page(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_INFO, None)
+            display.open_info.assert_called_once()
+
     def test_on_zone_tap_outputs_opens_the_outputs_list(self):
         from dial_touch_layout import TouchZone
 
@@ -2710,6 +2717,98 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
         self._assert_lock_free_and_network_free(display, [
             ("physical button (fitted=False)", on_press),
         ])
+
+
+# ---------------------------------------------------------------------------
+# The info page's data provider: wired after the HTTP server exists, before
+# display.start(), against a REAL DialDisplay (spied via create_dial_display)
+# — proves the actual lambda dial_main builds, not a hand-rolled stand-in.
+# ---------------------------------------------------------------------------
+
+class TestInfoProviderWiring:
+    def _run(self):
+        import dial_main as dm
+        import dial_display as dd
+        from dial_config import DialConfig, DialDisplayConfig
+
+        cfg = DialConfig(
+            uuid="info-wiring-uuid", sw_gpio=None, clk_gpio=None, dt_gpio=None,
+            led_gpio=None, pin="",
+        )
+        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+
+        captured: dict = {}
+        real_create_dial_display = dd.create_dial_display
+
+        def spy_create_dial_display(*args, **kwargs):
+            instance = real_create_dial_display(*args, **kwargs)
+            captured["display"] = instance
+            return instance
+
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_http.get_runtime_status.return_value = {"name": "Kitchen Dial"}
+        captured["http"] = mock_http
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer"), \
+             patch("dial_main._announce_self"), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", return_value=mock_http), \
+             patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.DialControlServer"), \
+             patch.object(dd, "create_dial_display", side_effect=spy_create_dial_display), \
+             patch("threading.Event", _QuickEvent):
+            dm.main()
+
+        return captured
+
+    def test_provider_wired_and_calls_gather_dial_info_with_live_name_and_version(self):
+        import dial_main as dm
+
+        captured = self._run()
+        display = captured["display"]
+        assert display._get_info_rows is not None
+
+        with patch("dial_main.gather_dial_info", return_value=(("Dial name", "Kitchen Dial"),)) as mock_gather:
+            rows = display._get_info_rows()
+        mock_gather.assert_called_once_with("Kitchen Dial", dm.VERSION)
+        assert rows == (("Dial name", "Kitchen Dial"),)
+
+    def test_provider_reads_the_live_runtime_name_not_a_stale_snapshot(self):
+        """get_runtime_status() is called fresh on every provider
+        invocation, not once at wiring time — a /configure rename must show
+        up on the next info-page open without a restart."""
+        captured = self._run()
+        display = captured["display"]
+        http = captured["http"]
+
+        with patch("dial_main.gather_dial_info", return_value=()) as mock_gather:
+            display._get_info_rows()
+            http.get_runtime_status.return_value = {"name": "Renamed Dial"}
+            display._get_info_rows()
+        assert mock_gather.call_args_list[0].args[0] == "Kitchen Dial"
+        assert mock_gather.call_args_list[1].args[0] == "Renamed Dial"
+
+    def test_not_wired_for_a_noop_display(self):
+        """set_info_provider is only ever called when the display stack
+        actually has one — the NoOpDisplayStatusProvider fallback (a Pillow/
+        display-stack import failure) has no screen at all."""
+        import dial_main as dm
+        from dial_http_server import NoOpDisplayStatusProvider
+
+        noop = NoOpDisplayStatusProvider()
+        assert not hasattr(noop, "set_info_provider")
 
 
 # ---------------------------------------------------------------------------

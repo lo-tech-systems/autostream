@@ -24,6 +24,7 @@ from dial_http_server import (
     NoOpDisplayStatusProvider,
     _announce_self,
 )
+from dial_info import gather_dial_info
 from dial_led import DialLED
 from dial_mdns import (
     get_display_targets,
@@ -480,10 +481,11 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # the repeat screen (closing it also reveals the main screen's
         # volume overlay on return — see display.toggle_repeat_screen());
         # REPEAT_* act on the repeat screen; IDLE_REPLAY opens the replay
-        # picker; OUTPUTS opens the outputs list; OUTPUT_* act on the
-        # per-output detail page; ARTWORK hides the main screen's own bands
-        # for a few seconds — see dial_touch.py's SURFACES paragraph for how
-        # a press ever reaches one of these zones in the first place.
+        # picker; IDLE_INFO opens the idle screen's read-only info page;
+        # OUTPUTS opens the outputs list; OUTPUT_* act on the per-output
+        # detail page; ARTWORK hides the main screen's own bands for a few
+        # seconds — see dial_touch.py's SURFACES paragraph for how a press
+        # ever reaches one of these zones in the first place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
@@ -506,6 +508,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.repeat_stop_tap()
         elif zone == TouchZone.IDLE_REPLAY:
             display.open_picker()
+        elif zone == TouchZone.IDLE_INFO:
+            display.open_info()
         elif zone == TouchZone.OUTPUTS:
             display.open_outputs()
         elif zone == TouchZone.OUTPUT_BACK:
@@ -636,6 +640,16 @@ def main() -> None:
     # child for that case.
     if cfg.display.fitted:
         start_general_browser(shutdown_event=shutdown_event)
+
+    # Wired here, after the HTTP server exists (its get_runtime_status()
+    # supplies the dial's live name) and before display.start() (so the
+    # provider is in place before the repeat thread can ever open the info
+    # page). hasattr guards the NoOpDisplayStatusProvider fallback above,
+    # which has no screen and so no provider to set.
+    if hasattr(display, "set_info_provider"):
+        display.set_info_provider(
+            lambda: gather_dial_info(http_server.get_runtime_status()["name"], VERSION)
+        )
     display.start()
 
     # Volume/mute broadcast scope (see dial_volume.py's module docstring):

@@ -73,7 +73,9 @@ on screen or not shown at all — there is no reveal-only phase for it).
 "repeat" maps to GEOMETRY_REPEAT; "idle" maps to GEOMETRY_IDLE; "outputs"
 maps to GEOMETRY_LIST (the outputs list reuses the same list chassis as
 the selector/picker); "output" maps to GEOMETRY_OUTPUT (the per-output
-detail page) — all held like the selector. The map is many-to-one on
+detail page); "info" maps to GEOMETRY_INFO (the idle screen's read-only
+info page — the list table with every row entry removed, so a row tap
+lands in no zone) — all held like the selector. The map is many-to-one on
 purpose: which surfaces share a geometry is a policy decision (reveal
 timing, what a row tap does), never a geometric one —
 dial_touch_layout.py itself only ever describes its geometries, never a
@@ -116,6 +118,7 @@ from dataclasses import dataclass
 from dial_touch_filter import TouchEvent, TouchEventType
 from dial_touch_layout import (
     GEOMETRY_IDLE,
+    GEOMETRY_INFO,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
@@ -198,6 +201,11 @@ SURFACE_OUTPUT = "output"
 # replay_surface). Held like every other non-hidden surface — see
 # set_surface() below.
 SURFACE_REPEAT_REPLAY = "repeat_replay"
+# The idle screen's own read-only info page: held like every other list
+# surface (a press arms immediately, no reveal step), but its own geometry
+# (GEOMETRY_INFO) carries no LIST_ROW entries at all — a tap on a row lands
+# in no zone.
+SURFACE_INFO = "info"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -213,6 +221,7 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_IDLE: GEOMETRY_IDLE,
     SURFACE_OUTPUTS: GEOMETRY_LIST,
     SURFACE_OUTPUT: GEOMETRY_OUTPUT,
+    SURFACE_INFO: GEOMETRY_INFO,
 }
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close
@@ -429,6 +438,9 @@ class TouchStateMachine:
         held behaviour as SURFACE_SELECTOR/SURFACE_PICKER.
         SURFACE_OUTPUT: the per-output detail page; hit-tests use the
         GEOMETRY_OUTPUT table, held like the selector.
+        SURFACE_INFO: the idle screen's own read-only info page; hit-tests
+        use the GEOMETRY_INFO table (the list table with every row entry
+        removed), held like the selector.
 
         name_active, dots_active and outputs_active are recorded either
         way — even on a same-surface call — since any of them can change on

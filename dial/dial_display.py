@@ -423,6 +423,37 @@ class PickerState:
 
 
 @dataclass(frozen=True)
+class InfoRow:
+    """One row of the idle screen's read-only info page — see InfoState."""
+    label: str
+    value: str          # "-" when a source failed or has nothing to report
+
+
+@dataclass(frozen=True)
+class InfoState:
+    """Immutable snapshot of the info page's rows and paging. rows: all six
+    fields, ALL pages (the same "every row, sliced at paint time" shape
+    PickerState/SelectorState use); page: the current page; opened_at: what
+    SELECTOR_TIMEOUT_SECONDS counts down from; gather_seq: which gather
+    (see DialDisplay._gather_info) this snapshot's rows belong to, so a
+    stale result landing after the page closed/reopened is dropped rather
+    than overwriting fresher (or placeholder) rows."""
+    rows: tuple[InfoRow, ...]
+    page: int
+    opened_at: float
+    gather_seq: int
+
+
+# The six info fields, shown at once and filled in within about a second of
+# opening — see DialDisplay.open_info()/_gather_info().
+INFO_TITLE = "Info"
+INFO_PLACEHOLDER_ROWS: tuple[InfoRow, ...] = tuple(
+    InfoRow(label=label, value="-")
+    for label in ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free")
+)
+
+
+@dataclass(frozen=True)
 class OutputRow:
     """One row of the outputs list, or the output shown on the detail page."""
     id: str
@@ -850,6 +881,21 @@ class DialDisplay:
         # The replay picker's own rows/paging — refreshed every poll tick
         # regardless of whether it is open, mirroring self._selector.
         self._picker: PickerState | None = None
+        # The info page's own state — written under self._lock by its
+        # opener (_open_info_locked) and by _gather_info's fold-in (its own
+        # short-lived daemon thread, the on_outputs_result fold-in
+        # discipline: one assignment under the lock, no I/O while held).
+        self._info: InfoState | None = None
+        # Bumped by open_info() (touch thread, no lock — a plain int write)
+        # each time the page (re)opens; a landing gather compares its own
+        # captured value against this one and drops its result if they no
+        # longer match (the page closed and reopened, or closed outright).
+        self._info_gather_seq = 0
+        # Zero-arg callable -> tuple[InfoRow, ...], wired by set_info_provider()
+        # at startup (dial_main.py, after the HTTP server exists). None
+        # (e.g. a NoOpDisplayStatusProvider stand-in, or before wiring runs)
+        # means _gather_info() falls back to the placeholder rows.
+        self._get_info_rows = None
         # The outputs list screen's own state — written under self._lock by
         # its opener and by on_outputs_result's fold (worker thread); read
         # lock-free by the touch thread's outputs_row_tap()/output_toggle_
@@ -1334,9 +1380,11 @@ class DialDisplay:
         dots_active is true whenever the currently focused/reporting
         appliance has a fresh, available repeat-store record — see
         _poll_once, which computes it into self._dots_active every tick.
-        "idle" is reported only while the idle affordance is drawn — a tap
-        on a plain logo with nothing held stays reveal-only, as before this
-        feature existed.
+        "idle" is reported whenever nothing is playing, not only while the
+        idle affordance is drawn — the info page's "i" affordance must be
+        reachable on every idle dial. A replay tap on a plain logo still
+        stays inert (see open_picker()'s own guard); only the idle
+        affordance decides whether IDLE_REPLAY actually does anything.
 
         Every secondary screen's surface tuple is fixed by its policy row
         (ScreenPolicy.surface) — the repeat screen's own top-band NAME zone
@@ -1379,7 +1427,7 @@ class DialDisplay:
                 s = policy.surface
             return (s[0], s[1], s[2], s[3] and self._outputs_available)
         if self._now_playing is None:
-            return ("idle" if self._idle_affordance else "hidden", False, False, False)
+            return ("idle", False, False, False)
         name_active = True
         dots_active = self._dots_active
         outputs_active = self._outputs_available
@@ -1941,16 +1989,20 @@ class DialDisplay:
         return woke
 
     def _idle_chassis_due_locked(self) -> bool:
-        """True when the idle screen's own compose path (compose_idle, no
-        volume/mute controls overlay) should be used in place of the
-        ordinary overlay compose path — exactly when the "tap to replay"
-        affordance is due. When nothing is playing but no affordance is
-        due, the plain logo goes through the normal reveal-on-touch overlay
-        path unchanged, matching the behaviour from before this screen
-        existed (see touch_surface(): the touch surface itself stays
-        "hidden", not "idle", in that case, so nothing here should look any
-        different from it either)."""
-        return self._idle_affordance and self._screen == "main" and self._now_playing is None
+        """True whenever the idle screen's own compose path (compose_idle:
+        the info badge, no volume/mute controls overlay) should be used in
+        place of the ordinary overlay compose path — whenever nothing is
+        playing, not only while the "tap to replay" affordance is due. The
+        idle screen is one screen regardless of whether a replay is held,
+        so the "i" affordance is reachable on every idle dial; which base
+        image it shows (the replay-available logo or the plain one) is
+        still decided by the affordance alone (see _display_idle_locked).
+        This is the one behaviour change the info page's own idle-screen
+        reach requires: a plain logo with nothing held used to fall through
+        to the ordinary reveal-on-touch overlay path (a controls overlay
+        over a logo that controlled nothing) — see touch_surface(), whose
+        "idle" surface now follows the same rule."""
+        return self._screen == "main" and self._now_playing is None
 
     # ---- appliance selector, repeat and picker screens ----------------------
     #
@@ -2017,7 +2069,12 @@ class DialDisplay:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW
         tap): routes to whichever list-chassis screen is actually open —
         the appliance selector (selector_pick), the replay picker
-        (picker_pick) or the outputs list (outputs_row_tap)."""
+        (picker_pick) or the outputs list (outputs_row_tap). A no-op on the
+        info page: its rows are already dead at the geometry level
+        (GEOMETRY_INFO carries no LIST_ROW entries at all), so this is
+        belt-and-braces only."""
+        if self._screen == "info":
+            return
         if self._screen == "picker":
             self.picker_pick(index)
         elif self._screen == "outputs":
@@ -2172,14 +2229,63 @@ class DialDisplay:
 
     def open_picker(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_REPLAY
-        tap). Also forces an immediate reconcile/poll, the same as
-        open_selector(), so a row that just went stale is refreshed within
-        about one poll interval of opening."""
+        tap). Refuses (plain bool read, no lock) when no replay is actually
+        held — the "i" affordance is reachable on every idle dial now (see
+        _idle_chassis_due_locked), but a replay tap on a plain logo stays
+        inert exactly as it was before that unification. Otherwise also
+        forces an immediate reconcile/poll, the same as open_selector(), so
+        a row that just went stale is refreshed within about one poll
+        interval of opening."""
+        if not self._idle_affordance:
+            return
         self._screen_request = "picker"
         self._reconcile_due = True
         auth_map.force_due()
         self._poll_wake.set()
         self._overlay_signal.set()
+
+    def open_info(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for the idle
+        screen's IDLE_INFO tap). Requests the info page and starts one
+        bounded gather on its own daemon thread; the page paints at once
+        with placeholder "-" values (see _open_info_locked) and fills in
+        within about a second once the gather lands (see _gather_info()).
+        Touches no lock and does no I/O itself: two plain writes, a signal
+        and a thread start."""
+        self._info_gather_seq += 1
+        seq = self._info_gather_seq
+        self._screen_request = "info"
+        self._overlay_signal.set()
+        threading.Thread(target=self._gather_info, args=(seq,), daemon=True, name="dial-info").start()
+
+    def _gather_info(self, seq: int) -> None:
+        """Worker thread (one per open_info() call, never the touch
+        thread): call the injected provider and fold the result in under
+        self._lock in one assignment — the on_outputs_result fold-in
+        discipline, no I/O while the lock is held. Never raises: a missing
+        or failing provider yields the placeholder rows instead. Drops a
+        stale result — the page closed and reopened (seq no longer
+        matches) or closed outright (self._info is None)."""
+        try:
+            if self._get_info_rows is not None:
+                rows = tuple(InfoRow(label=label, value=value) for label, value in self._get_info_rows())
+            else:
+                rows = INFO_PLACEHOLDER_ROWS
+        except Exception:
+            rows = INFO_PLACEHOLDER_ROWS
+        with self._lock:
+            state = self._info
+            if state is None or seq != self._info_gather_seq:
+                return
+            self._info = dataclasses.replace(state, rows=rows)
+        self._overlay_signal.set()
+
+    def set_info_provider(self, fn) -> None:
+        """Startup wiring (dial_main.py, after the HTTP server exists): a
+        zero-arg callable returning an iterable of (label, value) pairs —
+        dial_info.gather_dial_info, bound to this dial's own name/version.
+        Plain attribute write."""
+        self._get_info_rows = fn
 
     def picker_pick(self, index: int) -> None:
         """Touch-thread entry: start replaying the tapped row's held
@@ -2371,6 +2477,18 @@ class DialDisplay:
         rows = self._picker.rows if self._picker is not None else ()
         self._picker = PickerState(rows=rows, page=0, opened_at=time.monotonic())
         self._screen = "picker"
+        return True
+
+    def _open_info_locked(self) -> bool:
+        """The info row's opener: open at once with whatever rows the last
+        gather left (or the placeholders, on a fresh open), page 0, a
+        restarted inactivity clock. The actual data lands separately, from
+        the daemon thread open_info() already started — see _gather_info()."""
+        rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
+        self._info = InfoState(
+            rows=rows, page=0, opened_at=time.monotonic(), gather_seq=self._info_gather_seq,
+        )
+        self._screen = "info"
         return True
 
     def _open_repeat_locked(self) -> bool:
@@ -2705,6 +2823,21 @@ class DialDisplay:
             _picker_list_row, pressed=self._pressed,
         )
 
+    def _build_info_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
+        """Build the compositor's ListState for the info page's CURRENT
+        page — six read-only (label, False, value) rows, ALL pages held in
+        self._info.rows the same way SelectorState/PickerState hold theirs.
+        title/plain_background mark this as the read-only variant: the
+        compact tier's own title band reads "Info" instead of "Replay", and
+        the whole frame sits on the flat chassis colour rather than a
+        dimmed base image (the info page has no artwork/logo of its own to
+        dim)."""
+        list_state = _list_state_for(
+            self._info, _rows_per_page_for(width, height, metrics=metrics), "-",
+            lambda row: (row.label, False, row.value), pressed=self._pressed,
+        )
+        return dataclasses.replace(list_state, title=INFO_TITLE, plain_background=True)
+
     def _row_with_optimistic_locked(self, row: "OutputRow") -> "OutputRow":
         """*row* with the pending optimistic override folded in when it
         names this row — paint-time only, never written back to
@@ -2772,9 +2905,10 @@ class DialDisplay:
 
     def _display_list_locked(self) -> None:
         """Compose and push whichever list-chassis screen is open (the
-        appliance selector or the replay picker). Bypasses _display_locked()
-        so self._current_base_image survives a list visit unchanged and the
-        frame never picks up the main now-playing overlay. Caller holds
+        appliance selector, the replay picker, the outputs list or the
+        read-only info page). Bypasses _display_locked() so self.
+        _current_base_image survives a list visit unchanged and the frame
+        never picks up the main now-playing overlay. Caller holds
         self._lock; the backend-open check is _repaint_current_locked's.
 
         Passes self._current_base_image through as compose_list()'s `base`
@@ -2782,12 +2916,15 @@ class DialDisplay:
         (the current artwork/logo, dimmed behind it, same as every other
         compact screen); every other tier ignores the argument entirely and
         keeps its flat chassis background, so this is harmless off compact.
+        The info page ignores it too, on every tier (plain_background=True).
         """
         metrics = self._metrics_locked()
         if self._screen == "picker":
             list_state = self._build_picker_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         elif self._screen == "outputs":
             list_state = self._build_outputs_list_state_locked(metrics.width, metrics.height, metrics=metrics)
+        elif self._screen == "info":
+            list_state = self._build_info_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         else:
             list_state = self._build_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         self._push_frame_locked(lambda: self._compositor.compose_list(
@@ -2897,13 +3034,13 @@ class DialDisplay:
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
-        logo (the arrows-on-disc image) in place of the plain logo, with no
-        volume/mute controls overlay (nothing is playing, so there is
-        nothing on this screen to control). Only ever reached while a replay
-        is available (the idle affordance is due; see
-        _idle_chassis_due_locked and its call sites in _render_logo_locked/
-        _repaint_current_locked), so it always shows the replay logo,
-        degrading to the plain base if the replay image cannot be loaded.
+        logo (the arrows-on-disc image) whenever the idle affordance is due,
+        else the plain logo already stored as the current base — either
+        way with the "i" information badge and no volume/mute controls
+        overlay (nothing is playing, so there is nothing else on this
+        screen to control). Reached whenever nothing is playing (see
+        _idle_chassis_due_locked), not only while a replay is available;
+        degrades to the plain base if the replay image cannot be loaded.
         Caller holds self._lock; a no-op if the backend is closed or nothing
         has been rendered yet."""
         if not (self._backend_open and self._backend is not None):
@@ -2911,7 +3048,10 @@ class DialDisplay:
         if self._current_base_image is None:
             return
         metrics = self._metrics_locked()
-        base = load_logo(self._replay_logo_path, metrics.width, metrics.height) or self._current_base_image
+        base = (
+            (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._idle_affordance else None)
+            or self._current_base_image
+        )
         self._push_frame_locked(lambda: self._compositor.compose_idle(
             base, metrics.width, metrics.height,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -3796,6 +3936,13 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         # touch activity extends every list screen's clock — picker now
         # matches the selector/outputs lists rather than keeping its own
         # older (never-extends) behaviour.
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    "info": ScreenPolicy(
+        name="info", state_attr="_info", surface=("info", False, False, False),
+        open=DialDisplay._open_info_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
