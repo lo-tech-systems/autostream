@@ -1233,7 +1233,7 @@ class TestEndToEndDisplaySelection:
         aid = "a" * 20
         self._add_playing(appliance_id=aid)
         display = self._make_real_display()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value={"track_id": None, "status_error": "unauthorized",
                                   "appliance_id": aid}):
             display._poll_once()
@@ -1245,7 +1245,7 @@ class TestEndToEndDisplaySelection:
     def test_no_artwork_shows_logo(self):
         self._add_playing()
         display = self._make_real_display()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value={"track_id": None, "status_error": None}):
             display._poll_once()
         assert display.get_status()["showing"] == "logo"
@@ -1269,7 +1269,7 @@ class TestEndToEndDisplaySelection:
                 "status_error": None,
             }
 
-        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+        with patch("dial_core.fetch_target_status", side_effect=fake_fetch):
             display._poll_once()
 
         assert polled == ["Older"]

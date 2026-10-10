@@ -50,9 +50,9 @@ class TestMuteObservationFromStatusPoll:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, muted=True)), \
-             patch("dial_display.observe_mute_state") as mock_observe:
+             patch("dial_core.observe_mute_state") as mock_observe:
             display._poll_once()
         mock_observe.assert_called_once_with(t.service_name, True, requested_at=ANY, status_reports_mute=False)
 
@@ -60,9 +60,9 @@ class TestMuteObservationFromStatusPoll:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, muted=False)), \
-             patch("dial_display.observe_mute_state") as mock_observe:
+             patch("dial_core.observe_mute_state") as mock_observe:
             display._poll_once()
         mock_observe.assert_called_once_with(t.service_name, False, requested_at=ANY, status_reports_mute=False)
 
@@ -74,9 +74,9 @@ class TestMuteObservationFromStatusPoll:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(status_error="timeout")), \
-             patch("dial_display.observe_mute_state") as mock_observe:
+             patch("dial_core.observe_mute_state") as mock_observe:
             display._poll_once()
         mock_observe.assert_called_once_with(t.service_name, None, requested_at=ANY, status_reports_mute=False)
 
@@ -93,8 +93,8 @@ class TestMuteObservationFromStatusPoll:
         def fake_fetch(target, dial_id, timeout_seconds):
             return _status_result(track_id=None, muted=(target.service_name != "older"))
 
-        with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
-             patch("dial_display.observe_mute_state") as mock_observe:
+        with patch("dial_core.fetch_target_status", side_effect=fake_fetch), \
+             patch("dial_core.observe_mute_state") as mock_observe:
             display._poll_once()
         mock_observe.assert_any_call("older", False, requested_at=ANY, status_reports_mute=False)
         mock_observe.assert_any_call("newer", True, requested_at=ANY, status_reports_mute=False)
@@ -109,8 +109,8 @@ class TestMuteObservationFromStatusPoll:
         display, fb, gt = make_display(targets=[t_older, t_newer])
         display.enable()
 
-        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)), \
-             patch("dial_display.observe_master_volume") as mock_observe:
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=None)), \
+             patch("dial_core.observe_master_volume") as mock_observe:
             display._poll_once()
 
         assert mock_observe.call_args[0][0] == "older"
@@ -123,9 +123,9 @@ class TestMuteObservationFromStatusPoll:
         t_b = _target(name="B", service_name="svc-b", playing_since=20.0)
         display, fb, gt = make_display(targets=[t_a, t_b])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, muted=False)), \
-             patch("dial_display.forget_mute_states_except") as mock_forget:
+             patch("dial_core.forget_mute_states_except") as mock_forget:
             display._poll_once()
         mock_forget.assert_called_once()
         assert set(mock_forget.call_args[0][0]) == {"svc-a", "svc-b"}
@@ -140,7 +140,7 @@ class TestMuteObservationFromStatusPoll:
             t = _target()
             display, fb, gt = make_display(targets=[t])
             display.enable()
-            with patch("dial_display.fetch_target_status",
+            with patch("dial_core.fetch_target_status",
                        return_value=_status_result(track_id=None, muted=True)):
                 display._poll_once()
             assert dv.shown_muted(t.service_name) is True
@@ -156,11 +156,11 @@ class TestMuteObservationFromStatusPoll:
             t = _target(dial_proto_version=2)
             display, fb, gt = make_display(targets=[t])
             display.enable()
-            with patch("dial_display.fetch_target_status",
+            with patch("dial_core.fetch_target_status",
                        return_value=_status_result(track_id=None, muted=True)):
                 display._poll_once()
             assert dv.shown_muted(t.service_name) is True
-            with patch("dial_display.fetch_target_status",
+            with patch("dial_core.fetch_target_status",
                        return_value=_status_result(status_error="timeout")):
                 display._poll_once()
             assert dv.shown_muted(t.service_name) is True
@@ -171,9 +171,9 @@ class TestMuteObservationFromStatusPoll:
         t = _target(dial_proto_version=2)
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, muted=True)), \
-             patch("dial_display.observe_mute_state") as mock_observe:
+             patch("dial_core.observe_mute_state") as mock_observe:
             display._poll_once()
         mock_observe.assert_called_once_with(t.service_name, True, requested_at=ANY, status_reports_mute=True)
 
@@ -187,7 +187,7 @@ class TestMuteObservationFromStatusPoll:
             display, fb, gt = make_display(targets=[t])
             display.enable()
             dv.observe_mute_state(t.service_name, True)      # a mute reply
-            with patch("dial_display.fetch_target_status",
+            with patch("dial_core.fetch_target_status",
                        return_value=_status_result(track_id=None, muted=None)):
                 display._poll_once()
             assert dv.shown_muted(t.service_name) is False
@@ -202,7 +202,7 @@ class TestMuteObservationFromStatusPoll:
             display, fb, gt = make_display(targets=[t])
             display.enable()
             dv.observe_mute_state(t.service_name, True)
-            with patch("dial_display.fetch_target_status",
+            with patch("dial_core.fetch_target_status",
                        return_value=_status_result(track_id=None, muted=None)):
                 display._poll_once()
             assert dv.shown_muted(t.service_name) is True
@@ -221,9 +221,9 @@ class TestMuteObservationFromStatusPoll:
             clock["now"] = 105.0      # the reply arrives later
             return _status_result(track_id=None, muted=True)
 
-        with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
+        with patch("dial_core.fetch_target_status", side_effect=fake_fetch), \
              patch("dial_display.time.monotonic", side_effect=lambda: clock["now"]), \
-             patch("dial_display.observe_mute_state") as mock_observe:
+             patch("dial_core.observe_mute_state") as mock_observe:
             display._poll_once()
         mock_observe.assert_called_once_with(t.service_name, True, requested_at=100.0, status_reports_mute=False)
 
@@ -267,9 +267,9 @@ class TestNowPlayingAndSource:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(artist="The Artist"))), \
-             patch("dial_display.observe_master_volume") as mock_observe:
+             patch("dial_core.observe_master_volume") as mock_observe:
             display._poll_once()
 
         assert display.core.current_source_service_name() == t.service_name
@@ -284,7 +284,7 @@ class TestNowPlayingAndSource:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(album=""))):
             display._poll_once()
         assert display.core.snapshot().now_playing.album == ""
@@ -292,7 +292,7 @@ class TestNowPlayingAndSource:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(state="pending"))):
             display._poll_once()
         assert display.core.snapshot().now_playing.album == ""
@@ -300,12 +300,12 @@ class TestNowPlayingAndSource:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())):
             display._poll_once()
         assert display.core.current_source_service_name() is not None
 
         gt.return_value = []
-        with patch("dial_display.observe_master_volume") as mock_observe:
+        with patch("dial_core.observe_master_volume") as mock_observe:
             display._poll_once()
 
         assert display.core.current_source_service_name() is None
@@ -315,7 +315,7 @@ class TestNowPlayingAndSource:
         t = _target()
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())):
             display._poll_once()
         assert display.core.current_source_service_name() is not None
 
@@ -374,7 +374,7 @@ class TestUntypedRefusal:
         display, fb, gt = make_display(targets=[refused])
         display.enable()
         with patch("dial_auth.auth_map.force_due") as force_due, \
-                patch("dial_display.fetch_target_status", return_value=_status_result()):
+                patch("dial_core.fetch_target_status", return_value=_status_result()):
             display._poll_once()
         force_due.assert_any_call(aid)
         assert display._core._reconcile_due or display._core._last_reconcile_at > 0
@@ -386,7 +386,7 @@ class TestUntypedRefusal:
         display.enable()
         display._core._prev_playing_ids = {aid}
         with patch("dial_auth.auth_map.force_due") as force_due, \
-                patch("dial_display.fetch_target_status", return_value=_status_result()):
+                patch("dial_core.fetch_target_status", return_value=_status_result()):
             display._poll_once()
         assert call(aid) not in force_due.call_args_list
 
@@ -395,7 +395,7 @@ class TestUntypedRefusal:
         t = _target(name="Hall", service_name="Hall", appliance_id=aid)
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=self._refusal()) as fetch:
+        with patch("dial_core.fetch_target_status", return_value=self._refusal()) as fetch:
             display._poll_once()
         assert fetch.call_count == 1
         assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
@@ -408,7 +408,7 @@ class TestUntypedRefusal:
         display, fb, gt = make_display(targets=[t])
         display.enable()
         ok = _status_result(track_id=_track_id(), appliance_id=None)
-        with patch("dial_display.fetch_target_status", return_value=ok) as fetch:
+        with patch("dial_core.fetch_target_status", return_value=ok) as fetch:
             display._poll_once()
         assert fetch.call_count == 1
         assert display.core.snapshot().focus.reporting_id == aid

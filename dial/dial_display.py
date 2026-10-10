@@ -951,7 +951,9 @@ class DialDisplay:
             update_watcher=update_watcher, update_seen_path=update_seen_path,
             reboot=lambda: _request_reboot(),
         )
-        self._core.set_io(self._poll_io())
+        self._core.set_io(PollIO(
+            on_artwork_error=self._record_error, log_limiter=self._log_limiter,
+        ))
         self._core.set_eq_veto(self._compact_tier)
         self._core.set_idle_hold(self._holds_idle_state)
         self._core.set_polling(config.fitted)
@@ -4455,21 +4457,6 @@ class DialDisplay:
         """Record that appliance_id's warnings-changed push arrived (from the
         HTTP thread): the core fetches its warnings on its next tick."""
         self._core.notify_warnings_changed(appliance_id)
-
-    def _poll_io(self) -> PollIO:
-        """The calls the core's poll makes, looked up in this module when
-        they run, so replacing one here (a test does) takes effect."""
-        return PollIO(
-            fetch_status=lambda *a, **k: fetch_target_status(*a, **k),
-            enrich=lambda *a, **k: enrich_targets(*a, **k),
-            fetch_artwork=lambda url, timeout: _fetch_artwork(url, timeout),
-            artwork_eligible=lambda url: artwork_url_eligible(url),
-            observe_mute=lambda *a, **k: observe_mute_state(*a, **k),
-            observe_volume=lambda *a, **k: observe_master_volume(*a, **k),
-            forget_mute=lambda *a, **k: forget_mute_states_except(*a, **k),
-            on_artwork_error=lambda error_id: self._record_error(error_id),
-            log_limiter=self._log_limiter,
-        )
 
     def _apply_repeat_outcome(self, appliance_id: str, outcome) -> None:
         """React to what a repeat transport result meant: a poll at once for

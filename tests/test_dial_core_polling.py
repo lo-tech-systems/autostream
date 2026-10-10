@@ -57,7 +57,7 @@ class TestApplianceStatusFields:
         display, fb, gt = self._two()
         display.enable()
         result = _status_result(track_id=_track_id(), muted=True)
-        with patch("dial_display.fetch_target_status", return_value=result):
+        with patch("dial_core.fetch_target_status", return_value=result):
             display._poll_once()
         first = self._by_id(display)["1" * 20]
         assert (first.status_error, first.master_volume, first.muted) == (None, 50, True)
@@ -65,7 +65,7 @@ class TestApplianceStatusFields:
     def test_a_failed_fetch_records_the_error(self):
         display, fb, gt = self._two()
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(status_error="timeout")):
             display._poll_once()
         first = self._by_id(display)["1" * 20]
@@ -75,7 +75,7 @@ class TestApplianceStatusFields:
     def test_an_appliance_not_asked_this_tick_shows_none(self):
         display, fb, gt = self._two()
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id())) as fetch:
             display._poll_once()
         # The walk stops at the first target that identifies a track.
@@ -88,11 +88,11 @@ class TestApplianceStatusFields:
     def test_the_next_tick_replaces_the_last_ones_readings(self):
         display, fb, gt = self._two()
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(status_error="timeout")):
             display._poll_once()
         assert any(a.status_error == "timeout" for a in self._by_id(display).values())
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id())):
             display._poll_once()
         assert all(a.status_error is None for a in self._by_id(display).values())
@@ -100,7 +100,7 @@ class TestApplianceStatusFields:
     def test_the_readings_survive_a_roster_change_between_ticks(self):
         display, fb, gt = self._two()
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), muted=True)):
             display._poll_once()
         display.core.set_roster(display.core.roster() + [_roster_entry(name="Third", appliance_id="3" * 20)])
@@ -128,7 +128,7 @@ class TestAuthApplicationDuringPoll:
         t2 = _target(name="Second", service_name="Second", playing_since=2.0)
         display, fb, gt = make_display(targets=[t1, t2])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(status_error="unauthorized", appliance_id=aid)):
             display._poll_once()
         assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
@@ -139,7 +139,7 @@ class TestAuthApplicationDuringPoll:
         # outright — no fetch at all; the source moves to the next
         # controllable target.
         gt.return_value = [dataclasses.replace(t1, auth="unauthorized"), t2]
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id())) as mock_fetch:
             display._poll_once()
         mock_fetch.assert_called_once()
@@ -152,7 +152,7 @@ class TestAuthApplicationDuringPoll:
         t = _target(appliance_id=aid)
         display, fb, gt = make_display(targets=[t])
         display.enable()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), appliance_id=other_id)):
             display._poll_once()
         assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNKNOWN
@@ -175,23 +175,23 @@ class TestReconcilePass:
             return []
 
         with patch_monotonic(clock), \
-             patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
-             patch("dial_display.enrich_targets", side_effect=fake_enrich) as mock_enrich:
+             patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_core.enrich_targets", side_effect=fake_enrich) as mock_enrich:
             display._poll_once()  # sequential walk visits t1 only (breaks on its artwork)
         assert mock_enrich.call_count == 1
         pending_arg = mock_enrich.call_args[0][0]
         assert [t.service_name for t in pending_arg] == ["Two"]
 
         with patch_monotonic(clock), \
-             patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
-             patch("dial_display.enrich_targets", side_effect=fake_enrich) as mock_enrich2:
+             patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_core.enrich_targets", side_effect=fake_enrich) as mock_enrich2:
             display._poll_once()  # same instant: within the 60s interval
         mock_enrich2.assert_not_called()
 
         clock.t += dd.RECONCILE_INTERVAL_SECONDS
         with patch_monotonic(clock), \
-             patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
-             patch("dial_display.enrich_targets", side_effect=fake_enrich) as mock_enrich3:
+             patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_core.enrich_targets", side_effect=fake_enrich) as mock_enrich3:
             display._poll_once()
         mock_enrich3.assert_called_once()
 
@@ -208,8 +208,8 @@ class TestReconcilePass:
         dial_auth.auth_map.apply(aid2, dial_auth.OUTCOME_UNAUTHORIZED, aid2, clock.t)
 
         with patch_monotonic(clock), \
-             patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
-             patch("dial_display.enrich_targets", return_value=[]) as mock_enrich:
+             patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_core.enrich_targets", return_value=[]) as mock_enrich:
             display._poll_once()
         pending_arg = mock_enrich.call_args[0][0]
         assert [t.service_name for t in pending_arg] == ["Three"]
@@ -226,8 +226,8 @@ class TestReconcilePass:
                 {"name": "Two", "status_error": "unauthorized", "appliance_id": aid},
             ]
 
-        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
-             patch("dial_display.enrich_targets", side_effect=fake_enrich):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_core.enrich_targets", side_effect=fake_enrich):
             display._poll_once()
         assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
 
@@ -255,7 +255,7 @@ class TestRepeatStoreFeed:
         result = _status_result(track_id=None, appliance_id=aid)
         result["repeat"] = self._repeat_obj()
 
-        with patch("dial_display.fetch_target_status", return_value=result):
+        with patch("dial_core.fetch_target_status", return_value=result):
             display._poll_once()
 
         rec = drs.repeat_store.get(aid, now=time.monotonic())
@@ -271,7 +271,7 @@ class TestRepeatStoreFeed:
         display.enable()
         drs.repeat_store.update(aid, drs.parse_repeat_object(self._repeat_obj(), now=time.monotonic()))
 
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(status_error="unauthorized", appliance_id=aid)):
             display._poll_once()
 
@@ -286,7 +286,7 @@ class TestRepeatStoreFeed:
         rec = drs.parse_repeat_object(self._repeat_obj(), now=time.monotonic())
         drs.repeat_store.update(aid, rec)
 
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(status_error="timeout")):
             display._poll_once()
 
@@ -332,9 +332,9 @@ class TestRepeatStoreFeed:
                 "repeat": idle_repeat_obj,
             }]
 
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), appliance_id=aid_playing)), \
-             patch("dial_display.enrich_targets", side_effect=fake_enrich):
+             patch("dial_core.enrich_targets", side_effect=fake_enrich):
             display._poll_once()
 
         idle_rec = drs.repeat_store.get(aid_idle, now=time.monotonic())
@@ -385,9 +385,9 @@ class TestRepeatStoreFeed:
             }]
 
         with patch_monotonic(clock), \
-             patch("dial_display.fetch_target_status",
+             patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), appliance_id=aid_playing)), \
-             patch("dial_display.enrich_targets", side_effect=fake_enrich):
+             patch("dial_core.enrich_targets", side_effect=fake_enrich):
             display._poll_once()
 
         rec = drs.repeat_store.get(aid_idle, now=clock.t)
@@ -406,7 +406,7 @@ class TestRepeatStoreFeed:
         display, fb, gt = make_display(targets=[t])
         display.enable()
 
-        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())):
             display._poll_once()
 
         assert drs.repeat_store.get(aid_gone, now=time.monotonic()) is None
@@ -428,7 +428,7 @@ class TestPushProbes:
         display, fb, gt = make_display(targets=[t])
         display.notify_auth_changed(aid)
         display.notify_auth_changed("d" * 20)  # not rostered: skipped, no fetch
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(appliance_id=aid, track_id=None)) as mock_fetch:
             result = display._core._drain_push_probes()
         mock_fetch.assert_called_once()
@@ -436,7 +436,7 @@ class TestPushProbes:
         assert result == "probed"
     def test_drain_push_probes_is_noop_with_nothing_pending(self):
         display, fb, gt = make_display(targets=[])
-        with patch("dial_display.fetch_target_status") as mock_fetch:
+        with patch("dial_core.fetch_target_status") as mock_fetch:
             result = display._core._drain_push_probes()
         mock_fetch.assert_not_called()
         assert result == ""
@@ -468,7 +468,7 @@ class TestReconcileOnPlayingSetShrink:
         display._core._reconcile_due = False
         display._core._last_reconcile_at = time.monotonic()  # cadence alone would NOT fire
         with patch("dial_core_poll.reconcile") as rp, \
-             patch("dial_display.fetch_target_status",
+             patch("dial_core.fetch_target_status",
                    return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         rp.assert_not_called()
@@ -531,7 +531,7 @@ class TestOutputsAvailable:
         roster = [_roster_entry(appliance_id=aid, playing=True, dial_outputs=True)]
         display, fb, gt = make_display(targets=[t], roster=roster)
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         assert display.core.snapshot().focus.reporting_id == aid
         assert display.core.snapshot().outputs_available is True
@@ -542,7 +542,7 @@ class TestOutputsAvailable:
         roster = [_roster_entry(appliance_id=aid, playing=True, dial_outputs=False)]
         display, fb, gt = make_display(targets=[t], roster=roster)
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         assert display.core.snapshot().focus.reporting_id == aid
         assert display.core.snapshot().outputs_available is False
@@ -553,7 +553,7 @@ class TestOutputsAvailable:
         display, fb, gt = make_display(targets=[], roster=roster)
         display.enable()
         display.core.set_focus(aid)
-        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         assert display.core.snapshot().outputs_available is True
 
@@ -586,7 +586,7 @@ class TestEqAvailable:
         roster = [_roster_entry(appliance_id=aid, playing=True, dial_eq=True)]
         display, fb, gt = make_display(targets=[t], roster=roster)
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         assert display.core.snapshot().focus.reporting_id == aid
         assert display.core.snapshot().eq_available is True
@@ -597,7 +597,7 @@ class TestEqAvailable:
         roster = [_roster_entry(appliance_id=aid, playing=True, dial_eq=False)]
         display, fb, gt = make_display(targets=[t], roster=roster)
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         assert display.core.snapshot().eq_available is False
 
@@ -629,7 +629,7 @@ class TestEqAvailable:
             targets=[t], roster=roster, screen_size_inches=1.3,
         )
         display.enable()
-        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(appliance_id=aid)):
             display._poll_once()
         assert display._compact_tier() is True
         assert display.core.snapshot().eq_available is False

@@ -75,7 +75,7 @@ class TestManualFocus:
                 return _status_result(status_error="unauthorized", appliance_id=aid)
             return _status_result(track_id=_track_id())
 
-        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+        with patch("dial_core.fetch_target_status", side_effect=fake_fetch):
             display._poll_once()
 
         assert display.core.manual_focus_id() is None
@@ -88,9 +88,9 @@ class TestManualFocus:
         display.enable()
         display.core.set_focus(aid)
         fake_image = Image.new("RGB", (fb.width, fb.height))
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(album="Focused Album"), appliance_id=aid)), \
-             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_core_poll.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
             display._poll_once()
@@ -102,7 +102,7 @@ class TestManualFocus:
         display, fb, gt = make_display(targets=[playing], roster=[idle_entry])
         display.enable()
         display.core.set_focus(aid)
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
             display._poll_once()
         assert display.core.manual_focus_id() == aid
@@ -117,14 +117,14 @@ class TestManualFocus:
         display, fb, gt = make_display(targets=[], roster=[idle_entry])
         display.enable()
         display.core.set_focus(aid_idle)
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid_idle)):
             display._poll_once()
         assert display.core.manual_focus_id() == aid_idle
 
         other = _target(name="Other", service_name="Other", appliance_id="d" * 20, auth="authorized")
         gt.return_value = [other]
-        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=None)):
             display._poll_once()
         assert display.core.manual_focus_id() == aid_idle
     def test_picking_an_idle_row_shows_it_with_no_fetch_for_playing_targets(self):
@@ -142,7 +142,7 @@ class TestManualFocus:
             calls.append(target.service_name)
             return _status_result(track_id=None, appliance_id=target.appliance_id)
 
-        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+        with patch("dial_core.fetch_target_status", side_effect=fake_fetch):
             display._poll_once()
 
         assert calls == ["Idle"]
@@ -163,7 +163,7 @@ class TestManualFocus:
                 return _status_result(status_error="unauthorized", appliance_id=aid_idle)
             return _status_result(track_id=None, appliance_id=target.appliance_id)
 
-        with patch("dial_display.fetch_target_status", side_effect=fake_fetch):
+        with patch("dial_core.fetch_target_status", side_effect=fake_fetch):
             display._poll_once()
 
         assert display.core.manual_focus_id() is None
@@ -226,7 +226,7 @@ class TestFocusPendingGrace:
         display, fb, gt = make_display(targets=[], roster=[idle_entry])
         clock = _FakeClock()
         with patch_monotonic(clock), \
-             patch("dial_display.fetch_target_status",
+             patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
             set_focus_pending(display, aid, "Kitchen")
             display._poll_once()
@@ -248,7 +248,7 @@ class TestFocusPendingGrace:
 
         t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid, playing_since=1.0)
         gt.return_value = [t]
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
             display._poll_once()
         assert display.core.manual_focus_id() == aid
@@ -333,7 +333,7 @@ class TestAcceptedReplayShowsAsPlaying:
 
     def test_poll_shows_it_as_playing(self):
         display = self._display()
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    return_value=_status_result(appliance_id=self.AID)) as fetch:
             display._poll_once()
         assert fetch.call_args[0][0].appliance_id == self.AID

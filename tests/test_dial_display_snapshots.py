@@ -46,10 +46,10 @@ class _Rig:
         picture = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch(
-                "dial_display.fetch_target_status",
+                "dial_core.fetch_target_status",
                 side_effect=lambda *a, **k: _status_result(track_id=self.track),
             ))
-            stack.enter_context(patch("dial_display._fetch_artwork", return_value=(b"jpeg", "")))
+            stack.enter_context(patch("dial_core_poll.default_fetch_artwork", return_value=(b"jpeg", "")))
             stack.enter_context(patch("dial_display.decode_artwork", return_value=picture))
             stack.enter_context(patch(
                 "dial_display_compositor.transform_artwork_for_panel", return_value=picture,
@@ -261,9 +261,9 @@ class TestRealThreads:
         target = _target(auth="authorized")
         display, fb, gt = make_display(targets=[target])
         picture = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
-        with patch("dial_display.fetch_target_status",
+        with patch("dial_core.fetch_target_status",
                    side_effect=lambda *a, **k: _status_result(track_id=_track_id())), \
-             patch("dial_display._fetch_artwork", return_value=(b"jpeg", "")), \
+             patch("dial_core_poll.default_fetch_artwork", return_value=(b"jpeg", "")), \
              patch("dial_display.decode_artwork", return_value=picture), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=picture):
             display._core.set_poll_interval(0.05)
@@ -294,7 +294,7 @@ class TestRealThreads:
             woke_during_request.append(fb.wake_calls)
             return _status_result(track_id=None)
 
-        with patch("dial_display.fetch_target_status", side_effect=slow_status):
+        with patch("dial_core.fetch_target_status", side_effect=slow_status):
             display.start()
             try:
                 assert self._wait_until(lambda: woke_during_request, limit=3.0)
