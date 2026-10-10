@@ -369,18 +369,24 @@ class TestSystemdDependencyOrdering:
         assert "wifi_mdns" in siblings and "wifi_policy" in siblings, siblings
         assert "wifi_state" in siblings, siblings
         appliance = INSTALL_SH.read_text(encoding="utf-8")
-        dial = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
+        helpers = (REPO_ROOT / "installer" / "dial" / "helpers.sh").read_text(encoding="utf-8")
+        start = helpers.index("install_code_tree() {")
+        code_tree = helpers[start:helpers.index("\n}\n", start)]
+        dial_platform = set()
+        for m in re.finditer(r"for name in (.*?); do(.*?)done", code_tree, re.S):
+            if "$DEPLOY/platform/${name}.py" in m.group(2):
+                dial_platform = set(m.group(1).replace("\\", " ").split())
         for mod in siblings:
             assert f"platform/{mod}.py" in appliance, (
                 f"autostream_install.sh does not deploy platform/{mod}.py"
             )
-            assert f"platform/{mod}.py" in dial, (
-                f"autostream_dial_install.sh does not deploy platform/{mod}.py"
+            assert mod in dial_platform, (
+                f"the dial installer does not deploy platform/{mod}.py"
             )
 
     def test_installers_normalize_wifi_watcher_line_endings(self):
         appliance_installer = INSTALL_SH.read_text(encoding="utf-8")
-        dial_installer = (REPO_ROOT / "autostream_dial_install.sh").read_text(
+        dial_installer = (REPO_ROOT / "installer" / "dial" / "helpers.sh").read_text(
             encoding="utf-8"
         )
         assert r"sed -i 's/\r$//' " in appliance_installer

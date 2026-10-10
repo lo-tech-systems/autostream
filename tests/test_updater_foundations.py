@@ -35,6 +35,25 @@ HOST_INSTALLER = REPO_ROOT / "autostream_install.sh"
 DIAL_HELPERS   = REPO_ROOT / "installer" / "dial" / "helpers.sh"
 
 
+def _dial_code_tree() -> str:
+    """The body of install_code_tree() in the dial installer helpers: the one
+    place every dial code file is deployed from (to /opt/autostream on a fresh
+    install, to the staged tree on an update)."""
+    text = DIAL_HELPERS.read_text(encoding="utf-8")
+    start = text.index("install_code_tree() {")
+    return text[start:text.index("\n}\n", start)]
+
+
+def _dial_loop_modules(prefix: str) -> set[str]:
+    """Module names deployed by the install_code_tree loop that installs
+    "$DEPLOY/<prefix>/${name}.py" (prefix "core" or "platform")."""
+    body = _dial_code_tree()
+    for m in re.finditer(r"for name in (.*?); do(.*?)done", body, re.S):
+        if f"$DEPLOY/{prefix}/${{name}}.py" in m.group(2):
+            return set(m.group(1).replace("\\", " ").split())
+    return set()
+
+
 def _load_script(name: str) -> ModuleType:
     """Load a supervisor script (no .py extension) as a Python module.
 
@@ -65,15 +84,13 @@ class TestDialDeploymentManifest:
     """
 
     def test_sysutils_deployed_from_core(self):
-        content = DIAL_INSTALLER.read_text(encoding="utf-8")
-        assert "core/autostream_sysutils.py" in content, (
+        assert "autostream_sysutils" in _dial_loop_modules("core"), (
             "Dial installer must deploy core/autostream_sysutils.py; "
             "wifi_watcher imports autostream_sysutils at runtime"
         )
 
     def test_rpi_deployed_from_core(self):
-        content = DIAL_INSTALLER.read_text(encoding="utf-8")
-        assert "core/autostream_rpi.py" in content, (
+        assert "autostream_rpi" in _dial_loop_modules("core"), (
             "Dial installer must deploy core/autostream_rpi.py; "
             "autostream_sysutils imports autostream_rpi at runtime"
         )
@@ -96,12 +113,11 @@ class TestDialDeploymentManifest:
     def test_wifi_network_helper_deployed_by_dial_installer(self):
         """The recovery watcher imports autostream_wifi_network at runtime; the
         dial installer must deploy the helper so the import resolves."""
-        content = DIAL_INSTALLER.read_text(encoding="utf-8")
-        assert "core/autostream_wifi_network.py" in content, (
+        assert "autostream_wifi_network" in _dial_loop_modules("core"), (
             "Dial installer must deploy core/autostream_wifi_network.py "
             "alongside the watcher"
         )
-        assert "/opt/autostream/autostream_wifi_network.py" in content
+        assert '"${dest}/${name}.py"' in _dial_code_tree()
 
 
 class TestRecoveryHelperManifest:
@@ -117,9 +133,9 @@ class TestRecoveryHelperManifest:
         assert 'chmod 0644 "${INSTALL_DIR}/autostream_wifi_network.py"' in content
 
     def test_dial_installer_root_owns_helper(self):
-        content = DIAL_INSTALLER.read_text(encoding="utf-8")
-        assert "-o root -g root" in content
-        assert "autostream_wifi_network.py" in content
+        body = _dial_code_tree()
+        assert "own=(-o root -g root)" in body
+        assert "autostream_wifi_network" in _dial_loop_modules("core")
 
     def test_host_installer_deploys_wifi_web(self):
         """wifi_web.py is part of the recovery component (HTTP-extraction plan)."""
@@ -127,8 +143,7 @@ class TestRecoveryHelperManifest:
         assert "platform/wifi_web.py" in content
 
     def test_dial_installer_deploys_wifi_web(self):
-        content = DIAL_INSTALLER.read_text(encoding="utf-8")
-        assert "platform/wifi_web.py" in content
+        assert "wifi_web" in _dial_loop_modules("platform")
 
 
 def _join_continuations(text: str) -> str:
@@ -156,11 +171,13 @@ class TestWifiWebDeploymentMode:
         )
 
     def test_dial_installer_installs_wifi_web_root_0644(self):
-        content = _join_continuations(DIAL_INSTALLER.read_text(encoding="utf-8"))
-        assert _WIFI_WEB_INSTALL.search(content), (
-            "autostream_dial_install.sh must deploy platform/wifi_web.py via explicit "
-            "`install -m 0644 -o root -g root`"
-        )
+        body = _dial_code_tree()
+        assert "wifi_web" in _dial_loop_modules("platform")
+        assert "own=(-o root -g root)" in body
+        assert re.search(
+            r'install -m 0644 \$\{own\[@\]\+"\$\{own\[@\]\}"\} "\$DEPLOY/platform/\$\{name\}\.py"',
+            body,
+        ), "the dial installer must deploy platform/wifi_web.py root-owned 0644"
 
 
 class TestWifiWebImportIsolation:
