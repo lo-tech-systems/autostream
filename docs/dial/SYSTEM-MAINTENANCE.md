@@ -214,3 +214,5 @@ taking effect, or the dial being unreachable at all, see
   a dial day to day.
 - [Setup: Dials](../SETUP-DIALS.md): the appliance side of dial setup.
 - [Build Guide](BUILD-GUIDE.md): the hardware itself.
+- [HD dial](HD-DIAL.md): the kiosk service and troubleshooting for a dial with
+  a full-size touchscreen.

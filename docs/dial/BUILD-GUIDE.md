@@ -190,6 +190,19 @@ same dial - only one `touch_type` can be active at a time (see
 
 ---
 
+## Optional: HD Touchscreen
+
+Instead of the small SPI display, a dial can drive a full-size touchscreen
+(5 inches or larger) on a Pi 3, 4 or 5, over HDMI or the DSI connector. The
+panel and its touch controller connect the way they would to any Raspberry Pi:
+there is no SPI wiring, no GPIO touch harness and no back-box to fit. The
+board runs a kiosk browser on the dial's own page, installed with the
+installer's `--hd` flag. This is a preview and has not yet been tried on real
+hardware. See [HD dial](HD-DIAL.md) for what to expect, how to install it
+and how to use the screen.
+
+---
+
 ## Back-Box Assembly
 
 1. Feed the power cable through the cable entry at the back of the box.

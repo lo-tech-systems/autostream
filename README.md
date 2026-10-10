@@ -110,7 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/dia
 
 4. Reboot, then continue setup from the **autostream** web app on your phone (Setup → Dials)
 
-See [Getting Started](docs/dial/GETTING-STARTED.md) for detailed setup instructions and [BUILD-GUIDE.md](docs/dial/BUILD-GUIDE.md) for hardware build instructions.
+See [Getting Started](docs/dial/GETTING-STARTED.md) for detailed setup instructions and [BUILD-GUIDE.md](docs/dial/BUILD-GUIDE.md) for hardware build instructions. A dial can also use a full-size HDMI or DSI touchscreen (preview): see [HD-DIAL.md](docs/dial/HD-DIAL.md).
 
 ---
 

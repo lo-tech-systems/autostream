@@ -29,6 +29,10 @@ reaches its recovery pages (see
 [System Maintenance](SYSTEM-MAINTENANCE.md)). There is no setup UI served by
 the dial itself.
 
+A dial with a full-size HDMI or DSI touchscreen (an HD dial) is set up the same
+way. It is installed with an extra flag and has its own screen settings; see
+[HD dial](HD-DIAL.md).
+
 ## Authorizing the dial
 
 Before a dial can control an appliance, it must be authorized:
@@ -161,5 +165,6 @@ them at the same time, not just one.
   revoking a dial.
 - [System Maintenance](SYSTEM-MAINTENANCE.md): firmware updates and
   recovering a dial that won't come back online.
+- [HD dial](HD-DIAL.md): a dial with a full-size touchscreen (preview).
 - [Build Guide](BUILD-GUIDE.md): building or extending the hardware,
   including the optional screen, touch panel, and LED.

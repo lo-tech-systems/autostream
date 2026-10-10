@@ -4,7 +4,9 @@ This guide covers the optional dial screen: what each page shows, what
 happens when you tap it, and how the pages fit together. It doesn't cover
 setup or configuration; see [Getting Started](GETTING-STARTED.md) for
 that, and the [Build Guide](BUILD-GUIDE.md) for fitting the screen and
-touch panel in the first place.
+touch panel in the first place. It covers the small SPI screens. A dial
+with a full-size HDMI or DSI touchscreen has its own page: see
+[HD dial](HD-DIAL.md).
 
 The screen comes in two sizes. A small (physically tiny) panel runs a
 simplified "compact" layout: a plain 2x2 grid of controls with no text
@@ -378,6 +380,34 @@ all, the page closes on its own after a minute so it never sits over
 now-playing indefinitely. Either way, the current reading stays visible on
 the [info page](#info-page).
 
+## Appliance warnings
+
+An autostream appliance can ask the dial to show a warning of its own. The
+appliance sends these for maintenance and power: a stylus near or past the end
+of its life, a drive belt or main bearing due for service, or a power supply
+that has dipped below its voltage. They appear on the screen as a card like
+the SD card warning: the appliance's name in small text on top, then a title
+(for example "Input 1 stylus"), a short message (for example "Change soon,
+7.5 h left"), and one button spanning the card.
+
+These are the quietest warnings the dial shows:
+
+- The card only opens over the now-playing screen, and only while the screen
+  is awake. It never wakes a sleeping panel and never opens over a list or
+  another page.
+- If the dial has other warnings due (No-WiFi, SD card health), those come
+  first.
+- The card closes by itself if the appliance stops reporting the warning, for
+  instance after you reset the counter in its Service page.
+
+The button depends on the warning. Most say **Dismiss**, which hides the card
+for a day or a week (the appliance chooses) and brings it back after that if
+the cause is still there. The snooze survives a restart. A plain notice that
+cannot be snoozed has an **OK** button instead, which closes the card until
+the appliance reports the notice again.
+
+Compact panels show the same card in the same layout as the SD card warning.
+
 ## Software update
 
 When the dial updates its own software (see
@@ -430,5 +460,6 @@ appliance's Dials panel instead.
 - [Getting Started](GETTING-STARTED.md): setting the dial up in the first
   place, from the appliance's own web interface.
 - [Build Guide](BUILD-GUIDE.md): fitting the screen and touch panel.
+- [HD dial](HD-DIAL.md): a dial with a full-size touchscreen.
 - [System Maintenance](SYSTEM-MAINTENANCE.md): firmware updates and
   recovering a dial that won't come back online.

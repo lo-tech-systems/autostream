@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- new: HD dial (preview). A dial can now drive a full-size HDMI or DSI
+  touchscreen. The dial serves a touch page to a kiosk browser on the same
+  board: appliances and speakers on the left; artwork, replay controls, track
+  and volume on the right; an equaliser page; a pull-down sheet for
+  brightness, sleep and the dial's details; warnings; and a screen that
+  sleeps and wakes on the first touch. Install it with
+  `autostream_dial_install.sh --hd`. Not yet tried on real hardware.
+- new: appliances now send their own maintenance and power warnings to dials:
+  a stylus near or past the end of its life, a drive belt or main bearing due
+  for service, and a low power-supply voltage. They page on the dial's screen
+  with the appliance's name and a Dismiss button, quietly and only over the
+  now-playing screen, and the appliance tells the dial when they change.
+- new: the dial can use a six-band equaliser on an appliance that has one (the
+  HD dial's equaliser page); the small screen keeps bass and treble.
+- new: the dial's Setup card shows Brightness and Sleep after for an HD dial
+  in place of the SPI-only rows.
+- improvement: an output in use by another autostream appliance now says
+  which one (the HD dial shows "In Use by" and its name).
+- improvement: appliances advertise a new dial protocol generation (v3) and
+  serve a capabilities list that a dial reads in place of the discovery flags,
+  so new dial features need no new discovery keys. Older dials and appliances
+  keep working with each other. Protocol generations are now compared as
+  numbers.
+- fix: a dial whose saved poll interval is unusable now uses the default
+  instead of stopping its poll loop.
+- change: the dial's code is split into a core that tracks the appliances and
+  views that draw the screen, so the small screen and the HD page share one
+  model. No change to what the small screen does.
+- change: the dial reports its screen's surface, brightness and sleep time in
+  its screen settings, and can optionally serve its page on a PIN-protected
+  development listener on the local network (off by default).
+- docs: new HD dial guide; the dial architecture, screen and protocol
+  documents describe the above.
+
 ## Version 0.6.1 - 2026-10-02
 
 - fix: on a fresh install protected by a setup PIN, opening the web UI now

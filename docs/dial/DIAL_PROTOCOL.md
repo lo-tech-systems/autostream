@@ -7,7 +7,10 @@ in the mDNS TXT record.
 Out of scope: the dial's own loopback poll of its local Wi-Fi watcher (`GET
 127.0.0.1:9080/network_status`, every 15 s) and its use of the local nginx offline-recovery
 CGI (`POST 127.0.0.1/offline/reboot`) for the Restart action are dial-local, not part of the
-appliance<->dial protocol, and are not documented here.
+appliance<->dial protocol, and are not documented here. So is the HD page's own API, which
+the dial serves on its loopback address (and, if switched on, on a development listener) to
+the browser on the same board; see `HD-DIAL.md` and `ARCHITECTURE.md`. The only HD setting
+that appears here is `hd_dev_access` (section 4).
 
 ---
 
@@ -22,7 +25,7 @@ Deleted when the last capture stops.
 |---|---|---|
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
-| `dial_proto` | `v3` | The appliance speaks the third dialect (see below). Absent on older appliances; `v2` on 0.7 appliances |
+| `dial_proto` | `v3` | The appliance speaks the third dialect (see below). Absent on older appliances |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
@@ -67,7 +70,7 @@ Announced continuously by a dial device.
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |
 | `dial_sdmon` | `v1` | The dial exposes `GET`/`POST /sdcard-health` (section 4) and can run the guarded SD card health probe |
-| `dial_proto` | `v3` | The dial speaks the third dialect (see below). It includes everything `v2` means: typed refusals on every route matched to an appliance by `appliance_id`, and `muted` treated as authoritative. `v2` on 0.7 dials; absent on older dials |
+| `dial_proto` | `v3` | The dial speaks the third dialect (see below). It includes everything `v2` means: typed refusals on every route matched to an appliance by `appliance_id`, and `muted` treated as authoritative. Absent on older dials |
 
 Port: **7842** (dial HTTP server).
 
@@ -225,7 +228,7 @@ names with versions), so a dial can read it before it is authorized.
 {
   "ok": true,
   "appliance_id": "a1b2c3d4e5f6a7b8c9d0",
-  "version": "0.8.0",
+  "version": "0.7.0",
   "dial_proto": 3,
   "capabilities": {
     "dial_status": 1,
@@ -1732,10 +1735,10 @@ Responses:
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
 | `dial_outputs=v1` | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume |
-| `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
+| `dial_eq=v1`; version 2 (JSON only) | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; version 1 is bass/treble over the output EQ bands. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the six-band `bands` field on both routes |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
-| `dial_warnings=v1` | `POST /api/dial/warnings` | UUID-auth; appliance-authored warnings for the dial to show. Announced only by `GET /api/dial/capabilities` (version `1`), with no TXT key |
+| `dial_warnings=v1` (JSON only) | `POST /api/dial/warnings`, and the dial's `POST /warnings-changed` | UUID-auth; appliance-authored warnings for the dial to show. Announced only by `GET /api/dial/capabilities` (version `1`), with no TXT key |
 | `dial_proto=v3` | `GET /api/dial/capabilities` | Advertised by appliances (both records) in place of `v2`; each generation includes the earlier ones. The endpoint is the authoritative capability list, with the versions in the table above. In it, `dial_eq` is `2` (six-band `bands` on the EQ routes) while the TXT key stays `dial_eq=v1` |
 | `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, whether a dial relies on `muted`, and the dial's handling of an appliance without an `id` on its playing record; see **Protocol dialect** in section 1. `dial_api=v1` and `dial_status=v1` are unchanged alongside it |
 

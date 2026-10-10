@@ -16,7 +16,9 @@ health and update progress, and publishes all of that as immutable snapshots.
 The **view** (`dial/dial_display.py`) owns the panel. It subscribes to the
 core, folds each snapshot into the screen that is up, composes frames and
 pushes them to the SPI display. The view holds no appliance state of its own,
-and the core imports nothing that draws.
+and the core imports nothing that draws. An HD dial adds a second view, a web
+page served by the dial, described in [The HD page is a second
+view](#the-hd-page-is-a-second-view).
 
 ## Modules
 
@@ -30,6 +32,13 @@ and the core imports nothing that draws.
 | `dial_display.py` | `DialDisplay`: the SPI view. Screen policy, the repaint thread, composing and pushing frames, panel sleep and wake, the artwork reveal slide, the pressed channel and the touch surface. |
 | `dial_display_compositor.py`, `dial_display_image.py`, `dial_display_profiles.py`, `dial_display_adafruit.py` | Drawing, image policy, panel profiles and the hardware backend. |
 | `dial_touch*.py` | Touch drivers, filtering and the zone layout. The touch source calls core actions through the view's taps. |
+| `dial_capabilities.py` | What an appliance can do for the dial. A small registry of what appliances' capabilities replies said, and `appliance_capabilities()`, the one place every caller asks. An appliance of a generation with a capabilities endpoint is read from its reply once that has landed; every other appliance, and one whose reply has not arrived, is read from its mDNS flags. Pure data and one leaf lock. |
+| `dial_appliance_fetch.py` | The reader for what an appliance says about itself (its capabilities and its warnings). One worker thread, queue and HTTP client of its own, so a slow appliance delays nothing else. Results go back to the core. |
+| `dial_hd_server.py` | `HdServer`: the HD page's loopback web server, the page's static files, the state body, the held artwork, the event stream route and the settings, info, action and panel routes. Also the optional development listener. |
+| `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
+| `dial_hd_state.py` | `build_state()`: the pure function that turns a core snapshot into the page's state body. |
+| `dial_hd_actions.py` | The page's actions as one table onto core methods, with the argument checks. |
+| `dial_hd_panel.py` | `HdPanel`: the HD dial's sleep, wake and brightness, and the backlight writes. |
 | `dial_main.py` | Entry point. Builds the core first, then the display, workers, inputs and HTTP server. Also holds the headless stand-in for the display. |
 
 ## Threads
@@ -42,6 +51,11 @@ and the core imports nothing that draws.
 | `volume-worker`, `eq-worker`, `outputs-worker`, `repeat-worker`, `network-worker` | workers | Do the slow appliance and system calls. Their results are handed back to the core, which folds them into state and queues what they mean for the screen. |
 | mDNS browsers | roster | Keep the list of appliances and which are playing. The core reads them each tick. |
 | HTTP server threads | control API | Serve the dial's own API. They call core actions, not the view's internals. |
+| `appliance-fetch-worker` | appliance fetch | Reads appliances' capabilities and warnings, one at a time. Its results are handed to the core. |
+| `dial-hd`, plus one thread per connection | HD server | Accepts connections on the loopback address and serves each on a thread of its own. Every socket has a short timeout, so a stalled client holds only its own thread. |
+| `dial-hd-dev`, plus one thread per connection | HD server | The development listener, present only while it is switched on. |
+| `hd-events` | change hub | Turns core change signals into sequence numbers, and while a page is connected keeps the followed appliance's outputs and EQ fetched. Each event stream client also has its handler thread. |
+| `hd-panel` | HD panel | Runs the idle clock and the sleep and wake decisions, and writes the backlight. |
 
 ## The interface between core and view
 
@@ -73,6 +87,66 @@ The queue is a channel for one view, not a notification mechanism. Taking is
 atomic, so two takers would split the effects between them. A second consumer
 should use `subscribe` or `wait_for_change` and read the snapshot. With no
 view attached, only the newest `EFFECTS_BACKLOG_MAX` entries are kept.
+
+## The HD page is a second view
+
+An HD dial draws nothing itself. The dial serves a web page, and a kiosk
+browser on the same board shows it (see [HD-DIAL.md](HD-DIAL.md)). That page is
+a second view of the core, alongside the SPI view. It reads snapshots through a
+loopback API and calls core actions. It never takes effects, and it holds no
+appliance state of its own beyond a short-lived optimistic value for a control
+being dragged.
+
+**Server.** `HdServer` listens on `127.0.0.1:7843` (never through nginx and
+never on a LAN address). Every request is checked before routing: the `Host`
+header must name the loopback address, an `Origin` header must match it, the
+request line and body are capped, and a POST must carry a custom header that a
+cross-site form cannot set. No cross-origin headers are ever sent, and the page
+is served under a content security policy that forbids inline script.
+
+**State.** `build_state()` is a pure function from a `CoreSnapshot` (plus the
+dial's panel and settings, the warning descriptors and the clock readings it
+is handed) to a plain dictionary. It does no I/O, takes no lock and reads no
+clock, so the same input is always the same output. The body carries a version
+and only grows: fields are added, never renamed or removed. It carries only
+what the page draws, with artwork as a local key and URL rather than the
+appliance's address.
+
+**Change hub.** The core's subscriber callback, the config listener and the
+panel all call `ChangeHub.publish()`, which only records the request and wakes
+the hub thread, so a publisher is never delayed. Requests that arrive before the
+hub thread runs become one sequence step. The state body for a sequence is
+built lazily by the first client that asks and cached, so any number of
+clients cost one serialisation per change. The event stream (server-sent
+events) gives each client its own handler thread, and a client that stops
+reading is dropped after one write timeout, leaving the core, the hub and the
+other clients unaffected. With no page open the hub asks for neither outputs
+nor EQ.
+
+**Actions.** A POST to an action route is checked against the action's
+argument spec (only the named fields, each of its type and range) and then maps
+to one core method. Results map to HTTP status codes in the server, not in the
+action table. Screen settings go through the management server's own config
+path, and sleep, wake and activity go to the panel.
+
+**Panel.** `HdPanel` keeps the screen awake or asleep. Asleep, the page draws a
+black shield and the first touch only wakes; where a sysfs backlight exists the
+panel also writes it. The idle clock starts when nothing is playing and
+restarts on activity. Playback starting, or a warning that interrupts, wakes
+the panel; an appliance warning, which never interrupts, does not. The panel
+never calls into the core.
+
+**Development listener.** When the dial's `hd_dev_access` setting is on (and a
+PIN is set), a second listener serves the same page and API on the LAN behind
+a PIN login and an in-memory session. It is the same dispatcher, so it cannot
+drift from the loopback one. PIN guessing shares the management server's
+per-address limiter. It follows the config, so it opens and closes without a
+restart and drops its sessions when the PIN changes.
+
+**Locking and threads.** The HD code follows the locking rules below. The core's
+snapshot is a lock-free reference read, so a request handler never holds a core
+or view lock while it reads or writes a socket. The hub's one condition and the
+panel's own small lock are never held while calling out.
 
 ## Locking rules
 
