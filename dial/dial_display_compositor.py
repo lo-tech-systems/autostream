@@ -61,10 +61,15 @@ colour is not — an accepted cosmetic exception, limited to the fallback
 background and never artwork.
 
 The artwork-tap reveal is a paint parameter too: compose(reveal_progress=p)
-slides the finished top band up and bottom band down by p of their height
-and fades the inter-band text at 1 - p, with p = 0 exactly the ordinary
-frame and p = 1 exactly the no-overlay frame. The manager owns the clock;
-this module never knows a frame is part of an animation.
+and compose_repeat(reveal_progress=p) slide the overlay's own chrome (the
+dim, the glyphs, the text, the washes) off the panel by p of a band's
+height while the artwork underneath stays exactly where it is, and fade
+the inter-band text at 1 - p; p = 0 is exactly the ordinary frame and
+p = 1 exactly the no-overlay frame. The chrome is separated from the
+artwork once per frame descriptor (see RevealLayers/_reveal_layers) and
+memoised, so a slide frame costs a few small region operations and never
+re-renders text or glyphs. The manager owns the clock; this module never
+knows a frame is part of an animation.
 
 Text rendering (artist name, volume number) never raises: every draw or
 measure call goes through _draw_text_safe()/_text_size(), which swallow any
@@ -106,7 +111,7 @@ import functools
 import logging
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
@@ -569,6 +574,29 @@ class WarningView:
     pressed: "TouchZone | None" = None
 
 
+@dataclass(frozen=True)
+class RevealLayers:
+    """The overlay's own contribution to one screen's frame, separated from
+    the artwork it is drawn over, for the artwork-tap reveal: for each of
+    the top band, the bottom band and the inter-band strip, the light the
+    chrome adds on its own (`*_add`) and how much of whatever is behind it
+    shows through (`*_keep`, per channel, 0..255), so that a band's pixels
+    are add + keep * base / 255 wherever the band sits. Built by
+    _reveal_layers() from two renders of the same frame descriptor, over
+    black and over white; a pure function of that descriptor, so it is
+    memoised like the glyph tiles and never depends on the base image."""
+
+    top_band: Rect
+    bottom_band: Rect
+    strip: Rect
+    top_add: Image.Image
+    top_keep: Image.Image
+    bottom_add: Image.Image
+    bottom_keep: Image.Image
+    strip_add: Image.Image
+    strip_keep: Image.Image
+
+
 # Background sources for _new_frame(): where a frame's base image comes
 # from before anything is drawn on top of it.
 BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
@@ -739,9 +767,10 @@ class DialDisplayCompositor:
         reveal_progress: how far the artwork-tap reveal has run, 0.0 (the
             bands in place: exactly the frame drawn before this parameter
             existed) to 1.0 (the bands gone: exactly the no-overlay frame).
-            In between, the top band is slid up and the bottom band down by
-            that fraction of their height and the album/title/artist lines
-            fade with it (see _reveal_frame). A paint parameter like the
+            In between, the top band's chrome is slid up and the bottom
+            band's down by that fraction of their height, the artwork under
+            them staying put, and the album/title/artist lines fade with it
+            (see _reveal_frame). A paint parameter like the
             idle screen's flash phase: the manager owns the clock. Ignored
             on the compact tier, which has no bands to slide, and whenever
             the overlay is not drawn at all. Values outside 0..1 (or NaN)
@@ -774,11 +803,12 @@ class DialDisplayCompositor:
             return _compose_frame(
                 image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
             )
-        shown = _compose_frame(
-            image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics,
-        )
         layout = layout_for(image.width, image.height, metrics=metrics)
-        return _finish(_reveal_frame(image, shown, reveal_progress, layout), rotate, bgr)
+        layers = _reveal_layers(
+            frame, image.width, image.height, metrics,
+            layout.top_band, layout.bottom_band, layout.artwork,
+        )
+        return _finish(_reveal_frame(image, layers, reveal_progress), rotate, bgr)
 
     def compose_list(
         self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool,
@@ -821,7 +851,7 @@ class DialDisplayCompositor:
 
     def compose_repeat(
         self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool, base=None,
-        metrics: LayoutMetrics | None = None, controls: bool = True,
+        metrics: LayoutMetrics | None = None, controls: bool = True, reveal_progress: float = 0.0,
     ):
         """Build one display-ready frame for the repeat screen.
 
@@ -845,14 +875,37 @@ class DialDisplayCompositor:
         returns *base* itself, undimmed, with only rotate/bgr applied — bare
         artwork/logo, no header/body/footer at all. A parameter, not
         attribute state, so the compositor stays stateless either way.
+
+        reveal_progress: the artwork-tap reveal's progress, meaningful only
+        for the replaying layout off the compact tier (the enable layout
+        has no artwork to reveal and the compact tier no bands): between 0
+        and 1 the top and bottom bands' chrome slides off and the position
+        line fades, exactly as compose() does for the now-playing overlay;
+        0 (the default) is the ordinary frame and 1 the same bare frame
+        controls=False gives. Ignored elsewhere.
         """
         if metrics is None:
             metrics = metrics_for(width, height)
         if not controls:
             return _finish(_new_frame(base, width, height, BG_BASE), rotate, bgr)
+        frame = _repeat_frame(state, width, height, metrics)
+        if (
+            metrics.content_tier != CONTENT_COMPACT
+            and state.layout == "replaying"
+            and reveal_progress > 0.0
+        ):
+            if reveal_progress >= 1.0:
+                # The chrome has left the panel: the same bare frame
+                # controls=False produces, through the same call.
+                return _finish(_new_frame(base, width, height, BG_BASE), rotate, bgr)
+            layout = repeat_layout_for(width, height, metrics=metrics)
+            strip = (0, layout.top_band[3], width, layout.bottom_band[1])
+            layers = _reveal_layers(
+                frame, width, height, metrics, layout.top_band, layout.bottom_band, strip,
+            )
+            return _finish(_reveal_frame(base, layers, reveal_progress), rotate, bgr)
         return _compose_frame(
-            base, width, height, _repeat_frame(state, width, height, metrics),
-            rotate=rotate, bgr=bgr, metrics=metrics,
+            base, width, height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
     def compose_output(
@@ -1671,12 +1724,13 @@ def _centred_box(rect: tuple[int, int, int, int], side: int) -> tuple[int, int, 
 
 
 def _reset_render_caches() -> None:
-    """Clear the memoised glyph-tile and halo-layer caches. Test-only hook,
-    the same purpose _reset_font_cache() serves for the font cache — lets a
-    test exercise either from a clean slate without restarting the
-    process."""
+    """Clear the memoised glyph-tile, halo-layer and reveal-layer caches.
+    Test-only hook, the same purpose _reset_font_cache() serves for the
+    font cache — lets a test exercise any of them from a clean slate
+    without restarting the process."""
     _glyph_tile.cache_clear()
     _halo_layer.cache_clear()
+    _reveal_layers.cache_clear()
 
 
 def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit: bool) -> None:
@@ -2015,35 +2069,81 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
     return img
 
 
-def _reveal_frame(base, shown: Image.Image, progress: float, layout: OverlayLayout) -> Image.Image:
+@functools.lru_cache(maxsize=2)
+def _reveal_layers(
+    frame: Frame, width: int, height: int, metrics: LayoutMetrics,
+    top_band: Rect, bottom_band: Rect, strip: Rect,
+) -> RevealLayers:
+    """Separate *frame*'s chrome from whatever base it will be drawn over,
+    for the three regions the artwork-tap reveal moves or fades. Every
+    drawing step in the pipeline is linear in the pixel behind it (the
+    dim, every wash and glyph, the halo, antialiased text), so rendering
+    the same descriptor over black and over white gives, per channel, the
+    light the chrome adds on its own and how much of the base shows
+    through: black render = add, white render - black render = keep. A
+    pure function of its arguments, memoised the same way _glyph_tile()
+    is (see _load_font()'s statelessness note): two entries, so the
+    now-playing and the repeat screen's layers can both stay warm."""
+    black = Image.new("RGB", (width, height), (0, 0, 0))
+    white = Image.new("RGB", (width, height), (255, 255, 255))
+    add = _compose_frame(black, width, height, frame, rotate=False, bgr=False, metrics=metrics)
+    lit = _compose_frame(white, width, height, frame, rotate=False, bgr=False, metrics=metrics)
+    keep = ImageChops.subtract(lit, add)
+    return RevealLayers(
+        top_band=top_band, bottom_band=bottom_band, strip=strip,
+        top_add=add.crop(top_band), top_keep=keep.crop(top_band),
+        bottom_add=add.crop(bottom_band), bottom_keep=keep.crop(bottom_band),
+        strip_add=add.crop(strip), strip_keep=keep.crop(strip),
+    )
+
+
+def _apply_layer(region: Image.Image, add: Image.Image, keep: Image.Image) -> Image.Image:
+    """The chrome laid over *region*: add + keep * region / 255, per
+    channel. All three images are the same size."""
+    return ImageChops.add(ImageChops.multiply(region, keep), add)
+
+
+def _reveal_frame(base, layers: RevealLayers, progress: float) -> Image.Image:
     """One frame of the artwork-tap reveal, in compose space (before
-    rotate/BGR). *shown* is the fully drawn now-playing frame and *base*
-    the undimmed base image it was drawn over; *progress* is strictly
-    between 0 and 1. The inter-band strip (the album/title/artist lines,
-    plus any wash on the artwork zone) is blended between its bare and
-    drawn versions at 1 - progress, so the text fades; then the top band's
-    rows are pasted back round(progress * band height) higher and the
-    bottom band's the same amount lower, so each band's content slides off
-    its panel edge as one piece and the artwork shows through the rows it
-    has left. The two bands and the strip tile the panel, so this
-    reproduces *shown* at 0 and the bare base at 1; compose() short-
-    circuits both endpoints anyway rather than relying on that. Pure: a
-    fresh image is built from *base* (never the caller's object) and
-    *shown* is only read."""
-    width, height = shown.size
+    rotate/BGR). *progress* is strictly between 0 and 1. A fresh copy of
+    *base* (never the caller's object) has the inter-band strip's chrome
+    laid over it at opacity 1 - progress, so the text fades; then the top
+    band's chrome is laid over the top rows shifted round(progress * band
+    height) upwards and the bottom band's the same amount downwards, each
+    over the artwork already at those rows, so the chrome leaves the
+    panel edge while the artwork underneath never moves and shows bare
+    where the chrome has gone. Reproduces the ordinary frame at 0 and the
+    bare base at 1 to within rounding; the callers short-circuit both
+    endpoints to the exact frames anyway."""
+    width, height = layers.strip[2], layers.bottom_band[3]
     out = _new_frame(base, width, height, BG_BASE)
-    strip = layout.artwork
-    if strip[2] > strip[0] and strip[3] > strip[1]:
-        faded = Image.blend(out.crop(strip), shown.crop(strip), 1.0 - progress)
-        out.paste(faded, (strip[0], strip[1]))
-    x0, top_y0, x1, top_y1 = layout.top_band
-    dy = round(progress * (top_y1 - top_y0))
-    if dy < top_y1 - top_y0:
-        out.paste(shown.crop((x0, top_y0 + dy, x1, top_y1)), (x0, top_y0))
-    x0, bot_y0, x1, bot_y1 = layout.bottom_band
-    dy = round(progress * (bot_y1 - bot_y0))
-    if dy < bot_y1 - bot_y0:
-        out.paste(shown.crop((x0, bot_y0, x1, bot_y1 - dy)), (x0, bot_y0 + dy))
+    x0, y0, x1, y1 = layers.strip
+    if x1 > x0 and y1 > y0:
+        region = out.crop(layers.strip)
+        faded = Image.blend(
+            region, _apply_layer(region, layers.strip_add, layers.strip_keep), 1.0 - progress,
+        )
+        out.paste(faded, (x0, y0))
+    x0, y0, x1, y1 = layers.top_band
+    band_h = y1 - y0
+    dy = round(progress * band_h)
+    if dy < band_h:
+        region = out.crop((x0, y0, x1, y1 - dy))
+        chrome = (0, dy, x1 - x0, band_h)
+        out.paste(
+            _apply_layer(region, layers.top_add.crop(chrome), layers.top_keep.crop(chrome)),
+            (x0, y0),
+        )
+    x0, y0, x1, y1 = layers.bottom_band
+    band_h = y1 - y0
+    dy = round(progress * band_h)
+    if dy < band_h:
+        region = out.crop((x0, y0 + dy, x1, y1))
+        chrome = (0, 0, x1 - x0, band_h - dy)
+        out.paste(
+            _apply_layer(region, layers.bottom_add.crop(chrome), layers.bottom_keep.crop(chrome)),
+            (x0, y0 + dy),
+        )
     return out
 
 

@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+ImageChops = pytest.importorskip("PIL.ImageChops", reason="Pillow not installed")
 
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")
@@ -105,6 +106,7 @@ from dial_display_compositor import (  # noqa: E402
     _compact_list_frame,
     _compact_repeat_frame,
     _compact_small_glyph_box,
+    _apply_layer,
     _compose_frame,
     _draw_compact_list_row,
     _draw_speaker_glyph,
@@ -119,6 +121,7 @@ from dial_display_compositor import (  # noqa: E402
     _repeat_frame,
     _reset_font_cache,
     _reset_render_caches,
+    _reveal_layers,
     _scaled_px,
     _text_size,
     _truncate_to_width,
@@ -5437,11 +5440,12 @@ class TestComposeEq:
 
 
 # ---------------------------------------------------------------------------
-# The artwork-tap reveal: compose(reveal_progress=p) slides the finished
-# top/bottom bands off the panel and fades the inter-band text as p runs
-# from 0 (bands in place, the ordinary frame) to 1 (bands gone, the
-# no-overlay frame). Pinned on both the rich and large tiers, which are the
-# only ones the manager ever animates; the compact tier ignores the
+# The artwork-tap reveal: compose(reveal_progress=p) and
+# compose_repeat(reveal_progress=p) slide the overlay's own chrome off the
+# panel while the artwork under it stays put, and fade the inter-band text
+# as p runs from 0 (chrome in place, the ordinary frame) to 1 (chrome gone,
+# the no-overlay frame). Pinned on both the rich and large tiers, which are
+# the only ones the manager ever animates; the compact tier ignores the
 # parameter entirely.
 # ---------------------------------------------------------------------------
 
@@ -5458,6 +5462,34 @@ def _reveal_overlay():
         visible=True, artist="Artist", title="Title", album="Album", name="Kitchen",
         volume=50, dots=True, muted=True,
     )
+
+
+def _plain_overlay():
+    """Bands with nothing drawn on them: a pure dim, so the chrome adds no
+    light of its own."""
+    return OverlayState(visible=True)
+
+
+def _tol(a, b, tol=2):
+    """True when two same-size images agree within *tol* levels per channel."""
+    if a.size != b.size:
+        return False
+    return all(
+        abs(x - y) <= tol
+        for pa, pb in zip(a.getdata(), b.getdata())
+        for x, y in zip(pa, pb)
+    )
+
+
+def _reveal_frames(compositor, metrics, overlay, p):
+    """(out, shown, bare) for one reveal progress over the gradient base."""
+    w, h = metrics.width, metrics.height
+    base = _reveal_base_image(metrics)
+    kw = dict(rotate=False, bgr=False, is_artwork=False, metrics=metrics)
+    shown = compositor.compose(base, w, h, overlay=overlay, **kw)
+    bare = compositor.compose(base, w, h, overlay=None, **kw)
+    out = compositor.compose(base, w, h, overlay=overlay, reveal_progress=p, **kw)
+    return out, shown, bare
 
 
 class TestRevealProgress:
@@ -5515,40 +5547,71 @@ class TestRevealProgress:
 
     @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
     @pytest.mark.parametrize("p", [0.25, 0.5, 0.8])
-    def test_intermediate_progress_slides_bands_and_fades_text(self, compositor, metrics, p):
+    def test_artwork_is_stationary_under_a_sliding_band(self, compositor, metrics, p):
         w, h = metrics.width, metrics.height
-        base = _reveal_base_image(metrics)
-        overlay = _reveal_overlay()
-        shown = compositor.compose(
-            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=overlay, metrics=metrics,
-        )
-        bare = compositor.compose(
-            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=None, metrics=metrics,
-        )
-        out = compositor.compose(
-            base, w, h, rotate=False, bgr=False, is_artwork=False,
-            overlay=overlay, metrics=metrics, reveal_progress=p,
-        )
-        layout = layout_for(w, h, metrics=metrics)
-        band_h = layout.top_band[3]
+        out, shown, bare = _reveal_frames(compositor, metrics, _plain_overlay(), p)
+        band_h = layout_for(w, h, metrics=metrics).top_band[3]
         dy = round(p * band_h)
 
-        assert list(out.crop((0, 0, w, band_h - dy)).getdata()) == list(
-            shown.crop((0, dy, w, band_h)).getdata()
-        )
+        # Where a band still is, the dimmed artwork is the very rows it was
+        # over before the slide began, not rows carried along with the band.
+        # Compared in the left-edge columns, clear of every glyph, which do
+        # move with the band.
+        edge = 6
+        assert _tol(out.crop((0, 0, edge, band_h - dy)), shown.crop((0, 0, edge, band_h - dy)))
         assert list(out.crop((0, band_h - dy, w, band_h)).getdata()) == list(
             bare.crop((0, band_h - dy, w, band_h)).getdata()
         )
-        assert list(out.crop((0, h - band_h + dy, w, h)).getdata()) == list(
-            shown.crop((0, h - band_h, w, h - dy)).getdata()
+        assert _tol(
+            out.crop((0, h - band_h + dy, edge, h)), shown.crop((0, h - band_h + dy, edge, h)),
         )
         assert list(out.crop((0, h - band_h, w, h - band_h + dy)).getdata()) == list(
             bare.crop((0, h - band_h, w, h - band_h + dy)).getdata()
         )
-        expected_strip = Image.blend(
-            bare.crop(layout.artwork), shown.crop(layout.artwork), 1.0 - p,
+
+    def test_chrome_slides_by_the_offset(self, compositor):
+        metrics = _RICH_METRICS
+        w, h = metrics.width, metrics.height
+        p = 0.5
+        base = _reveal_base_image(metrics)
+        overlay = _reveal_overlay()
+        out, shown, bare = _reveal_frames(compositor, metrics, overlay, p)
+        layout = layout_for(w, h, metrics=metrics)
+        band_h = layout.top_band[3]
+        dy = round(p * band_h)
+
+        # The bottom band's divider column: white where the chrome has
+        # moved to, the bare artwork in the rows it has left.
+        x = layout.footer_dividers[0]
+        for y in range(h - band_h + dy, h):
+            assert out.getpixel((x, y)) == (255, 255, 255)
+        for y in range(h - band_h, h - band_h + dy):
+            assert out.getpixel((x, y)) == bare.getpixel((x, y))
+
+        # The top band's chrome is the ordinary frame's rows [dy, band_h),
+        # laid over the artwork at rows [0, band_h - dy).
+        frame = _now_playing_frame(overlay, w, h, metrics)
+        layers = _reveal_layers(
+            frame, w, h, metrics, layout.top_band, layout.bottom_band, layout.artwork,
         )
-        assert list(out.crop(layout.artwork).getdata()) == list(expected_strip.getdata())
+        nx0, _, nx1, _ = layout.name
+        region = base.crop((nx0, 0, nx1, band_h - dy))
+        chrome = (nx0, dy, nx1, band_h)
+        expected = _apply_layer(region, layers.top_add.crop(chrome), layers.top_keep.crop(chrome))
+        assert _tol(out.crop((nx0, 0, nx1, band_h - dy)), expected)
+        # And that region really carries name text: it differs from the
+        # plain dimmed artwork there.
+        plain = _reveal_frames(compositor, metrics, _plain_overlay(), p)[0]
+        assert _diff_bbox(out.crop((nx0, 0, nx1, band_h - dy)), plain.crop((nx0, 0, nx1, band_h - dy))) is not None
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("p", [0.25, 0.5, 0.8])
+    def test_strip_fades_by_alpha(self, compositor, metrics, p):
+        w, h = metrics.width, metrics.height
+        out, shown, bare = _reveal_frames(compositor, metrics, _reveal_overlay(), p)
+        layout = layout_for(w, h, metrics=metrics)
+        expected = Image.blend(bare.crop(layout.artwork), shown.crop(layout.artwork), 1.0 - p)
+        assert _tol(out.crop(layout.artwork), expected)
         assert _diff_bbox(out.crop(layout.title), shown.crop(layout.title)) is not None
         assert _diff_bbox(out.crop(layout.title), bare.crop(layout.title)) is not None
 
@@ -5581,6 +5644,52 @@ class TestRevealProgress:
         expected = plain.transpose(Image.ROTATE_180)
         expected = Image.merge("RGB", expected.split()[::-1])
         assert list(transformed.getdata()) == list(expected.getdata())
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_layers_are_the_black_and_white_renders(self, compositor, metrics):
+        w, h = metrics.width, metrics.height
+        layout = layout_for(w, h, metrics=metrics)
+        frame = _now_playing_frame(_reveal_overlay(), w, h, metrics)
+        layers = _reveal_layers(
+            frame, w, h, metrics, layout.top_band, layout.bottom_band, layout.artwork,
+        )
+        black = Image.new("RGB", (w, h), (0, 0, 0))
+        white = Image.new("RGB", (w, h), (255, 255, 255))
+        add = _compose_frame(black, w, h, frame, rotate=False, bgr=False, metrics=metrics)
+        lit = _compose_frame(white, w, h, frame, rotate=False, bgr=False, metrics=metrics)
+        keep = ImageChops.subtract(lit, add)
+        assert layers.top_add.tobytes() == add.crop(layout.top_band).tobytes()
+        assert layers.top_keep.tobytes() == keep.crop(layout.top_band).tobytes()
+        assert layers.bottom_add.tobytes() == add.crop(layout.bottom_band).tobytes()
+        assert layers.bottom_keep.tobytes() == keep.crop(layout.bottom_band).tobytes()
+        assert layers.strip_add.tobytes() == add.crop(layout.artwork).tobytes()
+        base = _reveal_base_image(metrics)
+        shown = _compose_frame(base, w, h, frame, rotate=False, bgr=False, metrics=metrics)
+        rebuilt = _apply_layer(base.crop(layout.artwork), layers.strip_add, layers.strip_keep)
+        assert _tol(rebuilt, shown.crop(layout.artwork))
+        rebuilt_top = _apply_layer(base.crop(layout.top_band), layers.top_add, layers.top_keep)
+        assert _tol(rebuilt_top, shown.crop(layout.top_band))
+
+    def test_layers_are_memoised_and_reset(self, compositor):
+        metrics = _RICH_METRICS
+        base = _reveal_base_image(metrics)
+        _reveal_layers.cache_clear()
+
+        def run(overlay):
+            return compositor.compose(
+                base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=overlay, metrics=metrics, reveal_progress=0.4,
+            )
+
+        overlay = _reveal_overlay()
+        run(overlay)
+        run(overlay)
+        info = _reveal_layers.cache_info()
+        assert (info.hits, info.misses) == (1, 1)
+        run(dataclasses.replace(overlay, volume=51))
+        assert _reveal_layers.cache_info().misses == 2
+        _reset_render_caches()
+        assert _reveal_layers.cache_info().currsize == 0
 
     def test_base_image_is_not_mutated(self, compositor):
         metrics = _RICH_METRICS
@@ -5616,3 +5725,66 @@ class TestRevealProgress:
         )
         after = dict(vars(compositor))
         assert before == after == {}
+
+
+def _replaying_state(**overrides) -> RepeatViewState:
+    base = dict(
+        name="Kitchen", layout="replaying", armed=False, line="0:42 / 3:12",
+        start_enabled=True, stop_enabled=True, stop_pressed=False,
+        muted=None, volume=40, pressed=None,
+    )
+    base.update(overrides)
+    return RepeatViewState(**base)
+
+
+class TestRepeatRevealProgress:
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_replaying_slides_and_fades_the_line(self, compositor, metrics):
+        w, h = metrics.width, metrics.height
+        base = _reveal_base_image(metrics)
+        state = _replaying_state()
+        kw = dict(rotate=False, bgr=False, base=base, metrics=metrics)
+        shown = compositor.compose_repeat(w, h, state, **kw)
+        bare = compositor.compose_repeat(w, h, state, controls=False, **kw)
+        p = 0.5
+        out = compositor.compose_repeat(w, h, state, reveal_progress=p, **kw)
+        layout = repeat_layout_for(w, h, metrics=metrics)
+        band_h = layout.top_band[3]
+        dy = round(p * band_h)
+
+        x = layout_for(w, h, metrics=metrics).footer_dividers[0]
+        for y in range(h - band_h, h - band_h + dy):
+            assert out.getpixel((x, y)) == bare.getpixel((x, y))
+        assert list(out.crop((0, band_h - dy, w, band_h)).getdata()) == list(
+            bare.crop((0, band_h - dy, w, band_h)).getdata()
+        )
+        assert _diff_bbox(out.crop(layout.line), shown.crop(layout.line)) is not None
+        assert _diff_bbox(out.crop(layout.line), bare.crop(layout.line)) is not None
+
+        assert list(compositor.compose_repeat(w, h, state, reveal_progress=0.0, **kw).getdata()) == list(
+            shown.getdata()
+        )
+        assert list(compositor.compose_repeat(w, h, state, reveal_progress=1.0, **kw).getdata()) == list(
+            bare.getdata()
+        )
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _COMPACT_240])
+    def test_enable_layout_and_compact_ignore_progress(self, compositor, metrics):
+        w, h = metrics.width, metrics.height
+        base = _reveal_base_image(metrics)
+        state = _repeat_state() if metrics is _RICH_METRICS else _replaying_state()
+        kw = dict(rotate=False, bgr=False, base=base, metrics=metrics)
+        zero = compositor.compose_repeat(w, h, state, **kw)
+        half = compositor.compose_repeat(w, h, state, reveal_progress=0.5, **kw)
+        assert list(zero.getdata()) == list(half.getdata())
+
+    def test_none_base_slides_a_chassis(self, compositor):
+        metrics = _RICH_METRICS
+        w, h = metrics.width, metrics.height
+        state = _replaying_state()
+        kw = dict(rotate=False, bgr=False, base=None, metrics=metrics)
+        mid = compositor.compose_repeat(w, h, state, reveal_progress=0.5, **kw)
+        assert mid.size == (w, h)
+        full = compositor.compose_repeat(w, h, state, reveal_progress=1.0, **kw)
+        bare = compositor.compose_repeat(w, h, state, controls=False, **kw)
+        assert list(full.getdata()) == list(bare.getdata())

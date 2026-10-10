@@ -232,31 +232,30 @@ REPEAT_COUNTER_HOLD_S = 1.0
 # enough to get out of the way" reasoning applies to both.
 CONTROLS_HIDE_SECONDS = 6.0
 
-# The artwork-tap reveal: how long the bands take to slide off the panel
-# (the top band up, the bottom band down) while the title/artist lines
-# fade, before the plain hidden artwork of the hide window above shows on
-# its own. Long enough to read as motion rather than a flicker at the
-# frame rate a windowed transmit allows on the shipped panel (eight or
-# nine frames), short enough that the artwork is unobstructed well inside
-# half a second of the tap. Rich and large tiers only: the base tier keeps
-# its instant hide and the compact tier has no bands. Frames are paced no
-# faster than one per REVEAL_FRAME_INTERVAL_S, a floor rather than a
-# target: on the shipped panel each frame's transmit already takes longer
-# than that, so the slide runs as fast as the bus allows, while a fast or
-# no-op backend cannot spin the repaint loop. See hide_controls() and
+# The artwork-tap reveal: how long the bands' chrome takes to slide off the
+# panel (the top band up, the bottom band down) while the inter-band text
+# fades, before the bare artwork of the hide window shows on its own. Long
+# enough to read as a smooth movement at the frame rate a windowed transmit
+# allows on the shipped panel (a dozen or more frames), short enough that
+# the artwork is unobstructed well inside a second of the tap. Rich and
+# large tiers only: the base tier keeps its instant hide and the compact
+# tier has no bands. Between slide frames the repaint loop always waits at
+# least REVEAL_FRAME_GAP_S with its lock released, so the poll thread can
+# publish a base or the touch side can wake it during the slide; on the
+# shipped panel the transmit itself is the pace, on a fast or no-op backend
+# the gap is what stops the loop spinning. See _advance_reveal_locked() and
 # _reveal_progress().
-REVEAL_ANIMATION_S = 0.35
-REVEAL_FRAME_INTERVAL_S = 1.0 / 30.0
+REVEAL_ANIMATION_S = 0.55
+REVEAL_FRAME_GAP_S = 0.006
 
 
 def _reveal_ease(t: float) -> float:
-    """Quadratic ease-out for the artwork-tap reveal: fast off the mark, so
-    the response to the tap is immediate, settling as the bands leave the
-    panel edge so the last few pixels of travel are not lingered over. *t*
-    is the clamped time fraction 0..1; the result is monotonic in 0..1
-    with f(0) = 0 and f(1) = 1 exactly."""
-    u = 1.0 - t
-    return 1.0 - u * u
+    """Smoothstep easing for the artwork-tap reveal: the chrome starts
+    moving gently, is fastest mid-way and settles as it leaves the panel
+    edge, so neither the first nor the last frame jumps at the frame rates
+    the panel allows. *t* is the clamped time fraction 0..1; the result is
+    monotonic in 0..1 with f(0) = 0 and f(1) = 1 exactly."""
+    return t * t * (3.0 - 2.0 * t)
 
 
 # The idle screen's offline flash: the Wi-Fi glyph alternates grey/red,
@@ -353,6 +352,10 @@ _WARNING_BY_SCREEN: dict[str, WarningDescriptor] = {d.screen: d for d in WARNING
 # landing — see _show_transition_locked(). A step lighter than the list
 # chassis (16, 16, 16) so it reads as "waiting", not as a list screen.
 _TRANSITION_RGB = (32, 32, 32)
+
+# The overlay an artwork tap's hide window substitutes for whatever the
+# touch side has published: nothing drawn. See _effective_overlay_locked().
+_HIDDEN_OVERLAY = OverlayState()
 
 # Splitting one changed region into separately written windows pays only
 # when the unchanged rows left out between them cost more to send than a
@@ -1140,22 +1143,31 @@ class DialDisplay:
         # scheduling and by the overlay gates. Plain float write/read, same
         # discipline as _idle_started_at.
         self._controls_hidden_until: float = 0.0
-        # Monotonic start of the artwork-tap reveal (the bands sliding off
-        # the panel), 0.0 when none is running. Stamped by the touch thread
-        # in hide_controls() AHEAD of the hide deadline above, so a repaint
-        # that reads between the two writes sees "no window, no slide" (the
-        # ordinary frame) rather than a hidden frame that the slide would
-        # then have to undo; cleared by every path that ends the hide window
-        # early, by a screen change, and by the repaint thread once the
-        # slide is done. Plain float write/read, same discipline as
-        # _controls_hidden_until.
+        # Monotonic start of the artwork-tap reveal (the bands' chrome
+        # sliding off the panel), 0.0 when none is running. Stamped only by
+        # _advance_reveal_locked(), under self._lock on the repaint or poll
+        # thread, at the compose that first finds the controls due to go, so
+        # the first slide frame is a frame that actually painted rather than
+        # a moment on the touch thread. Cleared by every path that takes the
+        # controls back early (a reveal tap, a screen change, the panel going
+        # dark) and by the repaint thread once the slide is done. Plain float
+        # write/read, same discipline as _controls_hidden_until.
         self._reveal_started_at: float = 0.0
-        # Monotonic time the last reveal frame was composed, so the repaint
-        # loop paces the slide no faster than REVEAL_FRAME_INTERVAL_S.
-        # Written only under self._lock (by _display_locked, from the
-        # repaint and poll threads); read lock-free by the deadline
+        # Monotonic time the last reveal frame finished being sent, so the
+        # repaint loop waits at least REVEAL_FRAME_GAP_S after it with the
+        # lock released. Written only under self._lock (by the two painters,
+        # from the repaint and poll threads); read lock-free by the deadline
         # scheduling, where a stale value costs at most one early frame.
         self._reveal_frame_at: float = 0.0
+        # Whether the last frame composed for the current screen drew its
+        # controls in place (the now-playing bands, or the repeat screen's
+        # replaying chrome), as opposed to not drawing them or drawing them
+        # mid-slide. The reveal slide starts exactly when this flips from
+        # True to False on a compose, whatever made the controls go: an
+        # artwork tap in either controls mode, or the touch side's own
+        # dismiss. Written under self._lock by the two painters; reset by a
+        # screen change and whenever the panel goes dark.
+        self._controls_drawn_last = False
         # Compact tier only: monotonic deadline until which a compact
         # screen's own controls stay drawn, opened by a touch/reveal/screen
         # change — see _show_compact_controls()/_compact_controls_hidden().
@@ -1779,54 +1791,78 @@ class DialDisplay:
 
     def hide_controls(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an ARTWORK
-        tap): hide the top/bottom bands for CONTROLS_HIDE_SECONDS, so a tap
-        on the artwork itself gives an unobstructed view of it. Plain float
-        write plus a repaint signal — same discipline as
-        notify_touch_activity(). While the window holds,
+        tap on the now-playing screen, or a tap on the replay screen's own
+        artwork while a replay runs): hide the top/bottom bands for
+        CONTROLS_HIDE_SECONDS, so a tap on the artwork itself gives an
+        unobstructed view of it. Plain float write plus a repaint signal,
+        same discipline as notify_touch_activity(). While the window holds
+        the overlay is not drawn whatever the touch snapshot says,
         persistent_overlay_shown() reads False and touch_surface() reports
-        "hidden", so the state machine drops to reveal-on-touch and the
-        next repaint composes a bare base with no overlay; a tap while
-        hidden is the ordinary reveal (on_reveal_overlay -> set_overlay(
-        visible=True)), which ends the window early (see set_overlay()).
-        The window's own expiry is woken by the repaint loop's deadline
-        scheduling (_next_repaint_deadline/_tick_controls_hidden).
+        "hidden", so the state machine drops to reveal-on-touch; a tap
+        while hidden is the ordinary reveal (on_reveal_overlay ->
+        set_overlay(visible=True)), which ends the window early (see
+        set_overlay()). The window's own expiry is woken by the repaint
+        loop's deadline scheduling (_next_repaint_deadline/
+        _tick_controls_hidden).
 
         On the rich and large tiers the bands do not vanish at once: the
-        tap starts a short slide (see REVEAL_ANIMATION_S, _reveal_progress)
-        in which the top band leaves upwards, the bottom band downwards and
-        the title/artist lines fade, ending on exactly the bare frame the
-        window then holds. The slide is driven by the repaint loop's own
-        deadline scheduling (_next_repaint_deadline/_tick_controls_reveal); no thread
-        of its own."""
-        now = time.monotonic()
-        # The slide is stamped before the window it belongs to, so a repaint
-        # reading between the two writes composes the ordinary frame rather
-        # than a hidden one. Only the tiers that draw bands animate; the
-        # compact tier has none and the base tier keeps its instant hide.
-        if self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE):
-            self._reveal_started_at = now
-        else:
-            self._reveal_started_at = 0.0
-        self._controls_hidden_until = now + CONTROLS_HIDE_SECONDS
+        first repaint that finds them due to go starts a short slide (see
+        _advance_reveal_locked()) in which each band's chrome leaves over
+        its panel edge and the inter-band text fades, ending on exactly the
+        bare frame the window then holds. The slide is the repaint thread's
+        own; nothing is stamped here.
+
+        A no-op off the two screens that have artwork to reveal: the
+        now-playing screen, and the replay screen exactly while a replay is
+        running (its enable layout has no artwork, and a stopped replay's
+        Restart control must stay visible); and on the compact tier, which
+        has no artwork zone to tap."""
+        screen = self._screen
+        if screen == "repeat":
+            if not self._repeat_replaying_lockfree():
+                return
+        elif screen != "main":
+            return
+        if self._compact_tier():
+            return
+        self._controls_hidden_until = time.monotonic() + CONTROLS_HIDE_SECONDS
         self._overlay_signal.set()
 
-    def _controls_hidden(self) -> bool:
+    def _repeat_replaying_lockfree(self) -> bool:
+        """True while the repeat screen's own appliance is replaying right
+        now, read the way repeat_stop_tap() reads it (plain reference of
+        self._repeat_screen, the store's own leaf lock): the only repeat
+        layout with artwork behind its controls to reveal."""
+        screen = self._repeat_screen
+        if screen is None:
+            return False
+        rec = repeat_store.get(screen.appliance_id, time.monotonic())
+        return rec is not None and rec.available and rec.state == "replaying"
+
+    def _controls_hidden(self, now: float | None = None) -> bool:
         """True while an artwork tap's hide window is still running. Plain
-        float read, same discipline as _display_sleeping's own reads."""
-        return time.monotonic() < self._controls_hidden_until
+        float read, same discipline as _display_sleeping's own reads. *now*
+        lets a compose pass its own single clock read through."""
+        if now is None:
+            now = time.monotonic()
+        return now < self._controls_hidden_until
+
+    def _slide_tier(self) -> bool:
+        """Whether this panel animates the reveal: the tiers that draw
+        bands the chrome can slide off. The base tier keeps its instant
+        hide; the compact tier has no bands. Plain-arithmetic read, safe
+        from any thread."""
+        return self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE)
 
     def _reveal_animating(self, now: float) -> bool:
-        """True while the artwork-tap reveal is still sliding the bands: a
-        start is stamped, the slide's own duration has not run out, and the
-        hide window it belongs to is still running (a reveal tap ends both
-        at once, see set_overlay()). Plain float reads, safe from any
-        thread."""
+        """True while a reveal slide is running: a start is stamped and its
+        duration has not run out. Plain float read, safe from any thread.
+        Every path that takes the controls back early also zeroes the
+        start (see set_overlay(), _apply_screen_requests_locked(),
+        _mark_noncomposited_locked()), so the slide never outlives what it
+        was sliding."""
         started = self._reveal_started_at
-        return (
-            started != 0.0
-            and now < started + REVEAL_ANIMATION_S
-            and now < self._controls_hidden_until
-        )
+        return started != 0.0 and now < started + REVEAL_ANIMATION_S
 
     def _reveal_progress(self, now: float) -> float:
         """How far the reveal has slid the bands off the panel at *now*, 0.0
@@ -1839,6 +1875,43 @@ class DialDisplay:
             return 0.0
         t = (now - self._reveal_started_at) / REVEAL_ANIMATION_S
         return _reveal_ease(min(1.0, max(0.0, t)))
+
+    def _advance_reveal_locked(self, now: float, steady: bool, slide_ok: bool) -> tuple[bool, float]:
+        """Decide, for the frame about to be composed at *now*, whether it
+        is a slide frame and how far along: (animating, progress). *steady*
+        is whether the screen's controls would be drawn in place by this
+        frame if no slide were running; *slide_ok* whether this screen and
+        tier animate at all right now. A slide starts exactly when the
+        previous frame drew the controls and this one would not: the tap
+        that hid them (in either controls mode), or the touch side's own
+        dismiss, all arrive here as that one transition. The start is
+        stamped at this compose, so the first slide frame is the ordinary
+        frame at progress 0 (identical to the last one, so nothing is
+        transmitted) and every later frame is measured from a moment a
+        frame actually painted, never from the tap on another thread.
+        Caller holds self._lock."""
+        if self._controls_drawn_last and not steady and slide_ok and not self._reveal_animating(now):
+            self._reveal_started_at = now
+        self._controls_drawn_last = steady
+        animating = self._reveal_animating(now)
+        return animating, (self._reveal_progress(now) if animating else 0.0)
+
+    def _held_overlay_locked(self, now: float) -> bool:
+        """The held-visible predicate _effective_overlay_locked() applies:
+        always-show on (off compact), or the compact tier's own controls
+        window open; a controllable appliance shown; the panel not cleared
+        or asleep; and no artwork-tap hide window running. Caller holds
+        self._lock."""
+        return (
+            (
+                (self._config.always_show_controls and not self._compact_tier())
+                or (self._compact_tier() and not self._compact_controls_hidden())
+            )
+            and self._now_playing is not None
+            and self._showing != "noop"
+            and not self._display_sleeping
+            and not self._controls_hidden(now)
+        )
 
     def touch_surface(self) -> tuple[str, bool, bool, bool]:
         """(surface, name_active, dots_active, outputs_active) for
@@ -1896,9 +1969,17 @@ class DialDisplay:
         persistent_overlay_shown() is False, but the repeat screen's surface
         is otherwise fixed by its policy row regardless of the window, so it
         needs this explicit override.
+
+        The replay screen's own artwork-tap hide window (see
+        hide_controls()) reports the main geometry's plain "hidden" as well,
+        with the appliance's name and dots and the outputs readout still
+        addressable: nothing is drawn to tap, so a touch brings the
+        controls back and never actuates Restart, Stop or the dots.
         """
         if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
             return ("hidden", False, False, False)
+        if self._screen == "repeat" and self._controls_hidden():
+            return ("hidden", True, self._dots_active, self._outputs_available)
         policy = _policy(self._screen)
         if policy.surface is not None:
             if (
@@ -2099,6 +2180,10 @@ class DialDisplay:
         # A press latched against geometry that just went dark must not
         # carry a wash into whatever comes back on screen next.
         self._pressed = None
+        # Nothing is on screen for a hide window or a slide to belong to.
+        self._controls_hidden_until = 0.0
+        self._reveal_started_at = 0.0
+        self._controls_drawn_last = False
 
     def _wake_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -2345,11 +2430,12 @@ class DialDisplay:
         nothing playing does not. See persistent_overlay_shown() and
         _effective_overlay_locked() for the shared predicate.
 
-        While an artwork-tap reveal is sliding the bands off (see
-        hide_controls()), the compose also receives how far it has got,
-        read from the clock here and never stored, so a poll-driven repaint
-        landing mid-slide composes its fresh base under the bands at their
-        current position rather than fighting the animation.
+        While a reveal slide is running (see _advance_reveal_locked()) the
+        compose also receives how far it has got, from the one clock read
+        this frame makes, so a poll-driven repaint landing mid-slide
+        composes its fresh base under the chrome at its current position
+        rather than fighting the animation, and a frame that lands after
+        the end draws the bare frame, never the full bands.
         """
         if not (self._backend_open and self._backend is not None):
             return
@@ -2357,12 +2443,16 @@ class DialDisplay:
         metrics = self._metrics_locked()
         now = time.monotonic()
         snapshot = self._overlay_snapshot
-        overlay = self._effective_overlay_locked(snapshot)
-        # The slide plays only where the tap itself takes the bands away: a
-        # touch-published visible overlay keeps them in place, as before.
-        progress = 0.0 if snapshot.visible else self._reveal_progress(now)
-        if self._reveal_animating(now):
-            self._reveal_frame_at = now
+        steady = (snapshot.visible or self._held_overlay_locked(now)) and not self._controls_hidden(now)
+        slide_ok = (
+            self._screen == "main"
+            and self._slide_tier()
+            and self._now_playing is not None
+            and self._showing != "noop"
+            and not self._display_sleeping
+        )
+        animating, progress = self._advance_reveal_locked(now, steady, slide_ok)
+        overlay = self._effective_overlay_locked(snapshot, now=now, animating=animating)
         self._push_frame_locked(lambda: self._compositor.compose(
             image, metrics.width, metrics.height,
             rotate=self._config.rotate,
@@ -2372,6 +2462,11 @@ class DialDisplay:
             metrics=metrics,
             reveal_progress=progress,
         ))
+        if animating:
+            # Paced from the moment the frame has actually left, so the
+            # loop's wait between slide frames is a real gap with the lock
+            # released, however long the transmit took.
+            self._reveal_frame_at = time.monotonic()
 
     def _repaint_base_locked(self, image, *, idle_ok: bool) -> None:
         """Publish a freshly chosen base image (artwork or logo) from the
@@ -2416,7 +2511,9 @@ class DialDisplay:
         self._showing = "waiting"
         self._display_locked(Image.new("RGB", (width, height), _TRANSITION_RGB))
 
-    def _effective_overlay_locked(self, snapshot: OverlayState) -> OverlayState:
+    def _effective_overlay_locked(
+        self, snapshot: OverlayState, now: float | None = None, animating: bool | None = None,
+    ) -> OverlayState:
         """Merge now-playing state into the touch-published overlay snapshot
         at compose time.
 
@@ -2445,12 +2542,13 @@ class DialDisplay:
             whenever a controllable appliance is shown — unconditional,
             never gated on how many appliances are authorized.
 
-        held-visible: when always_show_controls is on and a controllable
-        appliance is shown (self._now_playing is not None — true for real
-        artwork and for the playing-placeholder logo shown across a track
-        change; false only when nothing is playing at all), and the display
-        is not asleep, the overlay is forced visible here regardless of what
-        the touch-published snapshot says — this is what makes a stale
+        held-visible (see _held_overlay_locked()): when always_show_controls
+        is on and a controllable appliance is shown (self._now_playing is
+        not None — true for real artwork and for the playing-placeholder
+        logo shown across a track change; false only when nothing is
+        playing at all), and the display is not asleep, the overlay is
+        forced visible here regardless of what the touch-published snapshot
+        says — this is what makes a stale
         visible=False snapshot, or a dismiss landing while held, harmless
         (see dial_touch.py's HELD VISIBLE paragraph and set_held_visible()).
         It is also what keeps the overlay drawn across a track change: the
@@ -2458,41 +2556,44 @@ class DialDisplay:
         but self._now_playing stays non-None throughout, so the held overlay
         is preserved rather than dropped. The self._showing != "noop" term
         mirrors persistent_overlay_shown()'s own guard against the moment
-        right after the panel is cleared; the self._controls_hidden() term
-        mirrors its own artwork-tap hide window (see hide_controls()).
-        Deliberately does not also check self._backend_open: the caller
-        (_display_locked) already returned early when the backend is
-        closed, so there is nothing left to guard against here. While that
-        window's opening slide is still running the overlay is merged
-        regardless, so the bands can be drawn on their way off; see
-        _reveal_animating().
+        right after the panel is cleared. An artwork-tap hide window (see
+        hide_controls()) hides the overlay whatever the snapshot says,
+        except while the slide is still drawing it on its way off (see
+        _reveal_animating()), when it is merged regardless so the chrome can
+        be slid. Deliberately does not also check self._backend_open: the
+        caller (_display_locked) already returned early when the backend is
+        closed, so there is nothing left to guard against here. *now* and
+        *animating* let the caller pass the single clock read and slide
+        decision its compose was built on; either omitted is worked out
+        here.
 
         Returns *snapshot* unchanged when it is neither visible nor held:
         compose() already treats an invisible overlay as a strict no-op
         regardless of its other fields, so there is nothing worth merging in
         that case.
         """
-        held = (
-            (
-                (self._config.always_show_controls and not self._compact_tier())
-                or (self._compact_tier() and not self._compact_controls_hidden())
-            )
-            and self._now_playing is not None
-            and self._showing != "noop"
-            and not self._display_sleeping
-            and not self._controls_hidden()
-        )
-        # The reveal slide's own frames: the bands are still on their way
-        # off the panel, so they are drawn (the caller slides them) even
-        # though the hide window has already begun. Same guards as held,
-        # so a cleared now-playing or a sleeping panel mid-slide draws
-        # nothing.
+        if now is None:
+            now = time.monotonic()
+        if animating is None:
+            animating = self._reveal_animating(now)
+        held = self._held_overlay_locked(now)
+        # The reveal slide's own frames: the chrome is still on its way off
+        # the panel, so the overlay is merged (the compositor slides it)
+        # even though the snapshot or the hide window says hidden. Same
+        # guards as held, so a cleared now-playing or a sleeping panel
+        # mid-slide draws nothing.
         revealing = (
             self._now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
-            and self._reveal_animating(time.monotonic())
+            and animating
         )
+        # An artwork tap's hide window wins over a touch-published visible
+        # snapshot: the user asked for the artwork, whichever mode the
+        # controls are in. The touch side is told the same (see dial_main's
+        # ARTWORK dispatch) so its session matches.
+        if self._controls_hidden(now) and not revealing:
+            return _HIDDEN_OVERLAY
         if not (snapshot.visible or held or revealing):
             return snapshot
         now_playing = self._now_playing
@@ -2882,6 +2983,10 @@ class DialDisplay:
             return
         if rec.state in ("recording", "pending", "idle"):
             enqueue_arm(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), not rec.armed)
+        elif rec.state == "replaying":
+            # In the replaying layout this row is the position line over
+            # the artwork, not a toggle: a tap on it is an artwork tap.
+            self.hide_controls()
 
     def repeat_start_tap(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_START
@@ -3382,9 +3487,12 @@ class DialDisplay:
             # shows its own controls for a fresh window on the compact
             # tier; a no-op off it.
             self._show_compact_controls()
-            # A reveal slide belongs to the main screen it started on; a
-            # screen change abandons it rather than resuming it later.
+            # A hide window and any reveal slide belong to the screen they
+            # started on; a screen change abandons both rather than
+            # resuming them later.
+            self._controls_hidden_until = 0.0
             self._reveal_started_at = 0.0
+            self._controls_drawn_last = False
 
         policy = _policy(self._screen)
         if delta and policy.paged:
@@ -3512,11 +3620,11 @@ class DialDisplay:
             deadlines.append(self._controls_hidden_until + 0.005)
         now = time.monotonic()
         if self._reveal_animating(now):
-            # The next reveal frame: one interval after the last one began,
-            # or at once if that moment has passed (the transmit itself is
-            # the pace on the shipped panel), and never later than the end
-            # of the slide, so the settled frame paints on time.
-            next_frame = max(now, self._reveal_frame_at + REVEAL_FRAME_INTERVAL_S)
+            # The next reveal frame: a short gap after the last one was
+            # sent, or at once if that moment has passed, and never later
+            # than the end of the slide, so the settled frame paints on
+            # time.
+            next_frame = max(now, self._reveal_frame_at + REVEAL_FRAME_GAP_S)
             deadlines.append(min(next_frame, self._reveal_started_at + REVEAL_ANIMATION_S) + 0.005)
         if self._controls_shown_until > time.monotonic() and self._compact_tier():
             deadlines.append(self._controls_shown_until + 0.005)
@@ -3560,10 +3668,10 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _tick_controls_reveal(self) -> None:
-        """Wake the repaint loop for the next frame of an artwork-tap reveal
-        while one is sliding, and once more the moment it has ended (its
-        duration ran out, or its hide window did) so the settled bare frame
-        is painted at once rather than on the next unrelated signal.
+        """Wake the repaint loop for the next frame of a reveal slide while
+        one is running, and once more the moment it has ended (its duration
+        ran out) so the settled frame is painted at once rather than on the
+        next unrelated signal.
         Called from the repaint thread's own timeout branch, whose wait
         _next_repaint_deadline() has already sized onto the next frame.
         One-shot at the end: resets the start to 0.0 so this does not keep
@@ -3572,7 +3680,7 @@ class DialDisplay:
         if not started:
             return
         now = time.monotonic()
-        if now >= started + REVEAL_ANIMATION_S or now >= self._controls_hidden_until:
+        if now >= started + REVEAL_ANIMATION_S:
             self._reveal_started_at = 0.0
         self._overlay_signal.set()
 
@@ -3992,20 +4100,41 @@ class DialDisplay:
         one actually on screen, and commits the view's counter_second as
         self._repeat_painted_second, the reference the counter's tick
         advances against (None for any layout without a running counter,
-        so the next replaying frame re-anchors)."""
-        view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
+        so the next replaying frame re-anchors).
+
+        An artwork-tap hide window (see hide_controls()) hides the
+        replaying layout's controls the way it hides the main screen's,
+        with the same slide on the rich and large tiers (see
+        _advance_reveal_locked()); the counter keeps counting underneath.
+        The window ends here, at the first paint that finds no replay
+        running."""
+        now = time.monotonic()
+        view = self._build_repeat_view_locked(self._repeat_screen, now)
         self._repeat_layout_shown = view.layout
         metrics = self._metrics_locked()
-        controls = not self._compact_controls_hidden()
+        # Only a running replay has artwork behind its controls to reveal:
+        # a window still open when the replay stops (Restart must be
+        # tappable again) or the layout changes ends at once.
+        replaying = view.layout == "replaying" and view.counter_second is not None
+        if self._controls_hidden(now) and not replaying:
+            self._controls_hidden_until = 0.0
+            self._reveal_started_at = 0.0
+        steady = not self._compact_controls_hidden() and not self._controls_hidden(now)
+        animating, progress = self._advance_reveal_locked(now, steady, replaying and self._slide_tier())
+        controls = steady or animating
         self._push_frame_locked(lambda: self._compositor.compose_repeat(
             metrics.width, metrics.height, view, base=self._current_base_image,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-            controls=controls,
+            controls=controls, reveal_progress=progress,
         ))
-        # Committed whether or not the push succeeded: a write failure is
-        # already recorded and the next second's tick repaints the whole
-        # line anyway, whereas retrying the same second on every wake
-        # against a failing panel would spin.
+        if animating:
+            self._reveal_frame_at = time.monotonic()
+        # Committed whether or not the push succeeded, and whether or not
+        # the line is visible: a write failure is already recorded and the
+        # next second's tick repaints the whole line anyway, whereas
+        # retrying the same second on every wake against a failing panel
+        # would spin; and a hidden counter keeps counting, the tick
+        # advancing against this reference, so it must always move.
         self._repeat_painted_second = view.counter_second
 
     def _shown_eq(self, state: "EqScreenState", control: str) -> "int | None":
@@ -4360,6 +4489,9 @@ class DialDisplay:
             return
         if self._current_base_image is None:
             return
+        # The idle screen draws no controls; the next now-playing frame must
+        # not read the previous track's bands as having just been taken away.
+        self._controls_drawn_last = False
         metrics = self._metrics_locked()
         base = (
             (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._idle_affordance else None)

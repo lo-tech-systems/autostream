@@ -550,6 +550,10 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.output_volume_tap(-step)
         elif zone == TouchZone.ARTWORK:
             display.hide_controls()
+            # The session must know the controls are gone: with the
+            # controls revealed by touch nothing else would tell it, and a
+            # finger must never arm against bands that are no longer drawn.
+            touch_source.overlay_hidden()
 
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,

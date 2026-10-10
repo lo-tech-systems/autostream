@@ -773,6 +773,77 @@ class TestTouchEventSourceHeldPolling:
 
 
 # ---------------------------------------------------------------------------
+# overlay_hidden() — the display took the touch-revealed overlay down itself
+# (an artwork tap hid the controls): the session must count the overlay as
+# hidden at once, so a finger never arms against bands that are gone.
+# ---------------------------------------------------------------------------
+
+
+class TestOverlayHidden:
+    def _revealed(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, True, now=0.0)
+        sm._overlay_visible = True
+        return sm
+
+    def test_visible_and_not_held_dismisses(self):
+        sm = self._revealed()
+        sm._dismiss_deadline = 5.0
+        actions = sm.overlay_hidden(now=1.0)
+        assert kinds(actions) == [ACTION_DISMISS_OVERLAY]
+        assert sm.overlay_visible is False
+        assert sm._dismiss_deadline is None
+        assert sm._phase == "idle"
+
+    def test_lit_zone_is_cleared_first(self):
+        sm = self._revealed()
+        sm.on_filter_event(press_event(ARTWORK_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.ARTWORK
+        actions = sm.overlay_hidden(now=0.05)
+        assert actions == [
+            TouchAction(ACTION_SET_PRESSED_ZONE, None),
+            TouchAction(ACTION_DISMISS_OVERLAY),
+        ]
+        assert sm.pressed_zone is None
+        # The flash's own clear no longer fires.
+        assert sm.tick(now=PRESSED_FLASH_S) == []
+
+    def test_held_is_a_noop(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+        assert sm.overlay_hidden(now=1.0) == []
+        assert sm.overlay_visible is True
+        assert sm.held_visible is True
+
+    def test_not_visible_is_a_noop(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        assert sm.overlay_hidden(now=1.0) == []
+
+    def test_contact_down_falls_back_to_reveal_pending_and_next_press_reveals(self):
+        sm = self._revealed()
+        sm.on_filter_event(press_event(ARTWORK_XY), now=0.0)
+        sm.overlay_hidden(now=0.05)
+        assert sm._phase == "reveal_pending"
+        sm.on_filter_event(release_event(ARTWORK_XY), now=0.1)
+        actions = sm.on_filter_event(press_event(UP_XY), now=0.2)
+        assert kinds(actions) == [ACTION_REVEAL_OVERLAY]
+        assert ACTION_VOLUME_UP not in kinds(actions)
+
+    def test_event_source_dispatches_the_actions(self):
+        sm = self._revealed()
+        sm.on_filter_event(press_event(ARTWORK_XY), now=0.0)
+        calls = []
+        source = TouchEventSource(
+            FakeDriver(), TouchFilter(WIDTH, HEIGHT), sm,
+            on_dismiss_overlay=lambda: calls.append("dismiss"),
+            on_set_pressed_zone=lambda zone, index: calls.append(("pressed", zone)),
+            clock=lambda: 0.05,
+        )
+        source.overlay_hidden()
+        assert calls == [("pressed", None), "dismiss"]
+
+
+# ---------------------------------------------------------------------------
 # config_changed() — a live screen settings change (e.g. screen_type, which
 # can move zone boundaries outright). Stricter than force_reveal_only(): a
 # still-down finger must NOT be allowed to resume at all, only a fresh

@@ -77,7 +77,8 @@ pops back to main and reveals the main screen's volume overlay), NAME
 (reused, opens the appliance selector), OUTPUTS (the volume readout, opens
 the outputs list like the main screen — the repeat screen has no mute
 control of its own), REPEAT_PLAY (the enable layout's arm/disarm row),
-REPEAT_START, REPEAT_STOP. The IDLE geometry
+REPEAT_START, REPEAT_STOP, plus ARTWORK (the inter-band strip's remainder,
+taps hide the bands while a replay runs). The IDLE geometry
 (`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_WIFI and
 IDLE_INFO, two small corner squares listed first so they win the corners
 they share with IDLE_REPLAY, which covers the whole panel below the top
@@ -605,6 +606,11 @@ def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
         ZoneRect(TouchZone.REPEAT_PLAY, layout.row),
         ZoneRect(TouchZone.REPEAT_START, layout.start),
         ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
+        # Last: the row above already owns most of the strip, so this only
+        # catches the gaps between the row and the bands; a tap there is an
+        # artwork tap, meaningful only while a replay runs (the display
+        # decides, as for every zone here).
+        ZoneRect(TouchZone.ARTWORK, layout.artwork),
     )
 
 
@@ -807,6 +813,9 @@ class RepeatLayout:
     divider_x: int
     top_band: Rect
     bottom_band: Rect
+    # The inter-band strip behind the replaying layout's line and gaps
+    # (== the ARTWORK zone on this geometry off compact).
+    artwork: Rect
 
 
 @dataclass(frozen=True)
@@ -1388,6 +1397,7 @@ def repeat_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
         divider_x=layout.divider_x,
         top_band=layout.top_band,
         bottom_band=layout.bottom_band,
+        artwork=layout.artwork,
     )
 
 

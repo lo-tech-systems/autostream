@@ -459,6 +459,20 @@ class TestRepeatSurface:
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_PLAY
 
+    def test_repeat_artwork_is_hit_only_outside_the_row(self):
+        """On the rich tier the row leaves gaps of artwork above and below
+        it: a tap in a gap is an artwork tap, a tap in the row is still the
+        row."""
+        metrics = metrics_for(320, 240, 0.1778)
+        layout = repeat_layout_for(320, 240, metrics=metrics)
+        assert layout.row[1] > layout.top_band[3]
+        gap_y = (layout.top_band[3] + layout.row[1]) // 2
+        row_y = (layout.row[1] + layout.row[3]) // 2
+        hit = hit_test(GEOMETRY_REPEAT, 160, gap_y, 320, 240, metrics=metrics)
+        assert hit is not None and hit.zone == TouchZone.ARTWORK
+        hit = hit_test(GEOMETRY_REPEAT, 160, row_y, 320, 240, metrics=metrics)
+        assert hit is not None and hit.zone == TouchZone.REPEAT_PLAY
+
     def test_repeat_zone_at_resolves_outputs(self):
         """The top band's volume readout opens the outputs list on the
         repeat screen too (same as the main screen), so a tap there
@@ -630,6 +644,7 @@ class TestZoneRectsOrder:
             (TouchZone.REPEAT_PLAY, None),
             (TouchZone.REPEAT_START, None),
             (TouchZone.REPEAT_STOP, None),
+            (TouchZone.ARTWORK, None),
         ]
 
     def test_idle_order(self):
@@ -688,6 +703,7 @@ class TestZoneRectsMatchLayoutFields:
         assert entries[TouchZone.REPEAT_PLAY] == layout.row
         assert entries[TouchZone.REPEAT_START] == layout.start
         assert entries[TouchZone.REPEAT_STOP] == layout.stop
+        assert entries[TouchZone.ARTWORK] == layout.artwork == layout_for(width, height).artwork
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_idle_rect_is_layout_field(self, width, height):

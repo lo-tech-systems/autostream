@@ -60,7 +60,8 @@ overlay snapshot is cleared too — a finger must never be able to arm against
 controls that are no longer actually drawn. TouchEventSource polls the
 display's persistent_overlay_shown() (injected, never imported — see the
 class docstring) once per loop iteration so a transition is noticed within
-one tick either way.
+one tick either way. The display can also end a session itself, when an
+artwork tap hides the controls it revealed: see overlay_hidden().
 
 SURFACES: which screen is currently on the panel decides which hit-test
 geometry a press is sampled against — see TouchStateMachine.set_surface()
@@ -434,9 +435,26 @@ class TouchStateMachine:
             self._dismiss_deadline = None
             return []
         self._held = False
-        # Same latch handling as force_reveal_only(): drop whatever zone was
-        # armed and stop repeating, without assuming anything about whether
-        # a finger is currently down.
+        return self._drop_session()
+
+    def overlay_hidden(self, now: float) -> list[TouchAction]:
+        """External sync from the display: it has taken the touch-revealed
+        overlay down itself (an artwork tap hid the controls). Held: a
+        no-op, the display's own surface report drops to hidden and
+        set_surface() handles it. Otherwise exactly what the dismiss clock
+        firing does, at once: the overlay counts as hidden (the next press
+        reveals, never actuates), the latch is dropped and a DISMISS is
+        emitted so the touch-published snapshot is cleared too."""
+        if self._held:
+            return []
+        return self._drop_session()
+
+    def _drop_session(self) -> list[TouchAction]:
+        """Force the session back to hidden: drop whatever zone was armed
+        and stop repeating, without assuming anything about whether a
+        finger is currently down, and emit the actions that clear a lit
+        zone and the touch-published snapshot. Shared by set_held_visible()
+        and overlay_hidden()."""
         was_lit = self._pressed_lit
         self._armed_zone = None
         self._armed_index = None
@@ -822,6 +840,12 @@ class TouchEventSource:
         Safe to call from any thread; forwards to the state machine and
         dispatches any resulting actions."""
         self._dispatch(self._state_machine.overlay_live(self._clock()))
+
+    def overlay_hidden(self) -> None:
+        """Tell the underlying session the display has hidden the overlay
+        itself. Safe to call from any thread; forwards to the state machine
+        and dispatches any resulting actions."""
+        self._dispatch(self._state_machine.overlay_hidden(self._clock()))
 
     def display_config_changed(self, rotate: bool, *, layout=None) -> None:
         """Apply a live screen-settings change that affects touch mapping.

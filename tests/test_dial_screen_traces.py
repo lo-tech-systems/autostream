@@ -359,6 +359,8 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.hide_controls()
     elif kind == "tick_controls_hidden":
         d._tick_controls_hidden()
+    elif kind == "tick_controls_reveal":
+        d._tick_controls_reveal()
     elif kind == "network":
         # ("network", link, bars) -- feeds the poller's callback directly,
         # the same shape the worker calls it with after a poll.
@@ -1975,6 +1977,71 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("repaint",),  # back to idle
         ],
         {"cfg": cfg4, "backend": fb4},
+    ))
+
+    # An artwork tap on the rich tier with the controls held: the tap only
+    # opens the hide window, the first repaint after it is still the ordinary
+    # frame (the slide starts there), the surface reads "hidden" throughout,
+    # a mid-slide repaint and the settled one each push one frame, and the
+    # window's end brings the held controls back.
+    cfg5, fb5 = _rich_display_args()
+    aid5 = _aid("rs1")
+    t5 = _target("RS1", aid5)
+    scenarios.append((
+        "rich_artwork_tap_slides_then_settles",
+        [
+            ("targets", [t5]),
+            ("status", {aid5: _status_result()}),
+            ("update_config", {"always_show_controls": True}),
+            ("poll",),
+            ("repaint",),  # touch_surface == "held"
+            ("hide_controls",),
+            ("repaint",),  # slide begins at progress 0
+            ("advance", 0.2),
+            ("tick_controls_reveal",),
+            ("repaint",),  # mid-slide
+            ("advance", 0.4),
+            ("tick_controls_reveal",),
+            ("repaint",),  # settled, bare
+            ("advance", 6.0),
+            ("tick_controls_hidden",),
+            ("repaint",),  # window over, "held" again
+        ],
+        {"cfg": cfg5, "backend": fb5},
+    ))
+
+    # The same reveal on the replay screen while a replay runs: the tap
+    # opens the window and the surface reads "hidden" (no Restart/Stop to
+    # hit), the counter keeps ticking and repainting underneath, and the
+    # window's end brings the replaying controls back.
+    cfg6, fb6 = _rich_display_args()
+    aid6 = _aid("rs2")
+    t6 = _target("RS2", aid6)
+    replaying = _repeat_obj(
+        state="replaying", available=True, armed=True,
+        replay={"active": True, "position_seconds": 2.0, "duration_seconds": 30.0},
+    )
+    scenarios.append((
+        "rich_replay_artwork_tap_hides_and_counter_ticks",
+        [
+            ("targets", [t6]),
+            ("status", {aid6: _status_result(repeat=replaying)}),
+            ("poll",),
+            ("toggle_repeat",),
+            ("repaint",),  # touch_surface == "repeat", replaying layout
+            ("hide_controls",),
+            ("repaint",),  # slide begins at progress 0, surface "hidden"
+            ("advance", 1.0),
+            ("tick_repeat_line",),
+            ("repaint",),  # the counter's next second, controls still hidden
+            ("advance", 1.0),
+            ("tick_repeat_line",),
+            ("repaint",),
+            ("advance", 6.0),
+            ("tick_controls_hidden",),
+            ("repaint",),  # window over, "repeat" again
+        ],
+        {"cfg": cfg6, "backend": fb6},
     ))
 
     return scenarios

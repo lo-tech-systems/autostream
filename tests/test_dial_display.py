@@ -48,8 +48,9 @@ from dial_display_profiles import (
 from dial_mdns import PlayingTarget
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
-from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for
+from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for, repeat_layout_for
 import dial_display as dd
+import dial_display_compositor as dd_compositor
 from dial_display import (
     NOWIFI_PROMPT_STREAK,
     SCREEN_POLICIES,
@@ -3203,170 +3204,251 @@ class TestHideControls:
 
 
 # ---------------------------------------------------------------------------
-# The artwork-tap reveal: on the rich and large tiers, hide_controls() also
-# starts a short slide (see REVEAL_ANIMATION_S, _reveal_progress()) in which
-# the top band leaves upwards, the bottom band downwards, and the title/
-# artist lines fade, ending on exactly the same bare frame the hide window
-# always produced. The base tier keeps its instant hide; the compact tier
-# has no bands at all.
+# The artwork-tap reveal: on the rich and large tiers the bands' chrome slides
+# off the panel (the top band up, the bottom band down, the inter-band text
+# fading, the artwork under them staying put) whenever the controls are due
+# to go: an artwork tap in either controls mode, or the touch session's own
+# dismiss. The slide starts on the repaint thread at the first frame that
+# finds them due to go, ends on exactly the bare frame the hide window holds,
+# and showing the controls again is never animated. The base tier keeps its
+# instant hide; the compact tier has no bands at all.
 # ---------------------------------------------------------------------------
 
+def _repaint(display) -> None:
+    with display._lock:
+        display._repaint_current_locked()
+
+
+def _bare_frame(display, fb):
+    return display._compositor.compose(
+        display._current_base_image, fb.width, fb.height,
+        rotate=False, bgr=False, is_artwork=False, overlay=None,
+    )
+
+
+def _pixels(image):
+    return list(image.getdata())
+
+
+def _rows_equal(a, b, box, tol=0):
+    """Whether the *box* region of two same-size frames agrees within *tol*
+    levels per channel."""
+    ca, cb = a.crop(box), b.crop(box)
+    return all(
+        abs(x - y) <= tol
+        for pa, pb in zip(ca.getdata(), cb.getdata())
+        for x, y in zip(pa, pb)
+    )
+
+
 class TestArtworkReveal:
-    def test_hide_controls_starts_the_slide_on_rich(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
+    def _rich(self, always_show=True):
+        display, fb, gt = _make_rich_display(targets=[_target()], always_show_controls=always_show)
         display.enable()
         _poll_with_artwork(display, fb)
         with display._lock:
             assert display._layout_metrics().content_tier == "rich"
+        band_h = layout_for(fb.width, fb.height, metrics=display._layout_metrics()).top_band[3]
+        return display, fb, gt, band_h
+
+    def test_hide_controls_opens_the_window_and_stamps_nothing(self):
+        display, fb, gt, _ = self._rich()
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1000.0):
             display.hide_controls()
-        assert display._reveal_started_at == 1000.0
         assert display._controls_hidden_until == pytest.approx(1000.0 + dd.CONTROLS_HIDE_SECONDS)
+        assert display._reveal_started_at == 0.0
         assert display._overlay_signal.is_set()
 
-    def test_hide_controls_does_not_start_the_slide_on_base_or_compact(self):
-        for maker in (_make_display, _make_compact_display):
-            t = _target()
-            display, fb, gt = maker(targets=[t], always_show_controls=True)
-            display.enable()
-            _poll_with_artwork(display, fb)
-            display.hide_controls()
-            assert display._reveal_started_at == 0.0
+    def test_hide_controls_is_a_noop_off_main(self):
+        display, fb, gt, _ = self._rich()
+        display._screen = "selector"
+        display.hide_controls()
+        assert display._controls_hidden_until == 0.0
 
     def test_ease_and_progress(self):
         assert dd._reveal_ease(0.0) == 0.0
         assert dd._reveal_ease(1.0) == 1.0
-        assert dd._reveal_ease(0.5) == 0.75
+        assert dd._reveal_ease(0.5) == 0.5
+        assert dd._reveal_ease(0.25) == 0.15625
         values = [dd._reveal_ease(t / 20) for t in range(21)]
         assert values == sorted(values)
 
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
-        # No tap has happened yet: never animating.
+        display, fb, gt, _ = self._rich()
+        # No slide stamped yet: never animating.
         assert display._reveal_progress(1000.0) == 0.0
-        with patch("dial_display.time.monotonic", return_value=1000.0):
-            display.hide_controls()
+        display._reveal_started_at = 1000.0
         assert display._reveal_progress(1000.0) == 0.0
-        assert display._reveal_progress(1000.0 + dd.REVEAL_ANIMATION_S / 2.0) == pytest.approx(0.75)
+        assert display._reveal_progress(1000.0 + dd.REVEAL_ANIMATION_S / 2.0) == pytest.approx(0.5)
         assert display._reveal_progress(1000.0 + dd.REVEAL_ANIMATION_S) == 0.0
 
-    def test_frames_slide_then_settle(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
+    def test_slide_starts_on_the_first_compose_after_a_tap_always_show(self):
+        display, fb, gt, band_h = self._rich()
         held_frame = fb.displayed[-1]
-        metrics = display._layout_metrics()
-        layout = layout_for(fb.width, fb.height, metrics=metrics)
-        band_h = layout.top_band[3]
-
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.hide_controls()
-            with display._lock:
-                display._repaint_current_locked()
-            assert list(fb.displayed[-1].getdata()) == list(held_frame.getdata())
+            _repaint(display)
+            # The first slide frame is the ordinary frame at progress 0,
+            # and the slide is stamped by the compose, not by the tap.
+            assert _pixels(fb.displayed[-1]) == _pixels(held_frame)
+            assert display._reveal_started_at == 1000.0
+            assert display._reveal_frame_at >= 1000.0
 
             clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
-            with display._lock:
-                display._repaint_current_locked()
-            mid_frame = fb.displayed[-1]
-            bare = display._compositor.compose(
-                display._current_base_image, fb.width, fb.height,
-                rotate=False, bgr=False, is_artwork=False, overlay=None,
-            )
-            assert list(mid_frame.getdata()) != list(held_frame.getdata())
-            assert list(mid_frame.getdata()) != list(bare.getdata())
-            dy = round(0.75 * band_h)
-            assert list(mid_frame.crop((0, band_h - dy, fb.width, band_h)).getdata()) == list(
-                bare.crop((0, band_h - dy, fb.width, band_h)).getdata()
-            )
+            _repaint(display)
+            mid = fb.displayed[-1]
+            bare = _bare_frame(display, fb)
+            dy = round(0.5 * band_h)
+            assert _pixels(mid) != _pixels(held_frame)
+            assert _pixels(mid) != _pixels(bare)
+            assert _rows_equal(mid, bare, (0, band_h - dy, fb.width, band_h))
+            # The artwork under the band that is still there has not moved.
+            assert _rows_equal(mid, held_frame, (0, 0, 4, band_h - dy), tol=2)
+            assert _rows_equal(mid, held_frame, (0, fb.height - band_h + dy, 4, fb.height), tol=2)
 
-            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S
-            with display._lock:
-                display._repaint_current_locked()
-            assert list(fb.displayed[-1].getdata()) == list(bare.getdata())
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(bare)
 
             clock.t = 1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.1
             display._tick_controls_hidden()
-            with display._lock:
-                display._repaint_current_locked()
-            assert list(fb.displayed[-1].getdata()) == list(held_frame.getdata())
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(held_frame)
 
-    def test_visible_snapshot_keeps_the_bands_in_place(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=False)
+    def test_slide_starts_after_a_tap_in_touch_mode(self):
+        display, fb, gt, band_h = self._rich(always_show=False)
+        display.set_overlay(OverlayState(visible=True))
+        _repaint(display)
+        shown_frame = fb.displayed[-1]
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            display.hide_controls()
+            _repaint(display)
+            # The window overrides the visible snapshot; the slide has begun.
+            assert _pixels(fb.displayed[-1]) == _pixels(shown_frame)
+            assert display._reveal_started_at == 1000.0
+
+            clock.t = 1000.05
+            display.set_overlay(OverlayState(visible=False))
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
+            _repaint(display)
+            bare = _bare_frame(display, fb)
+            assert _pixels(fb.displayed[-1]) != _pixels(shown_frame)
+            assert _pixels(fb.displayed[-1]) != _pixels(bare)
+
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(bare)
+
+            clock.t = 1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.1
+            display._tick_controls_hidden()
+            _repaint(display)
+            # The session is hidden: no bands come back when the window ends.
+            assert _pixels(fb.displayed[-1]) == _pixels(bare)
+
+    def test_touch_dismiss_slides_without_a_window(self):
+        display, fb, gt, band_h = self._rich(always_show=False)
+        display.set_overlay(OverlayState(visible=True))
+        _repaint(display)
+        shown_frame = fb.displayed[-1]
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            display.set_overlay(OverlayState(visible=False))
+            _repaint(display)
+            assert display._controls_hidden_until == 0.0
+            assert display._reveal_started_at == 1000.0
+            assert _pixels(fb.displayed[-1]) == _pixels(shown_frame)
+
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
+            _repaint(display)
+            bare = _bare_frame(display, fb)
+            assert _pixels(fb.displayed[-1]) != _pixels(shown_frame)
+            assert _pixels(fb.displayed[-1]) != _pixels(bare)
+
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(bare)
+
+    @pytest.mark.parametrize("always_show", [True, False])
+    def test_base_tier_hides_instantly_in_both_modes(self, always_show):
+        display, fb, gt = _make_display(targets=[_target()], always_show_controls=always_show)
         display.enable()
         _poll_with_artwork(display, fb)
         display.set_overlay(OverlayState(visible=True))
-        with display._lock:
-            display._repaint_current_locked()
-        held_frame = fb.displayed[-1]
-
-        clock = _FakeClock(1000.0)
-        with patch("dial_display.time.monotonic", clock):
+        _repaint(display)
+        with patch("dial_display.time.monotonic", return_value=1000.0):
             display.hide_controls()
-            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
-            with display._lock:
-                display._repaint_current_locked()
-            # A touch-published visible snapshot keeps the bands in place:
-            # progress is forced to 0 even though the window is running.
-            assert list(fb.displayed[-1].getdata()) == list(held_frame.getdata())
+            _repaint(display)
+        assert _pixels(fb.displayed[-1]) == _pixels(_bare_frame(display, fb))
+        assert display._reveal_started_at == 0.0
 
-            display.set_overlay(OverlayState(visible=False))
-            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0 + 0.02
-            with display._lock:
-                display._repaint_current_locked()
-            joined_frame = fb.displayed[-1]
-            assert list(joined_frame.getdata()) != list(held_frame.getdata())
-
-            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
-            with display._lock:
-                display._repaint_current_locked()
-            bare_frame = fb.displayed[-1]
-            bare = display._compositor.compose(
-                display._current_base_image, fb.width, fb.height,
-                rotate=False, bgr=False, is_artwork=False, overlay=None,
-            )
-            assert list(bare_frame.getdata()) == list(bare.getdata())
-
-    def test_deadline_paces_frames(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
+    def test_compact_tier_never_hides_or_slides(self):
+        display, fb, gt = _make_compact_display(targets=[_target()], always_show_controls=True)
         display.enable()
         _poll_with_artwork(display, fb)
+        display.hide_controls()
+        assert display._controls_hidden_until == 0.0
+        assert display._reveal_started_at == 0.0
 
+    def test_show_is_never_animated(self):
+        display, fb, gt, band_h = self._rich()
+        held_frame = fb.displayed[-1]
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.hide_controls()
-            with display._lock:
-                display._repaint_current_locked()
-            assert display._reveal_frame_at == pytest.approx(1000.0)
-            assert display._next_repaint_deadline() == pytest.approx(1000.0 + dd.REVEAL_FRAME_INTERVAL_S + 0.005)
+            _repaint(display)
+            clock.t = 1000.2
+            _repaint(display)
+            # A reveal tap mid-slide: the bands are back in place at once.
+            display.set_overlay(OverlayState(visible=True))
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(held_frame)
+            assert display._reveal_started_at == 0.0
 
-            clock.t = 1000.05
-            assert display._next_repaint_deadline() == pytest.approx(1000.055)
+            display.hide_controls()
+            _repaint(display)
+            clock.t = 1000.2 + dd.CONTROLS_HIDE_SECONDS + 0.1
+            display._tick_controls_hidden()
+            _repaint(display)
+            # The window's expiry: the same snap back.
+            assert _pixels(fb.displayed[-1]) == _pixels(held_frame)
+            assert display._reveal_started_at == 0.0
 
-            display._reveal_frame_at = 1000.34
-            clock.t = 1000.34
-            assert display._next_repaint_deadline() == pytest.approx(1000.355)
+    def test_deadline_paces_from_the_end_of_the_frame(self):
+        display, fb, gt, _ = self._rich()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            display.hide_controls()
+            _repaint(display)
+            display._reveal_frame_at = 1000.03
+            clock.t = 1000.03
+            assert display._next_repaint_deadline() == pytest.approx(1000.03 + dd.REVEAL_FRAME_GAP_S + 0.005)
 
-            clock.t = 1000.36
-            assert display._next_repaint_deadline() == pytest.approx(1006.005)
+            # The slot has passed: at once.
+            clock.t = 1000.1
+            assert display._next_repaint_deadline() == pytest.approx(1000.105)
+
+            # Near the end the slide's own end wins over the next slot.
+            display._reveal_frame_at = 1000.546
+            clock.t = 1000.546
+            assert display._next_repaint_deadline() == pytest.approx(1000.0 + dd.REVEAL_ANIMATION_S + 0.005)
+
+            # Only the window's end is left.
+            clock.t = 1000.56
+            assert display._next_repaint_deadline() == pytest.approx(1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.005)
 
     def test_tick_signals_each_frame_and_once_at_the_end(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
+        display, fb, gt, _ = self._rich(always_show=False)
+        display.set_overlay(OverlayState(visible=True))
+        _repaint(display)
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
-            display.hide_controls()
+            display.set_overlay(OverlayState(visible=False))
+            _repaint(display)
+            assert display._reveal_started_at == 1000.0
 
+            # A dismiss slide has no window; the tick must not end it early.
             display._overlay_signal.clear()
             clock.t = 1000.1
             display._tick_controls_reveal()
@@ -3384,89 +3466,90 @@ class TestArtworkReveal:
             display._tick_controls_reveal()
             assert not display._overlay_signal.is_set()
 
-    def test_reveal_tap_resets_and_next_tap_replays(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
+    def test_second_tap_replays_from_zero(self):
+        display, fb, gt, _ = self._rich()
         held_frame = fb.displayed[-1]
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.hide_controls()
+            _repaint(display)
             clock.t = 1000.2
             display.set_overlay(OverlayState(visible=True))
             assert display._reveal_started_at == 0.0
             assert display._controls_hidden_until == 0.0
-            with display._lock:
-                display._repaint_current_locked()
-            assert list(fb.displayed[-1].getdata()) == list(held_frame.getdata())
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(held_frame)
 
             clock.t = 1001.0
             display.hide_controls()
+            _repaint(display)
             assert display._reveal_started_at == 1001.0
             assert display._reveal_progress(1001.0) == 0.0
-            assert display._reveal_progress(1001.0 + dd.REVEAL_ANIMATION_S / 2.0) == pytest.approx(0.75)
+            assert display._reveal_progress(1001.0 + dd.REVEAL_ANIMATION_S / 2.0) == pytest.approx(0.5)
 
-    def test_screen_change_abandons_the_slide(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
+    def test_screen_change_resets_window_and_slide(self):
+        display, fb, gt, _ = self._rich()
+        held_frame = fb.displayed[-1]
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.hide_controls()
+            _repaint(display)
+            assert display._reveal_started_at == 1000.0
             display.open_selector()
-            with display._lock:
-                display._repaint_current_locked()
+            _repaint(display)
             assert display._screen == "selector"
+            assert display._controls_hidden_until == 0.0
             assert display._reveal_started_at == 0.0
+            assert display._controls_drawn_last is False
 
             display.close_list()
             clock.t = 1000.2
-            with display._lock:
-                display._repaint_current_locked()
+            _repaint(display)
             assert display._screen == "main"
-            frame = fb.displayed[-1]
-            bare = display._compositor.compose(
-                display._current_base_image, fb.width, fb.height,
-                rotate=False, bgr=False, is_artwork=False, overlay=None,
-            )
-            # The window is still running (only the slide was abandoned), so
-            # returning to main shows bare artwork, exactly as an instant
-            # hide always has.
-            assert list(frame.getdata()) == list(bare.getdata())
+            # Back on main the ordinary frame shows, not bare artwork.
+            assert _pixels(fb.displayed[-1]) == _pixels(held_frame)
 
     def test_now_playing_clear_mid_slide_takes_the_idle_path(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
+        display, fb, gt, _ = self._rich()
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.hide_controls()
+            _repaint(display)
             clock.t = 1000.1
             gt.return_value = []
             display._poll_once()
             assert display._now_playing is None
-            with display._lock:
-                display._repaint_current_locked()  # must not raise
+            _repaint(display)  # must not raise
             result = display._effective_overlay_locked(OverlayState())
             assert result.visible is False
+            assert display._controls_drawn_last is False
 
-    def test_poll_repaint_mid_slide_composes_under_the_bands(self):
-        t = _target()
-        display, fb, gt = _make_rich_display(targets=[t], always_show_controls=True)
-        display.enable()
-        _poll_with_artwork(display, fb)
+    def test_resuming_after_idle_in_touch_mode_starts_no_phantom_slide(self):
+        display, fb, gt, _ = self._rich(always_show=False)
+        display.set_overlay(OverlayState(visible=True))
+        _repaint(display)
+        assert display._controls_drawn_last is True
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            gt.return_value = []
+            display._poll_once()
+            assert display._now_playing is None
+            display.set_overlay(OverlayState(visible=False))
+            clock.t = 1001.0
+            gt.return_value = [_target()]
+            _poll_with_artwork(display, fb)
+            assert display._reveal_started_at == 0.0
+            assert _pixels(fb.displayed[-1]) == _pixels(_bare_frame(display, fb))
+
+    def test_poll_repaint_mid_slide_composes_under_the_chrome(self):
+        display, fb, gt, band_h = self._rich()
         metrics = display._layout_metrics()
-        layout = layout_for(fb.width, fb.height, metrics=metrics)
-        band_h = layout.top_band[3]
-
         clock = _FakeClock(1000.0)
         with patch("dial_display.time.monotonic", clock):
             display.hide_controls()
+            _repaint(display)
             clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
-            new_image = Image.new("RGB", (fb.width, fb.height), (10, 200, 10))
+            new_image = Image.linear_gradient("L").resize((fb.width, fb.height)).convert("RGB")
             new_track_id = _track_id(artwork_url="https://provider.example/y.jpg")
             with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=new_track_id)), \
                  patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
@@ -3476,19 +3559,51 @@ class TestArtworkReveal:
             frame = fb.displayed[-1]
 
             with display._lock:
-                overlay = display._effective_overlay_locked(display._overlay_snapshot)
-            reference_shown = display._compositor.compose(
+                overlay = display._effective_overlay_locked(display._overlay_snapshot, now=clock.t, animating=False)
+            assert overlay.visible is False
+            shown = display._compositor.compose(
                 new_image, fb.width, fb.height, rotate=False, bgr=False, is_artwork=False,
-                overlay=overlay, metrics=metrics,
+                overlay=OverlayState(visible=True), metrics=metrics,
             )
-            progress = display._reveal_progress(clock.t)
-            dy = round(progress * band_h)
-            assert list(frame.crop((0, band_h - dy, fb.width, band_h)).getdata()) == list(
-                new_image.crop((0, band_h - dy, fb.width, band_h)).getdata()
-            )
-            assert list(frame.crop((0, 0, fb.width, band_h - dy)).getdata()) == list(
-                reference_shown.crop((0, dy, fb.width, band_h)).getdata()
-            )
+            dy = round(display._reveal_progress(clock.t) * band_h)
+            assert dy > 0
+            assert _rows_equal(frame, new_image, (0, band_h - dy, fb.width, band_h))
+            # The new artwork sits under the band that is still there, at
+            # the rows it always occupied.
+            assert _rows_equal(frame, shown, (0, 0, 4, band_h - dy), tol=2)
+
+    def test_chrome_change_mid_slide_rebuilds_layers_and_continues(self):
+        display, fb, gt, _ = self._rich()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            display.hide_controls()
+            _repaint(display)
+            with patch("dial_display.shown_volume", return_value=40):
+                clock.t = 1000.1
+                _repaint(display)
+                clock.t = 1000.15
+                _repaint(display)
+                before = dd_compositor._reveal_layers.cache_info()
+                with patch("dial_display.shown_volume", return_value=45):
+                    clock.t = 1000.2
+                    _repaint(display)
+                after = dd_compositor._reveal_layers.cache_info()
+            assert after.misses == before.misses + 1
+            assert display._reveal_started_at == 1000.0
+            assert display._reveal_progress(1000.2) == pytest.approx(dd._reveal_ease(0.2 / dd.REVEAL_ANIMATION_S))
+
+    def test_sleep_mid_slide_resets(self):
+        display, fb, gt, _ = self._rich()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            display.hide_controls()
+            _repaint(display)
+            assert display._reveal_started_at == 1000.0
+            with display._lock:
+                display._sleep_locked()
+            assert display._controls_hidden_until == 0.0
+            assert display._reveal_started_at == 0.0
+            assert display._controls_drawn_last is False
 
     def test_no_new_thread(self):
         display, fb, gt = _make_rich_display(targets=[])
@@ -3504,16 +3619,212 @@ class TestArtworkReveal:
             display.stop()
 
     def test_tick_controls_hidden_also_clears_the_stamp(self):
-        display, fb, gt = _make_rich_display(targets=[])
-        display.enable()
+        display, fb, gt, _ = self._rich()
         with patch("dial_display.time.monotonic", return_value=1000.0):
             display.hide_controls()
+            _repaint(display)
         assert display._reveal_started_at == 1000.0
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.1):
             display._tick_controls_hidden()
         assert display._controls_hidden_until == 0.0
         assert display._reveal_started_at == 0.0
+
+    def test_one_clock_read_per_compose(self):
+        display, fb, gt, _ = self._rich()
+        reads = []
+
+        def clock():
+            reads.append(1)
+            return 1000.0
+
+        with patch("dial_display.time.monotonic", clock):
+            display.hide_controls()
+            reads.clear()
+            with display._lock:
+                display._display_locked(display._current_base_image)
+        # The compose's own read, plus the stamp after the push.
+        assert len(reads) <= 2
+
+
+# ---------------------------------------------------------------------------
+# The same reveal on the replay screen, exactly while a replay is running: a
+# tap on the position line (or the artwork strip around it) slides the bands'
+# chrome off and fades the line, the counter keeps counting underneath, a
+# touch brings the controls back and never actuates a hidden Restart/Stop/
+# dots, and the window ends with the replay, the screen or its own timeout.
+# ---------------------------------------------------------------------------
+
+class TestReplayReveal:
+    AID = "31" * 10
+
+    def _opened(self, maker=None, state="replaying", at=1000.0):
+        display, fb, gt = (maker or _make_rich_display)(targets=[])
+        display.enable()
+        base = Image.linear_gradient("L").resize((fb.width, fb.height)).convert("RGB")
+        with display._lock:
+            display._screen = "repeat"
+            display._repeat_screen = dd.RepeatScreenState(
+                appliance_id=self.AID, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=at,
+            )
+            display._current_base_image = base
+        self._seed(state, at)
+        return display, fb, base
+
+    def _seed(self, state, observed_at):
+        import dial_repeat_store as drs
+        drs.repeat_store.update(self.AID, drs.RepeatRecord(
+            available=True, state=state, armed=True,
+            recording_seconds=30.0, position_seconds=5.0, duration_seconds=30.0,
+            observed_at=observed_at,
+        ))
+
+    def _bare(self, display, fb, base):
+        metrics = display._layout_metrics()
+        with display._lock:
+            view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
+        return display._compositor.compose_repeat(
+            fb.width, fb.height, view, rotate=False, bgr=False, base=base, metrics=metrics, controls=False,
+        )
+
+    def test_line_tap_while_replaying_hides(self):
+        display, fb, base = self._opened()
+        with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
+            display.repeat_toggle_tap()
+            assert display._controls_hidden_until == pytest.approx(1000.0 + dd.CONTROLS_HIDE_SECONDS)
+
+    def test_hold_and_enable_layouts_do_not_hide(self):
+        display, fb, base = self._opened(state="hold")
+        with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
+            display.repeat_toggle_tap()
+            display.hide_controls()
+            assert display._controls_hidden_until == 0.0
+            self._seed("idle", 1000.0)
+            display.repeat_toggle_tap()
+            display.hide_controls()
+            assert display._controls_hidden_until == 0.0
+
+    def test_touch_surface_reports_hidden_while_the_window_holds(self):
+        display, fb, base = self._opened()
+        with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
+            assert display.touch_surface()[0] == "repeat"
+            display.hide_controls()
+            assert display.touch_surface() == ("hidden", True, display._dots_active, display._outputs_available)
+            display.set_overlay(OverlayState(visible=True))
+            assert display.touch_surface()[0] == "repeat"
+
+    def test_repeat_frames_slide_then_bare(self):
+        display, fb, base = self._opened()
+        band_h = layout_for(fb.width, fb.height, metrics=display._layout_metrics()).top_band[3]
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            shown = fb.displayed[-1]
+            display.repeat_toggle_tap()
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(shown)
+            assert display._reveal_started_at == 1000.0
+
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S / 2.0
+            _repaint(display)
+            mid = fb.displayed[-1]
+            bare = self._bare(display, fb, base)
+            dy = round(0.5 * band_h)
+            assert _pixels(mid) != _pixels(shown)
+            assert _pixels(mid) != _pixels(bare)
+            assert _rows_equal(mid, bare, (0, band_h - dy, fb.width, band_h))
+            line = repeat_layout_for(fb.width, fb.height, metrics=display._layout_metrics()).line
+            assert _pixels(mid.crop(line)) != _pixels(bare.crop(line))
+            assert _pixels(mid.crop(line)) != _pixels(shown.crop(line))
+
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(bare)
+
+    def test_counter_keeps_ticking_while_hidden(self):
+        display, fb, base = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            display.repeat_toggle_tap()
+            _repaint(display)
+            clock.t = 1000.0 + dd.REVEAL_ANIMATION_S + 0.05
+            _repaint(display)
+            display._tick_controls_reveal()
+            bare = self._bare(display, fb, base)
+            painted = display._repeat_painted_second
+            for step in (1.0, 2.0):
+                clock.t = 1000.6 + step
+                display._overlay_signal.clear()
+                display._tick_repeat_line()
+                assert display._overlay_signal.is_set()
+                _repaint(display)
+                assert display._repeat_painted_second == painted + int(step)
+                assert display._next_repaint_deadline() > clock.t
+                assert _pixels(fb.displayed[-1]) == _pixels(bare)
+
+    def test_replay_end_ends_the_window(self):
+        display, fb, base = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            display.repeat_toggle_tap()
+            _repaint(display)
+            self._seed("hold", 1000.0)
+            _repaint(display)
+            assert display._controls_hidden_until == 0.0
+            assert display._reveal_started_at == 0.0
+            assert display.touch_surface()[0] == "repeat"
+            assert _pixels(fb.displayed[-1]) != _pixels(self._bare(display, fb, base))
+
+    def test_screen_change_ends_the_window(self):
+        display, fb, base = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            display.repeat_toggle_tap()
+            _repaint(display)
+            display.pop_secondary("repeat")
+            _repaint(display)
+            assert display._screen == "main"
+            assert display._controls_hidden_until == 0.0
+            assert display._reveal_started_at == 0.0
+
+    def test_window_expiry_shows_controls(self):
+        display, fb, base = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            display.repeat_toggle_tap()
+            _repaint(display)
+            clock.t = 1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.1
+            self._seed("replaying", clock.t)
+            display._tick_controls_hidden()
+            _repaint(display)
+            assert display.touch_surface()[0] == "repeat"
+            assert _pixels(fb.displayed[-1]) != _pixels(self._bare(display, fb, base))
+
+    def test_base_tier_hides_instantly(self):
+        display, fb, base = self._opened(maker=_make_display)
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            display.repeat_toggle_tap()
+            _repaint(display)
+            assert display._reveal_started_at == 0.0
+            assert _pixels(fb.displayed[-1]) == _pixels(self._bare(display, fb, base))
+
+    def test_compact_repeat_unaffected(self):
+        display, fb, base = self._opened(maker=_make_compact_display)
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            _repaint(display)
+            before = _pixels(fb.displayed[-1])
+            display.repeat_toggle_tap()
+            display.hide_controls()
+            assert display._controls_hidden_until == 0.0
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == before
 
 
 class TestHeldOverlay:
