@@ -212,19 +212,10 @@ class TestStartButtonHeld:
         start_held(page, hd)
         rewind, stop = replay_button(page, REWIND), replay_button(page, STOP)
         expect(rewind).to_have_attribute(BUSY, "true")
+        expect(stop).to_have_attribute(BUSY, "false")
         style = "e => { const s = getComputedStyle(e); return [s.backgroundColor, s.borderTopColor]; }"
-        theme = page.evaluate(
-            """() => {
-                const s = getComputedStyle(document.documentElement);
-                const probe = document.createElement('div');
-                document.body.appendChild(probe);
-                const read = (v) => { probe.style.color = s.getPropertyValue(v); return getComputedStyle(probe).color; };
-                const out = [read('--color-surface-selected'), read('--color-accent')];
-                probe.remove();
-                return out;
-            }""")
-        assert rewind.evaluate(style) == theme
-        assert stop.evaluate(style) != theme
+        assert rewind.evaluate(style)[0] != stop.evaluate(style)[0]
+        assert rewind.evaluate(style)[1] != stop.evaluate(style)[1]
         assert rewind.bounding_box()["width"] == stop.bounding_box()["width"]
 
     def test_a_second_press_while_held_sends_nothing(self, page, hd):

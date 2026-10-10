@@ -342,7 +342,6 @@ class HdServer:
         return {
             "brightness": display.brightness,
             "sleep_after_s": display.sleep_after_s,
-            "always_show_controls": display.always_show_controls,
         }
 
     def _recovery(self) -> dict:

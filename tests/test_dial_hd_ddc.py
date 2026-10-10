@@ -664,7 +664,7 @@ class Hub:
 class TestPanelDrivesDdc:
     def make(self, **kw):
         backlight, display, pauses = make(**kw)
-        settings = SimpleNamespace(sleep_after_s=300, brightness=80, always_show_controls=False)
+        settings = SimpleNamespace(sleep_after_s=300, brightness=80)
         panel = HdPanel(Hub(), settings=lambda: settings, backlight=backlight)
         return panel, backlight, display, settings
 

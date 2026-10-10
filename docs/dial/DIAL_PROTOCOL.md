@@ -684,8 +684,8 @@ an empty string. `pin_pending` is `true` while the speaker is waiting for a PIN 
 entered. `needs_auth_key` is `true` when the speaker has never been paired and has to be
 paired from a PIN before it will play. `pin_claim` names who is being asked for the PIN
 right now: `webui` for the appliance's own web page, `dial:<id>` for a dial, or an empty
-string when nobody is. A claim ends when the PIN is accepted or after a short while. A dial
-does not act on `pin_claim`; it acts on `needs_auth_key`.
+string when nobody is. A claim ends when the PIN is accepted or after 90 seconds. A dial
+does not act on `pin_claim`; it acts on `needs_auth_key`. The appliance's 90 second claim and the 90 second window a dial allows itself for a PIN are separate constants that happen to agree; neither reads the other.
 
 | `error` | Meaning |
 |---|---|

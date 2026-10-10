@@ -75,6 +75,7 @@ class TestSchedulePoweroff:
         assert ok is False
         run.assert_not_called()
 
+    # Guards the sudoers grant: the verb must take nothing from its caller.
     def test_the_function_takes_no_arguments_and_never_reads_the_namespace(self):
         tree = ast.parse(_ADMIN_SCRIPT.read_text(encoding="utf-8"))
         fn = next(n for n in ast.walk(tree)

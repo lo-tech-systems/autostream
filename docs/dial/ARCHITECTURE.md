@@ -157,6 +157,12 @@ drift from the loopback one. PIN guessing shares the management server's
 per-address limiter. It follows the config, so it opens and closes without a
 restart and drops its sessions when the PIN changes.
 
+**Trust boundary.** The loopback listener trusts every local process. The two
+actions only it may take (`presence` and `dial_shutdown`) are argument-free, and
+the privileged command behind the second takes no arguments either, so nothing a
+caller sends reaches it. A session token for the kiosk was considered and not
+adopted: the dial is a single-purpose appliance.
+
 **Locking and threads.** The HD code follows the locking rules below. The core's
 snapshot is a lock-free reference read, so a request handler never holds a core
 or view lock while it reads or writes a socket. The hub's one condition and the

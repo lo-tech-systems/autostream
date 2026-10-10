@@ -463,7 +463,7 @@ class TestState:
         body = json.loads(request(server, "GET", "/api/v1/state")[1])
         expected = build_state(
             scenario.snapshot, descriptors=core.warnings.descriptors(), panel=hs.PANEL_AWAKE,
-            settings={"brightness": 80, "sleep_after_s": 300, "always_show_controls": False},
+            settings={"brightness": 80, "sleep_after_s": 300},
             recovery=(False, False), hub_seq=scenario.snapshot.seq, now=hs.NOW,
             wall_now=hs.WALL_NOW, muted=False)
         assert body == json.loads(json.dumps(expected))

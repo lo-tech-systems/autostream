@@ -40,7 +40,7 @@ class Clock:
 
 
 def make_settings(**kwargs):
-    values = {"sleep_after_s": 300, "brightness": 80, "always_show_controls": False}
+    values = {"sleep_after_s": 300, "brightness": 80}
     values.update(kwargs)
     return SimpleNamespace(**values)
 
@@ -240,11 +240,11 @@ class TestWakeRules:
 
 class TestView:
     def test_it_reports_the_settings_and_the_backlight_kind(self, hub, clock):
-        settings = make_settings(brightness=55, sleep_after_s=900, always_show_controls=True)
+        settings = make_settings(brightness=55, sleep_after_s=900)
         panel = HdPanel(hub, settings=lambda: settings, backlight=FakeBacklight(), clock=clock)
         assert panel.view() == {
             "asleep": False, "brightness": 55, "sleep_after_s": 900, "backlight": "sysfs",
-            "always_show_controls": True, "kiosk": False,
+            "kiosk": False,
         }
 
     def test_with_no_backlight_the_kind_is_none(self, panel):

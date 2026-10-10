@@ -59,7 +59,7 @@ DIAL = DialInfo(
 )
 
 PANEL_AWAKE = {"asleep": False, "brightness": 80, "sleep_after_s": 300, "backlight": "sysfs"}
-SETTINGS = {"brightness": 80, "sleep_after_s": 300, "always_show_controls": False}
+SETTINGS = {"brightness": 80, "sleep_after_s": 300}
 
 
 def appliance(

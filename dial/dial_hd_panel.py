@@ -18,8 +18,9 @@ Locking: one small lock guards the panel's own fields and is never held while
 calling out (the hub, the settings reader, the backlight). Backlight writes
 are serialised by their own lock and always write the latest wanted level, so
 two threads changing state cannot leave the hardware showing the older one.
-A slow backlight (DDC) takes the level and applies it on a thread of its own,
-so a caller never waits on the hardware.
+The sysfs backlight is written under that lock (_hw_lock); the DDC backlight
+takes the level and applies it on a worker of its own, so a caller never waits
+on the bus.
 The panel never calls into the core.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -114,7 +115,7 @@ class Backlight(BacklightBase):
 
 class HdPanel:
     """*hub* is published to on every transition. *settings* returns the
-    current screen settings (sleep_after_s, brightness, always_show_controls).
+    current screen settings (sleep_after_s, brightness).
     *kiosk* says the page is shown on this dial's own screen.
     *inputs*, when given, returns (playing, interrupting, engaged) and feeds the
     background tick started by start()."""
@@ -174,8 +175,7 @@ class HdPanel:
 
     def view(self) -> dict:
         """The panel block's inputs: asleep, brightness, sleep_after_s,
-        backlight kind, always_show_controls and whether this is the kiosk
-        surface."""
+        backlight kind and whether this is the kiosk surface."""
         settings = self._settings()
         with self._lock:
             asleep = self._asleep
@@ -184,7 +184,6 @@ class HdPanel:
             "brightness": settings.brightness,
             "sleep_after_s": settings.sleep_after_s,
             "backlight": self.backlight_kind,
-            "always_show_controls": settings.always_show_controls,
             "kiosk": self._kiosk,
         }
 

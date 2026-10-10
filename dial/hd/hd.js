@@ -1048,7 +1048,7 @@
     function createBand() {
         const node = make("div", "eq-band");
         const freq = node.appendChild(make("span", "eq-band-freq"));
-        const slider = node.appendChild(make("div", "eq-band-box")).appendChild(make("input", "eq-band-slider"));
+        const slider = node.appendChild(make("div", "eq-band-box")).appendChild(make("input", "hd-band-slider"));
         slider.type = "range";
         slider.step = "1";
         const val = node.appendChild(make("span", "eq-band-val"));

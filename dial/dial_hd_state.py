@@ -381,9 +381,9 @@ def _panel_block(panel: "Mapping | None", settings: "Mapping | None") -> dict:
         "brightness": pick("brightness", DEFAULT_BRIGHTNESS),
         "sleep_after_s": pick("sleep_after_s", DEFAULT_SLEEP_AFTER_S),
         "backlight": _text(panel.get("backlight", "none")),
-        # Not read by the page any more (it always shows its controls); kept so
-        # an older page loaded against this dial still finds it.
-        "always_show_controls": bool(pick("always_show_controls", False)),
+        # Not read by the page (it always shows its controls); a constant, kept
+        # so an older page loaded against this dial still finds the key.
+        "always_show_controls": False,
         "kiosk": bool(panel.get("kiosk", False)),
     }
 

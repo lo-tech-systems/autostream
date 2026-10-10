@@ -182,10 +182,10 @@ class TestShape:
 
     def test_the_panel_falls_back_to_the_settings(self):
         state = _state("nothing_playing", panel={"asleep": True, "backlight": "none"},
-                       settings={"brightness": 55, "sleep_after_s": 900, "always_show_controls": True})
+                       settings={"brightness": 55, "sleep_after_s": 900})
         assert state["panel"] == {
             "asleep": True, "brightness": 55, "sleep_after_s": 900, "backlight": "none",
-            "always_show_controls": True, "kiosk": False}
+            "always_show_controls": False, "kiosk": False}
         assert build_state(hs.SCENARIOS["nothing_playing"].snapshot)["panel"]["brightness"] == 80
 
     @pytest.mark.parametrize("kind", ["none", "sysfs", "ddc"])
