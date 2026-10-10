@@ -231,7 +231,7 @@ class FakeWindowBackend(FakeBackend):
         return True
 
 
-def _roster_from_targets(targets) -> list:
+def _roster_from_targets(targets, repeat_capable=False) -> list:
     """Default get_roster() stand-in for _make_display(): a RosterEntry per
     identity-carrying target, mirroring dial_mdns.get_roster()'s own "no id,
     never rostered" rule. Built fresh from whatever *targets* currently
@@ -243,7 +243,7 @@ def _roster_from_targets(targets) -> list:
     return [
         RosterEntry(
             appliance_id=t.appliance_id, service_name=t.service_name, name=t.name,
-            ip=t.ip, port=t.port, playing=True, repeat_capable=False,
+            ip=t.ip, port=t.port, playing=True, repeat_capable=repeat_capable,
             dial_api=t.dial_api, audio_status=t.audio_status, dial_status=t.dial_status,
             auth=t.auth,
         )
@@ -261,6 +261,7 @@ def _make_display(
     backend_factory_builder=None,
     warnings=None,
     wall_clock=None,
+    repeat_capable=False,
 ) -> tuple[DialDisplay, FakeBackend, MagicMock]:
     cfg = DialDisplayConfig(
         fitted=fitted, rotate=rotate, bgr=bgr, screen_type=screen_type,
@@ -277,7 +278,7 @@ def _make_display(
         # rather than building it from *targets*.
         gr = lambda: roster
     else:
-        gr = lambda: _roster_from_targets(gt())
+        gr = lambda: _roster_from_targets(gt(), repeat_capable)
     display = DialDisplay(
         config=cfg,
         get_display_targets=gt,
@@ -6512,7 +6513,7 @@ class TestToggleRepeatScreen:
 class TestRepeatScreenTouchEntries:
     def _opened(self, state="idle", armed=False, appliance_id="5" * 20):
         t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
-        display, fb, gt = _make_display(targets=[t])
+        display, fb, gt = _make_display(targets=[t], repeat_capable=True)
         display.enable()
         _poll_focused_with_repeat(display, fb, appliance_id, _repeat_obj(state=state, armed=armed))
         display.toggle_repeat_screen()
@@ -6523,7 +6524,7 @@ class TestRepeatScreenTouchEntries:
 
     def test_toggle_tap_arms_in_idle(self):
         display, aid = self._opened(state="idle", armed=False)
-        with patch("dial_display.enqueue_arm") as mock_arm:
+        with patch("dial_core.enqueue_arm") as mock_arm:
             display.repeat_toggle_tap()
         mock_arm.assert_called_once()
         target, armed = mock_arm.call_args[0]
@@ -6532,7 +6533,7 @@ class TestRepeatScreenTouchEntries:
 
     def test_toggle_tap_disarms_when_already_armed(self):
         display, aid = self._opened(state="recording", armed=True)
-        with patch("dial_display.enqueue_arm") as mock_arm:
+        with patch("dial_core.enqueue_arm") as mock_arm:
             display.repeat_toggle_tap()
         mock_arm.assert_called_once()
         _, armed = mock_arm.call_args[0]
@@ -6540,13 +6541,13 @@ class TestRepeatScreenTouchEntries:
 
     def test_toggle_tap_ignored_while_replaying(self):
         display, aid = self._opened(state="replaying")
-        with patch("dial_display.enqueue_arm") as mock_arm:
+        with patch("dial_core.enqueue_arm") as mock_arm:
             display.repeat_toggle_tap()
         mock_arm.assert_not_called()
 
     def test_start_tap_seeks_zero_while_hold(self):
         display, aid = self._opened(state="hold")
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_start_tap()
         mock_transport.assert_called_once()
         target, action, position = mock_transport.call_args[0]
@@ -6556,19 +6557,19 @@ class TestRepeatScreenTouchEntries:
 
     def test_start_tap_seeks_zero_while_replaying(self):
         display, aid = self._opened(state="replaying")
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_start_tap()
         mock_transport.assert_called_once()
 
     def test_start_tap_ignored_while_recording(self):
         display, aid = self._opened(state="recording")
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_start_tap()
         mock_transport.assert_not_called()
 
     def test_stop_tap_stops_while_replaying(self):
         display, aid = self._opened(state="replaying")
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_stop_tap()
         mock_transport.assert_called_once()
         target, action, position = mock_transport.call_args[0]
@@ -6577,15 +6578,15 @@ class TestRepeatScreenTouchEntries:
 
     def test_stop_tap_ignored_while_hold(self):
         display, aid = self._opened(state="hold")
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_stop_tap()
         mock_transport.assert_not_called()
 
     def test_taps_are_noop_when_screen_not_open(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
-        with patch("dial_display.enqueue_arm") as mock_arm, \
-             patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_arm") as mock_arm, \
+             patch("dial_core.enqueue_transport") as mock_transport:
             display.repeat_toggle_tap()
             display.repeat_start_tap()
             display.repeat_stop_tap()
@@ -7686,6 +7687,7 @@ class TestPickerPick:
         now = time.monotonic()
         drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=12.0), now))
         display._refresh_picker_rows([row], now)
+        display._core.set_roster([row])
         display._idle_affordance = True
         display.open_picker()
         with display._lock:
@@ -7695,7 +7697,7 @@ class TestPickerPick:
 
     def test_pick_sets_pending_focus_and_enqueues_seek(self):
         display, fb, gt = self._opened_with_row(aid="a" * 20)
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.picker_pick(0)
         mock_transport.assert_called_once()
         target, action, position = mock_transport.call_args[0]
@@ -7707,7 +7709,7 @@ class TestPickerPick:
 
     def test_pick_closes_the_picker(self):
         display, fb, gt = self._opened_with_row()
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.picker_pick(0)
         with display._lock:
             display._repaint_current_locked()
@@ -7715,7 +7717,7 @@ class TestPickerPick:
 
     def test_stale_index_is_back_no_focus_no_enqueue(self):
         display, fb, gt = self._opened_with_row()
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.picker_pick(5)
         mock_transport.assert_not_called()
         assert display.manual_focus_id() is None
@@ -9250,7 +9252,7 @@ class TestCompactStopFlow:
         import dial_repeat_store as drs
         aid = "5" * 20
         t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
-        display, fb, gt = _make_compact_display(targets=[t])
+        display, fb, gt = _make_compact_display(targets=[t], repeat_capable=True)
         display.enable()
         _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
         display.toggle_repeat_screen()
@@ -9262,7 +9264,7 @@ class TestCompactStopFlow:
             _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
             time.monotonic(),
         ))
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.repeat_stop_tap()
         display.on_repeat_result(
             "transport", aid, 200,
@@ -9288,7 +9290,7 @@ class TestCompactStopFlow:
             _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
             time.monotonic(),
         ))
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.repeat_stop_tap()
         display.on_repeat_result("transport", aid, 200, {"ok": False, "error": "fading_out"})
         with display._lock:
@@ -9311,7 +9313,7 @@ class TestCompactStopFlow:
             _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
             time.monotonic(),
         ))
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.repeat_stop_tap()
         display.on_repeat_result(
             "transport", aid, 200,
@@ -9575,13 +9577,14 @@ class TestCompactPickerPick:
         drs.repeat_store.update("a" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=12.0), now))
         drs.repeat_store.update("b" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=34.0), now))
         display._refresh_picker_rows(rows, now)
+        display._core.set_roster(rows)
         display._idle_affordance = True
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
         assert display._metrics_locked().rows_per_page == 2  # both rows fit on page 0
 
-        with patch("dial_display.enqueue_transport") as mock_transport:
+        with patch("dial_core.enqueue_transport") as mock_transport:
             display.picker_pick(1)
         target, action, position = mock_transport.call_args[0]
         assert target.appliance_id == "b" * 20
@@ -10931,7 +10934,7 @@ class TestReplayTimer:
 
     def test_picker_pick_arms_the_timer(self):
         display, fb, gt = TestPickerPick()._opened_with_row(aid=self.AID)
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.picker_pick(0)
         assert display._replay_timer_id == self.AID
         assert display._replay_timer_shown_at == 0.0
@@ -12022,20 +12025,20 @@ class TestTransportRecordedByTheTaps:
 
     def test_arm_is_recorded_pending(self):
         display, aid = self._opened(state="idle")
-        with patch("dial_display.enqueue_arm"):
+        with patch("dial_core.enqueue_arm"):
             display.repeat_toggle_tap()
         request = display._core.snapshot().transport
         assert (request.appliance_id, request.kind, request.state) == (aid, "arm", "pending")
 
     def test_start_is_recorded_as_a_seek(self):
         display, aid = self._opened(state="hold")
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.repeat_start_tap()
         assert display._core.snapshot().transport.kind == "seek"
 
     def test_stop_is_recorded_and_its_own_ack_settles_it(self):
         display, aid = self._opened(state="replaying")
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.repeat_stop_tap()
         assert display._core.snapshot().transport.kind == "stop"
         display.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold"})
@@ -12043,11 +12046,114 @@ class TestTransportRecordedByTheTaps:
 
     def test_a_rejected_seek_is_recorded_with_its_error(self):
         display, aid = self._opened(state="hold")
-        with patch("dial_display.enqueue_transport"):
+        with patch("dial_core.enqueue_transport"):
             display.repeat_start_tap()
         display.on_repeat_result("transport", aid, 412, {"ok": False, "error": "fading_out"})
         request = display._core.snapshot().transport
         assert (request.state, request.error) == ("rejected", "fading_out")
+
+
+class TestTapsCallTheCoreActions:
+    """Each SPI tap resolves what is on screen to ids and hands the request
+    to the core action; the action's own behaviour is tested on the core."""
+
+    def _core_action(self, display, name, result=None):
+        from dial_core_state import ActionResult
+        return patch.object(display._core, name, return_value=result or ActionResult(True))
+
+    def test_selector_pick_sets_the_focus_to_the_row_id(self):
+        display = TestSelectorUnauthorizedRows()._display(authorized_count=2)
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        row = display._current_page_rows(display._selector)[1]
+        with self._core_action(display, "set_focus") as action:
+            display.selector_pick(1)
+        action.assert_called_once_with(row.appliance_id)
+
+    def test_selector_pick_shows_the_hint_when_the_core_says_unauthorized(self):
+        from dial_core_state import ActionResult
+        display = TestSelectorUnauthorizedRows()._display(authorized_count=2)
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        with self._core_action(display, "set_focus", ActionResult(False, "unauthorized")):
+            display.selector_pick(0)
+        assert display._screen_request == "info_value"
+
+    def test_picker_pick_starts_the_row_replay_and_arms_the_timer(self):
+        display, fb, gt = TestPickerPick()._opened_with_row(aid="a" * 20)
+        with self._core_action(display, "start_replay") as action:
+            display.picker_pick(0)
+        action.assert_called_once_with("a" * 20)
+        assert display._replay_timer_id == "a" * 20
+
+    def test_picker_pick_drops_the_timer_when_the_core_refuses(self):
+        from dial_core_state import ActionResult
+        display, fb, gt = TestPickerPick()._opened_with_row(aid="a" * 20)
+        with self._core_action(display, "start_replay", ActionResult(False, "wrong_state")):
+            display.picker_pick(0)
+        assert display._replay_timer_id is None
+
+    def test_picker_pick_with_a_stale_index_calls_nothing(self):
+        display, fb, gt = TestPickerPick()._opened_with_row()
+        with self._core_action(display, "start_replay") as action:
+            display.picker_pick(5)
+        action.assert_not_called()
+
+    def test_repeat_toggle_tap_arms_and_disarms_by_the_record(self):
+        display, aid = TestRepeatScreenTouchEntries()._opened(state="idle", armed=False)
+        with self._core_action(display, "set_repeat_armed") as action:
+            display.repeat_toggle_tap()
+        action.assert_called_once_with(aid, True)
+        display, aid = TestRepeatScreenTouchEntries()._opened(state="recording", armed=True)
+        with self._core_action(display, "set_repeat_armed") as action:
+            display.repeat_toggle_tap()
+        action.assert_called_once_with(aid, False)
+
+    def test_repeat_toggle_tap_while_replaying_is_an_artwork_tap(self):
+        display, aid = TestRepeatScreenTouchEntries()._opened(state="replaying")
+        with self._core_action(display, "set_repeat_armed") as action:
+            display.repeat_toggle_tap()
+        action.assert_not_called()
+
+    def test_repeat_start_tap_restarts_the_open_appliance(self):
+        display, aid = TestRepeatScreenTouchEntries()._opened(state="hold")
+        with self._core_action(display, "restart_replay") as action:
+            display.repeat_start_tap()
+        action.assert_called_once_with(aid)
+
+    def test_repeat_stop_tap_stops_the_open_appliance(self):
+        display, aid = TestRepeatScreenTouchEntries()._opened(state="replaying")
+        with self._core_action(display, "stop_replay") as action:
+            display.repeat_stop_tap()
+        action.assert_called_once_with(aid)
+
+    def test_output_taps_address_the_open_appliance_and_output(self):
+        display = TestOutputsTouchEntries()._opened_detail(selected=True, volume=40)
+        aid = display._outputs.appliance_id
+        with self._core_action(display, "set_output") as action:
+            display.output_toggle_tap()
+        action.assert_called_once_with(aid, "1", selected=False)
+        with self._core_action(display, "step_output_volume") as action:
+            display.output_volume_tap(-2)
+        action.assert_called_once_with(aid, "1", -2)
+
+    def test_eq_step_addresses_the_open_appliance_and_band(self):
+        display = TestEqStep()._opened()
+        aid = display._eq.appliance_id
+        with self._core_action(display, "step_eq") as action:
+            display.eq_step("treble", -1)
+        action.assert_called_once_with(aid, "treble", -1)
+
+    def test_warning_buttons_call_dismiss_and_reboot(self):
+        display = TestNoWifiStateMachine()._idle_display()[0]
+        with self._core_action(display, "dismiss_warning") as action:
+            display.warning_button_tap(TouchZone.NOWIFI_DISMISS)
+        action.assert_called_once_with("nowifi")
+        with patch.object(display._core, "request_dial_reboot", return_value=True) as action:
+            display.warning_button_tap(TouchZone.NOWIFI_RESTART)
+        action.assert_called_once_with()
 
 
 class TestApplianceWarningsAndTheView:

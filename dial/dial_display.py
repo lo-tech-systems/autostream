@@ -99,7 +99,9 @@ from dial_core_poll import (
     url_log_key as _url_log_key,
 )
 import dial_core_poll
-from dial_core import DEFAULT_POLL_INTERVAL_S, RECONCILE_INTERVAL_S, DialCore, PollIO
+from dial_core import (
+    DEFAULT_POLL_INTERVAL_S, FOCUS_PENDING_GRACE_S, RECONCILE_INTERVAL_S, DialCore, PollIO,
+)
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import (
@@ -109,7 +111,6 @@ from dial_network import (
 )
 from dial_network import request_reboot as _request_reboot
 from dial_sdhealth import SdHealthView
-from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_warning_text import (  # re-exported: the warning table and its text live there
@@ -209,11 +210,6 @@ SELECTOR_TIMEOUT_SECONDS = 18
 # (the fallback every cycle lands on); "repeat" and "eq" are skipped when
 # _repeat_page_available()/self._eq_available says there is nothing to show.
 _PAGE_ORDER = ("main", "repeat", "eq")
-
-# How long a picker-started replay's manual focus is held "pending" while
-# the appliance has not yet reached the playing set — see
-# set_manual_focus_pending() and the core's empty-targets branch.
-FOCUS_PENDING_GRACE_S = 10.0
 
 # The fixed inter-loop gap the appliance's replay engine inserts between
 # the end of a buffer and its restart — used only to wrap the locally
@@ -2878,7 +2874,13 @@ class DialDisplay:
                     self._screen_request = "info_value"
                     self._overlay_signal.set()
                     return
-                self.set_manual_focus(row.appliance_id)
+                if self._core.set_focus(row.appliance_id).reason == "unauthorized":
+                    # The core knows something newer than the row: the
+                    # appliance has refused this dial since the page was built.
+                    self._info_value_hint = _unauthorised_hint(row.label)
+                    self._screen_request = "info_value"
+                    self._overlay_signal.set()
+                    return
         self.close_list()
 
     def list_row_tap(self, index: int) -> None:
@@ -3034,8 +3036,7 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state in ("recording", "pending", "idle"):
-            self._core.begin_transport(screen.appliance_id, "arm")
-            enqueue_arm(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), not rec.armed)
+            self._core.set_repeat_armed(screen.appliance_id, not rec.armed)
         elif rec.state == "replaying":
             # In the replaying layout this row is the position line over
             # the artwork, not a toggle: a tap on it is an artwork tap.
@@ -3053,8 +3054,7 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state in ("replaying", "hold"):
-            self._core.begin_transport(screen.appliance_id, "seek")
-            enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "seek", 0.0)
+            self._core.restart_replay(screen.appliance_id)
 
     def repeat_stop_tap(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_STOP
@@ -3068,12 +3068,7 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state == "replaying":
-            # Recorded as the pending request so on_repeat_result (the
-            # worker thread) can tell this Stop's own ok ack apart from an
-            # unrelated Seek's — the repeat worker reports both under the
-            # same "transport" kind, so kind alone cannot distinguish them.
-            self._core.begin_transport(screen.appliance_id, "stop")
-            enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "stop", 0.0)
+            self._core.stop_replay(screen.appliance_id)
 
     def set_pressed(self, zone, index=None) -> None:
         """Touch-thread entry: record the zone (and, for LIST_ROW, the row
@@ -3096,12 +3091,12 @@ class DialDisplay:
             self._request_back(screen)
 
     def set_manual_focus_pending(self, appliance_id: str, service_name: str) -> None:
-        """Touch-thread entry (the replay picker's picker_pick()): pin the
-        focus to *appliance_id* the way set_manual_focus() does, and mark
-        it PENDING for FOCUS_PENDING_GRACE_S — a picker-started replay has
-        not yet reached the playing set, so the ordinary "gone from the
-        roster" focus-clear must not fire before it has had a chance to
-        appear. See the empty-targets branch of DialCore._poll_tick."""
+        """Pin the focus to *appliance_id* and mark it PENDING for
+        FOCUS_PENDING_GRACE_S, as the core's start_replay() does for a
+        picker-started replay: the ordinary "gone from the roster"
+        focus-clear must not fire before the replay has had a chance to
+        reach the playing set. See the empty-targets branch of
+        DialCore._poll_tick."""
         now = time.monotonic()
         self._core.set_focus_pending(appliance_id, service_name, now + FOCUS_PENDING_GRACE_S)
         self._core.request_poll()
@@ -3168,20 +3163,21 @@ class DialDisplay:
         """Touch-thread entry: start replaying the tapped row's held
         recording from the beginning. A stale index (the row vanished
         between paint and tap) is treated as back, same as
-        selector_pick(). Sets a PENDING manual focus (see
-        set_manual_focus_pending()) so the screen follows the appliance
-        through the gap before its replay reaches the playing set; a
-        rejected seek (source_active/no_recording, or any transport
-        failure) clears it again in on_repeat_result()."""
+        selector_pick(). The core sets a PENDING manual focus so the
+        screen follows the appliance through the gap before its replay
+        reaches the playing set; a rejected seek (source_active/
+        no_recording, or any transport failure) clears it again in
+        on_repeat_result()."""
         picker = self._picker
         if picker is not None and picker.rows:
             page_rows = self._current_page_rows(picker)
             if 0 <= index < len(page_rows):
                 row = page_rows[index]
-                self.set_manual_focus_pending(row.appliance_id, row.service_name)
+                # Armed before the request goes, so a rejection the worker
+                # reports at once finds the timer to drop.
                 self._arm_replay_timer(row.appliance_id)
-                self._core.begin_transport(row.appliance_id, "seek")
-                enqueue_transport(_RepeatTarget(row.appliance_id, row.ip, row.port), "seek", 0.0)
+                if not self._core.start_replay(row.appliance_id).accepted:
+                    self._arm_replay_timer(None)
         self.close_list()
 
     def _arm_replay_timer(self, appliance_id: "str | None") -> None:
@@ -4907,7 +4903,6 @@ class DialDisplay:
         poll wake so the source switch lands within milliseconds, not at
         the next tick. Never persisted."""
         self._core.set_focus(appliance_id)
-        self._core.request_poll()
 
     def manual_focus_id(self) -> str | None:
         return self._core.manual_focus_id()

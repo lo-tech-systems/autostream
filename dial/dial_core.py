@@ -40,6 +40,7 @@ from typing import Callable
 
 import dial_core_poll
 from dial_auth import AUTH_UNAUTHORIZED, auth_map
+from dial_config import SCOPE_ALL
 from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
@@ -57,13 +58,17 @@ from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_network import request_reboot as _default_reboot
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
+from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import repeat_store
 from dial_sdhealth import is_low as _sd_is_low
 from dial_update_watch import (
     PHASE_REBOOT, PHASE_VERIFY, STATUS_FAILURE, STATUS_IN_PROGRESS, STATUS_SUCCESS,
     UPDATE_SEEN_PATH, UpdateWatcher, read_seen_marker, write_seen_marker,
 )
-from dial_volume import forget_mute_states_except, observe_master_volume, observe_mute_state
+from dial_volume import (
+    enqueue_delta, enqueue_mute, enqueue_mute_all, forget_mute_states_except,
+    observe_master_volume, observe_mute_state, shown_muted,
+)
 from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key
 from dial_warnings import ACTION_DISMISS, WarningManager, WarningStore
 
@@ -76,6 +81,10 @@ DEFAULT_POLL_INTERVAL_S = 6
 RECONCILE_INTERVAL_S = 60
 # The housekeeping tick, and so the longest the core thread sleeps.
 HOUSEKEEPING_INTERVAL_S = 1.0
+# How long a picker-started replay's manual focus is held pending while the
+# appliance has not yet reached the playing set (see the empty-targets
+# branch of the poll tick).
+FOCUS_PENDING_GRACE_S = 10.0
 
 # FocusState fields the display's delegating properties write one at a time.
 _FOCUS_FIELDS = frozenset((
@@ -280,6 +289,7 @@ class DialCore:
         # plain, lock-free writes.
         self._io = io if io is not None else PollIO()
         self._eq_veto: Callable[[], bool] = lambda: False
+        self._mute_scope: Callable[[], str] = lambda: ""
         self._idle_hold: Callable[[bool], bool] = lambda focus_cleared: False
         self._polling = False
         self._poll_interval = DEFAULT_POLL_INTERVAL_S
@@ -505,10 +515,18 @@ class DialCore:
     def manual_focus_id(self) -> str | None:
         return self._state.focus.manual_id
 
-    def set_focus(self, appliance_id: str | None) -> None:
+    def set_focus(self, appliance_id: str | None) -> ActionResult:
         """Pin the display to *appliance_id*, or clear it back to auto-pick
-        with None. Never persisted. The caller wakes the poll."""
+        with None, and wake the poll so the switch lands at once. Never
+        persisted. Refused for an appliance that has refused this dial; an
+        id that is not on the roster is taken (the next tick drops a focus
+        that has gone)."""
+        entry = _roster_entry(self._state.roster, appliance_id)
+        if entry is not None and entry.auth == AUTH_UNAUTHORIZED:
+            return ActionResult(False, "unauthorized")
         self.set_field("manual_id", appliance_id)
+        self._poll_wake.set()
+        return ActionResult(True)
 
     def set_focus_pending(self, appliance_id: str, service_name: str, expires_at: float) -> None:
         """Pin the focus to *appliance_id* and mark it pending until
@@ -970,6 +988,77 @@ class DialCore:
             state.transport = TransportRequest(appliance_id, kind, now, "pending", now, None)
         self._publish(mutate)
 
+    def _repeat_refusal(self, appliance_id: str, states: tuple) -> ActionResult | None:
+        """Why a replay or repeat request cannot go to *appliance_id*, or
+        None when it can: the appliance must be known, repeat-capable and
+        not have refused this dial, hold a usable record, and have that
+        record in one of *states*."""
+        refusal = self._refusal(appliance_id, "repeat_capable")
+        if refusal is not None:
+            return refusal
+        record = repeat_store.get(appliance_id, self._clock())
+        if record is None or not record.available:
+            return ActionResult(False, "no_record")
+        if record.state not in states:
+            return ActionResult(False, "wrong_state")
+        return None
+
+    def _send_transport(self, appliance_id: str, action: str) -> None:
+        """Record the request as pending and hand it to the repeat worker."""
+        entry = _roster_entry(self._state.roster, appliance_id)
+        self.begin_transport(appliance_id, action)
+        enqueue_transport(_RepeatTarget(appliance_id, entry.ip, entry.port), action, 0.0)
+
+    def start_replay(self, appliance_id: str) -> ActionResult:
+        """Start the appliance's held recording from the beginning. The
+        focus is pinned to it as pending first, so the screen follows it
+        through the gap before the replay reaches the playing set; a
+        rejected request drops that again when the worker reports it.
+        Refused as restart_replay is."""
+        refusal = self._repeat_refusal(appliance_id, ("replaying", "hold"))
+        if refusal is not None:
+            return refusal
+        entry = _roster_entry(self._state.roster, appliance_id)
+        self.set_focus_pending(
+            appliance_id, entry.service_name, self._clock() + FOCUS_PENDING_GRACE_S,
+        )
+        self._poll_wake.set()
+        self._send_transport(appliance_id, "seek")
+        return ActionResult(True)
+
+    def restart_replay(self, appliance_id: str) -> ActionResult:
+        """Seek a running replay back to its start, or start one from Hold.
+        Refused unless the record is replaying or in hold (a live source
+        recording, or a replay fading out, is not something to seek)."""
+        refusal = self._repeat_refusal(appliance_id, ("replaying", "hold"))
+        if refusal is not None:
+            return refusal
+        self._send_transport(appliance_id, "seek")
+        return ActionResult(True)
+
+    def stop_replay(self, appliance_id: str) -> ActionResult:
+        """Stop a running replay (it fades out and lands in Hold, disarmed).
+        Recorded as the pending request so the worker's result can tell this
+        stop's own ok ack from an unrelated seek's, which it reports under
+        the same kind. Refused unless the record is replaying."""
+        refusal = self._repeat_refusal(appliance_id, ("replaying",))
+        if refusal is not None:
+            return refusal
+        self._send_transport(appliance_id, "stop")
+        return ActionResult(True)
+
+    def set_repeat_armed(self, appliance_id: str, armed: bool) -> ActionResult:
+        """Arm or disarm the appliance's repeat daemon. Refused unless the
+        record is recording, pending or idle (the states that have the
+        toggle)."""
+        refusal = self._repeat_refusal(appliance_id, ("recording", "pending", "idle"))
+        if refusal is not None:
+            return refusal
+        entry = _roster_entry(self._state.roster, appliance_id)
+        self.begin_transport(appliance_id, "arm")
+        enqueue_arm(_RepeatTarget(appliance_id, entry.ip, entry.port), bool(armed))
+        return ActionResult(True)
+
     def _resolve_transport(
         self, appliance_id: str, outcome: str, error: str | None, now: float,
     ) -> TransportRequest | None:
@@ -1267,6 +1356,45 @@ class DialCore:
             self._sync_warnings_locked(state)
         self._publish(mutate)
         return outcome[0]
+
+    def set_mute_scope(self, scope: Callable[[], str]) -> None:
+        """Say how far a mute toggle reaches: *scope* returns the dial's
+        live effective mute scope on every call, so a settings change
+        applies to the next press."""
+        self._mute_scope = scope
+
+    def _not_focused(self, appliance_id: str | None) -> ActionResult | None:
+        """The refusal for an id-addressed master volume or mute request:
+        the volume worker resolves its own targets, so for now only the
+        appliance the dial is following can be addressed by id."""
+        if appliance_id is not None and appliance_id != self._focused_id():
+            return ActionResult(False, "not_focused")
+        return None
+
+    def volume_step(self, delta: int, appliance_id: str | None = None) -> ActionResult:
+        """Queue a master volume change of *delta* percent for the volume
+        worker, which resolves the target when it sends. With an id, refused
+        unless that is the appliance the dial is following."""
+        refusal = self._not_focused(appliance_id)
+        if refusal is not None:
+            return refusal
+        enqueue_delta(delta)
+        return ActionResult(True)
+
+    def mute_toggle(self, appliance_id: str | None = None) -> ActionResult:
+        """Toggle mute. Under the broadcast scope "all" a fleet toggle is
+        queued, decided when the worker sends; otherwise what the followed
+        appliance last reported is flipped. Plain reads and a queue put: no
+        network, no lock held. With an id, refused unless that is the
+        appliance the dial is following."""
+        refusal = self._not_focused(appliance_id)
+        if refusal is not None:
+            return refusal
+        if self._mute_scope() == SCOPE_ALL:
+            enqueue_mute_all()
+        else:
+            enqueue_mute(shown_muted(self.current_source_service_name()))
+        return ActionResult(True)
 
     def current_source_service_name(self) -> str | None:
         """mDNS service name of the display's chosen artwork source, or
