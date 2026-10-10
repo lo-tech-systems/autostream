@@ -87,38 +87,88 @@ def current_state(page) -> dict:
 # The replay row
 # ---------------------------------------------------------------------------
 
+# The transport buttons by their spoken labels.
+PLAY, REWIND, STOP = "Play the recording", "Back to the start", "Stop the replay"
+
+
 def replay_row(page):
     return page.locator("#replay-row")
 
 
-def replay_button(page, text):
-    return page.locator("#replay-row button", has_text=text)
+def replay_button(page, label):
+    return page.locator(f'#replay-row button[aria-label="{label}"]')
+
+
+def replay_timer(page):
+    return page.locator("#replay-row .replay-counter")
+
+
+def row_layout(page) -> list:
+    """The replay row's controls left to right: a button's label, or
+    "timer" / "arm", with whether it is disabled and its box."""
+    return page.evaluate(
+        """() => Array.from(document.getElementById('replay-row').children).map(node => {
+            const r = node.getBoundingClientRect();
+            const name = node.tagName === 'BUTTON' ? node.getAttribute('aria-label')
+                : node.classList.contains('replay-counter') ? 'timer' : 'arm';
+            return {name: name, disabled: !!node.disabled, x: r.x, width: r.width, height: r.height,
+                    svg: node.querySelectorAll('svg').length, text: node.tagName === 'BUTTON' ? node.textContent : ''};
+        })"""
+    )
+
+
+def timer_seconds(page) -> int:
+    """The position the timer shows, in seconds."""
+    parts = [int(p) for p in replay_timer(page).text_content().split(" / ")[0].split(":")]
+    return sum(value * 60 ** power for power, value in enumerate(reversed(parts)))
+
+
+def replaying_at(position, title="Tunnel of Love", duration=1100.0):
+    """The Lounge replaying at *position* seconds (the state reports it a
+    second on, as a reading a second old), under a title a test can wait for."""
+    base = hs.replay_scenario("r", "replaying", position=position - 1.0, duration=duration)
+    return base.with_snapshot(now_playing=NowPlaying("Lounge", "Dire Straits", title, 42))
+
+
+def freeze_clock(page) -> None:
+    """Stop the page's clock, so that only run_for() moves it."""
+    page.clock.pause_at(page.evaluate("Date.now()") / 1000 + 1)
 
 
 class TestReplayRow:
     @pytest.mark.parametrize("armed", [True, False])
     @pytest.mark.parametrize("state", ["recording", "pending"])
-    def test_nothing_to_replay_shows_the_arm_toggle_only(self, page, hd, state, armed):
+    def test_playing_live_shows_the_arm_toggle_only(self, page, hd, state, armed):
         hd.show(hs.replay_scenario("r", state, armed=armed))
         open_page(page, hd)
         toggle = page.locator("#replay-row .repeat-arm")
         expect(toggle).to_be_visible()
         expect(toggle).to_contain_text("Repeat Play")
-        assert replay_row(page).locator("button").count() == 0
-        assert replay_row(page).locator(".replay-counter").count() == 0
+        assert [item["name"] for item in row_layout(page)] == ["arm"]
         checked = page.locator("#replay-row .repeat-arm input")
         if armed:
             expect(checked).to_be_checked()
         else:
             expect(checked).not_to_be_checked()
 
-    def test_idle_hides_the_row(self, page, hd):
+    def test_nothing_held_shows_the_transport_greyed_out(self, page, hd):
         hd.show(hs.replay_scenario("r", "idle"))
+        sent = watch_actions(page)
         open_page(page, hd)
-        expect(replay_row(page)).to_be_hidden()
-        assert replay_row(page).locator("*").count() == 0
+        expect(replay_row(page)).to_be_visible()
+        layout = row_layout(page)
+        assert [(item["name"], item["disabled"]) for item in layout] == [
+            (PLAY, True), (STOP, True), ("timer", False)]
+        expect(replay_timer(page)).to_have_text("-:-- / -:--")
+        expect(replay_timer(page)).to_have_class(re.compile("frozen"))
+        assert page.locator("#replay-row .repeat-arm").count() == 0
+        for label in (PLAY, STOP):
+            tap(page, f'#replay-row button[aria-label="{label}"]')
+        page.wait_for_timeout(150)
+        assert sent == []
         hd.show(hs.replay_scenario("r", "recording"))
         expect(page.locator("#replay-row .repeat-arm")).to_be_visible()
+        assert [item["name"] for item in row_layout(page)] == ["arm"]
 
     def test_arm_toggle_sends_and_follows_the_state(self, page, hd):
         hd.show(hs.replay_scenario("r", "recording", armed=False))
@@ -140,23 +190,37 @@ class TestReplayRow:
         page.clock.run_for(2500)
         expect(page.locator("#replay-row .repeat-arm input")).not_to_be_checked()
 
-    def test_held_recording_offers_replay_with_its_length(self, page, hd):
+    def test_a_held_recording_offers_play_with_its_length(self, page, hd):
         hd.show(hs.SCENARIOS["replay_hold"])
         sent = watch_actions(page)
         open_page(page, hd)
-        start = replay_button(page, "Replay")
-        expect(start).to_have_text("Replay 18:42")
-        assert replay_row(page).locator(".repeat-arm").count() == 0
-        start.click()
+        expect(replay_timer(page)).to_have_text("0:00 / 18:42")
+        expect(replay_timer(page)).not_to_have_class(re.compile("frozen"))
+        assert [(item["name"], item["disabled"]) for item in row_layout(page)] == [
+            (PLAY, False), (STOP, True), ("timer", False)]
+        assert page.locator("#replay-row .repeat-arm").count() == 0
+        tap(page, f'#replay-row button[aria-label="{STOP}"]')
+        replay_button(page, PLAY).click()
         page.wait_for_timeout(150)
-        assert only(sent, "replay_start") == [("replay_start", {"appliance_id": LOUNGE})]
+        assert sent == [("replay_start", {"appliance_id": LOUNGE})]
+
+    def test_play_starts_the_replay_and_the_row_becomes_the_running_one(self, page, hd):
+        hd.show(hs.SCENARIOS["replay_hold"])
+        open_page(page, hd)
+        replay_button(page, PLAY).click()
+        if hd.kind == "real":       # the mock moves to the replaying state by itself
+            hd.show(hs.SCENARIOS["replaying"])
+        expect(replay_button(page, REWIND)).to_be_enabled()
+        expect(replay_button(page, STOP)).to_be_enabled()
+        assert replay_button(page, PLAY).count() == 0
+        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
 
     def test_a_recording_of_an_hour_or_more_shows_hours(self, page, hd):
         hd.show(hs.replay_scenario("r", "hold", recording=3725.0))
         open_page(page, hd)
-        expect(replay_button(page, "Replay")).to_have_text("Replay 1:02:05")
+        expect(replay_timer(page)).to_have_text("0:00 / 1:02:05")
         hd.show(hs.replay_scenario("r", "replaying", position=3600.0, duration=7384.0))
-        expect(page.locator(".replay-counter")).to_have_text(re.compile(r"^1:00:0[0-9] / 2:03:04$"))
+        expect(replay_timer(page)).to_have_text(re.compile(r"^1:00:0[0-9] / 2:03:04$"))
 
     def test_the_badge_of_an_hour_long_recording_elsewhere_shows_hours(self, page, hd):
         base = hs.SCENARIOS["replay_elsewhere"]
@@ -166,51 +230,214 @@ class TestReplayRow:
         open_page(page, hd)
         expect(rows(page).filter(has_text="Lounge").locator(".badge")).to_have_text("Replay 1:00:00")
 
-    def test_replaying_shows_position_restart_and_stop(self, page, hd):
+    def test_replaying_shows_rewind_stop_and_the_timer_in_that_order(self, page, hd):
         hd.show(hs.SCENARIOS["replaying"])
         sent = watch_actions(page)
         open_page(page, hd)
-        expect(page.locator(".replay-counter")).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
-        assert replay_row(page).locator(".repeat-arm").count() == 0
-        restart, stop = replay_button(page, "Restart"), replay_button(page, "Stop")
-        expect(restart).to_be_enabled()
-        expect(stop).to_be_enabled()
-        restart.click()
+        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
+        layout = row_layout(page)
+        assert [(item["name"], item["disabled"]) for item in layout] == [
+            (REWIND, False), (STOP, False), ("timer", False)]
+        # Left to right on the screen too, without overlapping.
+        for left, right in zip(layout, layout[1:]):
+            assert left["x"] + left["width"] <= right["x"]
+        assert page.locator("#replay-row .repeat-arm").count() == 0
+        replay_button(page, REWIND).click()
         page.wait_for_timeout(150)
         expect(page.locator("#modal")).to_be_hidden()      # no confirmation
         assert sent == [("replay_restart", {"appliance_id": LOUNGE})]
-        stop.click()
+        replay_button(page, STOP).click()
         page.wait_for_timeout(150)
         assert sent[-1] == ("replay_stop", {"appliance_id": LOUNGE})
 
-    def test_the_counter_advances_between_states_and_stops_at_the_length(self, page, hd):
+    @pytest.mark.parametrize("name", ["replay_hold", "replaying"])
+    def test_the_transport_buttons_are_icons_with_labels(self, page, hd, name):
+        hd.show(hs.SCENARIOS[name])
+        open_page(page, hd)
+        buttons = [item for item in row_layout(page) if item["name"] != "timer"]
+        assert len(buttons) == 2
+        for item in buttons:
+            assert item["name"] in (PLAY, REWIND, STOP)
+            assert item["svg"] == 1 and item["text"] == ""
+        shapes = page.evaluate(
+            """() => Array.from(document.querySelectorAll('#replay-row button svg')).map(svg => ({
+                hidden: svg.getAttribute('aria-hidden'), box: svg.getAttribute('viewBox'),
+                paths: svg.querySelectorAll('path').length,
+                drawn: svg.querySelector('path').getBBox().width > 8}))"""
+        )
+        assert shapes == [{"hidden": "true", "box": "0 0 24 24", "paths": 1, "drawn": True}] * 2
+        # The two icons of a row are different pictures.
+        assert len(set(page.evaluate(
+            "Array.from(document.querySelectorAll('#replay-row button path')).map(p => p.getAttribute('d'))"
+        ))) == 2
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    def test_the_transport_buttons_are_finger_sized(self, page, hd_mock, size):
+        hd = Driver("mock", hd_mock)
+        for scenario_ in (hs.SCENARIOS["replay_hold"], hs.SCENARIOS["replaying"], hs.replay_scenario("i", "idle")):
+            hd.show(scenario_)
+            open_page(page, hd, size)
+            expect(replay_timer(page)).to_be_visible()
+            buttons = [item for item in row_layout(page) if item["name"] != "timer"]
+            assert len(buttons) == 2
+            for item in buttons:
+                assert item["width"] >= 56 and item["height"] >= 56
+            box = replay_row(page).bounding_box()
+            assert box["height"] <= buttons[0]["height"] + 0.5
+        hd.cleanup()
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    @pytest.mark.parametrize("name", ["replay_hold", "replaying", "fading_out"])
+    def test_the_timer_is_set_as_the_artist_line_is(self, page, hd_mock, name, size):
+        hd = Driver("mock", hd_mock)
+        hd.show(hs.SCENARIOS[name])
+        open_page(page, hd, size)
+        expect(page.locator("#sub")).not_to_have_text("")
+        fonts = page.evaluate(
+            """() => ['#replay-row .replay-counter', '#sub'].map(sel => {
+                const s = getComputedStyle(document.querySelector(sel));
+                return [s.fontFamily, s.fontSize, s.fontWeight, s.fontStyle];
+            })"""
+        )
+        hd.cleanup()
+        assert fonts[0] == fonts[1]
+        assert fonts[0][2] == "400"
+        title_size = page.evaluate("parseFloat(getComputedStyle(document.getElementById('title')).fontSize)")
+        assert float(fonts[0][1].rstrip("px")) < title_size
+
+    def test_the_timer_advances_between_states_and_stops_at_the_length(self, page, hd):
         hd.show(hs.SCENARIOS["replaying"])
         page.clock.install()
         open_page(page, hd)
-        expect(page.locator(".replay-counter")).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
-        before = page.locator(".replay-counter").text_content()
+        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
+        before = timer_seconds(page)
         page.clock.run_for(4000)
-        after = page.locator(".replay-counter").text_content()
-        assert after != before
+        assert 4 <= timer_seconds(page) - before <= 6
 
         hd.show(hs.replay_scenario("end", "replaying", position=1098.0, duration=1100.0))
-        expect(page.locator(".replay-counter")).to_have_text(re.compile(r"^18:1[89] / 18:20$"))
+        expect(replay_timer(page)).to_have_text(re.compile(r"^18:19 / 18:20$"))
         page.clock.run_for(6000)
-        expect(page.locator(".replay-counter")).to_have_text("18:20 / 18:20")
+        expect(replay_timer(page)).to_have_text("18:20 / 18:20")
+        page.clock.run_for(3000)
+        expect(replay_timer(page)).to_have_text("18:20 / 18:20")
 
-    def test_fading_out_freezes_the_counter_and_disables_the_controls(self, page, hd):
+    def test_the_timer_steps_a_second_at_a_time_whenever_it_is_looked_at(self, page, hd):
+        hd.show(replaying_at(120.0))
+        page.clock.install()
+        open_page(page, hd)
+        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
+        freeze_clock(page)
+        shown = [timer_seconds(page)]
+        for _ in range(40):
+            page.clock.run_for(250)
+            shown.append(timer_seconds(page))
+        steps = [b - a for a, b in zip(shown, shown[1:])]
+        assert set(steps) == {0, 1}
+        assert shown[-1] - shown[0] == 10
+        # A whole second passes between one step and the next.
+        at = [i for i, step in enumerate(steps) if step == 1]
+        assert all(b - a == 4 for a, b in zip(at, at[1:]))
+
+    def test_the_timer_never_steps_back_as_states_arrive_early_and_late(self, page, hd):
+        """Each state's position is a little off the page's own clock, one
+        way or the other. The timer keeps going forwards a second at a
+        time and stays with the dial's position."""
+        hd.show(replaying_at(120.0, "T0"))
+        page.clock.install()
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("T0")
+        freeze_clock(page)
+        start = timer_seconds(page)
+        shown = [start]
+        elapsed = 0.0
+        late = [0.4, -0.4, 0.3, -0.35, 0.45, -0.45, 0.2, -0.3, 0.4, -0.4] * 6
+        # States arrive every 0.39 s, so at every part of a second in turn.
+        for n, off in enumerate(late, start=1):
+            for _ in range(3):
+                page.clock.run_for(130)
+                elapsed += 0.13
+                shown.append(timer_seconds(page))
+            hd.show(replaying_at(121.0 + elapsed + off, f"T{n}"))
+            expect(page.locator("#title")).to_have_text(f"T{n}")
+            shown.append(timer_seconds(page))
+        steps = [b - a for a, b in zip(shown, shown[1:])]
+        assert min(steps) >= 0, shown
+        assert max(steps) <= 1, shown
+        assert abs((shown[-1] - start) - elapsed) <= 1, shown
+
+    def test_a_steady_difference_is_worked_off_without_a_jump(self, page, hd):
+        hd.show(replaying_at(120.0, "T0"))
+        page.clock.install()
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("T0")
+        freeze_clock(page)
+        start = timer_seconds(page)
+        shown = [start]
+        elapsed = 0.0
+        # The dial is 1.2 s ahead of the page from now on.
+        for n in range(1, 21):
+            for _ in range(4):
+                page.clock.run_for(500)
+                elapsed += 0.5
+                shown.append(timer_seconds(page))
+            hd.show(replaying_at(121.0 + elapsed + 1.2, f"T{n}"))
+            expect(page.locator("#title")).to_have_text(f"T{n}")
+            shown.append(timer_seconds(page))
+        steps = [b - a for a, b in zip(shown, shown[1:])]
+        assert min(steps) >= 0 and max(steps) <= 1, shown
+        # It has caught the dial up: the whole 1.2 s, give or take the cut to whole seconds.
+        assert (shown[-1] - start) - elapsed >= 1, shown
+
+    def test_a_large_difference_moves_the_timer_at_once(self, page, hd):
+        hd.show(replaying_at(120.0, "T0"))
+        page.clock.install()
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("T0")
+        freeze_clock(page)
+        page.clock.run_for(3000)
+        # Restarted: back to the beginning.
+        hd.show(replaying_at(0.5, "T1"))
+        expect(page.locator("#title")).to_have_text("T1")
+        assert timer_seconds(page) <= 1
+        page.clock.run_for(2000)
+        assert 2 <= timer_seconds(page) <= 3
+        # Another replay, far along.
+        hd.show(replaying_at(900.0, "T2"))
+        expect(page.locator("#title")).to_have_text("T2")
+        assert 900 <= timer_seconds(page) <= 901
+
+    def test_fading_out_freezes_the_timer_and_disables_the_controls(self, page, hd):
         hd.show(hs.SCENARIOS["fading_out"])
         page.clock.install()
         sent = watch_actions(page)
         open_page(page, hd)
-        counter = page.locator(".replay-counter")
-        expect(counter).to_have_text("18:19 / 18:20")
-        expect(counter).to_have_class(re.compile("frozen"))
-        expect(replay_button(page, "Restart")).to_be_disabled()
-        expect(replay_button(page, "Stop")).to_be_disabled()
+        timer = replay_timer(page)
+        expect(timer).to_have_text("18:19 / 18:20")
+        expect(timer).to_have_class(re.compile("frozen"))
+        assert [(item["name"], item["disabled"]) for item in row_layout(page)] == [
+            (REWIND, True), (STOP, True), ("timer", False)]
+        for label in (REWIND, STOP):
+            tap(page, f'#replay-row button[aria-label="{label}"]')
         page.clock.run_for(5000)
-        expect(counter).to_have_text("18:19 / 18:20")
+        expect(timer).to_have_text("18:19 / 18:20")
         assert sent == []
+
+    def test_a_replay_that_starts_fading_stops_where_the_timer_was(self, page, hd):
+        hd.show(replaying_at(120.0, "T0"))
+        page.clock.install()
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("T0")
+        freeze_clock(page)
+        page.clock.run_for(5000)
+        before = timer_seconds(page)
+        # The fade's own position is the last one read, some seconds old.
+        fading = hs.replay_scenario("f", "fading_out", position=121.0, duration=1100.0)
+        hd.show(fading.with_snapshot(now_playing=NowPlaying("Lounge", "Dire Straits", "T1", 42)))
+        expect(page.locator("#title")).to_have_text("T1")
+        expect(replay_timer(page)).to_have_class(re.compile("frozen"))
+        assert timer_seconds(page) == before
+        page.clock.run_for(4000)
+        assert timer_seconds(page) == before
 
     def test_an_appliance_without_repeat_has_no_row(self, page, hd):
         base = hs.SCENARIOS["replaying"]
@@ -221,6 +448,17 @@ class TestReplayRow:
         expect(replay_row(page)).to_be_hidden()
         hd.show(hs.SCENARIOS["replaying"])
         expect(replay_row(page)).to_be_visible()
+
+    @pytest.mark.parametrize("state", ["idle", "hold", "replaying"])
+    def test_repeat_turned_off_on_the_appliance_has_no_row(self, page, hd, state):
+        base = hs.replay_scenario("off", state)
+        appliances = tuple(
+            dataclasses.replace(a, repeat=dataclasses.replace(a.repeat, available=False))
+            for a in base.snapshot.appliances)
+        hd.show(base.with_snapshot(appliances=appliances))
+        open_page(page, hd)
+        expect(replay_row(page)).to_be_hidden()
+        assert replay_row(page).locator("*").count() == 0
 
     def test_no_record_yet_has_no_row(self, page, hd):
         assert hs.SCENARIOS["playing_artwork"].snapshot.appliances[0].repeat is None
@@ -240,13 +478,13 @@ class TestReplayRow:
         lounge_row.click()
         assert sent == [("focus", {"appliance_id": LOUNGE})]
         hd.show(hs.SCENARIOS["replay_hold"])
-        expect(replay_button(page, "Replay")).to_be_visible()
+        expect(replay_button(page, PLAY)).to_be_enabled()
 
     def test_stop_leaves_the_focus_alone(self, page, hd):
         hd.show(hs.SCENARIOS["replaying"])
         sent = watch_actions(page)
         open_page(page, hd)
-        replay_button(page, "Stop").click()
+        replay_button(page, STOP).click()
         page.wait_for_timeout(150)
         hd.show(hs.SCENARIOS["playing_artwork"])
         expect(rows(page).first).to_have_attribute("aria-current", "true")
@@ -258,7 +496,13 @@ class TestReplayRow:
         appliances = tuple(dataclasses.replace(a, status_error="timeout") for a in base.snapshot.appliances)
         hd.show(base.with_snapshot(appliances=appliances))
         open_page(page, hd)
-        expect(replay_button(page, "Replay")).to_be_disabled()
+        expect(replay_button(page, PLAY)).to_be_disabled()
+        expect(replay_button(page, STOP)).to_be_disabled()
+        running = hs.SCENARIOS["replaying"]
+        appliances = tuple(dataclasses.replace(a, status_error="timeout") for a in running.snapshot.appliances)
+        hd.show(running.with_snapshot(appliances=appliances))
+        expect(replay_button(page, REWIND)).to_be_disabled()
+        expect(replay_button(page, STOP)).to_be_disabled()
         playing = hs.replay_scenario("r", "recording")
         appliances = tuple(dataclasses.replace(a, status_error="timeout") for a in playing.snapshot.appliances)
         hd.show(playing.with_snapshot(appliances=appliances))

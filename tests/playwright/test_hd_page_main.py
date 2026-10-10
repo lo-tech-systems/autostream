@@ -421,6 +421,68 @@ class TestMute:
         expect(page.locator("#mute")).to_have_attribute("aria-pressed", "true")
         expect(page.locator("#mute")).to_have_attribute("aria-label", "Unmute")
 
+    @pytest.mark.parametrize("scope", ["current", "all"])
+    @pytest.mark.parametrize("name", ["playing_artwork", "replaying"])
+    def test_a_mute_stays_shown_through_the_states_that_follow(self, page, hd, name, scope):
+        """Mute pressed while playing live or replaying. The dial's state
+        says muted a moment later (under the broadcast scope only once the
+        dial has asked the appliances, so a state from before that still
+        says unmuted), and states keep arriving afterwards."""
+        def state(muted, title):
+            base = hs.SCENARIOS[name]
+            return dataclasses.replace(base.with_snapshot(
+                dial=dataclasses.replace(base.snapshot.dial, mute_scope=scope),
+                now_playing=dataclasses.replace(base.snapshot.now_playing, title=title),
+            ), muted=muted)
+
+        def shown(title, muted):
+            expect(page.locator("#title")).to_have_text(title)
+            expect(page.locator("#mute")).to_have_attribute("aria-pressed", "true" if muted else "false")
+            if muted:
+                expect(page.locator("#volume-row")).to_have_class(re.compile("muted"))
+                assert "line-through" in page.evaluate(
+                    "getComputedStyle(document.getElementById('master-num')).textDecorationLine")
+            else:
+                expect(page.locator("#volume-row")).not_to_have_class(re.compile("muted"))
+
+        hd.show(state(False, "T0"))
+        page.clock.install()
+        sent = watch_actions(page)
+        open_page(page, hd)
+        shown("T0", False)
+        page.locator("#mute").click()
+        shown("T0", True)
+        if scope == "all":
+            hd.show(state(False, "T1"))
+            shown("T1", True)
+            page.clock.run_for(800)
+        hd.show(state(True, "T2"))
+        shown("T2", True)
+        # Well past the time the page's own guess stands for.
+        page.clock.run_for(3000)
+        shown("T2", True)
+        for title in ("T3", "T4"):
+            hd.show(state(True, title))
+            shown(title, True)
+            page.clock.run_for(2500)
+            shown(title, True)
+
+        # The controls have faded from the untouched screen by now: a touch
+        # on the artwork brings them back.
+        if "controls-hidden" in (page.locator("#right").get_attribute("class") or ""):
+            box = page.locator("#art-zone").bounding_box()
+            page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        expect(page.locator("#mute")).to_be_visible()
+        shown("T4", True)
+        page.locator("#mute").click()
+        shown("T4", False)
+        hd.show(state(False, "T5"))
+        page.clock.run_for(3000)
+        shown("T5", False)
+        hd.show(state(False, "T6"))
+        shown("T6", False)
+        assert [name_ for name_, _body in sent] == ["mute_toggle", "mute_toggle"]
+
 
 class TestSpeakers:
     def test_cards_show_state_and_levels(self, page, hd):
@@ -824,9 +886,12 @@ class TestRightColumn:
         open_page(page, hd, size)
         empty = column_boxes(page)
         assert [n for n, _ in empty] == [".art-zone", ".art-frame", ".track-row", "#volume-row"]
-        for name in ("replaying", "replay_hold", "fading_out"):
-            hd.show(hs.SCENARIOS[name])
+        states = [hs.SCENARIOS[name] for name in ("replaying", "replay_hold", "fading_out")]
+        states += [hs.replay_scenario("idle", "idle"), hs.replay_scenario("live", "recording")]
+        for state in states:
+            hd.show(state)
             expect(page.locator("#replay-row")).to_be_visible()
+            expect(page.locator("#replay-row > *").first).to_be_visible()
             filled = column_boxes(page)
             assert [n for n, _ in filled] == [
                 ".art-zone", ".art-frame", "#replay-row", ".track-row", "#volume-row"]

@@ -113,21 +113,30 @@ stayed.
 
 ### Replay row
 
-If the followed appliance can repeat and replay, a row above the track shows
-only the controls that apply to what it is doing:
+If the followed appliance can repeat and replay, a row above the track holds
+its replay controls. While something is playing live, the row holds the
+**Repeat Play** switch, which arms or disarms repeat, as on the small screen.
+The rest of the time it holds two transport buttons and a timer, in that
+order, like the front of a tape deck:
 
-- While something is playing live, the row holds the **Repeat Play** switch,
-  which arms or disarms repeat, as on the small screen.
-- Once a recording is held, the row holds **Replay** and its length, which
-  starts it from the beginning.
-- While a replay runs, the row shows the position and length with **Restart**
-  and **Stop**. Restart does not ask for confirmation.
-- With nothing playing and nothing held, the row is not shown.
+- Once a recording is held, the first button is **play** (a triangle), which
+  starts the replay from the beginning. Stop is greyed out, and the timer
+  shows the recording's length, for example `0:00 / 18:20`.
+- While a replay runs, the first button is **back to the start** (a bar and
+  two arrows), which restarts the replay without asking, and the second is
+  **stop** (a square). The timer counts the position against the length, for
+  example `2:05 / 18:20`.
+- As a replay fades out at its end, both buttons are greyed out and the timer
+  stands still.
+- With nothing playing and nothing held, both buttons are greyed out and the
+  timer reads `-:-- / -:--`.
 
-Lengths of an hour or more show hours, for example 1:02:05.
+A greyed-out button does nothing. Lengths of an hour or more show hours, for
+example 1:02:05. If repeat is turned off on the appliance, the row is not
+shown.
 
 An appliance row that holds a recording shows its length as a badge. Tapping
-that row follows the appliance, and its replay row then offers Replay. See
+that row follows the appliance, and its replay row then offers play. See
 [Repeat and replay](USING-THE-SCREEN.md#repeat-and-replay) for what these
 mean.
 

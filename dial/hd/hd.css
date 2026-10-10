@@ -238,14 +238,16 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .appliance .warn-badge.sev-warning { background: var(--color-status-warning); color: #1b1b1b; }
 .appliance .warn-badge.sev-critical { background: var(--color-status-danger); }
 
-/* Replay row: the arm toggle, replay, counter, restart and stop */
+/* Replay row: the arm toggle, or the transport buttons and the timer. The
+   timer is set as the track's second line is. */
 .replay-row .repeat-arm { padding: 0 0 0 4px; gap: 12px; }
 .replay-row .repeat-arm-text { font-weight: 700; color: var(--color-text-strong); }
 .replay-row .repeat-arm input { inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
 .replay-row .repeat-arm input:disabled + .switch { opacity: 0.45; }
 .hd .pill-btn { min-height: 44px; padding: 0 1.3em; font-size: 1em; }
 .replay-counter {
-    font-size: 1.27em; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--color-text-strong);
+    font-size: 0.93em; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--color-text-secondary);
+    white-space: nowrap; margin-left: 4px;
 }
 .replay-counter.frozen { color: var(--color-text-dim); }
 

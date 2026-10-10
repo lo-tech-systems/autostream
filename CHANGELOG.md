@@ -23,9 +23,17 @@
   separately, and a list that has more to show fades at its edge.
 - new: the dial's Setup card shows Brightness and Sleep after for an HD dial
   in place of the SPI-only rows.
-- improvement: the HD dial's replay row shows only the controls that apply:
-  Repeat Play while playing, Replay once a recording is held, and nothing when
-  idle. Lengths of an hour or more show hours.
+- improvement: the HD dial's replay row uses transport buttons and a timer in
+  place of the Replay, Restart and Stop text buttons: play (or back to the
+  start while a replay runs), stop, then the timer. A button that does not
+  apply is greyed out. While something plays live the row holds Repeat Play
+  as before. Lengths of an hour or more show hours.
+- improvement: the HD dial's replay timer counts evenly, a second at a time,
+  and no longer hops forwards or back as the dial reports in.
+- fix: the HD dial's mute button and volume number went back to unmuted a
+  moment after a press although the sound stayed muted, and the volume number
+  could show an old level or another appliance's. Both now follow the
+  appliance being shown, and a mute shows as soon as the dial has acted on it.
 - improvement: an output in use by another autostream appliance now says
   which one (the HD dial shows "In Use by" and its name).
 - improvement: the dial's outputs list marks the appliance's default output (a

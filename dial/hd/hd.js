@@ -20,7 +20,11 @@
         dragCloseFraction: 3,       // a pull-down moved more than 1/this of its height stays moved
         userScrollHoldMs: 3000,     // after the user scrolls a list, the page leaves it alone this long
         autoScrollSettleMs: 400,    // scroll events this soon after the page's own scroll are not the user's
-        pictureSettleMs: 2000       // a picture that has not loaded by then is shown anyway
+        pictureSettleMs: 2000,      // a picture that has not loaded by then is shown anyway
+        replayResyncS: 2,           // the replay clock jumps to the dial's position only when this far out
+        replaySlewS: 10,            // a smaller difference is worked off over this long
+        replayMaxSlew: 0.05,        // by running the clock at most this much fast or slow
+        replayTickLagMs: 15         // how soon after a whole second the timer is drawn again
     };
 
     // The first rule that matches gives an appliance row its label.
@@ -72,17 +76,33 @@
     };
     const INFO_URL = "/api/v1/info";
 
-    // The controls the replay row shows for each state of an appliance's
-    // recording, left to right. An empty list hides the row.
-    const REPLAY_CONTROLS = {
-        idle: [], recording: ["arm"], pending: ["arm"], hold: ["start"],
-        replaying: ["counter", "restart", "stop"], fading_out: ["counter", "restart", "stop"]
+    // The replay row for each state of an appliance's recording: its
+    // controls left to right, which of them can be used, what the timer
+    // reads (nothing, the recording's length from zero, or the replay's
+    // position) and whether it is shown dimmed. A state not listed has no
+    // row.
+    const TRANSPORT_IDLE = ["play", "stop", "counter"];
+    const TRANSPORT_REPLAY = ["restart", "stop", "counter"];
+    const REPLAY_ROWS = {
+        idle: { controls: TRANSPORT_IDLE, usable: [], time: "none", dim: true },
+        recording: { controls: ["arm"], usable: ["arm"] },
+        pending: { controls: ["arm"], usable: ["arm"] },
+        hold: { controls: TRANSPORT_IDLE, usable: ["play"], time: "length", dim: false },
+        replaying: { controls: TRANSPORT_REPLAY, usable: ["restart", "stop"], time: "position", dim: false },
+        fading_out: { controls: TRANSPORT_REPLAY, usable: [], time: "position", dim: true }
     };
+    // The transport buttons: the action each sends, its spoken label and its
+    // icon as path data on a 24 unit square.
     const REPLAY_BUTTONS = {
-        start: { action: "replay_start", text: "Replay" },
-        restart: { action: "replay_restart", text: "Restart" },
-        stop: { action: "replay_stop", text: "Stop" }
+        play: { action: "replay_start", label: "Play the recording", icon: "M8 5.5v13l11-6.5z" },
+        restart: {
+            action: "replay_restart", label: "Back to the start",
+            icon: "M4 6h2.2v12H4zM13 6v12l-6-6zM20 6v12l-6-6z"
+        },
+        stop: { action: "replay_stop", label: "Stop the replay", icon: "M6.5 6.5h11v11h-11z" }
     };
+    const NO_TIME = "-:--";
+    const SVG_NS = "http://www.w3.org/2000/svg";
 
     // The pull-down's choices: [seconds, label]; 0 is never.
     const SLEEP_CHOICES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [0, "Never"]];
@@ -130,6 +150,20 @@
 
     function setText(node, text) {
         if (node.textContent !== text) { node.textContent = text; }
+    }
+
+    // A filled icon drawn from path data on a 24 unit square.
+    function makeIcon(pathData) {
+        const svg = document.createElementNS(SVG_NS, "svg");
+        svg.setAttribute("width", "28");
+        svg.setAttribute("height", "28");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        svg.setAttribute("fill", "currentColor");
+        const path = document.createElementNS(SVG_NS, "path");
+        path.setAttribute("d", pathData);
+        svg.appendChild(path);
+        return svg;
     }
 
     function setLevel(slider, value, enabled) {
@@ -182,7 +216,8 @@
         eqOpen: false, eqFor: null, sheetOpen: false, info: null, infoBusy: false,
         notice: null, viewing: null,
         touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0,
-        focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0
+        focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
+        replayClock: null
     };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
@@ -207,6 +242,45 @@
     function rollBack(keys) {
         (keys || []).forEach((key) => { delete pending[key]; });
         render();
+    }
+
+    // ---- The replay clock --------------------------------------------------
+
+    // The page keeps its own clock for a running replay, { id, base, at,
+    // slew, running }: the position was *base* seconds at page time *at*,
+    // and for the next while it runs *slew* fast (or, negative, slow). The
+    // dial's position arrives a little early or late each time, so it only
+    // steers the clock: a small difference is worked off by running slightly
+    // fast or slow for a few seconds, which keeps the timer even and never
+    // takes it backwards, and only a large one (a restart, another replay)
+    // moves it at once.
+    function clockRate(clock, now) {
+        return (now - clock.at) / 1000 < CONFIG.replaySlewS ? 1 + clock.slew : 1;
+    }
+
+    function clockPosition(clock, now) {
+        if (!clock.running) { return clock.base; }
+        const gone = (now - clock.at) / 1000;
+        return clock.base + gone + clock.slew * Math.min(gone, CONFIG.replaySlewS);
+    }
+
+    function nextReplayClock(old, state, now) {
+        const focus = state.appliances.find((a) => a.id === state.focus.appliance_id);
+        const r = focus ? focus.repeat : null;
+        const row = r ? REPLAY_ROWS[r.state] : null;
+        if (!row || row.time !== "position") { return null; }
+        const held = old && old.id === focus.id ? old : null;
+        const local = held ? clockPosition(held, now) : null;
+        if (r.state !== "replaying") {
+            // Not moving any more: it stops where the page had it.
+            return { id: focus.id, base: held ? local : r.position_s, at: now, slew: 0, running: false };
+        }
+        const error = held && held.running ? r.position_s - local : Infinity;
+        if (Math.abs(error) > CONFIG.replayResyncS) {
+            return { id: focus.id, base: r.position_s, at: now, slew: 0, running: true };
+        }
+        const slew = Math.max(-CONFIG.replayMaxSlew, Math.min(CONFIG.replayMaxSlew, error / CONFIG.replaySlewS));
+        return { id: focus.id, base: local, at: now, slew: slew, running: true };
     }
 
     // ---- The equaliser's response maths ----------------------------------
@@ -321,30 +395,44 @@
         return { count: list.length, severity: worst, key: list[0].key };
     }
 
-    // The replay row's controls for the focused appliance, from its record.
-    const REPLAY_ITEMS = {
-        arm: (r, can) => ({ id: "arm", on: settle("arm", r.armed), enabled: can }),
-        start: (r, can) => ({ id: "start", text: "Replay " + formatLength(r.duration_s || r.recording_s), enabled: can }),
-        counter: (r, can, position) => ({
-            id: "counter", text: formatLength(position) + " / " + formatLength(r.duration_s),
-            frozen: r.state !== "replaying"
-        }),
-        restart: (r, can) => ({ id: "restart", text: REPLAY_BUTTONS.restart.text, enabled: can && r.state === "replaying" }),
-        stop: (r, can) => ({ id: "stop", text: REPLAY_BUTTONS.stop.text, enabled: can && r.state === "replaying" })
+    // What the timer reads for each kind of time in REPLAY_ROWS: [elapsed,
+    // total] in seconds, null for a time there is none of.
+    const REPLAY_TIMES = {
+        none: () => [null, null],
+        length: (r) => [0, r.duration_s || r.recording_s],
+        position: (r, position) => [position, r.duration_s]
     };
 
+    const timeText = (seconds) => (seconds === null ? NO_TIME : formatLength(seconds));
+
+    // The replay row's controls for the focused appliance, from its record.
+    // The position counts whole seconds gone, so it is cut, not rounded,
+    // until the replay is at its end.
     function deriveReplay(focus, usable, local) {
         const r = focus && focus.capabilities.repeat ? focus.repeat : null;
-        const controls = r && r.available ? REPLAY_CONTROLS[r.state] : null;
-        if (!controls) { return { items: [], ticking: false }; }
-        let position = r.position_s;
-        if (r.state === "replaying") {
-            position += (local.now - local.stateAt) / 1000;
-            if (r.duration_s > 0) { position = Math.min(position, r.duration_s); }
-        }
+        const row = r && r.available ? REPLAY_ROWS[r.state] : null;
+        if (!row) { return { items: [], ticking: false, nextMs: 0 }; }
+        const clock = local.replayClock && local.replayClock.id === focus.id ? local.replayClock : null;
+        const length = r.duration_s > 0 ? r.duration_s : Infinity;
+        const at = clock ? clockPosition(clock, local.now) : r.position_s;
+        const ended = at >= length;
+        const position = ended ? length : Math.floor(at);
+        const ticking = !!clock && clock.running && !ended;
+        const can = (id) => usable && row.usable.indexOf(id) >= 0;
+        const items = row.controls.map((id) => {
+            if (id === "arm") { return { id: id, on: settle("arm", r.armed), enabled: can(id) }; }
+            if (id === "counter") {
+                const times = REPLAY_TIMES[row.time](r, position);
+                return { id: id, text: timeText(times[0]) + " / " + timeText(times[1]), frozen: row.dim };
+            }
+            return { id: id, enabled: can(id) };
+        });
         return {
-            items: controls.map((id) => REPLAY_ITEMS[id](r, usable, position)),
-            ticking: r.state === "replaying"
+            items: items,
+            ticking: ticking,
+            // How long until the position reaches its next whole second.
+            nextMs: ticking
+                ? (Math.floor(at) + 1 - at) / clockRate(clock, local.now) * 1000 + CONFIG.replayTickLagMs : 0
         };
     }
 
@@ -611,15 +699,14 @@
         return node;
     }
 
-    // Replay row controls, one builder per id in REPLAY_CONTROLS.
+    // Replay row controls, one builder per control id in REPLAY_ROWS.
     function replayButton(id) {
-        const node = make("button", "pill-btn replay-btn");
+        const node = make("button", "icon-btn replay-btn");
         node.type = "button";
+        node.setAttribute("aria-label", REPLAY_BUTTONS[id].label);
+        node.appendChild(makeIcon(REPLAY_BUTTONS[id].icon));
         node.addEventListener("click", () => onReplayButton(id));
-        node._update = (item) => {
-            setText(node, item.text);
-            node.disabled = !item.enabled;
-        };
+        node._update = (item) => { node.disabled = !item.enabled; };
         return node;
     }
 
@@ -645,7 +732,7 @@
             };
             return node;
         },
-        start: () => replayButton("start"),
+        play: () => replayButton("play"),
         restart: () => replayButton("restart"),
         stop: () => replayButton("stop")
     };
@@ -903,6 +990,8 @@
         paintModal(vm.modal);
     }
 
+    let replayTick = 0;
+
     function render() {
         const view = () => derive(ui.state || EMPTY_STATE, Object.assign({ now: Date.now() }, ui));
         ui.vm = view();
@@ -922,6 +1011,10 @@
             ui.viewing = null;
         }
         paint(ui.vm);
+        // A running replay is drawn again as its position reaches each
+        // whole second, so the timer steps evenly whenever states arrive.
+        clearTimeout(replayTick);
+        replayTick = ui.vm.replay.ticking ? setTimeout(render, ui.vm.replay.nextMs) : 0;
     }
 
     // ---- The equaliser's response graph ------------------------------------
@@ -1381,6 +1474,7 @@
             return;
         }
         ui.stateAt = Date.now();
+        ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt);
         render();
     }
 
