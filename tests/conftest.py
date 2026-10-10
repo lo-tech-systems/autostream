@@ -228,3 +228,12 @@ def _reset_webui_api_fail_counts():
     m = _mod("autostream_webui_api")
     if m is not None:
         m._audio_status_fail_count = 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_dial_seek_rate_limit():
+    """Reset the dial repeat-seek rate-limit timer after each test."""
+    yield
+    m = _mod("autostream_webui_api")
+    if m is not None:
+        m._dial_seek_last = 0.0

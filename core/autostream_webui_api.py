@@ -97,12 +97,14 @@ from autostream_core import (
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
+    send_live_repeat_transport,
     set_live_input_eq,
     set_live_input_gain,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
     set_live_repeat_armed,
+    set_live_repeat_armed_ack,
     set_live_repeat_enabled,
     update_live_owntone_runtime,
     update_live_silence_seconds,
@@ -934,6 +936,49 @@ def _dial_track_id_dict() -> dict:
     }
 
 
+def _derive_repeat_state(rs: dict) -> str:
+    """Derive the dial protocol's repeat state from a cached daemon "repeat"
+    status block. The daemon's internal "pending" admission window is
+    invisible here and reads as "idle"."""
+    rec = rs.get("recording") if isinstance(rs.get("recording"), dict) else {}
+    rep = rs.get("replay") if isinstance(rs.get("replay"), dict) else {}
+    if rep.get("active") and rep.get("fading_out"):
+        return "fading_out"
+    if rep.get("active"):
+        return "replaying"
+    if rec.get("active"):
+        return "recording"
+    if (rec.get("seconds") or 0) > 0:
+        return "hold"
+    return "idle"
+
+
+def _dial_repeat_object() -> dict | None:
+    """The dial protocol's "repeat" object for POST /api/dial/status, or
+    None when the daemon block is unavailable (older monitor binary, or no
+    poll yet). Every field but state and available is a passthrough of the
+    cached daemon block (get_repeat_status())."""
+    rs = get_repeat_status()
+    if not isinstance(rs, dict):
+        return None
+    rec = rs.get("recording") if isinstance(rs.get("recording"), dict) else {}
+    rep = rs.get("replay") if isinstance(rs.get("replay"), dict) else {}
+    enabled = bool(rs.get("enabled"))
+    state = _derive_repeat_state(rs) if enabled else "idle"
+    return {
+        "available": enabled,
+        "state": state,
+        "armed": bool(rs.get("armed")),
+        "held": state == "hold",
+        "recording_seconds": float(rec.get("seconds") or 0.0),
+        "replay": {
+            "active": bool(rep.get("active")),
+            "position_seconds": float(rep.get("position_seconds") or 0.0),
+            "duration_seconds": float(rep.get("duration_seconds") or 0.0),
+        },
+    }
+
+
 def _dial_auth_gate(handler, json_obj: dict) -> str | None:
     """Shared dial_id/authorization guard for the dial protocol routes.
 
@@ -999,14 +1044,120 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         return
 
     master_volume, selected_output_count = calculate_master_volume(result.outputs)
-    send_json(handler, 200, {
+    response = {
         "ok": True,
         "playing": playing,
         "master_volume": master_volume,
         "selected_output_count": selected_output_count,
         "track_id": _dial_track_id_dict(),
         "appliance_id": get_appliance_id(),
+    }
+    repeat = _dial_repeat_object()
+    if repeat is not None:
+        response["repeat"] = repeat
+    send_json(handler, 200, response)
+
+
+# Error tokens the daemon itself can produce for a transport/arm ack, passed
+# through as-is rather than mapped to backend_unavailable. Anything else --
+# including an older daemon's "unknown command: repeat_seek" -- is backend_unavailable.
+_REPEAT_KNOWN_ERRORS = frozenset({
+    "repeat_unavailable", "source_active", "no_recording", "fading_out",
+    "invalid_position",
+})
+
+_DIAL_SEEK_MIN_INTERVAL_S = 1.0
+_dial_seek_lock = threading.Lock()
+_dial_seek_last = 0.0
+
+
+def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
+    """Map a daemon transport/arm ack to the dial protocol's repeat response.
+
+    Shared by POST /api/dial/repeat and POST /api/dial/repeat/arm. ack is
+    None (daemon unreachable) or ok:false with an error the daemon minted
+    that is not one of _REPEAT_KNOWN_ERRORS (including an older daemon's
+    "unknown command: ...") -> backend_unavailable; a known ok:false error
+    is passed through as-is; ok:true carries position_seconds too. state
+    defaults to "idle" and armed to False when the ack lacks them (an old
+    daemon's set_repeat_armed ack has neither field).
+    """
+    if not isinstance(ack, dict) or not ack.get("ok"):
+        error = ack.get("error") if isinstance(ack, dict) else None
+        if error not in _REPEAT_KNOWN_ERRORS:
+            error = "backend_unavailable"
+        send_json(handler, 200, {
+            "ok": False,
+            "error": error,
+            "state": (ack or {}).get("state", "idle"),
+            "armed": bool((ack or {}).get("armed", False)),
+            "appliance_id": get_appliance_id(),
+        })
+        return
+    send_json(handler, 200, {
+        "ok": True,
+        "state": ack.get("state", "idle"),
+        "armed": bool(ack.get("armed", False)),
+        "position_seconds": float(ack.get("position_seconds", 0.0)),
+        "appliance_id": get_appliance_id(),
     })
+
+
+def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/repeat — repeat-replay transport (stop|seek).
+
+    UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
+    Start is expressed as seek 0 -- the dial never sends a nonzero position.
+    Seek is rate-limited to one call per second appliance-wide; stop is
+    idempotent (the daemon acks ok:true in every state) and never
+    rate-limited. Never reads get_repeat_status(): the response is built
+    entirely from the daemon's own transport ack.
+    """
+    dial_id = _dial_auth_gate(handler, json_obj)
+    if dial_id is None:
+        return
+    action = json_obj.get("action")
+    if action not in ("stop", "seek"):
+        send_json(handler, 400, {"ok": False, "error": "invalid_action"})
+        return
+    position = 0.0
+    if action == "seek":
+        raw = json_obj.get("position_seconds", 0)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) \
+                or not math.isfinite(raw) or raw < 0:
+            send_json(handler, 400, {"ok": False, "error": "invalid_position"})
+            return
+        position = float(raw)
+        now = time.monotonic()
+        with _dial_seek_lock:
+            global _dial_seek_last
+            if now - _dial_seek_last < _DIAL_SEEK_MIN_INTERVAL_S:
+                send_json(handler, 200, {"ok": False, "error": "rate_limited",
+                                         "appliance_id": get_appliance_id()})
+                return
+            _dial_seek_last = now
+    ack = send_live_repeat_transport(action, position)
+    _send_dial_repeat_ack(handler, ack)
+
+
+def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/repeat/arm — arm/disarm repeat-replay from the dial.
+
+    UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
+    Calls set_live_repeat_armed_ack() directly, never apply_repeat_arm_request
+    (that string-body API stays the contract for POST /api/repeat, federation
+    and the gateway). Arm is allowed in every daemon state -- the daemon's
+    Armed/Disarmed cells decide what it means.
+    """
+    dial_id = _dial_auth_gate(handler, json_obj)
+    if dial_id is None:
+        return
+    armed = json_obj.get("armed")
+    if not isinstance(armed, bool):
+        send_json(handler, 400, {"ok": False, "error": "invalid_armed"})
+        return
+    ack = set_live_repeat_armed_ack(armed)
+    _send_dial_repeat_ack(handler, ack)
 
 
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:

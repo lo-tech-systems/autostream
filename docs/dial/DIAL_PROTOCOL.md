@@ -224,6 +224,18 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
     "artwork_url": "https://provider.example/artwork/3f8a91c2.jpg",
     "updated_at": 1783170000.0,
     "last_attempt_at": 1783169990.0
+  },
+  "repeat": {
+    "available": true,
+    "state": "hold",
+    "armed": false,
+    "held": true,
+    "recording_seconds": 342.0,
+    "replay": {
+      "active": false,
+      "position_seconds": 0.0,
+      "duration_seconds": 0.0
+    }
   }
 }
 ```
@@ -239,6 +251,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `master_volume` | int\|null | Rounded arithmetic mean of selected output volumes; `null` when none selected |
 | `selected_output_count` | int | Number of currently selected outputs |
 | `track_id` | object | Grouped now-playing/track-identification state for authorized dials (see below) |
+| `repeat` | object | Repeat-recording/replay state (see below). Omitted entirely when the daemon has never reported it (older monitor binary, or no poll yet) |
 | `appliance_id` | string\|null | This appliance's stable identity (20 lowercase hex characters), or `null` for an identity-less appliance |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
@@ -287,6 +300,26 @@ artwork URL. This includes the `disabled` example below, and `waiting_for_audio`
 The endpoint remains read-only: it never fetches remote artwork or mutates track
 identification state on the request path.
 
+#### `repeat` object
+
+| Field | Type | Notes |
+|---|---|---|
+| `available` | bool | Whether repeat recording is enabled in settings |
+| `state` | string | One of `idle`, `recording`, `hold`, `replaying`, `fading_out` (the daemon's internal admission-window state reads as `idle` here) |
+| `armed` | bool | Whether replay is armed |
+| `held` | bool | `true` exactly when `state` is `hold` - a retained recording with nothing currently playing |
+| `recording_seconds` | number | Length of the retained/in-progress recording, in seconds |
+| `replay` | object | `active` (bool, `true` through `fading_out`), `position_seconds` (number), `duration_seconds` (number, stale when not replaying) |
+
+`state == "hold"` is the "not currently playing" signal for the replay picker - not the
+top-level `playing` flag above, which reflects the unified session tracker and is `true`
+while replay is actively producing audio (through `fading_out`).
+
+`repeat` is omitted from the response body entirely when the cached daemon status has never
+reported a repeat block. A dial that has previously seen this key treats its absence as
+transient (an OwnTone/monitor restart) and keeps its last known value rather than treating
+the feature as gone.
+
 **Application failure responses (200 body):**
 
 | `error` | Meaning |
@@ -311,6 +344,68 @@ malformed (`400`), or the store is transiently unreadable (`200 auth_unavailable
 
 `412` is not intercepted by the main NGINX `error_page` directive (which only intercepts
 404, 502, 503, and 504), so the dial client receives the original HTTP `412`.
+
+### `POST /api/dial/repeat`
+
+UUID-in-body auth via the same authorization gate as `POST /api/dial/status` (`_dial_auth_gate`):
+`400 missing_dial_id`, `412 dial_not_authorized`, `200 auth_unavailable`. Sends a
+repeat-replay transport command - stop, or seek to a position. The dial only ever sends
+seek `0` (used for Start); the API itself accepts any finite, non-negative position.
+
+**Request body:**
+```json
+{"dial_id": "<id>", "action": "seek", "position_seconds": 0}
+```
+
+`action` is `"stop"` or `"seek"`. `position_seconds` applies only to `"seek"` (a `"stop"`
+ignores it) and, when present, must be a finite, non-negative number; it defaults to `0`.
+
+**Success response (200):**
+```json
+{"ok": true, "state": "replaying", "armed": true, "position_seconds": 0.0,
+ "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
+```
+
+**Daemon-rejected response (200):**
+```json
+{"ok": false, "error": "source_active", "state": "recording", "armed": false,
+ "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
+```
+
+| `error` | Meaning |
+|---|---|
+| `invalid_action` (`400`) | `action` is neither `"stop"` nor `"seek"` |
+| `invalid_position` (`400`) | `position_seconds` is missing its default, not finite, or negative |
+| `repeat_unavailable` | Repeat recording is disabled in settings |
+| `no_recording` | Nothing retained to replay |
+| `source_active` | A live capture (or the daemon's admission window) is in progress |
+| `fading_out` | A stop is already fading out; a seek is refused until playback lands in `hold` |
+| `rate_limited` | A seek arrived less than one second after the previous one - `stop` is never rate-limited and is idempotent (the daemon acks `ok:true` in every state) |
+| `backend_unavailable` | The daemon is unreachable, or returned an error this appliance version does not recognise (for example an older daemon rejecting the command outright) |
+
+This route never reads the cached repeat status from `POST /api/dial/status` - the response
+is built entirely from the daemon's own transport acknowledgement, so it can never be stale
+relative to the command that produced it.
+
+### `POST /api/dial/repeat/arm`
+
+UUID-in-body auth via the same `_dial_auth_gate` guard as `POST /api/dial/status`. Arms or
+disarms repeat replay. Allowed in every daemon state - the daemon's own state machine
+decides what arming means in each one (arming while recording, for example, has no visible
+effect until the recording lands in `hold`).
+
+**Request body:**
+```json
+{"dial_id": "<id>", "armed": true}
+```
+
+**Responses:** same shape as `POST /api/dial/repeat` above - `ok`, `state`, `armed`, and
+`position_seconds` (only when `ok` is `true`), plus `appliance_id`.
+
+| `error` | Meaning |
+|---|---|
+| `invalid_armed` (`400`) | `armed` is missing or not a boolean |
+| `backend_unavailable` | The daemon is unreachable, or returned an error this appliance version does not recognise |
 
 ---
 

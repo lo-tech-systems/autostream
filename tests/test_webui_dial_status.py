@@ -105,6 +105,7 @@ def _invoke(
     config_error: bool = False,
     playing: bool = False,
     track_id_snapshot: TrackIdentificationSnapshot | None = None,
+    repeat_status: dict | None = None,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_status_post_json and return (status, body, update_mock).
 
@@ -112,6 +113,9 @@ def _invoke(
     by the patched dial_authorization() (one of AUTH_AUTHORIZED,
     AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE). appliance_id is what the patched
     get_appliance_id() returns (None for an identity-less appliance).
+    repeat_status is what the patched get_repeat_status() returns (None by
+    default -- no cached daemon "repeat" block, e.g. an older monitor binary
+    or no poll yet).
     """
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
@@ -140,6 +144,7 @@ def _invoke(
         patch("autostream_webui_api.update_output", update_mock),
         patch("autostream_webui_api.get_session_state",
               return_value={"active": playing, "source": "input1" if playing else None}),
+        patch("autostream_webui_api.get_repeat_status", return_value=repeat_status),
         patch("autostream_core.get_active_track_identification_snapshot",
               return_value=track_id_snapshot),
     ):
@@ -282,6 +287,7 @@ class TestPlayingField:
             patch("autostream_webui_api.get_session_state",
                   return_value={"active": True, "source": "replay"}),
             patch("autostream_webui_api.any_monitor_capturing", return_value=False),
+            patch("autostream_webui_api.get_repeat_status", return_value=None),
             patch("autostream_core.get_active_track_identification_snapshot",
                   return_value=disabled_snapshot()),
         ):
@@ -398,6 +404,111 @@ class TestTrackIdField:
             code, body, _ = _invoke({"dial_id": DIAL_ID}, track_id_snapshot=snap)
         mock_urlopen.assert_not_called()
         assert body["track_id"]["artwork_url"] == "https://provider.example/x.jpg"
+
+
+# ---------------------------------------------------------------------------
+# repeat object (Phase 2 A3)
+# ---------------------------------------------------------------------------
+
+def _daemon_block(**overrides) -> dict:
+    base = {
+        "enabled": True,
+        "armed": False,
+        "recording": {"active": False, "seconds": 0.0},
+        "replay": {"active": False, "position_seconds": 0.0, "duration_seconds": 0.0},
+    }
+    base.update(overrides)
+    return base
+
+
+class TestRepeatField:
+    def test_repeat_present_and_equals_dial_repeat_object(self):
+        block = _daemon_block(
+            armed=True,
+            recording={"active": False, "seconds": 42.0},
+            replay={"active": True, "position_seconds": 5.0, "duration_seconds": 42.0},
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=block)
+        assert code == 200
+        with patch("autostream_webui_api.get_repeat_status", return_value=block):
+            from autostream_webui_api import _dial_repeat_object
+            expected = _dial_repeat_object()
+        assert body["repeat"] == expected
+        assert body["repeat"] == {
+            "available": True,
+            "state": "replaying",
+            "armed": True,
+            "held": False,
+            "recording_seconds": 42.0,
+            "replay": {
+                "active": True,
+                "position_seconds": 5.0,
+                "duration_seconds": 42.0,
+            },
+        }
+
+    def test_repeat_absent_when_get_repeat_status_is_none(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=None)
+        assert code == 200
+        assert "repeat" not in body
+
+    def test_repeat_absent_on_backend_unavailable(self):
+        code, body, _ = _invoke(
+            {"dial_id": DIAL_ID},
+            list_result=_fail_list("OwnTone offline"),
+            repeat_status=_daemon_block(),
+        )
+        assert code == 200
+        assert body == {"ok": False, "error": "backend_unavailable"}
+        assert "repeat" not in body
+
+    @pytest.mark.parametrize(
+        "block,expected_state,expected_available,expected_held",
+        [
+            (_daemon_block(enabled=False), "idle", False, False),
+            (_daemon_block(), "idle", True, False),
+            (
+                _daemon_block(recording={"active": True, "seconds": 3.0}),
+                "recording", True, False,
+            ),
+            (
+                # recording.seconds > 0 with recording.active must read as
+                # "recording", not "hold" -- active always wins.
+                _daemon_block(recording={"active": True, "seconds": 90.0}),
+                "recording", True, False,
+            ),
+            (
+                _daemon_block(recording={"active": False, "seconds": 90.0}),
+                "hold", True, True,
+            ),
+            (
+                _daemon_block(
+                    recording={"active": False, "seconds": 90.0},
+                    replay={"active": True, "position_seconds": 1.0, "duration_seconds": 90.0},
+                ),
+                "replaying", True, False,
+            ),
+        ],
+    )
+    def test_state_derivation_table(
+        self, block, expected_state, expected_available, expected_held,
+    ):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=block)
+        assert code == 200
+        assert body["repeat"]["state"] == expected_state
+        assert body["repeat"]["available"] == expected_available
+        assert body["repeat"]["held"] == expected_held
+
+    def test_fading_out_state(self):
+        block = _daemon_block(
+            armed=False,
+            recording={"active": False, "seconds": 30.0},
+            replay={"active": True, "fading_out": True,
+                    "position_seconds": 30.0, "duration_seconds": 30.0},
+        )
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=block)
+        assert body["repeat"]["state"] == "fading_out"
+        assert body["repeat"]["held"] is False
 
 
 # ---------------------------------------------------------------------------
