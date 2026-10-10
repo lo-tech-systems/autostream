@@ -684,11 +684,10 @@ class TestOverlayText:
 
 
 class TestOverlayName:
-    """The appliance name (top-left, halo text) — always drawn whenever a
-    focused/controllable appliance is shown (Q4: unconditional, never
-    gated on how many appliances are authorized). Mirrors TestOverlayText's
-    checks for the artist line, since both go through the same halo
-    helper."""
+    """The appliance name (top-left, plain text over the dimmed band, no
+    halo — matching the repeat screen) — always drawn whenever a focused/
+    controllable appliance is shown (unconditional, never gated on how many
+    appliances are authorized)."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
@@ -760,23 +759,6 @@ class TestOverlayName:
             overlay=OverlayState(visible=True, name="CD Player", pressed=TouchZone.NAME),
         )
         assert list(unpressed.getdata()) != list(pressed.getdata())
-
-    def test_halo_makes_name_legible_over_dark_and_light_artwork(self, compositor):
-        # The point of the halo is that the same text differs from a plain
-        # backdrop whether that backdrop is dark or light — i.e. some part
-        # of what is drawn is not just the artwork's own colour showing
-        # through. A crude but effective proxy: the name rect must contain
-        # more than the two colours a flat dim would produce (background +
-        # glyph) once a dark glow is composited in as well.
-        for color in ((10, 10, 10), (240, 240, 240)):
-            img = self._panel_image(color=color)
-            layout = layout_for(160, 128)
-            result = compositor.compose(
-                img, 160, 128, rotate=False, bgr=False, is_artwork=False,
-                overlay=OverlayState(visible=True, name="CD Player"),
-            )
-            colors = set(result.crop(layout.name).getdata())
-            assert len(colors) > 2
 
     def test_font_fallback_unavailable_disables_name_text(self, compositor):
         size = (160, 128)

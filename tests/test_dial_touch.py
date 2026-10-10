@@ -1213,6 +1213,12 @@ class TestNewSurfacesArmImmediately:
         actions = sm.on_filter_event(press_event(REPEAT_PLAY_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
 
+    def test_mute_toggles_on_the_repeat_surface(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0)
+        actions = sm.on_filter_event(press_event(MUTE_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_MUTE_TOGGLE]
+
     def test_idle_replay_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_IDLE, False, now=0.0)

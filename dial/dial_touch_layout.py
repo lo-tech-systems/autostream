@@ -421,16 +421,18 @@ def repeat_layout_for(width: int, height: int) -> RepeatLayout:
 
 def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     """Hit-test the repeat screen's surface: DOTS first (pops back to
-    main), then NAME (opens the appliance selector), then the middle row
-    (REPEAT_PLAY), then START, then STOP, else None (a dead zone).
-    State-agnostic like every other hit-test here — the display decides
-    whether a hit means anything in the CURRENT layout (REPEAT_PLAY is
-    drawn only in the enable layout, START/STOP only in the replaying
+    main), then NAME (opens the appliance selector), then MUTE (the
+    mute/volume readout, toggles mute like the main screen), then the
+    middle row (REPEAT_PLAY), then START, then STOP, else None (a dead
+    zone). State-agnostic like every other hit-test here — the display
+    decides whether a hit means anything in the CURRENT layout (REPEAT_PLAY
+    is drawn only in the enable layout, START/STOP only in the replaying
     layout; see dial_display_compositor.compose_repeat)."""
     layout = repeat_layout_for(width, height)
     for zone, (x0, y0, x1, y1) in (
         (TouchZone.DOTS, layout.dots),
         (TouchZone.NAME, layout.name),
+        (TouchZone.MUTE, layout.volume_cluster),
         (TouchZone.REPEAT_PLAY, layout.row),
         (TouchZone.REPEAT_START, layout.start),
         (TouchZone.REPEAT_STOP, layout.stop),

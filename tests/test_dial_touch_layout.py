@@ -393,14 +393,14 @@ class TestRepeatSurface:
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_PLAY
 
-    def test_repeat_zone_at_volume_cluster_is_not_a_zone(self):
-        """The top band's mute/volume readout is display-only on the
-        repeat screen — a tap there must not resolve to MUTE or anything
-        else (it simply misses, same as any other dead zone)."""
+    def test_repeat_zone_at_resolves_mute(self):
+        """The top band's mute/volume readout toggles mute on the repeat
+        screen too (same as the main screen), so a tap there resolves to
+        MUTE."""
         layout = repeat_layout_for(160, 128)
         x0, y0, x1, y1 = layout.volume_cluster
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        assert repeat_zone_at(cx, cy, 160, 128) is None
+        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.MUTE
 
     def test_repeat_zone_at_resolves_start_and_stop(self):
         layout = repeat_layout_for(160, 128)

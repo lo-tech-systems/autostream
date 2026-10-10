@@ -571,17 +571,17 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
         # frame.
         draw = ImageDraw.Draw(frame)
 
-    # The name (top-left) is drawn over arbitrary album art, so it gets the
-    # soft halo — see the module docstring and _draw_text_with_halo(). The
-    # dots (also part of the top band) share this same helper with the
-    # repeat screen's own top band — see _draw_top_band_content().
+    # The name (top-left) is drawn plain (no halo), matching the repeat
+    # screen's own top band — it sits over the dimmed top band, which already
+    # gives it contrast. The dots (also part of the top band) share this
+    # same helper with the repeat screen — see _draw_top_band_content().
     _draw_top_band_content(
         frame,
         dots_rect=layout.dots if overlay.dots else None,
         dots_filled=0 if overlay.dots else None,
         name_rect=layout.name, name_text=overlay.name,
         volume_cluster_rect=layout.volume_cluster, volume=overlay.volume, muted=overlay.muted,
-        width=width, height=height, halo=True,
+        width=width, height=height, halo=False,
     )
 
     # The artist/title lines are main-screen-only (the repeat screen has no
