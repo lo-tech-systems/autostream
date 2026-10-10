@@ -529,24 +529,29 @@ class TestWarnings:
 
 
 class TestNothingLeaks:
-    @pytest.mark.parametrize("name", hs.SCENARIO_NAMES)
-    def test_no_appliance_url_service_name_or_address(self, name):
-        state = hs.SCENARIOS[name].state()
-        text = dumps(_drop_key(state, "webui"))
-        for secret in (
-            hs.ARTWORK_URL, "provider.example", hs.SERVICE_NAME, "_autostream._tcp", "192.0.2.20",
-        ):
-            assert secret not in text
+    def test_no_appliance_url_service_name_or_address(self):
+        leaks = []
+        for name in hs.SCENARIO_NAMES:
+            state = hs.SCENARIOS[name].state()
+            text = dumps(_drop_key(state, "webui"))
+            for secret in (
+                hs.ARTWORK_URL, "provider.example", hs.SERVICE_NAME, "_autostream._tcp", "192.0.2.20",
+            ):
+                if secret in text:
+                    leaks.append((name, secret))
+        assert not leaks, f"(scenario, text that leaked): {leaks}"
 
     def test_the_appliance_address_appears_only_in_webui(self):
         state = _state("playing_artwork")
         assert "192.0.2.20" in dumps(state)
         assert "192.0.2.20" not in dumps(_drop_key(state, "webui"))
 
-    @pytest.mark.parametrize("name", hs.SCENARIO_NAMES)
-    def test_every_string_is_short(self, name):
-        for text in _strings(hs.SCENARIOS[name].state()):
-            assert len(text) <= STRING_MAX
+    def test_every_string_is_short(self):
+        long = [
+            (name, text[:40]) for name in hs.SCENARIO_NAMES
+            for text in _strings(hs.SCENARIOS[name].state()) if len(text) > STRING_MAX
+        ]
+        assert not long, f"(scenario, start of a string over {STRING_MAX}): {long}"
 
     def test_a_long_string_is_cut(self):
         scenario = hs.SCENARIOS["playing_artwork"]

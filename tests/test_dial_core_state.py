@@ -75,14 +75,15 @@ class TestDataclasses:
         assert (row.remote_in_use, row.remote_owner) == (False, None)
         assert row.is_default is False
 
-    @pytest.mark.parametrize("cls", [
-        cs.NowPlaying, cs.OutputRow, cs.SelectorRow, cs.PickerRow, cs.ApplianceState,
-        cs.FocusState, cs.Artwork, cs.OutputsState, cs.EqBand, cs.EqState,
-        cs.WarningState, cs.TransportRequest, cs.DialInfo, cs.CoreSnapshot,
-        cs.FocusResolution, cs.Selection,
-    ])
-    def test_frozen(self, cls):
-        assert cls.__dataclass_params__.frozen
+    def test_frozen(self):
+        classes = (
+            cs.NowPlaying, cs.OutputRow, cs.SelectorRow, cs.PickerRow, cs.ApplianceState,
+            cs.FocusState, cs.Artwork, cs.OutputsState, cs.EqBand, cs.EqState,
+            cs.WarningState, cs.TransportRequest, cs.DialInfo, cs.CoreSnapshot,
+            cs.FocusResolution, cs.Selection,
+        )
+        not_frozen = [cls.__name__ for cls in classes if not cls.__dataclass_params__.frozen]
+        assert not not_frozen, f"not frozen: {not_frozen}"
 
     def test_dial_display_reexports_the_moved_types(self):
         import dial_display
