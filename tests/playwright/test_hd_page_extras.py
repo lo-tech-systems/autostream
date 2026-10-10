@@ -125,8 +125,10 @@ def timer_seconds(page) -> int:
 
 def replaying_at(position, title="Tunnel of Love", duration=1100.0):
     """The Lounge replaying at *position* seconds (the state reports it a
-    second on, as a reading a second old), under a title a test can wait for."""
-    base = hs.replay_scenario("r", "replaying", position=position - 1.0, duration=duration)
+    second on, as a reading a second old, with no start-buffer offset), under
+    a title a test can wait for."""
+    base = hs.replay_scenario("r", "replaying", position=position - 1.0, duration=duration,
+                              latency=0.0)
     return base.with_snapshot(now_playing=NowPlaying("Lounge", "Dire Straits", title, 42))
 
 
@@ -213,13 +215,13 @@ class TestReplayRow:
         expect(replay_button(page, REWIND)).to_be_enabled()
         expect(replay_button(page, STOP)).to_be_enabled()
         assert replay_button(page, PLAY).count() == 0
-        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
+        expect(replay_timer(page)).to_have_text(re.compile(r"^(1:59|2:0[0-9]) / 18:20$"))
 
     def test_a_recording_of_an_hour_or_more_shows_hours(self, page, hd):
         hd.show(hs.replay_scenario("r", "hold", recording=3725.0))
         open_page(page, hd)
         expect(replay_timer(page)).to_have_text("0:00 / 1:02:05")
-        hd.show(hs.replay_scenario("r", "replaying", position=3600.0, duration=7384.0))
+        hd.show(hs.replay_scenario("r", "replaying", position=3600.0, duration=7384.0, latency=0.0))
         expect(replay_timer(page)).to_have_text(re.compile(r"^1:00:0[0-9] / 2:03:04$"))
 
     def test_the_badge_of_an_hour_long_recording_elsewhere_shows_hours(self, page, hd):
@@ -234,7 +236,7 @@ class TestReplayRow:
         hd.show(hs.SCENARIOS["replaying"])
         sent = watch_actions(page)
         open_page(page, hd)
-        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
+        expect(replay_timer(page)).to_have_text(re.compile(r"^(1:59|2:0[0-9]) / 18:20$"))
         layout = row_layout(page)
         assert [(item["name"], item["disabled"]) for item in layout] == [
             (REWIND, False), (STOP, False), ("timer", False)]
@@ -309,12 +311,12 @@ class TestReplayRow:
         hd.show(hs.SCENARIOS["replaying"])
         page.clock.install()
         open_page(page, hd)
-        expect(replay_timer(page)).to_have_text(re.compile(r"^2:0[0-9] / 18:20$"))
+        expect(replay_timer(page)).to_have_text(re.compile(r"^(1:59|2:0[0-9]) / 18:20$"))
         before = timer_seconds(page)
         page.clock.run_for(4000)
         assert 4 <= timer_seconds(page) - before <= 6
 
-        hd.show(hs.replay_scenario("end", "replaying", position=1098.0, duration=1100.0))
+        hd.show(hs.replay_scenario("end", "replaying", position=1098.0, duration=1100.0, latency=0.0))
         expect(replay_timer(page)).to_have_text(re.compile(r"^18:19 / 18:20$"))
         page.clock.run_for(6000)
         expect(replay_timer(page)).to_have_text("18:20 / 18:20")
@@ -412,14 +414,14 @@ class TestReplayRow:
         sent = watch_actions(page)
         open_page(page, hd)
         timer = replay_timer(page)
-        expect(timer).to_have_text("18:19 / 18:20")
+        expect(timer).to_have_text("18:17 / 18:20")
         expect(timer).to_have_class(re.compile("frozen"))
         assert [(item["name"], item["disabled"]) for item in row_layout(page)] == [
             (REWIND, True), (STOP, True), ("timer", False)]
         for label in (REWIND, STOP):
             tap(page, f'#replay-row button[aria-label="{label}"]')
         page.clock.run_for(5000)
-        expect(timer).to_have_text("18:19 / 18:20")
+        expect(timer).to_have_text("18:17 / 18:20")
         assert sent == []
 
     def test_a_replay_that_starts_fading_stops_where_the_timer_was(self, page, hd):
@@ -431,13 +433,29 @@ class TestReplayRow:
         page.clock.run_for(5000)
         before = timer_seconds(page)
         # The fade's own position is the last one read, some seconds old.
-        fading = hs.replay_scenario("f", "fading_out", position=121.0, duration=1100.0)
+        fading = hs.replay_scenario("f", "fading_out", position=121.0, duration=1100.0, latency=0.0)
         hd.show(fading.with_snapshot(now_playing=NowPlaying("Lounge", "Dire Straits", "T1", 42)))
         expect(page.locator("#title")).to_have_text("T1")
         expect(replay_timer(page)).to_have_class(re.compile("frozen"))
         assert timer_seconds(page) == before
         page.clock.run_for(4000)
         assert timer_seconds(page) == before
+
+    def test_the_timer_follows_the_states_position_with_no_offset_of_its_own(self, page, hd):
+        """The state's position is already the heard one; the page shows it."""
+        hd.show(hs.replay_scenario("r", "replaying", position=300.0, duration=1100.0, latency=0.3))
+        page.clock.install()
+        open_page(page, hd)
+        freeze_clock(page)
+        # Reported 300.0 a second ago: about 301 now, less the 0.3 s start buffer.
+        expect(replay_timer(page)).to_have_text(re.compile(r"^5:0[01] / 18:20$"))
+        hd.show(hs.replay_scenario("r", "replaying", position=300.0, duration=1100.0, latency=3.5))
+        expect(replay_timer(page)).to_have_text(re.compile(r"^4:5[78] / 18:20$"))
+
+    def test_a_replay_just_started_reads_zero_until_the_start_buffer_has_passed(self, page, hd):
+        hd.show(hs.replay_scenario("r", "replaying", position=0.0, duration=1100.0, latency=3.5))
+        open_page(page, hd)
+        expect(replay_timer(page)).to_have_text("0:00 / 18:20")
 
     def test_an_appliance_without_repeat_has_no_row(self, page, hd):
         base = hs.SCENARIOS["replaying"]
@@ -507,6 +525,134 @@ class TestReplayRow:
         appliances = tuple(dataclasses.replace(a, status_error="timeout") for a in playing.snapshot.appliances)
         hd.show(playing.with_snapshot(appliances=appliances))
         expect(page.locator("#replay-row .repeat-arm input")).to_be_disabled()
+
+
+STOP_URL = "**/api/v1/actions/replay_stop"
+
+
+def answer_stop(page, body=None, status=200) -> list:
+    """Answer the page's Stop itself (so that neither backend moves on to
+    another state), and return the requests it saw."""
+    seen: list = []
+
+    def handler(route):
+        seen.append(route.request.post_data_json)
+        route.fulfill(status=status, content_type="application/json",
+                      body=json.dumps(body if body is not None else {"ok": True}))
+
+    page.route(STOP_URL, handler)
+    return seen
+
+
+def running_at_five_minutes(page, hd):
+    hd.show(replaying_at(300.0, "T0"))
+    page.clock.install()
+    open_page(page, hd)
+    expect(page.locator("#title")).to_have_text("T0")
+    freeze_clock(page)
+    page.clock.run_for(3000)
+    return timer_seconds(page)
+
+
+class TestStop:
+    def test_pressing_stop_freezes_the_timer_and_greys_the_controls_at_once(self, page, hd):
+        seen = answer_stop(page)
+        shown = running_at_five_minutes(page, hd)
+        assert shown >= 302
+        replay_button(page, STOP).click()
+        assert [(item["name"], item["disabled"]) for item in row_layout(page)] == [
+            (REWIND, True), (STOP, True), ("timer", False)]
+        expect(replay_timer(page)).to_have_class(re.compile("frozen"))
+        assert timer_seconds(page) == shown
+        page.clock.run_for(1500)
+        assert timer_seconds(page) == shown
+        assert seen == [{"appliance_id": LOUNGE}]
+
+    def test_it_stays_frozen_as_later_states_still_say_replaying(self, page, hd):
+        answer_stop(page)
+        shown = running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        page.clock.run_for(500)
+        # The appliance has not caught up: its states still say replaying, further on.
+        for n, position in enumerate((304.0, 305.5), start=1):
+            hd.show(replaying_at(position, f"T{n}"))
+            expect(page.locator("#title")).to_have_text(f"T{n}")
+            assert timer_seconds(page) == shown
+            expect(replay_button(page, STOP)).to_be_disabled()
+            expect(replay_button(page, REWIND)).to_be_disabled()
+            page.clock.run_for(300)
+            assert timer_seconds(page) == shown
+
+    def test_it_resets_to_the_hold_row_once_the_appliance_has_stopped(self, page, hd):
+        answer_stop(page)
+        running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        hd.show(hs.replay_scenario("h", "hold", recording=1122.0))
+        expect(replay_timer(page)).to_have_text("0:00 / 18:42")
+        expect(replay_timer(page)).not_to_have_class(re.compile("frozen"))
+        assert [(item["name"], item["disabled"]) for item in row_layout(page)] == [
+            (PLAY, False), (STOP, True), ("timer", False)]
+        page.clock.run_for(5000)
+        expect(replay_timer(page)).to_have_text("0:00 / 18:42")
+
+    def test_a_fade_that_follows_stays_where_stop_held_the_timer(self, page, hd):
+        answer_stop(page)
+        shown = running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        page.clock.run_for(600)
+        fading = hs.replay_scenario("f", "fading_out", position=304.0, duration=1100.0, latency=0.0)
+        hd.show(fading.with_snapshot(now_playing=NowPlaying("Lounge", "Dire Straits", "T1", 42)))
+        expect(page.locator("#title")).to_have_text("T1")
+        assert timer_seconds(page) == shown
+        page.clock.run_for(4000)
+        assert timer_seconds(page) == shown
+        expect(replay_timer(page)).to_have_class(re.compile("frozen"))
+
+    def test_a_refused_stop_toasts_and_the_timer_carries_on(self, page, hd):
+        answer_stop(page, {"ok": False, "error": "wrong_state"}, status=409)
+        shown = running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        expect(page.locator("#toast")).to_have_text("Not possible right now.")
+        expect(replay_button(page, STOP)).to_be_enabled()
+        expect(replay_button(page, REWIND)).to_be_enabled()
+        expect(replay_timer(page)).not_to_have_class(re.compile("frozen"))
+        assert timer_seconds(page) >= shown
+        before = timer_seconds(page)
+        page.clock.run_for(3000)
+        assert 2 <= timer_seconds(page) - before <= 4
+
+    def test_a_stop_the_appliance_never_confirms_gives_the_timer_back(self, page, hd):
+        answer_stop(page)
+        shown = running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        page.clock.run_for(1000)
+        assert timer_seconds(page) == shown
+        page.clock.run_for(1500)
+        # The pending window is over: the timer is where the replay now is.
+        expect(replay_button(page, STOP)).to_be_enabled()
+        expect(replay_timer(page)).not_to_have_class(re.compile("frozen"))
+        assert 2 <= timer_seconds(page) - shown <= 3
+        page.clock.run_for(3000)
+        assert 5 <= timer_seconds(page) - shown <= 6
+
+    def test_the_timer_does_not_step_back_when_it_resumes(self, page, hd):
+        answer_stop(page)
+        running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        seen = [timer_seconds(page)]
+        for _ in range(14):
+            page.clock.run_for(250)
+            seen.append(timer_seconds(page))
+        steps = [b - a for a, b in zip(seen, seen[1:])]
+        assert min(steps) >= 0, seen
+
+    def test_stop_sends_one_request_however_often_it_is_pressed(self, page, hd):
+        seen = answer_stop(page)
+        running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        replay_button(page, STOP).click(force=True)
+        page.clock.run_for(500)
+        assert len(seen) == 1
 
 
 # ---------------------------------------------------------------------------

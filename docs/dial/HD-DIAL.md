@@ -127,7 +127,12 @@ order, like the front of a tape deck:
 - While a replay runs, the first button is **back to the start** (a bar and
   two arrows), which restarts the replay without asking, and the second is
   **stop** (a square). The timer counts the position against the length, for
-  example `2:05 / 18:20`.
+  example `2:05 / 18:20`. It runs behind the appliance's reported position
+  by the appliance's audio start buffer, so it matches what you hear. Press
+  stop and the timer stops at once and both buttons grey out; when the
+  appliance confirms the replay has ended, the row shows the held recording
+  again. If the stop is refused or never confirmed, the timer picks up where
+  the replay now is.
 - As a replay fades out at its end, both buttons are greyed out and the timer
   stands still.
 - With nothing playing and nothing held, both buttons are greyed out and the

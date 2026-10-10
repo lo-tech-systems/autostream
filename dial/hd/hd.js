@@ -217,7 +217,7 @@
         notice: null, viewing: null,
         touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0,
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
-        replayClock: null
+        replayClock: null, stopHold: null
     };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
@@ -264,7 +264,9 @@
         return clock.base + gone + clock.slew * Math.min(gone, CONFIG.replaySlewS);
     }
 
-    function nextReplayClock(old, state, now) {
+    // *holdFor* gives the position the timer was held at for an appliance
+    // whose Stop is awaiting an answer, or null.
+    function nextReplayClock(old, state, now, holdFor) {
         const focus = state.appliances.find((a) => a.id === state.focus.appliance_id);
         const r = focus ? focus.repeat : null;
         const row = r ? REPLAY_ROWS[r.state] : null;
@@ -272,8 +274,11 @@
         const held = old && old.id === focus.id ? old : null;
         const local = held ? clockPosition(held, now) : null;
         if (r.state !== "replaying") {
-            // Not moving any more: it stops where the page had it.
-            return { id: focus.id, base: held ? local : r.position_s, at: now, slew: 0, running: false };
+            // Not moving any more: it stops where the page had it, which
+            // is where Stop held it when that was pressed.
+            const pressed = holdFor ? holdFor(focus.id) : null;
+            const base = pressed !== null ? pressed : held ? local : r.position_s;
+            return { id: focus.id, base: base, at: now, slew: 0, running: false };
         }
         const error = held && held.running ? r.position_s - local : Infinity;
         if (Math.abs(error) > CONFIG.replayResyncS) {
@@ -408,22 +413,29 @@
     // The replay row's controls for the focused appliance, from its record.
     // The position counts whole seconds gone, so it is cut, not rounded,
     // until the replay is at its end.
+    //
+    // A Stop that has been pressed holds the timer where it was and greys
+    // the controls until the appliance stops replaying, the request is
+    // refused, or its time is up; the timer then goes by the state again.
     function deriveReplay(focus, usable, local) {
         const r = focus && focus.capabilities.repeat ? focus.repeat : null;
         const row = r && r.available ? REPLAY_ROWS[r.state] : null;
         if (!row) { return { items: [], ticking: false, nextMs: 0 }; }
+        const running = r.state === "replaying";
+        const held = local.stopHold && local.stopHold.id === focus.id ? local.stopHold : null;
+        const stopping = settle("stop", running) !== running && !!held;
         const clock = local.replayClock && local.replayClock.id === focus.id ? local.replayClock : null;
         const length = r.duration_s > 0 ? r.duration_s : Infinity;
-        const at = clock ? clockPosition(clock, local.now) : r.position_s;
+        const at = stopping ? held.position : clock ? clockPosition(clock, local.now) : r.position_s;
         const ended = at >= length;
         const position = ended ? length : Math.floor(at);
-        const ticking = !!clock && clock.running && !ended;
-        const can = (id) => usable && row.usable.indexOf(id) >= 0;
+        const ticking = !!clock && clock.running && !ended && !stopping;
+        const can = (id) => usable && !stopping && row.usable.indexOf(id) >= 0;
         const items = row.controls.map((id) => {
             if (id === "arm") { return { id: id, on: settle("arm", r.armed), enabled: can(id) }; }
             if (id === "counter") {
                 const times = REPLAY_TIMES[row.time](r, position);
-                return { id: id, text: timeText(times[0]) + " / " + timeText(times[1]), frozen: row.dim };
+                return { id: id, text: timeText(times[0]) + " / " + timeText(times[1]), frozen: row.dim || stopping };
             }
             return { id: id, enabled: can(id) };
         });
@@ -1259,7 +1271,30 @@
         post("repeat_arm", { appliance_id: focusId(), armed: armed }, ["arm"]);
     }
 
+    // The position the timer holds at after Stop is pressed on *id*, while
+    // the press is still waiting for the appliance; otherwise null.
+    function stopHeldAt(id) {
+        const p = pending.stop;
+        const h = ui.stopHold;
+        return p && h && h.id === id && Date.now() < p.deadline ? h.position : null;
+    }
+
+    function onStop() {
+        const id = focusId();
+        const a = ui.state.appliances.find((item) => item.id === id);
+        if (pending.stop || !a || !a.repeat) { return; }
+        const clock = ui.replayClock && ui.replayClock.id === id ? ui.replayClock : null;
+        ui.stopHold = { id: id, position: clock ? clockPosition(clock, Date.now()) : a.repeat.position_s };
+        setPending("stop", false);
+        render();
+        post(REPLAY_BUTTONS.stop.action, { appliance_id: id }, ["stop"]);
+    }
+
     function onReplayButton(id) {
+        if (id === "stop" && canAct()) {
+            onStop();
+            return;
+        }
         post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() });
     }
 
@@ -1474,7 +1509,7 @@
             return;
         }
         ui.stateAt = Date.now();
-        ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt);
+        ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt, stopHeldAt);
         render();
     }
 

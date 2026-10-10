@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- improved: the replay timer on the dial's screens now runs behind the
+  appliance's reported position by the appliance's audio start buffer, so it
+  matches what you hear (it was a fixed two seconds on the small screens and
+  not offset on the HD page). Appliances send the buffer in the dial status;
+  against an older appliance the dial keeps using two seconds. On the HD page,
+  pressing Stop now stops the timer at once and it resets when playback
+  stops.
 - new: dials show a Starting... splash on an HDMI or DSI screen at boot and
   Shutting down... at shutdown and reboot. Existing dials gain it on their
   next update (one longer update while the boot files are rebuilt).

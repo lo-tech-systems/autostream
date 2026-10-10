@@ -246,7 +246,9 @@ start):
 
 *Rich: the position counter ("elapsed / total") over Restart and Stop.
 Restart seeks back to the beginning; Stop fades the replay out and returns
-to Hold.*
+to Hold. The counter runs behind the appliance's reported position by the
+appliance's audio start buffer (2 seconds when the appliance does not say),
+so it reads 0:00 until sound has started and matches what you hear.*
 
 ![The same replaying state on a compact panel, as a 2x2 with a restart-to-start icon and a stop square](images/repeat-replaying-compact.png)
 
