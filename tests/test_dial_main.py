@@ -1883,6 +1883,13 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.OUTPUTS, None)
             display.open_outputs.assert_called_once()
 
+    def test_on_zone_tap_artwork_hides_the_controls(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.ARTWORK, None)
+            display.hide_controls.assert_called_once()
+
     def test_on_zone_tap_output_back_closes_the_list_screen(self):
         from dial_touch_layout import TouchZone
 

@@ -73,7 +73,7 @@ PROFILE_SIZES = [
 
 ALL_ZONES = {
     TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
-    TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP,
+    TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP, TouchZone.ARTWORK,
 }
 
 
@@ -155,7 +155,7 @@ class TestZoneAt:
         assert _dead_zone_margin(240, 240) > 3
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_tap_in_name_area_hits_name_and_middle_returns_none(self, width, height):
+    def test_tap_in_name_area_hits_name_and_middle_hits_artwork(self, width, height):
         layout = layout_for(width, height)
 
         # The old artist-area rectangle is now the NAME zone.
@@ -163,13 +163,17 @@ class TestZoneAt:
         ncx, ncy = (nx0 + nx1) // 2, (ny0 + ny1) // 2
         assert zone_at(ncx, ncy, width, height) == TouchZone.NAME
 
-        # The relocated (centre-low) artist line is still non-actuating.
+        # The relocated (centre-low) artist line is over the ARTWORK zone
+        # (the inter-band strip) but is itself still non-actuating in its
+        # OWN right — its rect has no TouchZone of its own, so a tap there
+        # resolves to whatever zone actually covers that point, which is
+        # now ARTWORK rather than a dead zone.
         ax0, ay0, ax1, ay1 = layout.artist
         acx, acy = (ax0 + ax1) // 2, (ay0 + ay1) // 2
-        assert zone_at(acx, acy, width, height) is None
+        assert zone_at(acx, acy, width, height) == TouchZone.ARTWORK
 
         mid_y = (layout.top_band[3] + layout.bottom_band[1]) // 2
-        assert zone_at(width // 2, mid_y, width, height) is None
+        assert zone_at(width // 2, mid_y, width, height) == TouchZone.ARTWORK
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_divider_x_sits_in_the_gap(self, width, height):
@@ -243,11 +247,13 @@ class TestBandLayout:
         assert 0 <= ax0 < ax1 <= width
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_middle_rows_contain_no_zone_pixel(self, width, height):
+    def test_middle_rows_are_entirely_the_artwork_zone(self, width, height):
+        # The inter-band strip is the ARTWORK zone (a tap there hides the
+        # bands) — it is not a dead zone at all.
         layout = layout_for(width, height)
         for y in range(layout.top_band[3], layout.bottom_band[1]):
             for x in range(width):
-                assert zone_at(x, y, width, height) is None
+                assert zone_at(x, y, width, height) == TouchZone.ARTWORK
 
 
 def test_reference_geometry_exact():
@@ -518,6 +524,7 @@ class TestZoneRectsOrder:
             (TouchZone.MUTE, None),
             (TouchZone.DOWN, None),
             (TouchZone.UP, None),
+            (TouchZone.ARTWORK, None),
         ]
 
     def test_list_order(self):
@@ -1261,7 +1268,7 @@ class TestAlbumLine:
         entries = zone_rects_for(GEOMETRY_MAIN, 640, 480, metrics=_LARGE_640x480)
         assert [e.zone for e in entries] == [
             TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
-            TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP,
+            TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP, TouchZone.ARTWORK,
         ]
 
 

@@ -151,6 +151,12 @@ _REPEAT_LOOP_GAP_S = 1.5
 # never touched by this.
 REPEAT_COUNTER_LATENCY_S = 2.0
 
+# How long an artwork tap hides the top/bottom bands for — see
+# hide_controls(). Long enough to look at the artwork without the overlay
+# reappearing underneath, short enough that the controls are never truly
+# lost: any tap while hidden restores them at once anyway.
+CONTROLS_HIDE_SECONDS = 6.0
+
 
 # ---------------------------------------------------------------------------
 # Screen policy table
@@ -1045,7 +1051,15 @@ class DialDisplay:
         Safe to call from the touch thread at touch cadence: the write here
         is a single leaf-lock-guarded assignment, and the actual compose +
         SPI push happens later, asynchronously, on the repaint thread.
+
+        A visible overlay ends an artwork-tap hide window (see
+        hide_controls()) early: a normal reveal — the ordinary tap-to-show
+        path, or an always-show track that just resumed showing controls —
+        must not be fighting a hide window that still has time left on it.
+        Plain float write, same discipline as the window's own start.
         """
+        if state.visible:
+            self._controls_hidden_until = 0.0
         with self._overlay_snapshot_lock:
             self._overlay_snapshot = state
         self._overlay_signal.set()
@@ -1096,7 +1110,9 @@ class DialDisplay:
         panel is cleared (see _clear_locked): the panel is momentarily blank
         even though self._now_playing may still be set, so nothing is
         actually on screen for the overlay to be held over until the next
-        repaint recomposes a base image.
+        repaint recomposes a base image. An artwork tap (see hide_controls())
+        also drops this to False for its own window, regardless of
+        always_show_controls — the bands are hidden either way.
         """
         return (
             self._config.always_show_controls
@@ -1105,7 +1121,29 @@ class DialDisplay:
             and self._backend_open
             and not self._display_sleeping
             and self._screen == "main"
+            and not self._controls_hidden()
         )
+
+    def hide_controls(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for an ARTWORK
+        tap): hide the top/bottom bands for CONTROLS_HIDE_SECONDS, so a tap
+        on the artwork itself gives an unobstructed view of it. Plain float
+        write plus a repaint signal — same discipline as
+        notify_touch_activity(). While the window holds,
+        persistent_overlay_shown() reads False and touch_surface() reports
+        "hidden", so the state machine drops to reveal-on-touch and the
+        next repaint composes a bare base with no overlay; a tap while
+        hidden is the ordinary reveal (on_reveal_overlay -> set_overlay(
+        visible=True)), which ends the window early (see set_overlay()).
+        The window's own expiry is woken by the repaint loop's deadline
+        scheduling (_next_repaint_deadline/_tick_controls_hidden)."""
+        self._controls_hidden_until = time.monotonic() + CONTROLS_HIDE_SECONDS
+        self._overlay_signal.set()
+
+    def _controls_hidden(self) -> bool:
+        """True while an artwork tap's hide window is still running. Plain
+        float read, same discipline as _display_sleeping's own reads."""
+        return time.monotonic() < self._controls_hidden_until
 
     def touch_surface(self) -> tuple[str, bool, bool, bool]:
         """(surface, name_active, dots_active, outputs_active) for
@@ -1504,10 +1542,11 @@ class DialDisplay:
         but self._now_playing stays non-None throughout, so the held overlay
         is preserved rather than dropped. The self._showing != "noop" term
         mirrors persistent_overlay_shown()'s own guard against the moment
-        right after the panel is cleared. Deliberately does not also check
-        self._backend_open: the caller (_display_locked) already returned
-        early when the backend is closed, so there is nothing left to guard
-        against here.
+        right after the panel is cleared; the self._controls_hidden() term
+        mirrors its own artwork-tap hide window (see hide_controls()).
+        Deliberately does not also check self._backend_open: the caller
+        (_display_locked) already returned early when the backend is
+        closed, so there is nothing left to guard against here.
 
         Returns *snapshot* unchanged when it is neither visible nor held:
         compose() already treats an invisible overlay as a strict no-op
@@ -1518,6 +1557,7 @@ class DialDisplay:
             self._config.always_show_controls and self._now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
+            and not self._controls_hidden()
         )
         if not (snapshot.visible or held):
             return snapshot
@@ -1612,6 +1652,7 @@ class DialDisplay:
                 self._check_secondary_timeout()
                 self._tick_repeat_line()
                 self._tick_outputs_refresh()
+                self._tick_controls_hidden()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -2269,6 +2310,19 @@ class DialDisplay:
             return
         self._outputs_refresh_at = now
         enqueue_fetch(_OutputsTarget(state.appliance_id, state.ip, state.port))
+
+    def _tick_controls_hidden(self) -> None:
+        """Wake the repaint loop exactly when an artwork-tap hide window
+        (see hide_controls()) has just ended, so the bands reappear on
+        their own without waiting for an unrelated touch or poll — called
+        from the repeat thread's own timeout branch, the same cadence
+        _tick_repeat_line() uses. One-shot: resets the deadline to 0.0 (its
+        "not hidden" value) once fired, so this does not keep re-signalling
+        every housekeeping tick after expiry."""
+        deadline = self._controls_hidden_until
+        if deadline and time.monotonic() >= deadline:
+            self._controls_hidden_until = 0.0
+            self._overlay_signal.set()
 
     def _carried_paging_locked(self, prev, row_count: int) -> tuple[int, float]:
         """(page, opened_at) to keep across a row rebuild: the previous page

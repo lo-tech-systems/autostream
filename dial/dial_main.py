@@ -432,9 +432,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         # volume overlay on return — see display.toggle_repeat_screen());
         # REPEAT_* act on the repeat screen; IDLE_REPLAY opens the replay
         # picker; OUTPUTS opens the outputs list; OUTPUT_* act on the
-        # per-output detail page — see dial_touch.py's SURFACES paragraph
-        # for how a press ever reaches one of these zones in the first
-        # place.
+        # per-output detail page; ARTWORK hides the main screen's own bands
+        # for a few seconds — see dial_touch.py's SURFACES paragraph for how
+        # a press ever reaches one of these zones in the first place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
@@ -469,6 +469,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         elif zone == TouchZone.OUTPUT_DOWN:
             step = step_percent() if step_percent is not None else cfg.step_percent
             display.output_volume_tap(-step)
+        elif zone == TouchZone.ARTWORK:
+            display.hide_controls()
 
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,

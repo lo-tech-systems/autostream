@@ -2158,6 +2158,94 @@ class TestPersistentOverlayShown:
         assert display.get_status()["always_show_controls"] is True
 
 
+class TestHideControls:
+    """Item 9: tapping the artwork hides the bands for CONTROLS_HIDE_
+    SECONDS — see hide_controls()/_controls_hidden()."""
+
+    def test_hide_controls_sets_deadline_and_signals(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        display._overlay_signal.clear()
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            display.hide_controls()
+        assert display._controls_hidden_until == pytest.approx(1000.0 + dd.CONTROLS_HIDE_SECONDS)
+        assert display._overlay_signal.is_set()
+
+    def test_persistent_overlay_shown_false_during_window_true_after(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is True
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            display.hide_controls()
+        with patch("dial_display.time.monotonic", return_value=1000.0 + dd.CONTROLS_HIDE_SECONDS - 0.1):
+            assert display.persistent_overlay_shown() is False
+        with patch("dial_display.time.monotonic", return_value=1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.1):
+            assert display.persistent_overlay_shown() is True
+
+    def test_set_overlay_visible_ends_the_window_early(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.hide_controls()
+        assert display._controls_hidden() is True
+        display.set_overlay(dd.OverlayState(visible=True))
+        assert display._controls_hidden() is False
+
+    def test_set_overlay_invisible_does_not_end_the_window(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.hide_controls()
+        display.set_overlay(dd.OverlayState(visible=False))
+        assert display._controls_hidden() is True
+
+    def test_frames_composed_during_the_window_have_no_overlay(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        held_frame = fb.displayed[-1]
+
+        display.hide_controls()
+        with display._lock:
+            display._repaint_current_locked()
+        hidden_frame = fb.displayed[-1]
+
+        bare = display._compositor.compose(
+            hidden_frame, hidden_frame.width, hidden_frame.height,
+            rotate=False, bgr=False, is_artwork=False, overlay=None,
+        )
+        assert list(hidden_frame.getdata()) == list(bare.getdata())
+        assert list(hidden_frame.getdata()) != list(held_frame.getdata())
+
+    def test_tick_controls_hidden_signals_once_at_expiry(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            display.hide_controls()
+        display._overlay_signal.clear()
+        with patch("dial_display.time.monotonic", return_value=1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.1):
+            display._tick_controls_hidden()
+        assert display._overlay_signal.is_set()
+        assert display._controls_hidden_until == 0.0
+        # One-shot: a second call after firing does not re-signal.
+        display._overlay_signal.clear()
+        with patch("dial_display.time.monotonic", return_value=1000.0 + dd.CONTROLS_HIDE_SECONDS + 0.2):
+            display._tick_controls_hidden()
+        assert not display._overlay_signal.is_set()
+
+    def test_tick_controls_hidden_noop_before_deadline(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            display.hide_controls()
+        display._overlay_signal.clear()
+        with patch("dial_display.time.monotonic", return_value=1000.0 + 1.0):
+            display._tick_controls_hidden()
+        assert not display._overlay_signal.is_set()
+
 class TestHeldOverlay:
     def test_held_visible_frame_differs_from_no_overlay_frame(self):
         t = _target()

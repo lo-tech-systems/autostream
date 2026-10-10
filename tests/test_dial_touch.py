@@ -1119,6 +1119,7 @@ LIST_BACK_XY = _list_bar_center(_LIST_LAYOUT.back)
 LIST_DOWN_XY = _list_bar_center(_LIST_LAYOUT.down)
 LIST_UP_XY = _list_bar_center(_LIST_LAYOUT.up)
 NAME_XY = (lambda r: ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2))(zones_for(WIDTH, HEIGHT)[TouchZone.NAME])
+ARTWORK_XY = (lambda r: ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2))(zones_for(WIDTH, HEIGHT)[TouchZone.ARTWORK])
 
 
 class TestSetSurface:
@@ -1188,6 +1189,27 @@ class TestSetSurface:
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
         assert tap.zone == TouchZone.NAME
         assert tap.index is None
+
+    def test_artwork_tap_emits_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, True, now=0.0)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(ARTWORK_XY), now=0.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.ARTWORK
+        assert tap.index is None
+
+    def test_artwork_tap_is_single_shot_no_repeat(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, True, now=0.0)
+        sm._overlay_visible = True
+        sm.on_filter_event(press_event(ARTWORK_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.ARTWORK
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert actions == [TouchAction(ACTION_SET_PRESSED_ZONE, None)]
+        actions = sm.tick(now=FIRST_REPEAT_S + 1.0)
+        assert actions == []
 
     def test_surface_change_with_finger_down_drops_the_latch(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)

@@ -45,9 +45,10 @@ boundary hits neither neighbour rather than the wrong one. Two such
 boundaries exist: between the NAME zone and the volume cluster (a gap of
 2*margin, the same width used between DOWN and UP), and between DOWN and UP
 themselves. The middle half of the panel (the rows strictly between the top
-and bottom bands, other than the artist label's own rect) is dead for a
-different reason — it simply carries no control at all; `zone_at` returns
-None there exactly as it does in a genuine dead-zone gap. The margin is 3px
+and bottom bands) is NOT a dead zone: it is the ARTWORK zone, a single tap
+target covering the artist/title lines and the artwork around them — a tap
+there hides the bands for a few seconds (see dial_display.hide_controls()).
+The margin is 3px
 at the 160x128 profile (the shipped panel) and scales with the panel's
 short side using the same rule as dial_display_image._blur_radius_for —
 margin = round(min(width, height) * 3 / 128) with a floor of 1px. This
@@ -63,18 +64,20 @@ and the compositor's pressed-zone wash read, so the two can never disagree
 about where a boundary sits.
 
 The MAIN geometry (`zone_at`/`zones_for`/`layout_for`) is the now-playing
-screen: DOTS, NAME, MUTE, DOWN, UP, plus the non-actuating artist and
-title labels. DOTS is carved from the left of the NAME zone (whose x0
-therefore starts one band-height plus a 2*margin gap later than before);
-it opens the repeat screen. The LIST geometry
+screen: DOTS, NAME, OUTPUTS, MUTE, DOWN, UP, plus ARTWORK (the inter-band
+strip, taps hide the bands) and the non-actuating artist and title labels.
+DOTS is carved from the left of the NAME zone (whose x0 therefore starts
+one band-height plus a 2*margin gap later than before); it opens the
+repeat screen. The LIST geometry
 (`list_zone_at`/`list_layout_for`) is the appliance list (also reused,
 unchanged, for the replay picker): LIST_ROW (one per visible row),
 LIST_BACK, LIST_DOWN and LIST_UP. The REPEAT geometry
 (`repeat_zone_at`/`repeat_layout_for`) is the repeat screen: DOTS (reused,
 pops back to main and reveals the main screen's volume overlay), NAME
-(reused, opens the appliance selector), MUTE (the mute/volume readout,
-toggles mute like the main screen), REPEAT_PLAY (the enable layout's
-arm/disarm row), REPEAT_START, REPEAT_STOP. The IDLE geometry
+(reused, opens the appliance selector), OUTPUTS (the volume readout, opens
+the outputs list like the main screen — the repeat screen has no mute
+control of its own), REPEAT_PLAY (the enable layout's arm/disarm row),
+REPEAT_START, REPEAT_STOP. The IDLE geometry
 (`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_REPLAY,
 covering the whole panel below the top band, expressed as a single rect
 (`IdleLayout.replay`) like every other geometry's zones. A caller never
@@ -358,6 +361,8 @@ class TouchZone(str, Enum):
     detail surface (plus NAME, reused from the main surface).
     IDLE_REPLAY: the idle-screen surface (the whole panel below the top
     band, when the idle affordance is showing).
+    ARTWORK: the main surface's inter-band strip (between the top and
+    bottom bands); a tap hides the bands for a few seconds.
     """
 
     MUTE = "mute"
@@ -378,6 +383,7 @@ class TouchZone(str, Enum):
     OUTPUT_TOGGLE = "output_toggle"
     OUTPUT_UP = "output_up"
     OUTPUT_DOWN = "output_down"
+    ARTWORK = "artwork"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -430,6 +436,9 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
         ZoneRect(TouchZone.MUTE, layout.footer_mute),
         ZoneRect(TouchZone.DOWN, layout.footer_down),
         ZoneRect(TouchZone.UP, layout.footer_up),
+        # Last: the bands' own zones above do not overlap this strip at
+        # all, so the order only matters for readability, not correctness.
+        ZoneRect(TouchZone.ARTWORK, layout.artwork),
     )
 
 
@@ -530,6 +539,7 @@ class OverlayLayout:
     footer_up: Rect | None = None        # bottom band, middle third (plus, == UP zone)
     footer_mute: Rect | None = None      # bottom band, right third (== MUTE zone)
     footer_dividers: tuple[int, ...] = ()
+    artwork: Rect = (0, 0, 0, 0)          # the inter-band strip (== ARTWORK zone)
 
 
 @dataclass(frozen=True)
@@ -759,6 +769,12 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
     footer_mute: Rect = (fmx0, by0, fmx1, height)
     footer_dividers = ((fdx1 + fux0) // 2, (fux1 + fmx0) // 2)
 
+    # The inter-band strip: the whole width, rows strictly between the two
+    # dimmed bands. A tap here hides them (see the ARTWORK zone) — it never
+    # overlaps a real control (the bands own everything else), so it is
+    # simply the panel with the bands themselves removed.
+    artwork: Rect = (0, band_h, width, height - band_h)
+
     return OverlayLayout(
         top_band=top_band,
         bottom_band=bottom_band,
@@ -775,6 +791,7 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
         footer_up=footer_up,
         footer_mute=footer_mute,
         footer_dividers=footer_dividers,
+        artwork=artwork,
     )
 
 

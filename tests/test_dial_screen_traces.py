@@ -305,6 +305,10 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.on_outputs_result("fetch", aid, status, body, {})
     elif kind == "tick_outputs_refresh":
         d._tick_outputs_refresh()
+    elif kind == "hide_controls":
+        d.hide_controls()
+    elif kind == "tick_controls_hidden":
+        d._tick_controls_hidden()
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -1005,6 +1009,27 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("targets", []),
         ("poll",),
         ("outputs_result", aid_a, 200, _outputs_body([("1", "Bedroom", False, 0, False)])),
+        ("repaint",),
+    ])
+
+    # An artwork tap hides the always-shown controls for a window; a
+    # housekeeping tick before the window ends leaves them hidden, one
+    # after it ends brings them back.
+    aid = _aid("a1")
+    t = _target("A1", aid)
+    add("artwork_tap_hides_controls_then_expires", [
+        ("targets", [t]),
+        ("status", {aid: _status_result()}),
+        ("update_config", {"always_show_controls": True}),
+        ("poll",),
+        ("repaint",),
+        ("hide_controls",),
+        ("repaint",),
+        ("advance", 3.0),
+        ("tick_controls_hidden",),
+        ("repaint",),
+        ("advance", 4.0),
+        ("tick_controls_hidden",),
         ("repaint",),
     ])
 
