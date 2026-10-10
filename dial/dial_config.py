@@ -91,6 +91,7 @@ class DialConfig:
     pin:            str        = ''
     auto_update:    bool       = False
     update_channel: str        = 'stable'
+    mute_all_playing: bool     = False
     display:        DialDisplayConfig = field(default_factory=DialDisplayConfig)
 
 
@@ -237,6 +238,7 @@ def load_config() -> DialConfig:
         cfg.pin            = s.get('pin',            cfg.pin)
         cfg.auto_update    = s.get('auto_update',    cfg.auto_update)
         cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
+        cfg.mute_all_playing = bool(s.get('mute_all_playing', cfg.mute_all_playing))
         s_display = s.get('display')
         if isinstance(s_display, dict):
             cfg.display = DialDisplayConfig(
@@ -278,6 +280,7 @@ def save_config(cfg: DialConfig) -> None:
         'pin':            cfg.pin,
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
+        'mute_all_playing': cfg.mute_all_playing,
         'display':        {
             'fitted':      cfg.display.fitted,
             'rotate':      cfg.display.rotate,

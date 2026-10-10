@@ -267,6 +267,11 @@ class DialHTTPServer:
         with self._cfg_lock:
             return self._cfg.step_percent
 
+    @property
+    def mute_all_playing(self) -> bool:
+        with self._cfg_lock:
+            return self._cfg.mute_all_playing
+
     def update_cfg(self, cfg) -> None:
         """Replace live config after save_config() succeeds in POST /configure."""
         with self._cfg_lock:
@@ -412,6 +417,7 @@ class DialHTTPServer:
                         'version':              VERSION,
                         'auto_update':          cfg.auto_update,
                         'update_channel':       cfg.update_channel,
+                        'mute_all_playing':     cfg.mute_all_playing,
                         'can_confirm_presence': dial_server._can_confirm_presence,
                     })
 
@@ -524,7 +530,7 @@ class DialHTTPServer:
                     cfg = dial_server._cfg
                 new_cfg = copy.copy(cfg)
 
-                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel'))
+                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel', 'mute_all_playing'))
 
                 # PIN auth
                 if cfg.pin and changing_protected:
@@ -592,6 +598,13 @@ class DialHTTPServer:
                         return
                     new_cfg.update_channel = v_norm
 
+                if 'mute_all_playing' in obj:
+                    v = obj['mute_all_playing']
+                    if not isinstance(v, bool):
+                        self._send_json(400, {'ok': False, 'error': 'invalid_mute_all_playing'})
+                        return
+                    new_cfg.mute_all_playing = v
+
                 if 'new_pin' in obj:
                     p = obj['new_pin']
                     if isinstance(p, str) and p:
@@ -646,8 +659,9 @@ class DialHTTPServer:
                         return
 
                 logging.info(
-                    "config updated: name=%r step=%d auto_update=%s update_channel=%s",
+                    "config updated: name=%r step=%d auto_update=%s update_channel=%s mute_all_playing=%s",
                     new_cfg.name, new_cfg.step_percent, new_cfg.auto_update, new_cfg.update_channel,
+                    new_cfg.mute_all_playing,
                 )
                 self._send_json(200, {'ok': True})
 

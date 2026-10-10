@@ -66,6 +66,10 @@ class FakeDialServer:
     def step_percent(self) -> int:
         return self._cfg.step_percent
 
+    @property
+    def mute_all_playing(self) -> bool:
+        return self._cfg.mute_all_playing
+
     def _make_handler(self):
         return dhs.DialHTTPServer._make_handler(self)
 
@@ -296,6 +300,27 @@ class TestFieldBoundaries:
         r = _call_handler("/configure", body={"update_channel": 1})
         assert r["status"] == 400
 
+    def test_mute_all_playing_true_accepted(self):
+        r = _call_handler("/configure", body={"mute_all_playing": True})
+        assert r["status"] == 200
+        assert r["save_calls"][0].mute_all_playing is True
+
+    def test_mute_all_playing_false_accepted(self):
+        cfg = DialConfig(uuid="x", mute_all_playing=True)
+        r = _call_handler("/configure", body={"mute_all_playing": False}, cfg=cfg)
+        assert r["status"] == 200
+        assert r["save_calls"][0].mute_all_playing is False
+
+    def test_mute_all_playing_non_bool_rejected(self):
+        r = _call_handler("/configure", body={"mute_all_playing": 1})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_mute_all_playing"
+
+    def test_mute_all_playing_string_rejected(self):
+        r = _call_handler("/configure", body={"mute_all_playing": "true"})
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_mute_all_playing"
+
 
 # ---------------------------------------------------------------------------
 # PIN auth and rate limiting
@@ -308,6 +333,14 @@ class TestPINAuth:
     def test_protected_field_no_pin_sent_returns_403(self):
         cfg = DialConfig(uuid="x", pin="9999")
         r = _call_handler("/configure", body={"name": "New Name"}, cfg=cfg)
+        assert r["status"] == 403
+        assert r["data"]["error"] == "wrong_pin"
+
+    def test_mute_all_playing_is_pin_protected(self):
+        """mute_all_playing joins changing_protected — a PIN-set dial must
+        reject the change with no PIN sent, like its siblings above."""
+        cfg = DialConfig(uuid="x", pin="9999")
+        r = _call_handler("/configure", body={"mute_all_playing": True}, cfg=cfg)
         assert r["status"] == 403
         assert r["data"]["error"] == "wrong_pin"
 
@@ -1584,6 +1617,19 @@ class TestManagementApiRetained:
         assert result.get("status") == 200, (
             "GET /configure must still return 200 after setup UI removal"
         )
+
+    def test_get_configure_echoes_mute_all_playing(self):
+        result = {}
+        cfg = DialConfig(uuid="test-uuid", mute_all_playing=True)
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/configure"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.send_error     = lambda code, *_: result.update(status=code)
+        h.do_GET()
+        assert result["status"] == 200
+        assert result["data"]["mute_all_playing"] is True
 
     def test_get_recovery_status_still_reachable(self):
         """GET /recovery_status must still respond — recovery flow is retained."""
