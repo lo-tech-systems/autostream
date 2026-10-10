@@ -310,7 +310,7 @@ class TestAcceptedReplayShowsAsPlaying:
         real = _target(appliance_id=self.AID)
         assert display._core.with_accepted_replay([real], time.monotonic()) == [real]
         assert display.core.snapshot().focus.accepted_replay is None
-        # From then on the playing set alone decides, as before.
+        # From then on the playing set alone decides.
         assert display._core.with_accepted_replay([], time.monotonic()) == []
 
     def test_window_expires(self):

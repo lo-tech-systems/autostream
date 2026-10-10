@@ -4808,9 +4808,9 @@ class TestResampleFilter:
         assert dd._resample_filter((320, 240), (320, 240)) is dd._RESAMPLE_NEAREST
 
 
-class TestNonePathByteIdentity:
-    """The None path must stay byte-identical to today: no resize, and
-    _layout_metrics() computes exactly what _metrics_locked() always has."""
+class TestNoResizeWhenSizesMatch:
+    """A composed size that already matches the physical panel is not resized,
+    and _layout_metrics() equals metrics_for at the display's own density."""
 
     def test_no_resize_when_composed_size_already_matches_physical(self):
         fb = FakeBackend()
@@ -5316,8 +5316,7 @@ class TestTouchSurface:
     def test_idle_with_name_inactive_when_nothing_playing(self):
         # The idle screen is one screen whenever nothing plays: the "i"
         # affordance must be reachable even with no replay held, so
-        # the surface is "idle" here, not "hidden" — the pre-unification
-        # behaviour this test used to pin.
+        # the surface is "idle" here, not "hidden".
         display, fb, gt = make_display(targets=[])
         display.enable()
         display._poll_once()
@@ -6378,11 +6377,10 @@ class TestRepeatCounterPaintedReference:
 
 
 # ---------------------------------------------------------------------------
-# The unified pressed channel: one set_pressed(zone, index) feeding every
-# screen's own frame builder through the shared zone-rect table. The main
-# and idle screens must stay byte-identical to before this channel existed;
-# the selector, picker and repeat screens now draw a wash for a genuine
-# touch on any of their own zones.
+# The pressed channel: one set_pressed(zone, index) feeding every screen's
+# own frame builder through the shared zone-rect table. The main and idle
+# screens keep their own press handling; the selector, picker and repeat screens
+# draw a wash for a genuine touch on any of their own zones.
 # ---------------------------------------------------------------------------
 
 class TestSetPressedStorage:
@@ -6513,7 +6511,7 @@ class TestPressedChannelFeedsEachScreen:
 
     def test_repeat_screen_name_wash_is_accepted(self):
         """The repeat screen shares DOTS/NAME/MUTE with the main screen's
-        top band; the unified channel now surfaces a wash for them there
+        top band; the pressed channel surfaces a wash for them there
         too, matching what the compositor already renders for a main-screen
         press on the same zones."""
         aid = "9" * 20
@@ -6651,10 +6649,7 @@ class TestReplayPickerRows:
         assert display._screen == "picker"
 
     def test_open_picker_refuses_without_a_held_replay(self):
-        # The one deliberate behaviour change the idle-screen unification
-        # requires: a replay tap on a plain logo with nothing held stays
-        # inert, exactly as it was before the idle screen became reachable
-        # on every idle dial.
+        # A replay tap on a plain logo with nothing held stays inert.
         display, fb, gt = make_display(targets=[])
         display.enable()
         assert display.core.snapshot().idle_affordance is False
@@ -7429,7 +7424,7 @@ class TestCyclePages:
     def test_compact_always_two_way(self):
         """On the compact tier _eq_available is always False (see
         TestEqAvailable), so cycling never reaches "eq" -- a two-way
-        main<->repeat toggle exactly like before this feature existed."""
+        main<->repeat toggle."""
         t = _target(appliance_id="a" * 20)
         roster = [_roster_entry(appliance_id="a" * 20, playing=True, dial_eq=True)]
         display, fb, gt = make_display(targets=[t], roster=roster, screen_size_inches=1.3)
@@ -7499,7 +7494,7 @@ class TestOutputsPaintBuilders:
             OutputRow(id="2", name="Study", selected=True, volume=42),
         )[3] == ""
 
-    def test_output_list_row_level_rule_is_unchanged(self):
+    def test_output_list_row_shows_the_level_only_when_selected(self):
         on = dd._output_list_row(OutputRow(id="1", name="A", selected=True, volume=7, is_default=True))
         off = dd._output_list_row(OutputRow(id="1", name="A", selected=False, volume=7, is_default=True))
         assert (on[2], off[2]) == ("7", "")
@@ -8109,10 +8104,9 @@ class TestCompactDisplayListLockedPassesBase:
         assert spy.call_args.kwargs["base"] is display._current_base_image
 
     def test_base_tier_still_gets_the_same_argument_but_ignores_it(self):
-        # The argument is now passed unconditionally (see
+        # The argument is passed unconditionally (see
         # _display_list_locked's own docstring); off compact it is simply
-        # never read, so the rendered frame is unaffected -- proven by the
-        # full pre-existing test suite passing unchanged.
+        # never read, so the rendered frame is unaffected.
         display, fb, gt = make_display(targets=[])
         display.enable()
         with patch.object(
@@ -9629,7 +9623,7 @@ class TestGenericWarningCapabilities:
                 display._display_warning_locked()
         return mock_compose.call_args.args[3]
 
-    def test_default_descriptor_fields_leave_existing_rows_unchanged(self):
+    def test_the_nowifi_and_sdhealth_rows_keep_the_default_descriptor_fields(self):
         for desc in (d for d in WARNING_DESCRIPTORS if d.id in ("nowifi", "sdhealth")):
             assert desc.title_for is None and desc.progress_for is None
             assert desc.interrupting is False and desc.auto_clear_after_s is None
