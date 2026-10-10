@@ -339,12 +339,12 @@ class TestLayoutContextFor:
 # band_h, rows_per_page, row_h, touch_min_px, touch_short.
 _LAYOUT_METRICS_TABLE = [
     # (screen_type, inches, layout_size, tier, band_h, rows, row_h, touch_min_px, touch_short)
-    ("ili9341_320x240", 2.8, None, "rich", 60, 4, 60, 45, False),
+    ("ili9341_320x240", 2.8, None, "rich", 48, 5, 48, 45, False),
     ("ili9341_320x240", 2.8, "small", "base", 32, 3, 32, 24, False),
-    ("ili9341_320x240", 2.8, "large", "large", 120, 4, 120, 90, False),
+    ("ili9341_320x240", 2.8, "large", "large", 96, 5, 96, 90, False),
     ("st7735s_160x128", 1.8, None, "base", 32, 3, 32, 36, False),
-    ("st7735s_160x128", 1.8, "medium", "rich", 60, 4, 60, 70, False),
-    ("st7735s_160x128", 1.8, "large", "large", 120, 4, 120, 140, False),
+    ("st7735s_160x128", 1.8, "medium", "rich", 48, 5, 48, 70, False),
+    ("st7735s_160x128", 1.8, "large", "large", 96, 5, 96, 140, False),
 ]
 
 
