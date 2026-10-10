@@ -86,6 +86,7 @@ from autostream_playback_stats import (
 from autostream_sysutils import (
     audit_static_system_facts,
     get_install_state,
+    log_lifecycle,
     run_admin_cmd,
     write_avahi_playing_service,
     remove_avahi_playing_service,
@@ -4676,6 +4677,12 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     _ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
     version = _install_state.get("AUTOSTREAM_RELEASE_TAG", "")
+    # Always logged, whatever the level (see log_lifecycle()): a log bundle
+    # must say which release was running and when it started.
+    log_lifecycle(
+        "autostream starting (release %s, python %s, log level %s)",
+        version or "unknown", sys.version.split()[0], _live_platform_log_level,
+    )
 
     # Optionally start the web UI.  Let any startup failure propagate so the
     # process exits nonzero and systemd can restart it.
@@ -5267,7 +5274,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             _sync_playing_announcement(False, version)
             client.close()
             if not _reloading:
-                logging.info("Stopped cleanly.")
+                log_lifecycle("autostream stopped cleanly")
                 _cleanup_discovery()
 
         if not _reloading:

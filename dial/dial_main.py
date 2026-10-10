@@ -38,6 +38,13 @@ from dial_mdns import (
 from dial_network import latest as network_latest
 from dial_network import start_network_worker
 import dial_sdhealth
+# autostream_sysutils is deployed flat into /opt/autostream beside the dial
+# package; in the repo it lives in core/.
+try:
+    from autostream_sysutils import log_lifecycle
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+    from autostream_sysutils import log_lifecycle  # noqa: E402
 from dial_outputs import start_outputs_worker
 from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
@@ -57,7 +64,9 @@ from dial_volume import (
 DEFAULT_LOG_LEVEL = 'WARNING'
 
 
-def _configure_logging() -> None:
+def _configure_logging() -> str:
+    """Set up the dial's log file and console output, and return the name
+    of the level applied."""
     level_name = os.environ.get('APP_LOG_LEVEL', DEFAULT_LOG_LEVEL).strip().upper()
     level = getattr(logging, level_name, logging.WARNING)
     if not isinstance(level, int):
@@ -76,6 +85,7 @@ def _configure_logging() -> None:
     # Suppress library noise at INFO; still visible at DEBUG.
     logging.getLogger('gpiozero').setLevel(logging.WARNING)
     logging.getLogger('lgpio').setLevel(logging.WARNING)
+    return logging.getLevelName(level)
 
 
 def _reconcile_update_timer(auto_update: bool) -> None:
@@ -596,23 +606,28 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
 
 
 def main() -> None:
-    _configure_logging()
+    log_level = _configure_logging()
 
     shutdown_event = threading.Event()
 
+    # Start and stop are always logged, whatever the level (see
+    # log_lifecycle()): a log bundle must say which version was running.
     def _on_sigterm(sig, frame):
-        logging.info("autostream-dial stopping")
+        log_lifecycle("autostream-dial stopping")
         shutdown_event.set()
 
     def _on_sigint(sig, frame):
-        logging.info("autostream-dial stopping")
+        log_lifecycle("autostream-dial stopping")
         shutdown_event.set()
 
     signal.signal(signal.SIGTERM, _on_sigterm)
     signal.signal(signal.SIGINT, _on_sigint)
 
     cfg = load_config()
-    logging.info("autostream-dial starting (version %s, uuid %s)", VERSION, cfg.uuid)
+    log_lifecycle(
+        "autostream-dial starting (version %s, uuid %s, python %s, log level %s)",
+        VERSION, cfg.uuid, sys.version.split()[0], log_level,
+    )
 
     # Check BEFORE recreating: recreating first would make the marker
     # "survive" every single start, including this one. Likewise the

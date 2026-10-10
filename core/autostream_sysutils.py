@@ -124,6 +124,30 @@ _static_system_facts: StaticSystemFacts | None = None
 
 
 # ---------------------------------------------------------------------------
+# Service lifecycle log lines
+# ---------------------------------------------------------------------------
+
+LIFECYCLE_LOGGER = "autostream.lifecycle"
+
+
+def log_lifecycle(message: str, *args) -> None:
+    """Write a service lifecycle line (starting, stopping) to the service's
+    log whatever its configured level. The services run at WARNING by
+    default to spare the SD card, which would otherwise drop the one line a
+    log bundle most needs: which version was running, and when it started.
+    The record goes straight to each of the root logger's handlers, so
+    neither a logger's nor a handler's level can filter it; handler filters
+    and locking still apply. Never raises."""
+    try:
+        logger = logging.getLogger(LIFECYCLE_LOGGER)
+        record = logger.makeRecord(logger.name, logging.INFO, __file__, 0, message, args, None)
+        for handler in logging.getLogger().handlers:
+            handler.handle(record)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # AP SSID helper
 # ---------------------------------------------------------------------------
 

@@ -909,3 +909,61 @@ class TestSdcardHealthAdminVerbs:
             ok_result, code, payload = su.sdcard_health_disable()
         assert ok_result is False
         assert payload == {"output": "boom"}
+
+
+# ---------------------------------------------------------------------------
+# log_lifecycle
+# ---------------------------------------------------------------------------
+
+class TestLogLifecycle:
+    """Start and stop lines reach the log whatever the configured level."""
+
+    @pytest.fixture
+    def root_capture(self):
+        import io
+        import logging
+        root = logging.getLogger()
+        saved_level, saved_handlers = root.level, root.handlers[:]
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        root.handlers = [handler]
+        yield root, handler, stream
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
+
+    def test_written_when_the_root_logger_is_at_warning(self, root_capture):
+        import logging
+        root, _, stream = root_capture
+        root.setLevel(logging.WARNING)
+        logging.info("ordinary info")
+        su.log_lifecycle("service starting (version %s)", "1.2.3")
+        assert stream.getvalue() == "service starting (version 1.2.3)\n"
+
+    def test_written_past_a_handler_level(self, root_capture):
+        """A live level change also sets the handlers' levels; the
+        lifecycle line must still get through."""
+        import logging
+        root, handler, stream = root_capture
+        root.setLevel(logging.WARNING)
+        handler.setLevel(logging.ERROR)
+        su.log_lifecycle("service stopped cleanly")
+        assert stream.getvalue() == "service stopped cleanly\n"
+
+    def test_handler_filters_still_apply(self, root_capture):
+        import logging
+        root, handler, stream = root_capture
+        handler.addFilter(lambda record: False)
+        su.log_lifecycle("filtered out")
+        assert stream.getvalue() == ""
+
+    def test_never_raises(self, root_capture):
+        import logging
+        root, handler, _ = root_capture
+
+        class Broken(logging.Handler):
+            def handle(self, record):
+                raise RuntimeError("disk gone")
+
+        root.handlers = [Broken()]
+        su.log_lifecycle("still fine %s", "x")
