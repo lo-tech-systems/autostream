@@ -52,6 +52,7 @@ class TestReply:
                 "dial_eq": 2,
                 "repeat": 1,
                 "audio_status": 1,
+                "dial_warnings": 1,
             },
         }
 
@@ -82,8 +83,8 @@ class TestReply:
         body["capabilities"]["dial_eq"] = 99
         assert DIAL_CAPABILITIES["dial_eq"] == 2
 
-    def test_only_served_capabilities_are_listed(self):
-        assert "dial_warnings" not in DIAL_CAPABILITIES
+    def test_warnings_capability_is_listed_at_version_one(self):
+        assert DIAL_CAPABILITIES["dial_warnings"] == 1
 
 
 class TestRegistration:

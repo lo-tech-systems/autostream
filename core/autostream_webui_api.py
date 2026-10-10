@@ -27,6 +27,7 @@ Contents:
   - send_dial_outputs_set_post_json -- POST /api/dial/outputs/set
   - send_dial_eq_post_json       -- POST /api/dial/eq
   - send_dial_eq_set_post_json   -- POST /api/dial/eq/set
+  - send_dial_warnings_post_json -- POST /api/dial/warnings
   - apply_mute_action            -- shared mute/restore core (used by the dial)
 """
 
@@ -94,6 +95,7 @@ from autostream_dials import (
     dial_authorization,
     dial_speaks_v2,
 )
+from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
     any_monitor_capturing,
     apply_track_id_config_live_from_parsed,
@@ -552,6 +554,8 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 200, {"ok": False, "error": str(e)})
         return
 
+    poke_dial_warnings()
+
     # Build display dict so the client can update the DOM without recalculation.
     _display: dict = {}
     try:
@@ -621,6 +625,8 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     if not result.applied:
         send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
         return
+
+    poke_dial_warnings()
 
     response: dict = {
         "ok": True,
@@ -1289,6 +1295,26 @@ def send_dial_capabilities_json(handler, state: WebUIState) -> None:
         "version": get_app_version(),
         "dial_proto": int(DIAL_PROTO_VERSION[1:]),
         "capabilities": dict(DIAL_CAPABILITIES),
+    })
+
+
+def send_dial_warnings_post_json(handler, state: WebUIState, json_obj: dict) -> None:
+    """POST /api/dial/warnings — UUID-auth; the warnings this appliance
+    wants a dial to show (maintenance wear, power supply). An empty list is a
+    successful "nothing to report"; config_error means the list could not be
+    built, which a dial treats as "keep what you have"."""
+    if _dial_auth_gate(handler, json_obj) is None:
+        return
+    try:
+        warnings = current_warnings()
+    except Exception as e:
+        logging.warning("dial warnings: build failed: %s", e)
+        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        return
+    send_json(handler, 200, {
+        "ok": True,
+        "appliance_id": get_appliance_id(),
+        "warnings": warnings_payload(warnings),
     })
 
 

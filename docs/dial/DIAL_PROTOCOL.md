@@ -89,6 +89,9 @@ What `v3` adds to `v2`, on an appliance:
   another appliance.
 - **Six-band EQ.** `POST /api/dial/eq` and `POST /api/dial/eq/set` carry `bands`; the
   capabilities endpoint reports `dial_eq` as `2`.
+- **Appliance warnings.** `POST /api/dial/warnings` lists what the appliance wants a dial to
+  show (wear and power supply notices); the capabilities endpoint reports `dial_warnings`
+  as `1`.
 
 What `v2` means:
 
@@ -223,7 +226,8 @@ names with versions), so a dial can read it before it is authorized.
     "dial_outputs": 1,
     "dial_eq": 2,
     "repeat": 1,
-    "audio_status": 1
+    "audio_status": 1,
+    "dial_warnings": 1
   }
 }
 ```
@@ -750,6 +754,65 @@ the write.
 
 ---
 
+### `POST /api/dial/warnings`
+
+UUID-auth, read-only. Returns the warnings the appliance wants a dial to show. Available when
+the capabilities endpoint lists `dial_warnings`. It goes through the same gate as
+`POST /api/dial/status`, so an unauthorized dial gets the same `400`, `412` or `403` answers
+and learns nothing about the appliance's maintenance state.
+
+**Request body:**
+```json
+{"dial_id": "<dial UUID>"}
+```
+
+**Success response (200):**
+```json
+{
+  "ok": true,
+  "appliance_id": "a1b2c3d4e5f6a7b8c9d0",
+  "warnings": [
+    {"id": "stylus_in1", "severity": "warning", "title": "Input 1 stylus",
+     "message": "Needs changing soon (7.5 h remaining).", "dismissal": "week"}
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `appliance_id` | string\|null | The appliance's identity; a dial ignores a reply whose id is not the one it asked |
+| `warnings` | array | At most 8 entries, most urgent first. `[]` means there is nothing to report and clears whatever the dial held |
+| `id` | string | 1 to 32 characters from `a-z`, `0-9`, `_` and `-`, unique in the list. Stable for a given condition, so a dial can remember that it was dismissed |
+| `severity` | string | `info`, `warning` or `critical`. A condition that gets worse keeps its `id` and changes `severity` |
+| `title` | string | Plain text, at most 40 characters |
+| `message` | string | Plain text, at most 120 characters; may be empty |
+| `dismissal` | string | How long a Dismiss should hold: `day`, `week`, or `none` (a notice with no timed return) |
+
+Text is data: a dial strips control characters and never treats it as markup or a template.
+A dial truncates anything over the limits, so an appliance should stay within them.
+
+The warnings this appliance produces:
+
+| `id` | `severity` | Title | Message | When |
+|---|---|---|---|---|
+| `stylus_in<n>` | `critical` | `<input> stylus` | Needs changing now. Reset the counter in Service. | The stylus life is used up |
+| `stylus_in<n>` | `warning` | `<input> stylus` | Needs changing soon (`<h>` h remaining). | The stylus is near the end of its life |
+| `belt_in<n>` | `critical` | `<input> drive belt` | Needs attention now. Reset the counter in Service. | The belt's hours or age limit is passed |
+| `belt_in<n>` | `warning` | `<input> drive belt` | Service due soon. | The belt is near a limit |
+| `bearing_in<n>` | `critical` | `<input> main bearing` | Needs attention now. Reset the counter in Service. | The bearing's hours or age limit is passed |
+| `bearing_in<n>` | `warning` | `<input> main bearing` | Service due soon. | The bearing is near a limit |
+| `psu` | `critical` | `Power supply` | Undervoltage detected. Replace the PSU or cable. | Undervoltage is happening now |
+| `psu` | `warning` | `Power supply` | Undervoltage was detected earlier. Check the PSU and cable. | Undervoltage was seen since boot |
+
+Wear warnings appear only for enabled inputs with the item's life tracking turned on.
+Resetting a counter in the appliance's Service page clears its warning.
+
+**Failure responses:** the dial gate's answers as above, and `200 {"ok": false, "error":
+"config_error"}` when the list cannot be built. A dial keeps the warnings it already holds on
+any failure; only an `ok` reply with an empty list clears them.
+
+---
+
 ## 3. Main-appliance Dial Management Proxy
 
 The main autostream appliance exposes dial management routes under `/api/dial/` that
@@ -983,6 +1046,28 @@ rate-limited - the response must never leak that information to an unauthenticat
 `appliance_id` every 5 seconds; a push outside these windows is still answered `202` but
 never enqueued. This limits the probes a single caller (or a spoofed source) can trigger,
 not the endpoint's own reachability.
+
+### `POST /warnings-changed`
+
+Advisory, appliance-initiated notification that the warnings an appliance reports through
+`POST /api/dial/warnings` may have changed. It has the same shape, the same lack of
+authentication and the same answers as `POST /auth-changed` above: the body is
+`{"appliance_id": "<id>"}`, the reply is always `202 {"ok": true}`, and the push only causes
+the dial to fetch the list itself, so it grants nothing and carries no warning text.
+
+The appliance pushes to a dial only when all of these hold: the dial is in the appliance's
+authorized list, the appliance currently sees it on the network, and the dial advertises
+`dial_proto=v3` or later. An older dial is never contacted, and nothing is sent to an address
+the appliance has not seen advertise a dial.
+
+**When it is sent.** The appliance checks its warning set every 30 seconds, and straight away
+after a maintenance counter is reset or a maintenance setting is saved in its Service page.
+When the set has changed it sends one push to each eligible dial. It sends at most one such
+push every 10 seconds: changes inside that window are held and sent once the window ends,
+describing the set as it is then, and a change that reverses inside the window sends nothing.
+Both kinds of push share one sender on the appliance, one request at a time, with a 1 second
+timeout and one retry after 2 seconds. A dial still fetches the list on its own schedule, so
+a missed push delays an update and loses nothing.
 
 ### `POST /update`
 
@@ -1607,6 +1692,7 @@ Responses:
 | `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
+| `dial_warnings=v1` | `POST /api/dial/warnings` | UUID-auth; appliance-authored warnings for the dial to show. Announced only by `GET /api/dial/capabilities` (version `1`), with no TXT key |
 | `dial_proto=v3` | `GET /api/dial/capabilities` | Advertised by appliances (both records) in place of `v2`; each generation includes the earlier ones. The endpoint is the authoritative capability list, with the versions in the table above. In it, `dial_eq` is `2` (six-band `bands` on the EQ routes) while the TXT key stays `dial_eq=v1` |
 | `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, whether a dial relies on `muted`, and the dial's handling of an appliance without an `id` on its playing record; see **Protocol dialect** in section 1. `dial_api=v1` and `dial_status=v1` are unchanged alongside it |
 

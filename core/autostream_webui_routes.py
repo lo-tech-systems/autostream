@@ -1497,6 +1497,16 @@ register(
     )
 )
 
+register(
+    Route(
+        path="/api/dial/warnings",
+        methods=("POST",),
+        handler="_route_post_dial_warnings",
+        scheme="dial",
+        comment="Non-object JSON body -> 400.",
+    )
+)
+
 # --- Loopback-aware fast paths ----------------------------------------------
 
 register(

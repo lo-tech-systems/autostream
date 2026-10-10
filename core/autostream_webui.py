@@ -69,6 +69,7 @@ from autostream_webui_api import (
     send_browser_api_error,
     send_dial_eq_post_json,
     send_dial_eq_set_post_json,
+    send_dial_warnings_post_json,
     send_dial_mute_post_json,
     send_dial_outputs_post_json,
     send_dial_outputs_set_post_json,
@@ -631,6 +632,13 @@ def _route_post_dial_eq_set(handler, state):
     if json_obj is None:
         return
     send_dial_eq_set_post_json(handler, state, json_obj)
+
+
+def _route_post_dial_warnings(handler, state):
+    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
+    if json_obj is None:
+        return
+    send_dial_warnings_post_json(handler, state, json_obj)
 
 
 # --- Loopback-aware fast paths ----------------------------------------------
@@ -1657,6 +1665,7 @@ def start_webui_background(
     def _serve() -> None:
         try:
             from autostream_dials import start_dial_scanner
+            from autostream_dial_warnings import start_watcher as start_dial_warnings_watcher
             from autostream_appliances import (
                 reconcile_appliance_announcement,
                 start_appliance_scanner,
@@ -1666,6 +1675,7 @@ def start_webui_background(
 
             from autostream_core import stop_flag as _stop_flag
             start_dial_scanner(shutdown_event=_stop_flag)
+            start_dial_warnings_watcher(shutdown_event=_stop_flag)
             start_appliance_scanner(shutdown_event=_stop_flag)
             apply_mdns_grace_period_startup(STATE)
 

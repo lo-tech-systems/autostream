@@ -22,6 +22,7 @@ from __future__ import annotations
 import http.client
 import json as _json
 import logging
+import queue
 import threading
 import time
 
@@ -256,20 +257,30 @@ def dispatch_dial_management_post(handler, path: str, json_obj) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Auth-changed push
+# Dial pushes
 # ---------------------------------------------------------------------------
-# Best-effort notification to a dial that its authorization state may have
-# changed, so it can re-poll now instead of waiting for its next scheduled
-# tick. The push grants nothing by itself -- it only causes a poll -- so a
-# lost or failed push is harmless: the dial's own status poll is the only
-# source of authorization truth.
+# Best-effort notifications to a dial: "authorization may have changed"
+# (/auth-changed) and "warnings may have changed" (/warnings-changed). Each
+# only causes the dial to fetch or poll now instead of waiting for its next
+# scheduled tick, and grants nothing by itself, so a lost or failed push is
+# harmless: the dial's own poll and reconcile are the source of truth.
+#
+# Every push goes through one worker thread fed by a queue, so a burst of
+# changes costs one thread however many pushes it holds; a slow dial delays
+# the pushes behind it by at most the timeout and one retry.
 
-_AUTH_PUSH_TIMEOUT_S = 1.0
-_AUTH_PUSH_RETRY_DELAY_S = 2.0
+_PUSH_TIMEOUT_S = 1.0
+_PUSH_RETRY_DELAY_S = 2.0
+_AUTH_CHANGED_PATH = "/auth-changed"
+
+_push_queue: "queue.SimpleQueue[tuple[str, str, str]]" = queue.SimpleQueue()
+_push_worker_lock = threading.Lock()
+_push_worker_thread: threading.Thread | None = None
 
 
-def _post_auth_changed(ip: str, port: int, appliance_id: str, timeout: float) -> bool:
-    """One POST /auth-changed to the dial's own server. Never raises.
+def _post_push(ip: str, port: int, path: str, appliance_id: str, timeout: float) -> bool:
+    """One POST of {"appliance_id": ...} to *path* on the dial's own server.
+    Never raises.
 
     Returns True on any 2xx response. Plain http.client, no redirects
     followed and no interest in the response body -- the push is advisory.
@@ -278,41 +289,63 @@ def _post_auth_changed(ip: str, port: int, appliance_id: str, timeout: float) ->
     try:
         conn = http.client.HTTPConnection(ip, port, timeout=timeout)
         body = _json.dumps({"appliance_id": appliance_id}).encode()
-        conn.request("POST", "/auth-changed", body=body,
+        conn.request("POST", path, body=body,
                      headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
         resp.read()
         return 200 <= resp.status < 300
     except Exception as e:
-        logging.debug("dial auth push: POST %s:%s/auth-changed failed: %s", ip, port, e)
+        logging.debug("dial push: POST %s:%s%s failed: %s", ip, port, path, e)
         return False
     finally:
         if conn is not None:
             conn.close()
 
 
-def _auth_push_worker(uuid: str, appliance_id: str) -> None:
-    """Background-thread body: one push, one retry after a short delay."""
+def _push_once(path: str, uuid: str, appliance_id: str) -> None:
+    """One push job: one attempt, one retry after a short delay."""
     sighting = get_dial_sighting(uuid)
     if sighting is None:
-        logging.debug("dial auth push: %s not sighted, skipping", uuid)
+        logging.debug("dial push: %s not sighted, skipping", uuid)
         return
-    if _post_auth_changed(sighting.ip, sighting.port, appliance_id, _AUTH_PUSH_TIMEOUT_S):
+    if _post_push(sighting.ip, sighting.port, path, appliance_id, _PUSH_TIMEOUT_S):
         return
-    time.sleep(_AUTH_PUSH_RETRY_DELAY_S)
-    _post_auth_changed(sighting.ip, sighting.port, appliance_id, _AUTH_PUSH_TIMEOUT_S)
+    time.sleep(_PUSH_RETRY_DELAY_S)
+    _post_push(sighting.ip, sighting.port, path, appliance_id, _PUSH_TIMEOUT_S)
+
+
+def _push_worker_loop(jobs: "queue.SimpleQueue[tuple[str, str, str]]") -> None:
+    while True:
+        job = jobs.get()
+        try:
+            _push_once(*job)
+        except Exception:
+            logging.debug("dial push: job failed", exc_info=True)
+
+
+def enqueue_push(path: str, uuid: str, appliance_id: str) -> None:
+    """Queue one push of *path* to the dial *uuid*, starting the worker
+    thread on first use. Never blocks on the network."""
+    global _push_worker_thread
+    with _push_worker_lock:
+        if _push_worker_thread is None or not _push_worker_thread.is_alive():
+            _push_worker_thread = threading.Thread(
+                target=_push_worker_loop, args=(_push_queue,),
+                daemon=True, name="dial-push")
+            _push_worker_thread.start()
+    _push_queue.put((path, uuid, appliance_id))
 
 
 def notify_dial_auth_changed(uuid: str) -> None:
     """Best-effort, fire-and-forget. Called by the authorize and revoke
     handlers AFTER their response is sent. No-op when this appliance has no
-    identity (there is nothing to correlate on the dial).
+    identity (there is nothing to correlate on the dial). Goes to the one dial
+    named, whether or not it is (still) authorised.
     """
     appliance_id = get_appliance_id()
     if not appliance_id:
         return
-    threading.Thread(target=_auth_push_worker, args=(uuid, appliance_id),
-                     daemon=True, name="dial-auth-push").start()
+    enqueue_push(_AUTH_CHANGED_PATH, uuid, appliance_id)
 
 
 # ---------------------------------------------------------------------------

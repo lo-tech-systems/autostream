@@ -3,12 +3,13 @@
 Covers:
 1.  handle_dial_authorize_post / handle_dial_revoke_post call
     notify_dial_auth_changed(uuid) after their 200 response is sent.
-2.  _auth_push_worker skips silently when the uuid has no current sighting.
-3.  _auth_push_worker POSTs {"appliance_id": id} to the sighting's own
-    ip:port at path /auth-changed.
+2.  _push_once skips silently when the uuid has no current sighting.
+3.  _push_once POSTs {"appliance_id": id} to the sighting's own
+    ip:port at the path it is given (/auth-changed for this push).
 4.  A failed first attempt is retried once after a delay.
 5.  Nothing here ever raises (connection refusal, timeout, malformed peer).
-6.  notify_dial_auth_changed is a no-op when this appliance has no identity.
+6.  notify_dial_auth_changed is a no-op when this appliance has no identity,
+    and otherwise queues one /auth-changed job on the shared push worker.
 
 The push is best-effort and advisory only (it grants nothing; it only
 causes the dial to poll), so every failure mode is "log and move on".
@@ -29,10 +30,10 @@ if _core not in sys.path:
 
 from autostream_dials import DialSighting
 from autostream_webui_dials import (
-    _AUTH_PUSH_RETRY_DELAY_S,
-    _AUTH_PUSH_TIMEOUT_S,
-    _auth_push_worker,
-    _post_auth_changed,
+    _PUSH_RETRY_DELAY_S,
+    _PUSH_TIMEOUT_S,
+    _post_push,
+    _push_once,
     handle_dial_authorize_post,
     handle_dial_revoke_post,
     notify_dial_auth_changed,
@@ -124,80 +125,77 @@ class TestNotifyDialAuthChanged:
     def test_no_op_when_appliance_has_no_identity(self):
         with (
             patch("autostream_webui_dials.get_appliance_id", return_value=None),
-            patch("autostream_webui_dials.threading.Thread") as mock_thread,
+            patch("autostream_webui_dials.enqueue_push") as mock_enqueue,
         ):
             notify_dial_auth_changed(UUID)
-        mock_thread.assert_not_called()
+        mock_enqueue.assert_not_called()
 
-    def test_starts_a_daemon_thread_when_identified(self):
+    def test_queues_one_auth_changed_job_when_identified(self):
         with (
             patch("autostream_webui_dials.get_appliance_id", return_value=APPLIANCE_ID),
-            patch("autostream_webui_dials.threading.Thread") as mock_thread,
+            patch("autostream_webui_dials.enqueue_push") as mock_enqueue,
         ):
             notify_dial_auth_changed(UUID)
-        mock_thread.assert_called_once()
-        _, kwargs = mock_thread.call_args
-        assert kwargs["daemon"] is True
-        assert kwargs["args"] == (UUID, APPLIANCE_ID)
-        mock_thread.return_value.start.assert_called_once()
+        mock_enqueue.assert_called_once_with("/auth-changed", UUID, APPLIANCE_ID)
 
 
 # ---------------------------------------------------------------------------
-# _auth_push_worker: sighting lookup, retry
+# _push_once: sighting lookup, retry
 # ---------------------------------------------------------------------------
 
-class TestAuthPushWorker:
+class TestPushOnce:
     def test_skips_silently_when_not_sighted(self):
         with (
             patch("autostream_webui_dials.get_dial_sighting", return_value=None),
-            patch("autostream_webui_dials._post_auth_changed") as mock_post,
+            patch("autostream_webui_dials._post_push") as mock_post,
         ):
-            _auth_push_worker(UUID, APPLIANCE_ID)
+            _push_once("/auth-changed", UUID, APPLIANCE_ID)
         mock_post.assert_not_called()
 
     def test_single_success_does_not_retry(self):
         with (
             patch("autostream_webui_dials.get_dial_sighting", return_value=_sighting()),
-            patch("autostream_webui_dials._post_auth_changed", return_value=True) as mock_post,
+            patch("autostream_webui_dials._post_push", return_value=True) as mock_post,
             patch("autostream_webui_dials.time.sleep") as mock_sleep,
         ):
-            _auth_push_worker(UUID, APPLIANCE_ID)
+            _push_once("/auth-changed", UUID, APPLIANCE_ID)
         mock_post.assert_called_once()
         mock_sleep.assert_not_called()
 
     def test_failure_retries_once_after_delay(self):
         with (
             patch("autostream_webui_dials.get_dial_sighting", return_value=_sighting()),
-            patch("autostream_webui_dials._post_auth_changed",
+            patch("autostream_webui_dials._post_push",
                   side_effect=[False, True]) as mock_post,
             patch("autostream_webui_dials.time.sleep") as mock_sleep,
         ):
-            _auth_push_worker(UUID, APPLIANCE_ID)
+            _push_once("/auth-changed", UUID, APPLIANCE_ID)
         assert mock_post.call_count == 2
-        mock_sleep.assert_called_once_with(_AUTH_PUSH_RETRY_DELAY_S)
+        mock_sleep.assert_called_once_with(_PUSH_RETRY_DELAY_S)
 
     def test_both_attempts_use_the_sighting_address(self):
         sighting = _sighting(ip="10.0.0.9", port=7842)
         with (
             patch("autostream_webui_dials.get_dial_sighting", return_value=sighting),
-            patch("autostream_webui_dials._post_auth_changed",
+            patch("autostream_webui_dials._post_push",
                   side_effect=[False, False]) as mock_post,
             patch("autostream_webui_dials.time.sleep"),
         ):
-            _auth_push_worker(UUID, APPLIANCE_ID)
+            _push_once("/auth-changed", UUID, APPLIANCE_ID)
         for call in mock_post.call_args_list:
             args = call[0]
             assert args[0] == "10.0.0.9"
             assert args[1] == 7842
-            assert args[2] == APPLIANCE_ID
-            assert args[3] == _AUTH_PUSH_TIMEOUT_S
+            assert args[2] == "/auth-changed"
+            assert args[3] == APPLIANCE_ID
+            assert args[4] == _PUSH_TIMEOUT_S
 
 
 # ---------------------------------------------------------------------------
-# _post_auth_changed: wire format and failure containment
+# _post_push: wire format and failure containment
 # ---------------------------------------------------------------------------
 
-class TestPostAuthChanged:
+class TestPostPush:
     def test_posts_appliance_id_body_to_auth_changed_path(self):
         conn = MagicMock()
         resp = MagicMock()
@@ -206,8 +204,8 @@ class TestPostAuthChanged:
 
         with patch("autostream_webui_dials.http.client.HTTPConnection",
                    return_value=conn):
-            result = _post_auth_changed("192.168.1.50", 7842, APPLIANCE_ID,
-                                        _AUTH_PUSH_TIMEOUT_S)
+            result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
+                                        _PUSH_TIMEOUT_S)
 
         assert result is True
         method, path = conn.request.call_args[0][:2]
@@ -228,16 +226,16 @@ class TestPostAuthChanged:
 
         with patch("autostream_webui_dials.http.client.HTTPConnection",
                    return_value=conn):
-            result = _post_auth_changed("192.168.1.50", 7842, APPLIANCE_ID,
-                                        _AUTH_PUSH_TIMEOUT_S)
+            result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
+                                        _PUSH_TIMEOUT_S)
 
         assert result is False
 
     def test_connection_refused_never_raises(self):
         with patch("autostream_webui_dials.http.client.HTTPConnection",
                    side_effect=ConnectionRefusedError("refused")):
-            result = _post_auth_changed("192.168.1.50", 7842, APPLIANCE_ID,
-                                        _AUTH_PUSH_TIMEOUT_S)
+            result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
+                                        _PUSH_TIMEOUT_S)
         assert result is False
 
     def test_timeout_never_raises(self):
@@ -246,8 +244,8 @@ class TestPostAuthChanged:
 
         with patch("autostream_webui_dials.http.client.HTTPConnection",
                    return_value=conn):
-            result = _post_auth_changed("192.168.1.50", 7842, APPLIANCE_ID,
-                                        _AUTH_PUSH_TIMEOUT_S)
+            result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
+                                        _PUSH_TIMEOUT_S)
         assert result is False
 
     def test_connection_is_always_closed(self):
@@ -258,6 +256,6 @@ class TestPostAuthChanged:
 
         with patch("autostream_webui_dials.http.client.HTTPConnection",
                    return_value=conn):
-            _post_auth_changed("192.168.1.50", 7842, APPLIANCE_ID, _AUTH_PUSH_TIMEOUT_S)
+            _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID, _PUSH_TIMEOUT_S)
 
         conn.close.assert_called_once()

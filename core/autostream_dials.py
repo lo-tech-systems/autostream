@@ -47,6 +47,7 @@ DIAL_CAPABILITIES: dict[str, int] = {
     "dial_eq": 2,
     "repeat": 1,
     "audio_status": 1,
+    "dial_warnings": 1,
 }
 
 # Oldest protocol generation that gets the typed refusal and the other
