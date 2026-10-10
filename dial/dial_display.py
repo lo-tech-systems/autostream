@@ -2262,6 +2262,14 @@ class DialDisplay:
             prev = self._selector
             page, opened_at = self._carried_paging_locked(prev, len(rows))
             self._selector = SelectorState(rows=rows, page=page, opened_at=opened_at)
+            changed = prev is None or prev.rows != rows
+        if changed and (self._screen == "selector" or self._screen_request == "selector"):
+            # A rebuild that actually changed the rows must repaint even
+            # with nothing else moving on screen — otherwise the selector
+            # can sit on its opening placeholder until a touch elsewhere
+            # forces the next frame. Signalled outside the lock, like every
+            # other _overlay_signal.set() site.
+            self._overlay_signal.set()
 
     def _refresh_picker_rows(self, roster: list, now: float) -> None:
         """Rebuild the replay picker's row list from *roster* — poll thread
@@ -2286,6 +2294,9 @@ class DialDisplay:
             prev = self._picker
             page, opened_at = self._carried_paging_locked(prev, len(rows))
             self._picker = PickerState(rows=rows, page=page, opened_at=opened_at)
+            changed = prev is None or prev.rows != rows
+        if changed and (self._screen == "picker" or self._screen_request == "picker"):
+            self._overlay_signal.set()
 
     def _refresh_idle_affordance(self, roster: list, now: float) -> None:
         """Recompute whether the idle screen's "tap to replay" affordance

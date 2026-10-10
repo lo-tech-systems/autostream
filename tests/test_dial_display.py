@@ -2901,6 +2901,88 @@ class TestSelectorRows:
         assert [r.playing for r in rows] == [True, False]
 
 
+class TestSelectorAndPickerRowsSignalRepaint:
+    """A row rebuild that changes what would be painted must repaint even
+    with nothing else moving on screen — see _refresh_selector_rows and
+    _refresh_picker_rows."""
+
+    def test_selector_signals_when_rows_change_and_screen_requested(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._screen_request = "selector"
+        roster = [_roster_entry(name="A", appliance_id="a" * 20, auth="authorized", playing=True)]
+        display._overlay_signal.clear()
+
+        display._refresh_selector_rows(roster, reporting_id=None)
+
+        assert [r.appliance_id for r in display._selector.rows] == ["a" * 20]
+        assert display._overlay_signal.is_set()
+
+    def test_selector_signals_when_rows_change_and_screen_showing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._screen = "selector"
+        roster = [_roster_entry(name="A", appliance_id="a" * 20, auth="authorized", playing=True)]
+        display._overlay_signal.clear()
+
+        display._refresh_selector_rows(roster, reporting_id=None)
+
+        assert display._overlay_signal.is_set()
+
+    def test_selector_no_signal_when_rows_unchanged(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._screen_request = "selector"
+        roster = [_roster_entry(name="A", appliance_id="a" * 20, auth="authorized", playing=True)]
+        display._refresh_selector_rows(roster, reporting_id=None)
+        display._overlay_signal.clear()
+
+        display._refresh_selector_rows(roster, reporting_id=None)
+
+        assert not display._overlay_signal.is_set()
+
+    def test_selector_no_signal_when_another_screen_showing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        roster = [_roster_entry(name="A", appliance_id="a" * 20, auth="authorized", playing=True)]
+        display._overlay_signal.clear()
+
+        display._refresh_selector_rows(roster, reporting_id=None)
+
+        assert display._overlay_signal.is_set() is False
+
+    def test_picker_signals_when_rows_change_and_screen_requested(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._screen_request = "picker"
+        now = time.monotonic()
+        row = _roster_entry(name="A", appliance_id="a" * 20, auth="authorized", repeat_capable=True)
+        drs.repeat_store.update("a" * 20, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._overlay_signal.clear()
+
+        display._refresh_picker_rows([row], now)
+
+        assert [r.appliance_id for r in display._picker.rows] == ["a" * 20]
+        assert display._overlay_signal.is_set()
+
+    def test_picker_no_signal_when_rows_unchanged(self):
+        import dial_repeat_store as drs
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._screen_request = "picker"
+        now = time.monotonic()
+        row = _roster_entry(name="A", appliance_id="a" * 20, auth="authorized", repeat_capable=True)
+        drs.repeat_store.update("a" * 20, drs.parse_repeat_object(_repeat_obj(state="hold"), now))
+        display._refresh_picker_rows([row], now)
+        display._overlay_signal.clear()
+
+        display._refresh_picker_rows([row], now)
+
+        assert not display._overlay_signal.is_set()
+
+
 class TestSelectorOpenCloseAndRepaint:
     def _display_with_one_row(self, always_show_controls=False):
         a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
