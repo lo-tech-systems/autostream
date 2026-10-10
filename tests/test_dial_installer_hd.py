@@ -35,6 +35,7 @@ UNINSTALLER = REPO_ROOT / "autostream_dial_uninstall.sh"
 HELPERS = REPO_ROOT / "installer" / "dial" / "helpers.sh"
 KIOSK_UNIT = REPO_ROOT / "system" / "systemd" / "autostream_dial_kiosk.service"
 UDEV_RULE = REPO_ROOT / "system" / "udev" / "99-autostream-backlight.rules"
+I2C_MODULES = REPO_ROOT / "system" / "modules-load.d" / "autostream-dial-i2c.conf"
 
 # Every helper that exists for an HD dial only.
 HD_ONLY = ("install_kiosk_packages", "create_kiosk_user", "configure_hd_boot",
@@ -193,6 +194,29 @@ class TestBacklightRule:
         assert "99-autostream-backlight" not in INSTALLER.read_text(encoding="utf-8")
 
 
+class TestDdcAccess:
+    def test_the_module_file_loads_i2c_dev_and_nothing_else(self):
+        lines = [ln.strip() for ln in I2C_MODULES.read_text(encoding="utf-8").splitlines()
+                 if ln.strip() and not ln.startswith("#")]
+        assert lines == ["i2c-dev"]
+
+    def test_the_module_file_is_installed_by_the_hd_unit_step_only(self):
+        helpers = HELPERS.read_text(encoding="utf-8")
+        body = _function_body(helpers, "deploy_kiosk_unit")
+        assert "system/modules-load.d/${I2C_MODULES_FILE}" in body
+        assert 'I2C_MODULES_FILE="autostream-dial-i2c.conf"' in helpers
+        assert "autostream-dial-i2c" not in INSTALLER.read_text(encoding="utf-8")
+
+    def test_the_group_is_joined_by_the_hd_user_step_only(self):
+        body = _function_body(HELPERS.read_text(encoding="utf-8"), "create_kiosk_user")
+        assert "getent group i2c" in body
+        assert "usermod -aG i2c autostream" in body
+
+    def test_no_package_is_added_for_it(self):
+        body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_kiosk_packages")
+        assert "i2c" not in body
+
+
 class TestThemeStylesheet:
     def test_theme_css_goes_to_the_hd_directory_on_every_install(self):
         body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_code_tree")
@@ -205,6 +229,7 @@ class TestUninstaller:
         assert "systemctl disable --now autostream_dial_kiosk" in text
         assert "rm -f /etc/systemd/system/autostream_dial_kiosk.service" in text
         assert "rm -f /etc/udev/rules.d/99-autostream-backlight.rules" in text
+        assert "rm -f /etc/modules-load.d/autostream-dial-i2c.conf" in text
         assert "userdel autostream-kiosk" in text
         assert "rm -rf /var/lib/autostream-kiosk" in text
         assert text.index("autostream_dial_kiosk") < text.index("systemctl daemon-reload")
@@ -441,11 +466,14 @@ class TestHdConfigAndAccount:
 
     def test_unit_and_rule_are_installed_then_enabled_not_started(self, tmp_path):
         env = Env(tmp_path)
-        for name in ("install", "udevadm"):
+        for name in ("install", "udevadm", "modprobe"):
             env.fake(name, RECORDER)
         r = _run(env, "deploy_kiosk_unit")
         assert r.returncode == 0, r.stderr
         calls = env.calls()
+        assert any(c.startswith("install -D ") and c.endswith("/etc/modules-load.d/autostream-dial-i2c.conf")
+                   for c in calls)
+        assert "modprobe i2c-dev" in calls
         assert any(c.startswith("install ") and c.endswith("/etc/systemd/system/autostream_dial_kiosk.service")
                    for c in calls)
         assert any(c.startswith("install -D ") and c.endswith("/etc/udev/rules.d/99-autostream-backlight.rules")
@@ -468,6 +496,29 @@ class TestHdConfigAndAccount:
         for grp in ("video", "input", "render"):
             assert f"usermod -aG {grp} autostream-kiosk" in calls
         assert "usermod -aG video autostream" in calls
+
+    def test_the_service_user_joins_the_i2c_group_when_there_is_one(self, tmp_path):
+        env = Env(tmp_path)
+        env.fake("id", "#!/bin/bash\nexit 0\n")
+        env.fake("getent", "#!/bin/bash\nexit 0\n")
+        for name in ("useradd", "usermod", "chown", "chmod"):
+            env.fake(name, RECORDER)
+        r = _run(env, "create_kiosk_user; create_kiosk_user")
+        assert r.returncode == 0, r.stderr
+        assert env.calls().count("usermod -aG i2c autostream") == 2     # safe to repeat
+
+    def test_a_system_without_the_i2c_group_is_skipped_with_a_message(self, tmp_path):
+        env = Env(tmp_path)
+        env.fake("id", "#!/bin/bash\nexit 0\n")
+        env.fake("getent", "#!/bin/bash\nexit 2\n")
+        for name in ("useradd", "usermod", "chown", "chmod", "groupadd"):
+            env.fake(name, RECORDER)
+        r = _run(env, "create_kiosk_user")
+        assert r.returncode == 0, r.stderr
+        calls = env.calls()
+        assert "usermod -aG i2c autostream" not in calls
+        assert not [c for c in calls if c.startswith("groupadd")]
+        assert "No i2c group" in r.stdout
 
     def test_an_existing_user_is_not_recreated(self, tmp_path):
         env = Env(tmp_path)
@@ -548,6 +599,7 @@ class TestRetireAndOwnedFiles:
         env = Env(tmp_path)
         kiosk = ["/etc/systemd/system/autostream_dial_kiosk.service",
                  "/etc/udev/rules.d/99-autostream-backlight.rules",
+                 "/etc/modules-load.d/autostream-dial-i2c.conf",
                  "/var/lib/autostream/hd-kiosk"]
         spi = _run(env, "owned_files_list").stdout.splitlines()
         hd = _run(env, "HD=true; owned_files_list").stdout.splitlines()

@@ -188,6 +188,11 @@ class TestShape:
             "always_show_controls": True, "kiosk": False}
         assert build_state(hs.SCENARIOS["nothing_playing"].snapshot)["panel"]["brightness"] == 80
 
+    @pytest.mark.parametrize("kind", ["none", "sysfs", "ddc"])
+    def test_the_backlight_kind_is_reported_as_given(self, kind):
+        assert _state("nothing_playing", panel={"backlight": kind})["panel"]["backlight"] == kind
+        assert _state("nothing_playing")["v"] == 1
+
     def test_the_kiosk_flag_is_false_unless_the_panel_says_so(self):
         assert _state("playing_artwork")["panel"]["kiosk"] is False
         assert _state("playing_artwork", panel={"kiosk": True})["panel"]["kiosk"] is True

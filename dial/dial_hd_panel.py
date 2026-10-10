@@ -3,8 +3,10 @@
 The panel is asleep or awake. Asleep, the page draws a black shield (the
 state body reports it) and the first touch only wakes; where the display
 exposes a sysfs backlight the service also drives it to zero, and awake back
-to the configured brightness. With no backlight the page-only shield is all
-there is.
+to the configured brightness. The backlight is a sysfs one or, on an HDMI
+panel that answers the monitor control channel, a DDC one (see
+dial_hd_ddc.py); both have the same interface. With no backlight the
+page-only shield is all there is.
 
 The idle clock starts when nothing is playing and restarts on activity. After
 the configured sleep-after time the panel sleeps. Playback starting, or an
@@ -15,6 +17,8 @@ Locking: one small lock guards the panel's own fields and is never held while
 calling out (the hub, the settings reader, the backlight). Backlight writes
 are serialised by their own lock and always write the latest wanted level, so
 two threads changing state cannot leave the hardware showing the older one.
+A slow backlight (DDC) takes the level and applies it on a thread of its own,
+so a caller never waits on the hardware.
 The panel never calls into the core.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -32,15 +36,43 @@ BACKLIGHT_ROOT = Path("/sys/class/backlight")
 TICK_S = 1.0
 
 
-class Backlight:
+def scaled_level(percent: int, maximum: int) -> int:
+    """*percent* (clamped to 0..100) as a share of *maximum*: 0 is dark, any
+    other value at least the lowest step."""
+    percent = max(0, min(100, int(percent)))
+    return 0 if percent == 0 else max(1, round(maximum * percent / 100))
+
+
+class BacklightBase:
+    """What every backlight kind shares: a *kind* name, a first-failure-only
+    warning, and a close() for kinds that hold something."""
+
+    kind = ""
+
+    def __init__(self) -> None:
+        self._warned = False
+
+    def _warn_once(self, what: str, error: object) -> None:
+        if not self._warned:
+            self._warned = True
+            logging.warning("HD panel: %s failed (%s)", what, error)
+
+    def set_percent(self, percent: int) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        """Release anything held and leave the panel lit."""
+
+
+class Backlight(BacklightBase):
     """A sysfs backlight: brightness is written as a share of max_brightness."""
 
     kind = "sysfs"
 
     def __init__(self, directory: Path) -> None:
+        super().__init__()
         self._brightness = Path(directory) / "brightness"
         self._max = self._read_max(Path(directory) / "max_brightness")
-        self._warned = False
 
     @staticmethod
     def _read_max(path: Path) -> int:
@@ -73,14 +105,10 @@ class Backlight:
     def set_percent(self, percent: int) -> None:
         """Set the level: 0 is dark, any other value at least the lowest
         step. Never raises; the first failure is logged."""
-        percent = max(0, min(100, int(percent)))
-        value = 0 if percent == 0 else max(1, round(self._max * percent / 100))
         try:
-            self._brightness.write_text(str(value))
+            self._brightness.write_text(str(scaled_level(percent, self._max)))
         except OSError as e:
-            if not self._warned:
-                self._warned = True
-                logging.warning("HD panel: backlight write failed (%s)", e)
+            self._warn_once("backlight write", e)
 
 
 class HdPanel:
@@ -91,7 +119,7 @@ class HdPanel:
     background tick started by start()."""
 
     def __init__(
-        self, hub, *, settings: Callable[[], object], backlight: "Backlight | None" = None,
+        self, hub, *, settings: Callable[[], object], backlight: "BacklightBase | None" = None,
         inputs: "Callable[[], tuple[bool, bool]] | None" = None, clock=time.monotonic,
         kiosk: bool = False,
     ) -> None:
@@ -121,10 +149,13 @@ class HdPanel:
         self._thread.start()
 
     def stop(self) -> None:
+        """Stop ticking and leave the panel lit."""
         self._stop.set()
         thread, self._thread = self._thread, None
         if thread is not None and thread.is_alive():
             thread.join(2.0)
+        if self._backlight is not None:
+            self._backlight.close()
 
     def _run(self) -> None:
         while not self._stop.wait(TICK_S):

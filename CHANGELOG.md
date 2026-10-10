@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- new: an HD dial now dims and switches off an HDMI panel's backlight when the
+  panel supports the monitor control channel (DDC/CI). Brightness follows the
+  setting, the backlight goes off when the screen sleeps and comes back on a
+  touch (the panel may briefly show its own source banner). A panel that does
+  not answer keeps the old behaviour of the page dimming the picture. The HD
+  install loads `i2c-dev` at boot and adds the dial's account to the `i2c`
+  group; nothing new is installed.
 - improvement: the HD dial reads "Playing" as the track while an appliance is
   playing but has not named the track yet (as a track changes, or at the start
   of playback), as the small screen does, instead of "Nothing playing".

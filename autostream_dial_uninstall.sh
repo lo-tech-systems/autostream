@@ -53,6 +53,7 @@ rm -f /etc/dnsmasq.d/autostream-dial-setup.conf
 rm -f /etc/sudoers.d/autostream_dial
 rm -f /etc/logrotate.d/autostream-dial
 rm -f /etc/udev/rules.d/99-autostream-backlight.rules
+rm -f /etc/modules-load.d/autostream-dial-i2c.conf
 udevadm control --reload 2>/dev/null || true
 
 # Restore system dnsmasq (masked during install)

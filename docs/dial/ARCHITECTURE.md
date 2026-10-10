@@ -39,7 +39,8 @@ view](#the-hd-page-is-a-second-view).
 | `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
 | `dial_hd_state.py` | `build_state()`: the pure function that turns a core snapshot into the page's state body. |
 | `dial_hd_actions.py` | The page's actions as one table onto core methods, with the argument checks. |
-| `dial_hd_panel.py` | `HdPanel`: the HD dial's sleep, wake and brightness, and the backlight writes. |
+| `dial_hd_panel.py` | `HdPanel`: the HD dial's sleep, wake and brightness, and the sysfs backlight writes. |
+| `dial_hd_ddc.py` | The HDMI panel's backlight over DDC/CI through i2c-dev: the packet codec, panel detection, and `DdcBacklight`, which has the same interface as the sysfs backlight and applies levels on its own worker thread. |
 | `dial_main.py` | Entry point. Builds the core first, then the display, workers, inputs and HTTP server. Also holds the headless stand-in for the display. |
 
 ## Threads
@@ -57,6 +58,7 @@ view](#the-hd-page-is-a-second-view).
 | `dial-hd-dev`, plus one thread per connection | HD server | The development listener, present only while it is switched on. |
 | `hd-events` | change hub | Turns core change signals into sequence numbers, and while a page is connected keeps the followed appliance's outputs and EQ fetched. Each event stream client also has its handler thread. |
 | `hd-panel` | HD panel | Runs the idle clock and the sleep and wake decisions, and writes the backlight. |
+| `hd-ddc` | HD panel | Present only with a DDC backlight. Applies the newest wanted level to the panel (power on or off, brightness); the slow bus work happens here, never on a caller. |
 
 ## The interface between core and view
 
@@ -135,8 +137,10 @@ development listener. Screen settings go through the management server's own con
 path, and sleep, wake and activity go to the panel.
 
 **Panel.** `HdPanel` keeps the screen awake or asleep. Asleep, the page draws a
-black shield and the first touch only wakes; where a sysfs backlight exists the
-panel also writes it. The idle clock starts when nothing is playing and
+black shield and the first touch only wakes; where a sysfs backlight exists, or
+an HDMI panel answers DDC/CI, the panel also drives that backlight (the DDC one
+takes the wanted level and applies it on its own thread, keeping only the
+latest, so a caller never waits on the bus). The idle clock starts when nothing is playing and
 restarts on activity. Playback starting, or a warning that interrupts, wakes
 the panel; an appliance warning, which never interrupts, does not. The panel
 never calls into the core.
@@ -151,7 +155,8 @@ restart and drops its sessions when the PIN changes.
 **Locking and threads.** The HD code follows the locking rules below. The core's
 snapshot is a lock-free reference read, so a request handler never holds a core
 or view lock while it reads or writes a socket. The hub's one condition and the
-panel's own small lock are never held while calling out.
+panel's own small lock are never held while calling out. The DDC backlight's
+one condition guards only its wanted level and is never held across bus I/O.
 
 ## Locking rules
 

@@ -21,7 +21,8 @@ from dial_control import DialControlServer
 from dial_core import create_dial_core
 from dial_core_state import awaiting_pin
 from dial_hd_events import ChangeHub
-from dial_hd_panel import Backlight, HdPanel
+from dial_hd_ddc import detect_backlight
+from dial_hd_panel import HdPanel
 from dial_hd_server import HdServer
 from dial_http_server import (
     ADMIN_CMD,
@@ -793,7 +794,7 @@ def main() -> None:
 
         hd_panel = HdPanel(
             hd_hub, settings=lambda: http_server.display_config,
-            backlight=Backlight.detect() if kiosk_surface else None, inputs=panel_inputs,
+            backlight=detect_backlight() if kiosk_surface else None, inputs=panel_inputs,
             kiosk=kiosk_surface,
         )
         hd_server = HdServer(

@@ -58,6 +58,9 @@ class FakeBacklight:
         if self.panel is not None:
             self.lock_held_at_write.append(self.panel._lock.locked())
 
+    def close(self):
+        self.closed = True
+
 
 @pytest.fixture
 def clock():

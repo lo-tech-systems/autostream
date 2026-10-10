@@ -352,6 +352,7 @@ with os.fdopen(fd, 'w') as f:
 KIOSK_USER="autostream-kiosk"
 KIOSK_HOME="/var/lib/autostream-kiosk"
 KIOSK_UNIT="autostream_dial_kiosk.service"
+I2C_MODULES_FILE="autostream-dial-i2c.conf"
 
 _hd_marker() { printf '%s\n' "$(_state_dir)/hd-kiosk"; }
 
@@ -407,7 +408,8 @@ install_kiosk_packages() {
 create_kiosk_user() {
     # The browser's own account: no login shell, a home that holds only its
     # profile, and the groups it needs for the GPU and the touch panel. The
-    # dial service additionally joins video to drive the backlight.
+    # dial service additionally joins video to drive a sysfs backlight and
+    # i2c to reach an HDMI panel's DDC bus.
     if ! id "${KIOSK_USER}" &>/dev/null; then
         useradd --system --create-home --home-dir "${KIOSK_HOME}" \
             --shell /usr/sbin/nologin "${KIOSK_USER}"
@@ -417,6 +419,11 @@ create_kiosk_user() {
         usermod -aG "${grp}" "${KIOSK_USER}" 2>/dev/null || true
     done
     usermod -aG video autostream 2>/dev/null || true
+    if getent group i2c >/dev/null 2>&1; then
+        usermod -aG i2c autostream 2>/dev/null || true
+    else
+        echo "No i2c group on this system: an HDMI panel's backlight cannot be controlled over DDC."
+    fi
     chown "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}"
     chmod 0750 "${KIOSK_HOME}"
 }
@@ -945,13 +952,17 @@ write_hd_marker() {
 deploy_kiosk_unit() {
     # The unit is enabled, not started: the kiosk comes up on the reboot that
     # ends every install and update. The udev rule is applied to a backlight
-    # already present so a fresh install needs no extra reboot for it.
+    # already present so a fresh install needs no extra reboot for it, and
+    # i2c-dev (the HDMI panel's DDC bus) is loaded now as well as at boot.
     local root
     root="$(_fs_root)"
     install -m 0644 -o root -g root "$DEPLOY/system/systemd/${KIOSK_UNIT}" \
         "${root}/etc/systemd/system/${KIOSK_UNIT}"
     install -D -m 0644 -o root -g root "$DEPLOY/system/udev/99-autostream-backlight.rules" \
         "${root}/etc/udev/rules.d/99-autostream-backlight.rules"
+    install -D -m 0644 -o root -g root "$DEPLOY/system/modules-load.d/${I2C_MODULES_FILE}" \
+        "${root}/etc/modules-load.d/${I2C_MODULES_FILE}"
+    modprobe i2c-dev 2>/dev/null || true
     udevadm control --reload 2>/dev/null || true
     udevadm trigger --subsystem-match=backlight --action=add 2>/dev/null || true
     systemctl daemon-reload
@@ -1707,10 +1718,12 @@ owned_files_list() {
     for name in reboot.cgi factory-reset.cgi update-status.cgi download-logs.cgi; do
         printf '%s\n' "${opt}/nginx/cgi/${name}"
     done
-    # An HD dial also owns its kiosk unit, backlight rule and start marker.
+    # An HD dial also owns its kiosk unit, backlight rule, i2c module file and
+    # start marker.
     if [[ "${HD:-false}" == true ]]; then
         printf '%s\n' "/etc/systemd/system/${KIOSK_UNIT}" \
                       /etc/udev/rules.d/99-autostream-backlight.rules \
+                      "/etc/modules-load.d/${I2C_MODULES_FILE}" \
                       /var/lib/autostream/hd-kiosk
     fi
 }

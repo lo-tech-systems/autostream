@@ -103,7 +103,7 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
          patch("dial_main._reconcile_update_timer"), \
          patch("dial_main._announce_self"), \
          patch.multiple("dial_main", DialLED=DEFAULT, HdServer=mock_hd_class, ChangeHub=mock_hub_class,
-                       HdPanel=mock_panel_class, Backlight=mock_backlight), \
+                       HdPanel=mock_panel_class, detect_backlight=mock_backlight), \
          patch("dial_main.DialHTTPServer", return_value=mock_http), \
          patch("dial_main.start_playing_browser") as playing_browser, \
          patch("dial_main.start_general_browser"), \
@@ -326,7 +326,7 @@ class TestHdServerWiring:
         spi = _run_core_wiring(screen_type="st7735s_160x128")
         assert spi["panel_class"].call_args.kwargs["backlight"] is None
         kiosk = _run_core_wiring(screen_type="hd_kiosk")
-        assert kiosk["panel_class"].call_args.kwargs["backlight"] is kiosk["backlight"].detect.return_value
+        assert kiosk["panel_class"].call_args.kwargs["backlight"] is kiosk["backlight"].return_value
 
     def test_the_panel_starts_after_the_server_and_stops_after_it(self):
         order = _run_core_wiring()["order"]

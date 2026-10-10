@@ -28,9 +28,11 @@ work, not what we have confirmed. If you try one, please report what you see.
   needed.
 - At least one autostream appliance on the same network.
 
-A DSI panel with a backlight can be dimmed and switched off by the dial. Most
-HDMI panels have no software backlight control, so on those the page dims and
-blacks out the picture instead, and the panel's own backlight stays on.
+A DSI panel with a backlight can be dimmed and switched off by the dial. So can
+an HDMI panel that supports the monitor control channel (DDC/CI), which many do:
+the dial sets its brightness and switches its backlight off when the screen
+sleeps. An HDMI panel that does not answer it keeps working, but the page dims
+and blacks out the picture instead and the panel's own backlight stays on.
 
 ## Installing
 
@@ -52,7 +54,11 @@ On top of the normal dial install this:
 - selects the **HD touchscreen** screen type with no touch driver (the
   browser reads the touchscreen itself);
 - installs and enables the kiosk service, `autostream_dial_kiosk`, and a
-  small udev rule that lets the dial control a panel's backlight.
+  small udev rule that lets the dial control a panel's backlight;
+- loads the `i2c-dev` kernel module at boot and adds the dial's service
+  account to the `i2c` group, so the dial can talk to an HDMI panel's control
+  channel. Nothing extra is installed, and a system without an `i2c` group
+  simply skips this.
 
 Every dial install and update, SPI or HD, also adds a boot splash. A screen
 on the HDMI or DSI output shows "Starting..." while the dial boots, keeps it
@@ -220,8 +226,11 @@ Resetting the counter in the appliance's Service page clears its warning.
 ### Sleep and waking
 
 After the **Sleep after** time with nothing playing the screen goes black. On a
-panel with a backlight the dial also switches the backlight off. The screen
-wakes when something starts playing, or when you touch it. A touch on a
+panel with a backlight (including an HDMI panel the dial controls over DDC/CI)
+the dial also switches the backlight off. The screen wakes when something
+starts playing, or when you touch it. An HDMI panel can take a second or two to
+come back, and may briefly show its own source banner as it does. The touch
+layer keeps working while the panel is off, so a touch still wakes it. A touch on a
 sleeping screen only wakes it: it never presses a control, so touch again to
 use what is under your finger.
 
@@ -319,8 +328,16 @@ falls back to software rendering, which works but is slower.
 touchscreen directly, so check the panel's own USB or DSI touch connection and
 that the kiosk's account is in the `input` group.
 
-**Brightness does nothing on an HDMI panel.** Expected: without a backlight
-device the page dims the picture instead.
+**Brightness does nothing on an HDMI panel, or the panel never switches off.**
+The dial can only control an HDMI panel that answers DDC/CI. Check that the
+module is loaded (`lsmod | grep i2c_dev`), that a `/dev/i2c-*` device exists,
+that the dial's account is in the `i2c` group (`id autostream`; a change of
+group needs the dial service restarted, or a reboot) and that the panel's own
+menu has not turned DDC/CI off. The dial logs a line naming the bus when it
+finds a panel (`HD panel: DDC backlight on`). If the panel does not answer, the
+page dims the picture instead, and on a panel that has no way to switch off
+its backlight over DDC/CI the screen goes black but the panel's light stays
+dim.
 
 **An appliance shows Not authorised.** Allow the dial on that appliance, as for
 any dial: [Getting Started](GETTING-STARTED.md#authorizing-the-dial).
