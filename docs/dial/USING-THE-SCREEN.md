@@ -299,10 +299,9 @@ dots to the third page:
 
 ![EQ page: Bass and Treble bars, each with a dB reading and minus/plus steppers](images/eq-rich.png)
 
-*Bass over Treble, each with its own reading in dB and its own minus/plus,
-over the current artwork, dimmed. The master volume still shows top right,
-and tapping it opens the outputs list as on the other two pages; there's no
-mute control on this page.*
+*Bass over Treble, each with its own reading in dB and its own minus/plus.
+The master volume still shows top right, and tapping it opens the outputs
+list as on the other two pages; there's no mute control on this page.*
 
 ## Info page
 

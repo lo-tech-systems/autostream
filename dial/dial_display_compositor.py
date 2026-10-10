@@ -990,24 +990,23 @@ class DialDisplayCompositor:
 
     def compose_eq(
         self, width: int, height: int, state: "EqViewState", *, rotate: bool, bgr: bool,
-        base=None, metrics: LayoutMetrics | None = None,
+        metrics: LayoutMetrics | None = None,
     ):
-        """Build one display-ready frame for the EQ page: *base* (the
-        current artwork frame or the logo, already panel-sized; None falls
-        back to the flat chassis colour) dimmed across the whole panel,
-        matching the artwork the other two pages show, then the shared top
-        band with three pager dots (the third one filled) and the
-        master-volume readout (the OUTPUTS zone over it opens the outputs
-        list, as on the other two pages), and the bass/treble bar rows (see
-        BODY_EQ_BARS/_body_eq_bars). rotate/bgr are applied last, in the
-        same order every other compose*() call uses. Never raises: a font
-        or glyph failure degrades to a plainer frame, matching every other
-        screen's discipline. metrics: see compose().
+        """Build one display-ready frame for the EQ page: a dark chassis
+        background (no artwork: the bars fill the panel below the top
+        band), the shared top band with three pager dots (the third one
+        filled) and the master-volume readout (the OUTPUTS zone over it
+        opens the outputs list, as on the other two pages), and the
+        bass/treble bar rows (see BODY_EQ_BARS/_body_eq_bars). rotate/bgr
+        are applied last, in the same order every other compose*() call
+        uses. Never raises: a font or glyph failure degrades to a plainer
+        frame, matching every other screen's discipline. metrics: see
+        compose().
         """
         if metrics is None:
             metrics = metrics_for(width, height)
         return _compose_frame(
-            base, width, height, _eq_frame(state, width, height, metrics),
+            None, width, height, _eq_frame(state, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -3181,11 +3180,9 @@ def _eq_pressed_rects(
 
 
 def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetrics) -> Frame:
-    # The bars fill the whole panel below the top band, so the artwork
-    # behind them is dimmed everywhere, not just under the bands.
     return Frame(
-        background=BG_BASE,
-        dim_all=True,
+        background=BG_CHASSIS,
+        dim_top=True,
         pressed=_eq_pressed_rects(state.pressed, width, height, metrics),
         header=Header(
             name=state.name, volume=state.volume, muted=state.muted, dots_filled=2, dots_count=3,

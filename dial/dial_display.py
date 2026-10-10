@@ -4614,14 +4614,11 @@ class DialDisplay:
         """Compose and push the EQ-page frame — the compose_eq()
         counterpart to _display_repeat_locked(). Bypasses _display_locked()
         entirely: this screen has its own compose path and must never pick
-        up the main now-playing overlay. Passes self._current_base_image
-        through as compose_eq()'s `base`, drawn dimmed behind the bars so
-        the page shows the same artwork as the other two. Caller holds
-        self._lock."""
+        up the main now-playing overlay. Caller holds self._lock."""
         view = self._build_eq_view_locked(self._eq, time.monotonic())
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_eq(
-            metrics.width, metrics.height, view, base=self._current_base_image,
+            metrics.width, metrics.height, view,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 

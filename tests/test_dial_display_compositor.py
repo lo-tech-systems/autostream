@@ -5515,51 +5515,6 @@ def _artwork_gradient(width, height):
     return image
 
 
-class TestComposeEqArtwork:
-    """The EQ page draws the current artwork, dimmed across the whole
-    panel, behind the bars, as the other two main pages do."""
-
-    @pytest.fixture(autouse=True)
-    def _reset_cache(self):
-        _reset_font_cache()
-        _reset_render_caches()
-        yield
-        _reset_font_cache()
-        _reset_render_caches()
-
-    def test_artwork_shows_dimmed_where_nothing_is_drawn(self, compositor):
-        base = _artwork_gradient(320, 240)
-        result = compositor.compose_eq(
-            320, 240, _eq_state(name=""), rotate=False, bgr=False, base=base, metrics=_RICH_METRICS,
-        )
-        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
-        # The left edge of the gap between the two bar rows: no caption,
-        # track, control or divider reaches it.
-        point = (0, layout.bass.row[3] + 1)
-        expected = tuple(c * OVERLAY_DIM_FACTOR for c in base.getpixel(point))
-        assert all(abs(got - want) <= 1 for got, want in zip(result.getpixel(point), expected))
-
-    def test_top_band_is_dimmed_once_not_twice(self, compositor):
-        base = _artwork_gradient(320, 240)
-        result = compositor.compose_eq(
-            320, 240, _eq_state(name=""), rotate=False, bgr=False, base=base, metrics=_RICH_METRICS,
-        )
-        expected = tuple(c * OVERLAY_DIM_FACTOR for c in base.getpixel((0, 0)))
-        assert all(abs(got - want) <= 1 for got, want in zip(result.getpixel((0, 0)), expected))
-
-    def test_no_base_keeps_the_chassis_colour(self, compositor):
-        from dial_display_compositor import _LIST_BG_RGB
-        result = compositor.compose_eq(320, 240, _eq_state(name=""), rotate=False, bgr=False, metrics=_RICH_METRICS)
-        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
-        assert result.getpixel((0, 239)) == expected
-
-    def test_base_is_not_mutated(self, compositor):
-        base = _artwork_gradient(320, 240)
-        before = base.tobytes()
-        compositor.compose_eq(320, 240, _eq_state(), rotate=False, bgr=False, base=base, metrics=_RICH_METRICS)
-        assert base.tobytes() == before
-
-
 class TestComposeTimerLine:
     """compose()'s replay timer line: drawn in the artwork between the top
     band and the first album/title line, faded by timer_alpha, absent on
