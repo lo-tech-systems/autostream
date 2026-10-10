@@ -20,7 +20,12 @@ from typing import Optional
 
 from autostream_auth import FLASH_COOKIE_NAME
 from autostream_bluetooth_client import classify_loopback_hw
-from autostream_config import CONFIG_IO_LOCK, DEFAULT_STYLUS_LIFE_HOURS, load_config
+from autostream_config import (
+    CONFIG_IO_LOCK,
+    DEFAULT_STYLUS_LIFE_HOURS,
+    load_config,
+    normalize_input_type,
+)
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 from autostream_webui_assets import (
@@ -321,6 +326,7 @@ def _fallback_input_snapshot(
         belt_life_years=int(getattr(parsed_input, "belt_life_years", 0)),
         bearing_life_hours=int(getattr(parsed_input, "bearing_life_hours", 0)),
         bearing_life_years=int(getattr(parsed_input, "bearing_life_years", 0)),
+        input_type=normalize_input_type(getattr(parsed_input, "input_type", "line")),
     )
 
 

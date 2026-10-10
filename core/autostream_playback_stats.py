@@ -39,6 +39,8 @@ from autostream_config import (
     VALID_MAINTENANCE_LIFE_YEARS,
     TURNTABLE_SILENCE_THRESHOLD_DBFS,
     LINE_LEVEL_SILENCE_THRESHOLD_DBFS,
+    input_type_label,
+    normalize_input_type,
     normalize_stylus_life_hours,
     normalize_maintenance_life_hours,
     normalize_bearing_life_hours,
@@ -193,6 +195,7 @@ class PlaybackInputConfig:
     belt_life_years: int = 0
     bearing_life_hours: int = 0
     bearing_life_years: int = 0
+    input_type: str = "line"
 
     @classmethod
     def normalized(
@@ -206,6 +209,7 @@ class PlaybackInputConfig:
         belt_life_years: object = 0,
         bearing_life_hours: object = 0,
         bearing_life_years: object = 0,
+        input_type: object = "line",
     ) -> "PlaybackInputConfig":
         return cls(
             enabled=bool(enabled),
@@ -216,6 +220,7 @@ class PlaybackInputConfig:
             belt_life_years=normalize_maintenance_life_years(belt_life_years),
             bearing_life_hours=normalize_bearing_life_hours(bearing_life_hours),
             bearing_life_years=normalize_maintenance_life_years(bearing_life_years),
+            input_type=normalize_input_type(input_type),
         )
 
 
@@ -348,6 +353,8 @@ class InputPlaybackSnapshot:
     bearing_warning: bool
     last_bearing_service_at: Optional[str]
 
+    input_type: str = "line"
+
     def to_public_dict(self) -> dict:
         return {
             "input_index": int(self.input_index),
@@ -356,6 +363,8 @@ class InputPlaybackSnapshot:
             "enabled": bool(self.enabled),
             "is_turntable": bool(self.is_turntable),
             "is_bluetooth": bool(self.is_bluetooth),
+            "input_type": self.input_type,
+            "type_label": input_type_label(self.input_type),
             "total_playback_seconds": int(self.total_playback_seconds),
             "total_playback_hours": float(self.total_playback_hours),
             # Stylus
@@ -428,6 +437,7 @@ def make_fallback_input_snapshot(
     belt_life_years: int = 0,
     bearing_life_hours: int = 0,
     bearing_life_years: int = 0,
+    input_type: str = "line",
 ) -> InputPlaybackSnapshot:
     """Return an all-zeros InputPlaybackSnapshot with config-derived lifetime metadata."""
     return InputPlaybackSnapshot(
@@ -485,6 +495,7 @@ def make_fallback_input_snapshot(
         bearing_overdue=False,
         bearing_warning=False,
         last_bearing_service_at=None,
+        input_type=input_type,
     )
 
 
@@ -811,6 +822,7 @@ class PlaybackTracker:
                     belt_life_years=cfg.belt_life_years,
                     bearing_life_hours=cfg.bearing_life_hours,
                     bearing_life_years=cfg.bearing_life_years,
+                    input_type=cfg.input_type,
                 )
                 for idx, cfg in configs.items()
             }
@@ -831,6 +843,7 @@ class PlaybackTracker:
         belt_life_years: object = 0,
         bearing_life_hours: object = 0,
         bearing_life_years: object = 0,
+        input_type: object = "line",
     ) -> None:
         """Update config for a single input, splitting active time at the change."""
         idx = self._normalize_input_index(input_index)
@@ -845,6 +858,7 @@ class PlaybackTracker:
                 belt_life_years=belt_life_years,
                 bearing_life_hours=bearing_life_hours,
                 bearing_life_years=bearing_life_years,
+                input_type=input_type,
             )
             self._configs[idx] = cfg
             if not cfg.enabled:
@@ -1124,6 +1138,7 @@ class PlaybackTracker:
                     bearing_overdue=bearing_overdue,
                     bearing_warning=bearing_warning,
                     last_bearing_service_at=state.last_bearing_service_at,
+                    input_type=cfg.input_type,
                 )
 
             def _sorted_indices(condition):
@@ -1177,6 +1192,7 @@ class PlaybackTracker:
             belt_life_years=cfg.belt_life_years,
             bearing_life_hours=cfg.bearing_life_hours,
             bearing_life_years=cfg.bearing_life_years,
+            input_type=cfg.input_type,
         )
 
     def public_snapshot_dict(self) -> dict:

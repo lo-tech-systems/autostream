@@ -930,6 +930,7 @@ def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
             belt_life_years=cfg.audio1.belt_life_years,
             bearing_life_hours=cfg.audio1.bearing_life_hours,
             bearing_life_years=cfg.audio1.bearing_life_years,
+            input_type=cfg.audio1.input_type,
         ),
         2: PlaybackInputConfig.normalized(
             enabled=cfg.audio2_enabled,
@@ -940,6 +941,7 @@ def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
             belt_life_years=cfg.audio2.belt_life_years,
             bearing_life_hours=cfg.audio2.bearing_life_hours,
             bearing_life_years=cfg.audio2.bearing_life_years,
+            input_type=cfg.audio2.input_type,
         ),
     }
 
@@ -1012,6 +1014,7 @@ def update_playback_input_config(
     belt_life_years: int = 0,
     bearing_life_hours: int = 0,
     bearing_life_years: int = 0,
+    input_type: Optional[str] = None,
 ) -> bool:
     tracker = _playback_tracker
     if tracker is None:
@@ -1027,6 +1030,10 @@ def update_playback_input_config(
             belt_life_years=belt_life_years,
             bearing_life_hours=bearing_life_hours,
             bearing_life_years=bearing_life_years,
+            input_type=(
+                input_type if input_type is not None
+                else ("turntable" if is_turntable else "line")
+            ),
         )
         return True
     except Exception as e:

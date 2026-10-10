@@ -680,3 +680,27 @@ class TestBluetoothFlag:
         snap = make_fallback_input_snapshot(1, "Input 1")
         assert snap.is_bluetooth is False
         assert snap.to_public_dict()["is_bluetooth"] is False
+
+
+# ---------------------------------------------------------------------------
+# input_type: config -> snapshot -> public dict
+# ---------------------------------------------------------------------------
+
+class TestInputType:
+    def test_input_type_is_carried_into_the_snapshot(self, tmp_path):
+        tr = _tracker(tmp_path)
+        tr.replace_input_configs({1: PlaybackInputConfig.normalized(
+            enabled=True, is_turntable=False, input_type="cd",
+        )})
+        snap = tr.snapshot().inputs[1]
+        assert snap.input_type == "cd"
+        public = snap.to_public_dict()
+        assert public["input_type"] == "cd"
+        assert public["type_label"] == "CD"
+
+    def test_input_type_defaults_to_line(self, tmp_path):
+        tr = _tracker(tmp_path)
+        tr.replace_input_configs({1: _line_config()})
+        snap = tr.snapshot().inputs[1]
+        assert snap.input_type == "line"
+        assert snap.to_public_dict()["type_label"] == "Line"
