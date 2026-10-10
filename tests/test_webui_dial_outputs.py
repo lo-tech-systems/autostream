@@ -235,7 +235,7 @@ class TestOutputsList:
         assert body["appliance_id"] == TEST_APPLIANCE_ID
         assert body["outputs"] == [
             {"id": "1", "name": "Bedroom", "selected": True, "volume": 40,
-             "remote_in_use": False, "remote_owner": ""},
+             "remote_in_use": False, "remote_owner": "", "is_default": False},
         ]
 
     def test_hidden_unselected_output_excluded(self):
@@ -256,6 +256,31 @@ class TestOutputsList:
             parsed=_parsed(output_name="Zulu"),
         )
         assert body["outputs"][0]["name"] == "Zulu"
+
+    def test_reply_marks_the_default_output_and_no_other(self):
+        code, body = _invoke_list(
+            {"dial_id": DIAL_ID},
+            list_result=_ok_list(_output("2", "Zulu", 10), _output("1", "Alpha", 10)),
+            parsed=_parsed(output_name="Zulu"),
+        )
+        flags = [(o["name"], o["is_default"]) for o in body["outputs"]]
+        assert flags == [("Zulu", True), ("Alpha", False)]
+
+    def test_is_default_is_always_a_bool(self):
+        from autostream_appliance_models import build_output_list as real_build
+
+        def _without_flag(*args, **kwargs):
+            rows = real_build(*args, **kwargs)
+            for r in rows:
+                r.pop("is_default", None)
+            return rows
+
+        with patch("autostream_webui_api.build_output_list", side_effect=_without_flag):
+            code, body = _invoke_list(
+                {"dial_id": DIAL_ID},
+                list_result=_ok_list(_output("1", "Bedroom", 40)),
+            )
+        assert body["outputs"][0]["is_default"] is False
 
     def test_remote_in_use_true_when_used_elsewhere_and_not_locally_selected(self):
         from autostream_output_usage import OutputUsage

@@ -1246,7 +1246,8 @@ def _dial_outputs_list(parsed) -> Optional[list]:
     """The Home page's output list, as the dial sees it: the same three
     functions the Home page itself uses for its output list (hidden-output
     filtering and default-first ordering, then remote-occupancy annotation),
-    trimmed to the fields the dial needs. None when OwnTone is unreachable.
+    trimmed to the fields the dial needs, including whether each output is the
+    configured default. None when OwnTone is unreachable.
     """
     result = list_outputs(parsed.owntone.base_url, timeout=1.0)
     if not result.ok:
@@ -1258,6 +1259,7 @@ def _dial_outputs_list(parsed) -> Optional[list]:
             "id": o["id"], "name": o["name"], "selected": o["selected"],
             "volume": o["volume"], "remote_in_use": bool(o.get("remote_in_use")),
             "remote_owner": str(o.get("remote_owner") or ""),
+            "is_default": bool(o.get("is_default")),
         }
         for o in annotate_outputs(outputs)
     ]

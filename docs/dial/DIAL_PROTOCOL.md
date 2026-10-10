@@ -652,7 +652,7 @@ instance.
 ```json
 {"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "outputs": [
   {"id": "1", "name": "Living Room", "selected": true, "volume": 42,
-   "remote_in_use": false, "remote_owner": ""}
+   "remote_in_use": false, "remote_owner": "", "is_default": true}
 ]}
 ```
 
@@ -660,6 +660,11 @@ instance.
 using the output when `remote_in_use` is `true`, and an empty string otherwise. Appliances
 from before this field existed omit it, so a reader should treat a missing value as an
 empty string.
+
+`is_default` is `true` for the appliance's configured default output and `false` for every
+other. Appliances from before this field existed omit it; a reader treats a missing value as
+`false`. It is informational: the default output is listed first, and a dial may mark it, but
+it needs no different handling.
 
 | `error` | Meaning |
 |---|---|
