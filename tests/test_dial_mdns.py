@@ -342,11 +342,16 @@ class TestApplianceIdAndAuth:
 # ---------------------------------------------------------------------------
 
 class TestApplianceDisplayName:
-    def test_strips_service_prefix_and_replaces_underscores(self):
-        assert dm.appliance_display_name("autostream on CD_Player") == "CD Player"
+    # avahi-browse -p delivers the instance name with spaces escaped as \032,
+    # so these use the real on-the-wire form, not pre-spaced strings.
+    def test_strips_escaped_service_prefix_and_replaces_underscores(self):
+        assert dm.appliance_display_name("autostream\\032on\\032CD_Player") == "CD Player"
 
-    def test_hostname_without_underscores_unchanged(self):
-        assert dm.appliance_display_name("autostream on SL-D303") == "SL-D303"
+    def test_escaped_hostname_without_underscores_unchanged(self):
+        assert dm.appliance_display_name("autostream\\032on\\032Turntable") == "Turntable"
+
+    def test_already_unescaped_name_also_works(self):
+        assert dm.appliance_display_name("autostream on Hallway") == "Hallway"
 
     def test_name_without_prefix_still_replaces_underscores(self):
         assert dm.appliance_display_name("Some_Other_Name") == "Some Other Name"

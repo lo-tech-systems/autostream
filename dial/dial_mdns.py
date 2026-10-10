@@ -201,12 +201,27 @@ def get_display_targets() -> list[PlayingTarget]:
     return [_with_auth(t) for t in targets]
 
 
+def _avahi_unescape(s: str) -> str:
+    """Decode avahi-browse parsable-mode escapes. In -p output a byte is
+    escaped as a backslash followed by its three-digit DECIMAL value (a
+    space becomes \\032), and dot and backslash as \\. and \\\\. The service
+    instance name therefore arrives as e.g. autostream\\032on\\032CD_Player."""
+    out = re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1))), s)
+    return out.replace("\\.", ".").replace("\\\\", "\\")
+
+
 def appliance_display_name(service_name: str) -> str:
-    """Hostname part of the mDNS service name, underscores shown as spaces."""
+    """Hostname part of the mDNS service name, underscores shown as spaces.
+
+    The name is unescaped first (see _avahi_unescape): avahi hands us the
+    instance name with spaces escaped as \\032, so the "autostream on "
+    prefix only matches after decoding.
+    """
+    name = _avahi_unescape(service_name)
     host = (
-        service_name[len(_SERVICE_PREFIX):]
-        if service_name.startswith(_SERVICE_PREFIX)
-        else service_name
+        name[len(_SERVICE_PREFIX):]
+        if name.startswith(_SERVICE_PREFIX)
+        else name
     )
     return host.replace("_", " ")
 
