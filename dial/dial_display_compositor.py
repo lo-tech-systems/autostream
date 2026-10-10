@@ -115,6 +115,15 @@ from dataclasses import dataclass, field
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
+from dial_warning_text import (
+    NOWIFI_DISMISS_TEXT,
+    NOWIFI_MESSAGE_TEXT,
+    NOWIFI_RESTART_TEXT,
+    SDHEALTH_BODY_TEXT,
+    SDHEALTH_BODY_TEXT_NO_PERCENT,
+    SDHEALTH_DISMISS_TEXT,
+    SDHEALTH_TITLE_TEXT,
+)
 from dial_touch_layout import (
     CONTENT_COMPACT,
     FONT_BODY_PX_AT_REFERENCE,
@@ -271,17 +280,8 @@ _COMPACT_SMALL_GLYPH_FRACTION = 0.4
 # The replay picker's own title-bar text.
 _COMPACT_PICKER_TITLE = "Replay"
 
-# The No-WiFi page's fixed strings and the two centred-label screens' one line
-# each: the restart screen and the boot splash.
-NOWIFI_MESSAGE_TEXT = "No WiFi"
-NOWIFI_DISMISS_TEXT = "Dismiss"
-NOWIFI_RESTART_TEXT = "Restart"
-# The SD card warning's fixed strings: a title at readout size and a body
-# line at body size (the percent is filled in), over one Dismiss cell.
-SDHEALTH_TITLE_TEXT = "microSD Health"
-SDHEALTH_BODY_TEXT = "{percent}%: Replace Soon"
-SDHEALTH_BODY_TEXT_NO_PERCENT = "Replace Soon"
-SDHEALTH_DISMISS_TEXT = "Dismiss"
+# The two centred-label screens' one line each: the restart screen and the
+# boot splash.
 RESTARTING_TEXT = "Restarting..."
 STARTING_TEXT = "Starting..."
 

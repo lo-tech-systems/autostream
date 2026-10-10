@@ -355,3 +355,100 @@ class TestGenericFields:
         manager.dismiss("t")
         clock.t += 31.0
         assert manager.expired() == ["t"]
+
+
+# ---------------------------------------------------------------------------
+# Run-time registration (warnings an appliance supplies)
+# ---------------------------------------------------------------------------
+
+def _ns(appliance_id="a1", warning_id="stylus", *, persisted=True, buttons=True, snooze=3600.0):
+    return WarningDescriptor(
+        id=f"appliance:{appliance_id}:{warning_id}", priority=10, screen="appliance_warning",
+        geometry="sdhealth", title="T", message_for=lambda _s: "m",
+        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Dismiss", ACTION_DISMISS),) if buttons else (),
+        persisted=persisted, snooze_for=lambda _s: snooze,
+    )
+
+
+class TestRegistration:
+    def test_a_registered_warning_joins_the_registry_and_the_due_rule(self):
+        manager = WarningManager([_hi()], WarningStore(None))
+        manager.register(_ns())
+        assert [d.id for d in manager.descriptors()] == ["hi", "appliance:a1:stylus"]
+        manager.set_active("appliance:a1:stylus")
+        assert manager.due().id == "appliance:a1:stylus"
+        manager.set_active("hi")
+        assert manager.due().id == "hi"
+
+    def test_re_registering_replaces_the_descriptor_and_keeps_the_state(self):
+        manager = WarningManager([], WarningStore(None))
+        manager.register(_ns())
+        manager.set_active("appliance:a1:stylus", "x")
+        manager.dismiss("appliance:a1:stylus")
+        newer = _ns()
+        newer = WarningDescriptor(**{**newer.__dict__, "title": "New"})
+        manager.register(newer)
+        assert manager.descriptor("appliance:a1:stylus").title == "New"
+        assert manager.is_active("appliance:a1:stylus") and manager.is_snoozed("appliance:a1:stylus")
+        assert len(manager.descriptors()) == 1
+
+    def test_unregister_ends_the_incident_and_forgets_a_persisted_snooze(self, tmp_path):
+        path = tmp_path / "w.json"
+        clock = _Clock()
+        manager = WarningManager([], WarningStore(str(path)), clock=clock.now)
+        manager.register(_ns())
+        manager.set_active("appliance:a1:stylus")
+        manager.dismiss("appliance:a1:stylus")
+        manager.flush()
+        assert "appliance:a1:stylus" in json.loads(path.read_text())
+        manager.unregister("appliance:a1:stylus")
+        manager.flush()
+        assert json.loads(path.read_text()) == {}
+        assert manager.descriptors() == () and manager.due() is None
+        assert not manager.is_active("appliance:a1:stylus")
+
+    def test_unregistering_an_unknown_id_is_harmless(self):
+        manager = WarningManager([_hi()], WarningStore(None))
+        manager.unregister("nope")
+        assert [d.id for d in manager.descriptors()] == ["hi"]
+
+    def test_a_persisted_namespaced_snooze_is_parked_until_registered(self, tmp_path):
+        path = tmp_path / "w.json"
+        clock = _Clock()
+        path.write_text(json.dumps({
+            "appliance:a1:stylus": clock.t + 1000, "appliance:a1:old": clock.t - 5,
+            "elsewhere": clock.t + 1000,
+        }))
+        manager = WarningManager([_lo()], WarningStore(str(path)), clock=clock.now)
+        manager.flush()
+        assert json.loads(path.read_text()) == {"appliance:a1:stylus": clock.t + 1000}
+        manager.register(_ns())
+        assert manager.is_snoozed("appliance:a1:stylus")
+
+    def test_a_parked_snooze_is_not_applied_to_a_non_persisted_registration(self, tmp_path):
+        path = tmp_path / "w.json"
+        clock = _Clock()
+        path.write_text(json.dumps({"appliance:a1:stylus": clock.t + 1000}))
+        manager = WarningManager([], WarningStore(str(path)), clock=clock.now)
+        manager.register(_ns(persisted=False))
+        assert not manager.is_snoozed("appliance:a1:stylus")
+
+    def test_runtime_reports_state_in_registry_order(self):
+        clock = _Clock()
+        manager = WarningManager([_hi()], WarningStore(None), clock=clock.now)
+        manager.register(_ns())
+        manager.set_active("appliance:a1:stylus", "sev")
+        manager.dismiss("appliance:a1:stylus")
+        rows = manager.runtime()
+        assert [r[0] for r in rows] == ["hi", "appliance:a1:stylus"]
+        assert rows[0][1:] == (False, None, None, None)
+        wid, active, severity, since, until = rows[1]
+        assert active and severity == "sev" and since == clock.t and until == clock.t + 3600.0
+        clock.t += 3601
+        assert manager.runtime()[1][4] is None
+
+    def test_an_incident_scoped_dismissal_reports_infinity(self):
+        manager = WarningManager([_hi()], WarningStore(None))
+        manager.set_active("hi")
+        manager.dismiss("hi")
+        assert manager.runtime()[0][4] == float("inf")

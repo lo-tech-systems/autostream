@@ -15,7 +15,10 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import json
+import re
+import unicodedata
+from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
@@ -40,6 +43,11 @@ EQ_OPTIMISTIC_WINDOW_S = 2.0
 # before its own playing advertisement reaches the dial (normally a few
 # seconds).
 ACCEPTED_REPLAY_GRACE_S = 20.0
+
+# How many consecutive "down" polls (15 s apart) open the No-WiFi page on
+# their own: three, so a brief drop that recovers within about 45 s only
+# ever flashes the icon. A tap on the flashing icon opens the page at once.
+NOWIFI_PROMPT_STREAK = 3
 
 
 # ---- row and now-playing types -------------------------------------------
@@ -127,6 +135,8 @@ class ApplianceState:
     webui_scheme: str = "http"   # where this appliance's web UI is reached:
     webui_host: str = ""         # its roster address, and the port it
     webui_port: int = 0          # serves the web UI and the dial API on
+    supplies_warnings: bool = False  # advertises the appliance-warnings capability
+    warnings: tuple = ()             # its validated warnings, ApplianceWarning each
 
 
 @dataclass(frozen=True)
@@ -190,7 +200,7 @@ class WarningState:
     active: bool
     severity: object
     active_since: float | None     # wall clock; a change means a new incident
-    snoozed_until: float | None
+    snoozed_until: float | None    # wall clock; inf until the source clears it
 
 
 @dataclass(frozen=True)
@@ -269,6 +279,156 @@ class CoreSnapshot:
         repeat record as of the last publish."""
         records = {a.appliance_id: a.repeat for a in self.appliances}
         return picker_rows(self.appliances, lambda appliance_id, now: records.get(appliance_id), 0.0)
+
+
+# ---- appliance-supplied warnings ------------------------------------------
+#
+# The protocol is plain HTTP, so any host on the LAN can answer in an
+# appliance's place: everything in a warnings reply is untrusted text. The
+# validator below is the one entry point. It only ever returns data (strings
+# drawn from closed sets, or stripped and length-capped text); nothing it
+# returns is a format template, a path, a command or a link.
+
+# A reply larger than this is not parsed at all.
+APPLIANCE_WARNINGS_MAX_BODY_BYTES = 8192
+# At most this many warnings are kept per appliance; the rest are dropped.
+APPLIANCE_WARNINGS_MAX = 8
+# Entries examined before giving up on a list padded with unusable ones.
+APPLIANCE_WARNINGS_MAX_SCAN = 4 * APPLIANCE_WARNINGS_MAX
+# Longest title and message kept, in characters; longer ones are truncated.
+APPLIANCE_WARNING_TITLE_MAX = 40
+APPLIANCE_WARNING_MESSAGE_MAX = 120
+# A warning id is short and plain, so it can key a snooze safely.
+APPLIANCE_WARNING_ID_RE = re.compile(r"[a-z0-9_-]{1,32}")
+
+SEVERITY_INFO = "info"
+SEVERITY_WARNING = "warning"
+SEVERITY_CRITICAL = "critical"
+APPLIANCE_WARNING_SEVERITIES = (SEVERITY_INFO, SEVERITY_WARNING, SEVERITY_CRITICAL)
+# An unknown or missing severity reads as the mildest.
+APPLIANCE_WARNING_DEFAULT_SEVERITY = SEVERITY_INFO
+
+# How the appliance suggests a Dismiss should hold: a day, a week, or not at
+# all (a notice with no Dismiss). Anything else reads as a day.
+DISMISS_DAY = "day"
+DISMISS_WEEK = "week"
+DISMISS_NONE = "none"
+APPLIANCE_WARNING_DISMISSALS = (DISMISS_DAY, DISMISS_WEEK, DISMISS_NONE)
+APPLIANCE_WARNING_DEFAULT_DISMISSAL = DISMISS_DAY
+
+
+@dataclass(frozen=True)
+class ApplianceWarning:
+    """One warning an appliance supplies, after validation. The dial sets
+    everything about how it behaves (priority, no interruption, no wake);
+    the appliance supplies only these fields."""
+    id: str                 # [a-z0-9_-]{1,32}, unique within its appliance
+    severity: str           # one of APPLIANCE_WARNING_SEVERITIES
+    title: str              # non-empty, at most APPLIANCE_WARNING_TITLE_MAX characters
+    message: str            # at most APPLIANCE_WARNING_MESSAGE_MAX characters
+    dismissal: str          # one of APPLIANCE_WARNING_DISMISSALS
+    appliance_name: str = ""  # the roster's display name, set by the core
+
+
+def _clean_text(value, limit: int) -> str:
+    """*value* as plain display text of at most *limit* characters, or ""
+    for anything that is not a string. Control, format (which includes the
+    bidirectional overrides and isolates), surrogate, private-use and
+    unassigned characters are removed, except that white-space controls and
+    line separators become a space; runs of spaces collapse, the ends are
+    trimmed, and the result is Unicode NFC."""
+    if not isinstance(value, str):
+        return ""
+    value = value[:limit * 4]
+    out = []
+    for ch in value:
+        category = unicodedata.category(ch)
+        if category in ("Zl", "Zp") or (category == "Cc" and ch.isspace()):
+            out.append(" ")
+        elif category in ("Cc", "Cf", "Cs", "Co", "Cn"):
+            continue
+        else:
+            out.append(ch)
+    text = unicodedata.normalize("NFC", "".join(out))
+    text = re.sub(r" {2,}", " ", text).strip()
+    return text[:limit].rstrip()
+
+
+def _enum_or_default(value, allowed: tuple, default: str) -> str:
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in allowed:
+            return value
+    return default
+
+
+def validate_appliance_warnings(body, appliance_id: str) -> tuple[ApplianceWarning, ...]:
+    """The validated warnings of an appliance's reply, or () when there is
+    nothing usable. *body* is the reply as received (bytes or text, parsed
+    here under a size cap) or an already parsed object; *appliance_id* is
+    the appliance the request was made of.
+
+    The expected shape is {"appliance_id": "<id>", "warnings": [{"id":
+    "<id>", "severity": "<name>", "title": "<text>", "message": "<text>",
+    "dismissal": "<hint>"}, ...]}. The reply is refused (()) when it is too
+    large, is not JSON, is not an object, names a different appliance than
+    *appliance_id* or has no list of warnings. Within a list: an entry that
+    is not an object, has an invalid or repeated id, or has no title once
+    cleaned is dropped; over-long text and a long list are truncated, not
+    refused; severity and dismissal fall back to their defaults. Never
+    raises."""
+    try:
+        if not isinstance(appliance_id, str) or not appliance_id:
+            return ()
+        if isinstance(body, (bytes, bytearray, str)):
+            if len(body) > APPLIANCE_WARNINGS_MAX_BODY_BYTES:
+                return ()
+            body = json.loads(body)
+        if not isinstance(body, dict) or body.get("appliance_id") != appliance_id:
+            return ()
+        entries = body.get("warnings")
+        if not isinstance(entries, list):
+            return ()
+        out: list[ApplianceWarning] = []
+        seen: set[str] = set()
+        for entry in entries[:APPLIANCE_WARNINGS_MAX_SCAN]:
+            if len(out) >= APPLIANCE_WARNINGS_MAX:
+                break
+            if not isinstance(entry, dict):
+                continue
+            warning_id = entry.get("id")
+            if (
+                not isinstance(warning_id, str)
+                or APPLIANCE_WARNING_ID_RE.fullmatch(warning_id) is None
+                or warning_id in seen
+            ):
+                continue
+            title = _clean_text(entry.get("title"), APPLIANCE_WARNING_TITLE_MAX)
+            if not title:
+                continue
+            seen.add(warning_id)
+            out.append(ApplianceWarning(
+                id=warning_id,
+                severity=_enum_or_default(
+                    entry.get("severity"), APPLIANCE_WARNING_SEVERITIES,
+                    APPLIANCE_WARNING_DEFAULT_SEVERITY,
+                ),
+                title=title,
+                message=_clean_text(entry.get("message"), APPLIANCE_WARNING_MESSAGE_MAX),
+                dismissal=_enum_or_default(
+                    entry.get("dismissal"), APPLIANCE_WARNING_DISMISSALS,
+                    APPLIANCE_WARNING_DEFAULT_DISMISSAL,
+                ),
+            ))
+        return tuple(out)
+    except Exception:
+        return ()
+
+
+def attribute_appliance_warnings(warnings, name: str) -> tuple[ApplianceWarning, ...]:
+    """*warnings* carrying *name* (the roster's display name) as their
+    source, whatever the appliance said about itself."""
+    return tuple(replace(w, appliance_name=name) for w in warnings)
 
 
 # ---- poll decisions ------------------------------------------------------
@@ -566,12 +726,16 @@ def webui_address(ip: str, port: int) -> tuple[str, str, int]:
     return "http", ip, port
 
 
-def appliance_states(roster: Iterable, repeats: dict | None = None) -> tuple:
+def appliance_states(
+    roster: Iterable, repeats: dict | None = None, appliance_warnings: dict | None = None,
+) -> tuple:
     """One ApplianceState per roster entry, in roster order. *repeats* maps
-    an appliance id to its repeat record. Entries are read defensively:
+    an appliance id to its repeat record, *appliance_warnings* to its
+    validated warnings. Entries are read defensively:
     anything an entry does not carry takes its neutral value. Fields fed by
     the status poll (error, volume, mute) are not known here and stay None."""
     repeats = repeats or {}
+    appliance_warnings = appliance_warnings or {}
     out = []
     for r in roster:
         appliance_id = getattr(r, "appliance_id", "") or ""
@@ -604,6 +768,8 @@ def appliance_states(roster: Iterable, repeats: dict | None = None) -> tuple:
             webui_scheme=scheme,
             webui_host=host,
             webui_port=web_port,
+            supplies_warnings=bool(getattr(r, "dial_warnings", False)),
+            warnings=appliance_warnings.get(appliance_id, ()),
         ))
     return tuple(out)
 

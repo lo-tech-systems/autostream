@@ -30,17 +30,27 @@ from typing import Callable
 import dial_core_poll
 from dial_auth import AUTH_UNAUTHORIZED, auth_map
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, EQ_OPTIMISTIC_WINDOW_S, OUTPUTS_REFRESH_S,
-    ActionResult, Artwork, CoreSnapshot, DialInfo, EqState, FocusState, NowPlaying,
-    OutputsState, TransportRequest, _roster_entry, appliance_states, artwork_key, eq_gain,
-    with_accepted_replay,
+    ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
+    EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
+    ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
+    NowPlaying, OutputsState, TransportRequest, WarningState, _roster_entry, appliance_states,
+    artwork_key, attribute_appliance_warnings, eq_gain, with_accepted_replay,
 )
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
 from dial_mdns import get_roster as _default_get_roster
+from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
+from dial_network import request_reboot as _default_reboot
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_repeat_store import repeat_store
+from dial_sdhealth import is_low as _sd_is_low
+from dial_update_watch import (
+    PHASE_REBOOT, PHASE_VERIFY, STATUS_FAILURE, STATUS_IN_PROGRESS, STATUS_SUCCESS,
+    UPDATE_SEEN_PATH, UpdateWatcher, read_seen_marker, write_seen_marker,
+)
+from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key
+from dial_warnings import ACTION_DISMISS, WarningManager, WarningStore
 
 _UNSET = object()
 
@@ -93,12 +103,16 @@ class _CoreState:
     outputs_refresh_at: float           # when the watched list was last asked for
     outputs_watch: dict                 # watcher -> appliance id it follows
     eq_watch: dict
+    wifi_down_streak: int               # consecutive down link readings; reset by a connected or ignored one
+    sd_low: bool                        # the SD health incident latch (with hysteresis)
+    appliance_warnings: dict            # appliance id -> its validated, attributed warnings
 
 
 # Held in the state for the core's own use, never published as such.
 _PRIVATE_FIELDS = (
     "roster", "repeats", "outputs_optimistic", "eq_optimistic",
     "outputs_refresh_at", "outputs_watch", "eq_watch",
+    "wifi_down_streak", "sd_low", "appliance_warnings",
 )
 
 _SNAPSHOT_FIELDS = tuple(
@@ -116,6 +130,27 @@ class RepeatOutcome:
     ok: bool                # an ok:true ack
     replay_accepted: bool   # an ack for a replay of the appliance the dial follows
     stop_acked: bool        # an ok ack for the Stop this dial sent
+
+
+@dataclass(frozen=True)
+class WarningChange:
+    """What a source did to one warning, for a caller that turns warnings
+    into screens: reported present (`active`, and `began` when that started
+    a new incident rather than refreshing one) or cleared."""
+    warning_id: str
+    active: bool
+    began: bool = False
+
+
+@dataclass(frozen=True)
+class SourceEffects:
+    """The outcome of folding a source's reading: the warning changes in the
+    order they were made, whether the update run reached its reboot phase
+    (the caller shows its restarting screen), and whether the caller should
+    repaint."""
+    changes: tuple = ()
+    restarting: bool = False
+    signal: bool = True
 
 
 def _initial_state(dial_id: str) -> _CoreState:
@@ -150,6 +185,9 @@ def _initial_state(dial_id: str) -> _CoreState:
         outputs_refresh_at=0.0,
         outputs_watch={},
         eq_watch={},
+        wifi_down_streak=0,
+        sd_low=False,
+        appliance_warnings={},
     )
 
 
@@ -161,6 +199,10 @@ class DialCore:
         get_roster: Callable = _default_get_roster,
         *,
         clock: Callable[[], float] | None = None,
+        warnings: WarningManager | None = None,
+        update_watcher: UpdateWatcher | None = None,
+        update_seen_path: str = UPDATE_SEEN_PATH,
+        reboot: Callable[[], bool] | None = None,
     ) -> None:
         self._dial_id = dial_id
         self._get_display_targets = get_display_targets
@@ -174,6 +216,18 @@ class DialCore:
         self._seq = 0
         self._subscribers: dict[int, Callable[[], None]] = {}
         self._next_handle = 1
+        # The warning manager owns which warnings are active, snoozed or due
+        # and persists the snoozes; it has its own leaf lock and is never
+        # called while it could call back. The update watcher and the seen
+        # marker belong to the update source, driven from one thread.
+        self.warnings = warnings if warnings is not None else WarningManager(
+            WARNING_DESCRIPTORS, WarningStore(),
+        )
+        self.update_watcher = update_watcher if update_watcher is not None else UpdateWatcher()
+        self.update_seen_path = update_seen_path
+        self._update_seen: str | None = None
+        self._reboot = reboot if reboot is not None else _default_reboot
+        self._sync_warnings_locked(self._state)
         self._snapshot = self._build_snapshot_locked()
 
     # ---- reading -----------------------------------------------------------
@@ -279,7 +333,7 @@ class DialCore:
                     state.focus = dataclasses.replace(state.focus, idle_focus=idle)
             if repeats is not _UNSET:
                 state.repeats = repeats
-                state.appliances = appliance_states(state.roster, state.repeats)
+                state.appliances = self._derive_appliances_locked(state)
         return self._publish(mutate)
 
     # ---- field writes ------------------------------------------------------
@@ -293,7 +347,7 @@ class DialCore:
         """Store the merged roster and re-derive the appliance list."""
         def mutate(state: _CoreState) -> None:
             state.roster = roster
-            state.appliances = appliance_states(roster, state.repeats)
+            state.appliances = self._derive_appliances_locked(state)
         return self._publish(mutate)
 
     def set_field(self, name: str, value) -> CoreSnapshot:
@@ -882,6 +936,256 @@ class DialCore:
                 repeat_store.clear(appliance_id)
         self.drop_pending_focus(appliance_id)
         return RepeatOutcome(False, False, False)
+
+    # ---- warnings, update watch and sources ----------------------------------
+
+    def _derive_appliances_locked(self, state: _CoreState) -> tuple:
+        """The appliance list for the roster and repeat records held. An
+        appliance that has left the roster loses its warnings (their
+        incidents end with it)."""
+        known = {getattr(r, "appliance_id", "") for r in state.roster}
+        stale = [aid for aid in state.appliance_warnings if aid not in known]
+        if stale:
+            held = dict(state.appliance_warnings)
+            for appliance_id in stale:
+                for warning in held.pop(appliance_id):
+                    self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
+            state.appliance_warnings = held
+            self._sync_warnings_locked(state)
+        return appliance_states(state.roster, state.repeats, state.appliance_warnings)
+
+    def _sync_warnings_locked(self, state: _CoreState) -> bool:
+        """Copy the warning manager's runtime state and due warning into
+        *state*. True when either changed."""
+        warnings = tuple(
+            WarningState(wid, active, severity, active_since, snoozed_until)
+            for wid, active, severity, active_since, snoozed_until in self.warnings.runtime()
+        )
+        due = self.warnings.due()
+        due_id = due.id if due is not None else None
+        changed = warnings != state.warnings or due_id != state.due_warning_id
+        state.warnings = warnings
+        state.due_warning_id = due_id
+        return changed
+
+    def warning_active(self, warning_id: str, severity=None) -> WarningChange:
+        """A source reports its condition present (again); a repeat only
+        refreshes the severity. The change says whether this began a new
+        incident."""
+        began = []
+
+        def mutate(state: _CoreState) -> "bool | None":
+            began.append(self.warnings.set_active(warning_id, severity))
+            return None if self._sync_warnings_locked(state) else False
+        self._publish(mutate)
+        return WarningChange(warning_id, True, bool(began and began[0]))
+
+    def warning_cleared(self, warning_id: str) -> WarningChange:
+        """A source reports its condition gone: the incident ends and any
+        dismissal of it, in memory or on disk, is forgotten."""
+        def mutate(state: _CoreState) -> "bool | None":
+            self.warnings.clear(warning_id)
+            return None if self._sync_warnings_locked(state) else False
+        self._publish(mutate)
+        return WarningChange(warning_id, False)
+
+    def dismiss_warning(self, warning_id: str) -> ActionResult:
+        """Apply the warning's dismiss policy (an incident-scoped or timed
+        snooze, persisted or not). Refused with wrong_state for a warning
+        that is not registered or has no Dismiss button, as a notice has
+        none."""
+        desc = self.warnings.descriptor(warning_id)
+        if desc is None or not any(b.action == ACTION_DISMISS for b in desc.buttons):
+            return ActionResult(False, "wrong_state")
+
+        def mutate(state: _CoreState) -> "bool | None":
+            self.warnings.dismiss(warning_id)
+            return None if self._sync_warnings_locked(state) else False
+        self._publish(mutate)
+        return ActionResult(True)
+
+    def request_dial_reboot(self) -> bool:
+        """Ask for a reboot of the dial's own system (rate-gated where the
+        request is made). True when a request went out."""
+        try:
+            return bool(self._reboot())
+        except Exception:
+            logging.debug("dial core: reboot request raised", exc_info=True)
+            return False
+
+    def flush_warnings(self) -> None:
+        """Write any snooze changed since the last write. File I/O: call
+        with no lock held."""
+        self.warnings.flush()
+
+    def wifi_down_streak(self) -> int:
+        return self._state.wifi_down_streak
+
+    def sd_low(self) -> bool:
+        return self._state.sd_low
+
+    def on_network_view(self, view) -> SourceEffects:
+        """Fold a network reading. Connected: the streak resets, the
+        ever-connected latch is set and the No-WiFi warning clears. Down:
+        the streak grows, and at NOWIFI_PROMPT_STREAK the warning goes
+        active unless the link has never been connected since the process
+        started. Ignored (setup mode, reboot pending): the streak resets,
+        the warning and the latch stay. Any other reading changes nothing
+        but the held view."""
+        changes = []
+
+        def mutate(state: _CoreState) -> "bool | None":
+            changed = state.network != view
+            state.network = view
+            if view.link == LINK_CONNECTED:
+                changed = changed or not state.wifi_ever_connected
+                state.wifi_ever_connected = True
+                state.wifi_down_streak = 0
+                self.warnings.clear("nowifi")
+                changes.append(WarningChange("nowifi", False))
+            elif view.link == LINK_DOWN:
+                state.wifi_down_streak += 1
+                if state.wifi_ever_connected and state.wifi_down_streak >= NOWIFI_PROMPT_STREAK:
+                    began = self.warnings.set_active("nowifi")
+                    changes.append(WarningChange("nowifi", True, began))
+            elif view.link == LINK_IGNORED:
+                state.wifi_down_streak = 0
+            if self._sync_warnings_locked(state):
+                changed = True
+            return None if changed else False
+        self._publish(mutate)
+        return SourceEffects(tuple(changes))
+
+    def on_sd_health_view(self, view) -> SourceEffects:
+        """Fold an SD health reading: low (with hysteresis) starts or
+        refreshes the warning with the percent as its severity; not low
+        ends the incident."""
+        changes = []
+
+        def mutate(state: _CoreState) -> "bool | None":
+            changed = state.sd_health != view
+            state.sd_health = view
+            low = _sd_is_low(view, state.sd_low)
+            state.sd_low = low
+            if low:
+                began = self.warnings.set_active("sdhealth", view.percent)
+                changes.append(WarningChange("sdhealth", True, began))
+            else:
+                self.warnings.clear("sdhealth")
+                changes.append(WarningChange("sdhealth", False))
+            if self._sync_warnings_locked(state):
+                changed = True
+            return None if changed else False
+        self._publish(mutate)
+        return SourceEffects(tuple(changes))
+
+    def apply_update_view(self, view) -> SourceEffects:
+        """Fold a software update reading. A run in progress raises the
+        progress card, except in the reboot phase (the caller shows its
+        restarting screen; the updater has already asked for the reboot)
+        and the verify phase (nothing until the verdict). A finished run
+        raises its result card once, recorded in the seen marker, which
+        is file I/O, so call with no lock held."""
+        def store(state: _CoreState) -> "bool | None":
+            if state.update == view:
+                return False
+            state.update = view
+        self._publish(store)
+        changes = []
+        restarting = False
+        if view.status == STATUS_IN_PROGRESS:
+            if view.phase == PHASE_REBOOT:
+                changes.append(self.warning_cleared("update"))
+                restarting = True
+            elif view.phase != PHASE_VERIFY:
+                changes.append(self.warning_active("update", view))
+        elif view.status in (STATUS_SUCCESS, STATUS_FAILURE):
+            marker = view.last_run_at or f"{view.status}-{view.tag}"
+            if self._update_seen is None:
+                self._update_seen = read_seen_marker(self.update_seen_path)
+            if marker == self._update_seen:
+                return SourceEffects(signal=False)
+            self._update_seen = marker
+            write_seen_marker(marker, self.update_seen_path)
+            changes.append(self.warning_cleared("update"))
+            changes.append(self.warning_active("update_result", view))
+        return SourceEffects(tuple(changes), restarting)
+
+    def tick_update_watch(self, now: float) -> SourceEffects | None:
+        """Read the update result file when it has changed (a stat() while
+        nothing is happening) and fold it; None when it has not changed."""
+        view = self.update_watcher.tick(now)
+        return None if view is None else self.apply_update_view(view)
+
+    def expire_warnings(self) -> SourceEffects:
+        """Clear the warnings that have been active for their
+        auto_clear_after_s, as a source's clear would, and refresh the
+        published due warning (a snooze may just have run out)."""
+        changes = tuple(self.warning_cleared(wid) for wid in self.warnings.expired())
+
+        def mutate(state: _CoreState) -> "bool | None":
+            return None if self._sync_warnings_locked(state) else False
+        self._publish(mutate)
+        return SourceEffects(changes)
+
+    def tick_housekeeping(self, now: float) -> SourceEffects:
+        """The once-a-second tick: the update watch, expired warnings, and
+        the snooze write. Does file I/O: call with no lock held."""
+        watched = self.tick_update_watch(now)
+        expired = self.expire_warnings()
+        self.flush_warnings()
+        if watched is None:
+            return expired
+        return SourceEffects(
+            watched.changes + expired.changes, watched.restarting, watched.signal or expired.signal,
+        )
+
+    def set_appliance_warnings(self, appliance_id: str, warnings) -> ActionResult:
+        """Accept the validated warnings of *appliance_id* (what
+        validate_appliance_warnings returns; an empty set clears them).
+        The set replaces the appliance's previous one: each warning is
+        registered on the manager as a data-driven row and reported active,
+        those no longer present end their incidents, and each carries the
+        roster's name for the appliance. Refused with unknown_appliance
+        for an id not on the roster. Defensively keeps at most
+        APPLIANCE_WARNINGS_MAX well-formed, distinct warnings."""
+        outcome = []
+
+        def mutate(state: _CoreState) -> "bool | None":
+            current = next((a for a in state.appliances if a.appliance_id == appliance_id), None)
+            if current is None:
+                outcome.append(ActionResult(False, "unknown_appliance"))
+                return False
+            outcome.append(ActionResult(True))
+            clean, seen = [], set()
+            for w in tuple(warnings)[:APPLIANCE_WARNINGS_MAX]:
+                if (
+                    isinstance(w, ApplianceWarning) and w.id not in seen
+                    and APPLIANCE_WARNING_ID_RE.fullmatch(w.id) is not None
+                ):
+                    seen.add(w.id)
+                    clean.append(w)
+            new = attribute_appliance_warnings(clean, current.name)
+            old = state.appliance_warnings.get(appliance_id, ())
+            if new == old:
+                return False
+            for warning in old:
+                if warning.id not in seen:
+                    self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
+            for warning in new:
+                key = appliance_warning_key(appliance_id, warning.id)
+                self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
+                self.warnings.set_active(key, warning.severity)
+            held = dict(state.appliance_warnings)
+            if new:
+                held[appliance_id] = new
+            else:
+                held.pop(appliance_id, None)
+            state.appliance_warnings = held
+            state.appliances = appliance_states(state.roster, state.repeats, held)
+            self._sync_warnings_locked(state)
+        self._publish(mutate)
+        return outcome[0]
 
     def current_source_service_name(self) -> str | None:
         """mDNS service name of the display's chosen artwork source, or

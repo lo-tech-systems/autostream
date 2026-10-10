@@ -12014,3 +12014,33 @@ class TestTransportRecordedByTheTaps:
         display.on_repeat_result("transport", aid, 412, {"ok": False, "error": "fading_out"})
         request = display._core.snapshot().transport
         assert (request.state, request.error) == ("rejected", "fading_out")
+
+
+class TestApplianceWarningsAndTheView:
+    def test_a_due_appliance_warning_has_no_page_and_requests_none(self):
+        from dial_core_state import ApplianceWarning
+        display, fb, gt = _make_display(targets=[], roster=[_roster_entry(auth="authorized")])
+        display.enable()
+        display._poll_once()
+        _fold(display)
+        aid = display._core.snapshot().appliances[0].appliance_id
+        warning = ApplianceWarning("stylus", "warning", "Replace stylus", "500 h", "day")
+        assert display._core.set_appliance_warnings(aid, (warning,)).accepted
+        assert display._core.snapshot().due_warning_id.startswith("appliance:")
+        display._request_due_warning(wake=True)
+        assert display._screen_request is None
+        display._tick_warnings()
+        _fold(display)
+        assert display._screen == "main" and display._warning_screen is None
+
+    def test_a_dial_warning_still_pages_while_an_appliance_one_waits(self):
+        from dial_core_state import ApplianceWarning
+        display, fb, gt = _make_display(targets=[], roster=[_roster_entry(auth="authorized")])
+        display.enable()
+        display._poll_once()
+        _fold(display)
+        aid = display._core.snapshot().appliances[0].appliance_id
+        display._core.set_appliance_warnings(
+            aid, (ApplianceWarning("stylus", "critical", "Replace stylus", "", "day"),))
+        display._warning_active("sdhealth", severity=40)
+        assert display._screen_request == "sdhealth"

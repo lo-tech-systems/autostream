@@ -720,3 +720,217 @@ class TestApplianceStates:
         assert applied["webui_scheme"].default == "http"
         assert applied["webui_host"].default == ""
         assert applied["webui_port"].default == 0
+
+
+# ---------------------------------------------------------------------------
+# Appliance-supplied warnings: the validator over hostile replies
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+TARGET = "a" * 20
+
+
+def _reply(*warnings, appliance_id=TARGET, **extra):
+    return {"appliance_id": appliance_id, "warnings": list(warnings), **extra}
+
+
+def _warn(**kw):
+    base = {"id": "stylus", "severity": "warning", "title": "Replace stylus",
+            "message": "500 h played", "dismissal": "week"}
+    base.update(kw)
+    return base
+
+
+def _validate(body, appliance_id=TARGET):
+    return cs.validate_appliance_warnings(body, appliance_id)
+
+
+class TestApplianceWarningValidator:
+    def test_a_good_reply_comes_through_whole(self):
+        (w,) = _validate(_reply(_warn()))
+        assert w == cs.ApplianceWarning("stylus", "warning", "Replace stylus", "500 h played", "week")
+        assert w.appliance_name == ""
+
+    def test_raw_text_and_bytes_are_parsed(self):
+        text = json.dumps(_reply(_warn()))
+        assert len(_validate(text)) == 1
+        assert len(_validate(text.encode())) == 1
+
+    def test_an_oversized_body_is_refused_unparsed(self):
+        body = json.dumps(_reply(_warn(message="x" * cs.APPLIANCE_WARNINGS_MAX_BODY_BYTES)))
+        assert len(body) > cs.APPLIANCE_WARNINGS_MAX_BODY_BYTES
+        assert _validate(body) == ()
+        assert _validate(body.encode()) == ()
+
+    def test_a_body_at_the_cap_is_still_read(self):
+        good = json.dumps(_reply(_warn()))
+        pad = " " * (cs.APPLIANCE_WARNINGS_MAX_BODY_BYTES - len(good))
+        assert len(good + pad) == cs.APPLIANCE_WARNINGS_MAX_BODY_BYTES
+        assert len(_validate(good + pad)) == 1
+
+    def test_too_many_warnings_keeps_the_first_few(self):
+        warnings = [_warn(id=f"w{i}", title=f"T{i}") for i in range(50)]
+        out = _validate(_reply(*warnings))
+        assert [w.id for w in out] == [f"w{i}" for i in range(cs.APPLIANCE_WARNINGS_MAX)]
+
+    def test_a_list_padded_with_junk_is_scanned_only_so_far(self):
+        junk = [None] * cs.APPLIANCE_WARNINGS_MAX_SCAN
+        assert _validate(_reply(*junk, _warn())) == ()
+
+    def test_long_strings_are_truncated_not_refused(self):
+        (w,) = _validate(_reply(_warn(title="t" * 500, message="m" * 5000)))
+        assert w.title == "t" * cs.APPLIANCE_WARNING_TITLE_MAX
+        assert w.message == "m" * cs.APPLIANCE_WARNING_MESSAGE_MAX
+
+    def test_control_characters_are_stripped(self):
+        (w,) = _validate(_reply(_warn(title="Re\x00pl\x1bace\x7f stylus", message="a\x07b\x9fc")))
+        assert w.title == "Replace stylus" and w.message == "abc"
+
+    def test_white_space_controls_and_separators_become_one_space(self):
+        (w,) = _validate(_reply(_warn(title="Replace\r\n\tstylus", message="one two three")))
+        assert w.title == "Replace stylus"
+        assert w.message == "one two three"
+
+    @pytest.mark.parametrize("ch", [
+        "‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨",
+        "⁩", "‎", "‏", "؜", "​", "﻿",
+    ])
+    def test_bidi_and_format_characters_are_stripped(self, ch):
+        (w,) = _validate(_reply(_warn(title=f"ab{ch}cd", message=f"{ch}x{ch}")))
+        assert w.title == "abcd" and w.message == "x"
+
+    def test_private_use_surrogate_and_unassigned_are_stripped(self):
+        (w,) = _validate(_reply(_warn(title="ab\ud800c\U000e0080d")))
+        assert w.title == "abcd"
+
+    def test_text_is_normalised_to_nfc(self):
+        (w,) = _validate(_reply(_warn(title="Café", message="Å")))
+        assert w.title == "Café" and w.message == "Å"
+
+    def test_a_stripped_character_between_a_base_and_a_mark_still_gives_nfc(self):
+        (w,) = _validate(_reply(_warn(title="e​́x")))
+        assert w.title == "éx"
+
+    def test_a_title_empty_after_cleaning_drops_the_warning(self):
+        assert _validate(_reply(_warn(title="‮\x00  "))) == ()
+        assert _validate(_reply(_warn(title=None))) == ()
+        assert _validate(_reply(_warn(title=7))) == ()
+        assert _validate(_reply({"id": "x"})) == ()
+
+    def test_a_missing_or_wrong_typed_message_is_empty(self):
+        (a,) = _validate(_reply(_warn(message=None)))
+        (b,) = _validate(_reply(_warn(message={"x": 1})))
+        assert a.message == "" and b.message == ""
+
+    @pytest.mark.parametrize("value", ["fatal", "", None, 3, ["critical"], {"a": 1}])
+    def test_an_unknown_severity_takes_the_default(self, value):
+        (w,) = _validate(_reply(_warn(severity=value)))
+        assert w.severity == cs.APPLIANCE_WARNING_DEFAULT_SEVERITY == cs.SEVERITY_INFO
+
+    @pytest.mark.parametrize("value", ["info", "warning", "critical", " Critical ", "WARNING"])
+    def test_the_known_severities_are_kept(self, value):
+        (w,) = _validate(_reply(_warn(severity=value)))
+        assert w.severity == value.strip().lower()
+
+    @pytest.mark.parametrize("value", ["forever", "", None, 9, "Week;rm"])
+    def test_an_unknown_dismissal_hint_takes_the_default(self, value):
+        (w,) = _validate(_reply(_warn(dismissal=value)))
+        assert w.dismissal == cs.APPLIANCE_WARNING_DEFAULT_DISMISSAL == cs.DISMISS_DAY
+
+    @pytest.mark.parametrize("value", ["day", "week", "none"])
+    def test_the_known_dismissal_hints_are_kept(self, value):
+        (w,) = _validate(_reply(_warn(dismissal=value)))
+        assert w.dismissal == value
+
+    @pytest.mark.parametrize("bad", [
+        "", "Stylus", "has space", "a/b", "a:b", "../x", "a" * 33, "café", "x\n", "x\x00",
+        "١", None, 5, ["a"], {"a": 1}, "a.b", "A",
+    ])
+    def test_an_invalid_id_drops_that_warning_only(self, bad):
+        out = _validate(_reply(_warn(id=bad), _warn(id="ok", title="Fine")))
+        assert [w.id for w in out] == ["ok"]
+
+    @pytest.mark.parametrize("good", ["a", "a" * 32, "stylus-1", "a_b", "0", "-", "_"])
+    def test_a_valid_id_is_kept(self, good):
+        (w,) = _validate(_reply(_warn(id=good)))
+        assert w.id == good
+
+    def test_a_repeated_id_keeps_the_first(self):
+        out = _validate(_reply(_warn(title="First"), _warn(title="Second")))
+        assert [w.title for w in out] == ["First"]
+
+    def test_a_body_for_another_appliance_is_refused(self):
+        assert _validate(_reply(_warn(), appliance_id="b" * 20)) == ()
+        assert _validate({"warnings": [_warn()]}) == ()
+        assert _validate(_reply(_warn(), appliance_id=None)) == ()
+        assert _validate(_reply(_warn(), appliance_id=123)) == ()
+        assert _validate(_reply(_warn(), appliance_id=TARGET.upper())) == ()
+
+    @pytest.mark.parametrize("target", ["", None, 5, ["x"]])
+    def test_a_missing_target_id_refuses_everything(self, target):
+        assert cs.validate_appliance_warnings(_reply(_warn(), appliance_id=target), target) == ()
+
+    @pytest.mark.parametrize("body", [
+        None, 0, 1.5, True, [], ["x"], "", "not json", "null", "[]", "[1,2]", '"str"', "{",
+        b"\xff\xfe\x00", b"", {}, {"appliance_id": TARGET},
+        {"appliance_id": TARGET, "warnings": None},
+        {"appliance_id": TARGET, "warnings": "x"}, {"appliance_id": TARGET, "warnings": {"a": 1}},
+        {"appliance_id": TARGET, "warnings": 5},
+    ])
+    def test_garbage_shapes_give_nothing(self, body):
+        assert _validate(body) == ()
+
+    def test_entries_that_are_not_objects_are_skipped(self):
+        out = _validate(_reply(None, 5, "x", ["id"], [], _warn()))
+        assert [w.id for w in out] == ["stylus"]
+
+    def test_deeply_nested_json_is_refused_not_raised(self):
+        body = "[" * 3000 + "]" * 3000
+        assert _validate(body) == ()
+        assert _validate('{"appliance_id": "%s", "warnings": %s}' % (TARGET, body)) == ()
+
+    def test_extra_keys_are_ignored(self):
+        (w,) = _validate(_reply(_warn(priority=999, interrupting=True, wake=True, url="http://x"),
+                                priority=1, wake=True))
+        assert not hasattr(w, "priority") and not hasattr(w, "interrupting")
+
+    def test_hostile_text_is_data_never_interpreted(self):
+        (w,) = _validate(_reply(_warn(title="{percent} %s ${x}", message="<b>x</b>; rm -rf /")))
+        assert w.title == "{percent} %s ${x}"
+        assert w.message == "<b>x</b>; rm -rf /"
+
+    def test_it_never_raises_on_odd_objects(self):
+        class Boom(dict):
+            def get(self, *a):
+                raise RuntimeError("no")
+        assert _validate(Boom()) == ()
+
+    def test_attribution_replaces_whatever_the_appliance_claimed(self):
+        out = _validate(_reply(_warn(appliance_name="Spoofed", id="a", title="t"), _warn(id="b")))
+        named = cs.attribute_appliance_warnings(out, "Kitchen")
+        assert [w.appliance_name for w in named] == ["Kitchen", "Kitchen"]
+        assert all(w.appliance_name == "" for w in out)
+
+
+class TestApplianceWarningsSlot:
+    def test_an_appliance_supplies_no_warnings_by_default(self):
+        (state,) = cs.appliance_states([_entry()])
+        assert state.supplies_warnings is False
+        assert state.warnings == ()
+
+    def test_the_capability_flag_reads_the_entry(self):
+        entry = _entry()
+        object.__setattr__(entry, "dial_warnings", True)
+        (state,) = cs.appliance_states([entry])
+        assert state.supplies_warnings is True
+
+    def test_warnings_are_slotted_by_appliance_id(self):
+        a, b = _entry("Kitchen"), _entry("Lounge")
+        w = cs.ApplianceWarning("x", "info", "T", "", "day", "Lounge")
+        first, second = cs.appliance_states([a, b], None, {b.appliance_id: (w,)})
+        assert first.warnings == () and second.warnings == (w,)
+
+    def test_new_fields_are_appended(self):
+        names = [f.name for f in dataclasses.fields(cs.ApplianceState)]
+        assert names[-2:] == ["supplies_warnings", "warnings"]

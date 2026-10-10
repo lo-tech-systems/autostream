@@ -38,6 +38,11 @@ WARNINGS_PATH = "/var/lib/autostream/dial-warnings.json"
 ACTION_DISMISS = "dismiss"
 ACTION_RESTART = "restart"
 
+# Warnings an appliance supplies are registered at run time under keys that
+# start with this prefix (then the appliance id), so a persisted snooze for
+# one is kept across a restart until its appliance reports it again.
+APPLIANCE_WARNING_PREFIX = "appliance:"
+
 
 @dataclass(frozen=True)
 class WarningButton:
@@ -74,6 +79,8 @@ class WarningDescriptor:
     auto_clear_after_s: the manager reports the warning expired once it
       has been active this long, and the display clears it like a source
       would. None: only the source clears it.
+    source_name: who the warning is attributed to (an appliance warning
+      carries its appliance's name); "" for the dial's own.
     A warning with no buttons is a notice: it cannot be dismissed and its
     page is touch-inert.
     """
@@ -90,6 +97,7 @@ class WarningDescriptor:
     progress_for: "object | None" = None
     interrupting: bool = False
     auto_clear_after_s: "float | None" = None
+    source_name: str = ""
 
     def button_for(self, zone: TouchZone) -> "WarningButton | None":
         for button in self.buttons:
@@ -180,10 +188,17 @@ class WarningManager:
         self._lock = threading.Lock()
         self._state: dict[str, _WarningRuntime] = {wid: _WarningRuntime() for wid in self._by_id}
         self._dirty = False
+        # Snoozes loaded for appliance warnings that are not registered yet:
+        # held (and written back) until the warning is registered or the
+        # snooze runs out, so a restart does not forget them.
+        self._parked: dict[str, float] = {}
         now = clock()
         loaded = store.load()
         for wid, until in loaded.items():
             desc = self._by_id.get(wid)
+            if desc is None and wid.startswith(APPLIANCE_WARNING_PREFIX) and until > now:
+                self._parked[wid] = until
+                continue
             if desc is None or not desc.persisted or until <= now:
                 # An expired, unknown or non-persisted entry is pruned;
                 # the next flush writes the pruned map back.
@@ -197,16 +212,67 @@ class WarningManager:
         return self._by_id.get(warning_id)
 
     def descriptors(self) -> tuple[WarningDescriptor, ...]:
-        return tuple(self._by_id[wid] for wid in self._order)
+        with self._lock:
+            return tuple(self._by_id[wid] for wid in self._order)
 
     def button_owner(self, zone: TouchZone) -> "tuple[WarningDescriptor, WarningButton] | None":
         """The first registered warning with a button on *zone*."""
-        for wid in self._order:
-            desc = self._by_id[wid]
+        with self._lock:
+            descs = tuple(self._by_id[wid] for wid in self._order)
+        for desc in descs:
             button = desc.button_for(zone)
             if button is not None:
                 return desc, button
         return None
+
+    # ---- run-time registration ------------------------------------------------
+
+    def register(self, descriptor: WarningDescriptor) -> None:
+        """Add a warning at run time, or replace the descriptor of one that
+        is registered (its runtime state is kept). A parked snoozed
+        dismissal for the id is picked up by a new registration."""
+        with self._lock:
+            wid = descriptor.id
+            if wid in self._by_id:
+                self._by_id[wid] = descriptor
+                return
+            self._by_id[wid] = descriptor
+            self._order = self._order + (wid,)
+            state = _WarningRuntime()
+            self._state[wid] = state
+            until = self._parked.pop(wid, None)
+            if until is not None and descriptor.persisted and until > self._clock():
+                state.dismissed_until = until
+            elif until is not None:
+                self._dirty = True
+
+    def unregister(self, warning_id: str) -> None:
+        """Remove a run-time warning: its incident ends like a source's
+        clear (any dismissal forgotten, in memory and on disk) and the
+        descriptor goes."""
+        with self._lock:
+            state = self._state.pop(warning_id, None)
+            desc = self._by_id.pop(warning_id, None)
+            self._order = tuple(wid for wid in self._order if wid != warning_id)
+            if self._parked.pop(warning_id, None) is not None:
+                self._dirty = True
+            if state is not None and desc is not None and desc.persisted \
+                    and state.dismissed_until is not None:
+                self._dirty = True
+
+    def runtime(self) -> tuple:
+        """Every registered warning's runtime state, in registry order, as
+        (id, active, severity, active_since, snoozed_until) tuples; the last
+        is None unless a dismissal is still in force (inf: until the source
+        clears the warning)."""
+        with self._lock:
+            now = self._clock()
+            return tuple(
+                (wid, s.active, s.severity, s.active_since,
+                 s.dismissed_until if s.dismissed_until is not None and now < s.dismissed_until else None)
+                for wid in self._order
+                for s in (self._state[wid],)
+            )
 
     # ---- source API -------------------------------------------------------
 
@@ -244,11 +310,11 @@ class WarningManager:
     # ---- dismiss policy -----------------------------------------------------
 
     def dismiss(self, warning_id: str) -> None:
-        desc = self._by_id.get(warning_id)
-        if desc is None:
-            return
         with self._lock:
-            state = self._state[warning_id]
+            desc = self._by_id.get(warning_id)
+            state = self._state.get(warning_id)
+            if desc is None or state is None:
+                return
             if desc.snooze_for is None:
                 state.dismissed_until = math.inf
             else:
@@ -325,4 +391,8 @@ class WarningManager:
                 and state.dismissed_until is not None
                 and math.isfinite(state.dismissed_until)
             }
+            now = self._clock()
+            for wid in [w for w, until in self._parked.items() if until <= now]:
+                del self._parked[wid]
+            snapshot.update(self._parked)
         self._store.save(snapshot)

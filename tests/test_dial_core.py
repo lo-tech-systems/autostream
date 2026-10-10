@@ -1239,3 +1239,543 @@ class TestTransport:
             amap.force_due.side_effect = lambda *a: seen.append(core._lock.locked())
             core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "x"})
         assert seen == [False]
+
+
+# ---------------------------------------------------------------------------
+# Warnings, update watch and sources in the core
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+from dial_core_state import ApplianceWarning, NOWIFI_PROMPT_STREAK, validate_appliance_warnings  # noqa: E402
+from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView  # noqa: E402
+from dial_sdhealth import STATUS_VALID, SdHealthView  # noqa: E402
+from dial_update_watch import UpdateView, UpdateWatcher  # noqa: E402
+from dial_warning_text import (  # noqa: E402
+    APPLIANCE_WARNING_PRIORITY, WARNING_DESCRIPTORS, appliance_warning_key,
+)
+from dial_warnings import WarningManager, WarningStore  # noqa: E402
+
+
+def _warning_core(tmp_path=None, wall=None, store_path=None, reboot=None, **kwargs):
+    wall = wall or _Clock(1_000_000.0)
+    manager = WarningManager(
+        WARNING_DESCRIPTORS, WarningStore(store_path), clock=wall,
+    )
+    core = DialCore(
+        "dial-1", lambda: [], lambda: [], warnings=manager,
+        update_watcher=UpdateWatcher(str(tmp_path / "update-result.env")) if tmp_path else None,
+        update_seen_path=str(tmp_path / "seen") if tmp_path else "/nonexistent/seen",
+        reboot=reboot, **kwargs,
+    )
+    return core, manager, wall
+
+
+def _net(link):
+    return NetworkView(link=link)
+
+
+def _sd(percent, status=STATUS_VALID):
+    return SdHealthView(status=status, percent=percent)
+
+
+def _progress(phase="packages", percent=45):
+    return UpdateView(status="in_progress", percent=percent, phase=phase, tag="0.7.0",
+                      previous_tag="0.6.0", last_run_at="2000-01-01T00:00:00+00:00")
+
+
+def _finished(status="success", **kw):
+    fields = dict(status=status, percent=100, phase="done", tag="0.7.0", previous_tag="0.6.0",
+                  last_run_at="2000-01-01T01:00:00+00:00")
+    fields.update(kw)
+    return UpdateView(**fields)
+
+
+def _row(core, warning_id):
+    return next(w for w in core.snapshot().warnings if w.id == warning_id)
+
+
+class TestWarningSnapshot:
+    def test_the_snapshot_lists_every_registered_warning_in_registry_order(self):
+        core, manager, _ = _warning_core()
+        snap = core.snapshot()
+        assert [w.id for w in snap.warnings] == [d.id for d in WARNING_DESCRIPTORS]
+        assert all(not w.active for w in snap.warnings)
+        assert snap.due_warning_id is None
+
+    def test_an_active_warning_shows_its_severity_and_start(self):
+        core, manager, wall = _warning_core()
+        change = core.warning_active("sdhealth", 40)
+        assert change.began is True and change.active is True
+        row = _row(core, "sdhealth")
+        assert row.active and row.severity == 40 and row.active_since == wall.t
+        assert core.snapshot().due_warning_id == "sdhealth"
+
+    def test_a_repeat_refreshes_and_is_not_a_new_incident(self):
+        core, manager, wall = _warning_core()
+        core.warning_active("sdhealth", 40)
+        seq = core.snapshot().seq
+        wall.t += 10
+        change = core.warning_active("sdhealth", 40)
+        assert change.began is False
+        assert core.snapshot().seq == seq
+        core.warning_active("sdhealth", 30)
+        assert _row(core, "sdhealth").severity == 30
+        assert _row(core, "sdhealth").active_since == 1_000_000.0
+
+    def test_the_due_id_follows_priority(self):
+        core, manager, _ = _warning_core()
+        core.warning_active("sdhealth", 40)
+        core.warning_active("nowifi")
+        assert core.snapshot().due_warning_id == "nowifi"
+        core.warning_active("update", _progress())
+        assert core.snapshot().due_warning_id == "update"
+        core.warning_cleared("update")
+        core.warning_cleared("nowifi")
+        assert core.snapshot().due_warning_id == "sdhealth"
+
+    def test_a_dismissed_warning_is_not_due_until_the_snooze_runs_out(self):
+        core, manager, wall = _warning_core()
+        core.warning_active("sdhealth", 40)
+        assert core.dismiss_warning("sdhealth") == ActionResult(True)
+        assert core.snapshot().due_warning_id is None
+        assert _row(core, "sdhealth").snoozed_until is not None
+        wall.t += 7 * 86400.0 + 1
+        core.expire_warnings()
+        assert core.snapshot().due_warning_id == "sdhealth"
+        assert _row(core, "sdhealth").snoozed_until is None
+
+    def test_an_incident_scoped_dismissal_is_infinite_until_the_source_clears(self):
+        core, manager, wall = _warning_core()
+        core.warning_active("nowifi")
+        core.dismiss_warning("nowifi")
+        assert _row(core, "nowifi").snoozed_until == float("inf")
+        core.warning_cleared("nowifi")
+        assert _row(core, "nowifi").snoozed_until is None and not _row(core, "nowifi").active
+
+    def test_dismiss_is_refused_for_a_notice_and_an_unknown_id(self):
+        core, manager, _ = _warning_core()
+        core.warning_active("update", _progress())
+        assert core.dismiss_warning("update") == ActionResult(False, "wrong_state")
+        assert core.dismiss_warning("nope") == ActionResult(False, "wrong_state")
+        assert core.snapshot().due_warning_id == "update"
+
+    def test_dismissing_an_update_result_card_works(self):
+        core, manager, _ = _warning_core()
+        core.warning_active("update_result", _finished())
+        assert core.dismiss_warning("update_result").accepted
+        assert core.snapshot().due_warning_id is None
+
+    def test_a_snooze_written_to_the_store_survives_a_new_core(self, tmp_path):
+        path = str(tmp_path / "warnings.json")
+        wall = _Clock(1_000_000.0)
+        core, manager, _ = _warning_core(wall=wall, store_path=path)
+        core.warning_active("sdhealth", 40)
+        core.dismiss_warning("sdhealth")
+        core.flush_warnings()
+        wall.t += 3600
+        again, manager2, _ = _warning_core(wall=wall, store_path=path)
+        again.warning_active("sdhealth", 40)
+        assert again.snapshot().due_warning_id is None
+        assert _row(again, "sdhealth").snoozed_until is not None
+
+
+class TestNetworkSource:
+    def test_a_connected_reading_sets_the_latch_and_the_view(self):
+        core, manager, _ = _warning_core()
+        effects = core.on_network_view(_net(LINK_CONNECTED))
+        snap = core.snapshot()
+        assert snap.wifi_ever_connected is True and snap.network == _net(LINK_CONNECTED)
+        assert [(c.warning_id, c.active) for c in effects.changes] == [("nowifi", False)]
+        assert effects.signal is True
+
+    def test_down_never_prompts_until_the_link_has_connected(self):
+        core, manager, _ = _warning_core()
+        for _ in range(NOWIFI_PROMPT_STREAK + 3):
+            effects = core.on_network_view(_net(LINK_DOWN))
+            assert effects.changes == ()
+        assert core.wifi_down_streak() == NOWIFI_PROMPT_STREAK + 3
+        assert core.snapshot().due_warning_id is None
+
+    def test_a_loss_after_connecting_activates_at_the_streak(self):
+        core, manager, _ = _warning_core()
+        core.on_network_view(_net(LINK_CONNECTED))
+        for _ in range(NOWIFI_PROMPT_STREAK - 1):
+            assert core.on_network_view(_net(LINK_DOWN)).changes == ()
+        effects = core.on_network_view(_net(LINK_DOWN))
+        (change,) = effects.changes
+        assert (change.warning_id, change.active, change.began) == ("nowifi", True, True)
+        assert core.snapshot().due_warning_id == "nowifi"
+        again = core.on_network_view(_net(LINK_DOWN))
+        assert again.changes[0].began is False
+
+    def test_ignored_resets_the_streak_only(self):
+        core, manager, _ = _warning_core()
+        core.on_network_view(_net(LINK_CONNECTED))
+        for _ in range(NOWIFI_PROMPT_STREAK):
+            core.on_network_view(_net(LINK_DOWN))
+        core.on_network_view(_net(LINK_IGNORED))
+        assert core.wifi_down_streak() == 0
+        assert core.snapshot().wifi_ever_connected is True
+        assert manager.is_active("nowifi")
+
+    def test_an_unknown_reading_changes_only_the_held_view(self):
+        core, manager, _ = _warning_core()
+        core.on_network_view(_net(LINK_CONNECTED))
+        core.on_network_view(_net(LINK_DOWN))
+        effects = core.on_network_view(_net(LINK_UNKNOWN))
+        assert effects.changes == ()
+        assert core.wifi_down_streak() == 1
+        assert core.snapshot().network == _net(LINK_UNKNOWN)
+
+    def test_connected_ends_the_incident_and_forgets_the_dismissal(self):
+        core, manager, _ = _warning_core()
+        core.on_network_view(_net(LINK_CONNECTED))
+        for _ in range(NOWIFI_PROMPT_STREAK):
+            core.on_network_view(_net(LINK_DOWN))
+        core.dismiss_warning("nowifi")
+        assert manager.is_snoozed("nowifi")
+        core.on_network_view(_net(LINK_CONNECTED))
+        assert not manager.is_snoozed("nowifi") and not manager.is_active("nowifi")
+        assert core.snapshot().due_warning_id is None
+
+
+class TestSdHealthSource:
+    def test_low_activates_with_the_percent_and_recovery_clears(self):
+        core, manager, _ = _warning_core()
+        effects = core.on_sd_health_view(_sd(1))
+        (change,) = effects.changes
+        assert (change.warning_id, change.active, change.began) == ("sdhealth", True, True)
+        assert core.sd_low() is True
+        assert _row(core, "sdhealth").severity == 1
+        assert core.snapshot().sd_health == _sd(1)
+        effects = core.on_sd_health_view(_sd(100))
+        assert effects.changes[0].active is False
+        assert core.sd_low() is False and core.snapshot().due_warning_id is None
+
+    def test_a_reading_without_a_percent_ends_the_incident(self):
+        core, manager, _ = _warning_core()
+        core.on_sd_health_view(_sd(1))
+        core.on_sd_health_view(SdHealthView())
+        assert not manager.is_active("sdhealth")
+
+
+class TestUpdateSource:
+    def test_progress_raises_the_card_and_records_the_view(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        effects = core.apply_update_view(_progress())
+        (change,) = effects.changes
+        assert (change.warning_id, change.active, change.began) == ("update", True, True)
+        assert core.snapshot().update == _progress()
+        assert core.snapshot().due_warning_id == "update"
+        assert effects.restarting is False
+
+    def test_the_reboot_phase_clears_the_card_and_asks_for_restarting(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        core.apply_update_view(_progress())
+        effects = core.apply_update_view(_progress(phase="reboot", percent=96))
+        assert effects.restarting is True
+        assert [(c.warning_id, c.active) for c in effects.changes] == [("update", False)]
+        assert not manager.is_active("update")
+
+    def test_the_verify_phase_does_nothing(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        effects = core.apply_update_view(_progress(phase="verify", percent=96))
+        assert effects.changes == () and effects.restarting is False and effects.signal is True
+        assert not manager.is_active("update")
+
+    def test_a_finished_run_raises_its_result_once_and_records_the_marker(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        core.apply_update_view(_progress())
+        effects = core.apply_update_view(_finished())
+        assert [(c.warning_id, c.active) for c in effects.changes] == [
+            ("update", False), ("update_result", True),
+        ]
+        assert (tmp_path / "seen").read_text().strip() == "2000-01-01T01:00:00+00:00"
+        again = core.apply_update_view(_finished())
+        assert again.changes == () and again.signal is False
+
+    def test_a_marker_from_an_earlier_run_suppresses_the_card(self, tmp_path):
+        (tmp_path / "seen").write_text("2000-01-01T01:00:00+00:00\n")
+        core, manager, _ = _warning_core(tmp_path)
+        effects = core.apply_update_view(_finished())
+        assert effects.changes == () and not manager.is_active("update_result")
+
+    def test_the_marker_falls_back_to_status_and_tag(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        core.apply_update_view(_finished(last_run_at=""))
+        assert (tmp_path / "seen").read_text().strip() == "success-0.7.0"
+
+    def test_an_empty_view_signals_but_changes_nothing(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        effects = core.apply_update_view(UpdateView())
+        assert effects.changes == () and effects.signal is True
+
+    def test_the_watch_reads_the_file_only_when_it_changes(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        assert core.tick_update_watch(1.0) is None
+        (tmp_path / "update-result.env").write_text(
+            "STATUS=in_progress\nPERCENT_COMPLETE=30\nPHASE=packages\nTAG=0.7.0\n")
+        effects = core.tick_update_watch(2.0)
+        assert effects is not None and effects.changes[0].warning_id == "update"
+        assert _row(core, "update").severity.percent == 30
+        assert core.tick_update_watch(3.0) is None
+
+    def test_the_result_card_clears_itself_after_an_hour(self, tmp_path):
+        core, manager, wall = _warning_core(tmp_path)
+        core.apply_update_view(_finished())
+        wall.t += 3599
+        assert core.expire_warnings().changes == ()
+        wall.t += 2
+        effects = core.expire_warnings()
+        assert [(c.warning_id, c.active) for c in effects.changes] == [("update_result", False)]
+        assert core.snapshot().due_warning_id is None
+
+
+class TestHousekeepingAndReboot:
+    def test_the_tick_folds_the_watch_expiry_and_flush_together(self, tmp_path):
+        path = str(tmp_path / "warnings.json")
+        core, manager, wall = _warning_core(tmp_path, store_path=path)
+        core.warning_active("sdhealth", 40)
+        core.dismiss_warning("sdhealth")
+        (tmp_path / "update-result.env").write_text(
+            "STATUS=success\nPERCENT_COMPLETE=100\nTAG=0.7.0\nLAST_RUN_AT=t1\n")
+        effects = core.tick_housekeeping(5.0)
+        assert [c.warning_id for c in effects.changes] == ["update", "update_result"]
+        assert "sdhealth" in json.loads((tmp_path / "warnings.json").read_text())
+        wall.t += 3601
+        effects = core.tick_housekeeping(6.0)
+        assert [(c.warning_id, c.active) for c in effects.changes] == [("update_result", False)]
+
+    def test_a_quiet_tick_publishes_nothing(self, tmp_path):
+        core, manager, _ = _warning_core(tmp_path)
+        seq = core.snapshot().seq
+        effects = core.tick_housekeeping(5.0)
+        assert effects.changes == () and core.snapshot().seq == seq
+
+    def test_a_reboot_request_goes_to_the_injected_function(self):
+        calls = []
+        core, manager, _ = _warning_core(reboot=lambda: calls.append(1) or True)
+        assert core.request_dial_reboot() is True
+        assert calls == [1]
+
+    def test_a_rate_gated_or_raising_request_is_false(self):
+        core, manager, _ = _warning_core(reboot=lambda: False)
+        assert core.request_dial_reboot() is False
+
+        def boom():
+            raise RuntimeError("no")
+        core, manager, _ = _warning_core(reboot=boom)
+        assert core.request_dial_reboot() is False
+
+    def test_warning_changes_are_published_outside_the_core_lock(self):
+        core, manager, _ = _warning_core()
+        seen = []
+        core.subscribe(lambda: seen.append(core._lock.locked()))
+        core.warning_active("sdhealth", 5)
+        core.on_network_view(_net(LINK_CONNECTED))
+        assert seen and not any(seen)
+
+
+def _lounge_core(tmp_path=None, **kwargs):
+    core, manager, wall = _warning_core(tmp_path, **kwargs)
+    core.set_roster([_entry(AID, "Kitchen"), _entry(BID, "autostream on Lounge")])
+    return core, manager, wall
+
+
+def _stylus(**kw):
+    base = dict(id="stylus", severity="warning", title="Replace stylus", message="500 h", dismissal="week")
+    base.update(kw)
+    return ApplianceWarning(**base)
+
+
+def _slot(core, appliance_id):
+    return core.snapshot().appliance(appliance_id)
+
+
+class TestApplianceWarningsFeed:
+    def test_a_validated_set_lands_in_the_appliance_slot_with_its_name(self):
+        core, manager, _ = _lounge_core()
+        assert core.set_appliance_warnings(BID, (_stylus(),)) == ActionResult(True)
+        (w,) = _slot(core, BID).warnings
+        assert w.appliance_name == "Lounge" and w.title == "Replace stylus"
+        assert _slot(core, AID).warnings == ()
+
+    def test_the_capability_flag_is_false_for_every_appliance_today(self):
+        core, manager, _ = _lounge_core()
+        assert not any(a.supplies_warnings for a in core.snapshot().appliances)
+
+    def test_the_manager_gets_a_data_driven_row_namespaced_by_appliance(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        key = appliance_warning_key(BID, "stylus")
+        desc = manager.descriptor(key)
+        assert key == f"appliance:{BID}:stylus"
+        assert desc is not None and desc.title == "Replace stylus"
+        assert desc.message_for(None) == "500 h"
+        assert desc.interrupting is False and desc.auto_clear_after_s is None
+        assert desc.source_name == "Lounge" and desc.persisted is True
+        assert manager.is_active(key)
+        assert core.snapshot().due_warning_id == key
+
+    def test_the_dial_sets_priority_below_every_dial_warning_in_a_fixed_band(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (
+            _stylus(id="a", severity="info"), _stylus(id="b", severity="warning"),
+            _stylus(id="c", severity="critical"),
+        ))
+        priorities = {
+            w: manager.descriptor(appliance_warning_key(BID, w)).priority for w in "abc"
+        }
+        assert priorities == {
+            "a": APPLIANCE_WARNING_PRIORITY["info"], "b": APPLIANCE_WARNING_PRIORITY["warning"],
+            "c": APPLIANCE_WARNING_PRIORITY["critical"],
+        }
+        assert max(priorities.values()) < min(d.priority for d in WARNING_DESCRIPTORS)
+        assert core.snapshot().due_warning_id == appliance_warning_key(BID, "c")
+
+    def test_a_dial_warning_outranks_an_appliance_warning(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(severity="critical"),))
+        core.warning_active("sdhealth", 40)
+        assert core.snapshot().due_warning_id == "sdhealth"
+        core.dismiss_warning("sdhealth")
+        assert core.snapshot().due_warning_id == appliance_warning_key(BID, "stylus")
+
+    def test_the_same_warning_id_on_two_appliances_is_two_warnings(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(AID, (_stylus(),))
+        core.set_appliance_warnings(BID, (_stylus(),))
+        assert manager.is_active(appliance_warning_key(AID, "stylus"))
+        assert manager.is_active(appliance_warning_key(BID, "stylus"))
+        core.dismiss_warning(appliance_warning_key(AID, "stylus"))
+        assert manager.is_snoozed(appliance_warning_key(AID, "stylus"))
+        assert not manager.is_snoozed(appliance_warning_key(BID, "stylus"))
+
+    def test_the_dismissal_hint_picks_the_snooze_or_makes_a_notice(self):
+        core, manager, wall = _lounge_core()
+        core.set_appliance_warnings(BID, (
+            _stylus(id="d", dismissal="day"), _stylus(id="w", dismissal="week"),
+            _stylus(id="n", dismissal="none"),
+        ))
+        day, week, none = (appliance_warning_key(BID, w) for w in "dwn")
+        assert core.dismiss_warning(none) == ActionResult(False, "wrong_state")
+        core.dismiss_warning(day)
+        core.dismiss_warning(week)
+        wall.t += 86400.0 + 1
+        assert not manager.is_snoozed(day) and manager.is_snoozed(week)
+        wall.t += 6 * 86400.0
+        assert not manager.is_snoozed(week)
+
+    def test_a_replacement_set_ends_the_incidents_no_longer_present(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(id="a"), _stylus(id="b")))
+        core.dismiss_warning(appliance_warning_key(BID, "a"))
+        core.set_appliance_warnings(BID, (_stylus(id="b"),))
+        assert manager.descriptor(appliance_warning_key(BID, "a")) is None
+        assert [w.id for w in _slot(core, BID).warnings] == ["b"]
+        assert appliance_warning_key(BID, "a") not in [w.id for w in core.snapshot().warnings]
+        core.set_appliance_warnings(BID, (_stylus(id="a"),))
+        assert not manager.is_snoozed(appliance_warning_key(BID, "a"))
+
+    def test_an_empty_set_clears_everything_for_the_appliance(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        core.set_appliance_warnings(BID, ())
+        assert _slot(core, BID).warnings == ()
+        assert core.snapshot().due_warning_id is None
+        assert [w.id for w in core.snapshot().warnings] == [d.id for d in WARNING_DESCRIPTORS]
+
+    def test_the_same_set_again_publishes_nothing(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        seq = core.snapshot().seq
+        assert core.set_appliance_warnings(BID, (_stylus(),)).accepted
+        assert core.snapshot().seq == seq
+
+    def test_a_changed_text_replaces_the_row_and_keeps_the_incident(self):
+        core, manager, wall = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        key = appliance_warning_key(BID, "stylus")
+        core.dismiss_warning(key)
+        wall.t += 5
+        core.set_appliance_warnings(BID, (_stylus(title="Replace the stylus"),))
+        assert manager.descriptor(key).title == "Replace the stylus"
+        assert manager.is_snoozed(key)
+
+    def test_an_unknown_appliance_is_refused(self):
+        core, manager, _ = _lounge_core()
+        assert core.set_appliance_warnings("c" * 20, (_stylus(),)) == ActionResult(False, "unknown_appliance")
+        assert core.snapshot().due_warning_id is None
+
+    def test_the_core_keeps_at_most_the_cap_of_well_formed_distinct_warnings(self):
+        core, manager, _ = _lounge_core()
+        many = tuple(_stylus(id=f"w{i}") for i in range(30))
+        core.set_appliance_warnings(BID, many)
+        assert len(_slot(core, BID).warnings) == 8
+        core.set_appliance_warnings(BID, (_stylus(id="Bad Id"), "junk", None, _stylus(id="a"), _stylus(id="a")))
+        assert [w.id for w in _slot(core, BID).warnings] == ["a"]
+
+    def test_an_appliance_leaving_the_roster_loses_its_warnings(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        core.set_roster([_entry(AID, "Kitchen")])
+        assert manager.descriptor(appliance_warning_key(BID, "stylus")) is None
+        assert core.snapshot().due_warning_id is None
+        assert core.snapshot().appliance(BID) is None
+
+    def test_a_roster_refresh_keeps_warnings_for_appliances_still_present(self):
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        core.set_roster([_entry(AID, "Kitchen"), _entry(BID, "autostream on Lounge", playing=True)])
+        assert len(_slot(core, BID).warnings) == 1
+        assert manager.is_active(appliance_warning_key(BID, "stylus"))
+
+    def test_a_persisted_snooze_survives_a_restart_before_the_appliance_reports(self, tmp_path):
+        path = str(tmp_path / "warnings.json")
+        wall = _Clock(1_000_000.0)
+        core, manager, _ = _lounge_core(wall=wall, store_path=path)
+        core.set_appliance_warnings(BID, (_stylus(),))
+        key = appliance_warning_key(BID, "stylus")
+        core.dismiss_warning(key)
+        core.flush_warnings()
+        wall.t += 3600
+
+        again, manager2, _ = _lounge_core(wall=wall, store_path=path)
+        assert manager2.descriptor(key) is None
+        manager2._dirty = True          # something else changed meanwhile
+        again.flush_warnings()
+        assert key in json.loads((tmp_path / "warnings.json").read_text())
+        again.set_appliance_warnings(BID, (_stylus(),))
+        assert manager2.is_snoozed(key)
+        assert again.snapshot().due_warning_id is None
+
+    def test_a_parked_snooze_that_runs_out_is_dropped_on_the_next_write(self, tmp_path):
+        path = str(tmp_path / "warnings.json")
+        wall = _Clock(1_000_000.0)
+        core, manager, _ = _lounge_core(wall=wall, store_path=path)
+        core.set_appliance_warnings(BID, (_stylus(dismissal="day"),))
+        core.dismiss_warning(appliance_warning_key(BID, "stylus"))
+        core.flush_warnings()
+        wall.t += 3600
+        again, manager2, _ = _lounge_core(wall=wall, store_path=path)
+        wall.t += 86400
+        manager2._dirty = True
+        again.flush_warnings()
+        assert json.loads((tmp_path / "warnings.json").read_text()) == {}
+
+    def test_the_validator_output_feeds_straight_in(self):
+        core, manager, _ = _lounge_core()
+        body = {"appliance_id": BID, "warnings": [
+            {"id": "stylus", "severity": "critical", "title": "Replace stylus‮", "message": "x" * 500},
+            {"id": "BAD ID", "title": "dropped"},
+        ]}
+        core.set_appliance_warnings(BID, validate_appliance_warnings(body, BID))
+        (w,) = _slot(core, BID).warnings
+        assert w.title == "Replace stylus" and len(w.message) == 120 and w.severity == "critical"
+
+    def test_the_view_has_no_page_for_one_so_nothing_is_requested(self):
+        from dial_display import _WARNING_BY_ID
+        core, manager, _ = _lounge_core()
+        core.set_appliance_warnings(BID, (_stylus(),))
+        assert core.snapshot().due_warning_id not in _WARNING_BY_ID

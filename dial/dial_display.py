@@ -62,16 +62,9 @@ from dial_display_compositor import (
     InfoValueView,
     ListState,
     NOT_AUTHORISED_TEXT,
-    NOWIFI_DISMISS_TEXT,
-    NOWIFI_MESSAGE_TEXT,
-    NOWIFI_RESTART_TEXT,
     OutputViewState,
     OverlayState,
     RepeatViewState,
-    SDHEALTH_BODY_TEXT,
-    SDHEALTH_BODY_TEXT_NO_PERCENT,
-    SDHEALTH_DISMISS_TEXT,
-    SDHEALTH_TITLE_TEXT,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
@@ -92,7 +85,7 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, EqBand, EqState, NowPlaying, OutputRow, PickerRow, SelectorRow, artwork_key, availability, choose_pin,
+    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, NOWIFI_PROMPT_STREAK, EqBand, EqState, NowPlaying, OutputRow, PickerRow, SelectorRow, artwork_key, availability, choose_pin,
     dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
     eq_gain, reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
     walk_order, with_accepted_replay,
@@ -109,33 +102,51 @@ from dial_mdns import get_roster as _default_get_roster
 from dial_network import (
     LINK_CONNECTED,
     LINK_DOWN,
-    LINK_IGNORED,
     NetworkView,
 )
 from dial_network import request_reboot as _request_reboot
-from dial_sdhealth import SdHealthView, is_low as _sd_is_low
+from dial_sdhealth import SdHealthView
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
+from dial_warning_text import (  # re-exported: the warning table and its text live there
+    NOWIFI_DISMISS_TEXT,
+    NOWIFI_MESSAGE_TEXT,
+    NOWIFI_RESTART_TEXT,
+    SDHEALTH_BODY_TEXT,
+    SDHEALTH_BODY_TEXT_NO_PERCENT,
+    SDHEALTH_CRITICAL_PERCENT,
+    SDHEALTH_CRITICAL_SNOOZE_S,
+    SDHEALTH_DISMISS_TEXT,
+    SDHEALTH_SNOOZE_S,
+    SDHEALTH_TITLE_TEXT,
+    UPDATE_FAILED_TEXT,
+    UPDATE_PHASE_FALLBACK_TEXT,
+    UPDATE_PHASE_TEXT,
+    UPDATE_RESULT_DISMISS_TEXT,
+    UPDATE_RESULT_SECONDS,
+    UPDATED_TEXT,
+    UPDATING_TEXT,
+    WARNING_DESCRIPTORS,
+    _WARNING_BY_ID,
+    _WARNING_BY_SCREEN,
+    _sdhealth_message_for,
+    _sdhealth_snooze_for,
+    _update_message_for,
+    _update_progress_for,
+    _update_result_message_for,
+    _update_result_title_for,
+    _update_title_for,
+)
 from dial_update_watch import (
-    PHASE_REBOOT,
-    PHASE_VERIFY,
-    STATUS_FAILURE,
-    STATUS_IN_PROGRESS,
-    STATUS_SUCCESS,
     UPDATE_SEEN_PATH,
     UpdateView,
     UpdateWatcher,
-    read_seen_marker,
-    write_seen_marker,
 )
 from dial_touch_layout import (
     CONTENT_COMPACT,
     CONTENT_LARGE,
     CONTENT_RICH,
-    GEOMETRY_NONE,
-    GEOMETRY_NOWIFI,
-    GEOMETRY_SDHEALTH,
     LayoutMetrics,
     TouchZone,
     list_layout_for,
@@ -152,10 +163,8 @@ from dial_volume import (
 from dial_warnings import (
     ACTION_DISMISS,
     ACTION_RESTART,
-    WarningButton,
     WarningDescriptor,
     WarningManager,
-    WarningStore,
 )
 
 # The artwork fetch is shared with the OwnTone metadata publisher, which also
@@ -287,167 +296,11 @@ def _reveal_ease(t: float) -> float:
 # _tick_wifi_flash(); nothing else in the process ticks for it.
 WIFI_FLASH_HALF_PERIOD_S = 0.5
 
-# How many consecutive "down" polls (15 s apart) open the No-WiFi page on
-# their own: three, so a brief drop that recovers within about 45 s only
-# ever flashes the icon. A tap on the flashing icon opens the page at once.
-NOWIFI_PROMPT_STREAK = 3
-
 # The "Restarting..." screen is meant to end when the reboot takes the panel
 # down. If the reboot request itself failed (nginx down, helper refused),
 # fall back to main after this long so the dial is never stuck on it; the
 # warning tick then raises the No-WiFi page again if the link is still down.
 RESTARTING_TIMEOUT_SECONDS = 90.0
-
-# How long a Dismiss of the SD card warning holds: a week, or a day once
-# the reading is under SDHEALTH_CRITICAL_PERCENT. Persisted, so a restart
-# does not bring the page back early; forgotten when the reading recovers.
-SDHEALTH_SNOOZE_S = 7 * 86400.0
-SDHEALTH_CRITICAL_PERCENT = 3
-SDHEALTH_CRITICAL_SNOOZE_S = 86400.0
-
-
-def _sdhealth_snooze_for(percent) -> float:
-    if isinstance(percent, int) and percent < SDHEALTH_CRITICAL_PERCENT:
-        return SDHEALTH_CRITICAL_SNOOZE_S
-    return SDHEALTH_SNOOZE_S
-
-
-def _sdhealth_message_for(percent) -> str:
-    if percent is None:
-        return SDHEALTH_BODY_TEXT_NO_PERCENT
-    return SDHEALTH_BODY_TEXT.format(percent=percent)
-
-
-# The software update cards. The in-progress card's title is fixed and its
-# message is a short label chosen by the update's phase (never the result
-# file's long message, which is for the appliance's web page); the result
-# card says how the run ended and names the version. All of it must fit on
-# the smallest panel without truncation (tests render every string).
-UPDATING_TEXT = "Updating..."
-UPDATED_TEXT = "Updated"
-UPDATE_FAILED_TEXT = "Update failed"
-UPDATE_RESULT_DISMISS_TEXT = "Dismiss"
-UPDATE_PHASE_FALLBACK_TEXT = "Please wait"
-UPDATE_PHASE_TEXT = {
-    "download": "Downloading",
-    "prepare": "Preparing",
-    "packages": "Upgrading OS",
-    "python": "Installing",
-    "files": "Installing",
-    "configure": "Installing",
-    "staged": "Restarting",
-    "reboot": "Restarting",
-}
-
-# How long the result card waits for someone to see it before clearing
-# itself: an update can take most of an hour and is often left unattended.
-# Dismiss clears it sooner.
-UPDATE_RESULT_SECONDS = 3600.0
-
-
-def _update_title_for(_view) -> str:
-    return UPDATING_TEXT
-
-
-def _update_message_for(view) -> str:
-    phase = view.phase if isinstance(view, UpdateView) else ""
-    return UPDATE_PHASE_TEXT.get(phase, UPDATE_PHASE_FALLBACK_TEXT)
-
-
-def _update_progress_for(view) -> "int | None":
-    return view.percent if isinstance(view, UpdateView) else None
-
-
-def _update_result_title_for(view) -> str:
-    if isinstance(view, UpdateView) and view.status == STATUS_SUCCESS:
-        return UPDATED_TEXT
-    return UPDATE_FAILED_TEXT
-
-
-def _update_result_message_for(view) -> str:
-    if not isinstance(view, UpdateView):
-        return ""
-    if view.status == STATUS_SUCCESS:
-        return f"Version {view.tag}" if view.tag else ""
-    if view.rolled_back:
-        return f"Restored {view.previous_tag}" if view.previous_tag else "Restored previous"
-    return f"{view.previous_tag} kept" if view.previous_tag else "Previous kept"
-
-
-# ---------------------------------------------------------------------------
-# On-screen warnings
-#
-# One descriptor per warning. A warning's source (the network poller, the
-# SD health reader) calls _warning_active()/_warning_cleared() on the
-# manager; everything else (which page, which buttons, what a Dismiss
-# means, what survives a restart, which one wins when two are due) is read
-# from its row here. Adding a warning is adding a row plus a source; the
-# screen-policy table, the opener, the painter and the touch dispatch are
-# all driven from this tuple.
-#
-# Priority: a lost link outranks a worn card (the page is the only way to
-# ask for a restart), so "nowifi" carries the higher number.
-#
-# A future appliance-pushed notice would be one more row, for example a
-# stylus-replacement reminder with a month-long persisted snooze that the
-# appliance clears when the user marks the stylus replaced:
-#
-#   WarningDescriptor(
-#       id="stylus", priority=25, screen="stylus", geometry=GEOMETRY_SDHEALTH,
-#       title="Replace stylus", message_for=lambda hours: f"{hours} h played",
-#       buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Dismiss", ACTION_DISMISS),),
-#       persisted=True, snooze_for=lambda _severity: 30 * 86400.0,
-#   )
-#
-# plus one surface-to-geometry entry in dial_touch (the surface name is
-# new, the one-cell geometry is shared) and a source that calls
-# _warning_active("stylus", severity=hours) / _warning_cleared("stylus").
-# ---------------------------------------------------------------------------
-
-WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
-    WarningDescriptor(
-        id="nowifi", priority=100, screen="nowifi", geometry=GEOMETRY_NOWIFI,
-        title=NOWIFI_MESSAGE_TEXT, message_for=None,
-        buttons=(
-            WarningButton(TouchZone.NOWIFI_DISMISS, NOWIFI_DISMISS_TEXT, ACTION_DISMISS),
-            WarningButton(TouchZone.NOWIFI_RESTART, NOWIFI_RESTART_TEXT, ACTION_RESTART),
-        ),
-        persisted=False, snooze_for=None,
-    ),
-    WarningDescriptor(
-        id="sdhealth", priority=50, screen="sdhealth", geometry=GEOMETRY_SDHEALTH,
-        title=SDHEALTH_TITLE_TEXT, message_for=_sdhealth_message_for,
-        buttons=(
-            WarningButton(TouchZone.SDHEALTH_DISMISS, SDHEALTH_DISMISS_TEXT, ACTION_DISMISS),
-        ),
-        persisted=True, snooze_for=_sdhealth_snooze_for,
-    ),
-    # A software update in progress: above No-WiFi (the link may drop while
-    # the system upgrades), no buttons (touch does nothing), shown over
-    # whatever is up and waking the panel; its source clears it.
-    WarningDescriptor(
-        id="update", priority=200, screen="update", geometry=GEOMETRY_NONE,
-        title=UPDATING_TEXT, message_for=_update_message_for,
-        buttons=(),
-        persisted=False, snooze_for=None,
-        title_for=_update_title_for, progress_for=_update_progress_for,
-        interrupting=True,
-    ),
-    # How an update ended: one Dismiss (the SD page's cell), clears itself
-    # after UPDATE_RESULT_SECONDS.
-    WarningDescriptor(
-        id="update_result", priority=150, screen="update_result", geometry=GEOMETRY_SDHEALTH,
-        title=UPDATED_TEXT, message_for=_update_result_message_for,
-        buttons=(
-            WarningButton(TouchZone.SDHEALTH_DISMISS, UPDATE_RESULT_DISMISS_TEXT, ACTION_DISMISS),
-        ),
-        persisted=False, snooze_for=None,
-        title_for=_update_result_title_for,
-        interrupting=True, auto_clear_after_s=UPDATE_RESULT_SECONDS,
-    ),
-)
-_WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
-_WARNING_BY_SCREEN: dict[str, WarningDescriptor] = {d.screen: d for d in WARNING_DESCRIPTORS}
 
 # A plain dark base pushed for the moment between the display switching to
 # show a different appliance and that appliance's own artwork/logo actually
@@ -1133,7 +986,13 @@ class DialDisplay:
         # The appliance model's published snapshots. The poll still signals
         # its own repaints, so nothing here subscribes or reads the snapshot
         # yet: a subscription would wake the repaint thread on every tick.
-        self._core = core if core is not None else DialCore(dial_id, get_display_targets, get_roster)
+        # The warning manager, update watcher and update marker path are
+        # handed to the core when the display builds it (tests inject them).
+        self._core = core if core is not None else DialCore(
+            dial_id, get_display_targets, get_roster, warnings=warnings,
+            update_watcher=update_watcher, update_seen_path=update_seen_path,
+            reboot=lambda: _request_reboot(),
+        )
         # Set by notify_touch_activity() (touch thread, lock-free); consumed
         # by the repaint thread under self._lock.
         self._touch_activity_pending = False
@@ -1338,57 +1197,21 @@ class DialDisplay:
         # discipline as the outputs screen's: written under self._lock by
         # its opener and by on_eq_result's fold (worker thread); read
         # lock-free by the touch thread's eq_step() entry.
-        # ---- Wi-Fi link state (the idle icon and the No-WiFi page) ------
-        # The latest NetworkView from the network poller — written by the
-        # poller's own thread in on_network_view() (a plain reference
-        # assignment, no lock — the on_repeat_result discipline), read at
-        # paint time under self._lock and lock-free by the repaint loop's
-        # deadline scheduling. None until the first poll lands (drawn as an
-        # all-grey, steady icon).
-        self._network: "NetworkView | None" = None
-        # Consecutive down polls; reset by any connected poll. Poller
-        # thread only.
-        self._wifi_down_streak = 0
-        # Whether any poll since this process started has reported the link
-        # connected. Poller thread only (set in on_network_view), never
-        # reset — not by a later down/ignored poll and not by disable()/
-        # enable() or a backend swap: it describes this boot, not the panel.
-        # Read lock-free by the auto-prompt gate on the poller thread and
-        # under self._lock by the idle painter. It splits a DOWN link into
-        # two looks: a dial still connecting after boot (never connected
-        # yet) flashes the icon grey/blank and raises no prompt, while a
-        # dial that has lost a link it had flashes grey/red and raises the
-        # No-WiFi page — the alarm is for a loss, not for booting.
-        self._wifi_ever_connected = False
+        # ---- Wi-Fi link, SD health, warnings and the update watch ---------
+        # All of it lives in the core: the latest network and SD health
+        # readings, the down streak and ever-connected latches (the latter
+        # describes this boot, not the panel: it splits a DOWN link into a
+        # dial still connecting, whose icon flashes grey/blank and raises no
+        # prompt, and one that has lost a link it had, which flashes
+        # grey/red and raises the No-WiFi page), the warning manager and the
+        # update source. The properties further down read them back.
         # The restarting screen's own state, same write/read discipline as
         # self._info (opener under self._lock, cleared by
         # _close_secondary_locked via the policy table).
         self._restarting: "RestartingState | None" = None
-        # ---- SD card health (the warning page and the info row) ---------
-        # The latest reader view: written by the network poller's thread in
-        # on_sd_health_view() (plain reference assignment, no lock), read
-        # at paint time under self._lock.
-        self._sd_health: "SdHealthView | None" = None
-        # The incident latch: True from the first reading below the low
-        # threshold until one strictly above the recover threshold, or
-        # until monitoring is off. Poller thread only.
-        self._sd_low = False
         # The warning page on screen, if any (the one state attribute every
-        # warning row in the policy table shares), and the manager that
-        # owns which warnings are active, snoozed or due. The manager is
-        # injected by tests; the default reads and writes the dial's own
-        # state file.
+        # warning row in the policy table shares).
         self._warning_screen: "WarningScreenState | None" = None
-        self._warnings = warnings if warnings is not None else WarningManager(
-            WARNING_DESCRIPTORS, WarningStore(),
-        )
-        # The software update source: the result file's watcher and the
-        # marker of the last finished result the screen has shown (read on
-        # first use, written when a result card is raised). Repaint thread
-        # only.
-        self._update_watcher = update_watcher if update_watcher is not None else UpdateWatcher()
-        self._update_seen_path = update_seen_path
-        self._update_seen: "str | None" = None
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -1838,6 +1661,21 @@ class DialDisplay:
     _outputs_available = _snapshot_property("outputs_available")
     _eq_available = _snapshot_property("eq_available")
     _idle_affordance = _snapshot_property("idle_affordance")
+    # The link, SD health, warning and update-source state the core holds.
+    _network = property(lambda self: self._core.snapshot().network)
+    _wifi_ever_connected = property(lambda self: self._core.snapshot().wifi_ever_connected)
+    _sd_health = property(lambda self: self._core.snapshot().sd_health)
+    _wifi_down_streak = property(lambda self: self._core.wifi_down_streak())
+    _sd_low = property(lambda self: self._core.sd_low())
+    _warnings = property(lambda self: self._core.warnings)
+    _update_watcher = property(
+        lambda self: self._core.update_watcher,
+        lambda self, value: setattr(self._core, "update_watcher", value),
+    )
+    _update_seen_path = property(
+        lambda self: self._core.update_seen_path,
+        lambda self, value: setattr(self._core, "update_seen_path", value),
+    )
     _last_roster = property(
         lambda self: self._core.roster(),
         lambda self, value: self._core.set_roster(value),
@@ -4650,20 +4488,41 @@ class DialDisplay:
         holds is expected; the manager treats a repeat as a severity
         refresh. A warning that has just become active may wake a
         sleeping panel if it is interrupting; a refresh never does."""
-        began = self._warnings.set_active(warning_id, severity)
-        self._request_due_warning(wake=began)
+        change = self._core.warning_active(warning_id, severity)
+        self._request_due_warning(wake=change.began)
 
     def _warning_cleared(self, warning_id: str) -> None:
         """A source reports its condition gone: the incident ends (any
         dismissal, in memory or on disk, is forgotten), an open page for
         it closes on its own and a pending request for it is dropped.
         Lock-free."""
-        self._warnings.clear(warning_id)
+        self._core.warning_cleared(warning_id)
+        self._close_warning_request(warning_id)
+
+    def _close_warning_request(self, warning_id: str) -> None:
+        """Close the page of a warning whose incident has ended, or drop a
+        pending request for it. Lock-free."""
         screen = _WARNING_BY_ID[warning_id].screen
         if self._screen == screen:
             self._screen_request = _policy(screen).back_to
         elif self._screen_request == screen:
             self._screen_request = None
+
+    def _apply_source_effects(self, effects) -> None:
+        """Turn what a source did to the warnings into screen requests, in
+        the order it did it: a warning reported present is requested if it
+        is due (waking the panel when it just began and interrupts), one
+        cleared closes its page. The update run's reboot phase shows the
+        restarting screen. Lock-free."""
+        for change in effects.changes:
+            if change.active:
+                self._request_due_warning(wake=change.began)
+            else:
+                self._close_warning_request(change.warning_id)
+        if effects.restarting:
+            self._screen_request = "restarting"
+        if effects.signal:
+            self._overlay_signal.set()
 
     def _request_due_warning(self, wake: bool = False) -> None:
         """Request the page of the highest-priority warning that is active
@@ -4679,7 +4538,9 @@ class DialDisplay:
         without self._lock: plain reads and one plain request write, the
         same writes on_network_view() makes."""
         desc = self._warnings.due()
-        if desc is None:
+        if desc is None or desc.id not in _WARNING_BY_ID:
+            # A warning with no page of its own (one an appliance supplies)
+            # is published to the core's other consumers only.
             return
         if desc.interrupting:
             if self._screen in ("restarting", desc.screen) or self._screen_request == "restarting":
@@ -4715,18 +4576,7 @@ class DialDisplay:
         unknown (a failed read): nothing changes at all.
         Never raises."""
         try:
-            self._network = view
-            if view.link == LINK_CONNECTED:
-                self._wifi_ever_connected = True
-                self._wifi_down_streak = 0
-                self._warning_cleared("nowifi")
-            elif view.link == LINK_DOWN:
-                self._wifi_down_streak += 1
-                if self._wifi_ever_connected and self._wifi_down_streak >= NOWIFI_PROMPT_STREAK:
-                    self._warning_active("nowifi")
-            elif view.link == LINK_IGNORED:
-                self._wifi_down_streak = 0
-            self._overlay_signal.set()
+            self._apply_source_effects(self._core.on_network_view(view))
         except Exception:
             logging.debug("dial display: on_network_view raised", exc_info=True)
 
@@ -4810,7 +4660,7 @@ class DialDisplay:
             # applies the row's policy (incident-scoped or timed, and
             # persisted or not) and the page closes. The icon keeps
             # flashing for No-WiFi; a tap on it re-opens the page.
-            self._warnings.dismiss(desc.id)
+            self._core.dismiss_warning(desc.id)
             self._screen_request = _policy(desc.screen).back_to
             self._overlay_signal.set()
         elif action == ACTION_RESTART:
@@ -4820,7 +4670,7 @@ class DialDisplay:
             # re-shows the screen. Never raises.
             self._screen_request = "restarting"
             self._overlay_signal.set()
-            _request_reboot()
+            self._core.request_dial_reboot()
 
     def nowifi_dismiss_tap(self) -> None:
         """Kept for existing direct callers/tests: the No-WiFi Dismiss cell."""
@@ -4847,10 +4697,9 @@ class DialDisplay:
         no lock held. A warning that has been up for its
         auto_clear_after_s is cleared here, through the same path a
         source's clear takes."""
-        for warning_id in self._warnings.expired():
-            self._warning_cleared(warning_id)
+        self._apply_source_effects(self._core.expire_warnings())
         self._request_due_warning()
-        self._warnings.flush()
+        self._core.flush_warnings()
 
     # ---- Software update: the warning cards ---------------------------------
 
@@ -4859,9 +4708,9 @@ class DialDisplay:
         update result file has changed, map it onto the update cards.
         Lock-free, the on_network_view() discipline. Never raises."""
         try:
-            view = self._update_watcher.tick(time.monotonic())
-            if view is not None:
-                self._apply_update_view(view)
+            effects = self._core.tick_update_watch(time.monotonic())
+            if effects is not None:
+                self._apply_source_effects(effects)
         except Exception:
             logging.debug("dial display: update watch raised", exc_info=True)
 
@@ -4871,24 +4720,7 @@ class DialDisplay:
         the updater already has) and the verify phase (the boot after the
         swap: nothing until the verdict). A finished run shows its result
         card once, recorded in the seen marker."""
-        if view.status == STATUS_IN_PROGRESS:
-            if view.phase == PHASE_REBOOT:
-                self._warning_cleared("update")
-                self._screen_request = "restarting"
-                self._overlay_signal.set()
-            elif view.phase != PHASE_VERIFY:
-                self._warning_active("update", severity=view)
-        elif view.status in (STATUS_SUCCESS, STATUS_FAILURE):
-            marker = view.last_run_at or f"{view.status}-{view.tag}"
-            if self._update_seen is None:
-                self._update_seen = read_seen_marker(self._update_seen_path)
-            if marker == self._update_seen:
-                return
-            self._update_seen = marker
-            write_seen_marker(marker, self._update_seen_path)
-            self._warning_cleared("update")
-            self._warning_active("update_result", severity=view)
-        self._overlay_signal.set()
+        self._apply_source_effects(self._core.apply_update_view(view))
 
     # ---- SD card health: the warning page --------------------------------
 
@@ -4905,14 +4737,7 @@ class DialDisplay:
         clears, an open page closes on its own, and any snooze, including
         one saved across restarts, is forgotten. Never raises."""
         try:
-            self._sd_health = view
-            low = _sd_is_low(view, self._sd_low)
-            self._sd_low = low
-            if low:
-                self._warning_active("sdhealth", severity=view.percent)
-            else:
-                self._warning_cleared("sdhealth")
-            self._overlay_signal.set()
+            self._apply_source_effects(self._core.on_sd_health_view(view))
         except Exception:
             logging.debug("dial display: on_sd_health_view raised", exc_info=True)
 
