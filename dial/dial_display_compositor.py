@@ -199,7 +199,9 @@ class OverlayState:
         nothing and behaves exactly as it did before this feature existed —
         this is the regression guard the existing compositor tests pin.
     pressed: the TouchZone currently being pressed, or None if no zone is
-        pressed. Only meaningful when visible is True.
+        pressed. Only meaningful when visible is True. Populated by the
+        display manager from its own pressed channel at compose time, not
+        published directly by the touch side.
     muted: tri-state — True draws the muted glyph variant, False the
         unmuted variant, and None (unknown, e.g. nothing selected/playing)
         also draws the unmuted variant. See _draw_speaker_glyph() for the

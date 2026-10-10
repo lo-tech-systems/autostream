@@ -1554,12 +1554,25 @@ class TestEffectiveOverlayMerge:
         assert result.title == ""
         assert result.volume is None
 
-    def test_pressed_and_visible_fields_survive_the_merge_unchanged(self):
+    def test_visible_field_survives_the_merge_unchanged(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
-        result = display._effective_overlay_locked(OverlayState(visible=True, pressed=TouchZone.DOWN))
+        result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.visible is True
+
+    def test_pressed_comes_from_the_channel_not_the_snapshot(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+
+        display.set_pressed(TouchZone.DOWN)
+        result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.pressed == TouchZone.DOWN
+
+        # With nothing in the channel, a snapshot that sets pressed itself
+        # is overridden to None — the channel is the single source now.
+        display.set_pressed(None)
+        result = display._effective_overlay_locked(OverlayState(visible=True, pressed=TouchZone.UP))
+        assert result.pressed is None
 
 
 # ---------------------------------------------------------------------------
@@ -1648,6 +1661,8 @@ class TestOverlaySetAndRepaintExecutor:
         display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
         display.notify_touch_activity()
         display.set_overlay(OverlayState(visible=False))
+        display.set_pressed(TouchZone.UP)
+        display.set_pressed(None)
         display.noncomposited_generation()
 
         assert spy_lock.acquire_calls == 0, (
@@ -1692,11 +1707,12 @@ class TestOverlaySetAndRepaintExecutor:
             with patch.object(
                 display._compositor, "compose", wraps=display._compositor.compose
             ) as mock_compose:
+                display.set_overlay(OverlayState(visible=True))
                 # Several rapid signals before the repaint thread gets a
                 # chance to wake — must coalesce into exactly one repaint,
-                # of the LAST (newest) snapshot published.
+                # of the LAST (newest) pressed value published.
                 for zone in (TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP):
-                    display.set_overlay(OverlayState(visible=True, pressed=zone))
+                    display.set_pressed(zone)
 
                 assert done.wait(timeout=2.0), "repaint thread never woke"
                 # A window for a wrongly-duplicated repaint to also land.
@@ -1718,7 +1734,8 @@ class TestOverlaySetAndRepaintExecutor:
         t = _target()
         display, fb, gt = _make_display(targets=[t])
         display.enable()
-        display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
+        display.set_overlay(OverlayState(visible=True))
+        display.set_pressed(TouchZone.UP)
 
         fake_image = Image.new("RGB", (128, 160))
         with patch("dial_display.fetch_target_status",
@@ -2768,6 +2785,22 @@ class TestListStateForHelper:
         )
         assert second_page.has_next is False
 
+    def test_pressed_defaults_to_none(self):
+        selector = dd.SelectorState(
+            rows=(dd.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
+        )
+        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        assert state.pressed is None
+
+    def test_pressed_passes_through_unchanged(self):
+        selector = dd.SelectorState(
+            rows=(dd.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
+        )
+        state = dd._list_state_for(
+            selector, 3, "No devices", dd._selector_list_row, pressed=(TouchZone.LIST_ROW, 1),
+        )
+        assert state.pressed == (TouchZone.LIST_ROW, 1)
+
 
 class TestCurrentPageRows:
     def test_selector_state_page_one(self):
@@ -3486,6 +3519,204 @@ class TestRepeatLineInterpolation:
         display._overlay_signal.clear()
         display._tick_repeat_line()
         assert not display._overlay_signal.is_set()
+
+
+# ---------------------------------------------------------------------------
+# The unified pressed channel: one set_pressed(zone, index) feeding every
+# screen's own frame builder through the shared zone-rect table. The main
+# and idle screens must stay byte-identical to before this channel existed;
+# the selector, picker and repeat screens now draw a wash for a genuine
+# touch on any of their own zones.
+# ---------------------------------------------------------------------------
+
+class TestSetPressedStorage:
+    def test_stores_the_zone_and_index(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._overlay_signal.clear()
+
+        display.set_pressed(TouchZone.LIST_ROW, 2)
+
+        assert display._pressed == (TouchZone.LIST_ROW, 2)
+        assert display._overlay_signal.is_set()
+
+    def test_index_defaults_to_none(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+
+        display.set_pressed(TouchZone.UP)
+
+        assert display._pressed == (TouchZone.UP, None)
+
+    def test_none_zone_clears_the_channel(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.set_pressed(TouchZone.UP)
+        display._overlay_signal.clear()
+
+        display.set_pressed(None)
+
+        assert display._pressed is None
+        assert display._overlay_signal.is_set()
+
+
+class TestPressedChannelFeedsEachScreen:
+    def _opened_selector(self, count=3):
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                     auth="authorized", playing_since=float(i))
+            for i in range(count)
+        ]
+        display, fb, gt = _make_display(targets=targets)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, fb
+
+    def test_selector_row_wash_confined_to_its_row(self):
+        display, fb = self._opened_selector(count=3)
+        width, height = display._active_panel_dims()
+        unpressed = fb.displayed[-1]
+
+        display.set_pressed(TouchZone.LIST_ROW, 1)
+        with display._lock:
+            display._repaint_current_locked()
+        pressed = fb.displayed[-1]
+
+        assert list(unpressed.getdata()) != list(pressed.getdata())
+        layout = list_layout_for(width, height)
+        for i, rect in enumerate(layout.rows):
+            if i == 1:
+                continue
+            assert list(unpressed.crop(rect).getdata()) == list(pressed.crop(rect).getdata())
+
+    def test_picker_back_wash_confined_to_the_bar(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        width, height = display._active_panel_dims()
+        unpressed = fb.displayed[-1]
+
+        display.set_pressed(TouchZone.LIST_BACK)
+        with display._lock:
+            display._repaint_current_locked()
+        pressed = fb.displayed[-1]
+
+        layout = list_layout_for(width, height)
+        assert list(unpressed.crop(layout.back).getdata()) != list(pressed.crop(layout.back).getdata())
+        assert list(unpressed.crop(layout.down).getdata()) == list(pressed.crop(layout.down).getdata())
+        assert list(unpressed.crop(layout.up).getdata()) == list(pressed.crop(layout.up).getdata())
+
+    def test_foreign_zone_on_a_list_screen_washes_nothing(self):
+        display, fb = self._opened_selector(count=1)
+        unpressed = fb.displayed[-1]
+
+        display.set_pressed(TouchZone.NAME)
+        with display._lock:
+            display._repaint_current_locked()
+        pressed = fb.displayed[-1]
+
+        assert list(unpressed.getdata()) == list(pressed.getdata())
+
+    def test_main_screen_feeds_pressed_from_the_channel(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        display.set_overlay(OverlayState(visible=True))
+        display.set_pressed(TouchZone.UP)
+
+        with patch.object(
+            display._compositor, "compose", wraps=display._compositor.compose
+        ) as mock_compose:
+            with display._lock:
+                display._repaint_current_locked()
+        overlay_used = mock_compose.call_args.kwargs["overlay"]
+        assert overlay_used.pressed == TouchZone.UP
+
+    def test_repeat_screen_feeds_pressed_from_the_channel(self):
+        aid = "9" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle"))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+
+        display.set_pressed(TouchZone.REPEAT_PLAY)
+        with display._lock:
+            view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
+        assert view.pressed == TouchZone.REPEAT_PLAY
+
+    def test_repeat_screen_name_wash_is_accepted(self):
+        """The repeat screen shares DOTS/NAME/MUTE with the main screen's
+        top band; the unified channel now surfaces a wash for them there
+        too, matching what the compositor already renders for a main-screen
+        press on the same zones."""
+        aid = "9" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle"))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        unpressed = fb.displayed[-1]
+
+        display.set_pressed(TouchZone.NAME)
+        with display._lock:
+            display._repaint_current_locked()
+        pressed = fb.displayed[-1]
+
+        width, height = display._active_panel_dims()
+        from dial_touch_layout import repeat_layout_for
+        layout = repeat_layout_for(width, height)
+        assert list(unpressed.getdata()) != list(pressed.getdata())
+        assert list(unpressed.crop(layout.dots).getdata()) == list(pressed.crop(layout.dots).getdata())
+        assert list(unpressed.crop(layout.volume_cluster).getdata()) == list(
+            pressed.crop(layout.volume_cluster).getdata()
+        )
+        assert list(unpressed.crop(layout.row).getdata()) == list(pressed.crop(layout.row).getdata())
+
+
+class TestPressedChannelClears:
+    def test_close_secondary_locked_empties_pressed(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.set_pressed(TouchZone.DOWN)
+
+        with display._lock:
+            display._close_secondary_locked()
+
+        assert display._pressed is None
+
+    def test_opening_a_secondary_screen_empties_pressed(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.set_pressed(TouchZone.UP)
+
+        display.open_selector()
+        with display._lock:
+            display._apply_screen_requests_locked()
+
+        assert display._screen == "selector"
+        assert display._pressed is None
+
+    def test_mark_noncomposited_locked_empties_pressed(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display.set_pressed(TouchZone.UP)
+
+        with display._lock:
+            display._mark_noncomposited_locked()
+
+        assert display._pressed is None
 
 
 # ---------------------------------------------------------------------------

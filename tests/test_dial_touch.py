@@ -427,7 +427,7 @@ class RecordingCallbacks:
             on_volume_down=lambda: self.calls.append(("volume-down",)),
             on_mute_toggle=lambda: self.calls.append(("mute",)),
             on_dismiss_overlay=lambda: self.calls.append(("dismiss",)),
-            on_set_pressed_zone=lambda zone: self.calls.append(("zone", zone)),
+            on_set_pressed_zone=lambda zone, index=None: self.calls.append(("zone", zone)),
             on_cap=lambda: self.calls.append(("cap",)),
         )
 
@@ -566,7 +566,7 @@ class TestIrqLifecycle:
             on_volume_down=lambda: None,
             on_mute_toggle=lambda: None,
             on_dismiss_overlay=lambda: None,
-            on_set_pressed_zone=lambda z: None,
+            on_set_pressed_zone=lambda z, index=None: None,
             irq=irq,
             idle_tick_interval_s=0.01,
             poll_interval_s=0.01,
@@ -1174,6 +1174,55 @@ class TestZoneTapDispatch:
         source = TouchEventSource(driver, touch_filter, sm)
         # Must not raise even though on_zone_tap was never supplied.
         source._dispatch(sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0))
+
+
+class TestSetPressedZoneDispatch:
+    """on_set_pressed_zone(zone, index) carries the row index on the wire
+    for LIST_ROW, exactly like on_zone_tap already does — every other zone,
+    and the flash-clear, always pass index=None."""
+
+    def test_arming_a_list_row_dispatches_its_index(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+
+        calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            on_set_pressed_zone=lambda zone, index=None: calls.append((zone, index)),
+        )
+        source._dispatch(sm.on_filter_event(press_event(_list_row_center(2)), now=0.0))
+        assert (TouchZone.LIST_ROW, 2) in calls
+
+    def test_arming_down_dispatches_no_index(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm._overlay_visible = True
+
+        calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            on_set_pressed_zone=lambda zone, index=None: calls.append((zone, index)),
+        )
+        source._dispatch(sm.on_filter_event(press_event(DOWN_XY), now=0.0))
+        assert (TouchZone.DOWN, None) in calls
+
+    def test_the_flash_clear_dispatches_no_index(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0)
+
+        calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            on_set_pressed_zone=lambda zone, index=None: calls.append((zone, index)),
+        )
+        source._dispatch(sm.tick(now=PRESSED_FLASH_S))
+        assert (None, None) in calls
 
 
 # ---------------------------------------------------------------------------

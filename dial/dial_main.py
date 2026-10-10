@@ -371,55 +371,14 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     def on_dismiss_overlay() -> None:
         display.set_overlay(OverlayState(visible=False))
 
-    # LIST_* zones only ever arm while the selector/picker screen is on the
-    # panel (see dial_touch.TouchStateMachine._arm's surface branch), and
-    # that screen is rendered through compose_list()/ListState, not through
-    # OverlayState at all. Publishing an OverlayState for one of these
-    # zones — even the SET_PRESSED_ZONE(None) that later clears the flash —
-    # would incorrectly leave the MAIN overlay's published snapshot
-    # visible=True, so the very next time the screen returns to "main" it
-    # would show the volume overlay revealed despite no genuine touch there.
-    # _list_zone_pressed tracks "the in-flight press was a list zone" across
-    # the two calls (press, then its flash-clear) so both are suppressed.
-    # The selector's own pressed-row feedback is not wired in this phase
-    # (see dial_display._build_list_state_locked's docstring); touch
-    # activity/presence are still recorded either way, since a list tap is
-    # a genuine touch.
-    #
-    # The repeat screen's own zones (REPEAT_PLAY/REPEAT_START/REPEAT_STOP)
-    # and the idle screen's IDLE_REPLAY are rendered through their own
-    # compose paths too, so the same suppression applies — but their
-    # pressed-wash feedback IS wired, through display.set_secondary_pressed()
-    # rather than the main OverlayState. DOTS and NAME are deliberately NOT
-    # in either group: they are zones_for()'s own main-surface zones (drawn
-    # via the ordinary OverlayState.pressed path on both the main and
-    # repeat screens), so they need no special handling here.
-    _LIST_ZONES = (TouchZone.LIST_BACK, TouchZone.LIST_DOWN, TouchZone.LIST_UP, TouchZone.LIST_ROW)
-    _SECONDARY_ZONES = (
-        TouchZone.REPEAT_PLAY, TouchZone.REPEAT_START, TouchZone.REPEAT_STOP, TouchZone.IDLE_REPLAY,
-    )
-    _list_zone_pressed = [False]
-    _secondary_zone_pressed = [False]
-
-    def on_set_pressed_zone(zone) -> None:
+    def on_set_pressed_zone(zone, index=None) -> None:
+        # Every zone on every screen reports through one channel; the
+        # display resolves it against the screen actually showing, so a
+        # zone that does not exist there draws nothing. zone=None is the
+        # flash-clear.
         _confirm_presence()
         display.notify_touch_activity()
-        if zone in _LIST_ZONES:
-            _list_zone_pressed[0] = True
-            return
-        if zone in _SECONDARY_ZONES:
-            _secondary_zone_pressed[0] = True
-            display.set_secondary_pressed(zone)
-            return
-        if zone is None:
-            if _list_zone_pressed[0]:
-                _list_zone_pressed[0] = False
-                return
-            if _secondary_zone_pressed[0]:
-                _secondary_zone_pressed[0] = False
-                display.set_secondary_pressed(None)
-                return
-        display.set_overlay(OverlayState(visible=True, pressed=zone, muted=is_muted()))
+        display.set_pressed(zone, index)
 
     def on_volume_up() -> None:
         # enqueue_delta() first, THEN notify_touch_activity() — the reverse
@@ -443,10 +402,10 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         # no DialDisplay lock (see its docstring), so this stays as cheap as
         # the volume callbacks above. on_set_pressed_zone() always runs
         # immediately before this for the MUTE zone (see
-        # TouchStateMachine._arm), so the overlay is already visible with
-        # pressed=TouchZone.MUTE; this call only needs to update muted.
+        # TouchStateMachine._arm) and already recorded the press on the
+        # pressed channel; this call only needs to update muted.
         muted = enqueue_mute()
-        display.set_overlay(OverlayState(visible=True, pressed=TouchZone.MUTE, muted=muted))
+        display.set_overlay(OverlayState(visible=True, muted=muted))
 
     def on_zone_tap(zone, index) -> None:
         # NAME opens the appliance selector (from either the main or the

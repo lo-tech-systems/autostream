@@ -546,7 +546,7 @@ class TouchStateMachine:
         # later and every REPEAT_INTERVAL_S after that (see tick()), the same
         # shape as a keyboard's auto-repeat. Single-shot zones never repeat,
         # since re-actuating them at 150ms intervals would be meaningless.
-        actions = [TouchAction(ACTION_SET_PRESSED_ZONE, zone)]
+        actions = [TouchAction(ACTION_SET_PRESSED_ZONE, zone, index)]
         if zone == TouchZone.MUTE:
             actions.append(TouchAction(ACTION_MUTE_TOGGLE))
         elif zone == TouchZone.UP:
@@ -617,6 +617,10 @@ class TouchEventSource:
         self._on_volume_down = on_volume_down
         self._on_mute_toggle = on_mute_toggle
         self._on_dismiss_overlay = on_dismiss_overlay
+        # ACTION_SET_PRESSED_ZONE callback: on_set_pressed_zone(zone, index)
+        # — index only ever carries a value for LIST_ROW (the row it was
+        # sampled against); every other zone, and the flash-clear
+        # (zone=None), pass index=None.
         self._on_set_pressed_zone = on_set_pressed_zone
         # ACTION_ZONE_TAP callback: on_zone_tap(zone, index) — NAME (opens
         # the selector) and the LIST_* zones (act on it). See dial_main.py's
@@ -915,6 +919,6 @@ class TouchEventSource:
             elif action.kind == ACTION_DISMISS_OVERLAY and self._on_dismiss_overlay:
                 self._on_dismiss_overlay()
             elif action.kind == ACTION_SET_PRESSED_ZONE and self._on_set_pressed_zone:
-                self._on_set_pressed_zone(action.zone)
+                self._on_set_pressed_zone(action.zone, action.index)
             elif action.kind == ACTION_ZONE_TAP and self._on_zone_tap:
                 self._on_zone_tap(action.zone, action.index)

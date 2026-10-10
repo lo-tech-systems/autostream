@@ -1663,7 +1663,6 @@ class TestBuildTouchSourceWiring:
             display.set_overlay.assert_called_once()
             state = display.set_overlay.call_args[0][0]
             assert state.visible is True
-            assert state.pressed == TouchZone.MUTE
             assert state.muted is True  # enqueue_mute() was stubbed to return True
 
     def test_reveal_overlay_sets_overlay_visible_and_signals_overlay_live(self):
@@ -1694,16 +1693,23 @@ class TestBuildTouchSourceWiring:
             state = display.set_overlay.call_args[0][0]
             assert state.visible is False
 
-    def test_set_pressed_zone_sets_overlay_with_the_zone(self):
+    def test_set_pressed_zone_records_the_zone(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
 
-            state = display.set_overlay.call_args[0][0]
-            assert state.visible is True
-            assert state.pressed == TouchZone.UP
+            display.set_pressed.assert_called_once_with(TouchZone.UP, None)
+            display.set_overlay.assert_not_called()
             display.notify_touch_activity.assert_called_once()
+
+    def test_set_pressed_zone_passes_through_the_row_index(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.LIST_ROW, 2)
+
+            display.set_pressed.assert_called_once_with(TouchZone.LIST_ROW, 2)
 
     def test_reveal_overlay_confirms_presence(self):
         """The very first touch-down — reveal-only, nothing armed yet — must
@@ -1734,16 +1740,15 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
 
     def test_set_pressed_zone_for_a_list_zone_does_not_touch_the_main_overlay(self):
-        """LIST_* zones only ever arm on the selector surface, which is
-        rendered through compose_list()/ListState, not OverlayState at all
-        — publishing one here would incorrectly leave the MAIN overlay
-        snapshot visible=True, so the next return to the main screen would
-        show the volume overlay revealed despite no genuine touch there."""
+        """LIST_* zones report through the same unified pressed channel as
+        every other zone — on_set_pressed_zone never publishes an
+        OverlayState at all, so the main screen's snapshot is untouched."""
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.LIST_ROW)
             display.set_overlay.assert_not_called()
+            display.set_pressed.assert_called_once_with(TouchZone.LIST_ROW, None)
             # Touch activity/presence are still genuine, though.
             display.notify_touch_activity.assert_called_once()
 
@@ -1757,21 +1762,23 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.LIST_BACK)
             captured["kwargs"]["on_set_pressed_zone"](None)
             display.set_overlay.assert_not_called()
+            assert display.set_pressed.call_args_list == [
+                call(TouchZone.LIST_BACK, None), call(None, None),
+            ]
 
-    def test_set_pressed_zone_clear_after_name_still_updates_the_overlay(self):
-        """NAME's own pressed highlight IS drawn on the main overlay (it is
-        one of zones_for()'s zones), so its clear must NOT be swallowed by
-        the same suppression that protects LIST_* zones."""
+    def test_set_pressed_zone_clear_after_name_uses_the_pressed_channel(self):
+        """NAME reports through the same unified pressed channel as every
+        other zone now — its press and clear both go through set_pressed(),
+        never set_overlay()."""
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.NAME)
             captured["kwargs"]["on_set_pressed_zone"](None)
-            assert display.set_overlay.call_count == 2
-            first_state = display.set_overlay.call_args_list[0][0][0]
-            second_state = display.set_overlay.call_args_list[1][0][0]
-            assert first_state.pressed == TouchZone.NAME
-            assert second_state.pressed is None
+            display.set_overlay.assert_not_called()
+            assert display.set_pressed.call_args_list == [
+                call(TouchZone.NAME, None), call(None, None),
+            ]
 
     def test_on_zone_tap_name_opens_the_selector(self):
         from dial_touch_layout import TouchZone
@@ -1852,44 +1859,42 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.IDLE_REPLAY, None)
             display.open_picker.assert_called_once()
 
-    def test_set_pressed_zone_repeat_play_routes_to_secondary_pressed(self):
+    def test_set_pressed_zone_repeat_play_records_the_zone(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_PLAY)
-            display.set_secondary_pressed.assert_called_once_with(TouchZone.REPEAT_PLAY)
+            display.set_pressed.assert_called_once_with(TouchZone.REPEAT_PLAY, None)
             display.set_overlay.assert_not_called()
 
-    def test_set_pressed_zone_idle_replay_routes_to_secondary_pressed(self):
+    def test_set_pressed_zone_idle_replay_records_the_zone(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.IDLE_REPLAY)
-            display.set_secondary_pressed.assert_called_once_with(TouchZone.IDLE_REPLAY)
+            display.set_pressed.assert_called_once_with(TouchZone.IDLE_REPLAY, None)
             display.set_overlay.assert_not_called()
 
-    def test_set_pressed_zone_clear_after_secondary_zone_is_suppressed(self):
+    def test_set_pressed_zone_clear_after_secondary_zone(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.REPEAT_START)
             captured["kwargs"]["on_set_pressed_zone"](None)
             display.set_overlay.assert_not_called()
-            assert display.set_secondary_pressed.call_args_list == [
-                call(TouchZone.REPEAT_START), call(None),
+            assert display.set_pressed.call_args_list == [
+                call(TouchZone.REPEAT_START, None), call(None, None),
             ]
 
-    def test_set_pressed_zone_dots_still_uses_the_main_overlay(self):
-        """DOTS is one of the main surface's own zones (drawn via the
-        ordinary OverlayState.pressed path on both the main and repeat
-        screens) — it must NOT be routed through set_secondary_pressed()."""
+    def test_set_pressed_zone_dots_records_the_zone(self):
+        """DOTS reports through the same unified pressed channel as every
+        other zone."""
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.DOTS)
-            display.set_secondary_pressed.assert_not_called()
-            state = display.set_overlay.call_args[0][0]
-            assert state.pressed == TouchZone.DOTS
+            display.set_pressed.assert_called_once_with(TouchZone.DOTS, None)
+            display.set_overlay.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

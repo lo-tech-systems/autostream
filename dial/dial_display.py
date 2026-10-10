@@ -326,18 +326,21 @@ def _page_slice(rows: tuple, page: int, rows_per_page: int) -> tuple[int, tuple]
     return start, rows[start:start + rows_per_page]
 
 
-def _list_state_for(state, rows_per_page: int, placeholder: str, to_row) -> ListState:
+def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed=None) -> ListState:
     """Build the compositor's ListState for *state*'s current page, or a
     single non-selected *placeholder* row when there are no rows. *to_row*
-    maps one row of *state* to the row tuple ListState carries. pressed
-    stays None: the list chassis has no live press feedback yet."""
+    maps one row of *state* to the row tuple ListState carries. *pressed*
+    is the (zone, index) pair from the unified pressed channel, passed
+    through unchanged — the compositor resolves it against this screen's
+    own geometry, so a zone from another screen simply washes nothing."""
     if state is None or not state.rows:
-        return ListState(rows=((placeholder, False),), has_prev=False, has_next=False)
+        return ListState(rows=((placeholder, False),), has_prev=False, has_next=False, pressed=pressed)
     start, page_rows = _page_slice(state.rows, state.page, rows_per_page)
     return ListState(
         rows=tuple(to_row(row) for row in page_rows),
         has_prev=state.page > 0,
         has_next=start + rows_per_page < len(state.rows),
+        pressed=pressed,
     )
 
 
@@ -589,12 +592,16 @@ class DialDisplay:
         # The replay picker's own rows/paging — refreshed every poll tick
         # regardless of whether it is open, mirroring self._selector.
         self._picker: PickerState | None = None
-        # The zone currently pressed on a secondary screen's own chassis
-        # (the repeat screen or the idle affordance) — written by the touch
-        # thread via set_secondary_pressed(), read at compose time by
-        # _build_repeat_view_locked(). Plain attribute, same discipline as
+        # The (zone, index) currently pressed on whichever screen is
+        # showing — one channel for every screen, written by the touch
+        # thread via set_pressed() and read at compose time by each
+        # screen's own frame builder (_effective_overlay_locked,
+        # _build_repeat_view_locked, _build_list_state_locked/
+        # _build_picker_list_state_locked), which resolves it against its
+        # own geometry. index is only meaningful for LIST_ROW; every other
+        # zone carries None. Plain attribute, same discipline as
         # dial_touch's own pressed-zone tracking.
-        self._secondary_pressed: "TouchZone | None" = None
+        self._pressed: "tuple[TouchZone, int | None] | None" = None
         # One-shot: set (by toggle_repeat_screen(), when the repeat screen
         # closes via a DOTS tap) and consumed (by TouchEventSource._poll_
         # surface(), via consume_repeat_close_reveal() below) exclusively
@@ -1076,6 +1083,9 @@ class DialDisplay:
         """
         self._noncomposited_generation += 1
         self._noncomposited_event.set()
+        # A press latched against geometry that just went dark must not
+        # carry a wash into whatever comes back on screen next.
+        self._pressed = None
 
     def _wake_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -1185,11 +1195,14 @@ class DialDisplay:
         """Merge now-playing state into the touch-published overlay snapshot
         at compose time.
 
-        The touch side only ever publishes CONTROL state (visible, pressed,
+        The touch side only ever publishes CONTROL state (visible,
         muted-if-known) via set_overlay() — it has no idea what track is
         playing or what the master volume is, and must not need to, per the
         module docstring's "touch thread stays ignorant of polling" rule.
-        This fills in the fields only the poll thread knows about:
+        pressed is filled from the unified pressed channel (self._pressed)
+        instead — the snapshot's own pressed field, if any, is ignored; see
+        set_pressed(). This fills in the fields only the poll thread knows
+        about:
           - artist: from the reporting-from target's last poll result.
           - volume: the optimistic readout for that same target (see
             dial_volume.shown_volume()), not the raw polled master_volume —
@@ -1240,6 +1253,7 @@ class DialDisplay:
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
         muted = snapshot.muted if snapshot.muted is not None else is_muted()
+        pressed = self._pressed[0] if self._pressed is not None else None
         # Belt and braces: dots are meaningful only on the main screen —
         # _repaint_current_locked never reaches this merge for the repeat/
         # selector/picker screens anyway (they bypass _display_locked
@@ -1248,7 +1262,7 @@ class DialDisplay:
         dots = self._dots_active and self._screen == "main"
         return dataclasses.replace(
             snapshot, visible=True, artist=artist, title=title, volume=volume, muted=muted, name=name,
-            dots=dots,
+            dots=dots, pressed=pressed,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -1552,12 +1566,15 @@ class DialDisplay:
         if rec.state == "replaying":
             enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "stop", 0.0)
 
-    def set_secondary_pressed(self, zone) -> None:
-        """Touch-thread entry: record the zone currently pressed on a
-        secondary screen's own chassis (the repeat screen) for the next
-        repaint to draw a pressed wash. Plain attribute write plus a
-        signal — same discipline as notify_touch_activity()."""
-        self._secondary_pressed = zone
+    def set_pressed(self, zone, index=None) -> None:
+        """Touch-thread entry: record the zone (and, for LIST_ROW, the row
+        index) currently pressed on whatever screen is showing, or None
+        when nothing is. One channel for every screen: each frame builder
+        resolves it against its own surface geometry at compose time, so a
+        zone that does not exist on the current screen simply draws
+        nothing. Lock-free: a single reference assignment plus a repaint
+        signal, same discipline as notify_touch_activity()."""
+        self._pressed = (zone, index) if zone is not None else None
         self._overlay_signal.set()
 
     def pop_secondary(self, screen: str) -> None:
@@ -1623,7 +1640,7 @@ class DialDisplay:
         self._selector = None
         self._repeat_screen = None
         self._picker = None
-        self._secondary_pressed = None
+        self._pressed = None
         self._overlay_signal.set()
 
     _close_selector_locked = _close_secondary_locked  # alias kept for existing direct callers/tests
@@ -1653,6 +1670,7 @@ class DialDisplay:
         self._screen/self._selector/self._repeat_screen/self._picker.
         Caller holds self._lock; runs on the repeat thread only.
         """
+        previous_screen = self._screen
         request = self._screen_request
         self._screen_request = None
         delta = self._page_request
@@ -1673,6 +1691,12 @@ class DialDisplay:
                 self._screen = "repeat"
         elif request == "main":
             self._close_secondary_locked()
+
+        if self._screen != previous_screen:
+            # A press on a zone the new screen shares with the old one
+            # (e.g. DOTS/NAME/MUTE, shared between the main and repeat
+            # screens) must not carry its wash onto the screen it opens.
+            self._pressed = None
 
         active = (
             self._selector if self._screen == "selector"
@@ -1823,20 +1847,21 @@ class DialDisplay:
     def _build_list_state_locked(self, width: int, height: int) -> ListState:
         """Build the compositor's ListState for the appliance selector's
         CURRENT page. Caller holds self._lock; runs on the repeat thread
-        only. Live touch-press feedback is not wired into the selector
-        chassis in this phase — pressed is always None here (compose_list
-        still supports it, for the compositor's own tests)."""
+        only. pressed comes from the unified pressed channel (self._pressed)
+        — the same one every other screen feeds from."""
         return _list_state_for(
             self._selector, _rows_per_page_for(width, height), "No devices", _selector_list_row,
+            pressed=self._pressed,
         )
 
     def _build_picker_list_state_locked(self, width: int, height: int) -> ListState:
         """Build the compositor's ListState for the replay picker's CURRENT
         page — the PickerState counterpart to _build_list_state_locked().
         Each row's secondary slot carries the buffer length, formatted
-        "m:ss"."""
+        "m:ss". pressed comes from the same unified pressed channel."""
         return _list_state_for(
             self._picker, _rows_per_page_for(width, height), "Nothing to replay", _picker_list_row,
+            pressed=self._pressed,
         )
 
     def _display_list_locked(self) -> None:
@@ -1873,7 +1898,7 @@ class DialDisplay:
         the two screens can disagree about which appliance is focused for
         as long as it takes the next poll to notice a manual focus change.
         """
-        pressed = self._secondary_pressed
+        pressed = self._pressed[0] if self._pressed is not None else None
         if screen is None:
             return RepeatViewState(
                 name="", layout="enable", armed=False, line="",
