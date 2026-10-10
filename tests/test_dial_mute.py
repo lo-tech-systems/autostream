@@ -808,6 +808,30 @@ class TestDialVolumeQueue:
         # 1+4 coalesced, then the surviving mute, then 2
         assert batch == [("delta", 5), ("mute", True), ("delta", 2)]
 
+    def test_coalesce_two_adjacent_mute_all_cancel(self):
+        # Broadcast-scope mute_all is decided fresh at dispatch, not carried
+        # as a belief -- a run collapses by PARITY (even cancels, odd sends
+        # one), not "collapse to the last one" like plain mute.
+        self._mod._queue.put(("mute_all", 1))
+        batch = self._mod._coalesce(("mute_all", 1))
+        assert batch == []
+
+    def test_coalesce_three_adjacent_mute_all_send_one(self):
+        self._mod._queue.put(("mute_all", 1))
+        self._mod._queue.put(("mute_all", 1))
+        batch = self._mod._coalesce(("mute_all", 1))
+        assert batch == [("mute_all", 1)]
+
+    def test_coalesce_single_mute_all_sends_one(self):
+        batch = self._mod._coalesce(("mute_all", 1))
+        assert batch == [("mute_all", 1)]
+
+    def test_coalesce_delta_mute_all_delta_keeps_order(self):
+        self._mod._queue.put(("mute_all", 1))
+        self._mod._queue.put(("delta", 3))
+        batch = self._mod._coalesce(("delta", 2))
+        assert batch == [("delta", 2), ("mute_all", 1), ("delta", 3)]
+
 
 # ---------------------------------------------------------------------------
 # DialConfig — sw_gpio default and key semantics

@@ -23,14 +23,19 @@ the volume readout there is no "positive value proves it" shortcut here —
 this module never infers mute from a volume; it only ever repeats back what
 an appliance's status/mute/volume response explicitly said.
 
-Volume and mute address a single "reporting-from" target by default — the
+Volume and mute each address either a single "reporting-from" target — the
 display's chosen artwork source when it has one, else the oldest playing
-target (see select_volume_target()). Mute alone can be widened back to
-fleet-wide via the "mute all playing devices" setting (mute_targets_fn on
-start_volume_worker); volume is never fanned out to more than one target.
-Callers resolve targets fresh per dispatched event via targets_fn()/
-mute_targets_fn() rather than once per batch, so the two callables — and the
-config they read live (mute_all_playing) — are always current at send time.
+target (see select_volume_target()) — or, under broadcast scope "all", every
+playing appliance at once: a dial with no screen (or too small a one to
+select an appliance) cannot choose which appliance a twist or a push
+addresses, so it addresses all of them. Volume's "all" fans the same delta
+out to every target via the ordinary _fan_out(); mute's "all" is decided
+fresh at dispatch time by the worker, from what the fleet reports at that
+moment — see enqueue_mute_all()/_dispatch_mute_all() below, not a belief
+carried in the queue like a "current"-scope mute is. Callers resolve targets
+fresh per dispatched event via targets_fn()/mute_targets_fn() rather than
+once per batch, so the two callables — and the scope they read live — are
+always current at send time.
 
 The overlay's volume readout is optimistic: enqueue_delta() nudges a pending
 offset immediately so the number reacts to a press before any network round
@@ -51,11 +56,10 @@ consistent too but throws away that free correction for no benefit.
 
 Fan-out is concurrent: one thread per target with a 400 ms network timeout and
 a 600 ms join timeout (200 ms headroom ensures threads finish before clamped
-is evaluated). The fan-out helpers (_fan_out/_fan_out_mute) are unchanged in
-shape by single-targeting above — they still accept a list — but the lists
-they are normally handed now hold exactly one target; "fan-out" survives
-mainly as the mute-all-playing path. Targets are pre-deduplicated by mDNS
-service name via get_playing_targets() so no IP-based dedup is needed here.
+is evaluated). The fan-out helpers (_fan_out/_fan_out_mute/_fan_out_status)
+accept a list of any length: exactly one target for "current" scope, every
+playing target for "all". Targets are pre-deduplicated by mDNS service name
+via get_playing_targets() so no IP-based dedup is needed here.
 
 Failure logging is rate-limited: WARNING on the 1st failure and every 10th
 thereafter per target IP; DEBUG for all intermediate failures.  403 and 412
@@ -73,8 +77,14 @@ import urllib.error
 import urllib.request
 from typing import Tuple, Union
 
-# Each queue item is either ("delta", int) or ("mute", bool) — the bool is
-# the resulting absolute action (True = mute) at the moment it was enqueued.
+from dial_target_status import fetch_target_status
+
+# Each queue item is ("delta", int), ("mute", bool) or ("mute_all", int) —
+# for "delta" the int is the delta itself; for "mute" the bool is the
+# resulting absolute action (True = mute) at the moment it was enqueued; for
+# "mute_all" the int is always 1 and only ever matters for _coalesce()'s
+# parity count (see enqueue_mute_all()/_dispatch_mute_all() below) — the
+# action itself is decided fresh at dispatch, not at enqueue time.
 _Event = Union[Tuple[str, int], Tuple[str, bool]]
 _queue: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 
@@ -117,12 +127,30 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 # wins. No time-stamping is added for this — the next observation always
 # reconciles it.
 #
-# The mute observation store follows the identical shape, keyed separately
-# (_readout_muted_service/_readout_muted) so a wide mute-all-playing fan-out
-# touching several targets at once can never clobber the volume readout's
-# own reporting-from target. There is no "positive proves it" shortcut for
-# mute the way there is for volume: nothing here infers a mute state, it
-# only ever repeats back what an appliance's own response said.
+# The mute observation store is per-service (_observed_muted), unlike the
+# single-slot volume readout above: a screened dial set to broadcast scope
+# "all" fans a push out to every playing appliance, and the poll itself now
+# records the flag of every target it walks (not only the reporting one —
+# see dial_display.py), so several services can legitimately be tracked at
+# once. Keying by service means a response or observation for one target can
+# never clobber another's entry — in particular the bound/reporting
+# appliance's own glyph, which always reads back its own entry via
+# shown_muted(name) regardless of what a fan-out to OTHER targets last
+# reported. (This is a fix over the single-slot store this replaces: there,
+# every observation shared one slot, so a wide fan-out's last responder to
+# arrive could blank a different appliance's glyph until the next poll.)
+# There is no "positive proves it" shortcut for mute the way there is for
+# volume: nothing here infers a mute state, it only ever repeats back what an
+# appliance's own response said.
+#
+# _last_observed_mute_service additionally tracks whichever service the most
+# recent observe_mute_state() call named — purely so enqueue_mute()'s
+# same-frame echo (below) can re-target the one entry a "current"-scope press
+# just read via shown_muted(), with no service parameter of its own. Reading
+# and enqueuing happen back-to-back on the same thread with no I/O in
+# between, so this can only go stale if an unrelated observation (another
+# thread's poll tick or fan-out response) lands in that brief window — the
+# same narrow, accepted race the single-slot store always had.
 # ---------------------------------------------------------------------------
 
 _readout_lock = threading.Lock()     # leaf lock, never held across I/O
@@ -130,8 +158,8 @@ _readout_service: str | None = None  # target the base was observed on
 _readout_base: int | None = None     # last observed master_volume
 _readout_pending = 0                 # deltas enqueued since the base
 
-_readout_muted_service: str | None = None  # target the mute flag was observed on
-_readout_muted: bool | None = None         # last reported mute state for that target
+_observed_muted: dict[str, bool | None] = {}     # per-service last-reported mute flag
+_last_observed_mute_service: str | None = None   # most recently observed service
 
 
 def observe_master_volume(service_name: str | None, volume: int | None) -> None:
@@ -142,6 +170,23 @@ def observe_master_volume(service_name: str | None, volume: int | None) -> None:
     the readout entirely."""
     global _readout_service, _readout_base, _readout_pending
     with _readout_lock:
+        _readout_service = service_name
+        _readout_base = volume
+        _readout_pending = 0
+
+
+def observe_master_volume_if_tracked(service_name: str | None, volume: int | None) -> None:
+    """Like observe_master_volume(), but only when *service_name* is the one
+    currently tracked (or nothing is tracked yet). Used by a fan-out response
+    (see _send_one()) so that with several targets in flight at once, the
+    LAST one to respond cannot re-key the single volume readout away from
+    the bound appliance's own number — a screenless dial broadcasting volume
+    has no readout to lose by this; a screened dial's number stays the bound
+    appliance's."""
+    global _readout_service, _readout_base, _readout_pending
+    with _readout_lock:
+        if _readout_service is not None and service_name != _readout_service:
+            return
         _readout_service = service_name
         _readout_base = volume
         _readout_pending = 0
@@ -160,24 +205,42 @@ def shown_volume(service_name: str | None) -> int | None:
 
 def observe_mute_state(service_name: str | None, muted) -> None:
     """Record the mute flag an appliance reported (a status poll, a mute
-    response or a volume response) for *service_name*. None clears (an
-    appliance switch, or an old appliance's response carrying no field);
-    anything that is not a plain bool is treated the same as None, exactly
-    like dial_target_status's own parsing of the field."""
-    global _readout_muted_service, _readout_muted
+    response or a volume response) for *service_name*, in that service's own
+    entry. service_name None clears every entry (nothing is playing any
+    more — the dial-wide reset, not a per-target one). Anything that is not
+    a plain bool is treated the same as unknown (None), exactly like
+    dial_target_status's own parsing of the field."""
+    global _last_observed_mute_service
     with _readout_lock:
-        _readout_muted_service = service_name
-        _readout_muted = muted if isinstance(muted, bool) else None
+        if service_name is None:
+            _observed_muted.clear()
+            _last_observed_mute_service = None
+            return
+        _observed_muted[service_name] = muted if isinstance(muted, bool) else None
+        _last_observed_mute_service = service_name
 
 
 def shown_muted(service_name: str | None) -> bool:
     """The last reported mute state for *service_name*; False when unknown
-    or when the last observation was for a different target (a stale flag
-    from another appliance must never be shown)."""
+    or when nothing has been observed for it — each service has its own
+    entry, so a fan-out response or a poll observation for a DIFFERENT
+    target can never leak into this one."""
     with _readout_lock:
-        if service_name is None or service_name != _readout_muted_service:
+        if service_name is None:
             return False
-        return bool(_readout_muted)
+        return bool(_observed_muted.get(service_name))
+
+
+def forget_mute_states_except(service_names) -> None:
+    """Drop every observed mute entry whose service is not in *service_names*
+    (an iterable, consumed once into a set). Called by the display poll after
+    each tick so a target that stopped playing does not accumulate a stale
+    entry forever. Pure hygiene — never touches the entries it keeps."""
+    keep = set(service_names)
+    with _readout_lock:
+        for name in list(_observed_muted.keys()):
+            if name not in keep:
+                del _observed_muted[name]
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +271,8 @@ def start_volume_worker(cfg, targets_fn, led, *, mute_targets_fn=None, on_readou
     targets_fn resolves the volume-delta target(s), called fresh per
     dispatched delta event. mute_targets_fn resolves the mute target(s),
     called fresh per dispatched mute event — defaults to targets_fn itself
-    when not supplied (single-target mute, the pre-mute_all_playing
-    behaviour). on_readout_changed, when supplied, is called (best-effort)
+    when not supplied (single-target mute, scope "current"). on_readout_changed,
+    when supplied, is called (best-effort)
     after a volume response updates the optimistic readout, so the display
     can repaint the overlay's number — see _send_one().
     """
@@ -238,7 +301,9 @@ def enqueue_delta(delta: int) -> None:
 def enqueue_mute(currently_muted: bool) -> bool:
     """Enqueue the absolute action that flips *currently_muted* -- the
     reporting appliance's last-known mute state, read by the caller from
-    shown_muted() before calling this.
+    shown_muted() before calling this. Used for scope "current" only; a
+    scope "all" push uses enqueue_mute_all() instead (see below), which
+    decides its action at dispatch rather than echoing one here.
 
     Called from the touch thread and the button thread. Does no network
     I/O and never takes DialDisplay._lock — only the small dedicated
@@ -246,20 +311,47 @@ def enqueue_mute(currently_muted: bool) -> bool:
     the observation store immediately, so the glyph updates on the same
     frame as the press even before the appliance's response (about 0.4s
     later) or the next status poll confirms it — either of those overwrites
-    this echo. Returns the requested state (the caller may use it, but
-    nothing here depends on that).
+    this echo. The echo targets whichever service was most recently
+    observed (_last_observed_mute_service) — the same service the caller
+    just read via shown_muted() moments before, with no I/O in between to
+    let that go stale. Returns the requested state (the caller may use it,
+    but nothing here depends on that).
     """
-    global _readout_muted
     new_state = not currently_muted
     with _readout_lock:
-        _readout_muted = new_state
+        if _last_observed_mute_service is not None:
+            _observed_muted[_last_observed_mute_service] = new_state
     _queue.put(("mute", new_state))
     return new_state
 
 
+def enqueue_mute_all() -> None:
+    """Enqueue one fleet-wide mute toggle for delivery. Returns immediately.
+
+    Plain queue put; no lock, no I/O — unlike enqueue_mute(), nothing is
+    echoed into the observation store here, because the action itself is not
+    yet known: a screenless (or scope "all") push cannot be decided from
+    what this dial's touch/button thread already believes, since the
+    observation store is not a complete picture of the fleet (see
+    _dispatch_mute_all()'s docstring). The decision, and the store's
+    optimistic echo, happen together on the volume worker thread once it
+    dispatches this event — roughly 0.4-1s later, not on the same frame as
+    the press. Used for scope "all" only; enqueue_mute() is scope "current"'s
+    equivalent.
+    """
+    _queue.put(("mute_all", 1))
+
+
 def _coalesce(first: _Event) -> list[_Event]:
     """Drain the queue into an ordered batch, coalescing adjacent delta
-    events (summed) and adjacent mute events (collapsed to the last one)."""
+    events (summed), adjacent mute events (collapsed to the last one), and
+    adjacent mute_all events (collapsed by PARITY: an even-count run cancels
+    out entirely, an odd-count run sends one). Mute_all is absolute-per-
+    dispatch rather than absolute-per-enqueue like "mute", so a run cannot be
+    collapsed "to the last one" the way plain mute is — the worker only
+    learns what action a mute_all event means once it dispatches it, so two
+    queued pushes mean "toggle, then undo" (parity), not "whatever the last
+    one decides"."""
     batch: list[_Event] = []
 
     def _append(ev: _Event) -> None:
@@ -267,6 +359,8 @@ def _coalesce(first: _Event) -> list[_Event]:
             batch[-1] = ("delta", batch[-1][1] + ev[1])  # type: ignore[index]
         elif ev[0] == "mute" and batch and batch[-1][0] == "mute":
             batch[-1] = ev  # collapse a run of mutes to the last resulting action
+        elif ev[0] == "mute_all" and batch and batch[-1][0] == "mute_all":
+            batch[-1] = ("mute_all", batch[-1][1] + ev[1])  # type: ignore[index]
         else:
             batch.append(ev)
 
@@ -276,7 +370,11 @@ def _coalesce(first: _Event) -> list[_Event]:
             _append(_queue.get_nowait())
         except queue.Empty:
             break
-    return batch
+    return [
+        ("mute_all", 1) if ev[0] == "mute_all" else ev
+        for ev in batch
+        if not (ev[0] == "mute_all" and ev[1] % 2 == 0)
+    ]
 
 
 def _worker() -> None:
@@ -298,6 +396,12 @@ def _worker() -> None:
                 clamped = _fan_out(targets, _cfg.uuid, event[1])  # type: ignore[arg-type]
                 if clamped and _led_ref:
                     _led_ref.flash_clamped()
+            elif event[0] == "mute_all":
+                resolver = _mute_targets_fn or _targets_fn
+                targets = resolver()
+                if not targets:
+                    continue
+                _dispatch_mute_all(targets, _cfg.uuid)  # type: ignore[arg-type]
             else:  # "mute"
                 resolver = _mute_targets_fn or _targets_fn
                 targets = resolver()
@@ -336,6 +440,57 @@ def _fan_out_mute(targets: list, uuid: str, muted: bool) -> None:
         t.join(timeout=0.6)
 
 
+def _fan_out_status(targets: list, uuid: str) -> list:
+    """One fetch_target_status() per target concurrently — mirrors
+    _fan_out_mute's shape (thread per target, 0.4s request timeout, 0.6s
+    join). Each slot of the returned list is the `muted` flag that target
+    reported, or None when it did not answer in time or its response carried
+    no flag at all. Never raises: fetch_target_status() itself never raises."""
+    results: list = [None] * len(targets)
+
+    def _one(i: int, target) -> None:
+        record = fetch_target_status(target, uuid, timeout_seconds=0.4)
+        muted = record.get("muted")
+        results[i] = muted if isinstance(muted, bool) else None
+
+    threads = [
+        threading.Thread(target=_one, args=(i, t))
+        for i, t in enumerate(targets)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=0.6)
+    return results
+
+
+def _dispatch_mute_all(targets: list, uuid: str) -> None:
+    """Decide and send one fleet-wide mute/restore action, from a fresh
+    status sweep taken at this moment.
+
+    The observation store is not a complete-enough picture to decide this
+    from: a screenless dial runs no status poll at all, and a screened
+    dial's poll only walks targets up to the first identified one (see
+    dial_display.py) — so this reads every playing appliance itself, on the
+    worker thread, never on the touch or button thread.
+
+    An unknown flag (a timeout, no dial_status support, or a response with
+    no `muted` field at all) counts as unmuted, so any appliance this dial
+    cannot fully read makes the fleet action "mute" — the safe direction: a
+    push on a fleet the dial cannot fully confirm silences it. Only a fleet
+    where every target confirms `muted: true` gets a "restore".
+    """
+    if not targets:
+        return
+    flags = _fan_out_status(targets, uuid)
+    muted = any(flag is not True for flag in flags)
+    for t in targets:
+        # Optimistic echo, same as enqueue_mute()'s — overwritten by each
+        # target's own response in _fan_out_mute() just below.
+        observe_mute_state(t.service_name, muted)
+    _fan_out_mute(targets, uuid, muted)
+
+
 def _send_one(target, uuid: str, delta: int, clamped: list) -> None:
     url  = f"http://{target.ip}:{target.port}/api/dial/volume"
     body = json.dumps({"dial_id": uuid, "delta": delta}).encode()
@@ -366,8 +521,12 @@ def _send_one(target, uuid: str, delta: int, clamped: list) -> None:
             # Fast-path reconciliation of the optimistic readout (see the
             # "Optimistic volume readout" section above) — this response is
             # the authoritative master_volume for the target this delta was
-            # actually applied to, about 0.4s after the press.
-            observe_master_volume(target.service_name, vol)
+            # actually applied to, about 0.4s after the press. Scope "all"
+            # can fan a delta out to several targets at once; observing only
+            # when tracked (or nothing is tracked yet) stops the LAST
+            # response to arrive from re-keying the readout away from
+            # whichever appliance it actually belongs to.
+            observe_master_volume_if_tracked(target.service_name, vol)
             if _on_readout_changed is not None:
                 # A repaint request must never break a volume send — this
                 # runs on the fan-out thread, not the touch thread, but the

@@ -72,8 +72,12 @@ class FakeDialServer:
         return self._cfg.step_percent
 
     @property
-    def mute_all_playing(self) -> bool:
-        return self._cfg.mute_all_playing
+    def effective_volume_scope(self) -> str:
+        return dhs.effective_scope(self._cfg.display, self._cfg.display.volume_scope)
+
+    @property
+    def effective_mute_scope(self) -> str:
+        return dhs.effective_scope(self._cfg.display, self._cfg.display.mute_scope)
 
     def _make_handler(self):
         return dhs.DialHTTPServer._make_handler(self)
@@ -313,26 +317,13 @@ class TestFieldBoundaries:
         r = _call_handler("/configure", body={"update_channel": 1})
         assert r["status"] == 400
 
-    def test_mute_all_playing_true_accepted(self):
+    def test_configure_ignores_unknown_mute_all_playing_field(self):
+        """mute_all_playing is retired from /configure: an old appliance
+        still posting it must still succeed, with no effect (unknown keys
+        are ignored, matching every other unrecognised field)."""
         r = _call_handler("/configure", body={"mute_all_playing": True})
         assert r["status"] == 200
-        assert r["save_calls"][0].mute_all_playing is True
-
-    def test_mute_all_playing_false_accepted(self):
-        cfg = DialConfig(uuid="x", mute_all_playing=True)
-        r = _call_handler("/configure", body={"mute_all_playing": False}, cfg=cfg)
-        assert r["status"] == 200
-        assert r["save_calls"][0].mute_all_playing is False
-
-    def test_mute_all_playing_non_bool_rejected(self):
-        r = _call_handler("/configure", body={"mute_all_playing": 1})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_mute_all_playing"
-
-    def test_mute_all_playing_string_rejected(self):
-        r = _call_handler("/configure", body={"mute_all_playing": "true"})
-        assert r["status"] == 400
-        assert r["data"]["error"] == "invalid_mute_all_playing"
+        assert not hasattr(r["save_calls"][0], "mute_all_playing")
 
 
 # ---------------------------------------------------------------------------
@@ -346,14 +337,6 @@ class TestPINAuth:
     def test_protected_field_no_pin_sent_returns_403(self):
         cfg = DialConfig(uuid="x", pin="9999")
         r = _call_handler("/configure", body={"name": "New Name"}, cfg=cfg)
-        assert r["status"] == 403
-        assert r["data"]["error"] == "wrong_pin"
-
-    def test_mute_all_playing_is_pin_protected(self):
-        """mute_all_playing joins changing_protected — a PIN-set dial must
-        reject the change with no PIN sent, like its siblings above."""
-        cfg = DialConfig(uuid="x", pin="9999")
-        r = _call_handler("/configure", body={"mute_all_playing": True}, cfg=cfg)
         assert r["status"] == 403
         assert r["data"]["error"] == "wrong_pin"
 
@@ -950,6 +933,8 @@ class TestScreenSettingsGet:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
@@ -984,6 +969,8 @@ class TestScreenSettingsGet:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -1003,6 +990,8 @@ class TestScreenSettingsGet:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -1023,6 +1012,8 @@ class TestScreenSettingsGet:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
 
     def test_get_reflects_touch_type(self):
@@ -1043,6 +1034,8 @@ class TestScreenSettingsGet:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
 
     def test_runtime_touch_type_reports_running_controller(self):
@@ -1119,6 +1112,8 @@ class TestScreenSettingsGet:
             "always_show_controls": True,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
 
     def test_get_layout_sizes_matches_the_active_profiles_options(self):
@@ -1151,6 +1146,50 @@ class TestScreenSettingsGet:
         assert result["data"]["layout_sizes"] == layout_size_options(get_profile("st7789_240x240"))
         assert result["data"]["layout_sizes"] == []
 
+    def test_get_reflects_volume_and_mute_scope(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, volume_scope="all", mute_scope="current",
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"]["volume_scope"] == "all"
+        assert result["data"]["screen"]["mute_scope"] == "current"
+
+    def test_get_scope_block_reflects_effective_values_when_fitted(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, volume_scope="all", mute_scope="current",
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["scope"] == {"volume": "all", "mute": "current"}
+
+    def test_get_scope_block_forces_all_when_not_fitted(self):
+        """A screenless dial cannot choose which appliance to address, so
+        BOTH effective values report "all" regardless of the stored choice
+        -- the informational block must reflect what the dial is actually
+        doing, not merely what is saved."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, volume_scope="current", mute_scope="current",
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["scope"] == {"volume": "all", "mute": "all"}
+
 
 class TestScreenSettingsPost:
     def setup_method(self):
@@ -1167,6 +1206,8 @@ class TestScreenSettingsPost:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -1182,6 +1223,8 @@ class TestScreenSettingsPost:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -1198,6 +1241,8 @@ class TestScreenSettingsPost:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
@@ -1215,6 +1260,8 @@ class TestScreenSettingsPost:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
 
@@ -1231,6 +1278,8 @@ class TestScreenSettingsPost:
             "always_show_controls": True,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
         assert r["save_calls"][0].display.always_show_controls is True
 
@@ -1357,6 +1406,67 @@ class TestScreenSettingsPost:
                           setup_server=server)
         assert r["status"] == 200
         assert server._display_status.get_status()["fitted"] is True
+
+    def test_post_with_both_scopes_persists_and_echoes(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "volume_scope": "all", "mute_scope": "all"}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["volume_scope"] == "all"
+        assert r["data"]["screen"]["mute_scope"] == "all"
+        assert r["data"]["scope"] == {"volume": "all", "mute": "all"}
+        assert r["save_calls"][0].display.volume_scope == "all"
+        assert r["save_calls"][0].display.mute_scope == "all"
+
+    def test_post_omitting_scopes_saves_current(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, volume_scope="all", mute_scope="all",
+        ))
+        r = _call_handler(
+            "/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["volume_scope"] == "current"
+        assert r["data"]["screen"]["mute_scope"] == "current"
+
+    def test_post_non_string_volume_scope_returns_invalid_screen_settings(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "volume_scope": True}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
+
+    def test_post_unknown_mute_scope_value_returns_invalid_screen_settings(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "mute_scope": "everything"}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
+
+    def test_screen_apply_failed_body_carries_previous_scopes(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, screen_type="st7735s_160x128",
+            volume_scope="all", mute_scope="current",
+        ))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {
+                "fitted": True, "screen_type": "st7789_240x240",
+                "volume_scope": "current", "mute_scope": "current",
+            }},
+            setup_server=server,
+        )
+        assert r["status"] == 200
+        assert r["data"]["error"] == "screen_apply_failed"
+        assert r["data"]["screen"]["volume_scope"] == "all"
+        assert r["data"]["scope"] == {"volume": "all", "mute": "all"}
 
 
 # ---------------------------------------------------------------------------
@@ -2065,6 +2175,43 @@ class TestScreenSettingsApplyThenPersist:
 
 
 # ---------------------------------------------------------------------------
+# DialHTTPServer.effective_volume_scope / effective_mute_scope
+# ---------------------------------------------------------------------------
+
+class TestEffectiveScopeProperties:
+    def test_fitted_dial_reports_stored_values(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, volume_scope="all", mute_scope="current",
+        ))
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = threading.Lock()
+        assert server.effective_volume_scope == "all"
+        assert server.effective_mute_scope == "current"
+
+    def test_unfitted_dial_forces_all_for_both(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, volume_scope="current", mute_scope="current",
+        ))
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = threading.Lock()
+        assert server.effective_volume_scope == "all"
+        assert server.effective_mute_scope == "all"
+
+    def test_reads_live_cfg_after_update_cfg(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, mute_scope="current"))
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = threading.Lock()
+        assert server.effective_mute_scope == "current"
+        new_cfg = copy.copy(cfg)
+        new_cfg.display = DialDisplayConfig(fitted=True, mute_scope="all")
+        server.update_cfg(new_cfg)
+        assert server.effective_mute_scope == "all"
+
+
+# ---------------------------------------------------------------------------
 # NoOpDisplayStatusProvider — placeholder runtime status shape
 # ---------------------------------------------------------------------------
 
@@ -2164,9 +2311,12 @@ class TestManagementApiRetained:
             "GET /configure must still return 200 after setup UI removal"
         )
 
-    def test_get_configure_echoes_mute_all_playing(self):
+    def test_get_configure_does_not_echo_mute_all_playing(self):
+        """mute_all_playing is retired — GET /configure never reports it,
+        even for a dial that has never saved settings since the field was
+        removed (DialConfig no longer has the attribute at all)."""
         result = {}
-        cfg = DialConfig(uuid="test-uuid", mute_all_playing=True)
+        cfg = DialConfig(uuid="test-uuid")
         handler_cls, _ = _make_handler_cls(cfg)
         h = object.__new__(handler_cls)
         h.path           = "/configure"
@@ -2175,7 +2325,7 @@ class TestManagementApiRetained:
         h.send_error     = lambda code, *_: result.update(status=code)
         h.do_GET()
         assert result["status"] == 200
-        assert result["data"]["mute_all_playing"] is True
+        assert "mute_all_playing" not in result["data"]
 
     def test_get_recovery_status_still_reachable(self):
         """GET /recovery_status must still respond — recovery flow is retained."""

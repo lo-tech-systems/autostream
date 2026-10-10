@@ -2209,19 +2209,169 @@ class TestVolumeTargetsResolver:
 
         assert resolve() == [targets[0]]
 
+    def test_scope_fn_returning_all_returns_every_playing_target_ignoring_focus(self):
+        """Broadcast scope "all": every playing target with auth !=
+        unauthorized, in roster order, with any manual focus ignored -- a
+        fleet-wide twist has no single appliance to pin to."""
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        targets = self._targets()
+        blocked = PlayingTarget(ip="1.0.0.3", port=80, name="Blocked", service_name="blocked",
+                                 playing_since=30.0, auth="unauthorized")
+        focused = object()
+        display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
+        display.current_source_service_name = MagicMock(return_value="newer")
+        display.focus_volume_target = MagicMock(return_value=focused)
+        resolve = dm._build_volume_targets_fn(
+            display, get_targets=lambda: targets, scope_fn=lambda: "all",
+            get_all_targets=lambda: targets + [blocked],
+        )
+
+        assert resolve() == targets
+
+    def test_scope_fn_returning_current_keeps_todays_single_target_behaviour(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="newer")
+        resolve = dm._build_volume_targets_fn(
+            display, get_targets=lambda: targets, scope_fn=lambda: "current",
+        )
+
+        assert resolve() == [targets[1]]
+
+    def test_scope_fn_none_keeps_todays_single_target_behaviour(self):
+        """No scope_fn supplied at all (an older call site, or a test) must
+        behave exactly as before this feature existed."""
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[0]]
+
+    def test_scope_fn_called_fresh_per_resolve(self):
+        """The live-read discipline every resolver here follows: a
+        /screen/settings save applies to the very next twist with no
+        restart."""
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="newer")
+        scope = {"value": "current"}
+        resolve = dm._build_volume_targets_fn(
+            display, get_targets=lambda: targets, scope_fn=lambda: scope["value"],
+            get_all_targets=lambda: targets,
+        )
+
+        assert resolve() == [targets[1]]
+        scope["value"] = "all"
+        assert resolve() == targets
+
 
 # ---------------------------------------------------------------------------
-# _build_mute_targets_fn(): fleet-wide when mute_all_playing is on (read
-# live from http_server, not a captured cfg value), else the same single
-# target volume uses.
+# Effective scope end to end: an http server over a live config, exercised
+# through the SAME resolvers main() wires up, proves fitted=False forces
+# broadcast to every target regardless of the stored scope.
+# ---------------------------------------------------------------------------
+
+class TestEffectiveScopeEndToEnd:
+    def _server(self, *, fitted, volume_scope="current", mute_scope="current"):
+        from dial_config import DialConfig, DialDisplayConfig
+        from dial_http_server import DialHTTPServer
+
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=fitted, volume_scope=volume_scope, mute_scope=mute_scope,
+        ))
+        server = DialHTTPServer.__new__(DialHTTPServer)
+        server._cfg = cfg
+        server._cfg_lock = threading.Lock()
+        return server
+
+    def test_unfitted_screen_forces_volume_resolver_to_every_target(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        http_server = self._server(fitted=False)
+        targets = [
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            for n in ("a", "b")
+        ]
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="a")
+        resolve = dm._build_volume_targets_fn(
+            display, get_targets=lambda: targets,
+            scope_fn=lambda: http_server.effective_volume_scope,
+            get_all_targets=lambda: targets,
+        )
+
+        assert resolve() == targets
+
+    def test_fitted_screen_with_current_scope_gives_the_single_target(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        http_server = self._server(fitted=True, volume_scope="current")
+        targets = [
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            for n in ("a", "b")
+        ]
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="a")
+        resolve = dm._build_volume_targets_fn(
+            display, get_targets=lambda: targets,
+            scope_fn=lambda: http_server.effective_volume_scope,
+            get_all_targets=lambda: targets,
+        )
+
+        assert resolve() == [targets[0]]
+
+    def test_unfitted_screen_forces_mute_resolver_to_every_target(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        http_server = self._server(fitted=False)
+        targets = [
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            for n in ("a", "b")
+        ]
+        volume_targets_fn = MagicMock(return_value=["single-target"])
+        resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=lambda: targets)
+
+        assert resolve() == targets
+
+    def test_fitted_screen_with_current_scope_gives_the_single_mute_target(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        http_server = self._server(fitted=True, mute_scope="current")
+        targets = [
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            for n in ("a", "b")
+        ]
+        volume_targets_fn = MagicMock(return_value=["single-target"])
+        resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=lambda: targets)
+
+        assert resolve() == ["single-target"]
+
+
+# ---------------------------------------------------------------------------
+# _build_mute_targets_fn(): fleet-wide when the live effective mute scope is
+# "all" (read live from http_server, not a captured cfg value), else the
+# same single target volume uses.
 # ---------------------------------------------------------------------------
 
 class TestMuteTargetsResolver:
-    def test_mute_all_playing_false_returns_volume_resolvers_list(self):
+    def test_scope_current_returns_volume_resolvers_list(self):
         import dial_main as dm
 
         http_server = MagicMock()
-        http_server.mute_all_playing = False
+        http_server.effective_mute_scope = "current"
         volume_targets_fn = MagicMock(return_value=["single-target"])
         all_targets_fn = MagicMock(return_value=["a", "b", "c"])
 
@@ -2230,12 +2380,12 @@ class TestMuteTargetsResolver:
         assert resolve() == ["single-target"]
         all_targets_fn.assert_not_called()
 
-    def test_mute_all_playing_true_returns_every_playing_target(self):
+    def test_scope_all_returns_every_playing_target(self):
         import dial_main as dm
         from dial_mdns import PlayingTarget
 
         http_server = MagicMock()
-        http_server.mute_all_playing = True
+        http_server.effective_mute_scope = "all"
         volume_targets_fn = MagicMock(return_value=["single-target"])
         targets = [
             PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
@@ -2249,14 +2399,15 @@ class TestMuteTargetsResolver:
         volume_targets_fn.assert_not_called()
 
     def test_setting_is_read_live_not_captured_at_build_time(self):
-        """A /configure change to mute_all_playing must apply to the very
-        next mute press without rebuilding the resolver — the resolver
-        reads http_server.mute_all_playing on every call."""
+        """A /screen/settings change to the mute scope (or the screen being
+        unfitted) must apply to the very next mute press without rebuilding
+        the resolver — the resolver reads http_server.effective_mute_scope
+        on every call."""
         import dial_main as dm
         from dial_mdns import PlayingTarget
 
         class _FakeServer:
-            mute_all_playing = False
+            effective_mute_scope = "current"
 
         server = _FakeServer()
         volume_targets_fn = MagicMock(return_value=["single-target"])
@@ -2268,7 +2419,7 @@ class TestMuteTargetsResolver:
         resolve = dm._build_mute_targets_fn(server, volume_targets_fn, get_all_targets=all_targets_fn)
 
         assert resolve() == ["single-target"]
-        server.mute_all_playing = True
+        server.effective_mute_scope = "all"
         assert resolve() == targets
 
     def test_unauthorized_targets_excluded_from_mute_all(self):
@@ -2276,7 +2427,7 @@ class TestMuteTargetsResolver:
         from dial_mdns import PlayingTarget
 
         http_server = MagicMock()
-        http_server.mute_all_playing = True
+        http_server.effective_mute_scope = "all"
         volume_targets_fn = MagicMock(return_value=[])
         authorized = PlayingTarget(ip="1.0.0.1", port=80, name="A", service_name="a", auth="unknown")
         blocked = PlayingTarget(ip="1.0.0.2", port=80, name="B", service_name="b", auth="unauthorized")
@@ -2287,13 +2438,13 @@ class TestMuteTargetsResolver:
         assert resolve() == [authorized]
 
     def test_single_target_mute_follows_the_focus_entry(self):
-        """mute_all_playing off: single-target mute is exactly whatever the
+        """scope "current": single-target mute is exactly whatever the
         volume resolver returns, so a focus on an idle appliance (built
         through the real volume resolver) reaches mute unchanged."""
         import dial_main as dm
 
         http_server = MagicMock()
-        http_server.mute_all_playing = False
+        http_server.effective_mute_scope = "current"
         focused = object()
         display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
         display.current_source_service_name = MagicMock(return_value=None)
@@ -2303,6 +2454,69 @@ class TestMuteTargetsResolver:
         resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn)
 
         assert resolve() == [focused]
+
+
+# ---------------------------------------------------------------------------
+# _build_mute_press_fn(): the one thing a mute push does, shared by the
+# touch MUTE zone and the physical button.
+# ---------------------------------------------------------------------------
+
+class TestBuildMutePressFn:
+    def test_scope_current_enqueues_mute_with_the_flipped_reported_state(self):
+        import dial_main as dm
+
+        http_server = MagicMock()
+        http_server.effective_mute_scope = "current"
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="svc")
+
+        with patch.object(dm, "shown_muted", return_value=False) as mock_shown, \
+             patch.object(dm, "enqueue_mute") as mock_enqueue, \
+             patch.object(dm, "enqueue_mute_all") as mock_enqueue_all:
+            press = dm._build_mute_press_fn(display, http_server)
+            press()
+
+        mock_shown.assert_called_once_with("svc")
+        mock_enqueue.assert_called_once_with(False)
+        mock_enqueue_all.assert_not_called()
+
+    def test_scope_all_enqueues_one_fleet_toggle_and_writes_nothing_to_the_store(self):
+        import dial_main as dm
+        import dial_volume as dv
+
+        http_server = MagicMock()
+        http_server.effective_mute_scope = "all"
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="svc")
+
+        dv.observe_mute_state("svc", False)
+        try:
+            with patch.object(dm, "enqueue_mute") as mock_enqueue:
+                press = dm._build_mute_press_fn(display, http_server)
+                press()
+            mock_enqueue.assert_not_called()
+            # The store is untouched -- the fleet action is decided later,
+            # on the worker thread, not here.
+            assert dv.shown_muted("svc") is False
+            assert dv._queue.get_nowait() == ("mute_all", 1)
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_neither_scope_performs_network_io_or_touches_display_lock(self):
+        import dial_main as dm
+
+        for scope in ("current", "all"):
+            http_server = MagicMock()
+            http_server.effective_mute_scope = scope
+            display = MagicMock(spec=["current_source_service_name"])
+            display.current_source_service_name = MagicMock(return_value="svc")
+            press = dm._build_mute_press_fn(display, http_server)
+
+            def boom(*a, **kw):
+                raise AssertionError("mute press fn performed network I/O")
+
+            with patch("urllib.request.urlopen", side_effect=boom):
+                press()  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -2351,7 +2565,7 @@ class TestVolumeAndMuteNeverReadRoster:
 # ---------------------------------------------------------------------------
 
 class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
-    def _run(self):
+    def _run(self, *, fitted=True, effective_mute_scope="current"):
         import dial_main as dm
         import dial_display as dd
         from dial_config import DialConfig, DialDisplayConfig
@@ -2364,7 +2578,12 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
             led_gpio=None,
             pin="",
         )
-        cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
+        # touch_type stays "xpt2046" (and _build_touch_source is exercised)
+        # even for the fitted=False run below: main() only skips
+        # constructing touch when fitted is False, so that run's assertions
+        # exercise the physical button entry point alone, which is fine --
+        # the button never depended on the screen either.
+        cfg.display = DialDisplayConfig(fitted=fitted, touch_type="xpt2046")
 
         captured: dict = {}
 
@@ -2401,6 +2620,7 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
 
         mock_http = MagicMock()
         mock_http._server = MagicMock()
+        mock_http.effective_mute_scope = effective_mute_scope
 
         with patch("dial_main._configure_logging"), \
              patch("dial_main.load_config", return_value=cfg), \
@@ -2424,27 +2644,20 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
 
         return captured
 
-    def test_neither_entry_point_blocks_on_display_lock_or_touches_the_network(self):
-        captured = self._run()
-        display = captured["display"]
-        on_mute_toggle = captured["touch_kwargs"]["on_mute_toggle"]
-        on_press = captured["on_press"]
-
+    @staticmethod
+    def _assert_lock_free_and_network_free(display, entry_points):
         def _network_call_forbidden(*args, **kwargs):
             raise AssertionError("a mute press entry point performed network I/O")
 
         with patch("urllib.request.urlopen", side_effect=_network_call_forbidden):
-            # Hold DialDisplay's own lock in THIS thread. If either entry
-            # point tried to acquire it (directly, or via a display method
-            # that isn't actually lock-free), the call below would block
-            # for the full join timeout instead of returning immediately.
+            # Hold DialDisplay's own lock in THIS thread. If any entry point
+            # tried to acquire it (directly, or via a display method that
+            # isn't actually lock-free), the call below would block for the
+            # full join timeout instead of returning immediately.
             held = display._lock.acquire(blocking=False)
             assert held, "test setup: could not acquire display._lock to hold it"
             try:
-                for name, entry_point in (
-                    ("touch mute zone", on_mute_toggle),
-                    ("physical button", on_press),
-                ):
+                for name, entry_point in entry_points:
                     done = threading.Event()
 
                     def run(entry_point=entry_point, done=done):
@@ -2460,6 +2673,43 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
                     )
             finally:
                 display._lock.release()
+
+    def test_neither_entry_point_blocks_on_display_lock_or_touches_the_network(self):
+        captured = self._run()
+        display = captured["display"]
+        on_mute_toggle = captured["touch_kwargs"]["on_mute_toggle"]
+        on_press = captured["on_press"]
+
+        self._assert_lock_free_and_network_free(display, [
+            ("touch mute zone", on_mute_toggle),
+            ("physical button", on_press),
+        ])
+
+    def test_scope_all_entry_points_stay_lock_free_and_network_free(self):
+        """Under broadcast scope "all" both entry points enqueue a fleet
+        toggle (enqueue_mute_all()) instead of enqueue_mute() -- the fleet
+        status sweep that decides the action happens later, on the volume
+        worker thread, never here."""
+        captured = self._run(effective_mute_scope="all")
+        display = captured["display"]
+        on_mute_toggle = captured["touch_kwargs"]["on_mute_toggle"]
+        on_press = captured["on_press"]
+
+        self._assert_lock_free_and_network_free(display, [
+            ("touch mute zone (scope all)", on_mute_toggle),
+            ("physical button (scope all)", on_press),
+        ])
+
+    def test_fitted_false_button_entry_point_stays_lock_free_and_network_free(self):
+        """A screenless dial builds no touch stack at all, but the physical
+        button entry point must stay just as lock-free and network-free."""
+        captured = self._run(fitted=False)
+        display = captured["display"]
+        on_press = captured["on_press"]
+
+        self._assert_lock_free_and_network_free(display, [
+            ("physical button (fitted=False)", on_press),
+        ])
 
 
 # ---------------------------------------------------------------------------
@@ -2668,7 +2918,7 @@ class TestPresenceConfirmationWiring:
 
         captured = {}
 
-        def build_mock(cfg_arg, display_arg, confirm_presence=None, step_percent=None):
+        def build_mock(cfg_arg, display_arg, confirm_presence=None, step_percent=None, mute_press=None):
             captured["confirm_presence"] = confirm_presence
             return MagicMock()
 

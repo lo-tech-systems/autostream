@@ -24,7 +24,13 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from dial_config import InvalidScreenSettings, PIN_RESET_PATH, _read_env_file, validate_screen_settings
+from dial_config import (
+    InvalidScreenSettings,
+    PIN_RESET_PATH,
+    _read_env_file,
+    effective_scope,
+    validate_screen_settings,
+)
 from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
     UnknownDisplayProfileError,
@@ -97,6 +103,19 @@ def _layout_report_for(display_cfg) -> dict:
         "size_chosen": ctx.size_chosen,
         "content_tier": m.content_tier,
         "touch_short": m.touch_short,
+    }
+
+
+def _scope_report_for(display_cfg) -> dict:
+    """The EFFECTIVE volume/mute scope for *display_cfg*: the stored choice
+    while a screen is fitted, else always "all" (see
+    dial_config.effective_scope()). Informational — a client never sends
+    this back; it exists so the setup card and a person reading the JSON can
+    see what the dial is actually doing, not just what is stored. Pure and
+    lock-free: computed from the request's own config snapshot."""
+    return {
+        "volume": effective_scope(display_cfg, display_cfg.volume_scope),
+        "mute": effective_scope(display_cfg, display_cfg.mute_scope),
     }
 
 
@@ -372,9 +391,14 @@ class DialHTTPServer:
             return self._cfg.step_percent
 
     @property
-    def mute_all_playing(self) -> bool:
+    def effective_volume_scope(self) -> str:
         with self._cfg_lock:
-            return self._cfg.mute_all_playing
+            return effective_scope(self._cfg.display, self._cfg.display.volume_scope)
+
+    @property
+    def effective_mute_scope(self) -> str:
+        with self._cfg_lock:
+            return effective_scope(self._cfg.display, self._cfg.display.mute_scope)
 
     def update_cfg(self, cfg) -> None:
         """Replace live config after save_config() succeeds in POST /configure."""
@@ -545,7 +569,6 @@ class DialHTTPServer:
                         'version':              VERSION,
                         'auto_update':          cfg.auto_update,
                         'update_channel':       cfg.update_channel,
-                        'mute_all_playing':     cfg.mute_all_playing,
                         'can_confirm_presence': dial_server._can_confirm_presence,
                     })
 
@@ -589,11 +612,14 @@ class DialHTTPServer:
                             'always_show_controls': cfg.display.always_show_controls,
                             'screen_size_inches': cfg.display.screen_size_inches,
                             'layout_size': cfg.display.layout_size,
+                            'volume_scope': cfg.display.volume_scope,
+                            'mute_scope': cfg.display.mute_scope,
                         },
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
                         'layout_sizes':   layout_size_options(_profile_for(cfg.display)),
                         'layout':         _layout_report_for(cfg.display),
+                        'scope':          _scope_report_for(cfg.display),
                         'runtime':        runtime,
                     })
 
@@ -725,7 +751,7 @@ class DialHTTPServer:
                     cfg = dial_server._cfg
                 new_cfg = copy.copy(cfg)
 
-                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel', 'mute_all_playing'))
+                changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel'))
 
                 # PIN auth
                 if cfg.pin and changing_protected:
@@ -793,13 +819,6 @@ class DialHTTPServer:
                         return
                     new_cfg.update_channel = v_norm
 
-                if 'mute_all_playing' in obj:
-                    v = obj['mute_all_playing']
-                    if not isinstance(v, bool):
-                        self._send_json(400, {'ok': False, 'error': 'invalid_mute_all_playing'})
-                        return
-                    new_cfg.mute_all_playing = v
-
                 if 'new_pin' in obj:
                     p = obj['new_pin']
                     if isinstance(p, str) and p:
@@ -854,9 +873,8 @@ class DialHTTPServer:
                         return
 
                 logging.info(
-                    "config updated: name=%r step=%d auto_update=%s update_channel=%s mute_all_playing=%s",
+                    "config updated: name=%r step=%d auto_update=%s update_channel=%s",
                     new_cfg.name, new_cfg.step_percent, new_cfg.auto_update, new_cfg.update_channel,
-                    new_cfg.mute_all_playing,
                 )
                 self._send_json(200, {'ok': True})
 
@@ -975,9 +993,12 @@ class DialHTTPServer:
                             'always_show_controls': cfg.display.always_show_controls,
                             'screen_size_inches': cfg.display.screen_size_inches,
                             'layout_size': cfg.display.layout_size,
+                            'volume_scope': cfg.display.volume_scope,
+                            'mute_scope': cfg.display.mute_scope,
                         },
                         'layout_sizes': layout_size_options(_profile_for(cfg.display)),
                         'layout': _layout_report_for(cfg.display),
+                        'scope': _scope_report_for(cfg.display),
                         'runtime': runtime,
                     })
                     return
@@ -1024,9 +1045,12 @@ class DialHTTPServer:
                         'always_show_controls': new_cfg.display.always_show_controls,
                         'screen_size_inches': new_cfg.display.screen_size_inches,
                         'layout_size': new_cfg.display.layout_size,
+                        'volume_scope': new_cfg.display.volume_scope,
+                        'mute_scope': new_cfg.display.mute_scope,
                     },
                     'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
                     'layout':           _layout_report_for(new_cfg.display),
+                    'scope':            _scope_report_for(new_cfg.display),
                     'runtime':          runtime,
                     'restart_required': touch_type_changed,
                 }

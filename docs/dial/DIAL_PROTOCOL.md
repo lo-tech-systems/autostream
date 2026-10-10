@@ -90,7 +90,9 @@ every device), making them unsuitable for cross-host comparison. Names are the s
 ### `POST /api/dial/volume`
 
 UUID-in-body auth. Must be routed **before** `validate_csrf()` - no session or CSRF token
-required.
+required. A dial under broadcast scope "all" (see **Broadcast scope** under
+`GET /screen/settings`) may send this same request to several appliances at once for one
+twist; nothing about the request or response changes for any of them.
 
 **Request body:**
 ```json
@@ -147,7 +149,10 @@ not present in `dials.json`.
 ### `POST /api/dial/mute`
 
 UUID-in-body auth. Must be routed **before** `validate_csrf()` - no session or CSRF token
-required. Same authorization check as `POST /api/dial/volume`.
+required. Same authorization check as `POST /api/dial/volume`. A dial under broadcast scope
+"all" may send this same request to several appliances for one push, having already decided
+the single `"mute"`/`"restore"` action they all receive (see **Broadcast scope** under
+`GET /screen/settings`); nothing about the request or response changes for any of them.
 
 Applies an **explicit** mute or restore action across all currently selected OwnTone
 outputs. The appliance owns its own mute state (process memory, not persisted - see below)
@@ -575,6 +580,12 @@ All fields optional. PIN required to change `name`, `step_percent`, `new_pin`, o
 PIN recovery completion: include `"pin_recovery": true` with `"new_pin"` to complete recovery
 without knowing the current PIN (window must be active and volume confirmed).
 
+`mute_all_playing`, a field never documented in this file, is retired: it is silently ignored
+if a caller still posts it (unknown fields are ignored, same as any other), and it is never
+present in `GET /configure`. A dial that previously had it persisted as `true` migrates that
+choice once, at startup, onto `screen.mute_scope: "all"` (see `GET`/`POST /screen/settings`
+below) — no client action is required.
+
 ### `GET /configure`
 
 Returns current dial settings.
@@ -760,7 +771,9 @@ values from this endpoint.
     "bgr": false,
     "touch_type": "none",
     "screen_size_inches": null,
-    "layout_size": null
+    "layout_size": null,
+    "volume_scope": "current",
+    "mute_scope": "current"
   },
   "supported": [
     {"key": "st7735s_160x128", "text": "ST7735S (128x160)", "default_inches": 1.8},
@@ -803,6 +816,10 @@ values from this endpoint.
     "last_error_at": null,
     "display_sleeping": false,
     "display_idle_seconds": 0
+  },
+  "scope": {
+    "volume": "all",
+    "mute": "all"
   }
 }
 ```
@@ -816,6 +833,9 @@ values from this endpoint.
 | `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright - see **Validation** under `POST /screen/settings` below |
 | `screen.screen_size_inches` | number\|null | Persisted physical screen diagonal, in inches. `null` means "use the selected profile's own built-in default" (see `default_inches` under **Supported profiles** below). Optional, defaults to `null` |
 | `screen.layout_size` | string\|null | Persisted logical render size: the dial composes and hit-tests every screen at this size and resamples the finished frame to the panel. `null` means "use the panel's own resolution" - today's behaviour. When present, must be one of the keys in `layout_sizes` for the current `screen_type`. Optional, defaults to `null` |
+| `screen.volume_scope` | string | Which appliances a volume twist addresses while `screen.fitted` is true: `"current"` (the bound appliance) or `"all"` (every playing appliance). Optional, defaults to `"current"`. See **Scope capability gate** and **Broadcast scope** below |
+| `screen.mute_scope` | string | The same choice for a mute push. Optional, defaults to `"current"` |
+| `scope.volume`, `scope.mute` | string | The EFFECTIVE values: the stored `screen.volume_scope`/`screen.mute_scope` while `screen.fitted` is true, otherwise always `"all"` - a dial with no screen (or one too small to select an appliance) cannot choose which appliance to address. Informational only; a client never sends either back |
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
 | `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
 | `layout_sizes` | array | The logical render sizes this dial can compose the *current* `screen_type` at, as `[{"key", "text"}, ...]` (e.g. `{"key": "medium", "text": "Medium (320x240)"}`). The panel's own native resolution is not listed here - a client represents it as `screen.layout_size: null`. **Its presence is the capability gate for this field** - see **Layout-size capability gate** below |
@@ -899,6 +919,27 @@ tiers today, but clients should not assume the set is closed. `layout.touch_shor
 assessment against a fixed 6 mm control-band floor, and `layout.size_chosen` records
 whether a deliberate layout-size choice overrides the automatic fallback to the smallest
 tier. `layout.resampled` means the composed frame is scaled to the panel before it is sent.
+
+**Scope capability gate.** `volume_scope`/`mute_scope` are **one joint capability**,
+advertised by the presence of BOTH `screen.volume_scope` and `screen.mute_scope` in this
+response. A client must not send either field to a dial that did not advertise both, and
+must not infer this capability from `supported`, `supported_touch`, `layout_sizes`, or any
+other field - it is checked independently, the same pattern every other screen capability in
+this document follows. An old dial's `GET` response simply omits both fields.
+
+**Broadcast scope.** A dial with no screen fitted (or one too small to display an appliance
+selector) cannot choose which appliance a twist or a push addresses, so it addresses every
+playing appliance instead of the one it would otherwise be bound to. The rule is: the
+effective scope is the stored `screen.volume_scope`/`screen.mute_scope` while `screen.fitted`
+is `true`, and always `"all"` otherwise (see `scope.volume`/`scope.mute` above). Under
+`volume_scope` "all", `POST /api/dial/volume` sends the same delta to every playing
+appliance; each applies the delta to its own master volume and its own muted-volume rule (see
+that endpoint below) - nothing about the request or response changes. Under `mute_scope`
+"all", the dial decides one fleet-wide action from a fresh `POST /api/dial/status` sweep of
+every playing appliance taken at the moment of the push: `"mute"` when any of them reports
+`muted: false` (or no `muted` field at all), `"restore"` only when every one of them reports
+`muted: true`. This decision is made once per push, not once per appliance, so the whole
+fleet ends up in the same state even if it started mixed.
 
 ### `GET /screen/image`
 
@@ -1054,6 +1095,9 @@ echoes instead.
   own resolution"); when present it must be a string naming a key present in
   `layout_sizes` for the posted `screen_type`, or JSON `null`. A key not offered for that
   `screen_type` is rejected the same as an unrecognised one.
+- `volume_scope` is optional and defaults to `"current"` when omitted; when present it must
+  be the string `"current"` or `"all"`. Anything else is rejected outright.
+- `mute_scope` follows the identical rule as `volume_scope` immediately above, independently.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
   support them - see the capability gates above) returns HTTP `400`:

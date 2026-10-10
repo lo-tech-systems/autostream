@@ -398,9 +398,12 @@ class TestTargetSelectionFallback:
 
 class TestMuteObservationFromStatusPoll:
     """The poll observes the reported `muted` flag into dial_volume's
-    observation store for the reporting-from target only -- it never infers
-    mute from a volume, and never touches any other target's observation
-    (see dial_volume.observe_mute_state/shown_muted)."""
+    per-service observation store for every target it actually walked, not
+    only the reporting-from one -- it never infers mute from a volume. Each
+    target has its own entry, so one target's flag can never leak into
+    another's; the glyph itself still reads back only the reporting/bound
+    service's entry (see TestEffectiveOverlayMerge), unaffected by what else
+    the store now holds (see dial_volume.observe_mute_state/shown_muted)."""
 
     def test_muted_field_observed_for_the_reporting_target(self):
         t = _target()
@@ -436,11 +439,11 @@ class TestMuteObservationFromStatusPoll:
             display._poll_once()
         mock_observe.assert_called_once_with(t.service_name, None)
 
-    def test_muted_on_a_non_reporting_target_is_never_observed(self):
-        """Two targets, neither identified: the reporting-from target is the
-        oldest-playing (first) one. Only that target's muted flag reaches
-        the observation store -- the other target's is never consulted,
-        matching the single-reporting-target rule volume already follows."""
+    def test_muted_on_every_walked_target_is_observed(self):
+        """Two targets, neither identified: the walk visits both before
+        falling back to the oldest-playing (first) one as reporting-from --
+        both targets' muted flags reach the (per-service) observation store,
+        each in its own entry, not only the reporting one."""
         t_reporting = _target(name="Older", service_name="older", playing_since=10.0)
         t_other = _target(name="Newer", service_name="newer", playing_since=20.0)
         display, fb, gt = _make_display(targets=[t_reporting, t_other])
@@ -452,7 +455,9 @@ class TestMuteObservationFromStatusPoll:
         with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
              patch("dial_display.observe_mute_state") as mock_observe:
             display._poll_once()
-        mock_observe.assert_called_once_with("older", False)
+        mock_observe.assert_any_call("older", False)
+        mock_observe.assert_any_call("newer", True)
+        assert mock_observe.call_count == 2
 
     def test_fallback_reporting_target_is_oldest_when_nothing_identified(self):
         """With nothing identified, the reporting-from target is
@@ -468,6 +473,21 @@ class TestMuteObservationFromStatusPoll:
             display._poll_once()
 
         assert mock_observe.call_args[0][0] == "older"
+
+    def test_forget_mute_states_except_called_with_current_playing_targets(self):
+        """Each poll tick prunes the per-service store down to the targets
+        actually playing this tick, so a target that has since stopped does
+        not accumulate a stale entry forever."""
+        t_a = _target(name="A", service_name="svc-a", playing_since=10.0)
+        t_b = _target(name="B", service_name="svc-b", playing_since=20.0)
+        display, fb, gt = _make_display(targets=[t_a, t_b])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=None, muted=False)), \
+             patch("dial_display.forget_mute_states_except") as mock_forget:
+            display._poll_once()
+        mock_forget.assert_called_once()
+        assert set(mock_forget.call_args[0][0]) == {"svc-a", "svc-b"}
 
     def test_muted_flag_actually_reaches_the_real_observation_store(self):
         """End-to-end against the real dial_volume module (not a mock of

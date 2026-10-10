@@ -592,18 +592,20 @@ class TestSendOneMuteReconciliation:
             dv._send_one_mute(target, "uuid", True)
         assert dv.shown_muted("svc") is True
 
-    def test_a_later_observation_for_a_different_service_makes_the_earlier_one_unknown(self):
-        """The store holds one reporting service at a time (see
-        shown_muted()'s service-equality gate) -- a later observation for a
-        different service means reading the earlier one back reports
-        unknown (False), never a stale value from the wrong appliance."""
+    def test_a_later_observation_for_a_different_service_leaves_the_earlier_one_untouched(self):
+        """The store is per-service (dial_volume._observed_muted) -- a later
+        observation for a DIFFERENT service must never clobber an earlier
+        one's own entry. This inverts the single-slot store's old behaviour
+        (a wide fan-out's last responder used to blank a different
+        appliance's glyph until the next poll); the per-service store fixes
+        it by construction."""
         target_a = _target(ip="6.0.0.1", service_name="svc-a")
         target_b = _target(ip="6.0.0.2", service_name="svc-b")
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=True)):
             dv._send_one_mute(target_a, "uuid", True)
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_mute_success(muted=False)):
             dv._send_one_mute(target_b, "uuid", False)
-        assert dv.shown_muted("svc-a") is False  # unknown, not the stale True
+        assert dv.shown_muted("svc-a") is True   # untouched by svc-b's observation
         assert dv.shown_muted("svc-b") is False  # the actual last-reported value
 
 
@@ -764,6 +766,163 @@ class TestFanOutMute:
         assert dv._fail_counts.get(bad.ip, 0) == 1
         assert dv._fail_counts.get(good.ip, 0) == 0
 
+    def test_two_different_services_both_survive_with_their_own_flags(self):
+        """A fan-out to several DIFFERENT services (broadcast scope "all")
+        must leave each one's own entry independently correct -- not just
+        the last responder's, the single-slot store's old defect."""
+        one = _target(ip="4.0.0.3", service_name="svc-one")
+        two = _target(ip="4.0.0.4", service_name="svc-two")
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.startswith(f"http://{one.ip}"):
+                return _mock_urlopen_mute_success(muted=True)
+            return _mock_urlopen_mute_success(muted=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            dv._fan_out_mute([one, two], "uuid", True)
+
+        assert dv.shown_muted("svc-one") is True
+        assert dv.shown_muted("svc-two") is False
+
+
+# ---------------------------------------------------------------------------
+# enqueue_mute_all(): plain queue put, no lock, no I/O, no store echo -- the
+# action is decided at dispatch, not here.
+# ---------------------------------------------------------------------------
+
+class TestEnqueueMuteAll:
+    def setup_method(self):
+        _clear_state()
+        while True:
+            try:
+                dv._queue.get_nowait()
+            except Exception:
+                break
+
+    def test_enqueues_one_mute_all_event(self):
+        dv.enqueue_mute_all()
+        assert dv._queue.get_nowait() == ("mute_all", 1)
+
+    def test_performs_no_network_io(self):
+        def boom(*a, **kw):
+            raise AssertionError("enqueue_mute_all() must never touch the network")
+
+        with patch("urllib.request.urlopen", side_effect=boom):
+            dv.enqueue_mute_all()  # must not raise
+
+    def test_writes_nothing_to_the_observation_store(self):
+        """Unlike enqueue_mute(), there is no same-frame echo -- the fleet
+        action is not known yet at enqueue time."""
+        dv.observe_mute_state("svc", False)
+        dv.enqueue_mute_all()
+        assert dv.shown_muted("svc") is False
+
+
+# ---------------------------------------------------------------------------
+# _fan_out_status(): one fetch_target_status() per target, mirroring
+# _fan_out_mute's concurrent shape.
+# ---------------------------------------------------------------------------
+
+class TestFanOutStatus:
+    def test_one_slot_per_target_with_reported_flags(self):
+        t1 = _target(ip="5.1.0.1", service_name="s1")
+        t2 = _target(ip="5.1.0.2", service_name="s2")
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            return {"muted": target.service_name == "s1"}
+
+        with patch("dial_volume.fetch_target_status", side_effect=fake_fetch):
+            flags = dv._fan_out_status([t1, t2], "uuid")
+        assert flags == [True, False]
+
+    def test_timeout_or_missing_flag_becomes_none(self):
+        t1 = _target(ip="5.1.0.3", service_name="s3")
+        t2 = _target(ip="5.1.0.4", service_name="s4")
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            if target.service_name == "s3":
+                return {"status_error": "timeout"}  # no "muted" key at all
+            return {"muted": "not-a-bool"}
+
+        with patch("dial_volume.fetch_target_status", side_effect=fake_fetch):
+            flags = dv._fan_out_status([t1, t2], "uuid")
+        assert flags == [None, None]
+
+    def test_uses_the_0_4_second_timeout(self):
+        t = _target(ip="5.1.0.5", service_name="s5")
+        seen_timeouts = []
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            seen_timeouts.append(timeout_seconds)
+            return {"muted": True}
+
+        with patch("dial_volume.fetch_target_status", side_effect=fake_fetch):
+            dv._fan_out_status([t], "uuid")
+        assert seen_timeouts == [0.4]
+
+    def test_empty_targets_returns_empty_list(self):
+        assert dv._fan_out_status([], "uuid") == []
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_mute_all(): decides "mute"/"restore" from a fresh status sweep,
+# echoes it optimistically for every target, then fans it out for real.
+# Unknown counts as unmuted, so "mute" wins unless every target confirms
+# muted:true.
+# ---------------------------------------------------------------------------
+
+class TestDispatchMuteAll:
+    def setup_method(self):
+        _clear_state()
+
+    def test_one_unmuted_one_muted_sends_mute(self):
+        t1 = _target(ip="5.2.0.1", service_name="d1")
+        t2 = _target(ip="5.2.0.2", service_name="d2")
+        fan_out_calls = []
+        with patch.object(dv, "_fan_out_status", return_value=[True, False]), \
+             patch.object(dv, "_fan_out_mute", side_effect=lambda t, u, m: fan_out_calls.append(m)):
+            dv._dispatch_mute_all([t1, t2], "uuid")
+        assert fan_out_calls == [True]
+
+    def test_all_muted_sends_restore(self):
+        t1 = _target(ip="5.2.0.3", service_name="d3")
+        t2 = _target(ip="5.2.0.4", service_name="d4")
+        fan_out_calls = []
+        with patch.object(dv, "_fan_out_status", return_value=[True, True]), \
+             patch.object(dv, "_fan_out_mute", side_effect=lambda t, u, m: fan_out_calls.append(m)):
+            dv._dispatch_mute_all([t1, t2], "uuid")
+        assert fan_out_calls == [False]
+
+    def test_unknown_flag_counts_as_unmuted_and_sends_mute(self):
+        t1 = _target(ip="5.2.0.5", service_name="d5")
+        t2 = _target(ip="5.2.0.6", service_name="d6")
+        fan_out_calls = []
+        with patch.object(dv, "_fan_out_status", return_value=[True, None]), \
+             patch.object(dv, "_fan_out_mute", side_effect=lambda t, u, m: fan_out_calls.append(m)):
+            dv._dispatch_mute_all([t1, t2], "uuid")
+        assert fan_out_calls == [True]
+
+    def test_empty_targets_sends_nothing(self):
+        with patch.object(dv, "_fan_out_status") as mock_status, \
+             patch.object(dv, "_fan_out_mute") as mock_fan_out_mute:
+            dv._dispatch_mute_all([], "uuid")
+        mock_status.assert_not_called()
+        mock_fan_out_mute.assert_not_called()
+
+    def test_optimistic_echo_lands_for_every_target_before_the_fan_out(self):
+        t1 = _target(ip="5.2.0.7", service_name="d7")
+        t2 = _target(ip="5.2.0.8", service_name="d8")
+        echoed_before_fan_out = {}
+
+        def fake_fan_out_mute(targets, uuid, muted):
+            for t in targets:
+                echoed_before_fan_out[t.service_name] = dv.shown_muted(t.service_name)
+
+        with patch.object(dv, "_fan_out_status", return_value=[False, False]), \
+             patch.object(dv, "_fan_out_mute", side_effect=fake_fan_out_mute):
+            dv._dispatch_mute_all([t1, t2], "uuid")
+        assert echoed_before_fan_out == {"d7": True, "d8": True}
+
 
 # ---------------------------------------------------------------------------
 # enqueue_mute(): flips the caller-supplied reported state, no network I/O,
@@ -813,6 +972,16 @@ class TestEnqueueMuteAbsoluteAction:
         dv.enqueue_mute(False)
         assert dv.shown_muted("other-svc") is False
 
+    def test_enqueue_mute_leaves_other_services_entries_untouched(self):
+        """The store is per-service: echoing the reporting appliance's flip
+        must never disturb an unrelated service's own entry (e.g. one a
+        recent poll or a scope-"all" fan-out already recorded)."""
+        dv.observe_mute_state("svc-other", True)
+        dv.observe_mute_state("svc", False)  # the most recently observed -- becomes the echo target
+        dv.enqueue_mute(False)
+        assert dv.shown_muted("svc") is True
+        assert dv.shown_muted("svc-other") is True  # untouched
+
 
 # ---------------------------------------------------------------------------
 # _worker(): dispatches a mute batch item through _fan_out_mute with the
@@ -845,6 +1014,29 @@ class TestWorkerMuteDispatch:
                     dv._fan_out_mute(targets, dv._cfg.uuid, event[1])
 
         assert fan_out_mute_calls == [("test-uuid", True)]
+
+    def test_mute_all_batch_item_dispatches_via_dispatch_mute_all(self):
+        """The real _worker() routes a "mute_all" event to
+        _dispatch_mute_all(), not _fan_out_mute() directly -- the action
+        isn't known until dispatch decides it."""
+        dispatch_calls = []
+
+        def fake_dispatch_mute_all(targets, uuid):
+            dispatch_calls.append((targets, uuid))
+
+        target = _target()
+        dv._targets_fn = lambda: [target]
+        dv._mute_targets_fn = None
+
+        with patch.object(dv, "_dispatch_mute_all", side_effect=fake_dispatch_mute_all):
+            batch = dv._coalesce(("mute_all", 1))
+            for event in batch:
+                resolver = dv._mute_targets_fn or dv._targets_fn
+                targets = resolver()
+                if event[0] == "mute_all":
+                    dv._dispatch_mute_all(targets, dv._cfg.uuid)
+
+        assert dispatch_calls == [([target], "test-uuid")]
 
 
 # ---------------------------------------------------------------------------
@@ -896,19 +1088,26 @@ class TestWorkerTargetResolution:
         result reached which fan-out call."""
         fan_out_calls = []
         fan_out_mute_calls = []
+        mute_all_calls = []
         for event in batch:
             if event[0] == "delta":
                 targets = dv._targets_fn()
                 if not targets:
                     continue
                 fan_out_calls.append((targets, event[1]))
+            elif event[0] == "mute_all":
+                resolver = dv._mute_targets_fn or dv._targets_fn
+                targets = resolver()
+                if not targets:
+                    continue
+                mute_all_calls.append(targets)
             else:
                 resolver = dv._mute_targets_fn or dv._targets_fn
                 targets = resolver()
                 if not targets:
                     continue
                 fan_out_mute_calls.append((targets, event[1]))
-        return fan_out_calls, fan_out_mute_calls
+        return fan_out_calls, fan_out_mute_calls, mute_all_calls
 
     def test_delta_event_uses_targets_fn(self):
         vol_target = _target(ip="8.0.0.1", service_name="volume-target")
@@ -916,10 +1115,11 @@ class TestWorkerTargetResolution:
         dv._targets_fn = lambda: [vol_target]
         dv._mute_targets_fn = lambda: [mute_target]
 
-        fan_out_calls, fan_out_mute_calls = self._dispatch([("delta", 5)])
+        fan_out_calls, fan_out_mute_calls, mute_all_calls = self._dispatch([("delta", 5)])
 
         assert fan_out_calls == [([vol_target], 5)]
         assert fan_out_mute_calls == []
+        assert mute_all_calls == []
 
     def test_mute_event_uses_mute_targets_fn_when_set(self):
         vol_target = _target(ip="8.0.0.1", service_name="volume-target")
@@ -927,26 +1127,39 @@ class TestWorkerTargetResolution:
         dv._targets_fn = lambda: [vol_target]
         dv._mute_targets_fn = lambda: [mute_target]
 
-        fan_out_calls, fan_out_mute_calls = self._dispatch([("mute", True)])
+        fan_out_calls, fan_out_mute_calls, mute_all_calls = self._dispatch([("mute", True)])
 
         assert fan_out_calls == []
         assert fan_out_mute_calls == [([mute_target], True)]
+        assert mute_all_calls == []
 
     def test_mute_event_falls_back_to_targets_fn_when_mute_targets_fn_unset(self):
         vol_target = _target(ip="8.0.0.1", service_name="volume-target")
         dv._targets_fn = lambda: [vol_target]
         dv._mute_targets_fn = None
 
-        _, fan_out_mute_calls = self._dispatch([("mute", True)])
+        _, fan_out_mute_calls, _mute_all = self._dispatch([("mute", True)])
 
         assert fan_out_mute_calls == [([vol_target], True)]
+
+    def test_mute_all_event_uses_mute_targets_fn(self):
+        vol_target = _target(ip="8.0.0.1", service_name="volume-target")
+        mute_target = _target(ip="8.0.0.2", service_name="mute-target")
+        dv._targets_fn = lambda: [vol_target]
+        dv._mute_targets_fn = lambda: [mute_target]
+
+        fan_out_calls, fan_out_mute_calls, mute_all_calls = self._dispatch([("mute_all", 1)])
+
+        assert fan_out_calls == []
+        assert fan_out_mute_calls == []
+        assert mute_all_calls == [[mute_target]]
 
     def test_empty_targets_fn_result_skips_only_the_delta_event(self):
         mute_target = _target(ip="8.0.0.2", service_name="mute-target")
         dv._targets_fn = lambda: []
         dv._mute_targets_fn = lambda: [mute_target]
 
-        fan_out_calls, fan_out_mute_calls = self._dispatch([("delta", 5), ("mute", True)])
+        fan_out_calls, fan_out_mute_calls, _mute_all = self._dispatch([("delta", 5), ("mute", True)])
 
         assert fan_out_calls == []
         assert fan_out_mute_calls == [([mute_target], True)]
@@ -956,7 +1169,7 @@ class TestWorkerTargetResolution:
         dv._targets_fn = lambda: [vol_target]
         dv._mute_targets_fn = lambda: []
 
-        fan_out_calls, fan_out_mute_calls = self._dispatch([("delta", 5), ("mute", True)])
+        fan_out_calls, fan_out_mute_calls, _mute_all = self._dispatch([("delta", 5), ("mute", True)])
 
         assert fan_out_calls == [([vol_target], 5)]
         assert fan_out_mute_calls == []
@@ -1076,3 +1289,27 @@ class TestSendOneReadoutObservation:
         with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=88, ok=False)):
             dv._send_one(target, "uuid", 2, [])
         assert dv.shown_volume("svc-e") is None
+
+    def test_a_response_for_an_untracked_service_does_not_re_key_the_readout(self):
+        """Scope "all" can fan a delta out to several targets at once -- a
+        response from a target OTHER than the one already tracked must never
+        re-key the single volume readout away from it (see
+        observe_master_volume_if_tracked())."""
+        tracked = _target(ip="9.0.0.6", service_name="svc-tracked")
+        other = _target(ip="9.0.0.7", service_name="svc-other")
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=30)):
+            dv._send_one(tracked, "uuid", 2, [])
+        assert dv.shown_volume("svc-tracked") == 30
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=70)):
+            dv._send_one(other, "uuid", 2, [])
+        assert dv.shown_volume("svc-tracked") == 30
+        assert dv.shown_volume("svc-other") is None
+
+    def test_first_response_of_a_fan_out_establishes_the_tracked_service(self):
+        """With nothing tracked yet, the FIRST response in wins -- this is
+        what lets a fresh fan-out (or a dial with no prior readout) start
+        showing a number at all."""
+        first = _target(ip="9.0.0.8", service_name="svc-first")
+        with patch("urllib.request.urlopen", return_value=_mock_urlopen_success(volume=55)):
+            dv._send_one(first, "uuid", 2, [])
+        assert dv.shown_volume("svc-first") == 55

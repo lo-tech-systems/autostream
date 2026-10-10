@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, load_config
+from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_config
 from dial_control import DialControlServer
 from dial_http_server import (
     ADMIN_CMD,
@@ -39,6 +39,7 @@ from dial_target_status import enrich_targets
 from dial_volume import (
     enqueue_delta,
     enqueue_mute,
+    enqueue_mute_all,
     select_volume_target,
     shown_muted,
     start_volume_worker,
@@ -239,18 +240,29 @@ def _clear_recovery_request() -> None:
         )
 
 
-def _build_volume_targets_fn(display, get_targets=get_display_targets):
-    """Zero-arg resolver for the volume worker: a manual focus (playing or
-    idle) the display is showing, when it has one, else the display's
-    artwork source, else the oldest playing target — as a list of zero or
-    one target.
+def _build_volume_targets_fn(
+    display, get_targets=get_display_targets, *, scope_fn=None, get_all_targets=get_playing_targets,
+):
+    """Zero-arg resolver for the volume worker.
+
+    Under broadcast scope "all" (scope_fn returns SCOPE_ALL — a screenless
+    dial, or one whose screen was later unfitted, cannot choose an
+    appliance), every playing target with auth != "unauthorized" is
+    returned, focus ignored: a fleet-wide twist has no single appliance to
+    pin to. Otherwise (scope_fn absent or returning anything else) today's
+    single-target behaviour: a manual focus (playing or idle) the display is
+    showing, when it has one, else the display's artwork source, else the
+    oldest playing target — as a list of zero or one target.
 
     display may be any object — in particular NoOpDisplayStatusProvider,
     which has neither accessor at all — a missing or raising accessor
     degrades to the next step so a NoOp or broken display never blocks
     volume (display failure must never affect volume control). get_targets
     defaults to the real dial_mdns.get_display_targets, imported at module
-    load time; tests override it directly for a fake target list.
+    load time; tests override it directly for a fake target list. scope_fn,
+    when supplied, is called fresh on every resolve (the live-read discipline
+    every resolver here already follows), so a /screen/settings save or a
+    screen being unfitted applies to the very next twist with no restart.
 
     Rows with a confirmed 412 (auth == "unauthorized") are excluded. Rows
     whose auth is still "unknown" stay eligible — the encoder must be live
@@ -260,6 +272,8 @@ def _build_volume_targets_fn(display, get_targets=get_display_targets):
     focus_getter = getattr(display, "focus_volume_target", None)
 
     def resolve():
+        if scope_fn is not None and scope_fn() == SCOPE_ALL:
+            return [t for t in get_all_targets() if t.auth != "unauthorized"]
         if focus_getter is not None:
             try:
                 focused = focus_getter()
@@ -280,20 +294,39 @@ def _build_volume_targets_fn(display, get_targets=get_display_targets):
 
 
 def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_playing_targets):
-    """Zero-arg resolver for mute: every playing target when the live
-    mute_all_playing setting is on, else the same single target volume
-    uses. Reads the setting through http_server (not a captured cfg value)
-    so a /configure change applies without a restart, exactly like
-    step_percent does for the encoder today. As with volume, unauthorized
-    rows are excluded from the mute-all fan-out; unknown rows stay eligible."""
+    """Zero-arg resolver for mute: every playing target when the dial's live
+    effective mute scope is "all", else the same single target volume uses.
+    Reads the scope through http_server (not a captured cfg value) so a
+    /screen/settings change, or the screen being unfitted, applies without a
+    restart, exactly like step_percent does for the encoder today. As with
+    volume, unauthorized rows are excluded from the "all" fan-out; unknown
+    rows stay eligible."""
     def resolve():
-        if http_server.mute_all_playing:
+        if http_server.effective_mute_scope == SCOPE_ALL:
             return [t for t in get_all_targets() if t.auth != "unauthorized"]
         return volume_targets_fn()
     return resolve
 
 
-def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
+def _build_mute_press_fn(display, http_server):
+    """The one thing a mute push does, shared by the touch MUTE zone and the
+    physical button: under broadcast scope "all", enqueue a fleet toggle
+    decided at dispatch (see dial_volume.enqueue_mute_all()); otherwise flip
+    what the bound appliance last reported, exactly as a screened dial always
+    has. Both branches are plain writes plus a queue put — no network, no
+    DialDisplay lock — so sharing this one function between the two press
+    entries does not change either one's lock-free-touch guarantee."""
+    getter = getattr(display, "current_source_service_name", lambda: None)
+
+    def press() -> None:
+        if http_server.effective_mute_scope == SCOPE_ALL:
+            enqueue_mute_all()
+        else:
+            enqueue_mute(shown_muted(getter()))
+    return press
+
+
+def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, mute_press=None):
     """Construct and wire a TouchEventSource for cfg.display against the
     already-built *display* manager.
 
@@ -314,6 +347,14 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     rather than the startup cfg). When omitted, the callbacks fall back to
     the startup cfg.step_percent, unchanged from before this parameter
     existed.
+
+    mute_press, when supplied, is the zero-arg callable built by
+    _build_mute_press_fn(display, http_server) — main() passes the SAME
+    instance it also gives the physical button, so a touch tap and a button
+    press make identical scope decisions. When omitted (tests that construct
+    a touch source with no http_server), the MUTE zone falls back to the
+    plain scope-"current" behaviour this parameter replaces: read
+    shown_muted() for the display's current source and enqueue that.
     """
     from dial_display_compositor import OverlayState
     from dial_display_profiles import get_profile, layout_context_for
@@ -333,6 +374,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     # overlay_live()). Together they cover every contact. confirm_presence is
     # optional so callers/tests that don't care about recovery can omit it.
     _confirm_presence = confirm_presence or (lambda: None)
+    _mute_press = mute_press or (
+        lambda: enqueue_mute(shown_muted(display.current_source_service_name()))
+    )
 
     controller = get_controller(cfg.display.touch_type)
     profile = get_profile(cfg.display.screen_type)
@@ -415,16 +459,18 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
 
     def on_mute_toggle() -> None:
         display.notify_touch_activity()
-        # enqueue_mute() flips whatever the reporting appliance last
-        # reported (read from the observation store, never inferred or
-        # persisted here) and echoes the request into that same store so the
-        # glyph updates on this frame; the appliance's response or the next
-        # status poll confirms it. Does no network I/O and takes no
+        # mute_press() (see _build_mute_press_fn) is the same decision the
+        # physical button makes: under scope "current" it flips whatever the
+        # reporting appliance last reported (read from the observation
+        # store, never inferred or persisted here) and echoes the request
+        # into that same store so the glyph updates on this frame; under
+        # scope "all" it enqueues a fleet toggle the volume worker decides at
+        # dispatch instead. Either way this does no network I/O and takes no
         # DialDisplay lock, so this stays as cheap as the volume callbacks
         # above. on_set_pressed_zone() always runs immediately before this
         # for the MUTE zone (see TouchStateMachine._arm) and already
         # recorded the press on the pressed channel.
-        enqueue_mute(shown_muted(display.current_source_service_name()))
+        _mute_press()
         display.set_overlay(OverlayState(visible=True))
 
     def on_zone_tap(zone, index) -> None:
@@ -592,19 +638,27 @@ def main() -> None:
         start_general_browser(shutdown_event=shutdown_event)
     display.start()
 
-    # Single-target volume/mute (see dial_volume.py's module docstring):
-    # volume always addresses the display's
-    # reporting-from target; mute widens to every playing target only when
-    # mute_all_playing is on. Both resolvers degrade gracefully for a
+    # Volume/mute broadcast scope (see dial_volume.py's module docstring):
+    # each addresses the display's single reporting-from target, unless the
+    # dial's live effective scope is "all" (a screenless dial, or a screened
+    # one whose choice says "all"), in which case it addresses every playing
+    # target instead. Both resolvers degrade gracefully for a
     # NoOpDisplayStatusProvider (no current_source_service_name) and for a
     # bare mock http_server in tests — see _build_volume_targets_fn/
     # _build_mute_targets_fn.
-    volume_targets_fn = _build_volume_targets_fn(display)
+    volume_targets_fn = _build_volume_targets_fn(
+        display, scope_fn=lambda: http_server.effective_volume_scope,
+    )
     start_volume_worker(
         cfg, volume_targets_fn, led,
         mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
         on_readout_changed=getattr(display, "request_repaint", None),
     )
+
+    # Shared by the touch MUTE zone and the physical button below, so both
+    # make the identical scope decision from the same live http_server state
+    # — see _build_mute_press_fn.
+    mute_press = _build_mute_press_fn(display, http_server)
 
     # The repeat-transport sender: its own thread, queue and HTTP client,
     # entirely separate from the volume worker above (see dial_repeat.py's
@@ -643,6 +697,7 @@ def main() -> None:
             touch_source = _build_touch_source(
                 cfg, display, confirm_presence=http_server.confirm_volume,
                 step_percent=lambda: http_server.step_percent,
+                mute_press=mute_press,
             )
             touch_source.start()
             touch_runtime = cfg.display.touch_type
@@ -723,7 +778,7 @@ def main() -> None:
         def on_press() -> None:
             http_server.confirm_volume()
             _pop_repeat_screen()
-            enqueue_mute(shown_muted(getattr(display, "current_source_service_name", lambda: None)()))
+            mute_press()
 
         button = None
         if cfg.sw_gpio is None:

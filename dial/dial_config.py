@@ -13,7 +13,7 @@ import logging
 import os
 import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 # dial_display_profiles.py is pure data (no hardware imports) — see its module
@@ -61,6 +61,14 @@ def _normalise_dial_channel(value: object) -> str:
     return "dev" if str(value or "").strip().lower() == "dev" else "stable"
 
 
+# Which appliances a volume twist / a mute push address: the bound appliance
+# ("current") or every playing appliance ("all"). See effective_scope() below
+# for how the "current" choice is overridden while no screen is fitted.
+SCOPE_CURRENT = "current"
+SCOPE_ALL = "all"
+SCOPES = (SCOPE_CURRENT, SCOPE_ALL)
+
+
 @dataclass
 class DialDisplayConfig:
     """Screen settings for the dial's display.
@@ -76,6 +84,13 @@ class DialDisplayConfig:
     it shares the screen save path — see validate_screen_settings() and the
     "Always show controls" design notes for the held-visible behaviour it
     drives in dial_display.py/dial_touch.py.
+
+    `volume_scope`/`mute_scope` are colocated for the same reason again: the
+    choice only exists because a screen may or may not be there (a dial with
+    no screen, or one too small to select an appliance, cannot choose which
+    appliance a twist/push addresses, so it must address every playing one),
+    and it shares the screen save/validate path, which is also where
+    `fitted` — the one input to the effective rule below — lives.
     """
     fitted: bool = False
     rotate: bool = False
@@ -94,6 +109,30 @@ class DialDisplayConfig:
     # the frame is composed at that size and resampled to the panel, and
     # touch is mapped the other way. See layout_context_for().
     layout_size: str | None = None
+    # Which appliances a volume twist addresses while the screen is enabled:
+    # the bound appliance ("current") or every playing appliance ("all").
+    # See effective_scope() below for what happens while the screen is not
+    # enabled.
+    volume_scope: str = SCOPE_CURRENT
+    # Same choice, for a mute push.
+    mute_scope: str = SCOPE_CURRENT
+
+    @property
+    def effective_volume_scope(self) -> str:
+        return effective_scope(self, self.volume_scope)
+
+    @property
+    def effective_mute_scope(self) -> str:
+        return effective_scope(self, self.mute_scope)
+
+
+def effective_scope(display: "DialDisplayConfig", stored: str) -> str:
+    """The scope a dial actually acts on: *stored* while a screen is fitted,
+    else always SCOPE_ALL — a screenless dial (or one too small to select an
+    appliance) cannot choose which appliance to address, so it addresses
+    every playing one regardless of what was last saved. Pure; no locks, no
+    I/O."""
+    return stored if display.fitted else SCOPE_ALL
 
 
 @dataclass
@@ -109,7 +148,6 @@ class DialConfig:
     pin:            str        = ''
     auto_update:    bool       = False
     update_channel: str        = 'stable'
-    mute_all_playing: bool     = False
     display:        DialDisplayConfig = field(default_factory=DialDisplayConfig)
 
 
@@ -147,13 +185,18 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     dial_display_profiles.LAYOUT_SIZES, or JSON null, and that key must be
     one the selected screen_type actually offers (see layout_sizes_for()) —
     an offered-elsewhere key is rejected the same as an unknown one.
+    `volume_scope`/`mute_scope` are optional (each defaults to SCOPE_CURRENT);
+    if present each must be a string equal to one of SCOPES, else
+    InvalidScreenSettings — the same "optional-with-default, strict when
+    present" rule as `always_show_controls`, so an old appliance's whole-
+    object POST (which never sends either field) still validates.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
     unknown = set(obj.keys()) - {
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
-        "screen_size_inches", "layout_size",
+        "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
     }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
@@ -202,10 +245,17 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
             raise InvalidScreenSettings(
                 f"screen.layout_size {layout_size!r} is not available for screen_type {screen_type!r}"
             )
+    volume_scope = obj.get("volume_scope", SCOPE_CURRENT)
+    if not isinstance(volume_scope, str) or volume_scope not in SCOPES:
+        raise InvalidScreenSettings(f"screen.volume_scope must be one of {list(SCOPES)}")
+    mute_scope = obj.get("mute_scope", SCOPE_CURRENT)
+    if not isinstance(mute_scope, str) or mute_scope not in SCOPES:
+        raise InvalidScreenSettings(f"screen.mute_scope must be one of {list(SCOPES)}")
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
         touch_type=touch_type, always_show_controls=always_show_controls,
         screen_size_inches=screen_size_inches, layout_size=layout_size,
+        volume_scope=volume_scope, mute_scope=mute_scope,
     )
 
 
@@ -296,6 +346,28 @@ def _resolve_persisted_layout_size(value: object, screen_type: str) -> str | Non
     return value
 
 
+def _resolve_persisted_scope(value: object) -> str:
+    """Resolve a persisted volume_scope/mute_scope value, falling back to
+    SCOPE_CURRENT with a warning log for anything unusable, rather than
+    raising.
+
+    Mirrors the other _resolve_persisted_* helpers above: a corrupt or stale
+    settings file must not brick the dial at startup — only the strict
+    API-facing validate_screen_settings() is allowed to reject an unknown
+    value outright. Missing (None) silently means SCOPE_CURRENT — that is
+    the ordinary "never overridden" state, not corruption.
+    """
+    if value is None:
+        return SCOPE_CURRENT
+    if isinstance(value, str) and value in SCOPES:
+        return value
+    logging.warning(
+        "dial config: unusable persisted scope %r — falling back to %s",
+        value, SCOPE_CURRENT,
+    )
+    return SCOPE_CURRENT
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE env file without executing it."""
     data: dict[str, str] = {}
@@ -343,6 +415,8 @@ def load_config() -> DialConfig:
             always_show_controls=bool(hw_display.get('always_show_controls', False)),
             screen_size_inches=_resolve_persisted_screen_size(hw_display.get('screen_size_inches')),
             layout_size=_resolve_persisted_layout_size(hw_display.get('layout_size'), hw_screen_type),
+            volume_scope=_resolve_persisted_scope(hw_display.get('volume_scope')),
+            mute_scope=_resolve_persisted_scope(hw_display.get('mute_scope')),
         )
 
     if SETTINGS_PATH.exists():
@@ -352,12 +426,22 @@ def load_config() -> DialConfig:
         cfg.pin            = s.get('pin',            cfg.pin)
         cfg.auto_update    = s.get('auto_update',    cfg.auto_update)
         cfg.update_channel = _normalise_dial_channel(s.get('update_channel', cfg.update_channel))
-        cfg.mute_all_playing = bool(s.get('mute_all_playing', cfg.mute_all_playing))
+        # A persisted mute_all_playing (retired — see DialDisplayConfig's
+        # mute_scope) is migrated onto mute_scope ONCE below, only when the
+        # settings file has no display.mute_scope key yet; the legacy key
+        # itself is never written again by save_config.
+        legacy_mute_all_playing = bool(s.get('mute_all_playing', False))
         s_display = s.get('display')
         if isinstance(s_display, dict):
             s_screen_type = _resolve_persisted_screen_type(
                 s_display.get('screen_type', cfg.display.screen_type)
             )
+            if 'mute_scope' in s_display:
+                s_mute_scope = _resolve_persisted_scope(s_display.get('mute_scope'))
+            elif legacy_mute_all_playing:
+                s_mute_scope = SCOPE_ALL
+            else:
+                s_mute_scope = _resolve_persisted_scope(cfg.display.mute_scope)
             cfg.display = DialDisplayConfig(
                 fitted=bool(s_display.get('fitted', cfg.display.fitted)),
                 rotate=bool(s_display.get('rotate', cfg.display.rotate)),
@@ -375,7 +459,16 @@ def load_config() -> DialConfig:
                 layout_size=_resolve_persisted_layout_size(
                     s_display.get('layout_size', cfg.display.layout_size), s_screen_type
                 ),
+                volume_scope=_resolve_persisted_scope(
+                    s_display.get('volume_scope', cfg.display.volume_scope)
+                ),
+                mute_scope=s_mute_scope,
             )
+        elif legacy_mute_all_playing:
+            # No display block at all in this settings file, but the legacy
+            # top-level flag is present — migrate it onto the hw-overlay-
+            # resolved display config the same way as the dict branch above.
+            cfg.display = replace(cfg.display, mute_scope=SCOPE_ALL)
 
     if not cfg.uuid:
         state = _read_env_file(INSTALL_STATE_PATH)
@@ -404,7 +497,6 @@ def save_config(cfg: DialConfig) -> None:
         'pin':            cfg.pin,
         'auto_update':    cfg.auto_update,
         'update_channel': cfg.update_channel,
-        'mute_all_playing': cfg.mute_all_playing,
         'display':        {
             'fitted':      cfg.display.fitted,
             'rotate':      cfg.display.rotate,
@@ -414,6 +506,8 @@ def save_config(cfg: DialConfig) -> None:
             'always_show_controls': cfg.display.always_show_controls,
             'screen_size_inches': cfg.display.screen_size_inches,
             'layout_size': cfg.display.layout_size,
+            'volume_scope': cfg.display.volume_scope,
+            'mute_scope': cfg.display.mute_scope,
         },
     }
     with _save_lock:

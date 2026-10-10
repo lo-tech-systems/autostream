@@ -503,19 +503,6 @@ class TestProxyGetContracts:
         assert code == 200
         assert data["can_confirm_presence"] is True
 
-    def test_configure_get_passes_through_mute_all_playing(self):
-        """mute_all_playing on GET /configure must reach the browser
-        verbatim, the same generic pass-through as every other configure
-        field -- the webui gates the toggle's visibility on its presence."""
-        sighting = MagicMock(ip="1.2.3.4", port=7842)
-        conn = _conn_success(
-            body=b'{"ok":true,"pin_set":false,"mute_all_playing":true}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
-            sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/configure")
-        code, data = sent[0]
-        assert code == 200
-        assert data["mute_all_playing"] is True
-
     # can_confirm_presence and recovery_remaining_ms on the pin_recovery
     # status poll must also reach the browser verbatim — the recovery modal
     # uses both to show a countdown and to detect an expired window.
@@ -821,23 +808,6 @@ class TestProxyPostContracts:
         sent_body = json.loads(call_kwargs["body"])
         assert sent_body["name"] == "Test"
 
-    def test_configure_post_body_with_mute_all_playing_passes_through(self):
-        sighting = MagicMock(ip="1.2.3.4", port=7842)
-        conn = _conn_success(body=b'{"ok":true}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
-            handle_dial_configure_post(
-                MagicMock(),
-                {"uuid": "my-uuid", "current_pin": "1234", "mute_all_playing": True},
-            )
-        called_path = conn.request.call_args[0][1]
-        assert called_path == "/configure"
-        _, call_kwargs = conn.request.call_args
-        sent_body = json.loads(call_kwargs["body"])
-        assert sent_body == {"current_pin": "1234", "mute_all_playing": True}
-        assert "uuid" not in sent_body
-
     def test_none_body_sends_no_body(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
@@ -970,6 +940,57 @@ class TestHandleDialScreenSettings:
         assert sent_body == {
             "current_pin": "1234",
             "screen": {"fitted": True, "rotate": True, "screen_type": "tft_1in3", "bgr": False},
+        }
+        assert "uuid" not in sent_body
+
+    def test_get_passes_through_volume_and_mute_scope_and_scope_block_verbatim(self):
+        """volume_scope/mute_scope and the informational `scope` block must
+        reach the browser unaltered -- the proxy is a generic pass-through
+        and must not reshape the payload."""
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":false,"volume_scope":"all",'
+                 b'"mute_scope":"current"},'
+                 b'"scope":{"volume":"all","mute":"all"},'
+                 b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
+                 b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json") as mock_send, \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_get(MagicMock(), "uuid")
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/screen/settings"
+        code, data = mock_send.call_args[0][1], mock_send.call_args[0][2]
+        assert code == 200
+        assert data["screen"]["volume_scope"] == "all"
+        assert data["screen"]["mute_scope"] == "current"
+        assert data["scope"] == {"volume": "all", "mute": "all"}
+
+    def test_post_body_with_volume_and_mute_scope_passes_through_verbatim(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"volume_scope":"all","mute_scope":"all"},'
+                 b'"runtime":{},"restart_required":false}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_post(
+                MagicMock(),
+                {
+                    "uuid": "my-uuid",
+                    "current_pin": "1234",
+                    "screen": {"fitted": True, "volume_scope": "all", "mute_scope": "all"},
+                },
+            )
+        called_path = conn.request.call_args[0][1]
+        assert called_path == "/screen/settings"
+        _, call_kwargs = conn.request.call_args
+        sent_body = json.loads(call_kwargs["body"])
+        assert sent_body == {
+            "current_pin": "1234",
+            "screen": {"fitted": True, "volume_scope": "all", "mute_scope": "all"},
         }
         assert "uuid" not in sent_body
 

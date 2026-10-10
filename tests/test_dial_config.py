@@ -238,7 +238,7 @@ class TestSaveConfigMutableFieldsOnly:
         finally:
             dc.SETTINGS_PATH = orig
 
-        assert set(data.keys()) == {"step_percent", "name", "pin", "auto_update", "update_channel", "mute_all_playing", "display"}
+        assert set(data.keys()) == {"step_percent", "name", "pin", "auto_update", "update_channel", "display"}
         assert "uuid" not in data
         assert "clk_gpio" not in data
         assert "port" not in data
@@ -269,42 +269,74 @@ class TestSaveConfigMutableFieldsOnly:
 
 
 # ---------------------------------------------------------------------------
-# "Mute all playing devices" general setting (C.6) — a plain top-level
-# DialConfig field, not part of the screen/display settings block, so it
-# has no validate_screen_settings involvement.
+# volume_scope/mute_scope: broadcast scope for a screenless (or too-small-to-
+# select) dial. Colocated with the other screen fields (DialDisplayConfig),
+# same save/validate path. mute_all_playing (the field these two settings
+# retire) no longer exists on DialConfig; a persisted mute_all_playing=true
+# migrates to mute_scope="all" once, in load_config, when the settings file
+# has no display.mute_scope key yet.
 # ---------------------------------------------------------------------------
 
-class TestMuteAllPlayingSetting:
-    def test_default_is_false(self):
-        assert DialConfig().mute_all_playing is False
+class TestScopeSettings:
+    def test_defaults_are_current(self):
+        d = DialDisplayConfig()
+        assert d.volume_scope == "current"
+        assert d.mute_scope == "current"
 
-    def test_missing_settings_file_defaults_false(self, tmp_path):
+    def test_missing_settings_file_defaults_current(self, tmp_path):
         hw = tmp_path / "hw.json"
         _write_hw(hw)
         with _redirect(tmp_path, hw_path=hw):
             cfg = load_config()
-        assert cfg.mute_all_playing is False
+        assert cfg.display.volume_scope == "current"
+        assert cfg.display.mute_scope == "current"
 
-    def test_settings_file_overlays_true(self, tmp_path):
+    def test_hw_display_values_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "volume_scope": "all", "mute_scope": "all"})
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.volume_scope == "all"
+        assert cfg.display.mute_scope == "all"
+
+    def test_mutable_settings_override_hw(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "volume_scope": "all", "mute_scope": "all"})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "volume_scope": "current", "mute_scope": "current"})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.volume_scope == "current"
+        assert cfg.display.mute_scope == "current"
+
+    def test_persisted_garbage_falls_back_to_current_with_warning(self, tmp_path, caplog):
+        import logging
         hw = tmp_path / "hw.json"
         _write_hw(hw)
         s = tmp_path / "settings.json"
-        _write_settings(s, mute_all_playing=True)
-        with _redirect(tmp_path, hw_path=hw, settings_path=s):
-            cfg = load_config()
-        assert cfg.mute_all_playing is True
+        _write_settings(s, display={"fitted": True, "volume_scope": "everything", "mute_scope": 1})
+        with caplog.at_level(logging.WARNING):
+            with _redirect(tmp_path, hw_path=hw, settings_path=s):
+                cfg = load_config()
+        assert cfg.display.volume_scope == "current"
+        assert cfg.display.mute_scope == "current"
+        assert any("scope" in r.getMessage() for r in caplog.records)
 
-    def test_save_persists_mute_all_playing(self, tmp_path):
+    def test_save_persists_both(self, tmp_path):
         s = tmp_path / "dial-settings.json"
         orig = dc.SETTINGS_PATH
         dc.SETTINGS_PATH = s
         try:
-            cfg = DialConfig(uuid="x", mute_all_playing=True)
+            cfg = DialConfig(
+                uuid="x",
+                display=DialDisplayConfig(fitted=True, volume_scope="all", mute_scope="all"),
+            )
             save_config(cfg)
             data = json.loads(s.read_text())
         finally:
             dc.SETTINGS_PATH = orig
-        assert data["mute_all_playing"] is True
+        assert data["display"]["volume_scope"] == "all"
+        assert data["display"]["mute_scope"] == "all"
 
     def test_save_and_reload_round_trip(self, tmp_path):
         s = tmp_path / "dial-settings.json"
@@ -314,24 +346,114 @@ class TestMuteAllPlayingSetting:
         dc.SETTINGS_PATH = s
         dc.HW_CONFIG_PATH = hw
         try:
-            cfg = DialConfig(uuid="hw-uuid-1234", mute_all_playing=True)
+            cfg = DialConfig(
+                uuid="hw-uuid-1234",
+                display=DialDisplayConfig(fitted=True, volume_scope="all", mute_scope="current"),
+            )
             save_config(cfg)
             reloaded = load_config()
         finally:
             dc.SETTINGS_PATH = orig_s
             dc.HW_CONFIG_PATH = orig_hw
-        assert reloaded.mute_all_playing is True
+        assert reloaded.display.volume_scope == "all"
+        assert reloaded.display.mute_scope == "current"
 
-    def test_non_bool_persisted_value_coerced_by_bool(self, tmp_path):
-        """Mirrors auto_update/rotate/bgr's own bool(...) coercion at load
-        time — a corrupt/legacy settings file must not brick the dial."""
+    def test_mute_all_playing_not_persisted_by_save_config(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            save_config(DialConfig(uuid="x"))
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert "mute_all_playing" not in data
+
+    def test_legacy_mute_all_playing_true_migrates_to_mute_scope_all(self, tmp_path):
         hw = tmp_path / "hw.json"
         _write_hw(hw)
         s = tmp_path / "settings.json"
-        _write_settings(s, mute_all_playing=1)
+        _write_settings(s, mute_all_playing=True, display={"fitted": True})
         with _redirect(tmp_path, hw_path=hw, settings_path=s):
             cfg = load_config()
-        assert cfg.mute_all_playing is True
+        assert cfg.display.mute_scope == "all"
+
+    def test_legacy_mute_all_playing_true_with_no_display_block_still_migrates(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, mute_all_playing=True)
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.mute_scope == "all"
+
+    def test_legacy_mute_all_playing_false_does_not_force_all(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, mute_all_playing=False, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.mute_scope == "current"
+
+    def test_explicit_mute_scope_ignores_the_legacy_key(self, tmp_path):
+        """Once a settings file has its own display.mute_scope, the legacy
+        mute_all_playing key (even if still present from before an upgrade)
+        is never consulted again."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(
+            s, mute_all_playing=True,
+            display={"fitted": True, "mute_scope": "current"},
+        )
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.mute_scope == "current"
+
+    def test_migration_does_not_touch_volume_scope(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, mute_all_playing=True, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.volume_scope == "current"
+
+    def test_migrated_config_saved_output_has_no_legacy_key_and_carries_mute_scope(self, tmp_path):
+        """The migration only ever happens on load; the next save_config()
+        writes mute_scope and never re-introduces the legacy key."""
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, mute_all_playing=True, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        assert "mute_all_playing" not in data
+        assert data["display"]["mute_scope"] == "all"
+
+
+class TestEffectiveScope:
+    def test_fitted_true_returns_stored(self):
+        d = DialDisplayConfig(fitted=True, volume_scope="all", mute_scope="current")
+        assert dc.effective_scope(d, d.volume_scope) == "all"
+        assert dc.effective_scope(d, d.mute_scope) == "current"
+
+    def test_fitted_false_always_returns_all(self):
+        d = DialDisplayConfig(fitted=False, volume_scope="current", mute_scope="current")
+        assert dc.effective_scope(d, d.volume_scope) == "all"
+        assert dc.effective_scope(d, d.mute_scope) == "all"
+
+    def test_dataclass_properties_agree_with_the_function(self):
+        fitted = DialDisplayConfig(fitted=True, volume_scope="all", mute_scope="current")
+        assert fitted.effective_volume_scope == dc.effective_scope(fitted, fitted.volume_scope)
+        assert fitted.effective_mute_scope == dc.effective_scope(fitted, fitted.mute_scope)
+
+        unfitted = DialDisplayConfig(fitted=False, volume_scope="current", mute_scope="all")
+        assert unfitted.effective_volume_scope == "all"
+        assert unfitted.effective_mute_scope == "all"
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +578,8 @@ class TestDisplaySettings:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -498,6 +622,8 @@ class TestDisplaySettings:
             "always_show_controls": False,
             "screen_size_inches": None,
             "layout_size": None,
+            "volume_scope": "current",
+            "mute_scope": "current",
         }
 
 
@@ -1148,6 +1274,54 @@ class TestValidateScreenSettings:
         assert validate_screen_settings(
             {"fitted": True, "screen_size_inches": 20}
         ).screen_size_inches == 20.0
+
+    def test_volume_scope_omitted_defaults_current(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result.volume_scope == "current"
+
+    def test_volume_scope_all_accepted(self):
+        result = validate_screen_settings({"fitted": True, "volume_scope": "all"})
+        assert result.volume_scope == "all"
+
+    def test_volume_scope_current_accepted(self):
+        result = validate_screen_settings({"fitted": True, "volume_scope": "current"})
+        assert result.volume_scope == "current"
+
+    def test_volume_scope_non_string_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "volume_scope": True})
+
+    def test_volume_scope_unknown_string_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "volume_scope": "everything"})
+
+    def test_mute_scope_omitted_defaults_current(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result.mute_scope == "current"
+
+    def test_mute_scope_all_accepted(self):
+        result = validate_screen_settings({"fitted": True, "mute_scope": "all"})
+        assert result.mute_scope == "all"
+
+    def test_mute_scope_non_string_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "mute_scope": 1})
+
+    def test_mute_scope_unknown_string_rejected(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "mute_scope": "everything"})
+
+    def test_compat_old_appliance_omitting_scope_fields_defaults_current(self):
+        """An old appliance's whole-object POST never sends these fields at
+        all — must default rather than 400, exactly like always_show_controls
+        above."""
+        result = validate_screen_settings({
+            "fitted": True, "rotate": True, "screen_type": dc.DEFAULT_PROFILE_KEY,
+            "bgr": False, "touch_type": dc.DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
+        })
+        assert result.volume_scope == "current"
+        assert result.mute_scope == "current"
 
 
 class TestRunningMarkerPath:

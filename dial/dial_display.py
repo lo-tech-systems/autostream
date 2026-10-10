@@ -81,6 +81,7 @@ from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_touch_layout import LayoutMetrics, TouchZone, list_layout_for, metrics_for
 from dial_volume import (
+    forget_mute_states_except,
     observe_master_volume,
     observe_mute_state,
     select_volume_target,
@@ -3406,10 +3407,20 @@ class DialDisplay:
         self._close_bound_screen_if_unfocused()
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
-        # Mute is observed for the REPORTING-FROM target only, exactly like
-        # the volume readout just below — never inferred from a volume, only
-        # ever the flag this poll actually saw for this one target.
+        # Mute is recorded for EVERY target this poll actually walked, not
+        # only the reporting one — a screened dial set to broadcast scope
+        # "all" wants an up-to-date entry for every appliance it might fan a
+        # push out to. Each target has its own entry in the observation
+        # store (see dial_volume.observe_mute_state()), so this can never
+        # clobber another target's flag; the glyph itself is unaffected — it
+        # always reads back the reporting/bound service's own entry (see
+        # shown_muted() at compose time), never another target's.
+        for walked_name, walked_record in records.items():
+            if walked_name == reporting_name:
+                continue  # the explicit call just below covers this one
+            observe_mute_state(walked_name, walked_record.get("muted"))
         observe_mute_state(reporting_name, record.get("muted") if record else None)
+        forget_mute_states_except({t.service_name for t in targets})
         if isinstance(master_volume, int) and not isinstance(master_volume, bool):
             observe_master_volume(reporting_name, master_volume)
         elif reporting_name is not None:
