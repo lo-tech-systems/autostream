@@ -8,6 +8,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/installer/dial/helpers.sh"
+
 systemctl disable --now \
     autostream_dial \
     autostream_dial_wifi_watcher \
@@ -34,6 +37,11 @@ rm -f /etc/systemd/system/autostream_sdcardhealth.service
 rm -f /etc/systemd/system/autostream_sdcardhealth.timer
 rm -f /etc/systemd/system/autostream_sdcardhealth_boot.service
 rm -f /etc/systemd/system/autostream_dial_kiosk.service
+
+# Take back the boot splash while its state file (under /var/lib/autostream,
+# removed below) still says what was added. This also removes the splash's
+# systemd drop-in, so the reload that follows covers it.
+revert_plymouth
 systemctl daemon-reload
 
 rm -f /etc/nginx/sites-enabled/autostream-dial

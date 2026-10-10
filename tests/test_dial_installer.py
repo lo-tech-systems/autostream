@@ -1061,7 +1061,7 @@ class TestInstallerSafetyPrompt:
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("show_info_and_prompt()")
         assert start != -1
-        body = content[start: start + 1500]
+        body = content[start: start + 2000]
         # The else branch (no TTY) must exit, not proceed
         else_idx = body.find("else\n", body.find("if has_tty"))
         assert else_idx != -1, "show_info_and_prompt must have an else branch after 'if has_tty'"

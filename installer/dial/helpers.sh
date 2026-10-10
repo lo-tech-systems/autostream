@@ -507,6 +507,421 @@ configure_hd_boot() {
     write_boot_config_line gpu_mem 128 "${cfg}"
 }
 
+# ---- Boot splash -------------------------------------------------------------
+# A themed Plymouth splash on every dial: "Starting..." at boot and "Shutting
+# down..." at shutdown and reboot on an HDMI or DSI screen. An SPI panel is
+# driven from user space and is unaffected. Everything here is OS-level and
+# idempotent; what the installer added is recorded in a state file so the
+# uninstaller can take back exactly that.
+#
+# Every step helper returns 10 when it changed something and 0 when the
+# system was already as wanted, so the initramfs is rebuilt only when needed.
+
+PLYMOUTH_THEME="autostream-dial"
+PLYMOUTH_THEME_FILES=(autostream-dial.plymouth autostream-dial.script starting.png shutting-down.png)
+PLYMOUTH_PACKAGES=(plymouth plymouth-themes initramfs-tools)
+# Order matters: the I2C bus module must load before the graphics driver.
+PLYMOUTH_INITRAMFS_MODULES=(i2c_bcm2835 vc4)
+PLYMOUTH_CMDLINE_TOKENS=(quiet splash plymouth.ignore-serial-consoles loglevel=3
+    logo.nologo vt.global_cursor_default=0 consoleblank=0 systemd.show_status=0
+    rd.systemd.show_status=0)
+PLYMOUTH_DEVICE_TIMEOUT=20
+
+_plymouth_state() { printf '%s\n' "$(_state_dir)/plymouth.state"; }
+_plymouth_theme_dir() { printf '%s\n' "$(_fs_root)/usr/share/plymouth/themes/${PLYMOUTH_THEME}"; }
+_plymouth_conf() { printf '%s\n' "$(_fs_root)/etc/plymouth/plymouthd.conf"; }
+_plymouth_dropin() {
+    printf '%s\n' "$(_fs_root)/etc/systemd/system/plymouth-quit.service.d/retain-splash.conf"
+}
+
+_ere_escape() {
+    # Escape the characters that are special in an extended regex.
+    printf '%s' "$1" | sed -E 's/[][^.$*+?(){}|\\]/\\&/g'
+}
+
+_plymouth_state_get() {
+    # Print the value recorded for KEY, empty when there is none.
+    local file
+    file="$(_plymouth_state)"
+    [[ -f "${file}" ]] || return 0
+    sed -n "s/^$1=//p" "${file}" | tail -n 1
+}
+
+_plymouth_state_set() {
+    # Record KEY=VALUE, replacing any earlier line for KEY.
+    # Usage: _plymouth_state_set KEY VALUE
+    local file tmp
+    file="$(_plymouth_state)"
+    mkdir -p "$(dirname "${file}")"
+    tmp="$(mktemp)"
+    if [[ -f "${file}" ]]; then
+        grep -v "^$1=" "${file}" > "${tmp}" || true
+    fi
+    printf '%s=%s\n' "$1" "$2" >> "${tmp}"
+    cat "${tmp}" > "${file}"
+    rm -f "${tmp}"
+}
+
+_plymouth_state_add() {
+    # Merge WORDs into the space-separated list recorded for KEY, so a re-run
+    # never loses an earlier record.
+    # Usage: _plymouth_state_add KEY WORD...
+    local key="$1"
+    shift
+    (( $# > 0 )) || return 0
+    local -a words=()
+    read -r -a words <<< "$(_plymouth_state_get "${key}")"
+    words+=("$@")
+    _plymouth_state_set "${key}" "$(printf '%s\n' "${words[@]}" | sort -u | paste -sd' ' -)"
+}
+
+install_plymouth_packages() {
+    # Plymouth, its script-plugin theme package and initramfs-tools. Those not
+    # fully installed beforehand are recorded so the uninstaller purges only
+    # what this installer brought in (a package left in the config-files state
+    # does not count as installed).
+    local pkg status
+    local -a missing=()
+    for pkg in "${PLYMOUTH_PACKAGES[@]}"; do
+        status="$(dpkg-query -W -f='${db:Status-Status}' "${pkg}" 2>/dev/null || true)"
+        [[ "${status}" == installed ]] || missing+=("${pkg}")
+    done
+    apt_step apt-get install -y --no-install-recommends "${PLYMOUTH_PACKAGES[@]}"
+    if (( ${#missing[@]} > 0 )); then
+        _plymouth_state_add packages_installed "${missing[@]}"
+    fi
+}
+
+ensure_initramfs_modules() {
+    # Make the initramfs module list carry PLYMOUTH_INITRAMFS_MODULES as whole
+    # lines in that order, keeping every other line. Modules already present
+    # are moved into order but not recorded as added.
+    # Usage: ensure_initramfs_modules [MODULES_FILE]
+    local file="${1:-$(_fs_root)/etc/initramfs-tools/modules}"
+    local mod line prev=0 in_order=true tmp
+    local -a absent=()
+    for mod in "${PLYMOUTH_INITRAMFS_MODULES[@]}"; do
+        line=""
+        if [[ -f "${file}" ]]; then
+            line="$(grep -nxF -- "${mod}" "${file}" | head -n 1 | cut -d: -f1 || true)"
+        fi
+        if [[ -z "${line}" ]]; then
+            absent+=("${mod}")
+            in_order=false
+        elif (( line <= prev )); then
+            in_order=false
+        else
+            prev="${line}"
+        fi
+    done
+    if ${in_order}; then
+        return 0
+    fi
+    mkdir -p "$(dirname "${file}")"
+    tmp="$(mktemp)"
+    if [[ -f "${file}" ]]; then
+        grep -vxF -f <(printf '%s\n' "${PLYMOUTH_INITRAMFS_MODULES[@]}") "${file}" > "${tmp}" || true
+    fi
+    printf '%s\n' "${PLYMOUTH_INITRAMFS_MODULES[@]}" >> "${tmp}"
+    if ! cat "${tmp}" > "${file}"; then
+        echo "WARNING: could not update ${file} — add ${PLYMOUTH_INITRAMFS_MODULES[*]} to it manually" >&2
+        rm -f "${tmp}"
+        return 0
+    fi
+    rm -f "${tmp}"
+    _plymouth_state_add modules_added "${absent[@]}"
+    return 10
+}
+
+set_plymouth_device_timeout() {
+    # Give plymouthd a bounded wait for a display device: on a dial with no
+    # screen on the graphics driver it then gives up quickly instead of
+    # holding the boot. The original file is kept once for the uninstaller.
+    # Usage: set_plymouth_device_timeout [PLYMOUTHD_CONF]
+    local file="${1:-$(_plymouth_conf)}"
+    local line="DeviceTimeout=${PLYMOUTH_DEVICE_TIMEOUT}" tmp
+    if [[ -f "${file}" ]] && awk -v line="${line}" '
+            /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); cur = s }
+            cur == "[Daemon]" && $0 == line { found = 1 }
+            END { exit !found }' "${file}"; then
+        return 0
+    fi
+    if [[ -z "$(_plymouth_state_get plymouthd_conf)" ]]; then
+        if [[ -f "${file}" ]]; then
+            cp -p "${file}" "$(_state_dir)/plymouthd.conf.orig" \
+                && _plymouth_state_set plymouthd_conf backup
+        else
+            _plymouth_state_set plymouthd_conf created
+        fi
+    fi
+    mkdir -p "$(dirname "${file}")"
+    tmp="$(mktemp)"
+    if [[ -f "${file}" ]]; then
+        cat "${file}" > "${tmp}"
+    fi
+    awk -v line="${line}" '
+        /^[[:space:]]*DeviceTimeout=/ { next }
+        { print }
+        /^[[:space:]]*\[Daemon\][[:space:]]*$/ && !done { print line; done = 1 }
+        END { if (!done) { print "[Daemon]"; print line } }' "${tmp}" > "${tmp}.new" \
+        && cat "${tmp}.new" > "${file}" \
+        || echo "WARNING: could not set ${line} in ${file}" >&2
+    rm -f "${tmp}" "${tmp}.new"
+    return 10
+}
+
+ensure_cmdline_tokens() {
+    # Append the splash and quiet-boot tokens to the single kernel command
+    # line. A key=value token counts as present whatever its value, so an
+    # owner's own setting is left alone; only tokens added here are recorded.
+    # Usage: ensure_cmdline_tokens [CMDLINE_FILE]
+    local file="${1:-$(_fs_root)/boot/firmware/cmdline.txt}"
+    local token pattern
+    local -a added=()
+    if [[ ! -f "${file}" ]]; then
+        echo "WARNING: ${file} not found — add ${PLYMOUTH_CMDLINE_TOKENS[*]} to the kernel command line manually" >&2
+        return 0
+    fi
+    for token in "${PLYMOUTH_CMDLINE_TOKENS[@]}"; do
+        if [[ "${token}" == *=* ]]; then
+            pattern="(^|[[:space:]])$(_ere_escape "${token%%=*}")="
+        else
+            pattern="(^|[[:space:]])$(_ere_escape "${token}")([[:space:]]|\$)"
+        fi
+        if grep -qE "${pattern}" "${file}"; then
+            continue
+        fi
+        if sed -i -E "1 s/[[:space:]]*\$/ ${token}/" "${file}"; then
+            added+=("${token}")
+        else
+            echo "WARNING: could not add ${token} to ${file}" >&2
+        fi
+    done
+    if (( ${#added[@]} == 0 )); then
+        return 0
+    fi
+    _plymouth_state_add cmdline_added "${added[@]}"
+    return 10
+}
+
+remove_boot_config_line() {
+    # Delete every KEY=... line from the unconditional part of config.txt
+    # (before any section header, or under [all]); lines inside conditional
+    # sections are left alone. The counterpart of write_boot_config_line.
+    # Usage: remove_boot_config_line KEY [CONFIG_FILE]
+    local key="$1" cfg="${2:-/boot/firmware/config.txt}" tmp
+    [[ -f "${cfg}" ]] || return 0
+    tmp="$(mktemp)"
+    awk -v pat="^[[:space:]]*${key}=" '
+        /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); cond = (s != "[all]") }
+        !cond && $0 ~ pat { next }
+        { print }' "${cfg}" > "${tmp}" || { rm -f "${tmp}"; return 0; }
+    if ! cmp -s "${tmp}" "${cfg}"; then
+        cat "${tmp}" > "${cfg}" \
+            || echo "WARNING: could not remove ${key} from ${cfg}" >&2
+    fi
+    rm -f "${tmp}"
+}
+
+set_disable_splash() {
+    # Turn off the firmware's rainbow square. A different existing value is
+    # the firmware default being undone, not an owner preference, so it is
+    # rewritten; only an key_was_absent key is recorded as added.
+    # Usage: set_disable_splash [CONFIG_FILE]
+    local cfg="${1:-$(_fs_root)/boot/firmware/config.txt}"
+    local before key_was_absent=false
+    if [[ ! -f "${cfg}" ]]; then
+        echo "WARNING: ${cfg} not found — set disable_splash=1 in the boot config manually" >&2
+        return 0
+    fi
+    _boot_config_in_all "${cfg}" '^[[:space:]]*disable_splash=' || key_was_absent=true
+    before="$(mktemp)"
+    cat "${cfg}" > "${before}"
+    write_boot_config_line disable_splash 1 "${cfg}"
+    if cmp -s "${before}" "${cfg}"; then
+        rm -f "${before}"
+        return 0
+    fi
+    rm -f "${before}"
+    if ${key_was_absent}; then
+        _plymouth_state_add config_added disable_splash=1
+    fi
+    return 10
+}
+
+write_retain_splash_dropin() {
+    # Quit Plymouth with its last frame retained, so the screen keeps the
+    # splash until the kiosk browser paints over it.
+    local path tmp
+    path="$(_plymouth_dropin)"
+    tmp="$(mktemp)"
+    cat > "${tmp}" <<'DROPIN'
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/plymouth quit --retain-splash
+DROPIN
+    _plymouth_state_set dropin 1
+    if [[ -f "${path}" ]] && cmp -s "${tmp}" "${path}"; then
+        rm -f "${tmp}"
+        return 0
+    fi
+    mkdir -p "$(dirname "${path}")"
+    if ! install -m 0644 "${tmp}" "${path}"; then
+        echo "WARNING: could not write ${path}" >&2
+    fi
+    rm -f "${tmp}"
+    return 10
+}
+
+install_plymouth_theme() {
+    # Install the theme files from the checkout, replacing only those that
+    # differ.
+    local dir name src changed=false
+    local -a own=()
+    [[ "${EUID:-$(id -u)}" -eq 0 ]] && own=(-o root -g root)
+    dir="$(_plymouth_theme_dir)"
+    mkdir -p "${dir}"
+    for name in "${PLYMOUTH_THEME_FILES[@]}"; do
+        src="${DEPLOY}/system/plymouth/${PLYMOUTH_THEME}/${name}"
+        if [[ -f "${dir}/${name}" ]] && cmp -s "${src}" "${dir}/${name}"; then
+            continue
+        fi
+        if install -m 0644 ${own[@]+"${own[@]}"} "${src}" "${dir}/${name}"; then
+            changed=true
+        else
+            echo "WARNING: could not install ${name} into ${dir}" >&2
+        fi
+    done
+    _plymouth_state_set theme "${PLYMOUTH_THEME}"
+    if ${changed}; then
+        return 10
+    fi
+    return 0
+}
+
+apply_plymouth_theme() {
+    # Make the theme the default and rebuild the initramfs of the running
+    # kernel when something changed, or when the last rebuild was for another
+    # kernel. A failure warns and leaves the previous initramfs in place, so
+    # the dial still boots; the next run retries.
+    # Usage: apply_plymouth_theme CHANGED   (true or false)
+    local changed="${1:-false}" current kernel
+    if ! command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        echo "WARNING: plymouth-set-default-theme not found — the boot splash is not applied" >&2
+        return 0
+    fi
+    current="$(plymouth-set-default-theme 2>/dev/null || true)"
+    if [[ "${current}" != "${PLYMOUTH_THEME}" ]]; then
+        if ! plymouth-set-default-theme "${PLYMOUTH_THEME}"; then
+            echo "WARNING: could not set the ${PLYMOUTH_THEME} boot theme" >&2
+            return 0
+        fi
+        changed=true
+    fi
+    kernel="$(uname -r)"
+    if [[ "${changed}" != true && "$(_plymouth_state_get initramfs_kernel)" == "${kernel}" ]]; then
+        return 0
+    fi
+    if ! command -v update-initramfs >/dev/null 2>&1; then
+        echo "WARNING: update-initramfs not found — the boot splash needs an initramfs rebuild" >&2
+        return 0
+    fi
+    phase configure 82 "Configuring the boot splash (this may take a few minutes)..."
+    if update-initramfs -u -k "${kernel}"; then
+        _plymouth_state_set initramfs_kernel "${kernel}"
+    else
+        echo "WARNING: could not rebuild the initramfs for ${kernel}" >&2
+    fi
+    return 0
+}
+
+configure_plymouth() {
+    # Every boot-splash step in order, then one theme apply and rebuild when
+    # any of them changed something. Step status 10 means "changed".
+    local changed=false rc step
+    for step in ensure_initramfs_modules set_plymouth_device_timeout \
+                ensure_cmdline_tokens set_disable_splash \
+                write_retain_splash_dropin install_plymouth_theme; do
+        rc=0
+        "${step}" || rc=$?
+        if (( rc == 10 )); then
+            changed=true
+        fi
+    done
+    apply_plymouth_theme "${changed}"
+}
+
+revert_plymouth() {
+    # Undo exactly what the boot splash steps recorded in the state file, in
+    # reverse of how it was set up, then remove the state file. Every step
+    # tolerates "already gone", and a dial with no state file (installed
+    # before the splash existed, or already reverted) is left alone.
+    local state value word mod token pkg conf orig cfg cmdline modules tmp
+    local -a words=() pkgs=()
+    state="$(_plymouth_state)"
+    [[ -f "${state}" ]] || return 0
+    conf="$(_plymouth_conf)"
+    orig="$(_state_dir)/plymouthd.conf.orig"
+    cfg="$(_fs_root)/boot/firmware/config.txt"
+    cmdline="$(_fs_root)/boot/firmware/cmdline.txt"
+    modules="$(_fs_root)/etc/initramfs-tools/modules"
+
+    if [[ "$(_plymouth_state_get dropin)" == 1 ]]; then
+        rm -f "$(_plymouth_dropin)"
+        rmdir --ignore-fail-on-non-empty "$(dirname "$(_plymouth_dropin)")" 2>/dev/null || true
+    fi
+
+    value="$(_plymouth_state_get plymouthd_conf)"
+    case "${value}" in
+        backup) [[ -f "${orig}" ]] && { cp -p "${orig}" "${conf}" || true; } ;;
+        created) rm -f "${conf}" ;;
+        "") ;;
+        *) [[ -f "${conf}" ]] && { sed -i "/^[[:space:]]*DeviceTimeout=${PLYMOUTH_DEVICE_TIMEOUT}\$/d" "${conf}" || true; } ;;
+    esac
+
+    read -r -a words <<< "$(_plymouth_state_get modules_added)"
+    if [[ -f "${modules}" ]]; then
+        for mod in ${words[@]+"${words[@]}"}; do
+            tmp="$(mktemp)"
+            grep -vxF -- "${mod}" "${modules}" > "${tmp}" || true
+            cat "${tmp}" > "${modules}" || true
+            rm -f "${tmp}"
+        done
+    fi
+
+    read -r -a words <<< "$(_plymouth_state_get cmdline_added)"
+    if [[ -f "${cmdline}" && ${#words[@]} -gt 0 ]]; then
+        for token in "${words[@]}"; do
+            sed -i -E "s/(^|[[:space:]])$(_ere_escape "${token}")([[:space:]]|\$)/\1\2/g" "${cmdline}" || true
+        done
+        sed -i -E '1 s/[[:space:]]+/ /g; 1 s/^ //; 1 s/ $//' "${cmdline}" || true
+    fi
+
+    read -r -a words <<< "$(_plymouth_state_get config_added)"
+    for word in ${words[@]+"${words[@]}"}; do
+        if [[ "${word}" == disable_splash=1 ]]; then
+            remove_boot_config_line disable_splash "${cfg}"
+        fi
+    done
+
+    rm -rf "$(_plymouth_theme_dir)"
+    if command -v plymouth-set-default-theme >/dev/null 2>&1 \
+            && [[ "$(plymouth-set-default-theme 2>/dev/null || true)" == "${PLYMOUTH_THEME}" ]]; then
+        plymouth-set-default-theme -r || true
+    fi
+
+    read -r -a pkgs <<< "$(_plymouth_state_get packages_installed)"
+    if (( ${#pkgs[@]} > 0 )); then
+        apt-get purge -y "${pkgs[@]}" || true
+    fi
+
+    if command -v update-initramfs >/dev/null 2>&1; then
+        update-initramfs -u -k "$(uname -r)" || true
+    fi
+
+    rm -f "${state}" "${orig}"
+}
+
 write_hd_display_config() {
     # A fresh --hd install: the hardware file's display block selects the HD
     # profile with no SPI panel and no touch driver, so the dial runs headless
@@ -576,6 +991,7 @@ This script will:
 - Enable systemd services for dial, wifi watcher, and auto-update
 - Create system users/groups and modify permissions
 - Configure nginx, logrotate, dnsmasq, and avahi for dial operation
+- Install a boot and shutdown splash (shown on an HDMI or DSI screen)
 
 WARNING:
 - Use ONLY on a dedicated Raspberry Pi Zero running Raspberry Pi OS Lite (Trixie).
@@ -1232,8 +1648,9 @@ owned_files_list() {
     # one absolute path per line. The restore after a failed run (or a failed
     # first boot) covers exactly these. Not listed on purpose: boot
     # configuration (additive, idempotent and tolerated by older software),
-    # installed packages, the sdmon binary, the cloud-init flag and group
-    # memberships.
+    # the boot splash (theme, drop-in, module list, plymouthd.conf and its
+    # state file: OS-level like the boot configuration), installed packages,
+    # the sdmon binary, the cloud-init flag and group memberships.
     local opt unit name
     opt="/opt/autostream"
     for name in autostream_admin autostream_dial_updater autostream_update_support.py \

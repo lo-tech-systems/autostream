@@ -126,6 +126,9 @@ phase packages 10 "Installing packages..."
 install_recovery_packages
 install_image_packages
 install_display_hardware_packages
+# The boot splash is installed on every dial, so a monitor plugged into any
+# dial shows it; an SPI panel is unaffected.
+install_plymouth_packages
 # The kiosk browser and its account exist on an HD dial only.
 if $HD; then
     install_kiosk_packages
@@ -206,6 +209,12 @@ enable_i2c
 if $HD; then
     configure_hd_boot
 fi
+
+# ---- Boot splash (fresh install and --update) --------------------------------
+# Unconditional and idempotent, like disable_cloud_init below: dials installed
+# before this existed gain the splash on their next --update, and the initramfs
+# is rebuilt only when something changed.
+configure_plymouth
 
 # ---- Boot-time trim (fresh install and --update) ----------------------------
 # One call on the unconditional path rather than inside the fresh-only block
