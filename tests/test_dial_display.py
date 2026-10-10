@@ -6682,6 +6682,29 @@ class TestRepeatCounterPaintedReference:
             assert self._paint(display) == 0
             assert self._line(display, clock).startswith("0:00 / ")
 
+    def test_immediate_poll_reporting_the_ack_position_keeps_the_counter_at_zero(self):
+        """The poll fired by a replaying ack reads a consistent appliance:
+        replaying, at the ack position. Its re-stamp leaves the counter at
+        zero, with no step back and no hold-state line."""
+        import dial_repeat_store as drs
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with patch("dial_display.time.monotonic", clock):
+            self._seed(position=9.0, observed_at=1000.0)
+            assert self._paint(display) == 7
+            clock.t = 1000.2
+            drs.repeat_store.apply_ack(
+                self.AID, {"ok": True, "state": "replaying", "armed": True, "position_seconds": 0.0}, clock.t,
+            )
+            assert self._paint(display) == 0
+            clock.t = 1000.5
+            self._seed(position=0.0, observed_at=clock.t)
+            display._overlay_signal.clear()
+            display._tick_repeat_line()
+            assert self._paint(display) == 0
+            assert self._line(display, clock).startswith("0:00 / ")
+            assert "hold" not in self._line(display, clock).lower()
+
     def test_loop_wrap_re_anchors_to_zero_then_counts_up(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
@@ -10606,6 +10629,24 @@ class TestAcceptedReplayShowsAsPlaying:
         assert display._accepted_replay[0] == self.AID
         targets = display._with_accepted_replay([], time.monotonic())
         assert [t.appliance_id for t in targets] == [self.AID]
+
+    def test_accepted_replay_window_survives_a_consistent_immediate_poll(self):
+        import dial_repeat_store as drs
+        display = self._display(state="hold", accepted=False)
+        display.request_poll = MagicMock()
+        display.on_repeat_result(
+            "transport", self.AID, 200, {"ok": True, "state": "replaying", "armed": False, "position_seconds": 0.0},
+        )
+        now = time.monotonic()
+        replaying = _repeat_obj(
+            state="replaying", held=False,
+            replay={"active": True, "position_seconds": 0.0, "duration_seconds": 30.0},
+        )
+        display._apply_status_to_repeat(self.AID, {"repeat": replaying, "status_error": None}, now)
+        assert drs.repeat_store.get(self.AID, now).state == "replaying"
+        targets = display._with_accepted_replay([], now)
+        assert [t.appliance_id for t in targets] == [self.AID]
+        assert display._accepted_replay is not None
 
     def test_ack_for_another_appliance_does_not_poll(self):
         display = self._display(state="hold", focus=False, accepted=False)
