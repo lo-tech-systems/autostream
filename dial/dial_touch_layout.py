@@ -78,10 +78,13 @@ pops back to main and reveals the main screen's volume overlay), NAME
 the outputs list like the main screen — the repeat screen has no mute
 control of its own), REPEAT_PLAY (the enable layout's arm/disarm row),
 REPEAT_START, REPEAT_STOP. The IDLE geometry
-(`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_REPLAY,
-covering the whole panel below the top band, expressed as a single rect
-(`IdleLayout.replay`) like every other geometry's zones. A caller never
-mixes geometries — which one to hit-test against is decided elsewhere
+(`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_INFO, a small
+top-right square opening the read-only info list, listed first so it wins
+the corner it shares with IDLE_REPLAY, which covers the whole panel below
+the top band. GEOMETRY_INFO is the info page's own reading of the LIST
+table with every LIST_ROW entry removed (its rows are display-only). A
+caller never mixes geometries — which one to hit-test against is decided
+elsewhere
 (dial_touch.TouchStateMachine.set_surface, which maps its own surface
 strings onto these four geometries many-to-one) — but `hit_test()` and
 every per-geometry wrapper are pure functions of (x, y, width, height) and
@@ -390,6 +393,9 @@ class TouchZone(str, Enum):
     detail surface (plus NAME, reused from the main surface).
     IDLE_REPLAY: the idle-screen surface (the whole panel below the top
     band, when the idle affordance is showing).
+    IDLE_INFO: the idle screen's own small top-right "i" affordance,
+    reachable on every idle dial regardless of whether a replay is held —
+    opens the read-only info list (see IdleLayout.info/GEOMETRY_INFO).
     ARTWORK: the main surface's inter-band strip (between the top and
     bottom bands); a tap hides the bands for a few seconds.
     """
@@ -407,6 +413,7 @@ class TouchZone(str, Enum):
     REPEAT_START = "repeat_start"
     REPEAT_STOP = "repeat_stop"
     IDLE_REPLAY = "idle_replay"
+    IDLE_INFO = "idle_info"
     OUTPUTS = "outputs"
     OUTPUT_BACK = "output_back"
     OUTPUT_TOGGLE = "output_toggle"
@@ -432,8 +439,13 @@ GEOMETRY_REPEAT = "repeat"
 GEOMETRY_REPEAT_REPLAY = "repeat_replay"
 GEOMETRY_IDLE = "idle"
 GEOMETRY_OUTPUT = "output"
+# The info page's own table: the list table with every LIST_ROW entry
+# removed, so a row press never arms, flashes or dispatches (rows are dead
+# at the geometry level, not just in the manager — see _info_zone_rects).
+GEOMETRY_INFO = "info"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
+    GEOMETRY_INFO,
 )
 
 
@@ -572,8 +584,24 @@ def _repeat_replay_zone_rects(
 
 
 def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    # IDLE_INFO first: on rich the info square dips a few pixels below the
+    # top band into IDLE_REPLAY's own rect, and on compact IDLE_REPLAY is
+    # the whole panel — either way the two overlap, and hit_test's
+    # first-match order is what gives the "i" the corner while leaving
+    # IDLE_REPLAY's own published rect untouched.
     layout = idle_layout_for(width, height, metrics=metrics)
-    return (ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),)
+    return (
+        ZoneRect(TouchZone.IDLE_INFO, layout.info),
+        ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),
+    )
+
+
+def _info_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_INFO: the list table with every LIST_ROW entry removed — the
+    info page's rows are dead at the geometry level, so a press anywhere on
+    one lands in no entry at all (no arm, no flash, no dispatch); the
+    controls (rail or cancel/more) resolve exactly as they do on the list."""
+    return tuple(e for e in _list_zone_rects(width, height, metrics) if e.zone != TouchZone.LIST_ROW)
 
 
 def _output_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
@@ -594,6 +622,7 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_REPEAT_REPLAY: _repeat_replay_zone_rects,
     GEOMETRY_IDLE: _idle_zone_rects,
     GEOMETRY_OUTPUT: _output_zone_rects,
+    GEOMETRY_INFO: _info_zone_rects,
 }
 
 
@@ -720,12 +749,14 @@ def output_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
 class IdleLayout:
     """Idle-screen geometry: a single non-actuating affordance line
     (reusing the same centre-low rect the main surface's artist line
-    occupies — `affordance`), plus the actuating rect for the whole panel
+    occupies — `affordance`), the actuating rect for the whole panel
     below the top band (`replay`, == the IDLE_REPLAY zone, resolved by
-    idle_zone_at())."""
+    idle_zone_at()), and the small top-right "i" square (`info`, == the
+    IDLE_INFO zone) that opens the read-only info list on every idle dial."""
 
     affordance: Rect
     replay: Rect
+    info: Rect
 
 
 @dataclass(frozen=True)
@@ -1115,13 +1146,18 @@ def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
     centre-low rectangle the main surface's (non-actuating) artist line
     occupies; replay is the whole panel below the top band — or, on the
     compact tier (which has no top band of its own to exclude), the whole
-    panel."""
+    panel; info is an 8mm-floor square in the top-right corner (the
+    fingertip floor wherever density is known, else a band-high square),
+    reachable on every idle dial regardless of tier or replay availability."""
     if metrics is None:
         metrics = metrics_for(width, height)
     layout = layout_for(width, height, metrics=metrics)
+    m = metrics.margin
+    side = metrics.touch_min_px if metrics.touch_min_px is not None else metrics.band_h
+    info: Rect = (width - m - side, m, width - m, m + side)
     if metrics.content_tier == CONTENT_COMPACT:
-        return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height))
-    return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height))
+        return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height), info=info)
+    return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height), info=info)
 
 
 def idle_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:

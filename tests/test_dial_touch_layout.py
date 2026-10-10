@@ -32,6 +32,7 @@ from dial_touch_layout import (  # noqa: E402
     FONT_READOUT_MAX_PX,
     GEOMETRIES,
     GEOMETRY_IDLE,
+    GEOMETRY_INFO,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
@@ -502,6 +503,60 @@ class TestIdleSurface:
         assert idle_zone_at(50, 128, 160, 128) is None
 
 
+class TestIdleInfoZone:
+    """The "i" affordance's own square: 8mm by construction wherever
+    density is known, a band-high square otherwise — pinned at every
+    shipped panel/density combination."""
+
+    def test_pinned_at_320x240_rich(self):
+        metrics = metrics_for(320, 240, 0.1778)
+        assert metrics.touch_min_px == 45
+        idle = idle_layout_for(320, 240, metrics=metrics)
+        assert idle.info == (269, 6, 314, 51)
+        assert idle.replay == (0, 48, 320, 240)
+
+    def test_pinned_at_240x240_compact(self):
+        metrics = metrics_for(240, 240, 0.0973)
+        assert metrics.touch_min_px == 83
+        idle = idle_layout_for(240, 240, metrics=metrics)
+        assert idle.info == (151, 6, 234, 89)
+        assert idle.replay == (0, 0, 240, 240)
+
+    def test_pinned_at_128x128_compact(self):
+        metrics = metrics_for(128, 128, 0.2021)
+        assert metrics.touch_min_px == 40
+        idle = idle_layout_for(128, 128, metrics=metrics)
+        assert idle.info == (85, 3, 125, 43)
+        assert idle.replay == (0, 0, 128, 128)
+
+    def test_pinned_at_160x128_base(self):
+        metrics = metrics_for(160, 128, 0.2231)
+        assert metrics.touch_min_px == 36
+        idle = idle_layout_for(160, 128, metrics=metrics)
+        assert idle.info == (121, 3, 157, 39)
+        assert idle.replay == (0, 32, 160, 128)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_density_unknown_uses_band_high_square(self, width, height):
+        # metrics=None (tests, a bare caller): side is band_h, not
+        # touch_min_px (which is None with no density).
+        metrics = metrics_for(width, height)
+        assert metrics.touch_min_px is None
+        idle = idle_layout_for(width, height, metrics=metrics)
+        m, side = metrics.margin, metrics.band_h
+        assert idle.info == (width - m - side, m, width - m, m + side)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_square_is_at_least_8mm_when_density_known(self, width, height):
+        mm_per_px = 0.1778 if min(width, height) >= 200 else 0.2021
+        metrics = metrics_for(width, height, mm_per_px)
+        idle = idle_layout_for(width, height, metrics=metrics)
+        x0, y0, x1, y1 = idle.info
+        assert (x1 - x0) * mm_per_px >= TOUCH_MIN_MM - 1e-9
+        assert (y1 - y0) * mm_per_px >= TOUCH_MIN_MM - 1e-9
+        assert (x1 - x0) == (y1 - y0)
+
+
 # ---------------------------------------------------------------------------
 # The shared zone-rect table: one ordered table per geometry, read by both
 # the hit-tests above and the compositor's pressed-zone wash.
@@ -560,7 +615,10 @@ class TestZoneRectsOrder:
 
     def test_idle_order(self):
         entries = zone_rects_for(GEOMETRY_IDLE, 160, 128)
-        assert [(e.zone, e.index) for e in entries] == [(TouchZone.IDLE_REPLAY, None)]
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.IDLE_INFO, None),
+            (TouchZone.IDLE_REPLAY, None),
+        ]
 
     def test_output_order(self):
         entries = zone_rects_for(GEOMETRY_OUTPUT, 160, 128)
@@ -614,8 +672,9 @@ class TestZoneRectsMatchLayoutFields:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_idle_rect_is_layout_field(self, width, height):
         layout = idle_layout_for(width, height)
-        entries = zone_rects_for(GEOMETRY_IDLE, width, height)
-        assert entries[0].rect == layout.replay
+        entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_IDLE, width, height)}
+        assert entries[TouchZone.IDLE_INFO] == layout.info
+        assert entries[TouchZone.IDLE_REPLAY] == layout.replay
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_output_rects_are_layout_fields(self, width, height):
@@ -687,18 +746,75 @@ class TestListZoneAtExhaustive:
                 assert list_zone_at(x, y, width, height) == reference(x, y)
 
 
+class TestInfoGeometry:
+    """GEOMETRY_INFO: the list table with every LIST_ROW entry removed — the
+    info page's rows are display-only, dead at the geometry level."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_equals_list_minus_rows(self, width, height):
+        list_entries = zone_rects_for(GEOMETRY_LIST, width, height)
+        info_entries = zone_rects_for(GEOMETRY_INFO, width, height)
+        assert info_entries == tuple(e for e in list_entries if e.zone != TouchZone.LIST_ROW)
+        assert all(e.zone != TouchZone.LIST_ROW for e in info_entries)
+
+    @pytest.mark.parametrize(
+        "metrics", [None, metrics_for(320, 240, 0.1778),
+                    metrics_for(240, 240, 0.0973), metrics_for(128, 128, 0.2021)],
+    )
+    def test_no_pixel_ever_resolves_to_a_row(self, metrics):
+        width = metrics.width if metrics is not None else 160
+        height = metrics.height if metrics is not None else 128
+        for y in range(height):
+            for x in range(width):
+                hit = hit_test(GEOMETRY_INFO, x, y, width, height, metrics=metrics)
+                assert hit is None or hit.zone != TouchZone.LIST_ROW
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_controls_resolve_exactly_as_on_the_list(self, width, height):
+        list_layout = list_layout_for(width, height)
+        for zone, rect in (
+            (TouchZone.LIST_BACK, list_layout.back),
+            (TouchZone.LIST_DOWN, list_layout.down),
+            (TouchZone.LIST_UP, list_layout.up),
+        ):
+            if rect is None:
+                continue
+            cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+            list_hit = hit_test(GEOMETRY_LIST, cx, cy, width, height)
+            info_hit = hit_test(GEOMETRY_INFO, cx, cy, width, height)
+            assert info_hit is not None and (info_hit.zone, info_hit.index) == (list_hit.zone, list_hit.index)
+        rail = list_layout.rail_up, list_layout.rail_cancel, list_layout.rail_down
+        for rect, zone in zip(rail, (TouchZone.LIST_UP, TouchZone.LIST_BACK, TouchZone.LIST_DOWN)):
+            if rect is None:
+                continue
+            cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+            info_hit = hit_test(GEOMETRY_INFO, cx, cy, width, height)
+            assert info_hit is not None and info_hit.zone == zone
+
+    def test_is_pure(self):
+        for width, height in PROFILE_SIZES:
+            a = zone_rects_for(GEOMETRY_INFO, width, height)
+            b = zone_rects_for(GEOMETRY_INFO, width, height)
+            assert a == b
+
+
 class TestIdleZoneAtExhaustive:
     """Every pixel of every profile size, plus a one-pixel ring outside the
-    panel: IDLE_REPLAY iff the point is on-panel and at or below the top
-    band, else None."""
+    panel: IDLE_INFO inside the "i" square (checked first, so it wins the
+    corner it shares with IDLE_REPLAY), else IDLE_REPLAY iff the point is
+    on-panel and at or below the top band, else None."""
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_matches_top_band_boundary_at_every_pixel_and_a_ring_outside(self, width, height):
         band_h = height // 4
+        info = idle_layout_for(width, height).info
+        ix0, iy0, ix1, iy1 = info
         for y in range(-1, height + 1):
             for x in range(-1, width + 1):
                 expected = None
-                if 0 <= x < width and 0 <= y < height and y >= band_h:
+                if ix0 <= x < ix1 and iy0 <= y < iy1:
+                    expected = TouchZone.IDLE_INFO
+                elif 0 <= x < width and 0 <= y < height and y >= band_h:
                     expected = TouchZone.IDLE_REPLAY
                 assert idle_zone_at(x, y, width, height) == expected
 
@@ -814,16 +930,36 @@ class TestDensityHasNoEffectOnGeometry:
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_idle_layout_for_unaffected(self, size, mm):
+        # affordance/replay are unaffected by density at the base tier, same
+        # as every other layout here; `info` is a deliberate exception (see
+        # TestIdleSurface's own pinned info-square tests) — it is 8mm by
+        # construction whenever density is known, which is exactly the
+        # feature, not a regression this invariant should guard.
         width, height = size
-        assert idle_layout_for(width, height) == idle_layout_for(
-            width, height, metrics=metrics_for(width, height, mm)
-        )
+        base = idle_layout_for(width, height)
+        dense = idle_layout_for(width, height, metrics=metrics_for(width, height, mm))
+        assert base.affordance == dense.affordance
+        assert base.replay == dense.replay
+
+    @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
+    def test_idle_layout_for_info_square_is_density_dependent(self, size, mm):
+        # The one deliberate exception to this class's own invariant: see
+        # test_idle_layout_for_unaffected above.
+        width, height = size
+        base = idle_layout_for(width, height)
+        dense = idle_layout_for(width, height, metrics=metrics_for(width, height, mm))
+        assert base.info != dense.info
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_zone_rects_for_unaffected(self, size, mm):
+        # GEOMETRY_IDLE is excluded: its IDLE_INFO rect is the one
+        # deliberate density-dependent exception (see
+        # test_idle_layout_for_info_square_is_density_dependent above).
         width, height = size
         metrics = metrics_for(width, height, mm)
         for geometry in GEOMETRIES:
+            if geometry == GEOMETRY_IDLE:
+                continue
             assert zone_rects_for(geometry, width, height) == zone_rects_for(
                 geometry, width, height, metrics=metrics
             )
@@ -1603,7 +1739,11 @@ class TestCompactZoneTables:
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_idle_table_is_the_whole_panel(self, metrics):
         entries = zone_rects_for(GEOMETRY_IDLE, metrics.width, metrics.height, metrics=metrics)
-        assert entries == (ZoneRect(TouchZone.IDLE_REPLAY, (0, 0, metrics.width, metrics.height)),)
+        info = idle_layout_for(metrics.width, metrics.height, metrics=metrics).info
+        assert entries == (
+            ZoneRect(TouchZone.IDLE_INFO, info),
+            ZoneRect(TouchZone.IDLE_REPLAY, (0, 0, metrics.width, metrics.height)),
+        )
 
     def test_output_table_is_unreachable_and_unaffected(self):
         # GEOMETRY_OUTPUT is unchanged on compact — the per-output detail
@@ -1615,15 +1755,17 @@ class TestCompactZoneTables:
 
     @pytest.mark.parametrize(
         "geometry,metrics", [
-            (g, m) for g in (GEOMETRY_MAIN, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE)
+            (g, m) for g in (GEOMETRY_MAIN, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY)
             for m in (_COMPACT_240x240, _COMPACT_128x128)
         ],
     )
     def test_every_pixel_hits_exactly_one_entry_or_a_dead_gap(self, geometry, metrics):
         # Shared by every compact geometry still built straight from the
-        # compact grid (MAIN, REPEAT, REPEAT_REPLAY, IDLE) — GEOMETRY_LIST
-        # gets its own picker-shaped version below, since it no longer uses
-        # the grid's cells directly.
+        # compact grid (MAIN, REPEAT, REPEAT_REPLAY) — GEOMETRY_LIST gets its
+        # own picker-shaped version below, since it no longer uses the grid's
+        # cells directly, and GEOMETRY_IDLE gets its own version further
+        # down (its IDLE_INFO/IDLE_REPLAY entries overlap by design, resolved
+        # by hit_test's first-match order rather than by non-overlap).
         w, h = metrics.width, metrics.height
         entries = zone_rects_for(geometry, w, h, metrics=metrics)
         c = compact_layout_for(w, h, metrics=metrics)
@@ -1638,19 +1780,36 @@ class TestCompactZoneTables:
                 result = hit_test(geometry, x, y, w, h, metrics=metrics)
                 if hits:
                     assert result is not None and (result.zone, result.index) == hits[0]
-                elif geometry != GEOMETRY_IDLE:
+                else:
                     # A dead pixel must sit either in the grid's own margin
                     # gap around one of the two dividers, or (on the REPEAT/
                     # REPEAT_REPLAY enable and replaying tables, which carry
                     # no entry for the top-right cell at all) inside that
-                    # cell itself — idle has no gap at all (its one zone
-                    # covers the whole panel).
+                    # cell itself.
                     near_v = abs(x - c.divider_x) <= m
                     near_h = abs(y - c.divider_y) <= m
                     tx0, ty0, tx1, ty1 = c.tr
                     in_tr = tx0 <= x < tx1 and ty0 <= y < ty1
                     assert near_v or near_h or in_tr, (geometry, x, y)
                     assert result is None
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
+    def test_idle_every_pixel_resolves_info_first_then_replay(self, metrics):
+        # GEOMETRY_IDLE's own version: IDLE_INFO and IDLE_REPLAY overlap by
+        # design (IDLE_REPLAY is the whole panel on compact), so every pixel
+        # inside the "i" square resolves to IDLE_INFO and every other pixel
+        # resolves to IDLE_REPLAY — no dead gap anywhere.
+        w, h = metrics.width, metrics.height
+        info = idle_layout_for(w, h, metrics=metrics).info
+        ix0, iy0, ix1, iy1 = info
+        for y in range(h):
+            for x in range(w):
+                result = hit_test(GEOMETRY_IDLE, x, y, w, h, metrics=metrics)
+                assert result is not None
+                if ix0 <= x < ix1 and iy0 <= y < iy1:
+                    assert result.zone == TouchZone.IDLE_INFO
+                else:
+                    assert result.zone == TouchZone.IDLE_REPLAY
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_picker_table_every_pixel_hits_exactly_one_entry_or_a_dead_gap(self, metrics):
@@ -1706,11 +1865,14 @@ class TestCompactIdleGeometry:
         # idle_zone_at() itself has no metrics parameter (a base-tier-only
         # convenience — see zone_at()/list_zone_at()/repeat_zone_at()); the
         # density-aware hit-test every real caller uses is hit_test() with
-        # an explicit metrics, exercised directly here.
+        # an explicit metrics, exercised directly here. Every pixel resolves
+        # to IDLE_INFO or IDLE_REPLAY — see
+        # test_idle_every_pixel_resolves_info_first_then_replay for the
+        # exact split.
         for y in range(metrics.height):
             for x in range(metrics.width):
                 hit = hit_test(GEOMETRY_IDLE, x, y, metrics.width, metrics.height, metrics=metrics)
-                assert hit is not None and hit.zone == TouchZone.IDLE_REPLAY
+                assert hit is not None and hit.zone in (TouchZone.IDLE_INFO, TouchZone.IDLE_REPLAY)
 
 
 # ---------------------------------------------------------------------------
