@@ -155,6 +155,39 @@ enable_spi1() {
         || echo "WARNING: could not append SPI1 overlay to ${cfg} — enable it manually if a resistive touch panel is fitted" >&2
 }
 
+set_spidev_bufsiz() {
+    # Raises the kernel's per-transfer spidev limit so a display window goes
+    # out in a few large SPI transfers instead of one ioctl per 4096 bytes.
+    # The dial reads the live limit at startup and sizes its own writes to
+    # match (dial_spi_bus._configure_spi_chunk_size), so this is safe on an
+    # update: until the reboot applies it the dial keeps using 4096.
+    #
+    # spidev.bufsiz goes on the kernel command line rather than in
+    # modprobe.d: spidev loads from the initramfs, which never sees a
+    # modprobe.d change without a rebuild, while the command line reaches it
+    # either way. cmdline.txt must stay a single line, so any existing
+    # spidev.bufsiz token is replaced in place rather than appended again.
+    # Called unconditionally; costs nothing with no panel. Takes effect on
+    # the next boot.
+    local cmdline="${1:-/boot/firmware/cmdline.txt}"
+    local token="spidev.bufsiz=65536"
+
+    if [[ ! -f "${cmdline}" ]]; then
+        echo "WARNING: ${cmdline} not found — add ${token} to the kernel command line manually" >&2
+        return 0
+    fi
+    if grep -qE "(^|[[:space:]])${token}([[:space:]]|\$)" "${cmdline}"; then
+        return 0
+    fi
+    if grep -qE '(^|[[:space:]])spidev\.bufsiz=[^[:space:]]*' "${cmdline}"; then
+        sed -i -E "1 s/(^|[[:space:]])spidev\.bufsiz=[^[:space:]]*/\1${token}/" "${cmdline}" \
+            || echo "WARNING: could not update spidev.bufsiz in ${cmdline}" >&2
+        return 0
+    fi
+    sed -i -E "1 s/[[:space:]]*\$/ ${token}/" "${cmdline}" \
+        || echo "WARNING: could not add ${token} to ${cmdline}" >&2
+}
+
 enable_i2c() {
     # Enables Raspberry Pi I2C for a future capacitive (FT6206/FT6236) touch
     # panel backend. Called unconditionally: enabling I2C with nothing

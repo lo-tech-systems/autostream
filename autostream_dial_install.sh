@@ -160,6 +160,7 @@ install_display_hardware_packages
 add_spi_group
 enable_spi0
 enable_spi1
+set_spidev_bufsiz
 enable_i2c
 
 # ---- Boot-time trim (fresh install and --update) ----------------------------

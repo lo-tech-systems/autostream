@@ -61,6 +61,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
 
@@ -111,6 +112,34 @@ _transaction_locks = {spec.label: threading.Lock() for spec in _ALL_BUSES}
 # Constructed busio.SPI objects, keyed by bus label. Populated lazily.
 _buses: dict = {}
 
+# Blinka's Linux SPI goes through Adafruit_PureIO, which splits every write
+# into chunks of SPI_BUFSIZE bytes (4096 when unset), one ioctl each. A chunk
+# larger than the kernel's spidev bufsiz fails outright, so the chunk size is
+# taken from the live kernel limit rather than fixed: a dial updated to a
+# larger limit on the kernel command line keeps working at 4096 until the
+# reboot that applies it. Capped, so an oversized limit cannot make one
+# transfer hold the bus for a whole frame.
+_SPIDEV_BUFSIZ_PATH = "/sys/module/spidev/parameters/bufsiz"
+_PUREIO_DEFAULT_CHUNK = 4096
+_SPI_CHUNK_MAX = 65536
+
+
+def _configure_spi_chunk_size(path: str = _SPIDEV_BUFSIZ_PATH) -> None:
+    """Set SPI_BUFSIZE for Adafruit_PureIO from the kernel's spidev bufsiz,
+    before any bus is constructed. An explicit SPI_BUFSIZE in the
+    environment wins. Never raises: an unreadable or unparsable limit
+    leaves PureIO on its own default."""
+    if "SPI_BUFSIZE" in os.environ:
+        return
+    try:
+        with open(path, encoding="ascii") as f:
+            limit = int(f.read().strip())
+    except (OSError, ValueError):
+        return
+    size = min(limit, _SPI_CHUNK_MAX)
+    if size > _PUREIO_DEFAULT_CHUNK:
+        os.environ["SPI_BUFSIZE"] = str(size)
+
 
 def board_pin(board_module, gpio: int, *aliases: str):
     """Resolve a BCM GPIO number to whichever alias this Blinka release's
@@ -152,6 +181,7 @@ def get_bus(spec: SpiBusSpec):
         existing = _buses.get(spec.label)
         if existing is not None:
             return existing
+        _configure_spi_chunk_size()
         import board
         import busio
 

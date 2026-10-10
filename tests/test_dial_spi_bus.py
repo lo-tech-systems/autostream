@@ -323,3 +323,61 @@ class TestSpiTransactionLock:
             t1.join(timeout=5)
 
         assert touch_acquired.is_set()
+
+
+class TestSpiChunkSize:
+    """_configure_spi_chunk_size() sizes Adafruit_PureIO's write chunks from
+    the kernel's spidev bufsiz, never above the cap and never below PureIO's
+    own default, and leaves an explicit SPI_BUFSIZE alone."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("SPI_BUFSIZE", raising=False)
+
+    def _limit_file(self, tmp_path, text):
+        path = tmp_path / "bufsiz"
+        path.write_text(text)
+        return str(path)
+
+    def test_raised_kernel_limit_sets_the_chunk_size(self, tmp_path):
+        import os
+        dial_spi_bus._configure_spi_chunk_size(self._limit_file(tmp_path, "65536\n"))
+        assert os.environ["SPI_BUFSIZE"] == "65536"
+
+    def test_limit_above_the_cap_is_capped(self, tmp_path):
+        import os
+        dial_spi_bus._configure_spi_chunk_size(self._limit_file(tmp_path, "1048576\n"))
+        assert os.environ["SPI_BUFSIZE"] == str(dial_spi_bus._SPI_CHUNK_MAX)
+
+    def test_default_kernel_limit_leaves_pureio_default(self, tmp_path):
+        import os
+        dial_spi_bus._configure_spi_chunk_size(self._limit_file(tmp_path, "4096\n"))
+        assert "SPI_BUFSIZE" not in os.environ
+
+    def test_explicit_environment_value_wins(self, tmp_path, monkeypatch):
+        import os
+        monkeypatch.setenv("SPI_BUFSIZE", "8192")
+        dial_spi_bus._configure_spi_chunk_size(self._limit_file(tmp_path, "65536\n"))
+        assert os.environ["SPI_BUFSIZE"] == "8192"
+
+    @pytest.mark.parametrize("text", ["", "not-a-number\n"])
+    def test_unparsable_limit_never_raises(self, tmp_path, text):
+        import os
+        dial_spi_bus._configure_spi_chunk_size(self._limit_file(tmp_path, text))
+        assert "SPI_BUFSIZE" not in os.environ
+
+    def test_missing_limit_file_never_raises(self, tmp_path):
+        import os
+        dial_spi_bus._configure_spi_chunk_size(str(tmp_path / "absent"))
+        assert "SPI_BUFSIZE" not in os.environ
+
+    def test_get_bus_configures_before_constructing(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dial_spi_bus, "_configure_spi_chunk_size", lambda: calls.append("configure"))
+        modules = _install_fake_hardware_modules(
+            spi_ctor=lambda **kw: calls.append("construct") or MagicMock()
+        )
+        monkeypatch.setitem(sys.modules, "board", modules["board"])
+        monkeypatch.setitem(sys.modules, "busio", modules["busio"])
+        dial_spi_bus.get_bus(dial_spi_bus.DISPLAY_BUS)
+        assert calls == ["configure", "construct"]
