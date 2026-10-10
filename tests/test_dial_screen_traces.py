@@ -45,6 +45,7 @@ from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, 
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_sdhealth import SdHealthView, STATUS_VALID
 from dial_touch_layout import TouchZone
+from dial_test_support import MONOTONIC_TARGETS, FakeBackend, _FakeClock
 from dial_warnings import WarningManager, WarningStore
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -58,53 +59,10 @@ _TEST_LOGO_PATH = str(REPO_ROOT / "images" / "autostream-logo-centred-dark.png")
 
 
 # ---------------------------------------------------------------------------
-# Small self-contained fixtures (deliberately not shared with
-# test_dial_display.py, so this corpus stands on its own).
+# Fixtures. The recording backend and the fake clock are the shared ones;
+# the target, status and display builders differ from the shared ones, so
+# this corpus keeps its own.
 # ---------------------------------------------------------------------------
-
-class _FakeClock:
-    """Controllable stand-in for time.monotonic, advanced only by explicit
-    "advance" steps so every scenario is fully deterministic."""
-
-    def __init__(self, start: float = 1000.0) -> None:
-        self.t = start
-
-    def __call__(self) -> float:
-        return self.t
-
-
-class FakeBackend:
-    name = "fake"
-    width = 128
-    height = 160
-
-    def __init__(self) -> None:
-        self.opened = False
-        self.closed = False
-        self.cleared = False
-        self.displayed: list = []
-        self.sleep_calls = 0
-        self.wake_calls = 0
-
-    def open(self) -> None:
-        self.opened = True
-
-    def close(self) -> None:
-        self.closed = True
-        self.opened = False
-
-    def clear(self) -> None:
-        self.cleared = True
-
-    def display(self, image) -> None:
-        self.displayed.append(image)
-
-    def sleep(self) -> None:
-        self.sleep_calls += 1
-
-    def wake(self) -> None:
-        self.wake_calls += 1
-
 
 def _target(
     name: str, appliance_id: str, auth: str = "authorized", playing_since: float = 1.0,
@@ -552,7 +510,7 @@ _FAKE_ARTWORK_IMAGE = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
 # Every module-level name the scenarios replace, as (target, kwargs factory):
 # the factory gets the scenario context and the artwork image the scenario's
 # panel size needs. When a function that calls one of these moves to another
-# module, this tuple (and _MONOTONIC_TARGETS) is the one place to repoint.
+# module, this tuple (and dial_test_support.MONOTONIC_TARGETS) is the one place to repoint.
 _PATCHES = (
     ("dial_core.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
     ("dial_core_poll.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
@@ -563,9 +521,6 @@ _PATCHES = (
     ("dial_display_compositor.transform_artwork_for_panel", lambda ctx, img: {"return_value": img}),
     ("dial_display._request_reboot", lambda ctx, img: {}),
 )
-# Every place time.monotonic is read, all patched with the scenario's one
-# fake clock.
-_MONOTONIC_TARGETS = ("dial_display.time.monotonic", "dial_core_poll.time.monotonic")
 
 
 def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:
@@ -576,7 +531,7 @@ def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:
     # scenario that opted into a non-default panel (e.g. the compact tier).
     artwork_image = _FAKE_ARTWORK_IMAGE if backend is None else Image.new("RGB", (backend.width, backend.height))
     with contextlib.ExitStack() as stack:
-        for target in _MONOTONIC_TARGETS:
+        for target in MONOTONIC_TARGETS:
             stack.enter_context(patch(target, ctx.clock))
         for target, make_kwargs in _PATCHES:
             stack.enter_context(patch(target, **make_kwargs(ctx, artwork_image)))

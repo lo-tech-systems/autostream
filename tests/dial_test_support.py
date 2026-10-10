@@ -1,6 +1,6 @@
 """Shared helpers for dial display tests: a recording backend, builders for
 targets, roster entries and status results, a controllable clock and a
-display factory. test_dial_display.py keeps its own older copies."""
+display factory, shared by the display, trace and core tests."""
 from __future__ import annotations
 
 import contextlib
