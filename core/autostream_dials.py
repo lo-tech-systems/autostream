@@ -35,6 +35,23 @@ _SIGHTING_THROTTLE_SECS = 60
 # in step with the value the appliance advertises (autostream_admin).
 DIAL_PROTO_VERSION = "v2"
 
+# Oldest protocol generation that gets the typed refusal and the other
+# current-dialect behaviour. Later generations include everything earlier ones
+# mean, so every check is "at least this generation".
+_MIN_DIAL_GENERATION = 2
+
+
+def dial_proto_generation(value) -> int:
+    """Parse a dial_proto value of the form v<N> into its generation number.
+
+    Anything absent or malformed (no leading v, no digits, signs, spaces,
+    non-ASCII digits) is generation 0, the earliest dialect.
+    """
+    if not isinstance(value, str):
+        return 0
+    m = re.fullmatch(r"v([0-9]{1,6})", value)
+    return int(m.group(1)) if m else 0
+
 # Printable ASCII only (0x20–0x7e); reject ; | which break TXT parsing.
 # Intentional policy duplication of the identical function in autostream_admin
 # (an extensionless privileged executable that cannot be imported).
@@ -263,15 +280,15 @@ def get_all_sightings() -> list[DialSighting]:
 
 
 def dial_speaks_v2(uuid: str) -> bool:
-    """True when the dial is currently sighted and advertises the current
-    protocol dialect.  An unsighted dial is treated as legacy."""
+    """True when the dial is currently sighted and advertises at least the
+    current protocol dialect.  An unsighted dial is treated as legacy."""
     s = get_dial_sighting(uuid)
-    return s is not None and s.dial_proto == DIAL_PROTO_VERSION
+    return s is not None and dial_proto_generation(s.dial_proto) >= _MIN_DIAL_GENERATION
 
 
 def sighting_needs_update(s: DialSighting) -> bool:
     """True when the sighted dial does not advertise the current protocol dialect."""
-    return s.dial_proto != DIAL_PROTO_VERSION
+    return dial_proto_generation(s.dial_proto) < _MIN_DIAL_GENERATION
 
 
 def dials_needing_update() -> list[DialSighting]:

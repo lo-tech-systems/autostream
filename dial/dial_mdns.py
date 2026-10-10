@@ -4,7 +4,7 @@ _autostream._tcp, and the merged roster built from both.
 Scans for autostream appliances announcing _autostream-playing._tcp.  Only
 entries that carry dial_api=v1 in their TXT record are tracked — earlier
 appliances without this field are ignored.  The separate dial_proto TXT key
-names the protocol dialect (see _DIAL_PROTO_ACCEPTED); absent means the
+names the protocol dialect (see _proto_generation); absent means the
 earlier dialect, which also announces no id on the playing record.
 
 IPv4 only.  Deduplication across interfaces is handled by the shared
@@ -57,13 +57,21 @@ from dataclasses import dataclass
 
 _APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 
-# dial_proto TXT value -> protocol generation. Anything else (absent or an
-# unknown value) is generation 0, the earlier dialect.
-_DIAL_PROTO_ACCEPTED = {"v2": 2}
+def _proto_generation(value) -> int:
+    """Parse a dial_proto value of the form v<N> into its generation number.
+
+    Anything absent or malformed is generation 0, the earlier dialect. Later
+    generations include everything earlier ones mean, so callers compare with
+    >=.
+    """
+    if not isinstance(value, str):
+        return 0
+    m = re.fullmatch(r"v([0-9]{1,6})", value)
+    return int(m.group(1)) if m else 0
 
 
 def _parse_dial_proto(txt: dict) -> int:
-    return _DIAL_PROTO_ACCEPTED.get(txt.get("dial_proto", ""), 0)
+    return _proto_generation(txt.get("dial_proto", ""))
 
 
 _DIAL_EQ_VERSIONS = {"v1": 1, "v2": 2}

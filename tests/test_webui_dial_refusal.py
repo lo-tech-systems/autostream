@@ -104,15 +104,16 @@ def _call_refused(fn, body, dial_proto, auth=AUTH_NOT_AUTHORIZED):
 
 @pytest.mark.parametrize("name,fn,body", _ROUTES, ids=[r[0] for r in _ROUTES])
 class TestRefusalStyle:
-    @pytest.mark.parametrize("dial_proto", [None, "", "v3"],
-                             ids=["unsighted", "legacy", "unknown_dialect"])
+    @pytest.mark.parametrize("dial_proto", [None, "", "v1", "x3"],
+                             ids=["unsighted", "legacy", "earlier_generation", "malformed"])
     def test_non_v2_dial_gets_403_empty_body_byte_for_byte(self, name, fn, body, dial_proto):
         result = _call_refused(fn, body, dial_proto)
         assert result == _reference(403, {})
         assert result[2] == b"{}"
 
-    def test_v2_dial_gets_typed_412(self, name, fn, body):
-        assert _call_refused(fn, body, "v2") == _reference(412, {
+    @pytest.mark.parametrize("dial_proto", ["v2", "v3", "v10"])
+    def test_v2_or_later_dial_gets_typed_412(self, name, fn, body, dial_proto):
+        assert _call_refused(fn, body, dial_proto) == _reference(412, {
             "ok": False, "error": "dial_not_authorized", "appliance_id": TEST_APPLIANCE_ID,
         })
 

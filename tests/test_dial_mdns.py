@@ -816,8 +816,25 @@ class TestDialProto:
     def test_playing_record_without_dial_proto_is_version_0(self):
         assert self._playing("dial_api=v1").dial_proto_version == 0
 
-    def test_playing_record_dial_proto_v3_is_version_0(self):
-        assert self._playing("dial_api=v1 dial_proto=v3").dial_proto_version == 0
+    def test_playing_record_later_dial_proto_is_numeric_generation(self):
+        assert self._playing("dial_api=v1 dial_proto=v3").dial_proto_version == 3
+        assert self._playing("dial_api=v1 dial_proto=v10").dial_proto_version == 10
+
+    def test_playing_record_malformed_dial_proto_is_version_0(self):
+        for bad in ("2", "vx", "v", "v-2", "V2"):
+            assert self._playing(f"dial_api=v1 dial_proto={bad}").dial_proto_version == 0, bad
+
+    def test_later_generation_counts_as_v2_capable(self):
+        t = self._playing("dial_api=v1 dial_proto=v3")
+        assert t.status_reports_mute is True
+
+    def test_proto_generation_parser(self):
+        assert dm._proto_generation("v2") == 2
+        assert dm._proto_generation("v3") == 3
+        assert dm._proto_generation("v10") == 10
+        for bad in ("", None, "v", "2", "V2", "vx", "v2x", "v+2", "v 2", "v\u0662", 2):
+            assert dm._proto_generation(bad) == 0, bad
+        assert dm._parse_dial_proto({}) == 0
 
     def test_playing_record_still_needs_dial_api_v1(self):
         dm._browser._handle_line(_av_add(txt="dial_proto=v2"))
