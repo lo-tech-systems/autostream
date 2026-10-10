@@ -22,7 +22,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
     ApplianceState, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
-    FocusState, NowPlaying, OutputRow, OutputsState, TransportRequest, WarningState,
+    FocusState, NowPlaying, OutputRow, OutputsState, PowerState, TransportRequest, WarningState,
     artwork_key,
 )
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView
@@ -280,6 +280,8 @@ def _build() -> dict:
         appliances=(appliance(), appliance(KITCHEN, "Kitchen", auth=AUTH_UNAUTHORIZED)),
     ), muted=None))
     add(Scenario("recovery_pending", base(), recovery=(True, False), muted=None))
+    add(Scenario("power_requested", base(power=PowerState("requested", NOW - 1)), muted=None))
+    add(Scenario("power_failed", base(power=PowerState("failed", NOW - 1)), muted=None))
     add(Scenario("eq_none", _playing(eq=None, eq_available=False, appliances=(
         appliance(playing=True, eq_version=0, master_volume=42, muted=False),))))
     add(Scenario("eq_two", _playing(

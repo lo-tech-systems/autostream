@@ -82,5 +82,9 @@
   "recovery": {
     "active": false,
     "confirmed": false
+  },
+  "power": {
+    "state": "idle",
+    "changed_at": 0.0
   }
 }

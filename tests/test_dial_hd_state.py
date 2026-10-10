@@ -78,7 +78,7 @@ class TestCorpus:
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
             "appliance_warning", "appliance_warning_notice", "disconnected",
             "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited", "pin_required_v1",
-            "pin_expired",
+            "pin_expired", "power_requested", "power_failed",
         }
 
     def test_a_build_is_repeatable(self):
@@ -196,6 +196,11 @@ class TestShape:
     def test_the_kiosk_flag_is_false_unless_the_panel_says_so(self):
         assert _state("playing_artwork")["panel"]["kiosk"] is False
         assert _state("playing_artwork", panel={"kiosk": True})["panel"]["kiosk"] is True
+
+    def test_the_power_block_carries_the_state_and_its_moment(self):
+        assert _state("nothing_playing")["power"] == {"state": "idle", "changed_at": 0.0}
+        assert _state("power_requested")["power"] == {"state": "requested", "changed_at": hs.NOW - 1}
+        assert _state("power_failed")["power"] == {"state": "failed", "changed_at": hs.NOW - 1}
 
     def test_recovery_takes_a_tuple_or_a_mapping(self):
         assert _state("recovery_pending")["recovery"] == {"active": True, "confirmed": False}

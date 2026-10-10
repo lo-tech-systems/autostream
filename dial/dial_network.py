@@ -30,6 +30,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 from dial_info import (
     SIGNAL_NORMAL,
@@ -70,6 +71,9 @@ REBOOT_COOLDOWN_S = 60.0
 # reply has gone out by then.
 ADMIN_CMD = "/usr/local/libexec/autostream/autostream_admin"
 SHUTDOWN_REQUEST_TIMEOUT_S = 15.0
+# How long a power-off the helper has scheduled may take to end this process
+# (the helper's own delay, the timer's granularity, the services stopping).
+SHUTDOWN_EXPECTED_S = 20.0
 
 # Link verdicts, derived from the watcher's device.state.
 LINK_CONNECTED = "connected"   # online, degraded
@@ -312,10 +316,14 @@ def request_reboot(now: "float | None" = None) -> bool:
         return False
 
 
-def _shutdown_thread() -> None:
-    """Run the helper's power-off verb. A request that did not go through
-    frees the slot, so the person can ask again; one that did keeps it, as
-    the box is going down."""
+def _shutdown_thread(on_outcome: Callable[[bool], None]) -> None:
+    """Run the helper's power-off verb and report a request that did not
+    happen. The helper returning 0 only means the power-off is scheduled; the
+    one sign it happened is this process dying, so it is given
+    SHUTDOWN_EXPECTED_S to do so. A request that did not go through, or did
+    not take effect, frees the slot so the person can ask again, and is
+    reported through *on_outcome* (a success is never reported: there is no
+    one left to tell)."""
     global _shutdown_pending
     try:
         done = subprocess.run(
@@ -327,17 +335,24 @@ def _shutdown_thread() -> None:
         ok = False
     if ok:
         logging.info("dial network: shutdown requested")
-        return
-    logging.warning("dial network: shutdown request failed")
+        threading.Event().wait(SHUTDOWN_EXPECTED_S)
+        logging.warning("dial network: shutdown did not happen")
+    else:
+        logging.warning("dial network: shutdown request failed")
     with _shutdown_lock:
         _shutdown_pending = False
+    try:
+        on_outcome(False)
+    except Exception:
+        logging.debug("dial network: shutdown outcome callback raised", exc_info=True)
 
 
-def request_shutdown() -> bool:
+def request_shutdown(on_outcome: Callable[[bool], None]) -> bool:
     """Ask for a graceful power-off, fire-and-forget: starts a short-lived
     daemon thread for the request. Returns False (and does nothing) while an
     earlier request is still in hand. Does no I/O on the calling thread.
-    Never raises."""
+    *on_outcome* is called from that thread, with no lock held, only with
+    False when the power-off did not happen. Never raises."""
     global _shutdown_pending
     try:
         with _shutdown_lock:
@@ -345,7 +360,9 @@ def request_shutdown() -> bool:
                 logging.warning("dial network: shutdown refused - already requested")
                 return False
             _shutdown_pending = True
-        threading.Thread(target=_shutdown_thread, daemon=True, name="dial-shutdown").start()
+        threading.Thread(
+            target=_shutdown_thread, args=(on_outcome,), daemon=True, name="dial-shutdown",
+        ).start()
         return True
     except Exception:
         logging.debug("dial network: request_shutdown raised", exc_info=True)

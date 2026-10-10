@@ -102,7 +102,8 @@
         eq: null,
         warnings: { due: null, cards: [] },
         panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", kiosk: false },
-        recovery: { active: false, confirmed: false }
+        recovery: { active: false, confirmed: false },
+        power: { state: "idle", changed_at: 0 }
     };
 
     const LOGO_URL = "/static/logo.png";
@@ -150,8 +151,8 @@
     const NO_TIME = "-:--";
     const SVG_NS = "http://www.w3.org/2000/svg";
 
-    // The cards the Shut down button leads to, by stage: the question, then
-    // the wait while the dial goes down.
+    // The cards the Shut down button leads to, by stage: the question, the
+    // wait while the dial goes down, and the news that it did not.
     const POWER_CARDS = {
         confirm: {
             title: "Shut down?", closable: true,
@@ -164,8 +165,26 @@
         going: {
             title: "Shutting down...", closable: false, buttons: [],
             message: "Wait for the screen to go dark before taking the power away."
+        },
+        failed: {
+            title: "The dial did not shut down", closable: false,
+            message: "Nothing was switched off. You can try again from the power button.",
+            buttons: [{ id: "ok", label: "OK", act: "power_ack" }]
         }
     };
+    // The card to show, first match wins: p is the dial's power block, u the
+    // page's own facts (asked: the question is open; sent: the request is out
+    // and the state has not yet taken it over; dismissedAt: the failure the
+    // person has seen).
+    const POWER_RULES = [
+        [(p, u) => p.state === "requested" || u.sent, "going"],
+        [(p, u) => p.state === "failed" && u.dismissedAt !== p.changed_at, "failed"],
+        [(p, u) => u.asked, "confirm"]
+    ];
+    // Whether the dial's state has taken over from the request the page sent.
+    const POWER_TAKEN_OVER = (p, u) =>
+        p.state === "requested" || (p.state === "failed" && p.changed_at !== u.dismissedAt);
+    const POWER_IDLE_UI = { asked: false, sent: false, dismissedAt: 0 };
 
     // The pull-down's choices: [seconds, label]; 0 is never.
     const SLEEP_CHOICES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [0, "Never"]];
@@ -280,7 +299,7 @@
         notice: null, viewing: null,
         activityAt: 0,
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
-        replayClock: null, stopHold: null, press: null, power: null, host: window.location.hostname,
+        replayClock: null, stopHold: null, press: null, power: Object.assign({}, POWER_IDLE_UI), host: window.location.hostname,
         // The keypad's own buffer (the digits live nowhere else), the request
         // it was typed for, the request the person turned away, and the
         // page-clock moment a rate-limit wait ends.
@@ -615,6 +634,12 @@
         };
     }
 
+    // The shut-down card to show, if any: its key in POWER_CARDS.
+    function derivePower(s, local) {
+        const rule = POWER_RULES.find((r) => r[0](s.power, local.power));
+        return rule ? rule[1] : null;
+    }
+
     // The one modal card to show, if any: the shut-down card first (the person
     // has just asked for it), then the PIN recovery confirmation,
     // then a speaker's PIN, the not-authorised notice, an appliance warning
@@ -625,9 +650,9 @@
         s.appliances.forEach((a) => a.warnings.forEach((w) => owners.set(w.key, a.id)));
         const due = cardsById.get(s.warnings.due);
 
-        const power = POWER_CARDS[local.power];
+        const power = derivePower(s, local);
         if (power) {
-            return Object.assign({ key: "power", source: "", severity: "warning", progress: null, kind: "notice" }, power);
+            return Object.assign({ key: "power", source: "", severity: "warning", progress: null, kind: "notice" }, POWER_CARDS[power]);
         }
         if (s.recovery.active && !s.recovery.confirmed) {
             return {
@@ -745,7 +770,7 @@
             eq: eq,
             settings: settings,
             hidePointer: !!panel.kiosk && isLoopbackHost(local.host),
-            sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !local.power },
+            sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !derivePower(s, local) },
             modal: modal,
             // Something on the page changes with the clock.
             live: replay.ticking || !!(modal && modal.kind === "pin" && modal.pin.waiting)
@@ -1202,6 +1227,11 @@
             ui.pin = Object.assign({}, ui.pin, { waitKey: asked.pin.key, waitUntil: Date.now() + asked.pin.retryAfterS * 1000 });
             ui.vm = view();
         }
+        // The dial's state takes over from the shut-down request the page sent.
+        if (ui.power.sent && ui.state && POWER_TAKEN_OVER(ui.state.power, ui.power)) {
+            ui.power = Object.assign({}, ui.power, { sent: false });
+            ui.vm = view();
+        }
         // A held button ends with its reason, and is drawn once more without it.
         if (ui.press && !ui.vm.replay.pressed) {
             ui.press = null;
@@ -1624,20 +1654,24 @@
         },
         restart: () => post("dial_restart", {}),
         shutdown: () => {
-            ui.power = "going";
+            ui.power = Object.assign({}, ui.power, { asked: false, sent: true });
             setSheet(false);
             post("dial_shutdown", {}).then((went) => {
                 if (!went) {
-                    ui.power = null;
+                    ui.power = Object.assign({}, ui.power, { sent: false });
                     render();
                 }
             });
+        },
+        power_ack: () => {
+            ui.power = Object.assign({}, ui.power, { dismissedAt: ui.state.power.changed_at });
+            render();
         },
         presence: () => post("presence", {}),
         close: () => {
             ui.notice = null;
             ui.viewing = null;
-            ui.power = null;
+            ui.power = Object.assign({}, ui.power, { asked: false });
             render();
         },
         pin_cancel: (card) => {
@@ -1673,7 +1707,7 @@
     els.brightness.addEventListener("change", () => onBrightness(Number(els.brightness.value), true));
     trackDrag(els.brightness, () => "brightness");
     els.power.addEventListener("click", () => {
-        ui.power = "confirm";
+        ui.power = Object.assign({}, ui.power, { asked: true });
         render();
     });
     els.sleepNow.addEventListener("click", () => {

@@ -1,0 +1,90 @@
+{
+  "v": 1,
+  "seq": 4821,
+  "core_seq": 4790,
+  "started": true,
+  "polling": true,
+  "dial": {
+    "name": "Lounge dial",
+    "version": "0.8.0",
+    "uuid": "11111111-2222-3333-4444-555555555555",
+    "address": "192.0.2.10",
+    "inputs": [
+      "touch:hd"
+    ],
+    "volume_scope": "current",
+    "mute_scope": "current"
+  },
+  "focus": {
+    "appliance_id": null,
+    "manual": false,
+    "pending": false,
+    "idle": false
+  },
+  "appliances": [
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaa",
+      "name": "Lounge",
+      "auth": "authorized",
+      "playing": false,
+      "replaying": false,
+      "reachable": true,
+      "volume": null,
+      "muted": null,
+      "capabilities": {
+        "outputs": 1,
+        "eq": 2,
+        "repeat": true,
+        "warnings": true,
+        "proto": 3
+      },
+      "repeat": null,
+      "warnings": [],
+      "webui": "http://192.0.2.20:80/"
+    }
+  ],
+  "now_playing": null,
+  "artwork": null,
+  "volume": {
+    "appliance_id": null,
+    "level": null,
+    "muted": null
+  },
+  "outputs": null,
+  "outputs_available": false,
+  "eq": null,
+  "eq_available": false,
+  "transport": null,
+  "outputs_request": null,
+  "warnings": {
+    "due": null,
+    "cards": []
+  },
+  "network": {
+    "link": "connected",
+    "ssid": "HomeNet",
+    "signal": "Strong",
+    "bars": 3
+  },
+  "sd_health": {
+    "status": "valid",
+    "percent": 84
+  },
+  "update": null,
+  "panel": {
+    "asleep": false,
+    "brightness": 80,
+    "sleep_after_s": 300,
+    "backlight": "sysfs",
+    "always_show_controls": false,
+    "kiosk": false
+  },
+  "recovery": {
+    "active": false,
+    "confirmed": false
+  },
+  "power": {
+    "state": "requested",
+    "changed_at": 999.0
+  }
+}

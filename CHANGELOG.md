@@ -23,6 +23,8 @@
 - new: the HD dial's pull-down has a power button at the top right. It asks
   "Shut down?" and, once confirmed, shuts the dial down. It works only from
   the dial's own touchscreen, not from the page served on the local network.
+  If the dial does not switch off within about half a minute, a card says so
+  and the power button works again.
   Dials gain a `poweroff` verb in their privileged helper and a matching
   sudoers line on update.
 - new: an HD dial can pair a speaker that asks for a PIN. Switching the

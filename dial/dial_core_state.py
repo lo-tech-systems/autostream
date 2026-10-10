@@ -229,6 +229,15 @@ class TransportRequest:
     retry_after_s: int = 0         # seconds a rate-limited reply asked the sender to wait
 
 
+@dataclass(frozen=True)
+class PowerState:
+    state: str          # "idle" | "requested" | "failed"
+    changed_at: float   # the core's clock when it reached this state
+
+
+POWER_IDLE = PowerState("idle", 0.0)
+
+
 # The rule an appliance applies to a speaker PIN; the dial refuses anything
 # else before sending it.
 PIN_RE = re.compile(r"^[0-9]{4,8}\Z")
@@ -318,6 +327,7 @@ class CoreSnapshot:
     tick: TickContext | None = None     # what the tick that ended in this snapshot started from
     auth_promotions: int = 0            # appliances a pushed auth change has confirmed as newly authorised
     outputs_request: TransportRequest | None = None  # the latest output request and its outcome
+    power: PowerState = POWER_IDLE      # whether a requested power-off is in hand or did not happen
 
     def appliance(self, appliance_id: str | None) -> ApplianceState | None:
         if appliance_id is None:

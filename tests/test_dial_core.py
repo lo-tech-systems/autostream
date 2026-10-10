@@ -1606,7 +1606,9 @@ class TestTransport:
 
 import json  # noqa: E402
 
-from dial_core_state import ApplianceWarning, NOWIFI_PROMPT_STREAK, validate_appliance_warnings  # noqa: E402
+from dial_core_state import (  # noqa: E402
+    POWER_IDLE, ApplianceWarning, NOWIFI_PROMPT_STREAK, PowerState, validate_appliance_warnings,
+)  # noqa: E402
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView  # noqa: E402
 from dial_sdhealth import STATUS_VALID, SdHealthView  # noqa: E402
 from dial_update_watch import UpdateView, UpdateWatcher  # noqa: E402
@@ -1628,6 +1630,91 @@ def _warning_core(tmp_path=None, wall=None, store_path=None, reboot=None, **kwar
         reboot=reboot, **kwargs,
     )
     return core, manager, wall
+
+
+class TestPower:
+    @staticmethod
+    def _core(accept=True):
+        clock = _Clock(500.0)
+        asked = []
+
+        def shutdown(on_outcome):
+            asked.append(on_outcome)
+            return accept
+        core = DialCore("dial-1", lambda: [], lambda: [], clock=clock, shutdown=shutdown)
+        return core, clock, asked
+
+    def test_it_starts_idle(self):
+        core, _, _ = self._core()
+        assert core.snapshot().power == POWER_IDLE
+
+    def test_a_request_the_network_module_takes_publishes_requested(self):
+        core, clock, asked = self._core()
+        seq = core.snapshot().seq
+        assert core.request_dial_shutdown() is True
+        assert core.snapshot().power == PowerState("requested", 500.0)
+        assert core.snapshot().seq == seq + 1
+        assert len(asked) == 1
+
+    def test_a_refusal_from_the_network_module_publishes_nothing(self):
+        core, _, asked = self._core(accept=False)
+        seq = core.snapshot().seq
+        assert core.request_dial_shutdown() is False
+        assert core.snapshot().power == POWER_IDLE and core.snapshot().seq == seq
+
+    def test_a_success_report_changes_nothing(self):
+        core, _, _ = self._core()
+        core.request_dial_shutdown()
+        seq = core.snapshot().seq
+        core._on_shutdown_outcome(True)
+        assert core.snapshot().power.state == "requested" and core.snapshot().seq == seq
+
+    def test_a_failure_while_requested_moves_to_failed_at_that_moment(self):
+        core, clock, asked = self._core()
+        core.request_dial_shutdown()
+        clock.t = 520.0
+        asked[0](False)
+        assert core.snapshot().power == PowerState("failed", 520.0)
+
+    def test_a_failure_while_idle_changes_nothing(self):
+        core, _, _ = self._core()
+        seq = core.snapshot().seq
+        core._on_shutdown_outcome(False)
+        assert core.snapshot().power == POWER_IDLE and core.snapshot().seq == seq
+
+    def test_a_request_while_requested_is_refused_without_asking(self):
+        core, _, asked = self._core()
+        core.request_dial_shutdown()
+        assert core.request_dial_shutdown() is False
+        assert len(asked) == 1
+
+    def test_a_request_while_failed_moves_to_requested(self):
+        core, clock, asked = self._core()
+        core.request_dial_shutdown()
+        asked[0](False)
+        clock.t = 600.0
+        assert core.request_dial_shutdown() is True
+        assert core.snapshot().power == PowerState("requested", 600.0)
+        assert len(asked) == 2
+
+    def test_a_failure_before_the_request_was_published_is_not_lost(self):
+        clock = _Clock(500.0)
+
+        def shutdown(on_outcome):
+            on_outcome(False)           # the helper failed before the call returned
+            return True
+        core = DialCore("dial-1", lambda: [], lambda: [], clock=clock, shutdown=shutdown)
+        assert core.request_dial_shutdown() is True
+        assert core.snapshot().power == PowerState("failed", 500.0)
+        assert core.request_dial_shutdown() is True      # and the person can ask again
+
+    def test_the_outcome_is_folded_outside_the_core_lock(self):
+        core, _, asked = self._core()
+        core.request_dial_shutdown()
+        seen = []
+        core.subscribe(lambda: seen.append(core._lock.locked()))
+        asked[0](False)
+        assert seen == [False]
 
 
 def _net(link):
@@ -1929,15 +2016,15 @@ class TestHousekeepingAndReboot:
 
     def test_a_shutdown_request_goes_to_the_injected_function(self):
         calls = []
-        core, manager, _ = _warning_core(shutdown=lambda: calls.append(1) or True)
+        core, manager, _ = _warning_core(shutdown=lambda on_outcome: calls.append(1) or True)
         assert core.request_dial_shutdown() is True
         assert calls == [1]
 
     def test_a_refused_or_raising_shutdown_request_is_false(self):
-        core, manager, _ = _warning_core(shutdown=lambda: False)
+        core, manager, _ = _warning_core(shutdown=lambda on_outcome: False)
         assert core.request_dial_shutdown() is False
 
-        def boom():
+        def boom(on_outcome):
             raise RuntimeError("no")
         core, manager, _ = _warning_core(shutdown=boom)
         assert core.request_dial_shutdown() is False

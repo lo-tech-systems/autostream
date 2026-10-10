@@ -197,9 +197,10 @@ To shut the dial down, press the power button. The dial asks **Shut down?**;
 choose **Shut down** to go ahead or **Cancel** to leave things as they are.
 Once you confirm, the screen reads **Shutting down...** and then the shutdown
 screen takes over. Wait for the screen to go dark before taking the power
-away, and unplug and replug the dial to start it again. Only the dial's own
-touchscreen can do this: the page served on the local network for development
-(see below) refuses it.
+away, and unplug and replug the dial to start it again. If the dial does not
+switch off, a card says so; press **OK** and you can try again. Only the dial's
+own touchscreen can do this: the page served on the local network for
+development (see below) refuses it.
 
 ### Warnings
 

@@ -33,7 +33,7 @@ if _PLAYWRIGHT_INSTALLED:
     from playwright.sync_api import expect
 
 import hd_scenarios as hs  # noqa: E402
-from dial_core_state import NowPlaying, TransportRequest  # noqa: E402
+from dial_core_state import NowPlaying, PowerState, TransportRequest  # noqa: E402
 
 LOUNGE, KITCHEN, NOW = hs.LOUNGE, hs.KITCHEN, hs.NOW
 
@@ -425,6 +425,83 @@ class TestPowerButton:
         page.locator(SHUT_DOWN, has_text="Shut down").click()
         expect(page.locator("#toast")).to_have_text("No connection to the dial.")
         expect(modal_card(page)).to_be_hidden()
+
+    def test_a_shutdown_that_does_not_happen_says_so(self, page, hd):
+        answer(page, "dial_shutdown")
+        open_page(page, hd)
+        open_sheet(page)
+        page.locator("#power").click()
+        page.locator(SHUT_DOWN, has_text="Shut down").click()
+        expect(page.locator("#card-title")).to_have_text("Shutting down...")
+        hd.show(hs.SCENARIOS["power_failed"])
+        expect(page.locator("#card-title")).to_have_text("The dial did not shut down")
+        assert [b.inner_text() for b in page.locator(SHUT_DOWN).all()] == ["OK"]
+        assert page.locator("#card-message").inner_text().strip()
+        # The dimmed area does not dismiss it: the one button does.
+        page.mouse.click(5, 5)
+        page.wait_for_timeout(200)
+        expect(page.locator("#card-title")).to_have_text("The dial did not shut down")
+        page.locator(SHUT_DOWN, has_text="OK").click()
+        expect(modal_card(page)).to_be_hidden()
+        open_sheet(page)
+        expect(page.locator("#power")).to_be_enabled()
+        # The same failure, reported again, does not bring the card back.
+        hd.show(hs.SCENARIOS["power_failed"].with_snapshot(seq=4791))
+        page.wait_for_timeout(300)
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_a_new_failure_shows_the_card_again(self, page, hd):
+        hd.show(hs.SCENARIOS["power_failed"])
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("The dial did not shut down")
+        page.locator(SHUT_DOWN, has_text="OK").click()
+        expect(modal_card(page)).to_be_hidden()
+        hd.show(hs.SCENARIOS["power_failed"].with_snapshot(power=PowerState("failed", NOW + 30)))
+        expect(page.locator("#card-title")).to_have_text("The dial did not shut down")
+
+    def test_asking_again_after_a_dismissed_failure_shows_the_wait(self, page, hd):
+        seen = answer(page, "dial_shutdown")
+        hd.show(hs.SCENARIOS["power_failed"])
+        open_page(page, hd)
+        page.locator(SHUT_DOWN, has_text="OK").click()
+        open_sheet(page)
+        page.locator("#power").click()
+        page.locator(SHUT_DOWN, has_text="Shut down").click()
+        # The old failure is still the dial's state: it is not the answer.
+        expect(page.locator("#card-title")).to_have_text("Shutting down...")
+        page.wait_for_timeout(300)
+        expect(page.locator("#card-title")).to_have_text("Shutting down...")
+        assert seen == [{}]
+        hd.show(hs.SCENARIOS["power_requested"])
+        expect(page.locator("#card-title")).to_have_text("Shutting down...")
+
+    def test_the_going_card_follows_the_state_once_the_dial_has_it(self, page, hd):
+        open_page(page, hd)
+        hd.show(hs.SCENARIOS["power_requested"])
+        expect(page.locator("#card-title")).to_have_text("Shutting down...")
+        expect(page.locator(SHUT_DOWN)).to_have_count(0)
+        expect(page.locator("#power")).to_be_disabled()
+
+    def test_a_stale_failure_at_page_open_shows_once(self, page, hd):
+        hd.show(hs.SCENARIOS["power_failed"])
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("The dial did not shut down")
+        page.locator(SHUT_DOWN, has_text="OK").click()
+        expect(modal_card(page)).to_be_hidden()
+        page.wait_for_timeout(300)
+        expect(modal_card(page)).to_be_hidden()
+
+    @pytest.mark.parametrize("size", SIZES, ids=size_id)
+    def test_the_failed_card_fits_the_screen(self, page, hd_mock, size):
+        hd = Driver("mock", hd_mock)
+        hd.show(hs.SCENARIOS["power_failed"])
+        open_page(page, hd, size)
+        box = page.locator("#card").bounding_box()
+        assert box["x"] >= 0 and box["y"] >= 0
+        assert box["x"] + box["width"] <= size[0] and box["y"] + box["height"] <= size[1]
+        assert page.locator(SHUT_DOWN).first.bounding_box()["height"] >= 44
+        hd.show(hs.SCENARIOS["playing_artwork"])    # the mock outlives this test
+        hd.cleanup()
 
     @pytest.mark.parametrize("size", SIZES, ids=size_id)
     def test_the_card_fits_the_screen(self, page, hd_mock, size):

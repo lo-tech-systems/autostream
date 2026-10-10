@@ -387,6 +387,11 @@ def _recovery_block(recovery) -> dict:
     return {"active": bool(active), "confirmed": bool(confirmed)}
 
 
+def _power_block(snapshot) -> dict:
+    held = snapshot.power
+    return {"state": held.state, "changed_at": _round(held.changed_at, 3)}
+
+
 def _capped(value):
     """*value* with every string cut to STRING_MAX characters."""
     if isinstance(value, str):
@@ -449,6 +454,7 @@ def build_state(
         "update": _update_block(snapshot.update),
         "panel": _panel_block(panel, settings),
         "recovery": _recovery_block(recovery),
+        "power": _power_block(snapshot),
     }
     return _capped(body)
 

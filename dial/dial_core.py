@@ -61,7 +61,7 @@ from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
-    NowPlaying, OutputsState, PIN_RE, TickContext, TransportRequest, WarningState, _roster_entry,
+    NowPlaying, OutputsState, PIN_RE, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, reporting_for, resolve_focus,
     started_refused, validate_appliance_warnings, visible_targets, walk_order,
@@ -158,6 +158,7 @@ class _CoreState:
     update: object | None
     transport: object | None
     outputs_request: object | None   # the latest output request, as `transport` is the latest replay one
+    power: object                    # a PowerState
     volume_readout: tuple
     dial: DialInfo
     dots_active: bool
@@ -287,6 +288,7 @@ def _initial_state(dial_id: str) -> _CoreState:
         update=None,
         transport=None,
         outputs_request=None,
+        power=POWER_IDLE,
         volume_readout=(None, None),
         dial=DialInfo(
             name="", version="", uuid=dial_id, ip="", port=0, inputs=(),
@@ -339,7 +341,7 @@ class DialCore:
         update_watcher: UpdateWatcher | None = None,
         update_seen_path: str = UPDATE_SEEN_PATH,
         reboot: Callable[[], bool] | None = None,
-        shutdown: Callable[[], bool] | None = None,
+        shutdown: Callable[[Callable[[bool], None]], bool] | None = None,
         io: PollIO | None = None,
     ) -> None:
         self._dial_id = dial_id
@@ -1426,13 +1428,39 @@ class DialCore:
 
     def request_dial_shutdown(self) -> bool:
         """Ask for a graceful power-off of the dial's own system (one
-        request at a time where the request is made). True when a request
-        went out."""
+        request at a time). True when a request went out; the outcome of one
+        that did not happen is folded into `power` by `_on_shutdown_outcome`."""
+        if self._state.power.state == "requested":
+            return False
+        early: list = []    # an outcome that reached us before the request was published
         try:
-            return bool(self._shutdown())
+            accepted = bool(self._shutdown(lambda ok: self._on_shutdown_outcome(ok, early)))
         except Exception:
             logging.debug("dial core: shutdown request raised", exc_info=True)
             return False
+        if not accepted:
+            return False
+
+        def mutate(state: _CoreState) -> None:
+            state.power = PowerState("failed" if early else "requested", self._clock())
+        self._publish(mutate)
+        return True
+
+    def _on_shutdown_outcome(self, ok: bool, early: "list | None" = None) -> None:
+        """Fold the network thread's report of a power-off request. A success
+        needs no state (the power goes); a failure ends a request in hand.
+        One that arrives before the request was published is left in *early*
+        for the publish to read, under the same lock."""
+        if ok:
+            return
+
+        def mutate(state: _CoreState) -> "bool | None":
+            if state.power.state != "requested":
+                if early is not None:
+                    early.append(False)
+                return False
+            state.power = PowerState("failed", self._clock())
+        self._changed(mutate)
 
     def flush_warnings(self) -> None:
         """Write any snooze changed since the last write. File I/O: call
