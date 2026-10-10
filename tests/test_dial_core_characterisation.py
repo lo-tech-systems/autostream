@@ -1,13 +1,16 @@
 """Characterisation tests for the dial display's poll ordering and focus
-handling, written against DialDisplay as it stands so the same behaviour can
-be re-pointed at a different owner later.
+handling, timing windows, warnings and artwork, written against DialDisplay as
+it stands so the same behaviour can be re-pointed at a different owner later.
 
 Covers: a mute observation sent before a press never reverting the press,
 every walked target's mute being observed, the selected service being set
 before the artwork fetch, the accepted-replay window (no title or artist, the
 grace boundary, the pending-focus boundary), no playing frame after a replay
 stops, a refused first check never waking or painting, the sticky binding
-beneath manual focus, and the screens a focus clear closes.
+beneath manual focus, the screens a focus clear closes, a refused playing
+appliance being re-probed once per backoff, artwork failure logging and the
+artwork URL staying out of status and logs, the outputs refresh and EQ
+optimistic-window boundaries, and a persisted snooze surviving a restart.
 
 Every clock-driven test patches time.monotonic everywhere it is read.
 """
@@ -15,6 +18,8 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import json
+import logging
 import queue
 from unittest.mock import MagicMock, patch
 
@@ -33,10 +38,13 @@ from dial_test_support import (
     make_display,
 )
 
+import dial_auth
 import dial_display as dd
 import dial_repeat_store as drs
 import dial_volume as dv
 from dial_display import PLAYING_ARTIST_TEXT, SCREEN_POLICIES
+from dial_touch_layout import TouchZone
+from dial_warnings import WarningManager, WarningStore
 
 # Module-level names that read the clock. dial_display and dial_volume both
 # reach the one time module, so patching either patches both, but each is
@@ -517,3 +525,243 @@ class TestFocusClearClosesPolicyScreens:
             assert display._screen == name
             if policy.state_attr is not None:
                 assert getattr(display, policy.state_attr) is sentinel
+
+
+# ---------------------------------------------------------------------------
+# A refused appliance that keeps playing is re-probed once per backoff
+# ---------------------------------------------------------------------------
+
+class TestRefusedPlayingReprobe:
+    def test_refused_playing_appliance_is_probed_once_per_backoff(self):
+        """The appliance has been refused and keeps advertising playback. It
+        is never fetched by the walk; only the reconcile pass re-checks it,
+        and only once its backoff has run out. The reconcile pass runs every
+        RECONCILE_INTERVAL_SECONDS, so with the backoff starting at 30 s and
+        doubling per refusal the re-checks land at 0, 60, 120, 240 and 480 s
+        rather than on a fixed cadence."""
+        t = _target(name="Hall", service_name="Hall", appliance_id="9" * 20,
+                    auth="unauthorized", dial_status=True)
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        clock = _FakeClock(1000.0)
+        start = clock.t
+        probed_at: list[float] = []
+
+        def fake_enrich(targets, dial_id):
+            probed_at.extend([clock.t - start] * len(targets))
+            return [
+                {"name": x.service_name, "status_error": "unauthorized",
+                 "appliance_id": x.appliance_id}
+                for x in targets
+            ]
+
+        with _patch_monotonic(clock), \
+                patch("dial_display.fetch_target_status") as walk_fetch, \
+                patch("dial_display.enrich_targets", side_effect=fake_enrich):
+            for _ in range(61):         # 10 s ticks across 600 s
+                display._poll_once()
+                clock.t += 10.0
+        walk_fetch.assert_not_called()
+        assert probed_at == [0.0, 60.0, 120.0, 240.0, 480.0]
+        assert display._reporting_appliance_id is None
+        assert dial_auth.auth_map.state(t.appliance_id) == dial_auth.AUTH_UNAUTHORIZED
+
+
+# ---------------------------------------------------------------------------
+# Artwork failure logging and the URL staying out of status and logs
+# ---------------------------------------------------------------------------
+
+_SECRET_URL = "https://provider.example/art-token-7731/cover.jpg"
+
+
+def _artwork_display(url=_SECRET_URL):
+    t = _target()
+    display, fb, gt = make_display(targets=[t])
+    display.enable()
+    result = _status_result(track_id=_track_id(artwork_url=url))
+    return display, result
+
+
+class TestArtworkLogging:
+    def test_artwork_failures_log_first_and_tenth(self, caplog):
+        display, result = _artwork_display()
+        with patch("dial_display.fetch_target_status", return_value=result), \
+                patch("dial_display._fetch_artwork", return_value=(None, "timeout")) as fetch, \
+                caplog.at_level(logging.WARNING):
+            for _ in range(11):
+                display._poll_once()
+        assert fetch.call_count == 11           # every poll retries
+        records = [r for r in caplog.records if "artwork fetch failed" in r.getMessage()]
+        assert len(records) == 2
+        assert display.get_status()["showing"] == "logo"
+        assert display.get_status()["last_error"] == "artwork_fetch_failed"
+
+    def test_artwork_decode_failures_log_first_and_tenth(self, caplog):
+        display, result = _artwork_display()
+        with patch("dial_display.fetch_target_status", return_value=result), \
+                patch("dial_display._fetch_artwork", return_value=(b"bad", "")), \
+                patch("dial_display.decode_artwork", return_value=None), \
+                caplog.at_level(logging.WARNING):
+            for _ in range(11):
+                display._poll_once()
+        records = [r for r in caplog.records if "artwork decode failed" in r.getMessage()]
+        assert len(records) == 2
+
+    def test_artwork_url_never_stored_or_logged(self, caplog):
+        """Pins current behaviour: status and every log record carry only the
+        short URL key. The display itself does keep the URL, in
+        _source_artwork_url (the cache-reuse key), and nowhere else."""
+        display, result = _artwork_display()
+        fake_image = Image.new("RGB", (128, 160))
+        with patch("dial_display.fetch_target_status", return_value=result), \
+                caplog.at_level(logging.DEBUG):
+            with patch("dial_display._fetch_artwork", return_value=(None, "timeout")):
+                for _ in range(3):
+                    display._poll_once()
+            with patch("dial_display._fetch_artwork", return_value=(b"jpeg", "")), \
+                    patch("dial_display.decode_artwork", return_value=fake_image), \
+                    patch("dial_display_compositor.transform_artwork_for_panel",
+                          return_value=fake_image):
+                display._poll_once()
+        assert display.get_status()["showing"] == "artwork"
+        assert caplog.records
+        for record in caplog.records:
+            assert "art-token-7731" not in record.getMessage()
+            assert all("art-token-7731" not in str(a) for a in (record.args or ()))
+        assert "art-token-7731" not in json.dumps(display.get_status())
+        holders = [
+            k for k, v in vars(display).items()
+            if isinstance(v, str) and "art-token-7731" in v
+        ]
+        assert holders == ["_source_artwork_url"]
+
+
+# ---------------------------------------------------------------------------
+# Timing windows: the outputs refresh tick and the EQ optimistic override
+# ---------------------------------------------------------------------------
+
+class TestOutputsRefreshBoundary:
+    def _opened(self, screen="outputs"):
+        display, fb, gt = make_display(targets=[])
+        display._reporting_appliance_id = AID
+        display._last_roster = [_roster_entry(appliance_id=AID, dial_outputs=True)]
+        assert display._open_outputs_locked() is True
+        display._screen = screen
+        return display
+
+    def test_outputs_refresh_tick_boundary(self):
+        display = self._opened()
+        clock = _FakeClock(1000.0)
+        with _patch_monotonic(clock), patch("dial_display.enqueue_fetch") as enqueue:
+            display._tick_outputs_refresh()
+            assert enqueue.call_count == 1          # the first tick is due at once
+            clock.t = 1001.99
+            display._tick_outputs_refresh()
+            assert enqueue.call_count == 1
+            clock.t = 1002.01
+            display._tick_outputs_refresh()
+            assert enqueue.call_count == 2
+            clock.t = 1003.99
+            display._tick_outputs_refresh()
+            assert enqueue.call_count == 2          # the window restarts at the fetch
+        assert enqueue.call_args[0][0].appliance_id == AID
+
+    def test_outputs_refresh_runs_for_the_detail_page_and_not_for_main(self):
+        clock = _FakeClock(1000.0)
+        with _patch_monotonic(clock), patch("dial_display.enqueue_fetch") as enqueue:
+            self._opened(screen="output")._tick_outputs_refresh()
+            assert enqueue.call_count == 1
+            self._opened(screen="main")._tick_outputs_refresh()
+            assert enqueue.call_count == 1
+
+
+def _eq_display():
+    display, fb, gt = make_display(targets=[])
+    display._reporting_appliance_id = AID
+    display._last_roster = [_roster_entry(appliance_id=AID, dial_eq=True)]
+    display._update_eq_available()
+    return display
+
+
+class TestEqOptimisticWindow:
+    def test_eq_optimistic_window_boundary(self):
+        display = _eq_display()
+        clock = _FakeClock(1000.0)
+        fetched = {"ok": True, "bass_db": 0, "treble_db": 0}
+        with _patch_monotonic(clock), patch("dial_display._enqueue_eq_set"):
+            assert display._open_eq_locked() is True
+            display.eq_step("bass", +2)
+            clock.t = 1001.99
+            assert display._shown_eq(display._eq, "bass") == 2
+            # A fetch that lands inside the window leaves the override in place.
+            display.on_eq_result("fetch", AID, 200, fetched, {})
+            assert display._eq_optimistic is not None
+            assert display._shown_eq(display._eq, "bass") == 2
+            clock.t = 1002.01
+            assert display._shown_eq(display._eq, "bass") == 0
+            # One that lands after it clears the override.
+            display.on_eq_result("fetch", AID, 200, fetched, {})
+        assert display._eq_optimistic is None
+
+    def test_eq_step_preserves_the_other_controls_shown_value(self):
+        display = _eq_display()
+        clock = _FakeClock(1000.0)
+        with _patch_monotonic(clock), patch("dial_display._enqueue_eq_set"):
+            display._open_eq_locked()
+            display.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": 1, "treble_db": -3}, {})
+            display.eq_step("bass", +9)
+            assert display._eq_optimistic == (6, -3, 1002.0)   # clamped to the limit
+            assert display._shown_eq(display._eq, "treble") == -3
+
+
+# ---------------------------------------------------------------------------
+# A persisted snooze survives a restart through the real warning store
+# ---------------------------------------------------------------------------
+
+class TestPersistedSnoozeRestart:
+    def _display(self, path, wall):
+        manager = WarningManager(dd.WARNING_DESCRIPTORS, WarningStore(path), clock=wall)
+        display, fb, gt = make_display(targets=[], warnings=manager)
+        return display, manager
+
+    @pytest.mark.parametrize("percent, snooze_s", [
+        (50, dd.SDHEALTH_SNOOZE_S),
+        (1, dd.SDHEALTH_CRITICAL_SNOOZE_S),
+    ])
+    def test_persisted_snooze_survives_a_restart(self, tmp_path, percent, snooze_s):
+        path = str(tmp_path / "warnings.json")
+        wall = _FakeClock(1_000_000.0)
+        first, manager = self._display(path, wall)
+        first._warning_active("sdhealth", percent)
+        first.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
+        assert manager.is_snoozed("sdhealth") is True
+        manager.flush()
+        with open(path, encoding="utf-8") as f:
+            assert "sdhealth" in json.load(f)
+
+        # A restart: a fresh manager over the same file, the condition still holding.
+        wall.t += 3600.0
+        second, manager2 = self._display(path, wall)
+        second._warning_active("sdhealth", percent)
+        assert manager2.is_snoozed("sdhealth") is True
+        assert manager2.due() is None
+
+        # Past the snooze it is due again.
+        wall.t += snooze_s
+        third, manager3 = self._display(path, wall)
+        third._warning_active("sdhealth", percent)
+        assert manager3.is_snoozed("sdhealth") is False
+        assert manager3.due().id == "sdhealth"
+
+    def test_a_cleared_source_forgets_the_persisted_snooze(self, tmp_path):
+        path = str(tmp_path / "warnings.json")
+        wall = _FakeClock(1_000_000.0)
+        first, manager = self._display(path, wall)
+        first._warning_active("sdhealth", 50)
+        first.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
+        manager.flush()
+        first._warning_cleared("sdhealth")
+        manager.flush()
+        second, manager2 = self._display(path, wall)
+        second._warning_active("sdhealth", 50)
+        assert manager2.is_snoozed("sdhealth") is False
