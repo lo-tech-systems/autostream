@@ -843,7 +843,7 @@ values from this endpoint.
 | `layout.physical_width`, `layout.physical_height` | int | The configured profile's panel size - the size the composed frame is resampled to before it is sent |
 | `layout.resampled` | bool | `true` when the logical size differs from the physical size, i.e. the frame is scaled to the panel before it is sent |
 | `layout.size_chosen` | bool | `true` when `screen.layout_size` is set, meaning the automatic small-screen fallback (see `layout.touch_short`) does not apply |
-| `layout.content_tier` | string | The chrome density the logical size resolves to: `"base"`, `"rich"`, or `"large"`. Informational - clients should not assume this set is closed |
+| `layout.content_tier` | string | The chrome density the logical size resolves to: `"compact"` (physically small glass - a 2x2 grid of controls, no name or readout), `"base"`, `"rich"`, or `"large"`. Informational - clients should not assume this set is closed |
 | `layout.touch_short` | bool | `true` when the quarter-height control band on this glass works out below the comfortable-touch floor (a fixed 6 mm), so on-screen controls are shorter than a fingertip |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
@@ -914,7 +914,7 @@ and the content tier and touch-target assessment for that combination. It is inf
 and computed from the **persisted** configuration, so it is meaningful even before a panel
 is fitted or open - never from the open backend; compare `screen.screen_type` with
 `runtime.screen_type` for what is actually open. Its presence indicates the dial publishes
-this report; a client never sends any of it back. `layout.content_tier` names one of three
+this report; a client never sends any of it back. `layout.content_tier` names one of four
 tiers today, but clients should not assume the set is closed. `layout.touch_short` is an
 assessment against a fixed 6 mm control-band floor, and `layout.size_chosen` records
 whether a deliberate layout-size choice overrides the automatic fallback to the smallest

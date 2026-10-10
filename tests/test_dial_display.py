@@ -6097,3 +6097,279 @@ class TestScreenPolicyTable:
         # same as main -- mute is no longer reachable from this screen (the
         # physical button and DOTS-back-to-main still mute from anywhere).
         assert SCREEN_POLICIES["repeat"].surface == ("repeat", True, True, True)
+
+    def test_only_repeat_has_a_replay_surface(self):
+        with_replay = {name for name, policy in SCREEN_POLICIES.items() if policy.replay_surface is not None}
+        assert with_replay == {"repeat"}
+        assert SCREEN_POLICIES["repeat"].replay_surface == ("repeat_replay", True, True, False)
+
+
+# ---------------------------------------------------------------------------
+# The compact content tier, wired through the manager: held-always,
+# touch_surface()'s "held"/"repeat"/"repeat_replay" reporting, wrap paging,
+# _display_list_locked's base passthrough, picker_pick and the time-tap-back
+# close. Uses the shipped 1.3in 240x240 profile, whose default diagonal
+# already resolves compact (see dial_touch_layout.metrics_for) — a custom
+# FakeBackend matches its physical pixel size, following the same pattern
+# TestListPagingMatchesPaintedRows uses for the rich tier.
+# ---------------------------------------------------------------------------
+
+def _make_compact_display(targets=None, **overrides):
+    fb = FakeBackend()
+    fb.width, fb.height = 240, 240
+    overrides.setdefault("screen_type", "st7789_240x240")
+    overrides.setdefault("backend", fb)
+    display, fb, gt = _make_display(targets=targets or [], **overrides)
+    return display, fb, gt
+
+
+class TestCompactPersistentOverlayAndSurface:
+    def test_persistent_overlay_shown_true_without_always_show_controls(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        with display._lock:
+            assert display._metrics_locked().content_tier == "compact"
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is True
+
+    def test_touch_surface_reports_held_without_always_show_controls(self):
+        t = _target()
+        display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.touch_surface()[0] == "held"
+
+    def test_still_false_when_nothing_is_playing(self):
+        # Compact does not hold an overlay over bare logo — same guard as
+        # every other tier (self._now_playing is not None).
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        display._poll_once()
+        assert display.persistent_overlay_shown() is False
+
+
+class TestCompactRepeatSurfaceFlip:
+    def _opened(self, aid):
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_compact_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        return display
+
+    def test_reports_repeat_while_the_enable_layout_is_shown(self):
+        display = self._opened("1" * 20)
+        assert display._screen == "repeat"
+        assert display.touch_surface()[0] == "repeat"
+
+    def test_flips_to_repeat_replay_once_a_replaying_view_is_painted(self):
+        import dial_repeat_store as drs
+        aid = "2" * 20
+        display = self._opened(aid)
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.touch_surface()[0] == "repeat_replay"
+
+    def test_hold_also_reports_repeat_replay(self):
+        # "hold" builds the same "replaying" RepeatViewState.layout as a
+        # running replay (see _build_repeat_view_locked) -- the compact
+        # surface follows the layout, not the daemon state name.
+        import dial_repeat_store as drs
+        aid = "3" * 20
+        display = self._opened(aid)
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="hold"), time.monotonic()))
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.touch_surface()[0] == "repeat_replay"
+
+    def test_back_to_repeat_once_the_enable_layout_is_repainted(self):
+        import dial_repeat_store as drs
+        aid = "4" * 20
+        display = self._opened(aid)
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.touch_surface()[0] == "repeat_replay"
+
+        drs.repeat_store.update(aid, drs.parse_repeat_object(_repeat_obj(state="idle"), time.monotonic()))
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.touch_surface()[0] == "repeat"
+
+    def test_never_reports_repeat_replay_off_compact(self):
+        import dial_repeat_store as drs
+        aid = "5" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])  # base tier, 160x128
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.touch_surface()[0] == "repeat"
+
+
+class TestCompactTimeTapBack:
+    def test_a_dots_zone_tap_while_the_repeat_screen_is_open_closes_to_main(self):
+        aid = "6" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_compact_display(targets=[t])
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+
+        # dial_main.py's on_zone_tap routes every DOTS tap to this same
+        # entry point regardless of which screen/layout drew the cell the
+        # finger landed on -- the compact replaying layout's own "time"
+        # strip is drawn there, but the dispatch is identical.
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+        assert display.consume_repeat_close_reveal() is True
+
+
+class TestCompactWrapPaging:
+    def _opened_selector(self, count):
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                     auth="authorized", playing_since=float(i))
+            for i in range(count)
+        ]
+        display, fb, gt = _make_compact_display(targets=targets)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, targets
+
+    def test_rows_per_page_is_two(self):
+        display, targets = self._opened_selector(count=3)
+        with display._lock:
+            assert display._metrics_locked().rows_per_page == 2
+
+    def test_advancing_past_the_last_page_wraps_to_zero(self):
+        display, targets = self._opened_selector(count=3)  # pages: [T0,T1], [T2]
+        assert display._selector.page == 0
+        display.selector_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1
+        display.selector_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 0
+
+    def test_carried_paging_still_clamps_after_a_rebuild(self):
+        # _carried_paging_locked() (a rebuild landing a stale page back into
+        # range) keeps clamping even on compact -- only the touch-thread
+        # advance itself wraps.
+        display, targets = self._opened_selector(count=3)
+        display.selector_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1
+        display._refresh_selector_rows([], None)
+        assert display._selector.page == 0
+
+    def test_off_compact_the_same_advance_clamps_instead(self):
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                     auth="authorized", playing_since=float(i))
+            for i in range(5)
+        ]
+        display, fb, gt = _make_display(targets=targets)  # base tier, rows_per_page == 3
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        display.selector_page(+5)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1  # clamped at the last page, not wrapped
+
+
+class TestCompactDisplayListLockedPassesBase:
+    def test_passes_the_current_base_image_through(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        assert display._current_base_image is not None
+        with patch.object(
+            display._compositor, "compose_list", wraps=display._compositor.compose_list,
+        ) as spy:
+            with display._lock:
+                display._screen = "picker"
+                display._display_list_locked()
+        assert spy.call_args.kwargs["base"] is display._current_base_image
+
+    def test_base_tier_still_gets_the_same_argument_but_ignores_it(self):
+        # The argument is now passed unconditionally (see
+        # _display_list_locked's own docstring); off compact it is simply
+        # never read, so the rendered frame is unaffected -- proven by the
+        # full pre-existing test suite passing unchanged.
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch.object(
+            display._compositor, "compose_list", wraps=display._compositor.compose_list,
+        ) as spy:
+            with display._lock:
+                display._screen = "picker"
+                display._display_list_locked()
+        assert spy.call_args.kwargs["base"] is display._current_base_image
+
+
+class TestCompactPickerPick:
+    def test_pick_index_one_starts_the_second_rows_replay(self):
+        import dial_repeat_store as drs
+        from dial_mdns import RosterEntry
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        rows = [
+            RosterEntry(
+                appliance_id="a" * 20, service_name="Kitchen", name="Kitchen",
+                ip="10.0.0.9", port=8080, playing=False, repeat_capable=True, auth="authorized",
+            ),
+            RosterEntry(
+                appliance_id="b" * 20, service_name="Lounge", name="Lounge",
+                ip="10.0.0.10", port=8081, playing=False, repeat_capable=True, auth="authorized",
+            ),
+        ]
+        now = time.monotonic()
+        drs.repeat_store.update("a" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=12.0), now))
+        drs.repeat_store.update("b" * 20, drs.parse_repeat_object(_repeat_obj(state="hold", recording_seconds=34.0), now))
+        display._refresh_picker_rows(rows, now)
+        display.open_picker()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._metrics_locked().rows_per_page == 2  # both rows fit on page 0
+
+        with patch("dial_display.enqueue_transport") as mock_transport:
+            display.picker_pick(1)
+        target, action, position = mock_transport.call_args[0]
+        assert target.appliance_id == "b" * 20
+        assert action == "seek"
+        assert position == 0.0
+        assert display.manual_focus_id() == "b" * 20

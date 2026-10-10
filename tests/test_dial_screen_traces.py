@@ -196,9 +196,12 @@ def _aid(tag: str) -> str:
     return (tag + "0" * 20)[:20]
 
 
-def _make_display(targets, get_roster) -> tuple[DialDisplay, FakeBackend, MagicMock]:
-    cfg = DialDisplayConfig(fitted=True)
-    fb = FakeBackend()
+def _make_display(targets, get_roster, cfg=None, backend=None) -> tuple[DialDisplay, FakeBackend, MagicMock]:
+    """*cfg*/*backend* let a scenario opt into a non-default profile/panel
+    size (e.g. the compact tier's own 240x240 glass) — every existing call
+    site leaves both None and gets exactly today's base-tier fixture."""
+    cfg = cfg if cfg is not None else DialDisplayConfig(fitted=True)
+    fb = backend if backend is not None else FakeBackend()
     gt = MagicMock(return_value=list(targets))
     display = DialDisplay(
         config=cfg,
@@ -218,11 +221,11 @@ def _make_display(targets, get_roster) -> tuple[DialDisplay, FakeBackend, MagicM
 # ---------------------------------------------------------------------------
 
 class _Ctx:
-    def __init__(self, targets=()) -> None:
+    def __init__(self, targets=(), cfg=None, backend=None) -> None:
         self.clock = _FakeClock(start=1000.0)
         self.status_by_id: dict[str, dict] = {}
         self.roster_override: list | None = None
-        self.display, self.fb, self.gt = _make_display(targets, self._get_roster)
+        self.display, self.fb, self.gt = _make_display(targets, self._get_roster, cfg=cfg, backend=backend)
         self.frame_offset = 0
 
     def _get_roster(self) -> list:
@@ -399,14 +402,19 @@ def _snapshot(ctx: _Ctx) -> dict:
 _FAKE_ARTWORK_IMAGE = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
 
 
-def _run_scenario(steps: list[tuple]) -> list[dict]:
-    ctx = _Ctx()
+def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:
+    ctx = _Ctx(cfg=cfg, backend=backend)
+    # The fake "transform" must still land on the active logical size (see
+    # _FAKE_ARTWORK_IMAGE's own comment) — the shared module-level image for
+    # every existing (backend=None) scenario, a freshly sized one for a
+    # scenario that opted into a non-default panel (e.g. the compact tier).
+    artwork_image = _FAKE_ARTWORK_IMAGE if backend is None else Image.new("RGB", (backend.width, backend.height))
     with patch("dial_display.time.monotonic", ctx.clock), \
          patch("dial_display.fetch_target_status", side_effect=ctx.fake_fetch), \
          patch("dial_display.enrich_targets", side_effect=ctx.fake_enrich), \
          patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
-         patch("dial_display.decode_artwork", return_value=_FAKE_ARTWORK_IMAGE), \
-         patch("dial_display_compositor.transform_artwork_for_panel", return_value=_FAKE_ARTWORK_IMAGE):
+         patch("dial_display.decode_artwork", return_value=artwork_image), \
+         patch("dial_display_compositor.transform_artwork_for_panel", return_value=artwork_image):
         ctx.display.enable()
         ctx.frame_offset = len(ctx.fb.displayed)
         trace = []
@@ -1253,6 +1261,89 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
 
 
 # ---------------------------------------------------------------------------
+# Compact-tier scenarios: the 1.3in 240x240 profile's default diagonal
+# already resolves the compact content tier (see dial_touch_layout.
+# metrics_for) — each scenario below carries its own (cfg, backend) pair for
+# _run_scenario, since every scenario above shares the module's default
+# 128x160 base-tier fixture.
+# ---------------------------------------------------------------------------
+
+def _compact_display_args() -> tuple[DialDisplayConfig, "FakeBackend"]:
+    fb = FakeBackend()
+    fb.width, fb.height = 240, 240
+    cfg = DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+    return cfg, fb
+
+
+def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
+    scenarios: list[tuple[str, list[tuple], dict]] = []
+
+    # Playing 2x2 (held without always_show_controls) -> a mute press ->
+    # repeat (enable layout) -> repeat_replay (replaying layout, once the
+    # daemon starts one) -> a time-tap back to the playing 2x2.
+    aid = _aid("cp1")
+    t = _target("CP1", aid)
+    cfg, fb = _compact_display_args()
+    scenarios.append((
+        "compact_playing_mute_repeat_and_repeat_replay_time_tap_back",
+        [
+            ("targets", [t]),
+            ("status", {aid: _status_result(repeat=_repeat_obj(state="idle", available=True))}),
+            ("poll",),
+            ("repaint",),  # touch_surface == "held" -- compact holds with no always_show_controls
+            ("set_pressed", TouchZone.MUTE, None),
+            ("repaint",),
+            ("toggle_repeat",),
+            ("repaint",),  # touch_surface == "repeat" (compact enable layout)
+            ("status", {aid: _status_result(repeat=_repeat_obj(
+                state="replaying", available=True, armed=True,
+                replay={"active": True, "position_seconds": 2.0, "duration_seconds": 30.0},
+            ))}),
+            ("poll",),
+            ("repaint",),  # touch_surface == "repeat_replay" (compact replaying layout)
+            ("toggle_repeat",),  # the time strip's own DOTS zone: tap = back
+            ("repaint",),  # touch_surface == "held" again; reveal armed
+        ],
+        {"cfg": cfg, "backend": fb},
+    ))
+
+    # A picker with three held rows (rows_per_page == 2 on compact): each
+    # appliance is seen playing first (so the auth map has already confirmed
+    # it and a later reconcile pass never re-probes it away), then goes
+    # idle with a retained recording -- the idle screen's replay affordance
+    # and the picker's own rows both come from the same roster. Paging past
+    # the last page wraps back to page 0 instead of clamping there.
+    cfg2, fb2 = _compact_display_args()
+    aids = [_aid(f"cp2_{i}") for i in range(3)]
+    targets = [_target(f"CP2-{i}", aids[i], playing_since=float(i)) for i in range(3)]
+    statuses = {
+        a: _status_result(repeat=_repeat_obj(state="hold", available=True, recording_seconds=10.0 * (i + 1)))
+        for i, a in enumerate(aids)
+    }
+    rows = [_idle_row(f"CP2-{i}", aids[i], repeat_capable=True) for i in range(3)]
+    scenarios.append((
+        "compact_picker_more_wraps_past_the_last_page",
+        [
+            ("targets", targets),
+            ("status", statuses),
+            ("poll",),  # each appliance seen playing at least once
+            ("targets", []),
+            ("roster", rows),
+            ("poll",),  # all three now idle, held, on the roster
+            ("open_picker",),
+            ("repaint",),  # page 0: CP2-0, CP2-1
+            ("list_page", 1),
+            ("repaint",),  # page 1: CP2-2 alone
+            ("list_page", 1),
+            ("repaint",),  # wraps back to page 0, not clamped at page 1
+        ],
+        {"cfg": cfg2, "backend": fb2},
+    ))
+
+    return scenarios
+
+
+# ---------------------------------------------------------------------------
 # Seeded random walks — a few hundred steps each, exercising interactions
 # nobody scripted above.
 # ---------------------------------------------------------------------------
@@ -1374,6 +1465,8 @@ class TestScreenTraceCorpus:
         result = {}
         for name, steps in _scripted_scenarios() + _random_walk_scenarios():
             result[name] = _run_scenario(steps)
+        for name, steps, kwargs in _compact_scenarios():
+            result[name] = _run_scenario(steps, **kwargs)
 
         payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
 

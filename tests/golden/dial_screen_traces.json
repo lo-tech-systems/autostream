@@ -4247,6 +4247,1078 @@
       ]
     }
   ],
+  "compact_picker_more_wraps_past_the_last_page": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp2_0000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP2-0",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp2_0000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp2_0000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP2-0",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp2_0000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp2_0000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP2-0",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp2_0000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "main",
+      "screen_request": "picker",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "picker",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "picker",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 1,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "picker",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "picker",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 1000.0,
+        "page": 1,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "picker",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "picker",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 1,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 1000.0,
+        "page": 1,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "picker",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "picker",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": true,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": 3
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "picker",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 3
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "picker",
+        false,
+        false,
+        false
+      ]
+    }
+  ],
+  "compact_playing_mute_repeat_and_repeat_replay_time_tap_back": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": null,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": [
+        "mute",
+        null
+      ],
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": [
+        "mute",
+        null
+      ],
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": [
+        "mute",
+        null
+      ],
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "main",
+      "screen_request": "repeat",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": "cp100000000000000000",
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "repeat",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "repeat",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": "cp100000000000000000",
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "repeat",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "repeat",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": "cp100000000000000000",
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "repeat",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "repeat",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": "cp100000000000000000",
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "repeat",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "repeat_replay",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": "cp100000000000000000",
+      "repeat_close_reveal": true,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "repeat",
+      "screen_request": "main",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "repeat_replay",
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "cp100000000000000000",
+      "display_sleeping": false,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          240,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "manual_focus_id": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "CP1",
+        "title": ""
+      },
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": true,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "cp100000000000000000",
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "held",
+        true,
+        true,
+        false
+      ]
+    }
+  ],
   "device_switch_pushes_transition_frame": [
     {
       "bound_appliance_id": null,

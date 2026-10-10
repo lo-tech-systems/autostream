@@ -1654,19 +1654,23 @@ class TestLayoutReportHelper:
                 "resampled": True, "size_chosen": True,
                 "content_tier": "large", "touch_short": False,
             }),
+            # The 1.44in default diagonal at this pixel size is physically
+            # small enough (25.9mm short side) to resolve compact.
             ("st7735s_128x128", None, None, {
                 "logical_width": 128, "logical_height": 128,
                 "physical_width": 128, "physical_height": 128,
                 "resampled": False, "size_chosen": False,
-                "content_tier": "base", "touch_short": False,
+                "content_tier": "compact", "touch_short": False,
             }),
+            # The 1.3in default diagonal at this pixel size is physically
+            # small enough (23.4mm short side) to resolve compact, ahead of
+            # the older touch_short veto this glass would otherwise have
+            # hit (touch_short is still reported, informationally).
             ("st7789_240x240", None, None, {
                 "logical_width": 240, "logical_height": 240,
                 "physical_width": 240, "physical_height": 240,
                 "resampled": False, "size_chosen": False,
-                # Vetoed back to base: the quarter-height band on this glass
-                # is short of the touch floor, and no size was chosen.
-                "content_tier": "base", "touch_short": True,
+                "content_tier": "compact", "touch_short": True,
             }),
             ("st7789_320x240", None, None, {
                 "logical_width": 320, "logical_height": 240,
@@ -1698,22 +1702,22 @@ class TestLayoutReportHelper:
                 "resampled": True, "size_chosen": True,
                 "content_tier": "large", "touch_short": False,
             }),
-            # touch_short is True at 240x240's default size...
+            # touch_short is True at 240x240's default size, which is also
+            # compact...
             ("st7789_240x240", 1.3, None, {
                 "logical_width": 240, "logical_height": 240,
                 "physical_width": 240, "physical_height": 240,
                 "resampled": False, "size_chosen": False,
-                "content_tier": "base", "touch_short": True,
+                "content_tier": "compact", "touch_short": True,
             }),
             # ...and moves with the glass: the same 320x240 panel, set to a
-            # smaller physical size than its 2.8in default, also reports
-            # touch_short True (this is the case the setup-card warning
-            # exists for).
+            # smaller physical size than its 2.8in default, is now small
+            # enough (22.9mm short side) to resolve compact outright.
             ("st7789_320x240", 1.5, None, {
                 "logical_width": 320, "logical_height": 240,
                 "physical_width": 320, "physical_height": 240,
                 "resampled": False, "size_chosen": False,
-                "content_tier": "base", "touch_short": True,
+                "content_tier": "compact", "touch_short": True,
             }),
             # An unknown screen_type falls back to the default profile.
             ("no-such-profile", None, None, {

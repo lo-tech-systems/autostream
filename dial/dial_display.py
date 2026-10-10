@@ -79,7 +79,7 @@ from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
-from dial_touch_layout import LayoutMetrics, TouchZone, list_layout_for, metrics_for
+from dial_touch_layout import CONTENT_COMPACT, LayoutMetrics, TouchZone, list_layout_for, metrics_for
 from dial_volume import (
     forget_mute_states_except,
     observe_master_volume,
@@ -203,6 +203,12 @@ class ScreenPolicy:
     closes_on_focus_clear: bool       # a manual-focus clear pops it
     back_to: str                      # the screen a back/close request returns to
     bound_to_appliance: bool = False  # closed by the poll when its appliance stops being focused/reporting
+    # A second surface tuple this screen reports, in place of `surface`,
+    # while its own replaying-style layout is the one actually painted and
+    # the resolved content tier gives that layout its own geometry (the
+    # compact tier's repeat screen — see touch_surface() and
+    # self._repeat_layout_shown). None: this screen never has one.
+    replay_surface: tuple[str, bool, bool, bool] | None = None
 
 
 # Pillow renamed these resample enums in recent versions; fall back for
@@ -437,6 +443,16 @@ def _clamp_page(page: int, row_count: int, rows_per_page: int) -> int:
     """Clamp *page* into [0, last page] for *row_count* rows; 0 when empty."""
     max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
     return max(0, min(page, max_page))
+
+
+def _wrap_page(page: int, row_count: int, rows_per_page: int) -> int:
+    """Wrap *page* into [0, page_count) for *row_count* rows; 0 when empty
+    — the compact tier's own paging rule (see _apply_screen_requests_locked):
+    the picker's "more" advance loops back to page 0 after the last page
+    instead of clamping there, since compact has no previous-page control of
+    its own to get back with otherwise."""
+    pages = max(1, -(-row_count // rows_per_page)) if row_count else 1
+    return page % pages
 
 
 def _page_slice(rows: tuple, page: int, rows_per_page: int) -> tuple[int, tuple]:
@@ -780,6 +796,14 @@ class DialDisplay:
         # lock-free by the touch thread's repeat_toggle_tap()/repeat_start_
         # tap()/repeat_stop_tap() entries.
         self._repeat_screen: RepeatScreenState | None = None
+        # Plain str written by _display_repeat_locked from the RepeatViewState
+        # it just built ("enable" or "replaying") — read lock-free by
+        # touch_surface() (with at most one repaint's staleness, the same
+        # discipline _check_secondary_timeout's own lock-free reads
+        # document) to decide whether the compact tier's own repeat_replay
+        # surface applies. Never written or read by any other tier's own
+        # touch_surface() branch.
+        self._repeat_layout_shown: str = "enable"
         # The replay picker's own rows/paging — refreshed every poll tick
         # regardless of whether it is open, mirroring self._selector.
         self._picker: PickerState | None = None
@@ -1141,9 +1165,14 @@ class DialDisplay:
 
     def persistent_overlay_shown(self) -> bool:
         """True while the display is holding the controls overlay visible
-        on its own (always_show_controls on, a controllable appliance shown,
-        backend open, not asleep, and the MAIN screen is showing — never
-        true while the appliance selector is open). Plain attribute reads;
+        on its own (always_show_controls on OR the resolved content tier is
+        compact, a controllable appliance shown, backend open, not asleep,
+        and the MAIN screen is showing — never true while the appliance
+        selector is open). The compact tier's own screens have no reveal
+        step of their own regardless of the always_show_controls setting —
+        every cell on a compact screen is already a control, so a
+        reveal-then-arm rule would cost every action a second tap; see
+        _compact_tier(). Plain attribute reads;
         the touch thread polls this once per loop iteration (see dial_touch.
         TouchEventSource._poll_held_visible, the legacy fallback path) so a
         finger can never arm against controls that are not actually drawn —
@@ -1163,7 +1192,7 @@ class DialDisplay:
         always_show_controls — the bands are hidden either way.
         """
         return (
-            self._config.always_show_controls
+            (self._config.always_show_controls or self._compact_tier())
             and self._now_playing is not None
             and self._showing != "noop"
             and self._backend_open
@@ -1171,6 +1200,14 @@ class DialDisplay:
             and self._screen == "main"
             and not self._controls_hidden()
         )
+
+    def _compact_tier(self) -> bool:
+        """True while the resolved content tier is compact — the physically
+        tiny 2x2 screens, which are always held (no reveal-then-arm step:
+        every cell on them is already a control, so a first-tap-only-
+        reveals rule would cost every action a second tap). Plain-arithmetic
+        read, safe from any thread, same as _layout_metrics() itself."""
+        return self._layout_metrics().content_tier == CONTENT_COMPACT
 
     def hide_controls(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an ARTWORK
@@ -1230,10 +1267,26 @@ class DialDisplay:
         outputs zone (the repeat screen's own top-right readout) still
         gates on the live self._outputs_available, same as main; a row
         that carries False there is unaffected.
+
+        A policy row whose own ScreenPolicy.replay_surface is set reports
+        that second surface tuple instead, exactly while the compact tier's
+        own replaying layout is the one actually painted (self.
+        _repeat_layout_shown == "replaying") — the repeat screen's own
+        time/Restart/Stop cells sit on different rectangles than its enable
+        layout only on that tier (see dial_touch_layout.GEOMETRY_REPEAT_
+        REPLAY); every other tier paints one shared table for both states,
+        so this branch is never taken there.
         """
         policy = _policy(self._screen)
         if policy.surface is not None:
-            s = policy.surface
+            if (
+                policy.replay_surface is not None
+                and self._compact_tier()
+                and self._repeat_layout_shown == "replaying"
+            ):
+                s = policy.replay_surface
+            else:
+                s = policy.surface
             return (s[0], s[1], s[2], s[3] and self._outputs_available)
         if self._now_playing is None:
             return ("idle" if self._idle_affordance else "hidden", False, False, False)
@@ -1628,7 +1681,7 @@ class DialDisplay:
         that case.
         """
         held = (
-            self._config.always_show_controls and self._now_playing is not None
+            (self._config.always_show_controls or self._compact_tier()) and self._now_playing is not None
             and self._showing != "noop"
             and not self._display_sleeping
             and not self._controls_hidden()
@@ -2285,7 +2338,9 @@ class DialDisplay:
         if delta and policy.paged:
             active = getattr(self, policy.state_attr)
             if active is not None:
-                new_page = _clamp_page(active.page + delta, len(active.rows), self._rows_per_page())
+                rows_per_page = self._rows_per_page()
+                page_fn = _wrap_page if self._compact_tier() else _clamp_page
+                new_page = page_fn(active.page + delta, len(active.rows), rows_per_page)
                 if new_page != active.page:
                     setattr(self, policy.state_attr, dataclasses.replace(active, page=new_page))
 
@@ -2586,7 +2641,14 @@ class DialDisplay:
         appliance selector or the replay picker). Bypasses _display_locked()
         so self._current_base_image survives a list visit unchanged and the
         frame never picks up the main now-playing overlay. Caller holds
-        self._lock; the backend-open check is _repaint_current_locked's."""
+        self._lock; the backend-open check is _repaint_current_locked's.
+
+        Passes self._current_base_image through as compose_list()'s `base`
+        unconditionally — read only by the compact tier's own picker frame
+        (the current artwork/logo, dimmed behind it, same as every other
+        compact screen); every other tier ignores the argument entirely and
+        keeps its flat chassis background, so this is harmless off compact.
+        """
         metrics = self._metrics_locked()
         if self._screen == "picker":
             list_state = self._build_picker_list_state_locked(metrics.width, metrics.height, metrics=metrics)
@@ -2595,7 +2657,7 @@ class DialDisplay:
         else:
             list_state = self._build_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         self._push_frame_locked(lambda: self._compositor.compose_list(
-            metrics.width, metrics.height, list_state,
+            metrics.width, metrics.height, list_state, base=self._current_base_image,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
@@ -2683,9 +2745,14 @@ class DialDisplay:
         compose path and must never pick up the main now-playing overlay.
         Passes self._current_base_image through as compose_repeat()'s
         `base` — the replaying layout draws it (dimmed) behind the
-        position counter; the enable layout ignores it. Caller holds
-        self._lock."""
+        position counter; the enable layout ignores it (the compact tier's
+        own frame dims it either way — see the compositor's compact repeat
+        builder). Caller holds self._lock. Stamps self._repeat_layout_shown
+        from the freshly built view so touch_surface() can report the
+        compact tier's own replay_surface exactly while this layout is the
+        one actually on screen."""
         view = self._build_repeat_view_locked(self._repeat_screen, time.monotonic())
+        self._repeat_layout_shown = view.layout
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_repeat(
             metrics.width, metrics.height, view, base=self._current_base_image,
@@ -3574,6 +3641,10 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
         close_reveals_overlay=True, closes_on_focus_clear=True, back_to="main",
+        # The compact tier's own replaying layout: time/back where DOTS
+        # would be, Restart/Stop in place of the enable layout's own row —
+        # see GEOMETRY_REPEAT_REPLAY and touch_surface().
+        replay_surface=("repeat_replay", True, True, False),
     ),
     "outputs": ScreenPolicy(
         name="outputs", state_attr="_outputs", surface=("outputs", False, False, False),

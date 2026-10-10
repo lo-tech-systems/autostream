@@ -35,10 +35,12 @@ from dial_touch import (  # noqa: E402
     SURFACE_OUTPUTS,
     SURFACE_PICKER,
     SURFACE_REPEAT,
+    SURFACE_REPEAT_REPLAY,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
     TouchStateMachine,
+    _REPEAT_SURFACES,
     _REPEATING_ZONES,
     _SINGLE_SHOT_ZONES,
     _ZONE_TAP_ZONES,
@@ -47,7 +49,9 @@ from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E
 from dial_touch_layout import (  # noqa: E402
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
+    GEOMETRY_REPEAT_REPLAY,
     TouchZone,
+    compact_layout_for,
     hit_test,
     layout_for,
     list_layout_for,
@@ -1780,6 +1784,127 @@ class TestRepeatCloseRevealWiring:
         source._poll_surface()
         source._poll_surface()  # must not raise with no getter supplied
         assert sm.surface == SURFACE_HIDDEN
+
+
+# ---------------------------------------------------------------------------
+# SURFACE_REPEAT_REPLAY: the compact tier's own repeat-replaying surface —
+# GEOMETRY_REPEAT_REPLAY, held immediately like every other non-hidden
+# surface, and the repeat-close reveal rule treats it as one set together
+# with SURFACE_REPEAT.
+# ---------------------------------------------------------------------------
+
+_COMPACT_METRICS = metrics_for(240, 240, 0.0973)
+_COMPACT_LAYOUT = compact_layout_for(240, 240, metrics=_COMPACT_METRICS)
+
+
+class TestNewSurfaceMapsToGeometryRepeatReplay:
+    def test_maps_to_geometry_repeat_replay(self):
+        from dial_touch import _GEOMETRY_FOR_SURFACE
+
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_REPEAT_REPLAY] == GEOMETRY_REPEAT_REPLAY
+
+    def test_arms_immediately_like_every_other_held_surface(self):
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.0, dots_active=True)
+        assert sm.overlay_visible is True
+        assert sm.held_visible is True
+
+    def test_bl_arms_repeat_start(self):
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.0)
+        actions = sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.bl)), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.REPEAT_START
+
+    def test_br_arms_repeat_stop(self):
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.0)
+        actions = sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.br)), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.REPEAT_STOP
+
+    def test_top_row_time_tap_reports_dots_gated_by_dots_active(self):
+        # The time strip reuses the DOTS zone for "tap = back" — gated by
+        # dots_active exactly like the main/repeat surfaces' own DOTS cell.
+        sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
+        sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.0, dots_active=False)
+        assert sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.top_row)), now=0.1) == []
+        sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.2, dots_active=True)
+        actions = sm.on_filter_event(press_event(_rect_center(_COMPACT_LAYOUT.top_row)), now=0.3)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.DOTS
+
+
+class TestRepeatSurfacesFormOneSet:
+    def test_repeat_and_repeat_replay_are_both_members(self):
+        assert SURFACE_REPEAT in _REPEAT_SURFACES
+        assert SURFACE_REPEAT_REPLAY in _REPEAT_SURFACES
+
+    def test_repeat_to_repeat_replay_does_not_fire_the_close_reveal(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_REPEAT_REPLAY, True, True)])
+        reveal_calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=MagicMock(return_value=True),
+            on_reveal_overlay=lambda: reveal_calls.append(True),
+        )
+        source._poll_surface()  # -> SURFACE_REPEAT
+        source._poll_surface()  # -> SURFACE_REPEAT_REPLAY: still in the set, no reveal
+        assert reveal_calls == []
+
+    def test_repeat_replay_to_repeat_does_not_fire_the_close_reveal(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT_REPLAY, True, True), (SURFACE_REPEAT, True, True)])
+        reveal_calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=MagicMock(return_value=True),
+            on_reveal_overlay=lambda: reveal_calls.append(True),
+        )
+        source._poll_surface()
+        source._poll_surface()
+        assert reveal_calls == []
+
+    def test_repeat_replay_to_hidden_does_fire_the_close_reveal(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT_REPLAY, True, True), (SURFACE_HIDDEN, True, False)])
+        reveal_calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=lambda: True,
+            on_reveal_overlay=lambda: reveal_calls.append(True),
+        )
+        source._poll_surface()  # -> SURFACE_REPEAT_REPLAY
+        source._poll_surface()  # -> SURFACE_HIDDEN: leaves the set, reveals
+        assert len(reveal_calls) == 1
+        assert sm.overlay_visible is True
+
+    def test_repeat_replay_to_held_does_fire_the_close_reveal(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        values = iter([(SURFACE_REPEAT_REPLAY, True, True), (SURFACE_HELD, True, False)])
+        reveal_calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+            consume_repeat_close_reveal=lambda: True,
+            on_reveal_overlay=lambda: reveal_calls.append(True),
+        )
+        source._poll_surface()
+        source._poll_surface()
+        assert len(reveal_calls) == 1
 
 
 # ---------------------------------------------------------------------------

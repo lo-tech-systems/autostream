@@ -100,7 +100,11 @@ name_active, dots_active), or the 4-tuple (surface, name_active,
 dots_active, outputs_active) touch_surface() may return. Closing the repeat
 screen via a DOTS tap also reveals the main screen's volume overlay on
 return — see TouchStateMachine.force_overlay_visible() and
-TouchEventSource._poll_surface().
+TouchEventSource._poll_surface(). "repeat_replay" is a physically-tiny-glass
+variant of "repeat" (its own geometry, GEOMETRY_REPEAT_REPLAY, for the
+replaying layout's own time/Restart/Stop cells): held exactly like "repeat",
+and the two are treated as one set by the repeat-close reveal rule above, so
+a flip between them is never mistaken for a close.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -116,6 +120,7 @@ from dial_touch_layout import (
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
+    GEOMETRY_REPEAT_REPLAY,
     LayoutMetrics,
     TouchZone,
     hit_test,
@@ -186,6 +191,13 @@ SURFACE_PICKER = "picker"
 # exactly like SURFACE_SELECTOR/SURFACE_PICKER — see set_surface() below.
 SURFACE_OUTPUTS = "outputs"
 SURFACE_OUTPUT = "output"
+# The compact tier's own repeat-replaying surface — reported by the
+# display's touch_surface() in place of SURFACE_REPEAT exactly while that
+# tier's replaying layout (time/back, Restart/Stop) is the one actually
+# painted; every other tier never reports it (see ScreenPolicy.
+# replay_surface). Held like every other non-hidden surface — see
+# set_surface() below.
+SURFACE_REPEAT_REPLAY = "repeat_replay"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -197,10 +209,19 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_SELECTOR: GEOMETRY_LIST,
     SURFACE_PICKER: GEOMETRY_LIST,
     SURFACE_REPEAT: GEOMETRY_REPEAT,
+    SURFACE_REPEAT_REPLAY: GEOMETRY_REPEAT_REPLAY,
     SURFACE_IDLE: GEOMETRY_IDLE,
     SURFACE_OUTPUTS: GEOMETRY_LIST,
     SURFACE_OUTPUT: GEOMETRY_OUTPUT,
 }
+
+# The repeat screen's two surfaces, treated as one set by the repeat-close
+# reveal rule below: a flip between them (the compact tier's own enable <->
+# replaying transition) is not a close, so it must not fire the reveal —
+# only leaving the set entirely (to "hidden"/"held", a genuine DOTS-tap
+# close) does. Off the compact tier only SURFACE_REPEAT is ever reported, so
+# this set is a strict superset of the old exact-match check.
+_REPEAT_SURFACES = frozenset((SURFACE_REPEAT, SURFACE_REPEAT_REPLAY))
 
 
 @dataclass(frozen=True)
@@ -906,7 +927,7 @@ class TouchEventSource:
                 dots_active=bool(dots_active), outputs_active=bool(outputs_active),
             ))
             if (
-                previous_surface == SURFACE_REPEAT and surface != SURFACE_REPEAT
+                previous_surface in _REPEAT_SURFACES and surface not in _REPEAT_SURFACES
                 and self._consume_repeat_close_reveal is not None
                 and self._consume_repeat_close_reveal()
             ):
