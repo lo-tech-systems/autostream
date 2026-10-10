@@ -108,6 +108,9 @@ class ApplianceState:
     master_volume: int | None  # last good record's master_volume, else None
     muted: bool | None        # the observed mute flag, None = unknown
     repeat: RepeatRecord | None  # the repeat record at publish time
+    webui_scheme: str = "http"   # where this appliance's web UI is reached:
+    webui_host: str = ""         # its roster address, and the port it
+    webui_port: int = 0          # serves the web UI and the dial API on
 
 
 @dataclass(frozen=True)
@@ -212,6 +215,7 @@ class CoreSnapshot:
     transport: TransportRequest | None  # the latest replay/arm request and its outcome
     volume_readout: tuple[str | None, int | None]  # (service_name, shown_volume)
     dial: DialInfo                      # this dial: name, version, address, inputs present
+    dots_active: bool = False           # the page dots are tappable for the focused/reporting appliance
 
     def appliance(self, appliance_id: str | None) -> ApplianceState | None:
         if appliance_id is None:
@@ -223,6 +227,16 @@ class CoreSnapshot:
 
     def focused_id(self) -> str | None:
         return self.focus.manual_id or self.focus.reporting_id
+
+    def selector_rows(self) -> tuple:
+        """The appliance selector's rows for this snapshot."""
+        return selector_rows(self.appliances, self.focus.manual_id, self.focus.reporting_id)
+
+    def picker_rows(self) -> tuple:
+        """The replay picker's rows for this snapshot, from each appliance's
+        repeat record as of the last publish."""
+        records = {a.appliance_id: a.repeat for a in self.appliances}
+        return picker_rows(self.appliances, lambda appliance_id, now: records.get(appliance_id), 0.0)
 
 
 # ---- poll decisions ------------------------------------------------------
@@ -510,6 +524,55 @@ def picker_rows(roster: Iterable, repeat_lookup: Callable, now: float) -> tuple:
         if rec is not None and rec.state == "hold"
         and r.auth == AUTH_AUTHORIZED and r.repeat_capable
     )
+
+
+def webui_address(ip: str, port: int) -> tuple[str, str, int]:
+    """(scheme, host, port) of an appliance's web UI, from its roster
+    address. The appliance serves its web UI and the dial API on the one
+    advertised port, over plain HTTP."""
+    return "http", ip, port
+
+
+def appliance_states(roster: Iterable, repeats: dict | None = None) -> tuple:
+    """One ApplianceState per roster entry, in roster order. *repeats* maps
+    an appliance id to its repeat record. Entries are read defensively:
+    anything an entry does not carry takes its neutral value. Fields fed by
+    the status poll (error, volume, mute) are not known here and stay None."""
+    repeats = repeats or {}
+    out = []
+    for r in roster:
+        appliance_id = getattr(r, "appliance_id", "") or ""
+        service_name = getattr(r, "service_name", "") or ""
+        ip = getattr(r, "ip", "") or ""
+        port = getattr(r, "port", 0) or 0
+        dial_eq = bool(getattr(r, "dial_eq", False))
+        dial_outputs = bool(getattr(r, "dial_outputs", False))
+        scheme, host, web_port = webui_address(ip, port)
+        out.append(ApplianceState(
+            appliance_id=appliance_id,
+            service_name=service_name,
+            name=appliance_display_name(service_name) if isinstance(service_name, str) else "",
+            ip=ip,
+            port=port,
+            playing=bool(getattr(r, "playing", False)),
+            playing_since=0.0,
+            auth=getattr(r, "auth", ""),
+            dial_status=bool(getattr(r, "dial_status", False)),
+            dial_outputs=dial_outputs,
+            dial_eq=dial_eq,
+            repeat_capable=bool(getattr(r, "repeat_capable", False)),
+            dial_proto_version=getattr(r, "dial_proto_version", 0),
+            dial_eq_version=1 if dial_eq else 0,
+            dial_outputs_version=1 if dial_outputs else 0,
+            status_error=None,
+            master_volume=None,
+            muted=None,
+            repeat=repeats.get(appliance_id),
+            webui_scheme=scheme,
+            webui_host=host,
+            webui_port=web_port,
+        ))
+    return tuple(out)
 
 
 def idle_affordance(roster: Iterable, held_ids) -> bool:

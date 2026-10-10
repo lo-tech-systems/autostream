@@ -685,3 +685,38 @@ class TestAvailability:
         assert cs.dots_active(None, True) is True
         assert cs.dots_active(_rec(available=True), False) is True
         assert cs.dots_active(_rec(available=False), False) is False
+
+
+class TestApplianceStates:
+    def test_webui_address_is_plain_http_on_the_roster_address(self):
+        assert cs.webui_address("192.0.2.10", 80) == ("http", "192.0.2.10", 80)
+        assert cs.webui_address("192.0.2.11", 8080) == ("http", "192.0.2.11", 8080)
+
+    def test_one_state_per_roster_entry_in_roster_order(self):
+        roster = [_entry("Kitchen", AUTH_AUTHORIZED, playing=True), _entry("Lounge")]
+        states = cs.appliance_states(roster)
+        assert [s.service_name for s in states] == ["Kitchen", "Lounge"]
+        assert states[0].playing is True and states[1].playing is False
+        assert states[0].auth == AUTH_AUTHORIZED
+        assert (states[0].webui_scheme, states[0].webui_host, states[0].webui_port) == (
+            "http", "192.0.2.10", 80,
+        )
+
+    def test_repeat_records_are_attached_by_id(self):
+        roster = [_entry("Kitchen"), _entry("Lounge")]
+        rec = RepeatRecord(True, "hold", False, 30.0, 0.0, 0.0, 1.0)
+        states = cs.appliance_states(roster, {_id("Kitchen"): rec})
+        assert states[0].repeat is rec and states[1].repeat is None
+
+    def test_capability_versions_follow_the_flags(self):
+        states = cs.appliance_states([_entry("Kitchen", dial_eq=True, dial_outputs=True), _entry("Lounge")])
+        assert (states[0].dial_eq_version, states[0].dial_outputs_version) == (1, 1)
+        assert (states[1].dial_eq_version, states[1].dial_outputs_version) == (0, 0)
+
+    def test_state_appended_fields_have_defaults(self):
+        snap_fields = {f.name for f in dataclasses.fields(cs.CoreSnapshot)}
+        assert "dots_active" in snap_fields
+        applied = {f.name: f for f in dataclasses.fields(cs.ApplianceState)}
+        assert applied["webui_scheme"].default == "http"
+        assert applied["webui_host"].default == ""
+        assert applied["webui_port"].default == 0
