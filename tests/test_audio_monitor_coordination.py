@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -23,11 +24,19 @@ if _core not in sys.path:
 
 import autostream_core as core
 from autostream_core import AudioMonitor, MonitorClient
+from autostream_nowplaying import NowPlayingMetadata
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_retry_sleep():
+    """Live pushes retry with a pause between attempts; tests do not wait."""
+    with patch.object(core, "LIVE_PUSH_RETRY_GAP_SECONDS", 0.0):
+        yield
+
 
 def _make_monitor(**overrides) -> AudioMonitor:
     """Create an AudioMonitor with patched nowplaying dependencies."""
@@ -699,6 +708,7 @@ class TestUpdateLiveSilenceSeconds:
             result = core.update_live_silence_seconds(45)
         assert result is True
         assert mock_client.configure_input.call_count == 2
+        assert mock_client.configure_input.call_args.kwargs["input_type"] == "line"
 
     def test_returns_false_when_client_unavailable(self):
         mon = _make_monitor(input_index=0)
@@ -764,13 +774,62 @@ class TestUpdateLiveSilenceThresholdDbfs:
             result = core.update_live_silence_threshold_dbfs(0, -35.0)
         assert result is False
 
-    def test_returns_false_when_configure_input_fails(self):
+    def test_failed_push_is_retried_then_reported(self):
         _make_monitor(input_index=0)
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = False
         with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
             result = core.update_live_silence_threshold_dbfs(0, -35.0)
         assert result is False
+        assert mock_client.configure_input.call_count == 3
+
+    def test_push_failure_still_updates_monitor_threshold(self):
+        mon = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = False
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert mon.silence_threshold_dbfs == -35.0
+
+    def test_first_acknowledged_retry_stops_retrying(self):
+        _make_monitor(input_index=0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.side_effect = [False, True]
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert result is True
+        assert mock_client.configure_input.call_count == 2
+
+    def test_each_attempt_opens_a_fresh_connection(self):
+        mon = _make_monitor(input_index=0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = False
+        entered = []
+
+        @_contextmanager
+        def _counting(*args, **kwargs):
+            entered.append(1)
+            yield mock_client
+
+        with patch.object(core, "_connected_monitor", _counting):
+            assert core._push_input_config_with_retry(mon) is False
+        assert len(entered) == 3
+
+    def test_an_exception_counts_as_a_failed_attempt(self):
+        mon = _make_monitor(input_index=0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.side_effect = [RuntimeError("boom"), True]
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            assert core._push_input_config_with_retry(mon) is True
+        assert mock_client.configure_input.call_count == 2
+
+    def test_push_carries_the_monitor_type(self):
+        _make_monitor(input_index=0, input_type="cd")
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert mock_client.configure_input.call_args.kwargs["input_type"] == "cd"
 
     def test_updates_only_matching_monitor_threshold_on_success(self):
         mon0 = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
@@ -781,6 +840,143 @@ class TestUpdateLiveSilenceThresholdDbfs:
             core.update_live_silence_threshold_dbfs(0, -35.0)
         assert mon0.silence_threshold_dbfs == -35.0
         assert mon1.silence_threshold_dbfs == -50.0
+
+
+# ---------------------------------------------------------------------------
+# update_live_input_type
+# ---------------------------------------------------------------------------
+
+class TestUpdateLiveInputType:
+    def _acking_client(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        return mock_client
+
+    def test_returns_true_with_no_matching_monitor(self):
+        assert core.update_live_input_type(0, "cd", -60.0) is True
+
+    def test_pushes_type_and_threshold(self):
+        _make_monitor(input_index=0)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_input_type(0, "cd", -60.0)
+        assert result is True
+        args, kwargs = mock_client.configure_input.call_args
+        assert kwargs["input_type"] == "cd"
+        assert args[2] == -60.0
+
+    def test_updates_monitor_attributes(self):
+        mon = _make_monitor(input_index=0)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_input_type(0, "cd", -60.0)
+            assert mon.input_type == "cd"
+            assert mon.is_turntable is False
+            assert mon.silence_threshold_dbfs == -60.0
+            core.update_live_input_type(0, "turntable", -45.0)
+        assert mon.input_type == "turntable"
+        assert mon.is_turntable is True
+        assert mon.silence_threshold_dbfs == -45.0
+
+    def test_swaps_a_default_bundle_and_requests_republish(self):
+        mon = _make_monitor(input_index=0)
+        core.consume_nowplaying_republish()
+        mon._current_nowplaying = mon._default_nowplaying_metadata()
+        with patch.object(core, "_connected_monitor", _fake_connected(self._acking_client())):
+            core.update_live_input_type(0, "cd", -60.0)
+        assert mon._current_nowplaying.title == "CD"
+        assert core.consume_nowplaying_republish() is True
+
+    def test_invalid_threshold_returns_false_and_changes_nothing(self):
+        mon = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_input_type(0, "cd", "not-a-number")
+        assert result is False
+        assert mon.input_type == "line"
+        assert mon.is_turntable is False
+        assert mon.silence_threshold_dbfs == -50.0
+        mock_client.configure_input.assert_not_called()
+
+    def test_stored_type_is_normalised(self):
+        mon = _make_monitor(input_index=0)
+        with patch.object(core, "_connected_monitor", _fake_connected(self._acking_client())):
+            core.update_live_input_type(0, "  CD ", -60.0)
+        assert mon.input_type == "cd"
+
+    def test_swapped_default_bundle_keeps_its_artwork(self):
+        mon = _make_monitor(input_index=0)
+        mon._current_nowplaying = replace(
+            mon._default_nowplaying_metadata(), artwork=b"art-bytes"
+        )
+        with patch.object(core, "_connected_monitor", _fake_connected(self._acking_client())):
+            core.update_live_input_type(0, "cd", -60.0)
+        assert mon._current_nowplaying.title == "CD"
+        assert mon._current_nowplaying.artwork == b"art-bytes"
+
+    def test_leaves_an_identified_bundle_alone(self):
+        mon = _make_monitor(input_index=0)
+        song = NowPlayingMetadata(title="Song", artist="A", album="B")
+        mon._current_nowplaying = song
+        with patch.object(core, "_connected_monitor", _fake_connected(self._acking_client())):
+            core.update_live_input_type(0, "cd", -60.0)
+        assert mon._current_nowplaying is song
+
+    def test_failed_push_reports_false_but_keeps_attributes(self):
+        mon = _make_monitor(input_index=0)
+        with patch.object(core, "_connected_monitor", _fake_connected(None)):
+            result = core.update_live_input_type(0, "cd", -60.0)
+        assert result is False
+        assert mon.input_type == "cd"
+        assert mon.silence_threshold_dbfs == -60.0
+
+
+# ---------------------------------------------------------------------------
+# get_session_source_input_index / get_monitor_levels_dbfs
+# ---------------------------------------------------------------------------
+
+class TestGetSessionSourceInputIndex:
+    def _index(self, state, repeat_status=None):
+        with patch.object(core, "get_session_state", return_value=state), \
+             patch.object(core, "get_repeat_status", return_value=repeat_status):
+            return core.get_session_source_input_index()
+
+    def test_input1(self):
+        assert self._index({"active": True, "source": "input1"}) == 1
+
+    def test_input2(self):
+        assert self._index({"active": True, "source": "input2"}) == 2
+
+    def test_replay_resolves_to_the_origin_input(self):
+        status = {"replay": {"active": True}, "recording": {"origin_input": 2}}
+        assert self._index({"active": True, "source": "replay"}, status) == 2
+
+    def test_replay_without_repeat_status_is_none(self):
+        assert self._index({"active": True, "source": "replay"}, None) is None
+
+    def test_idle_is_none(self):
+        assert self._index({"active": False, "source": None}) is None
+
+    @pytest.mark.parametrize("source", ["input", "inputX", 123])
+    def test_unparseable_source_is_none(self, source):
+        assert self._index({"active": True, "source": source}) is None
+
+
+class TestDefaultNowPlayingMetadata:
+    def test_raw_capture_device_string_never_appears(self):
+        raw_device = "hw:CARD=CODEC,DEV=0"
+        for input_type in ("turntable", "cd", "line"):
+            meta = _make_monitor(
+                input_device=raw_device, input_type=input_type
+            )._default_nowplaying_metadata()
+            for text in (meta.title, meta.artist, meta.album):
+                assert raw_device not in text
+
+
+class TestGetMonitorLevelsDbfs:
+    def test_each_item_carries_its_input_index(self):
+        _make_monitor(input_index=2)
+        assert core.get_monitor_levels_dbfs()[0]["index"] == 2
 
 
 # ---------------------------------------------------------------------------

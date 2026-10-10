@@ -83,7 +83,7 @@ def _write_png(path: Path, size=(64, 64), color=(10, 200, 90)) -> None:
 class TestNowPlayingMetadataDefaults:
     def test_default_title(self):
         m = NowPlayingMetadata()
-        assert m.title == "Line-In"
+        assert m.title == "Line"
 
     def test_default_artist(self):
         assert NowPlayingMetadata().artist == "autostream"
@@ -1127,32 +1127,24 @@ class TestArtworkFallbackAndHold:
 # ---------------------------------------------------------------------------
 
 class TestDefaultNowPlayingStrings:
-    """_default_nowplaying_title() picks a receiver-facing label instead of
-    leaking the raw ALSA device string, with turntable taking precedence
-    over bluetooth-ness (an established design decision: a bluetooth
-    turntable is still "Vinyl")."""
+    """_default_nowplaying_title() is the input type's label instead of the
+    raw ALSA device string. A Bluetooth source shows its chosen type, never
+    "Bluetooth"."""
 
-    def test_turntable_input_is_vinyl(self):
-        assert _default_nowplaying_title(True, "hw:1,0") == "Vinyl"
+    def test_turntable_is_turntable(self):
+        assert _default_nowplaying_title("turntable") == "Turntable"
 
-    def test_turntable_wins_over_bluetooth(self):
-        # A bluetooth-loopback-shaped device string, but is_turntable=True.
-        assert _default_nowplaying_title(True, "hw:CARD=ASBT,DEV=1") == "Vinyl"
+    def test_cd_is_cd(self):
+        assert _default_nowplaying_title("cd") == "CD"
 
-    def test_bluetooth_loopback_input_is_bluetooth(self):
-        assert _default_nowplaying_title(False, "hw:CARD=ASBT,DEV=1") == "Bluetooth"
+    def test_line_is_line(self):
+        assert _default_nowplaying_title("line") == "Line"
 
-    def test_other_input_is_line_in(self):
-        assert _default_nowplaying_title(False, "hw:1,0") == "Line-In"
-
-    def test_default_title_never_contains_raw_device_string(self):
-        raw_device = "hw:CARD=USB_AUDIO_CODEC,DEV=0"
-        for is_turntable in (True, False):
-            label = _default_nowplaying_title(is_turntable, raw_device)
-            assert raw_device not in label
+    def test_unknown_type_is_line(self):
+        assert _default_nowplaying_title("tape") == "Line"
 
     def test_default_metadata_artist_is_autostream(self):
         # "autostream" is the constant artist; _default_nowplaying_title()
-        # supplies the *title* (Vinyl/Bluetooth/Line-In), the prominent line on
+        # supplies the *title* (Turntable/CD/Line), the prominent line on
         # the receiver -- see TestNowPlayingMetadataDefaults.
         assert NowPlayingMetadata().artist == "autostream"

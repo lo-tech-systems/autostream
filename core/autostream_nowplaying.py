@@ -177,7 +177,7 @@ def release_shared_metadata_publisher(audio_fifo_path: str) -> None:
 
 @dataclass
 class NowPlayingMetadata:
-    title: str = "Line-In"
+    title: str = "Line"
     artist: str = "autostream"
     album: str = "Unknown Album"
     # None means "no artwork decision here" -- the publisher re-sends

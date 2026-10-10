@@ -353,6 +353,25 @@ class TestConfigureInput:
         ok = c.configure_input(1, "hw:bad", -40.0, 10)
         assert ok is False
 
+    def _sent_cmd(self, **kwargs):
+        sock = FakeSocket((json.dumps({"ok": True}) + "\n").encode())
+        c = _client(sock)
+        c.configure_input(0, "hw:1,0", -50.0, 5, **kwargs)
+        return json.loads(b"".join(sock.sent).strip())
+
+    def test_sends_input_type_when_given(self):
+        cmd = self._sent_cmd(input_type="turntable")
+        assert cmd["input_type"] == "turntable"
+
+    @pytest.mark.parametrize("unnamed", [None, "", "  "])
+    def test_omits_input_type_when_unnamed(self, unnamed):
+        cmd = self._sent_cmd(input_type=unnamed)
+        assert "input_type" not in cmd
+
+    def test_normalises_input_type_case_and_space(self):
+        cmd = self._sent_cmd(input_type="  CD ")
+        assert cmd["input_type"] == "cd"
+
 
 # ---------------------------------------------------------------------------
 # set_log_level

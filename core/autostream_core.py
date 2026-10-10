@@ -34,10 +34,13 @@ from typing import Callable, Optional
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
     DEFAULT_LOG_LEVEL,
+    INPUT_TYPE_DEFAULT,
     OutputEqConfig,
+    input_type_label,
     load_and_parse,
     normalize_airplay_mode,
     normalize_audio_path,
+    normalize_input_type,
     normalize_log_level,
     python_log_level_value,
     unconfigured,
@@ -544,6 +547,24 @@ def get_session_state() -> dict:
     """Return the most recently computed {"active", "source"} session state."""
     with _session_state_lock:
         return dict(_session_state)
+
+
+def get_session_source_input_index() -> Optional[int]:
+    """The input number behind the current session, or None when idle.
+
+    "input1"/"input2" name a live source; "replay" resolves to the input
+    the replaying recording came from, as the track identification snapshot
+    and the now-playing source are resolved.
+    """
+    source = get_session_state().get("source")
+    if source is None:
+        return None
+    if source == "replay":
+        return _replay_origin_input(get_repeat_status())
+    try:
+        return int(source[len("input"):])
+    except (ValueError, IndexError, TypeError):
+        return None
 
 
 # ── User-initiated output action marker ──────────────────────────────────────
@@ -1119,6 +1140,7 @@ def update_live_silence_seconds(
                     live_silence_seconds,
                     monitor.track_change_silence_seconds,
                     monitor.minimum_playback_seconds,
+                    input_type=monitor.input_type,
                 ):
                     logging.warning(
                         "Live silence timeout update failed for input %d.",
@@ -1135,20 +1157,63 @@ def update_live_silence_seconds(
         return False
 
 
+# A live push to the daemon is tried a few times before it is reported as
+# not applied. Each attempt opens its own connection, so a daemon that is
+# busy or restarting gets a fresh socket; the gap keeps the whole thing
+# well inside the request that asked for it.
+LIVE_PUSH_ATTEMPTS = 3
+LIVE_PUSH_RETRY_GAP_SECONDS = 0.15
+
+
+def _push_input_config_with_retry(
+    monitor: "AudioMonitor", *, socket_path: Optional[str] = None,
+) -> bool:
+    """Send one monitor's current configure_input() values to the daemon.
+
+    Returns True on the first acknowledged push, False once every attempt
+    has failed. The monitor's attributes are the source of truth, so a
+    failed push is repaired by the next reconnect resync. Never raises.
+    """
+    for attempt in range(1, LIVE_PUSH_ATTEMPTS + 1):
+        try:
+            with _connected_monitor(socket_path) as client:
+                if client is not None and client.configure_input(
+                    monitor.input_index,
+                    monitor.input_device,
+                    monitor.silence_threshold_dbfs,
+                    monitor.silence_seconds,
+                    monitor.track_change_silence_seconds,
+                    monitor.minimum_playback_seconds,
+                    input_type=monitor.input_type,
+                ):
+                    return True
+        except Exception as e:
+            logging.warning(
+                "Live input config push for input %d failed: %s",
+                monitor.input_index, e,
+            )
+        if attempt < LIVE_PUSH_ATTEMPTS:
+            time.sleep(LIVE_PUSH_RETRY_GAP_SECONDS)
+    logging.warning(
+        "Live input config push for input %d not applied after %d attempts; "
+        "it is saved and will be sent when the daemon reconnects.",
+        monitor.input_index, LIVE_PUSH_ATTEMPTS,
+    )
+    return False
+
+
 def update_live_silence_threshold_dbfs(
     input_index: int,
     silence_threshold_dbfs: float,
     *,
     socket_path: Optional[str] = None,
 ) -> bool:
-    """Apply a live silence-threshold update to one input's running monitor.
+    """Apply a live silence-threshold change to one input's running monitor.
 
-    silence_threshold_dbfs is just another configure_input() field, so the
-    same live-reconfigure path used by update_live_silence_seconds applies
-    here -- only the one matching monitor is touched, since the threshold is
-    per-input rather than shared. Returns True on success (including when
-    the input has no running monitor to push to), False if the live update
-    could not be applied and the caller should fall back to a config reload.
+    The monitor's cached threshold is updated first, so the value survives
+    a failed push and goes out with the next reconnect resync. Returns
+    True when the input has no running monitor or the daemon acknowledged
+    the push, False when every push attempt failed.
     """
     try:
         live_threshold_dbfs = float(silence_threshold_dbfs)
@@ -1163,40 +1228,64 @@ def update_live_silence_threshold_dbfs(
         target = next(
             (m for m in all_monitors if m.input_index == input_index), None
         )
-
     if target is None:
         return True
 
+    target.silence_threshold_dbfs = live_threshold_dbfs
+    return _push_input_config_with_retry(target, socket_path=socket_path)
+
+
+def update_live_input_type(
+    input_index: int,
+    input_type: str,
+    silence_threshold_dbfs: float,
+    *,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply a live input-type change to one input's running monitor.
+
+    The monitor's type, turntable flag and threshold are updated, the
+    default now-playing title follows the type (and is re-sent if the
+    current bundle is still a default), and the daemon is pushed the new
+    configuration. Returns True when the input has no running monitor or
+    the daemon acknowledged the push, False when every push attempt failed;
+    the attributes are updated either way.
+    """
+    new_type = normalize_input_type(input_type)
     try:
-        with _connected_monitor(socket_path) as client:
-            if client is None:
-                logging.warning(
-                    "Could not connect to monitor daemon for live silence threshold update.",
-                )
-                return False
-
-            if not client.configure_input(
-                target.input_index,
-                target.input_device,
-                live_threshold_dbfs,
-                target.silence_seconds,
-                target.track_change_silence_seconds,
-                target.minimum_playback_seconds,
-            ):
-                logging.warning(
-                    "Live silence threshold update failed for input %d.",
-                    target.input_index,
-                )
-                return False
-
-            with _monitors_lock:
-                for monitor in all_monitors:
-                    if monitor.input_index == input_index:
-                        monitor.silence_threshold_dbfs = live_threshold_dbfs
-            return True
-    except Exception as e:
-        logging.warning("Could not update live silence threshold: %s", e)
+        threshold = float(silence_threshold_dbfs)
+    except Exception:
+        logging.warning(
+            "Could not update live input type: invalid threshold %r",
+            silence_threshold_dbfs,
+        )
         return False
+
+    with _monitors_lock:
+        target = next(
+            (m for m in all_monitors if m.input_index == input_index), None
+        )
+    if target is None:
+        return True
+
+    old_default = target._default_nowplaying_metadata()
+    target.input_type = new_type
+    target.is_turntable = new_type == "turntable"
+    target.silence_threshold_dbfs = threshold
+
+    # A bundle that is still the old default takes the new one; an
+    # identified track is left alone and the next boundary uses the new
+    # default anyway.
+    cur = target._current_nowplaying
+    if cur is not None and (cur.title, cur.artist, cur.album) == (
+        old_default.title, old_default.artist, old_default.album
+    ):
+        target._current_nowplaying = replace(
+            target._default_nowplaying_metadata(), artwork=cur.artwork
+        )
+    request_nowplaying_republish()
+
+    return _push_input_config_with_retry(target, socket_path=socket_path)
 
 
 def any_monitor_capturing() -> bool:
@@ -2260,6 +2349,7 @@ def get_monitor_levels_dbfs() -> list[dict]:
         snapshot = list(all_monitors)
     for mon in snapshot:
         levels.append({
+            "index": int(mon.input_index),
             "label": f"Input {mon.input_index}",
             "dbfs": round(mon.poll_peak_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
@@ -2833,17 +2923,23 @@ class MonitorClient:
         silence_seconds: int,
         track_change_silence_seconds: float = 1.25,
         minimum_playback_seconds: int = 30,
+        input_type: Optional[str] = None,
     ) -> bool:
+        cmd = {
+            "type": "configure_input",
+            "input": index,
+            "device": device,
+            "silence_threshold_dbfs": silence_threshold_dbfs,
+            "silence_seconds": silence_seconds,
+            "track_change_silence_seconds": track_change_silence_seconds,
+            "minimum_playback_seconds": minimum_playback_seconds,
+        }
+        # The daemon's reader has no notion of null; an unnamed type is an
+        # absent key.
+        if isinstance(input_type, str) and input_type.strip():
+            cmd["input_type"] = input_type.strip().lower()
         with self._lock:
-            resp = self._command({
-                "type": "configure_input",
-                "input": index,
-                "device": device,
-                "silence_threshold_dbfs": silence_threshold_dbfs,
-                "silence_seconds": silence_seconds,
-                "track_change_silence_seconds": track_change_silence_seconds,
-                "minimum_playback_seconds": minimum_playback_seconds,
-            })
+            resp = self._command(cmd)
             ok = bool(resp and resp.get("ok"))
             if not ok:
                 logging.error(
@@ -3055,19 +3151,11 @@ class MonitorClient:
             return (pcm, rate)
 
 
-def _default_nowplaying_title(is_turntable: bool, input_device: str) -> str:
-    """Pick a receiver-facing default title for an input with no manual hint
-    and no identified track yet, instead of leaking the raw ALSA device
-    string (e.g. "hw:1,0") to the Now Playing screen.
-
-    Precedence: turntable wins over bluetooth-ness -- a bluetooth turntable
-    is still "Vinyl" (established design decision), not "Bluetooth".
-    """
-    if is_turntable:
-        return "Vinyl"
-    if classify_loopback_hw(input_device) == "capture":
-        return "Bluetooth"
-    return "Line-In"
+def _default_nowplaying_title(input_type: str) -> str:
+    """The receiver-facing default title for an input with no manual hint
+    and no identified track: the input type's label ("Turntable", "CD",
+    "Line"), never the raw ALSA device string."""
+    return input_type_label(input_type)
 
 
 # --------------------------------------------------------------------------- #
@@ -3112,10 +3200,12 @@ class AudioMonitor:
         eq_100hz_db: float = 0.0,
         eq_8khz_db: float = 0.0,
         is_turntable: bool = False,
+        input_type: str = INPUT_TYPE_DEFAULT,
     ) -> None:
         self.input_index = input_index
         self.input_device = input_device
         self.is_turntable = is_turntable
+        self.input_type = normalize_input_type(input_type)
         self.silence_threshold_dbfs = silence_threshold_dbfs
         self.silence_seconds = silence_seconds
         self.track_change_silence_seconds = track_change_silence_seconds
@@ -3333,13 +3423,13 @@ class AudioMonitor:
     def _default_nowplaying_metadata(self) -> "NowPlayingMetadata":
         """The now-playing metadata for this input with no identified track:
         a manual hint from nowplaying_hints.json if one applies, otherwise a
-        receiver-friendly input label (Vinyl / Bluetooth / Line-In) as the
+        receiver-friendly input label (Turntable / CD / Line) as the
         title -- the prominent line on the receiver -- with the constant
         "autostream" as the artist beneath it, rather than leaking the raw
         ALSA device string. Re-read each call (not cached) so a manual-hints
         file edit is picked up at the next session start."""
         return self._nowplaying_cache.get_manual_hint(self.input_device) or NowPlayingMetadata(
-            title=_default_nowplaying_title(self.is_turntable, self.input_device),
+            title=_default_nowplaying_title(self.input_type),
             artist="autostream",
             album="Unknown Album",
         )
@@ -4583,6 +4673,7 @@ def _resync_monitor_daemon(
             m.silence_seconds,
             m.track_change_silence_seconds,
             m.minimum_playback_seconds,
+            input_type=m.input_type,
         ):
             logging.warning(
                 "configure_input(%d, %r) failed after reconnect; will retry full resync.",
@@ -4724,6 +4815,7 @@ def _configure_startup_monitors(
             cfg.general.silence_seconds,
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
+            input_type=cfg.audio1.input_type,
         ):
             logging.warning(
                 "configure_input(1, %r) failed during startup; will retry.",
@@ -4768,6 +4860,7 @@ def _configure_startup_monitors(
             eq_100hz_db=cfg.audio1.eq_100hz_db,
             eq_8khz_db=cfg.audio1.eq_8khz_db,
             is_turntable=cfg.audio1.is_turntable,
+            input_type=cfg.audio1.input_type,
         ))
 
     if (
@@ -4784,6 +4877,7 @@ def _configure_startup_monitors(
             cfg.general.silence_seconds,
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
+            input_type=cfg.audio2.input_type,
         ):
             logging.error(
                 "configure_input(2, %r) failed; skipping second input.",
@@ -4830,6 +4924,7 @@ def _configure_startup_monitors(
                 eq_100hz_db=cfg.audio2.eq_100hz_db,
                 eq_8khz_db=cfg.audio2.eq_8khz_db,
                 is_turntable=cfg.audio2.is_turntable,
+                input_type=cfg.audio2.input_type,
             ))
 
     if len(monitors) > 1:

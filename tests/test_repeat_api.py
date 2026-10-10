@@ -1034,6 +1034,28 @@ class TestP6ResyncRepush:
         assert ok is True
         client.set_repeat_enabled.assert_called_once_with(True, "mp2_224", 45)
 
+    def test_resync_sends_each_monitors_input_type(self):
+        client = self._mock_client_for_resync()
+        monitors = [
+            _make_monitor(input_index=1, input_type="cd"),
+            _make_monitor(input_index=2, input_type="turntable"),
+        ]
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+            ok = _resync_monitor_daemon(
+                client, monitors, "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=False, repeat_codec="auto",
+            )
+        assert ok is True
+        sent = {
+            c.args[0]: c.kwargs.get("input_type")
+            for c in client.configure_input.call_args_list
+        }
+        assert sent == {1: "cd", 2: "turntable"}
+
     def test_resync_tolerates_old_binary_rejecting_repeat_command(self):
         """set_repeat_enabled failing (old binary) must not fail the whole resync."""
         client = self._mock_client_for_resync()

@@ -73,6 +73,7 @@ class TestInput1DisabledStartup:
             cfg.general.silence_seconds,
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
+            input_type=cfg.audio2.input_type,
         )
 
     def test_zero_inputs_returns_empty_list_not_none(self):
@@ -105,4 +106,5 @@ class TestInput1DisabledStartup:
             cfg.general.silence_seconds,
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
+            input_type=cfg.audio1.input_type,
         )
