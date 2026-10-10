@@ -188,6 +188,22 @@ it's currently playing or idle. Tap the X to close the list without
 changing anything. The chevrons (or, on some panels, a side rail) page
 through the list if there are more appliances than fit on one screen.
 
+An appliance that has not authorised this dial is listed too, dimmed, with
+**Not authorised** in place of the playing glyph or volume. Tapping that row
+does not switch to it. Instead it opens a short full-screen hint, "Allow this
+dial in <appliance name>'s web UI (Setup, Dials)", and going back from the
+hint returns to the list. To fix it, open that appliance's web page, go to
+Setup, Dials, find this dial's card and turn on **Allow dial to control this
+appliance** (see [Getting Started](GETTING-STARTED.md#authorizing-the-dial)).
+The row returns to normal once the appliance has accepted the dial and the
+dial has next checked in with it.
+
+An appliance that has not authorised the dial no longer wakes the screen.
+Playing on it does not turn a sleeping panel on, does not keep an idle panel
+awake, and does not put a "Playing" view on screen. The dial does not send it
+volume or mute either. An appliance that has not answered either way yet is
+treated as usable until it refuses.
+
 Compact panels have no name button and so no way to open this list: a
 compact dial simply follows whichever appliance is currently reporting
 playback.
@@ -357,6 +373,41 @@ until the reading recovers or the dial restarts; if you don't tap it at
 all, the page closes on its own after a minute so it never sits over
 now-playing indefinitely. Either way, the current reading stays visible on
 the [info page](#info-page).
+
+## Software update
+
+When the dial updates its own software (see
+[System Maintenance](SYSTEM-MAINTENANCE.md#firmware-updates)), a card
+appears on the screen. It can come up over whatever is showing, including a
+list, and it wakes a sleeping panel. Touching the screen does nothing while
+it shows, but turning the volume control and pressing it still work as normal.
+
+**Updating...** is the card while the update runs. It has a progress bar and,
+under it, a short label for the current step: **Downloading**, **Upgrading
+OS**, **Installing** or **Restarting**. The bar moves forward as the update
+does. If the update is retried after an interruption, the bar starts again
+from the start.
+
+When the update reaches its restart, the card gives way to the same
+**Restarting...** screen the No-WiFi page uses. The panel then goes dark while
+the dial reboots, and shows **Starting...** when it comes back. While the new
+version is being checked the screen carries on as normal.
+
+Then a result card tells you how it went:
+
+- **Updated**, with **Version <number>** under it, if the new version passed
+  its check.
+- **Update failed**, with **Restored <old number>** under it if the new version
+  failed its check and the dial went back to the old one, or **<old number>
+  kept** if the update stopped before anything was replaced.
+
+The result card has one **Dismiss** button. If nobody dismisses it, it clears
+itself after an hour, since an update can take about 40 minutes and may well
+be left unattended. A result is shown once: it does not come back after
+Dismiss, after it clears itself, or after the dial restarts.
+
+If the dial has no screen, none of this applies; follow the update from the
+appliance's Dials panel instead.
 
 ## Gaps I couldn't confirm from the code
 

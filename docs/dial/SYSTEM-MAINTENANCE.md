@@ -13,8 +13,101 @@ The dial's card in the appliance's **Dials** panel (see
 When a newer release is available for the dial's channel and the dial is
 online, an **Update firmware** button appears on its card. Tapping it asks
 you to confirm ("Start firmware update? The dial will restart."), then
-starts the update. The dial's own service restarts automatically once the
-update finishes.
+starts the update. Every update ends with the dial restarting once, so
+expect it to be unavailable for a minute or two at the end.
+
+A dial that is running an older protocol version (see
+[Protocol](DIAL_PROTOCOL.md#protocol-dialect-dial_proto)) is flagged
+**Needs update** on its card, and the Home page shows a **Dial updates
+required** banner that links to Setup, Dials. The dial keeps working in the
+meantime; updating it brings it up to date.
+
+### What an update does
+
+An update goes through these steps. The dial keeps running its current
+software until the very end, so a problem part-way through leaves it as it
+was.
+
+1. **Download.** The dial fetches the new release from GitHub.
+2. **Upgrade OS.** It upgrades the operating system's packages, the same
+   routine the main appliance uses, then installs any packages the new
+   version needs.
+3. **Install.** It builds a fresh Python environment for the new version,
+   copies the new software into a holding area beside the live copy, and
+   updates its services and configuration files. Before changing any of
+   those it keeps a copy of the old ones.
+4. **Restart and switch over.** The dial restarts. Very early in the boot,
+   before its main service starts, the new software is swapped in for the
+   old.
+5. **Check.** The dial then checks that the new version really is running
+   and healthy: the main service is up, it has not restarted itself, and it
+   reports the new version. This check allows up to two minutes.
+6. **Done.** When the check passes, the update is recorded as successful
+   and the leftovers are cleaned up.
+
+An update can take a long time, up to about 40 minutes on a Pi Zero 2 W,
+most of it in the package upgrade, and a slow SD card makes it longer. Leave
+the dial powered and let it finish.
+
+### Seeing progress
+
+- **On the dial's screen**, if one is fitted, an **Updating...** card shows a
+  progress bar and a short label for the step (Downloading, Upgrading OS,
+  Installing, Restarting). See
+  [Using the Screen](USING-THE-SCREEN.md#software-update). You can still
+  turn the dial's volume control while this shows.
+- **On the dial's card in the appliance's Dials panel**, a progress bar and
+  line of text follow the update, ending with "Updated to <version>" or a
+  failure line.
+- **On the dial's own web page**, `http://<dial-hostname>.local/` shows an
+  updating page with a progress bar for as long as the update runs.
+
+### If something goes wrong
+
+**Automatic retries.** Two kinds of problem are retried without anyone
+doing anything:
+
+- If power is lost or the dial restarts part-way through an update, it picks
+  the update up again at the next boot, before its main service starts,
+  and carries on from the start of the install. It makes up to four
+  attempts in all, counting the first. The progress shows "Retrying update
+  (attempt 2 of 4)" and so on. If the fourth attempt is also interrupted,
+  the update is marked failed and the dial stays on its current version.
+- If the download fails because of a network problem, or a package step
+  fails because the package system is locked or cannot be reached, the dial
+  waits about half a minute and tries that one step once more. Any other
+  failure, such as a damaged download, stops the update at once rather than
+  repeating it.
+
+A failure before the switch-over leaves the dial on its current version,
+still running as normal. Nothing has been replaced yet.
+
+**Automatic rollback.** If the new version fails its check after the
+restart, or the dial restarts unexpectedly before the check finishes, the
+dial puts the previous version back and restarts again. This is not retried:
+a version that failed its check is not tried again until you start another
+update.
+
+What a rollback restores:
+
+- The dial's own software.
+- Its Python environment.
+- Its services and configuration files (systemd services, web server and
+  discovery settings, and the like) and its recorded installed version.
+
+What a rollback does not undo:
+
+- Operating-system packages already upgraded during the update. The
+  previous dial software then runs on the upgraded system, as it does after
+  any ordinary system upgrade.
+- Changes to the boot configuration for the display and sensor
+  connections, which are additive and safe for the older software.
+
+After a rollback the dial's card shows a red line such as "Update to 0.7.0
+failed - restored 0.6.0". If an update fails without being rolled back, it
+says "Update to 0.7.0 failed - 0.6.0 kept" instead. An update that failed
+while nobody was watching, for example an automatic one, shows this line
+again when you next open the Dials panel, for a week afterwards.
 
 ### Automatic updates (opt-in)
 
@@ -43,12 +136,6 @@ Switching back to stable does not downgrade an already-installed
 pre-release. A later, numerically newer stable release is still offered
 normally.
 
-### If an update is interrupted
-
-If power is lost or the dial reboots mid-update, the dial resolves this at
-its next boot before its main service starts, marking the update as failed
-rather than leaving it stuck. Simply retry the update once the dial is back
-online.
 
 ## SD card care
 
@@ -98,8 +185,10 @@ The recovery page offers four actions:
 ### During a firmware update
 
 While an update is in progress, the browser is automatically redirected to
-an **updating** page that shows progress until the update completes and the
-service restarts.
+an **updating** page that shows progress until the update completes. The
+dial restarts as part of the update, and the updating page is kept in place
+until the new version's check has finished, so allow a minute or two after
+the restart before the dial's normal page returns.
 
 ## When the dial won't come back
 

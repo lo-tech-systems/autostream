@@ -61,8 +61,61 @@ Announced continuously by a dial device.
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |
 | `dial_sdmon` | `v1` | The dial exposes `GET`/`POST /sdcard-health` (section 4) and can run the guarded SD card health probe |
+| `dial_proto` | `v2` | The dial speaks the 0.7 dialect (see below): it understands typed refusals on every route, matches them to an appliance by `appliance_id`, and treats `muted` as authoritative. Absent on older dials |
 
 Port: **7842** (dial HTTP server).
+
+#### Protocol dialect (`dial_proto`)
+
+`dial_proto` is how each side tells the other which dialect it speaks. It is advertised by
+appliances (on both appliance records) and by dials (on `_autostream-dial._tcp`).
+`dial_api=v1` and `dial_status=v1` stay on the wire unchanged, so nothing that worked before
+stops working. `v2` is the only value defined. Anything else, or no key at all, means the
+older dialect.
+
+What `v2` means:
+
+- **Typed refusals.** An appliance answers an unauthorized dial that advertises
+  `dial_proto=v2` with `412` and
+  `{"ok": false, "error": "dial_not_authorized", "appliance_id": "<id>"|null}` on every dial
+  route: status, volume, mute, repeat, outputs and EQ.
+- **Identity.** The appliance's `id` is on its playing record, and `appliance_id` is in the
+  status reply, so the dial can match a refusal to the appliance that sent it.
+- **`muted` is authoritative.** Status and volume replies carry `muted`, and while the
+  appliance is muted its reported volume is the pre-mute level, never 0. A v2 dial trusts the
+  field and does not infer mute from the volume.
+
+Legacy behaviour, when one side does not advertise `dial_proto=v2`:
+
+- **Refusal style follows the requesting dial.** The appliance chooses between `412` and the
+  older answer from the *dial's* advertised `dial_proto`, read from the dial's own mDNS
+  record. A dial that advertises `dial_proto=v2` gets the typed `412`. Any other dial, and a
+  dial the appliance has not currently seen on the network (so cannot tell which dialect it
+  speaks), gets `403` with an empty JSON body, `{}`. The `400 missing_dial_id` and
+  `200 auth_unavailable` answers are the same for both styles. Volume and mute use the same
+  check as the other routes.
+- **How a v2 dial reads a refusal.** A `403` whose body is exactly `{}` with a JSON content
+  type, from an appliance that does not advertise `dial_proto=v2`, is read as a refusal. A
+  `403` with any other body (a proxy or CSRF rejection, for example) is not. A `403` from an
+  appliance that does advertise `dial_proto=v2` is treated as transient, because that
+  appliance would have sent a `412`.
+- **Status without `muted`.** An older appliance's status reply has no `muted` field. A v2
+  dial then goes by the mute it last sent: a later status poll that says nothing about mute
+  clears that belief instead of keeping it, so the dial follows a mute made elsewhere within
+  a poll. The press itself stays protected while a mute request is in flight.
+- **No `id` on the playing record.** An older appliance announces its `id` only on
+  `_autostream._tcp`. A v2 dial looks for an `_autostream._tcp` record at the same IP address
+  and port as the playing record and uses that record's `id`. The match is weaker than an `id`
+  on the playing record itself: if an address changes hands between the two lookups, a refusal
+  can be attributed to the wrong appliance until the next poll corrects it. An appliance whose
+  `id` cannot be found this way is not controlled by the dial and does not wake the screen.
+- **Older dials with a v2 appliance.** They keep tracking and controlling the appliance, since
+  it still advertises `dial_api=v1`, and they ignore the extra fields in its replies. An
+  unauthorized older dial is refused with the bare `403 {}`. The appliance's web UI shows
+  "Dial updates required" on the Home page and flags the dial's card on the Setup page with
+  "Needs update" while the dial does not advertise `dial_proto=v2`.
+- **Capabilities with their own keys** (`dial_outputs`, `dial_eq`, `repeat`) are unaffected.
+  An older appliance does not advertise them, so a dial does not offer the features.
 
 **Name constraints:** dial names are restricted to printable ASCII (0x20-0x7e) excluding `;`
 (avahi field separator) and `|` (config delimiter). Names containing these characters are
@@ -186,10 +239,12 @@ explicit `POST /api/dial/mute {"action": "restore"}`.
 | `"no_active_outputs"` | No outputs currently selected |
 | `"all_outputs_failed"` | Every per-output update call failed |
 
-**Authorization failure: 403** (empty body). Returned when `dial_id` is absent, empty, or
-not present in `dials.json`. Unlike `POST /api/dial/status` below, this endpoint does not
-distinguish a definitive miss from a transiently unreadable dials store - both cases are
-403 here.
+**Authorization failure.** This route uses the same gate as `POST /api/dial/status` below:
+`400 missing_dial_id` when `dial_id` is absent, empty or not a string; `200 auth_unavailable`
+when the dials store is transiently unreadable; and for a definitive miss, `412
+dial_not_authorized` (with `appliance_id`) to a dial that advertises `dial_proto=v2`, or `403`
+with an empty JSON body (`{}`) to any other dial, including one the appliance has not
+currently seen. See **Protocol dialect** in section 1.
 
 ---
 
@@ -267,8 +322,7 @@ the requested action - `true` for `"mute"`, `false` for `"restore"`.)
 | `"no_active_outputs"` | No outputs currently selected |
 | `"all_outputs_failed"` | Every per-output update call failed |
 
-**Authorization failure: 403** (empty body). Returned when `dial_id` is absent, empty, or
-not present in `dials.json`. Matches `POST /api/dial/volume` behavior.
+**Authorization failure.** Same gate and same answers as `POST /api/dial/volume` above.
 
 **Invalid action: 400**
 ```json
@@ -432,13 +486,18 @@ a malformed request never touches the file.
 
 **Authorization failure: 412** `{"ok": false, "error": "dial_not_authorized", "appliance_id": "<id>"|null}`.
 Returned when `dial_id` is present but not authorized for this appliance (a definitive miss,
-distinct from the transient `auth_unavailable` case above). `appliance_id` lets the dial
-correlate the rejection with the appliance that issued it even if its `ip:port` has since
-been reused by a different appliance on the network.
+distinct from the transient `auth_unavailable` case above) and the dial advertises
+`dial_proto=v2`. `appliance_id` lets the dial correlate the rejection with the appliance that
+issued it even if its `ip:port` has since been reused by a different appliance on the network.
 
-Unlike `POST /api/dial/volume` and `POST /api/dial/mute` (still `403`, see below), the status
-route never returns `403` - a caller is either authorized (`200`), a definitive miss (`412`),
-malformed (`400`), or the store is transiently unreadable (`200 auth_unavailable`).
+**Authorization failure: 403** `{}`. The same definitive miss, for a dial that does not
+advertise `dial_proto=v2` or that the appliance has not currently seen on the network (see
+**Protocol dialect** in section 1). The body is exactly the two bytes `{}` with a JSON content
+type.
+
+Every dial route (status, volume, mute, repeat, outputs, EQ) answers in the same four ways: a
+caller is authorized, malformed (`400`), a definitive miss (`412` or `403` as above), or the
+store is transiently unreadable (`200 auth_unavailable`).
 
 `412` is not intercepted by the main NGINX `error_page` directive (which only intercepts
 404, 502, 503, and 504), so the dial client receives the original HTTP `412`.
@@ -654,7 +713,7 @@ using the transport status.
 ### Direct volume endpoint
 
 `POST /api/dial/volume` is a machine-to-machine endpoint called by the dial firmware, not
-by a browser dial-management flow. Its native `403` authorization response and HTTP `200`
+by a browser dial-management flow. Its native authorization responses (`403` or `412`, see section 1) and HTTP `200`
 application-failure bodies are preserved unchanged and are not subject to the tunneling
 contract above.
 
@@ -855,10 +914,62 @@ update itself has not been attempted in this case.
 ### `GET /update/status`
 
 ```json
-{"state": "idle", "version": "1.0.0"}
+{
+  "state": "running",
+  "version": "0.6.0",
+  "percent": 45,
+  "message": "Installing Python packages...",
+  "phase": "python",
+  "tag": "0.7.0",
+  "previous_tag": "0.6.0",
+  "attempt": 1,
+  "max_attempts": 4,
+  "rolled_back": false,
+  "last_run_at": "2025-01-15T14:30:00+00:00"
+}
 ```
 
-`state` is one of `"idle"`, `"running"`, `"complete"`, `"failed"`.
+`state` is one of `"idle"`, `"running"`, `"complete"`, `"failed"`. `version` is the version
+of the software that is running now, so during an update it stays at the old version until the
+dial has restarted into the new one. The other fields describe the most recent update run
+and come from the dial's update result record:
+
+| Field | Type | Notes |
+|---|---|---|
+| `percent` | int | Progress, 0 to 100. Moves forward as the update passes through its phases |
+| `message` | string | A human-readable status line, for example `Downloading 0.7.0...` or `Update to 0.7.0 failed - restored 0.6.0` |
+| `phase` | string | Where the update is up to; see the phase names below. Empty when no update has run |
+| `tag` | string | The release being installed (or that was installed) |
+| `previous_tag` | string | The release that was installed before the update started |
+| `attempt` | int | The attempt number, 1 for a first run. It goes up each time an interrupted update is retried at boot |
+| `max_attempts` | int | The most attempts an update gets, currently 4 (the first run and three retries) |
+| `rolled_back` | bool | `true` only when a new version was installed, failed its check after the restart, and the previous version was put back |
+| `last_run_at` | string | When the most recent update run started or last changed state, as an ISO 8601 UTC timestamp; empty when no update has run |
+
+Fields a record does not hold take neutral values (empty string, `0`, `false`), so an
+update run by older software, or no update at all, still gives a well-formed reply.
+
+Phase names, in the order a normal update passes through them:
+
+| `phase` | Meaning |
+|---|---|
+| `download` | Fetching the release (also shown while an interrupted update is being retried) |
+| `prepare` | Checking the system and getting ready |
+| `packages` | Upgrading operating-system packages and installing the packages the dial needs |
+| `python` | Building the Python environment for the new version |
+| `files` | Copying the new software into a holding area beside the live copy |
+| `configure` | Updating services and configuration files, after saving copies of the old ones |
+| `staged` | Everything is ready to be switched in at the next start |
+| `reboot` | The dial is about to restart |
+| `verify` | The dial has restarted into the new version and is checking that it works |
+| `done` | The new version passed its check |
+| `failed` | The update stopped and the previous version is still installed |
+| `rolled_back` | The new version failed its check and the previous version was restored |
+
+While the dial restarts (around the `reboot` and `verify` phases) requests to this route can
+fail; a client should keep polling. Through the appliance's
+proxy the reply is passed on unchanged, and a restarting dial appears as offline. See
+[System Maintenance](SYSTEM-MAINTENANCE.md#firmware-updates) for what each phase does.
 
 ### `GET /update/check`
 
@@ -1399,6 +1510,7 @@ Responses:
 | `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
+| `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, whether a dial relies on `muted`, and the dial's handling of an appliance without an `id` on its playing record; see **Protocol dialect** in section 1. `dial_api=v1` and `dial_status=v1` are unchanged alongside it |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
 UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API
@@ -1423,6 +1535,11 @@ after this change talking to an appliance that predates it just never sees the f
 shows no lit glyph, which volume/mute presses still work through regardless (they are
 explicit actions, not inferred from what the glyph shows). Appliances are expected to deploy
 ahead of dials for this reason.
+
+The `dial_proto=v2` dialect (section 1) was introduced the same way, as a new key beside the
+existing `v1` indicators rather than a bump of them. It carries the changes that an older dial
+would misread (typed refusals, and `muted` being authoritative), and each side falls back to
+the older behaviour when the other does not advertise it.
 
 Breaking changes (new `v2`):
 - Any change to request/response schema that removes or renames required fields.
