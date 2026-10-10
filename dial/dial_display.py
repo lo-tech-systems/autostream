@@ -252,6 +252,7 @@ class NowPlaying:
     artist: str
     title: str          # track title, drawn on the title line above the artist
     master_volume: int | None
+    album: str = ""     # album name, drawn above the title where the layout has room
 
 
 @dataclass(frozen=True)
@@ -1312,6 +1313,7 @@ class DialDisplay:
         set_pressed(). This fills in the fields only the poll thread knows
         about:
           - artist: from the reporting-from target's last poll result.
+          - album: from the same poll result.
           - volume: the optimistic readout for that same target (see
             dial_volume.shown_volume()), not the raw polled master_volume —
             the readout already reconciles the polled value with any
@@ -1358,6 +1360,7 @@ class DialDisplay:
         now_playing = self._now_playing
         artist = now_playing.artist if now_playing is not None else ""
         title = now_playing.title if now_playing is not None else ""
+        album = now_playing.album if now_playing is not None else ""
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
         muted = snapshot.muted if snapshot.muted is not None else is_muted()
@@ -1369,8 +1372,8 @@ class DialDisplay:
         # can never show them somewhere they should not appear.
         dots = self._dots_active and self._screen == "main"
         return dataclasses.replace(
-            snapshot, visible=True, artist=artist, title=title, volume=volume, muted=muted, name=name,
-            dots=dots, pressed=pressed,
+            snapshot, visible=True, artist=artist, title=title, album=album, volume=volume, muted=muted,
+            name=name, dots=dots, pressed=pressed,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -2531,6 +2534,7 @@ class DialDisplay:
         selected_service = None
         selected_artist = ""
         selected_title = ""
+        selected_album = ""
         records: dict[str, dict] = {}
         visited: set[str] = set()
 
@@ -2601,6 +2605,7 @@ class DialDisplay:
                             selected_url = track_id["artwork_url"]
                             selected_artist = track_id.get("artist", "")
                             selected_title = track_id.get("title", "")
+                            selected_album = track_id.get("album", "")
                     break
 
                 if status_error:
@@ -2616,6 +2621,7 @@ class DialDisplay:
                     selected_service = target.service_name
                     selected_artist = track_id.get("artist", "")
                     selected_title = track_id.get("title", "")
+                    selected_album = track_id.get("album", "")
                     break
 
         # Reporting-from target: the idle focus when one is pinned; else
@@ -2655,7 +2661,7 @@ class DialDisplay:
         # during the artwork fetch already goes to the right target.
         self._source_service_name = selected_service
         new_now_playing = (
-            NowPlaying(reporting_name, selected_artist, selected_title, master_volume)
+            NowPlaying(reporting_name, selected_artist, selected_title, master_volume, album=selected_album)
             if reporting_name is not None else None
         )
         changed = new_now_playing != self._now_playing

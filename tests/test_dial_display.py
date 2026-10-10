@@ -498,6 +498,25 @@ class TestMuteBeliefReconciliationFromStatusPoll:
 
 
 # ---------------------------------------------------------------------------
+# NowPlaying's album field: defaulted and appended last, so every existing
+# positional construction (display code and tests alike) keeps working
+# unchanged, and an album-only difference still counts for the `!=` check
+# _poll_once uses to decide whether to repaint.
+# ---------------------------------------------------------------------------
+
+class TestNowPlayingDataclass:
+    def test_positional_construction_without_album_still_works(self):
+        now_playing = dd.NowPlaying("svc", "A", "T", 50)
+        assert now_playing.album == ""
+
+    def test_album_only_difference_is_unequal(self):
+        assert dd.NowPlaying("svc", "A", "T", 50, album="X") != dd.NowPlaying("svc", "A", "T", 50)
+
+    def test_same_album_is_equal(self):
+        assert dd.NowPlaying("svc", "A", "T", 50, album="X") == dd.NowPlaying("svc", "A", "T", 50, album="X")
+
+
+# ---------------------------------------------------------------------------
 # Now-playing state and artwork-source exposure (A.4): the poll thread keeps
 # title/artist/master_volume that used to be discarded, and exposes the
 # chosen artwork source's service name so the volume worker's resolver can
@@ -517,10 +536,29 @@ class TestNowPlayingAndSource:
         assert display.current_source_service_name() == t.service_name
         assert display._now_playing is not None
         assert display._now_playing.artist == "The Artist"
+        assert display._now_playing.album == "Album"
         assert display._now_playing.service_name == t.service_name
         # The reporting target's master_volume (from _status_result's
         # default of 50) reaches observe_master_volume.
         mock_observe.assert_called_once_with(t.service_name, 50)
+
+    def test_identified_target_without_album_gives_empty_string(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(album=""))):
+            display._poll_once()
+        assert display._now_playing.album == ""
+
+    def test_non_identified_target_gives_empty_album(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(state="pending"))):
+            display._poll_once()
+        assert display._now_playing.album == ""
 
     def test_no_targets_clears_source_and_now_playing(self):
         t = _target()
@@ -560,6 +598,24 @@ class TestNowPlayingAndSource:
         display._overlay_signal.clear()
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
             display._poll_once()
+        assert display._overlay_signal.is_set()
+
+    def test_album_only_change_sets_overlay_signal(self):
+        # Two polls differing only in album must still count as "now-playing
+        # changed" — NowPlaying's == comparison sees every field.
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(album="First Album"))):
+            display._poll_once()
+        assert display._now_playing.album == "First Album"
+
+        display._overlay_signal.clear()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(album="Second Album"))):
+            display._poll_once()
+        assert display._now_playing.album == "Second Album"
         assert display._overlay_signal.is_set()
 
 
@@ -1666,6 +1722,14 @@ class TestEffectiveOverlayMerge:
         finally:
             dv.observe_master_volume(None, None)
 
+    def test_visible_snapshot_merges_album(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "The Artist", "Title", 50, album="The Album")
+        result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
+        assert result.album == "The Album"
+
     def test_no_now_playing_merges_empty_artist_and_none_volume(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
@@ -1673,6 +1737,7 @@ class TestEffectiveOverlayMerge:
         assert result.artist == ""
         assert result.title == ""
         assert result.volume is None
+        assert result.album == ""
 
     def test_visible_field_survives_the_merge_unchanged(self):
         display, fb, gt = _make_display(targets=[])
@@ -2624,6 +2689,21 @@ class TestManualFocus:
             display._poll_once()
         assert display.get_status()["showing"] == "artwork"
         assert display._source_service_name == "Focus"
+
+    def test_focus_target_album_is_read_on_the_pinned_path(self):
+        aid = "8" * 19 + "a"
+        focus_t = _target(name="Focus", service_name="Focus", appliance_id=aid, playing_since=1.0)
+        display, fb, gt = _make_display(targets=[focus_t])
+        display.enable()
+        display.set_manual_focus(aid)
+        fake_image = Image.new("RGB", (fb.width, fb.height))
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(album="Focused Album"), appliance_id=aid)), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        assert display._now_playing.album == "Focused Album"
 
     def test_focus_clears_when_appliance_stops_but_stays_idle_on_roster(self):
         aid = "b" * 20

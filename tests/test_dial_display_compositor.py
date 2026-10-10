@@ -55,8 +55,10 @@ from dial_display_compositor import (  # noqa: E402
     _FOOTER_RENDERERS,
     _GLYPH_SUPERSAMPLE,
     _compose_frame,
+    _draw_speaker_glyph,
     _glyph_tile,
     _halo_layer,
+    _load_font,
     _pad_px,
     _reset_font_cache,
     _reset_render_caches,
@@ -67,6 +69,9 @@ from dial_display_compositor import (  # noqa: E402
 )
 from dial_touch_layout import (  # noqa: E402
     CONTENT_BASE,
+    CONTENT_LARGE,
+    FONT_BODY_MAX_PX,
+    FONT_READOUT_MAX_PX,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
@@ -115,6 +120,15 @@ def _marked_image(size=(4, 4)):
     image = Image.new("RGB", size, (0, 0, 0))
     image.putpixel((0, 0), (255, 0, 0))
     return image
+
+
+def _diff_bbox(a: Image.Image, b: Image.Image):
+    """Bounding box (left, upper, right, lower) of every pixel where *a* and
+    *b* differ, or None when they are identical — a compact way to assert
+    both "this drew something" and "it stayed inside its rect"."""
+    from PIL import ImageChops
+
+    return ImageChops.difference(a, b).getbbox()
 
 
 @pytest.fixture
@@ -1749,6 +1763,40 @@ class TestMetricsByteEquivalence:
         )
         assert list(plain.getdata()) == list(with_metrics.getdata())
 
+    @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
+    def test_album_ignored_on_the_base_tier(self, compositor, size, mm):
+        # A tier with no album rect must render identically whether an
+        # album string is set or not — the field is read nowhere the
+        # layout has no rect for it.
+        width, height = size
+        base = _marked_image(size=(width, height))
+        with_album = compositor.compose(
+            base, width, height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album"),
+            metrics=metrics_for(width, height, mm),
+        )
+        without_album = compositor.compose(
+            base, width, height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", album=""),
+            metrics=metrics_for(width, height, mm),
+        )
+        assert list(with_album.getdata()) == list(without_album.getdata())
+
+    def test_album_ignored_on_the_rich_tier(self, compositor):
+        width, height = _RICH_METRICS.width, _RICH_METRICS.height
+        base = _marked_image(size=(width, height))
+        with_album = compositor.compose(
+            base, width, height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album"),
+            metrics=_RICH_METRICS,
+        )
+        without_album = compositor.compose(
+            base, width, height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", album=""),
+            metrics=_RICH_METRICS,
+        )
+        assert list(with_album.getdata()) == list(without_album.getdata())
+
 
 class TestShimsEqualMetricsFields:
     """_pad_px and _scaled_px are test-facing shims now delegating to
@@ -1825,6 +1873,8 @@ def _render_cache_corpus(width, height, metrics=None):
     add_main("muted_false", muted=False)
     add_main("empty_text", artist="", title="")
     add_main("long_text", artist=long_text, title=long_text)
+    add_main("album", album="Album Name")
+    add_main("long_album", album=long_text)
 
     def add_list(name, state):
         cases.append((
@@ -2393,3 +2443,237 @@ class TestRenderCacheLruBound:
             )
         info = _halo_layer.cache_info()
         assert info.currsize == info.maxsize == 16
+
+
+# ---------------------------------------------------------------------------
+# The large content tier's now-playing body: the album line above the title,
+# and the fonts/icon/halo caps that keep a large panel legible rather than
+# merely bigger. Base and rich unaffected by construction — proved above
+# (TestMetricsByteEquivalence's album-ignored pins and TestHaloLayerCache-
+# Accounting's unchanged two-miss count at 160x128).
+# ---------------------------------------------------------------------------
+
+_LARGE_PREVIEW_METRICS = metrics_for(640, 480, 0.0889, size_chosen=True)
+
+
+class TestLargeAlbumLine:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _panel(self, metrics):
+        return Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+
+    def _compose(self, compositor, metrics, img, **overlay_kwargs):
+        state = dict(visible=True, artist="Artist", title="Title")
+        state.update(overlay_kwargs)
+        return compositor.compose(
+            img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(**state), metrics=metrics,
+        )
+
+    @pytest.mark.parametrize("metrics", [_LARGE_METRICS, _LARGE_PREVIEW_METRICS], ids=["native", "preview"])
+    def test_album_pixels_confined_to_its_own_rect(self, compositor, metrics):
+        img = self._panel(metrics)
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        with_album = self._compose(compositor, metrics, img, album="Album")
+        without_album = self._compose(compositor, metrics, img, album="")
+        bbox = _diff_bbox(with_album, without_album)
+        assert bbox is not None
+        ax0, ay0, ax1, ay1 = layout.album
+        bx0, by0, bx1, by1 = bbox
+        # The halo layer is composited on a rect-sized buffer and pasted
+        # back into the rect only, so every changed pixel is contained in
+        # it, exactly like the artist and title lines beside it.
+        assert ax0 <= bx0 and bx1 <= ax1
+        assert ay0 <= by0 and by1 <= ay1
+
+    def test_empty_album_leaves_the_rect_untouched(self, compositor):
+        metrics = _LARGE_METRICS
+        img = self._panel(metrics)
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        no_album = self._compose(compositor, metrics, img, album="")
+        baseline = compositor.compose(
+            img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        assert list(no_album.crop(layout.album).getdata()) == list(baseline.crop(layout.album).getdata())
+
+    def test_long_album_truncates_with_an_ellipsis(self):
+        # The album line shares _truncate_to_width with every other halo-
+        # drawn line — check it actually shortens a too-long album string
+        # for the album rect's own width at the capped 36px font, the same
+        # way it already does for artist/title.
+        from PIL import ImageDraw
+
+        metrics = _LARGE_METRICS
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        long_album = "A Very Long Album Name Indeed Of Considerable Length" * 3
+        img = Image.new("RGB", (metrics.width, metrics.height))
+        draw = ImageDraw.Draw(img)
+        font = _load_font(metrics.font_body)
+        max_w = layout.album[2] - layout.album[0] - metrics.pad
+        truncated = _truncate_to_width(draw, long_album, font, max_w)
+        assert len(truncated) < len(long_album)
+        assert truncated.endswith("...")
+
+    def test_long_album_stays_within_the_rect_on_the_frame(self, compositor):
+        metrics = _LARGE_METRICS
+        img = self._panel(metrics)
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        long_album = "A Very Long Album Name Indeed Of Considerable Length" * 3
+        with_album = self._compose(compositor, metrics, img, album=long_album)
+        without_album = self._compose(compositor, metrics, img, album="")
+        bbox = _diff_bbox(with_album, without_album)
+        assert bbox is not None
+        assert layout.album[0] <= bbox[0] and bbox[2] <= layout.album[2]
+
+
+class TestLargeFontCaps:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_load_font_called_with_capped_body_and_readout_sizes(self, compositor):
+        metrics = _LARGE_METRICS
+        img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        with patch("dial_display_compositor._load_font", wraps=_load_font) as spy:
+            compositor.compose(
+                img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album", volume=42),
+                metrics=metrics,
+            )
+        sizes = {call.args[0] for call in spy.call_args_list}
+        assert FONT_BODY_MAX_PX in sizes
+        assert FONT_READOUT_MAX_PX in sizes
+        assert 49 not in sizes  # the uncapped body size at this panel — never reached
+        assert 56 not in sizes  # the uncapped readout size at this panel — never reached
+
+    def test_title_glyph_is_narrower_than_the_uncapped_scaled_size(self, compositor):
+        # Compare the real (capped) metrics against what this same panel
+        # would have resolved to without the cap — a direct A/B rather than
+        # a magic pixel threshold. The title rect is far wider than either
+        # rendering of "Title" needs, so — unlike its height, which the
+        # halo's rect-sized canvas always fills — glyph WIDTH is a clean
+        # measure of the font actually used.
+        metrics = _LARGE_METRICS
+        with patch("dial_touch_layout.FONT_BODY_MAX_PX", 999):
+            uncapped_metrics = metrics_for(640, 480, 0.127)
+        assert uncapped_metrics.font_body == 49
+        assert metrics.font_body == 36
+
+        img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+
+        def glyph_width(m):
+            with_title = compositor.compose(
+                img, m.width, m.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, title="Title"), metrics=m,
+            )
+            without_title = compositor.compose(
+                img, m.width, m.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, title=""), metrics=m,
+            )
+            bbox = _diff_bbox(with_title.crop(layout.title), without_title.crop(layout.title))
+            assert bbox is not None
+            return bbox[2] - bbox[0]
+
+        assert glyph_width(metrics) < glyph_width(uncapped_metrics)
+
+    def test_speaker_icon_box_is_capped(self, compositor):
+        metrics = _LARGE_METRICS
+        img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        with patch("dial_display_compositor._draw_speaker_glyph", wraps=_draw_speaker_glyph) as spy:
+            compositor.compose(
+                img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, volume=42), metrics=metrics,
+            )
+        box = spy.call_args.args[1]
+        assert box[2] - box[0] == metrics.icon == FONT_READOUT_MAX_PX
+
+
+class TestLargeHaloCacheAccounting:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _panel(self):
+        return Image.new("RGB", (_LARGE_METRICS.width, _LARGE_METRICS.height), (200, 150, 100))
+
+    def test_three_misses_then_three_hits(self, compositor):
+        img = self._panel()
+        overlay = OverlayState(visible=True, artist="Artist", title="Title", album="Album")
+        compositor.compose(
+            img, _LARGE_METRICS.width, _LARGE_METRICS.height, rotate=False, bgr=False,
+            is_artwork=False, overlay=overlay, metrics=_LARGE_METRICS,
+        )
+        info = _halo_layer.cache_info()
+        assert info.misses == 3
+        assert info.hits == 0
+
+        compositor.compose(
+            img, _LARGE_METRICS.width, _LARGE_METRICS.height, rotate=False, bgr=False,
+            is_artwork=False, overlay=overlay, metrics=_LARGE_METRICS,
+        )
+        info = _halo_layer.cache_info()
+        assert info.misses == 3
+        assert info.hits == 3
+
+    def test_changing_only_the_album_adds_one_miss(self, compositor):
+        img = self._panel()
+        compositor.compose(
+            img, _LARGE_METRICS.width, _LARGE_METRICS.height, rotate=False, bgr=False,
+            is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album"),
+            metrics=_LARGE_METRICS,
+        )
+        misses_before = _halo_layer.cache_info().misses
+
+        compositor.compose(
+            img, _LARGE_METRICS.width, _LARGE_METRICS.height, rotate=False, bgr=False,
+            is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Other Album"),
+            metrics=_LARGE_METRICS,
+        )
+        assert _halo_layer.cache_info().misses == misses_before + 1
+
+
+class TestLargeNeverRaises:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_no_font_available_still_composes_a_full_frame(self, compositor):
+        metrics = _LARGE_METRICS
+        img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            result = compositor.compose(
+                img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album"),
+                metrics=metrics,
+            )
+        assert result.size == (metrics.width, metrics.height)
+
+    def test_halo_failure_still_draws_plain_album_text(self, compositor):
+        metrics = _LARGE_METRICS
+        img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        with patch("dial_display_compositor.ImageFilter.GaussianBlur", side_effect=RuntimeError("boom")):
+            with_album = compositor.compose(
+                img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, album="Album"), metrics=metrics,
+            )
+        baseline_blank = compositor.compose(
+            img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, album=""), metrics=metrics,
+        )
+        assert list(with_album.crop(layout.album).getdata()) != list(baseline_blank.crop(layout.album).getdata())

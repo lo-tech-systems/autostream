@@ -61,8 +61,9 @@ exception handling: every helper it calls already degrades gracefully on
 its own, and an unrecognised Body/Footer kind is a programming error, left
 to raise rather than be hidden.
 
-The artist and title lines (centre-low) are drawn over arbitrary album art,
-so they go through _draw_text_with_halo() rather than a plain draw.text():
+The album, title and artist lines (centre-low) are drawn over arbitrary
+album art, so they go through _draw_text_with_halo() rather than a plain
+draw.text():
 a soft, Gaussian-blurred dark glow is composited behind the text before the
 text itself is drawn, so it stays legible whether the artwork behind it is
 light or dark. The appliance name (top-left) sits over the dimmed top band
@@ -221,6 +222,10 @@ class OverlayState:
         rect is a separate zone carved out of the top band (see
         dial_touch_layout.layout_for). Appended after name/title so
         existing positional construction keeps working.
+    album: the now-playing album name, or "" to draw nothing. Drawn only
+        where the layout provides an album rect (the content tier with
+        room for it); ignored elsewhere. Appended last so existing
+        positional construction keeps working.
     """
 
     visible: bool = False
@@ -231,6 +236,7 @@ class OverlayState:
     name: str = ""
     title: str = ""
     dots: bool = False
+    album: str = ""
 
 
 @dataclass(frozen=True)
@@ -375,6 +381,7 @@ class Body:
     armed: bool = False    # BODY_REPEAT_ROW
     line: str = ""         # BODY_REPEAT_LINE
     rows: tuple = ()       # BODY_LIST_ROWS — same row tuples ListState.rows carries
+    album: str = ""        # BODY_NOW_PLAYING — drawn only where the layout has an album rect
 
 
 @dataclass(frozen=True)
@@ -892,10 +899,10 @@ def _draw_text_with_halo(
     """Draw *text* inside *rect* (left-aligned, or centred when
     align="center"), legible over arbitrary album art: a soft,
     Gaussian-blurred dark glow is composited behind the text before the
-    text itself is drawn in the glyph colour. Used for the appliance name
-    and artist line (left-aligned) and the repeat screen's replaying-layout
-    position line (centred, over its own artwork/logo base image) — see the
-    module docstring's halo paragraph.
+    text itself is drawn in the glyph colour. Used for the appliance name,
+    album, title and artist lines (left-aligned) and the repeat screen's
+    replaying-layout position line (centred, over its own artwork/logo base
+    image) — see the module docstring's halo paragraph.
 
     A blank *text*, a missing *font*, truncation-to-nothing, or any Pillow
     failure while building the halo all degrade gracefully: the halo step
@@ -1214,6 +1221,8 @@ def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
 def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     layout = layout_for(metrics.width, metrics.height, metrics=metrics)
     font = _load_font(metrics.font_body)
+    if layout.album is not None:
+        _draw_text_with_halo(img, layout.album, body.album, font, metrics)
     _draw_text_with_halo(img, layout.title, body.title, font, metrics)
     _draw_text_with_halo(img, layout.artist, body.artist, font, metrics)
 
@@ -1437,7 +1446,7 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
             name=overlay.name, volume=overlay.volume, muted=overlay.muted,
             dots_filled=0 if overlay.dots else None,
         ),
-        body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist),
+        body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist, album=overlay.album),
         footer=Footer(FOOTER_VOLUME),
     )
 
