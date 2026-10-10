@@ -27,7 +27,9 @@ import threading
 import time
 
 from autostream_dials import (
+    dial_proto_generation,
     get_dial_sighting,
+    parse_dial_entries,
     remove_dial_entry,
     validate_dial_name,
     write_dial_entry,
@@ -312,6 +314,21 @@ def _push_once(path: str, uuid: str, appliance_id: str) -> None:
         return
     time.sleep(_PUSH_RETRY_DELAY_S)
     _post_push(sighting.ip, sighting.port, path, appliance_id, _PUSH_TIMEOUT_S)
+
+
+def eligible_dial_uuids(min_generation: int, *, exclude=()) -> list[str]:
+    """The authorised dials that are sighted now and speak at least
+    *min_generation*, in the authorised list's order, less *exclude*. Reads
+    the dials file: not for a request thread or the coordinator loop."""
+    out = []
+    for entry in parse_dial_entries():
+        if entry.uuid in exclude:
+            continue
+        sighting = get_dial_sighting(entry.uuid)
+        if sighting is None or dial_proto_generation(sighting.dial_proto) < min_generation:
+            continue
+        out.append(entry.uuid)
+    return out
 
 
 def _push_worker_loop(jobs: "queue.SimpleQueue[tuple[str, str, str]]") -> None:

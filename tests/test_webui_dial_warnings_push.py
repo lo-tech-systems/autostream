@@ -211,9 +211,9 @@ def _notify(entries, sightings, appliance_id=APPLIANCE_ID):
     enqueue_push calls."""
     with (
         patch("autostream_dial_warnings.get_appliance_id", return_value=appliance_id),
-        patch("autostream_dial_warnings.parse_dial_entries",
+        patch("autostream_webui_dials.parse_dial_entries",
               return_value=[SimpleNamespace(uuid=u) for u in entries]),
-        patch("autostream_dial_warnings.get_dial_sighting", side_effect=sightings.get),
+        patch("autostream_webui_dials.get_dial_sighting", side_effect=sightings.get),
         patch("autostream_webui_dials.enqueue_push") as enqueue,
     ):
         dw.notify_dials_warnings_changed()
@@ -254,6 +254,17 @@ class TestTargets:
     def test_never_raises(self):
         with patch("autostream_dial_warnings.get_appliance_id", side_effect=RuntimeError("x")):
             dw.notify_dials_warnings_changed()
+
+
+class TestEligible:
+    def test_returns_the_authorised_order_less_exclusions(self):
+        sightings = {u: _sighting(u, "v3") for u in ("a", "b", "c")}
+        with (
+            patch("autostream_webui_dials.parse_dial_entries",
+                  return_value=[SimpleNamespace(uuid=u) for u in ("a", "b", "c")]),
+            patch("autostream_webui_dials.get_dial_sighting", side_effect=sightings.get),
+        ):
+            assert wd.eligible_dial_uuids(3, exclude={"b"}) == ["a", "c"]
 
 
 class TestSharedWorker:

@@ -21,7 +21,6 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
-from autostream_dials import dial_proto_generation, get_dial_sighting, parse_dial_entries
 from autostream_rpi import get_appliance_id
 
 # Limits a dial applies to what it receives; the text here is built to fit.
@@ -222,15 +221,10 @@ def notify_dials_warnings_changed() -> None:
         appliance_id = get_appliance_id()
         if not appliance_id:
             return
-        from autostream_webui_dials import enqueue_push
+        from autostream_webui_dials import eligible_dial_uuids, enqueue_push
 
-        for entry in parse_dial_entries():
-            sighting = get_dial_sighting(entry.uuid)
-            if sighting is None:
-                continue
-            if dial_proto_generation(sighting.dial_proto) < WARNINGS_MIN_GENERATION:
-                continue
-            enqueue_push(WARNINGS_PUSH_PATH, entry.uuid, appliance_id)
+        for uuid in eligible_dial_uuids(WARNINGS_MIN_GENERATION):
+            enqueue_push(WARNINGS_PUSH_PATH, uuid, appliance_id)
     except Exception:
         logging.debug("dial warnings: push enqueue failed", exc_info=True)
 
