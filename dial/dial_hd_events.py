@@ -22,12 +22,17 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import logging
+import select
 import socket
 import threading
+import time
 from typing import Callable
 
 SSE_MAX_CLIENTS = 4
 SSE_HEARTBEAT_S = 15.0
+# How often an idle stream looks at its own socket to see whether the client
+# has gone (a reloaded page closes its stream without the server writing).
+SSE_LIVENESS_S = 1.0
 # Kernel send buffer asked for on a stream socket: a client that stops
 # reading fills it after a few events and is dropped at the next write
 # timeout, instead of sitting on a large buffer.
@@ -200,6 +205,33 @@ def _event_bytes(seq: int, body: bytes) -> bytes:
     return b"id: %d\nevent: state\ndata: %s\n\n" % (seq, body)
 
 
+def _peer_closed(sock) -> bool:
+    """Whether the client has closed (or reset) its end of *sock*. A client
+    that is merely quiet is not."""
+    try:
+        if not select.select([sock], [], [], 0)[0]:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
+
+
+def _wait(handler, hub: ChangeHub, clients, seen: int) -> "int | None":
+    """The hub's sequence once it is past *seen*; None after one heartbeat
+    with no change. A client that went away ends the stream (OSError) within
+    SSE_LIVENESS_S instead of at the next write."""
+    deadline = time.monotonic() + SSE_HEARTBEAT_S
+    while True:
+        left = deadline - time.monotonic()
+        changed = hub.wait_for_change(seen, max(0.0, min(SSE_LIVENESS_S, left)))
+        if changed is not None or clients.stopping or hub.stopped:
+            return changed
+        if _peer_closed(handler.connection):
+            raise ConnectionResetError("client closed the stream")
+        if left <= SSE_LIVENESS_S:
+            return None
+
+
 def _stream(handler, hub: ChangeHub, clients) -> None:
     try:
         handler.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SSE_SEND_BUFFER_BYTES)
@@ -223,7 +255,7 @@ def _stream(handler, hub: ChangeHub, clients) -> None:
         _write(handler, _event_bytes(seq, body))
         seen = seq
     while not clients.stopping and not hub.stopped:
-        changed = hub.wait_for_change(seen, SSE_HEARTBEAT_S)
+        changed = _wait(handler, hub, clients, seen)
         if clients.stopping or hub.stopped:
             break
         if changed is None:

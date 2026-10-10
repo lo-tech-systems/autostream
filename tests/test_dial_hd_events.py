@@ -455,6 +455,31 @@ class TestEventStream:
         assert fresh.status == 200
         fresh.event()
 
+    def test_a_client_that_closes_is_noticed_without_any_write(self, stack, monkeypatch):
+        # A reloaded page drops its stream silently; with the heartbeat far
+        # away the server must still see the close and free the slot.
+        monkeypatch.setattr(hde, "SSE_HEARTBEAT_S", 60.0)
+        monkeypatch.setattr(hde, "SSE_LIVENESS_S", 0.1)
+        clients = [connect(stack) for _ in range(SSE_MAX_CLIENTS)]
+        for c in clients:
+            c.event()
+        assert stack.server.client_count() == SSE_MAX_CLIENTS
+        for c in clients:
+            c.close()
+        assert wait_until(lambda: stack.server.client_count() == 0, timeout=2.0)
+        fresh = connect(stack)
+        assert fresh.status == 200
+
+    def test_a_quiet_client_is_not_mistaken_for_a_closed_one(self, stack, monkeypatch):
+        monkeypatch.setattr(hde, "SSE_HEARTBEAT_S", 60.0)
+        monkeypatch.setattr(hde, "SSE_LIVENESS_S", 0.05)
+        client = connect(stack)
+        client.event()
+        time.sleep(0.4)
+        assert stack.server.client_count() == 1
+        stack.core.publish()
+        assert client.event()["json"]["seq"]
+
     def test_the_client_count_follows_connections(self, stack):
         assert stack.server.client_count() == 0
         a = connect(stack)

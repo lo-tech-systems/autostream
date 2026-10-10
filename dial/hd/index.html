@@ -9,6 +9,7 @@
 </head>
 <body class="hd">
 <main id="app" class="screen">
+<button type="button" class="handle" id="handle" aria-label="Open settings" aria-expanded="false"><span></span></button>
 <div class="main">
 <div class="left" id="left">
 <div class="section-label">Appliances</div>
@@ -39,9 +40,51 @@
 </div>
 </div>
 </div>
+<div class="scrim" id="scrim"></div>
+<section class="sheet" id="sheet" aria-label="Dial settings" inert>
+<div class="sheet-col">
+<h2>Screen</h2>
+<div class="setting">
+<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+<input class="hslider" type="range" min="5" max="100" value="80" id="brightness" aria-label="Brightness">
+<div class="level-num" id="brightness-num"></div>
+</div>
+<div class="setting-row"><span>Sleep after</span><div class="seg" id="sleep-after" role="group" aria-label="Sleep after"></div></div>
+<div class="setting-row"><span>Always show controls</span><label class="output-toggle"><input type="checkbox" id="always" aria-label="Always show controls"><span class="switch"></span></label></div>
+<div class="setting-row"><button type="button" class="pill-btn" id="sleep-now">Sleep now</button></div>
+</div>
+<div class="sheet-col">
+<h2>This dial</h2>
+<dl class="info" id="info"></dl>
+<div class="empty-note" id="info-note" hidden></div>
+</div>
+<div class="grip"></div>
+</section>
+<section class="eq" id="eq" aria-label="Equaliser" inert>
+<div class="eq-head">
+<button type="button" class="icon-btn" id="eq-close" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+<h2 class="eq-title">Equaliser <span class="eq-for" id="eq-for"></span></h2>
+<button type="button" class="pill-btn" id="eq-reset">Reset</button>
+</div>
+<div class="eq-body">
+<div class="eq-bands-row" id="eq-bands"></div>
+<canvas class="eq-graph" id="eq-graph" aria-label="Equaliser response"></canvas>
+</div>
+<div class="empty-note" id="eq-note" hidden></div>
+</section>
+<div class="modal" id="modal" hidden>
+<div class="card" id="card" role="alertdialog" aria-modal="true" aria-labelledby="card-title">
+<div class="card-title" id="card-title"></div>
+<div class="card-message" id="card-message"></div>
+<div class="card-source" id="card-source"></div>
+<div class="progress" id="card-progress"><div class="progress-bar" id="card-bar"></div></div>
+<div class="card-buttons" id="card-buttons"></div>
+</div>
+</div>
 <div class="offline-bar" id="offline" role="status"></div>
 <div class="toast" id="toast" role="status"></div>
 <div class="portrait-note">Turn the screen to landscape.</div>
+<div class="sleep" id="sleep" aria-hidden="true"><span>Touch to wake</span></div>
 </main>
 <script src="/static/hd.js"></script>
 </body>

@@ -191,6 +191,12 @@ class Scenario:
         return dataclasses.replace(self, snapshot=dataclasses.replace(self.snapshot, **overrides))
 
 
+def replay_scenario(name: str, state: str, **repeat_kwargs) -> Scenario:
+    """A scenario outside the corpus: the Lounge's repeat record in *state*
+    (any of the six), with the record's readings given by *repeat_kwargs*."""
+    return Scenario(name, _replay_snapshot(state, **repeat_kwargs), muted=None if state == "hold" else False)
+
+
 def _stylus_warning(dismissal="week", severity="warning"):
     return ApplianceWarning(
         "stylus_in1", severity, "Technics stylus", "Needs changing soon.", dismissal,

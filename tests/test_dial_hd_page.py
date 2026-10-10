@@ -83,3 +83,37 @@ def test_stylesheets_load_nothing_else():
         assert "@import" not in css, path
         for url in re.findall(r"url\(([^)]*)\)", css):
             assert url.strip("'\" ").startswith("#"), (path, url)
+
+
+def test_every_request_the_script_makes_names_a_real_route():
+    import sys
+    for path in (REPO_ROOT / "dial", REPO_ROOT / "core"):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    from dial_hd_actions import ACTIONS
+
+    source = (HD / "hd.js").read_text(encoding="utf-8")
+    sent = (
+        set(re.findall(r'post\("([a-z_]+)"', source))
+        | set(re.findall(r'sendDrag\([^,]+, "([a-z_]+)"', source))
+        | set(re.findall(r'action: "([a-z_]+)"', source))
+    )
+    served = set(ACTIONS) | {"settings", "panel_wake", "panel_sleep", "panel_activity"}
+    assert sent and sent <= served, sent - served
+    # Every action the dial has a use for in the page is one the page can send.
+    assert {"replay_start", "replay_restart", "replay_stop", "repeat_arm", "eq", "eq_reset",
+            "warning_dismiss", "dial_restart", "presence"} <= sent
+
+    routes = {"/api/v1/settings", "/api/v1/info", "/api/v1/state", "/api/v1/events",
+              "/api/v1/panel/wake", "/api/v1/panel/sleep", "/api/v1/panel/activity",
+              "/api/v1/actions/", "/api/v1/artwork/"}
+    assert set(re.findall(r'"(/api/v1/[a-z/_]*)"', source)) <= routes
+
+
+def test_script_draws_the_response_curve_from_the_appliances_filters():
+    source = (HD / "hd.js").read_text(encoding="utf-8")
+    # The bass and treble sliders of a two-band appliance move these bands.
+    assert re.search(r'bass: \[\["peq1", 1\], \["peq2", 1\]\]', source)
+    assert re.search(r'treble: \[\["peq6", 1\], \["peq5", 0\.5\]\]', source)
+    for kind in ("low_shelf", "high_shelf", "peak"):
+        assert f'"{kind}"' in source

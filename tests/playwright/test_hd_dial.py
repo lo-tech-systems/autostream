@@ -50,30 +50,77 @@ VIEWPORT = {"width": 800, "height": 480}
 # Servers
 # ---------------------------------------------------------------------------
 
+class FakePanel:
+    """The panel service as the server sees it: a sleep flag the page can
+    flip, and every call it makes recorded."""
+
+    INFO_ROWS = (
+        ("Dial name", "Lounge dial"), ("Firmware", "0.8.0"), ("IPv4", "192.0.2.10"), ("WiFi", "HomeNet"),
+        ("Signal", "Strong"), ("Disk free", "5.2 GB"), ("SD health", "84%"),
+    )
+
+    def __init__(self, publish) -> None:
+        self._publish = publish
+        self.asleep = False
+        self.backlight = "sysfs"
+        self.calls: list = []
+
+    def view(self) -> dict:
+        return {"asleep": self.asleep, "backlight": self.backlight}
+
+    def set_view(self, asleep: bool, backlight: str) -> None:
+        self.asleep, self.backlight = asleep, backlight
+        self._publish()
+
+    def wake(self) -> None:
+        self.calls.append("wake")
+        self.set_view(False, self.backlight)
+
+    touch = lambda self: self.calls.append("activity")  # noqa: E731
+
+    def sleep_now(self) -> None:
+        self.calls.append("sleep")
+        self.set_view(True, self.backlight)
+
+
 @pytest.fixture(scope="session")
 def hd_real():
     """The real HdServer over a FakeCore, started on a free port."""
+    from unittest.mock import patch
+
     import dial_hd_server as hds
     import hd_scenarios
     from dial_hd_events import ChangeHub
     from hd_fake_core import FakeCore
     from hd_http_support import close_management_server, management_server
 
-    # Each test's page leaves its event stream open until the server next
-    # writes to it, so the client cap is lifted for the whole run.
+    # A page closed without a clean goodbye is noticed within a second, but
+    # tests open pages faster than that now and then, so the client cap is
+    # lifted for the whole run.
     saved_cap = hds.SSE_MAX_CLIENTS
     hds.SSE_MAX_CLIENTS = 1000
     muted = [False]
     core = FakeCore(hd_scenarios.SCENARIOS["playing_artwork"].snapshot)
     management = management_server()
     hub = ChangeHub(core)
+    panel = FakePanel(hub.publish)
+    management.add_cfg_listener(lambda cfg: hub.publish())
     server = hds.HdServer(
-        SimpleNamespace(), core, http_server=management, hub=hub, port=0,
-        muted_fn=lambda service: muted[0],
+        SimpleNamespace(), core, http_server=management, hub=hub, port=0, panel=panel,
+        info_fn=lambda: FakePanel.INFO_ROWS, muted_fn=lambda service: muted[0],
+        # The scenarios carry fixed readings, so the server reads fixed clocks.
+        clock=lambda: hd_scenarios.NOW, wall_clock=lambda: hd_scenarios.WALL_NOW,
     )
     hub.start()
     server.start()
-    yield SimpleNamespace(core=core, server=server, hub=hub, muted=muted, url=f"http://127.0.0.1:{server.port}")
+    # The settings route persists the config; keep it off the disk.
+    saver = patch("dial_config.save_config", lambda cfg: None)
+    saver.start()
+    yield SimpleNamespace(
+        core=core, server=server, hub=hub, muted=muted, panel=panel, management=management,
+        url=f"http://127.0.0.1:{server.port}",
+    )
+    saver.stop()
     server.stop()
     hub.stop()
     close_management_server(management)

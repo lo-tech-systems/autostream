@@ -54,6 +54,17 @@ class Driver:
         """Make *scenario* the state the dial reports now."""
         if self.kind == "real":
             self.backend.muted[0] = scenario.muted
+            for descriptor in scenario.descriptors:
+                self.backend.core.warnings.register(descriptor)
+            window = self.backend.management._recovery_window
+            window.complete()
+            active, confirmed = scenario.recovery
+            if active:
+                window.open()
+                if confirmed:
+                    window.confirm_volume()
+            self.backend.panel.set_view(
+                bool(scenario.panel.get("asleep")), scenario.panel.get("backlight", "sysfs"))
             self.backend.core.publish(snapshot=scenario.snapshot)
         else:
             self._count += 1
@@ -200,8 +211,10 @@ class TestStates:
         row = rows(page).filter(has_text="Kitchen")
         expect(row.locator(".state")).to_have_text("Not authorised")
         row.click()
-        expect(page.locator("#toast")).to_have_text(
-            "Allow this dial in Kitchen's web UI (Setup, Dials): http://192.0.2.20:80/")
+        expect(page.locator("#card-title")).to_have_text("Not authorised")
+        expect(page.locator("#card-message")).to_have_text("Allow this dial in Kitchen's web UI (Setup, Dials)")
+        expect(page.locator("#card-source")).to_have_text("http://192.0.2.20:80/")
+        expect(page.locator("#toast")).not_to_have_class(re.compile("show"))
         page.wait_for_timeout(200)
         assert sent == []
 
@@ -612,17 +625,17 @@ class TestRightColumn:
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
     def test_a_filled_replay_row_shrinks_the_artwork_not_the_rows(self, page, hd_mock, size):
         hd = Driver("mock", hd_mock)
-        hd.show(hs.SCENARIOS["replaying"])
+        hd.show(hs.SCENARIOS["playing_artwork"])
         open_page(page, hd, size)
         empty = column_boxes(page)
         assert [n for n, _ in empty] == [".art-frame", ".track-row", "#volume-row"]
-        page.evaluate(
-            "(() => { const b = document.createElement('button'); b.textContent = 'Stop';"
-            " document.getElementById('replay-row').appendChild(b); })()")
-        filled = column_boxes(page)
-        assert [n for n, _ in filled] == [".art-frame", "#replay-row", ".track-row", "#volume-row"]
-        assert_column_sound(filled, size)
-        assert filled[0][1]["height"] <= empty[0][1]["height"]
+        for name in ("replaying", "replay_hold", "fading_out"):
+            hd.show(hs.SCENARIOS[name])
+            expect(page.locator("#replay-row")).to_be_visible()
+            filled = column_boxes(page)
+            assert [n for n, _ in filled] == [".art-frame", "#replay-row", ".track-row", "#volume-row"]
+            assert_column_sound(filled, size)
+            assert filled[0][1]["height"] <= empty[0][1]["height"]
         hd.cleanup()
 
 

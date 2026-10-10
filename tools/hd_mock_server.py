@@ -28,6 +28,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import http.server
 import json
 import re
@@ -90,10 +91,15 @@ ACTION_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
 ARTWORK_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 
 INFO_ROWS = [
-    ["Model", "autostream dial (mock)"],
-    ["Version", "0.0.0-mock"],
-    ["Address", "127.0.0.1"],
+    ["Dial name", "Lounge dial"],
+    ["Firmware", "0.0.0-mock"],
+    ["IPv4", "127.0.0.1"],
+    ["WiFi", "HomeNet"],
+    ["Signal", "Strong"],
+    ["Disk free", "5.2 GB"],
+    ["SD health", "84%"],
 ]
+SETTINGS_KEYS = ("brightness", "sleep_after_s", "always_show_controls")
 
 
 def load_script(path) -> list:
@@ -113,6 +119,16 @@ def load_script(path) -> list:
     return out
 
 
+class _QuietServer(http.server.ThreadingHTTPServer):
+    """A browser that goes away mid-response is not worth a traceback."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:
+        if not isinstance(sys.exc_info()[1], OSError):
+            super().handle_error(request, client_address)
+
+
 class MockServer:
     """The mock server as an object, so tests can start one on port 0."""
 
@@ -130,9 +146,9 @@ class MockServer:
         self._log = log or (lambda text: None)
         self._stopping = threading.Event()
         self._cut = 0                       # bumped by cut_streams()
-        self._settings = dict(hd_scenarios.SETTINGS)
-        self._httpd = http.server.ThreadingHTTPServer((bind, port), self._make_handler())
-        self._httpd.daemon_threads = True
+        self._overrides: dict = {}          # settings posted since the scenario was set
+        self._asleep = None                 # the panel's state once a page has changed it
+        self._httpd = _QuietServer((bind, port), self._make_handler())
         self._threads: list = []
 
     # ---- lifecycle -------------------------------------------------------
@@ -171,12 +187,17 @@ class MockServer:
         with self._cond:
             return self._scenario
 
-    def set_scenario(self, name: str) -> bool:
-        """Make *name* current and wake every stream. False when unknown."""
+    def set_scenario(self, name: str, *, keep_changes: bool = False) -> bool:
+        """Make *name* current and wake every stream. False when unknown.
+        The settings a page posted and the panel's sleep state it changed
+        are forgotten unless *keep_changes*."""
         if name not in hd_scenarios.SCENARIOS:
             return False
         with self._cond:
             self._scenario = name
+            if not keep_changes:
+                self._overrides = {}
+                self._asleep = None
             self._seq += 1
             self._state_cache = None
             self._cond.notify_all()
@@ -194,6 +215,16 @@ class MockServer:
         with self._cond:
             return list(self._actions)
 
+    def _bump(self) -> None:
+        with self._cond:
+            self._seq += 1
+            self._state_cache = None
+            self._cond.notify_all()
+
+    def _screen(self) -> dict:
+        """The screen settings now: the scenario's, with what a page posted."""
+        return {**hd_scenarios.SCENARIOS[self.scenario].settings, **self._overrides}
+
     def _record(self, action: str, body: dict) -> None:
         with self._cond:
             self._actions.append({"action": action, "body": body, "at": time.time()})
@@ -208,7 +239,13 @@ class MockServer:
         """(seq, wire body) of the current scenario, built once per change."""
         with self._cond:
             if self._state_cache is None or self._state_cache[0] != self._seq:
-                body = hd_scenarios.SCENARIOS[self._scenario].state(hub_seq=self._seq)
+                scenario = hd_scenarios.SCENARIOS[self._scenario]
+                panel = {**scenario.panel, **{k: v for k, v in self._overrides.items() if k in scenario.panel}}
+                if self._asleep is not None:
+                    panel["asleep"] = self._asleep
+                scenario = dataclasses.replace(
+                    scenario, panel=panel, settings={**scenario.settings, **self._overrides})
+                body = scenario.state(hub_seq=self._seq)
                 self._state_cache = (self._seq, dumps(body).encode("utf-8"))
             return self._state_cache
 
@@ -299,7 +336,7 @@ class MockServer:
         elif path == "/api/v1/info":
             handler.send_json(200, {"ok": True, "rows": INFO_ROWS})
         elif path == "/api/v1/settings":
-            handler.send_json(200, {"ok": True, "screen": dict(self._settings)})
+            handler.send_json(200, {"ok": True, "screen": self._screen()})
         elif path == "/mock/scenarios":
             handler.send_json(200, {"scenarios": list(hd_scenarios.SCENARIO_NAMES),
                                     "current": self.scenario})
@@ -331,22 +368,29 @@ class MockServer:
             self._log(f"action {name} {json.dumps(body)}")
             lead = self._leads.get(name)
             if lead:
-                self.set_scenario(lead)
+                self.set_scenario(lead, keep_changes=True)
             handler.send_json(200, {"ok": True})
         elif path == "/api/v1/settings":
             body = handler.read_body()
             if body is None:
                 return
-            if not body or any(key not in self._settings for key in body):
+            if not body or any(key not in SETTINGS_KEYS for key in body):
                 handler.send_json(400, {"ok": False, "error": "invalid_field"})
                 return
-            self._settings.update(body)
             self._record("settings", body)
-            handler.send_json(200, {"ok": True, "screen": dict(self._settings)})
+            with self._cond:
+                self._overrides.update(body)
+            self._bump()
+            handler.send_json(200, {"ok": True, "screen": self._screen()})
         elif path.startswith("/api/v1/panel/") and path[len("/api/v1/panel/"):] in PANEL_ACTIONS:
             if handler.read_body() is None:
                 return
-            self._record("panel_" + path.rsplit("/", 1)[1], {})
+            name = path.rsplit("/", 1)[1]
+            self._record("panel_" + name, {})
+            if name in ("wake", "sleep"):
+                with self._cond:
+                    self._asleep = name == "sleep"
+                self._bump()
             handler.send_json(200, {"ok": True})
         else:
             handler.send_json(404, {"ok": False, "error": "not_found"})
