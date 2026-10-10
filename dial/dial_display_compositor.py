@@ -48,12 +48,13 @@ case for a text failure is an overlay with the glyphs but no text — never an
 exception escaping compose(). See _load_font() for the font fallback chain
 this same discipline extends to.
 
-The appliance name (top-left) and the artist line (centre-low) are both
-drawn over arbitrary album art, so both go through _draw_text_with_halo()
-rather than a plain draw.text(): a soft, Gaussian-blurred dark glow is
-composited behind the text before the text itself is drawn, so it stays
-legible whether the artwork behind it is light or dark. The halo is drawn
-per element, confined to that element's own rectangle — never as a
+The artist and title lines (centre-low) are drawn over arbitrary album art,
+so they go through _draw_text_with_halo() rather than a plain draw.text():
+a soft, Gaussian-blurred dark glow is composited behind the text before the
+text itself is drawn, so it stays legible whether the artwork behind it is
+light or dark. The appliance name (top-left) sits over the dimmed top band
+instead, which gives it enough contrast on its own, so it is drawn plain.
+The halo is drawn per element, confined to that element's own rectangle — never as a
 whole-frame effect — the same discipline _draw_glyph_supersampled() applies
 to the selector chassis's check mark and chevrons (rendered at a higher
 resolution and downsampled with LANCZOS, so small diagonal strokes read
