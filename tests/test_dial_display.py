@@ -2021,6 +2021,95 @@ def _poll_with_artwork(display, fb):
         display._poll_once()
 
 
+class TestDeviceSwitchTransitionFrame:
+    """Item 10: switching directly from one playing appliance to another
+    must not leave the previous one's artwork on screen under the new
+    appliance's name — see _maybe_show_transition()/_show_transition_locked()."""
+
+    def _target_pair(self):
+        aid_a, aid_b = "a" * 20, "b" * 20
+        ta = _target(name="A", service_name="A", appliance_id=aid_a, auth="authorized", playing_since=1.0)
+        tb = _target(name="B", service_name="B", appliance_id=aid_b, auth="authorized", playing_since=2.0)
+        return ta, tb
+
+    def test_switching_between_two_playing_appliances_pushes_a_grey_frame_first(self):
+        ta, tb = self._target_pair()
+        display, fb, gt = _make_display(targets=[ta])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        before = len(fb.displayed)
+
+        gt.return_value = [tb]
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+
+        pushed = fb.displayed[before:]
+        assert len(pushed) == 2
+        transition_frame, logo_frame = pushed
+        assert transition_frame.size == logo_frame.size
+        cx, cy = transition_frame.width // 2, transition_frame.height // 2
+        assert transition_frame.getpixel((cx, cy))[:3] == (32, 32, 32)
+
+    def test_showing_is_waiting_while_the_new_logo_has_not_landed_yet(self):
+        ta, tb = self._target_pair()
+        display, fb, gt = _make_display(targets=[ta])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+
+        gt.return_value = [tb]
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)), \
+             patch.object(display, "show_logo") as mock_show_logo:
+            display._poll_once()
+        mock_show_logo.assert_called_once()
+        assert display._showing == "waiting"
+
+    def test_no_transition_frame_when_reporting_id_unchanged(self):
+        ta, _ = self._target_pair()
+        display, fb, gt = _make_display(targets=[ta])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        before = len(fb.displayed)
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        pushed = fb.displayed[before:]
+        assert len(pushed) <= 1  # at most the (deduped-away) logo re-render, never a transition
+
+    def test_no_transition_frame_on_the_very_first_poll(self):
+        # enable() already rendered the logo; the first poll's own
+        # show_logo() call dedupes against it (still "logo") -- no stale
+        # artwork to guard against on a fresh start, so nothing more is
+        # pushed at all, let alone a transition frame.
+        ta, _ = self._target_pair()
+        display, fb, gt = _make_display(targets=[ta])
+        display.enable()
+        before = len(fb.displayed)
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        pushed = fb.displayed[before:]
+        assert len(pushed) == 0
+
+    def test_no_transition_frame_when_switching_to_nothing_playing(self):
+        ta, _ = self._target_pair()
+        display, fb, gt = _make_display(targets=[ta])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        before = len(fb.displayed)
+        gt.return_value = []
+        display._poll_once()
+        pushed = fb.displayed[before:]
+        assert len(pushed) == 0  # still deduped against the same logo -- no transition either
+
+    def test_show_transition_locked_is_a_noop_when_backend_closed(self):
+        display, fb, gt = _make_display(targets=[])
+        with display._lock:
+            display._show_transition_locked()
+        assert fb.displayed == []
+
+
 class TestLogoOverlayGating:
     """A track change swaps the base image to the placeholder logo and
     clears artist/title, but must not by itself drop a held overlay: the

@@ -157,6 +157,12 @@ REPEAT_COUNTER_LATENCY_S = 2.0
 # lost: any tap while hidden restores them at once anyway.
 CONTROLS_HIDE_SECONDS = 6.0
 
+# A plain dark base pushed for the moment between the display switching to
+# show a different appliance and that appliance's own artwork/logo actually
+# landing — see _show_transition_locked(). A step lighter than the list
+# chassis (16, 16, 16) so it reads as "waiting", not as a list screen.
+_TRANSITION_RGB = (32, 32, 32)
+
 
 # ---------------------------------------------------------------------------
 # Screen policy table
@@ -1501,6 +1507,25 @@ class DialDisplay:
             overlay=overlay,
             metrics=metrics,
         ))
+
+    def _show_transition_locked(self) -> None:
+        """A plain dark base while the newly-shown appliance's own artwork
+        or logo is fetched/rendered: the previous appliance's artwork must
+        never linger on screen under the new appliance's name — see
+        _maybe_show_transition(), which calls this exactly when the
+        reporting-from appliance has just changed. Caller holds self._lock;
+        a no-op when no backend is open. Drops the artwork cache so the
+        fetch that follows always paints, and marks self._showing
+        "waiting" so neither show_logo()'s nor _show_artwork()'s own
+        dedupe (both compare against "logo"/"artwork") mistakes this for
+        already showing something."""
+        if not (self._backend_open and self._backend is not None):
+            return
+        width, height = self._logical_dims()
+        self._source_artwork_url = ""
+        self._current_rendered_image = None
+        self._showing = "waiting"
+        self._display_locked(Image.new("RGB", (width, height), _TRANSITION_RGB))
 
     def _effective_overlay_locked(self, snapshot: OverlayState) -> OverlayState:
         """Merge now-playing state into the touch-published overlay snapshot
@@ -2919,6 +2944,26 @@ class DialDisplay:
             entry is not None and entry.dial_outputs and entry.auth != AUTH_UNAUTHORIZED
         )
 
+    def _maybe_show_transition(self, previous_reporting_id: "str | None") -> None:
+        """Push a brief dark transition frame (_show_transition_locked())
+        when self._reporting_appliance_id has just changed, this tick,
+        directly from one appliance to a DIFFERENT one — poll thread only;
+        call once the tick's own reporting id is final, in either branch of
+        _poll_once (something playing, or an idle focus taking over from a
+        stopped one). A no-op when it is unchanged, cleared (nothing
+        playing/focused now), or was previously unset: a fresh start (boot,
+        or the first appliance ever seen) has no stale artwork on screen to
+        guard against, so it goes straight to that appliance's own logo/
+        artwork with no transition flash first."""
+        reporting_id = self._reporting_appliance_id
+        if (
+            reporting_id is not None
+            and previous_reporting_id is not None
+            and reporting_id != previous_reporting_id
+        ):
+            with self._lock:
+                self._show_transition_locked()
+
     def _close_bound_screen_if_unfocused(self) -> None:
         """Poll thread: pop whichever screen is showing if its own policy
         says it is bound to an appliance (the outputs list, the per-output
@@ -2947,6 +2992,11 @@ class DialDisplay:
             self._dots_active = False
             self._outputs_available = False
             return
+
+        # Captured before anything below can change it — compared against
+        # this tick's own final value at _maybe_show_transition()'s two call
+        # sites, one per branch (nothing playing vs. something playing).
+        previous_reporting_id = self._reporting_appliance_id
 
         targets = self._get_display_targets()
         # A source that WAS playing and has now stopped drops out of the
@@ -3146,6 +3196,7 @@ class DialDisplay:
                     self._update_dots_active(now)
                     self._update_outputs_available()
 
+            self._maybe_show_transition(previous_reporting_id)
             self._close_bound_screen_if_unfocused()
             self.show_logo()
             return
@@ -3261,6 +3312,7 @@ class DialDisplay:
         self._reporting_appliance_id = reporting_id
         self._update_dots_active(time.monotonic())
         self._update_outputs_available()
+        self._maybe_show_transition(previous_reporting_id)
         self._close_bound_screen_if_unfocused()
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None

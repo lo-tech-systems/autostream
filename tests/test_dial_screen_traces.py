@@ -349,6 +349,7 @@ def _snapshot(ctx: _Ctx) -> dict:
 
     return {
         "screen": d._screen,
+        "showing": d._showing,
         "screen_request": d._screen_request,
         "page_request": d._page_request,
         "selector": _list_state(d._selector),
@@ -1033,6 +1034,20 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
+    # A direct switch from one playing appliance to another (no gap in
+    # between) pushes a brief dark transition frame before the new
+    # appliance's own logo/artwork lands, so the previous one's artwork
+    # never lingers under the new name.
+    aid_a, aid_b = _aid("t1a"), _aid("t1b")
+    ta = _target("T1A", aid_a, playing_since=1.0)
+    tb = _target("T1B", aid_b, playing_since=2.0)
+    add("device_switch_pushes_transition_frame", [
+        ("targets", [ta]),
+        ("poll",),
+        ("targets", [tb]),
+        ("poll",),
+    ])
+
     return scenarios
 
 
@@ -1186,13 +1201,18 @@ class TestScreenTraceCorpus:
 # compare what remains against a frozen copy of the golden taken immediately
 # before this feature's screens/rows/steps existed.
 #
-# Two scenarios are deliberately excluded from the strict comparison, both
-# for reasons unrelated to the outputs feature itself:
+# A handful of scenarios are deliberately excluded from the strict
+# comparison, all for reasons unrelated to the outputs feature itself:
 #   - "picker_touch_does_not_restart_timeout" was renamed to
 #     "picker_touch_restarts_timeout" and its own recorded values legitimately
 #     changed -- it exists specifically to pin the picker row's
 #     touch_extends_timeout field, which this same change flips from False to
 #     True (a deliberate, reviewed product decision, not a regression).
+#   - "outputs_closes_when_reporting_appliance_changes" switches directly
+#     from one playing appliance to another: it now also pushes the brief
+#     dark transition frame (see device_switch_pushes_transition_frame),
+#     one more frame than before -- a deliberate, reviewed fix, not a
+#     regression.
 #   - every "random_walk_*" scenario's step sequence itself changed (the
 #     random-walk action-kind list gained new entries, which reshuffles what
 #     every later rng.choice() draws for a given seed) -- these are
@@ -1205,15 +1225,20 @@ _RENAMED_SCENARIOS = {
     "picker_touch_does_not_restart_timeout": "picker_touch_restarts_timeout",
 }
 
+_CONTENT_CHANGED_SCENARIOS = {
+    "outputs_closes_when_reporting_appliance_changes":
+        "now also pushes the transition frame on its direct appliance-to-appliance switch",
+}
+
 
 def _strip_new_fields(step: dict) -> dict:
-    """*step*'s snapshot dict with every field the outputs feature added
-    removed, so what remains is exactly the shape the pre-outputs golden
-    recorded."""
+    """*step*'s snapshot dict with every field a later change added removed,
+    so what remains is exactly the shape the pre-outputs golden recorded."""
     stripped = dict(step)
     stripped.pop("outputs", None)
     stripped.pop("output_detail", None)
     stripped.pop("outputs_optimistic", None)
+    stripped.pop("showing", None)
     if "touch_surface" in stripped:
         stripped["touch_surface"] = stripped["touch_surface"][:3]
     return stripped
@@ -1229,6 +1254,8 @@ class TestPreOutputsScenariosUnchanged:
             if name.startswith("random_walk_"):
                 continue
             if name in _RENAMED_SCENARIOS:
+                continue
+            if name in _CONTENT_CHANGED_SCENARIOS:
                 continue
             assert name in new, f"scenario {name!r} present in the pre-outputs golden is missing from the current one"
             new_trace = new[name]
