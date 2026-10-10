@@ -120,6 +120,7 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_appliance_models import (
+    _dial_update_banner_text,
     _OUTPUT_EQ_ALL_FIELDS,
     _OUTPUT_EQ_BOOL_FIELDS,
     _OUTPUT_EQ_DB_FIELDS,
@@ -404,6 +405,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
             "stylus": playback.stylus_banner_text or "",
             "belt": playback.belt_banner_text or "",
             "bearing": playback.bearing_banner_text or "",
+            "dial_update": _dial_update_banner_text(),
         }
         try:
             from autostream_core import get_active_track_identification_snapshot
@@ -430,6 +432,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         "playback_banner_text": warnings.get("stylus"),
         "belt_banner_text": warnings.get("belt"),
         "bearing_banner_text": warnings.get("bearing"),
+        "dial_update_banner_text": warnings.get("dial_update") or "",
         "track_identification": ti_dict,
         # Always present (unlike "repeat" below): the session tracker runs
         # regardless of whether the repeat feature/block exists at all.

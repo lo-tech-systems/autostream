@@ -263,7 +263,7 @@ def build_home_state(
             "preferences": {},
             "playback": {},
             "input_levels": [],
-            "warnings": {"stylus": "", "belt": "", "bearing": ""},
+            "warnings": {"stylus": "", "belt": "", "bearing": "", "dial_update": ""},
             "outputs": [],
             "muted": mute_state.is_muted(),
             "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
@@ -344,6 +344,7 @@ def build_home_state(
             "stylus": playback.stylus_banner_text or "",
             "belt": playback.belt_banner_text or "",
             "bearing": playback.bearing_banner_text or "",
+            "dial_update": _dial_update_banner_text(),
         },
         "outputs": outputs,
         "muted": mute_state.is_muted(),
@@ -351,6 +352,16 @@ def build_home_state(
         "track_identification": ti_dict,
         **_session_and_repeat_fields(),
     }
+
+
+def _dial_update_banner_text() -> str:
+    """Dial-update banner text, or "" when none is due or the dial scanner
+    is unavailable (never raises)."""
+    try:
+        from autostream_dials import build_dial_update_banner_text
+        return build_dial_update_banner_text()
+    except Exception:
+        return ""
 
 
 def _session_and_repeat_fields() -> dict:

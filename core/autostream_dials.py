@@ -279,6 +279,13 @@ def dials_needing_update() -> list[DialSighting]:
     return [s for s in get_all_sightings() if sighting_needs_update(s)]
 
 
+def build_dial_update_banner_text() -> str:
+    """Home page banner text: non-empty when at least one currently sighted
+    dial does not advertise the current protocol dialect.  The wording is the
+    same whatever the count; the Setup page's dial card flags each dial."""
+    return "Dial updates required" if dials_needing_update() else ""
+
+
 def start_dial_scanner(
     shutdown_event: "threading.Event | None" = None,
 ) -> None:

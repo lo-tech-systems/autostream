@@ -25,7 +25,7 @@ from urllib.parse import parse_qs
 from autostream_config import (
     mark_configured,
 )
-from autostream_dials import parse_dial_entries
+from autostream_dials import parse_dial_entries, sighting_needs_update
 
 try:
     from autostream_dials import get_all_sightings as _get_dial_sightings
@@ -539,6 +539,7 @@ def _dial_card_html(
     last_seen: str = "",
     fw_version: str = "",
     needs_update: bool = False,
+    needs_update_protocol: bool = False,
     pin_recovery: bool = False,
     ip: str = "",
     sdmon: bool = False,
@@ -580,6 +581,13 @@ def _dial_card_html(
         if pin_recovery else ""
     )
 
+    protocol_update = bool(online and needs_update_protocol)
+    data_needs_update = ' data-needs-update="true"' if protocol_update else ""
+    update_badge_html = (
+        '<span class="dial-badge dial-badge-update">Needs update</span>'
+        if protocol_update else ""
+    )
+
     title_text = html.escape(name if name else uuid[:16])
     fw_span = (
         f'<span style="font-size:0.75rem;color:var(--color-text-muted);'
@@ -598,7 +606,7 @@ def _dial_card_html(
     fw_update_btn = (
         '<button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"'
         ' data-dial-action="update">Update firmware</button>'
-    ) if (online and needs_update) else ""
+    ) if (online and (needs_update or needs_update_protocol)) else ""
     show_screen_btn = (
         '<button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"'
         ' data-dial-action="show-screen">Show dial screen</button>'
@@ -628,7 +636,7 @@ def _dial_card_html(
     card_html = settings_card_html(f"""
           <div class="dial-card" data-dial-uuid="{su}"
                data-authorized="{'true' if authorized else 'false'}"
-               data-online="{'true' if online else 'false'}"{data_new}
+               data-online="{'true' if online else 'false'}"{data_new}{data_needs_update}
                data-pin-set="false">
             <div class="dial-card-top">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
@@ -638,6 +646,7 @@ def _dial_card_html(
                 <span style="display:flex;align-items:center;gap:0.35rem;">
                   <span class="dial-badge {badge_cls}">{badge_text}</span>
                   {recovery_badge_html}
+                  {update_badge_html}
                 </span>
               </div>
               <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
@@ -1694,6 +1703,7 @@ def _setup_dial_cards_html() -> tuple:
     _n_auth = len(_authorized_entries)
     _n_online = sum(1 for e in _authorized_entries if e.uuid in _sightings_by_uuid)
     _n_new = sum(1 for s in _all_sightings if s.uuid not in _authorized_uuids)
+    _n_needs_update = sum(1 for s in _all_sightings if sighting_needs_update(s))
     if _n_auth == 0 and _n_new == 0:
         _dials_summary = "No dials"
     elif _n_auth == 0:
@@ -1702,6 +1712,8 @@ def _setup_dial_cards_html() -> tuple:
         _dials_summary = f"{_n_auth} authorized · {_n_new} new"
     else:
         _dials_summary = f"{_n_auth} authorized" + (f" · {_n_online} online" if _n_online else "")
+    if _n_needs_update:
+        _dials_summary += f" · {_n_needs_update} need update"
     _dials_summary = html.escape(_dials_summary)
     _app_ver = get_app_version()
     _dial_cards_html = ""
@@ -1721,6 +1733,7 @@ def _setup_dial_cards_html() -> tuple:
             last_seen=_ls,
             fw_version=_fw,
             needs_update=_needs_upd,
+            needs_update_protocol=bool(_sighting is not None and sighting_needs_update(_sighting)),
             pin_recovery=_pin_recovery,
             ip=(_sighting.ip if _sighting else ""),
             sdmon=bool(getattr(_sighting, "sdmon", False)) if _sighting is not None else False,
@@ -1736,6 +1749,7 @@ def _setup_dial_cards_html() -> tuple:
                 online=True,
                 fw_version=_new_fw,
                 needs_update=_new_needs_upd,
+                needs_update_protocol=sighting_needs_update(_sighting),
                 pin_recovery=bool(_sighting.pin_recovery),
                 ip=_sighting.ip,
                 sdmon=bool(getattr(_sighting, "sdmon", False)) if _sighting is not None else False,
@@ -2060,6 +2074,7 @@ def send_setup_page(
 .dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
 .dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
 .dial-badge-recovery{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-badge-update{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
@@ -3536,6 +3551,10 @@ def send_setup_page(
           if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }}
+        // Deep link from the Home page dial-update banner.
+        window.addEventListener('DOMContentLoaded', function() {{
+          if (location.hash === '#dials') openPanel('dials');
+        }});
         function _repeatCodecLabel(codec) {{
           if (!codec) return '';
           var m = /^mp2_(\\d+)$/.exec(String(codec));
@@ -3968,8 +3987,9 @@ def send_setup_page(
           var sub = document.getElementById('dials-card-sub');
           if (!sub || !_setupPanelIsLoaded('dials')) return;
           var all = document.querySelectorAll('.dial-card');
-          var nAuth = 0, nOnline = 0, nNew = 0;
+          var nAuth = 0, nOnline = 0, nNew = 0, nUpdate = 0;
           all.forEach(function(c) {{
+            if (c.dataset.needsUpdate === 'true') nUpdate++;
             if (c.dataset.authorized === 'true') {{
               nAuth++;
               if (c.dataset.online === 'true') nOnline++;
@@ -3980,6 +4000,7 @@ def send_setup_page(
           else if (nAuth === 0) {{ text = nNew + ' new'; }}
           else if (nNew > 0) {{ text = nAuth + ' authorized · ' + nNew + ' new'; }}
           else {{ text = nAuth + ' authorized' + (nOnline ? ' · ' + nOnline + ' online' : ''); }}
+          if (nUpdate > 0) text += ' · ' + nUpdate + ' need update';
           sub.textContent = text;
         }}
 

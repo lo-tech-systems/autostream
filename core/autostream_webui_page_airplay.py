@@ -14,7 +14,7 @@ import logging
 
 from typing import Optional
 
-from autostream_appliance_models import build_output_list
+from autostream_appliance_models import _dial_update_banner_text, build_output_list
 from autostream_appliances import get_all_appliances
 from autostream_core import (
     get_monitor_levels_dbfs,
@@ -268,6 +268,7 @@ def send_airplay_page(
     stylus_banner_text = playback_snapshot.stylus_banner_text or ""
     belt_banner_text = playback_snapshot.belt_banner_text or ""
     bearing_banner_text = playback_snapshot.bearing_banner_text or ""
+    dial_update_banner_text = _dial_update_banner_text()
     hostname_label = _display_hostname_label()
 
     # Determine the active input for the initial Now Playing card render.
@@ -476,8 +477,8 @@ def send_airplay_page(
         function onStatusPollData(d) {{
           renderNowPlayingCard(d);
           updateRepeatButton(d);
-          ['stylus', 'belt', 'bearing'].forEach(function(item) {{
-            var el = document.getElementById(item + '-warning-banner');
+          ['stylus', 'belt', 'bearing', 'dial_update'].forEach(function(item) {{
+            var el = document.getElementById(item.replace('_', '-') + '-warning-banner');
             if (!el) return;
             var key = item === 'stylus' ? 'playback_banner_text' : item + '_banner_text';
             var txt = String((d && d[key]) || '').trim();
@@ -722,6 +723,10 @@ def send_airplay_page(
         f" style='display:{'none' if not bearing_banner_text else 'block'};"
         f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
         f"{html.escape(bearing_banner_text)}</a>"
+        + f"<a id='dial-update-warning-banner' href='/setup#dials'"
+        f" style='display:{'none' if not dial_update_banner_text else 'block'};"
+        f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
+        f"{html.escape(dial_update_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + _placeholder_html
         + A2HS_PROMPT_HTML

@@ -57,6 +57,7 @@
 .dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
 .dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
 .dial-badge-recovery{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-badge-update{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
@@ -1441,6 +1442,10 @@
           if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }
+        // Deep link from the Home page dial-update banner.
+        window.addEventListener('DOMContentLoaded', function() {
+          if (location.hash === '#dials') openPanel('dials');
+        });
         function _repeatCodecLabel(codec) {
           if (!codec) return '';
           var m = /^mp2_(\d+)$/.exec(String(codec));
@@ -1873,8 +1878,9 @@
           var sub = document.getElementById('dials-card-sub');
           if (!sub || !_setupPanelIsLoaded('dials')) return;
           var all = document.querySelectorAll('.dial-card');
-          var nAuth = 0, nOnline = 0, nNew = 0;
+          var nAuth = 0, nOnline = 0, nNew = 0, nUpdate = 0;
           all.forEach(function(c) {
+            if (c.dataset.needsUpdate === 'true') nUpdate++;
             if (c.dataset.authorized === 'true') {
               nAuth++;
               if (c.dataset.online === 'true') nOnline++;
@@ -1885,6 +1891,7 @@
           else if (nAuth === 0) { text = nNew + ' new'; }
           else if (nNew > 0) { text = nAuth + ' authorized · ' + nNew + ' new'; }
           else { text = nAuth + ' authorized' + (nOnline ? ' · ' + nOnline + ' online' : ''); }
+          if (nUpdate > 0) text += ' · ' + nUpdate + ' need update';
           sub.textContent = text;
         }
 

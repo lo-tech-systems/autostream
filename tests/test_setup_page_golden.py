@@ -122,12 +122,13 @@ def _minimal_cfg(tmp_path: Path) -> Path:
 
 
 class _DialSighting:
-    def __init__(self, uuid, name, version, pin_recovery=False, ip="10.0.0.42"):
+    def __init__(self, uuid, name, version, pin_recovery=False, ip="10.0.0.42", dial_proto="v2"):
         self.uuid = uuid
         self.name = name
         self.version = version
         self.pin_recovery = pin_recovery
         self.ip = ip
+        self.dial_proto = dial_proto
 
 
 class _DialEntry:
