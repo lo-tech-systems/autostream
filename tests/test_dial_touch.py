@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -2107,6 +2107,15 @@ class TestNoWifiAndRestartingSurfaces:
         for xy in (UP_XY, DOWN_XY, MUTE_XY, (WIDTH // 2, HEIGHT // 2)):
             assert sm.on_filter_event(press_event(xy), now=0.1) == []
             sm.on_filter_event(release_event(), now=0.2)
+
+    def test_a_button_less_warning_surface_mapped_to_none_is_held_but_inert(self):
+        layout = nowifi_layout_for(WIDTH, HEIGHT)
+        with patch.dict(_GEOMETRY_FOR_SURFACE, {"notice": GEOMETRY_NONE}):
+            sm = TouchStateMachine(WIDTH, HEIGHT)
+            sm.set_surface("notice", False, now=0.0)
+            for rect in (layout.message, layout.dismiss, layout.restart):
+                assert sm.on_filter_event(press_event(_rect_center(rect)), now=0.1) == []
+                sm.on_filter_event(release_event(), now=0.2)
 
     def test_sdhealth_surface_map(self):
         assert _GEOMETRY_FOR_SURFACE[SURFACE_SDHEALTH] == GEOMETRY_SDHEALTH

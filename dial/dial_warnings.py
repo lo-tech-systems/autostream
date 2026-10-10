@@ -64,6 +64,18 @@ class WarningDescriptor:
     persisted: whether a finite dismissed_until is written to the store.
     snooze_for(severity) -> seconds, or None for an incident-scoped
       dismiss (suppressed until the source clears the warning).
+    title_for(severity) -> the readout-size line, replacing `title` when
+      set (a page whose heading depends on its severity).
+    progress_for(severity) -> a percent 0..100 drawn as a bar under the
+      message, or None for no bar.
+    interrupting: the page may open over a secondary screen, and a source
+      activating it wakes a sleeping panel. Priority still decides which
+      warning shows.
+    auto_clear_after_s: the manager reports the warning expired once it
+      has been active this long, and the display clears it like a source
+      would. None: only the source clears it.
+    A warning with no buttons is a notice: it cannot be dismissed and its
+    page is touch-inert.
     """
     id: str
     priority: int
@@ -74,6 +86,10 @@ class WarningDescriptor:
     buttons: tuple[WarningButton, ...]
     persisted: bool
     snooze_for: "object | None"
+    title_for: "object | None" = None
+    progress_for: "object | None" = None
+    interrupting: bool = False
+    auto_clear_after_s: "float | None" = None
 
     def button_for(self, zone: TouchZone) -> "WarningButton | None":
         for button in self.buttons:
@@ -148,6 +164,7 @@ class _WarningRuntime:
     active: bool = False
     severity: object = None
     dismissed_until: "float | None" = None   # None: not dismissed; inf: until the source clears
+    active_since: "float | None" = None      # when the current incident began; None while inactive
 
 
 class WarningManager:
@@ -193,13 +210,21 @@ class WarningManager:
 
     # ---- source API -------------------------------------------------------
 
-    def set_active(self, warning_id: str, severity=None) -> None:
+    def set_active(self, warning_id: str, severity=None) -> bool:
+        """Report the condition present. A repeat refreshes the severity
+        and keeps the incident's start time. Returns True when this call
+        began a new incident (it was inactive), False for a refresh or an
+        unknown id."""
         with self._lock:
             state = self._state.get(warning_id)
             if state is None:
-                return
+                return False
+            began = not state.active
+            if began:
+                state.active_since = self._clock()
             state.active = True
             state.severity = severity
+            return began
 
     def clear(self, warning_id: str) -> None:
         """End the incident: inactive, any dismissal forgotten (memory and
@@ -210,6 +235,7 @@ class WarningManager:
                 return
             state.active = False
             state.severity = None
+            state.active_since = None
             if state.dismissed_until is not None:
                 state.dismissed_until = None
                 if self._by_id[warning_id].persisted:
@@ -248,6 +274,22 @@ class WarningManager:
         with self._lock:
             state = self._state.get(warning_id)
             return state.severity if state else None
+
+    def expired(self, now: "float | None" = None) -> list[str]:
+        """The ids of active warnings whose auto_clear_after_s has run
+        out, in registry order. The caller clears them."""
+        if now is None:
+            now = self._clock()
+        out: list[str] = []
+        with self._lock:
+            for wid in self._order:
+                state = self._state[wid]
+                limit = self._by_id[wid].auto_clear_after_s
+                if limit is None or not state.active or state.active_since is None:
+                    continue
+                if now - state.active_since >= limit:
+                    out.append(wid)
+        return out
 
     def due(self, now: "float | None" = None) -> "WarningDescriptor | None":
         """The highest-priority warning that is active and not snoozed, or

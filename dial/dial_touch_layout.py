@@ -1114,12 +1114,13 @@ class WarningLayout:
     """A warning page with any number of button cells: the No-WiFi card
     and message row, the bottom row split into `cells` (left to right)
     with a vertical divider between each neighbouring pair (divider_xs,
-    one fewer than the cells) under the shared horizontal divider."""
+    one fewer than the cells) under the shared horizontal divider. With
+    no cells the message row is the whole card and there is no divider."""
 
     card: Rect
     message: Rect
     cells: tuple[Rect, ...]
-    divider_y: int
+    divider_y: "int | None"
     divider_xs: tuple[int, ...]
 
 
@@ -1130,9 +1131,13 @@ def warning_layout_for(
     No-WiFi table exactly (Dismiss | Restart); one cell is the SD card
     warning's undivided row exactly; more are the same row split evenly
     with the usual 2*margin dead gap between neighbours, offset to the
-    card's origin (whole-panel on compact). buttons < 1 is treated as 1."""
+    card's origin (whole-panel on compact). No buttons is a notice: the
+    message row is the whole card, with no cells, no dividers and no
+    horizontal divider (divider_y is None)."""
     n = nowifi_layout_for(width, height, metrics=metrics)
-    count = max(1, int(buttons))
+    count = max(0, int(buttons))
+    if count == 0:
+        return WarningLayout(card=n.card, message=n.card, cells=(), divider_y=None, divider_xs=())
     if count == 2:
         return WarningLayout(
             card=n.card, message=n.message, cells=(n.dismiss, n.restart),

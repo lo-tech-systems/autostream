@@ -1030,10 +1030,22 @@ class TestWarningLayout:
         assert w.cells == (s.dismiss,)
         assert w.divider_xs == ()
 
-    def test_zero_buttons_behaves_as_one(self):
-        s = sdhealth_layout_for(160, 128)
-        w = warning_layout_for(160, 128, buttons=0)
-        assert w.cells == (s.dismiss,)
+    @pytest.mark.parametrize("width,height", [(160, 128), (128, 128), (240, 240), (320, 240)])
+    def test_zero_buttons_is_the_whole_card_as_one_message_row(self, width, height):
+        n = nowifi_layout_for(width, height)
+        w = warning_layout_for(width, height, buttons=0)
+        assert w.card == n.card
+        assert w.message == n.card
+        assert w.cells == ()
+        assert w.divider_xs == ()
+        assert w.divider_y is None
+
+    def test_negative_buttons_is_treated_as_none(self):
+        assert warning_layout_for(160, 128, buttons=-1) == warning_layout_for(160, 128, buttons=0)
+
+    def test_one_and_two_buttons_are_unchanged_by_the_zero_form(self):
+        assert warning_layout_for(160, 128, buttons=1).divider_y is not None
+        assert warning_layout_for(160, 128, buttons=2).message != warning_layout_for(160, 128, buttons=2).card
 
     def test_three_buttons_are_ascending_non_overlapping_with_margin_gaps(self):
         metrics = metrics_for(320, 240, 0.1778)

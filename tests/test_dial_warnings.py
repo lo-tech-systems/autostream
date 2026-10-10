@@ -284,3 +284,74 @@ class TestButtonResolution:
         desc = _hi()
         assert desc.button_for(TouchZone.NOWIFI_DISMISS).action == ACTION_DISMISS
         assert desc.button_for(TouchZone.SDHEALTH_DISMISS) is None
+
+
+# ---------------------------------------------------------------------------
+# Generic descriptor fields: defaults, active_since and expired().
+# ---------------------------------------------------------------------------
+
+def _timed(after, wid="t") -> WarningDescriptor:
+    return WarningDescriptor(
+        id=wid, priority=10, screen=wid, geometry="none", title="T", message_for=None,
+        buttons=(), persisted=False, snooze_for=None, auto_clear_after_s=after,
+    )
+
+
+class TestGenericFields:
+    def test_new_fields_default_to_the_existing_behaviour(self):
+        for desc in (_hi(), _lo()):
+            assert desc.title_for is None and desc.progress_for is None
+            assert desc.interrupting is False and desc.auto_clear_after_s is None
+
+    def test_set_active_reports_a_new_incident_only(self):
+        manager = WarningManager([_timed(5.0)], WarningStore(None))
+        assert manager.set_active("t") is True
+        assert manager.set_active("t") is False
+        assert manager.set_active("nope") is False
+        manager.clear("t")
+        assert manager.set_active("t") is True
+
+    def test_expired_lists_only_rows_past_their_limit(self):
+        clock = _Clock()
+        manager = WarningManager(
+            [_timed(60.0, "a"), _timed(None, "b"), _timed(10.0, "c")],
+            WarningStore(None), clock=clock.now,
+        )
+        manager.set_active("a")
+        manager.set_active("b")
+        manager.set_active("c")
+        assert manager.expired() == []
+        clock.t += 10.0
+        assert manager.expired() == ["c"]
+        clock.t += 50.0
+        assert manager.expired() == ["a", "c"]
+        assert manager.expired(now=clock.t - 100.0) == []
+
+    def test_a_refresh_keeps_the_incident_start(self):
+        clock = _Clock()
+        manager = WarningManager([_timed(30.0)], WarningStore(None), clock=clock.now)
+        manager.set_active("t", severity=1)
+        clock.t += 20.0
+        manager.set_active("t", severity=2)
+        clock.t += 11.0
+        assert manager.expired() == ["t"]
+
+    def test_clear_restarts_the_clock_and_inactive_rows_never_expire(self):
+        clock = _Clock()
+        manager = WarningManager([_timed(30.0)], WarningStore(None), clock=clock.now)
+        assert manager.expired() == []
+        manager.set_active("t")
+        clock.t += 40.0
+        manager.clear("t")
+        assert manager.expired() == []
+        manager.set_active("t")
+        clock.t += 29.0
+        assert manager.expired() == []
+
+    def test_a_dismissed_row_still_expires(self):
+        clock = _Clock()
+        manager = WarningManager([_timed(30.0)], WarningStore(None), clock=clock.now)
+        manager.set_active("t")
+        manager.dismiss("t")
+        clock.t += 31.0
+        assert manager.expired() == ["t"]

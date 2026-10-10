@@ -11061,3 +11061,204 @@ class TestUntypedRefusal:
             display._apply_status_to_auth(t, typed)
             display._apply_status_to_auth(t, typed)
         assert len([r for r in caplog.records if "refused this dial" in r.getMessage()]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Generic warning capabilities: title_for, progress_for, interrupting,
+# auto_clear_after_s and the button-less notice form, driven through rows
+# registered for the test only.
+# ---------------------------------------------------------------------------
+
+def _notice_descriptor(**overrides):
+    from dial_touch_layout import GEOMETRY_NONE
+    from dial_warnings import WarningDescriptor
+    fields = dict(
+        id="notice", priority=200, screen="notice", geometry=GEOMETRY_NONE,
+        title="Working", message_for=lambda sev: f"step {sev}", buttons=(),
+        persisted=False, snooze_for=None,
+        title_for=lambda sev: f"Title {sev}", progress_for=lambda sev: sev * 10,
+        interrupting=True, auto_clear_after_s=None,
+    )
+    fields.update(overrides)
+    return WarningDescriptor(**fields)
+
+
+class TestGenericWarningCapabilities:
+    @pytest.fixture
+    def rig(self):
+        clock = _Clock(1_000_000.0)
+        started = []
+
+        def build(**overrides):
+            notice = _notice_descriptor(**overrides)
+            display, fb, gt = _make_display(
+                targets=[],
+                warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), WarningStore(None), clock=clock.now),
+            )
+            for p in (
+                patch.dict(dd._WARNING_BY_ID, {notice.id: notice}),
+                patch.dict(dd.SCREEN_POLICIES, {notice.screen: dd._warning_policy_row(notice)}),
+            ):
+                p.start()
+                started.append(p)
+            display.enable()
+            display._poll_once()
+            _fold(display)
+            return display, fb, clock
+
+        yield build
+        for p in started:
+            p.stop()
+
+    def _painted_view(self, display):
+        with patch.object(
+            display._compositor, "compose_warning", wraps=display._compositor.compose_warning,
+        ) as mock_compose:
+            with display._lock:
+                display._display_warning_locked()
+        return mock_compose.call_args.args[3]
+
+    def test_default_descriptor_fields_leave_existing_rows_unchanged(self):
+        for desc in WARNING_DESCRIPTORS:
+            assert desc.title_for is None and desc.progress_for is None
+            assert desc.interrupting is False and desc.auto_clear_after_s is None
+
+    def test_painter_uses_title_for_and_progress_for(self, rig):
+        display, fb, clock = rig()
+        display._warning_active("notice", severity=4)
+        _fold(display)
+        view = self._painted_view(display)
+        assert view.title == "Title 4"
+        assert view.message == "step 4"
+        assert view.percent == 40
+        assert view.buttons == ()
+
+    def test_painter_falls_back_to_the_fixed_title_and_no_percent(self, rig):
+        display, fb, clock = rig(title_for=None, progress_for=None)
+        display._warning_active("notice", severity=4)
+        _fold(display)
+        view = self._painted_view(display)
+        assert view.title == "Working"
+        assert view.percent is None
+
+    def test_existing_warning_view_carries_no_percent(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        view = self._painted_view(display)
+        assert view.percent is None and view.title == "microSD Health"
+
+    def test_tick_warnings_clears_expired_rows(self, rig):
+        display, fb, clock = rig(auto_clear_after_s=60.0)
+        display._warning_active("notice", severity=1)
+        _fold(display)
+        assert display._screen == "notice"
+        clock.t += 59.0
+        display._tick_warnings()
+        assert display._screen_request is None and display._screen == "notice"
+        clock.t += 2.0
+        display._tick_warnings()
+        assert not display._warnings.is_active("notice")
+        assert display._screen_request == "main"
+        _fold(display)
+        assert display._screen == "main" and display._warning_screen is None
+
+    def test_tick_warnings_clear_drops_a_pending_request(self, rig):
+        display, fb, clock = rig(auto_clear_after_s=10.0)
+        display._warning_active("notice", severity=1)
+        assert display._screen_request == "notice"
+        clock.t += 11.0
+        display._tick_warnings()
+        assert display._screen_request is None
+
+    def test_interrupting_opens_over_a_secondary_screen(self, rig):
+        display, fb, clock = rig()
+        display._screen_request = "selector"
+        _fold(display)
+        assert display._screen == "selector"
+        display._warning_active("notice", severity=2)
+        assert display._screen_request == "notice"
+        _fold(display)
+        assert display._screen == "notice"
+        assert display._selector is None
+
+    def test_non_interrupting_does_not_open_over_a_secondary_screen(self, rig):
+        display, fb, clock = rig(interrupting=False)
+        display._screen_request = "selector"
+        _fold(display)
+        display._warning_active("notice", severity=2)
+        assert display._screen_request is None
+        _fold(display)
+        assert display._screen == "selector"
+
+    def test_interrupting_wakes_a_sleeping_panel(self, rig):
+        display, fb, clock = rig()
+        with display._lock:
+            display._sleep_locked()
+        assert display._display_sleeping
+        display._warning_active("notice", severity=2)
+        assert display._screen_request == "notice"
+        _fold(display)
+        assert not display._display_sleeping
+        assert display._screen == "notice"
+
+    def test_non_interrupting_does_not_wake_a_sleeping_panel(self, rig):
+        display, fb, clock = rig(interrupting=False)
+        with display._lock:
+            display._sleep_locked()
+        display._warning_active("notice", severity=2)
+        assert display._screen_request is None
+        assert display._display_sleeping
+
+    def test_interrupting_refresh_and_tick_do_not_rewake_after_sleep(self, rig):
+        display, fb, clock = rig()
+        display._warning_active("notice", severity=2)
+        _fold(display)
+        with display._lock:
+            display._sleep_locked()
+        display._warning_active("notice", severity=3)
+        display._tick_warnings()
+        assert display._screen_request is None and display._display_sleeping
+        display.notify_touch_activity()
+        _fold(display)
+        assert not display._display_sleeping and display._screen == "notice"
+
+    def test_interrupting_never_opens_over_restarting(self, rig):
+        display, fb, clock = rig()
+        display._screen_request = "restarting"
+        _fold(display)
+        assert display._screen == "restarting"
+        display._warning_active("notice", severity=2)
+        assert display._screen_request is None
+        _fold(display)
+        assert display._screen == "restarting"
+
+    def test_interrupting_does_not_request_again_while_showing(self, rig):
+        display, fb, clock = rig()
+        display._warning_active("notice", severity=2)
+        _fold(display)
+        display._warning_active("notice", severity=3)
+        display._tick_warnings()
+        assert display._screen_request is None
+
+    def test_higher_priority_page_is_not_replaced_by_a_lower_interrupting_one(self, rig):
+        display, fb, clock = rig(priority=10)
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        assert display._screen == "sdhealth"
+        display._warning_active("notice", severity=2)
+        _fold(display)
+        assert display._screen == "sdhealth"
+
+    def test_higher_priority_interrupting_page_replaces_an_open_lower_one(self, rig):
+        display, fb, clock = rig()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        display.on_sd_health_view(_sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        assert display._screen == "sdhealth"
+        display._warning_active("notice", severity=2)
+        _fold(display)
+        assert display._screen == "notice"

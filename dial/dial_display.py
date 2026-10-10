@@ -3612,7 +3612,8 @@ class DialDisplay:
         screen must stay until the reboot lands or times out) and while a
         higher-priority warning is already up; otherwise open with a fresh
         clock. A page that is already showing this warning is reopened in
-        place (same screen, fresh clock)."""
+        place (same screen, fresh clock). An interrupting warning first
+        pops whatever secondary screen is up and wakes a sleeping panel."""
         if self._screen == "restarting":
             return False
         desc = _WARNING_BY_ID[warning_id]
@@ -3622,6 +3623,13 @@ class DialDisplay:
             and _WARNING_BY_ID[showing.warning_id].priority > desc.priority
         ):
             return False
+        if desc.interrupting:
+            if self._screen != "main":
+                self._close_secondary_locked()
+            if self._display_sleeping:
+                self._wake_locked()
+                if self._screen_request == desc.screen:
+                    self._screen_request = None
         self._warning_screen = WarningScreenState(warning_id=warning_id, opened_at=time.monotonic())
         self._screen = desc.screen
         return True
@@ -4209,10 +4217,14 @@ class DialDisplay:
             return
         desc = _WARNING_BY_ID[screen.warning_id]
         pressed = self._pressed[0] if self._pressed is not None else None
-        message = desc.message_for(self._warnings.severity(desc.id)) if desc.message_for is not None else ""
+        severity = self._warnings.severity(desc.id)
+        message = desc.message_for(severity) if desc.message_for is not None else ""
+        title = desc.title_for(severity) if desc.title_for is not None else desc.title
+        percent = desc.progress_for(severity) if desc.progress_for is not None else None
         view = WarningView(
-            title=desc.title, message=message,
+            title=title, message=message,
             buttons=tuple(b.label for b in desc.buttons), geometry=desc.geometry, pressed=pressed,
+            percent=percent,
         )
         metrics = self._metrics_locked()
         base = self._current_base_image
@@ -4575,9 +4587,10 @@ class DialDisplay:
         is requested if it is due right now (main screen, awake, nothing
         else requested). Calling this on every poll while the condition
         holds is expected; the manager treats a repeat as a severity
-        refresh."""
-        self._warnings.set_active(warning_id, severity)
-        self._request_due_warning()
+        refresh. A warning that has just become active may wake a
+        sleeping panel if it is interrupting; a refresh never does."""
+        began = self._warnings.set_active(warning_id, severity)
+        self._request_due_warning(wake=began)
 
     def _warning_cleared(self, warning_id: str) -> None:
         """A source reports its condition gone: the incident ends (any
@@ -4591,18 +4604,28 @@ class DialDisplay:
         elif self._screen_request == screen:
             self._screen_request = None
 
-    def _request_due_warning(self) -> None:
+    def _request_due_warning(self, wake: bool = False) -> None:
         """Request the page of the highest-priority warning that is active
         and not snoozed, if any, and only while the main screen is showing
         with nothing else requested and the panel awake (never over a
         list, the info page, another warning or the restart screen, and
         never into a sleeping panel: the wake path calls this again).
-        Callable with or without self._lock: plain reads and one plain
-        request write, the same writes on_network_view() makes."""
-        if self._display_sleeping or self._screen != "main" or self._screen_request is not None:
-            return
+        An interrupting warning is also requested over a secondary screen
+        (the opener pops it), over a lower-priority warning page and over
+        a pending request other than the restart screen's, and with
+        wake=True into a sleeping panel (the opener wakes it); it is not
+        requested again while its own page is up. Callable with or
+        without self._lock: plain reads and one plain request write, the
+        same writes on_network_view() makes."""
         desc = self._warnings.due()
         if desc is None:
+            return
+        if desc.interrupting:
+            if self._screen in ("restarting", desc.screen) or self._screen_request == "restarting":
+                return
+            if self._display_sleeping and not wake:
+                return
+        elif self._display_sleeping or self._screen != "main" or self._screen_request is not None:
             return
         self._screen_request = desc.screen
         self._overlay_signal.set()
@@ -4760,7 +4783,11 @@ class DialDisplay:
         due while a list or menu was open), and write any snooze a
         Dismiss changed since the last write. Lock-free plain reads, the
         _check_secondary_timeout() discipline; the file write runs with
-        no lock held."""
+        no lock held. A warning that has been up for its
+        auto_clear_after_s is cleared here, through the same path a
+        source's clear takes."""
+        for warning_id in self._warnings.expired():
+            self._warning_cleared(warning_id)
         self._request_due_warning()
         self._warnings.flush()
 

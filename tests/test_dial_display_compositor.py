@@ -139,6 +139,7 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_NONE,
     GEOMETRY_NOWIFI,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
@@ -6154,3 +6155,160 @@ class TestRevealNumpyPath:
         got = _reveal_frame(base, layers, 0.5)
         assert len(calls) > 1
         assert got.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
+
+
+# ---------------------------------------------------------------------------
+# Generic warning body: the optional progress bar and the button-less notice,
+# and the guard that the existing No-WiFi and SD frames did not change.
+# ---------------------------------------------------------------------------
+
+_WARNING_MM_PER_PX = {(160, 128): None, (128, 128): None, (320, 240): 0.1778, (240, 240): 0.0973}
+
+
+def _reference_body_warning(img, metrics, body):
+    """The warning body as it was drawn before the progress bar and the
+    button-less form existed: kept here, independent of the shared
+    renderer, as the reference the existing pages must still match."""
+    from PIL import ImageDraw
+    import dial_display_compositor as dcm
+    layout = warning_layout_for(metrics.width, metrics.height, buttons=max(1, len(body.buttons)), metrics=metrics)
+    draw = ImageDraw.Draw(img)
+    readout_font = dcm._load_font(metrics.font_readout)
+    body_font = dcm._load_font(metrics.font_body)
+    mx0, my0, mx1, my1 = layout.message
+    if body.line:
+        split = my0 + (my1 - my0) * 3 // 5
+        dcm._draw_label_centered(draw, (mx0, my0, mx1, split), body.title, readout_font)
+        dcm._draw_label_centered(draw, (mx0, split, mx1, my1), body.line, body_font)
+    else:
+        dcm._draw_label_centered(draw, layout.message, body.title, readout_font)
+    for rect, label in zip(layout.cells, body.buttons):
+        dcm._draw_label_centered(draw, rect, label, body_font)
+    w = metrics.divider_w
+    cx0, cy0, cx1, cy1 = layout.card
+    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=dcm._DIVIDER_RGB, width=w)
+    for x in layout.divider_xs:
+        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=dcm._DIVIDER_RGB, width=w)
+
+
+class TestWarningGenericBody:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _compose(self, compositor, width, height, view, mm_per_px=None):
+        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else None
+        base = Image.new("RGB", (width, height), (200, 200, 200))
+        return compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+
+    @pytest.mark.parametrize("width,height", sorted(_WARNING_MM_PER_PX))
+    @pytest.mark.parametrize("pressed", [False, True])
+    def test_existing_nowifi_and_sd_frames_match_the_pre_change_renderer(self, compositor, width, height, pressed):
+        import dial_display_compositor as dcm
+        from dial_display import WARNING_DESCRIPTORS
+        mm = _WARNING_MM_PER_PX[(width, height)]
+        metrics = metrics_for(width, height, mm) if mm is not None else None
+        base = Image.new("RGB", (width, height), (200, 200, 200))
+        for desc in WARNING_DESCRIPTORS:
+            # Every shipped row leaves the generic fields at their defaults.
+            assert desc.title_for is None and desc.progress_for is None
+            severity = 15 if desc.message_for is not None else None
+            zone = desc.buttons[-1].zone if pressed else None
+            view = WarningView(
+                title=desc.title,
+                message=desc.message_for(severity) if desc.message_for is not None else "",
+                buttons=tuple(b.label for b in desc.buttons), geometry=desc.geometry, pressed=zone,
+            )
+            current = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+            with patch.dict(dcm._BODY_RENDERERS, {dcm.BODY_WARNING: _reference_body_warning}):
+                reference = compositor.compose_warning(
+                    base, width, height, view, rotate=False, bgr=False, metrics=metrics,
+                )
+            assert current.tobytes() == reference.tobytes(), desc.id
+
+    def test_percent_defaults_to_none_on_view_and_body(self):
+        assert WarningView(title="x").percent is None
+        assert Body().percent is None
+
+    @pytest.mark.parametrize("width,height,mm_per_px", [
+        (320, 240, 0.1778), (240, 240, 0.0973), (160, 128, None), (128, 128, None),
+    ])
+    def test_progress_bar_is_drawn_to_the_percent_and_absent_without_one(self, compositor, width, height, mm_per_px):
+        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else metrics_for(width, height)
+        layout = warning_layout_for(width, height, buttons=0, metrics=metrics)
+        mx0, my0, mx1, my1 = layout.message
+        zone = (my1 - my0) // 4
+        bar_cy = my1 - zone // 2
+        x0, x1 = mx0 + metrics.pad, mx1 - metrics.pad
+        plain = self._compose(compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE), mm_per_px)
+        half = self._compose(
+            compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=50), mm_per_px,
+        )
+        full = self._compose(
+            compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=100), mm_per_px,
+        )
+        empty = self._compose(
+            compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=0), mm_per_px,
+        )
+        mid = (x0 + x1) // 2
+        left, right = x0 + 2, x1 - 3
+        assert half.getpixel((left, bar_cy)) == (255, 255, 255)
+        assert half.getpixel((right, bar_cy)) not in ((255, 255, 255), plain.getpixel((right, bar_cy)))
+        assert full.getpixel((right, bar_cy)) == (255, 255, 255)
+        assert full.getpixel((mid, bar_cy)) == (255, 255, 255)
+        assert empty.getpixel((left, bar_cy)) != (255, 255, 255)
+        assert empty.getpixel((left, bar_cy)) != plain.getpixel((left, bar_cy))
+        # No percent: the row is untouched by any bar.
+        assert plain.getpixel((mid, bar_cy)) != (255, 255, 255)
+        # The track stays inside the card's inner width.
+        assert half.getpixel((x0 - 2, bar_cy)) == plain.getpixel((x0 - 2, bar_cy))
+
+    def test_progress_percent_is_clamped(self, compositor):
+        over = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=250))
+        full = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=100))
+        under = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=-5))
+        empty = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=0))
+        assert list(over.getdata()) == list(full.getdata())
+        assert list(under.getdata()) == list(empty.getdata())
+
+    def test_progress_bar_moves_the_message_line_up(self, compositor):
+        view = dict(title="Updating...", message="Downloading", geometry=GEOMETRY_NONE)
+        with_bar = self._compose(compositor, 320, 240, WarningView(percent=40, **view), 0.1778)
+        without = self._compose(compositor, 320, 240, WarningView(**view), 0.1778)
+        layout = warning_layout_for(320, 240, buttons=0, metrics=metrics_for(320, 240, 0.1778))
+        _, my0, _, my1 = layout.message
+        split = my0 + (my1 - my0) * 3 // 5
+
+        def lit_rows(img):
+            return [
+                y for y in range(split, my1)
+                if any(img.getpixel((x, y)) == (255, 255, 255) for x in range(layout.message[0], layout.message[2]))
+            ]
+        assert lit_rows(with_bar) and lit_rows(without)
+        assert min(lit_rows(with_bar)) < min(lit_rows(without))
+
+    @pytest.mark.parametrize("width,height,mm_per_px", [
+        (320, 240, 0.1778), (160, 128, None), (128, 128, None),
+    ])
+    def test_no_buttons_draws_no_crosshair(self, compositor, width, height, mm_per_px):
+        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else metrics_for(width, height)
+        layout = warning_layout_for(width, height, buttons=0, metrics=metrics)
+        frame = self._compose(
+            compositor, width, height,
+            WarningView(title="Updating...", message="", buttons=(), geometry=GEOMETRY_NONE), mm_per_px,
+        )
+        cx0, cy0, cx1, cy1 = layout.card
+        # Probe the places the old divider and cell split would sit.
+        n = nowifi_layout_for(width, height, metrics=metrics)
+        for x in list(range(cx0 + 1, cx0 + 8)) + list(range(cx1 - 9, cx1 - 1)):
+            assert frame.getpixel((x, n.divider_y)) != (255, 255, 255)
+        assert frame.getpixel((n.divider_x, n.dismiss[3] - 4)) != (255, 255, 255)
+
+    def test_no_buttons_with_a_font_failure_still_returns_a_frame(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = self._compose(
+                compositor, 160, 128, WarningView(title="Hi", geometry=GEOMETRY_NONE, percent=30),
+            )
+        assert frame.size == (160, 128)

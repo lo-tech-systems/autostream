@@ -570,14 +570,16 @@ class WarningView:
     """Immutable snapshot of a warning page: the readout-size title, the
     optional body-size message under it (empty prints the title alone,
     centred in the whole message row), the button labels left to right,
-    the touch geometry whose cells they sit in (for the press wash), and
-    the pressed cell, if any."""
+    the touch geometry whose cells they sit in (for the press wash), the
+    pressed cell, if any, and the optional progress percent (None draws no
+    bar; no buttons draws a notice with no cells)."""
 
     title: str
     message: str = ""
     buttons: tuple[str, ...] = ()
     geometry: str = GEOMETRY_SDHEALTH
     pressed: "TouchZone | None" = None
+    percent: "int | None" = None
 
 
 @dataclass(frozen=True)
@@ -713,6 +715,7 @@ class Body:
     wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3) under WIFI_SIGNAL; 0 draws it all grey
     wifi_style: str = WIFI_SIGNAL # BODY_IDLE_BADGE: WIFI_SIGNAL / WIFI_GREY / WIFI_RED / WIFI_OFF — see the constants
     buttons: tuple[str, ...] = ()  # BODY_WARNING: button labels, left to right, one per layout cell
+    percent: "int | None" = None   # BODY_WARNING: progress bar under the message (0..100), None for none
 
 
 @dataclass(frozen=True)
@@ -2788,21 +2791,37 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     spanning the bottom row only (the message row is never split). On
     the compact tier the card is the whole panel, so a two-button page
     is exactly the 2x2's own bottom-row divider pattern and a one-button
-    page has no vertical line at all."""
+    page has no vertical line at all. A page with no cells has no
+    crosshair. With body.percent set, a progress bar takes the bottom
+    quarter of the message row (a dimmed track from the card's inner left
+    to right edge, a white fill to the percent) and the text is laid out
+    in the rest of the row."""
     layout = warning_layout_for(metrics.width, metrics.height, buttons=len(body.buttons), metrics=metrics)
     draw = ImageDraw.Draw(img)
     readout_font = _load_font(metrics.font_readout)
     body_font = _load_font(metrics.font_body)
     mx0, my0, mx1, my1 = layout.message
+    w = metrics.divider_w
+    if body.percent is not None:
+        zone = (my1 - my0) // 4
+        bar_h = max(3, 2 * w)
+        bar_y0 = my1 - zone // 2 - bar_h // 2
+        x0, x1 = mx0 + metrics.pad, mx1 - metrics.pad
+        fill_x1 = x0 + round((x1 - x0) * max(0, min(100, body.percent)) / 100)
+        draw.rectangle([x0, bar_y0, x1 - 1, bar_y0 + bar_h - 1], fill=_DIMMED_GLYPH_RGB)
+        if fill_x1 > x0:
+            draw.rectangle([x0, bar_y0, fill_x1 - 1, bar_y0 + bar_h - 1], fill=_GLYPH_RGB)
+        my1 -= zone
     if body.line:
         split = my0 + (my1 - my0) * 3 // 5
         _draw_label_centered(draw, (mx0, my0, mx1, split), body.title, readout_font)
         _draw_label_centered(draw, (mx0, split, mx1, my1), body.line, body_font)
     else:
-        _draw_label_centered(draw, layout.message, body.title, readout_font)
+        _draw_label_centered(draw, (mx0, my0, mx1, my1), body.title, readout_font)
     for rect, label in zip(layout.cells, body.buttons):
         _draw_label_centered(draw, rect, label, body_font)
-    w = metrics.divider_w
+    if not layout.cells:
+        return
     cx0, cy0, cx1, cy1 = layout.card
     draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
     for x in layout.divider_xs:
@@ -3198,7 +3217,7 @@ def _warning_frame(view: WarningView, width: int, height: int, metrics: LayoutMe
         card=None if compact else layout.card,
         pressed=_warning_pressed_rects(view.geometry, view.pressed, width, height, metrics),
         header=None,
-        body=Body(BODY_WARNING, title=view.title, line=view.message, buttons=view.buttons),
+        body=Body(BODY_WARNING, title=view.title, line=view.message, buttons=view.buttons, percent=view.percent),
         footer=Footer(FOOTER_NONE),
     )
 
