@@ -116,6 +116,15 @@ def _parse_appliance_id(data: dict) -> str | None:
     return None
 
 
+def _is_untyped_refusal(resp, raw: bytes) -> bool:
+    """True for the earlier dialect's refusal: a JSON object body with no keys."""
+    ct_header = resp.getheader("Content-Type") or ""
+    if ct_header.split(";")[0].strip().lower() != "application/json":
+        return False
+    data = _lenient_json_object(raw)
+    return data is not None and not data
+
+
 def _base_record(target: "PlayingTarget") -> dict:
     return {
         "name": target.name,
@@ -194,7 +203,16 @@ def fetch_target_status(
 
     # HTTP 403: generic forbidden (nginx, CSRF, an older appliance's missing
     # dial_id guard). Transient by contract: never demotes the auth map.
+    # The one exception is an appliance that does not speak the typed
+    # dialect: it refuses an unauthorised dial with exactly a JSON `{}`
+    # body, which is a refusal. The body carries no appliance_id, so the
+    # record is flagged and the caller correlates with the target's own
+    # resolved id.
     if http_status == 403:
+        if not target.typed_refusals and _is_untyped_refusal(resp, raw):
+            record["status_error"] = "unauthorized"
+            record["untyped_refusal"] = True
+            return record
         record["status_error"] = "forbidden"
         return record
 

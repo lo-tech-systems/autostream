@@ -4854,9 +4854,25 @@ class DialDisplay:
             outcome = OUTCOME_UNAUTHORIZED
         else:
             outcome = OUTCOME_TRANSIENT
-        return auth_map.apply(
-            target.appliance_id, outcome, result.get("appliance_id"), time.monotonic(),
+        body_id = result.get("appliance_id")
+        if result.get("untyped_refusal") and not body_id:
+            # An earlier-dialect refusal carries no id: correlate with the
+            # id this target was resolved to.
+            body_id = target.appliance_id
+        changed = auth_map.apply(
+            target.appliance_id, outcome, body_id, time.monotonic(),
         )
+        if (
+            outcome == OUTCOME_UNAUTHORIZED
+            and auth_map.state(target.appliance_id) == AUTH_UNAUTHORIZED
+            and auth_map.record_refusal(target.appliance_id)
+        ):
+            logging.warning(
+                "dial display: appliance %s refused this dial; allow it in "
+                "that appliance's web UI",
+                target.name,
+            )
+        return changed
 
     def _probe_auth(self, target) -> dict:
         """Fetch one target's status and apply it to the auth map. Shared

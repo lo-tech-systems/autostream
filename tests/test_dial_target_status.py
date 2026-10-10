@@ -357,10 +357,60 @@ class TestMutedField:
 class TestEnrichUnauthorized:
     def test_http_403_is_transient_forbidden(self):
         t = _target()
+        t.dial_proto_version = 2
         with _mock_conn(b"{}", status=403):
             result = enrich_targets([t], "wrong-dial-id")
         assert result[0]["status_error"] == "forbidden"
         assert result[0]["playing"] is None
+
+    def test_untyped_target_403_empty_object_is_unauthorized(self):
+        t = _target()
+        t.appliance_id = "c" * 20
+        with _mock_conn(b"{}", status=403):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "unauthorized"
+        assert record["appliance_id"] is None
+        assert record["untyped_refusal"] is True
+        assert record["playing"] is None
+
+    def test_untyped_target_403_with_json_content_type_params_is_unauthorized(self):
+        t = _target()
+        with _mock_conn(b"{}", status=403, content_type="application/json; charset=utf-8"):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "unauthorized"
+
+    def test_typed_target_403_empty_object_stays_forbidden(self):
+        t = _target()
+        t.dial_proto_version = 2
+        with _mock_conn(b"{}", status=403):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "forbidden"
+        assert "untyped_refusal" not in record
+
+    def test_untyped_target_403_html_page_stays_forbidden(self):
+        t = _target()
+        page = b"<html><body><h1>403 Forbidden</h1></body></html>"
+        with _mock_conn(page, status=403, content_type="text/html"):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "forbidden"
+
+    def test_untyped_target_403_html_with_json_content_type_stays_forbidden(self):
+        t = _target()
+        with _mock_conn(b"<html></html>", status=403):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "forbidden"
+
+    def test_untyped_target_403_non_empty_json_stays_forbidden(self):
+        t = _target()
+        with _mock_conn({"error": "csrf"}, status=403):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "forbidden"
+
+    def test_untyped_target_403_empty_body_stays_forbidden(self):
+        t = _target()
+        with _mock_conn(b"", status=403):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] == "forbidden"
 
     def test_http_412_with_protocol_body_returns_unauthorized_and_appliance_id(self):
         aid = "a" * 20

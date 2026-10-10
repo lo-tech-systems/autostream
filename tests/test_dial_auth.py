@@ -325,3 +325,25 @@ class TestConcurrency:
         # Whatever the final state is, it must be one of the three valid
         # states and reading it must never raise.
         assert auth_map.state(AID) in (AUTH_UNKNOWN, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
+
+
+class TestRecordRefusal:
+    def test_apply_unauthorized_with_resolved_id_transitions(self, auth_map):
+        auth_map.note_sighting(AID, "10.0.0.1", 80, 100.0)
+        assert auth_map.apply(AID, OUTCOME_UNAUTHORIZED, AID, 101.0) is True
+        assert auth_map.state(AID) == AUTH_UNAUTHORIZED
+
+    def test_first_refusal_reports_true_then_false(self, auth_map):
+        assert auth_map.record_refusal(AID) is True
+        assert auth_map.record_refusal(AID) is False
+        assert auth_map.record_refusal(OTHER_AID) is True
+
+    def test_refusal_reports_again_only_after_authorization(self, auth_map):
+        assert auth_map.record_refusal(AID) is True
+        auth_map.apply(AID, OUTCOME_UNAUTHORIZED, AID, 101.0)
+        assert auth_map.record_refusal(AID) is False
+        auth_map.apply(AID, OUTCOME_AUTHORIZED, AID, 102.0)
+        assert auth_map.record_refusal(AID) is True
+
+    def test_empty_id_never_reports(self, auth_map):
+        assert auth_map.record_refusal("") is False

@@ -62,6 +62,7 @@ class AuthMap:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._entries: dict[str, AuthEntry] = {}
+        self._refusal_reported: set[str] = set()
 
     def note_sighting(self, appliance_id: str, ip: str, port: int, now: float) -> None:
         """Record that appliance_id is currently sighted at (ip, port).
@@ -136,6 +137,7 @@ class AuthMap:
             if outcome == OUTCOME_AUTHORIZED:
                 changed = entry.state != AUTH_AUTHORIZED
                 entry.state = AUTH_AUTHORIZED
+                self._refusal_reported.discard(appliance_id)
                 entry.last_confirmed = now
                 entry.backoff_s = 0.0
                 entry.next_probe_at = 0.0
@@ -151,6 +153,18 @@ class AuthMap:
                 entry.next_probe_at = now + entry.backoff_s
                 return changed
             return False
+
+    def record_refusal(self, appliance_id: str) -> bool:
+        """True the first time appliance_id's refusal is reported, and again
+        only after it has been authorised in between. Lets a caller log a
+        refusal once instead of on every re-probe."""
+        if not appliance_id:
+            return False
+        with self._lock:
+            if appliance_id in self._refusal_reported:
+                return False
+            self._refusal_reported.add(appliance_id)
+            return True
 
     def due_for_probe(self, appliance_id: str, now: float) -> bool:
         """True when appliance_id should be probed now.
@@ -198,6 +212,7 @@ class AuthMap:
         """Clear all entries. Tests only."""
         with self._lock:
             self._entries.clear()
+            self._refusal_reported.clear()
 
 
 auth_map = AuthMap()   # module singleton, mirrors dial_volume's module state

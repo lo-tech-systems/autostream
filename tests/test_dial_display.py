@@ -34,6 +34,8 @@ for _p in (_DIAL, _CORE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import logging
+
 import dial_auth
 from dial_config import DialDisplayConfig
 from dial_display_compositor import OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL, _LIST_BG_RGB
@@ -10754,3 +10756,68 @@ class TestIdentifiedWithoutArtwork:
             display._poll_once()
         assert display._now_playing.title == ""
         assert display._now_playing.artist == ""
+
+
+# ---------------------------------------------------------------------------
+# Refusal from an appliance that does not speak the typed dialect
+# ---------------------------------------------------------------------------
+
+class TestUntypedRefusal:
+    def _refusal(self):
+        result = _status_result(status_error="unauthorized", appliance_id=None)
+        result["untyped_refusal"] = True
+        return result
+
+    def test_refusal_without_body_id_applies_to_the_resolved_id(self):
+        aid = "4" * 20
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        assert display._apply_status_to_auth(t, self._refusal()) is True
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
+
+    def test_refusal_for_an_unresolved_target_changes_nothing(self):
+        t = _target(name="Hall", service_name="Hall")
+        display, fb, gt = _make_display(targets=[t])
+        assert display._apply_status_to_auth(t, self._refusal()) is False
+
+    def test_plain_unauthorized_without_body_id_is_still_uncorrelated(self):
+        aid = "4" * 20
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        result = _status_result(status_error="unauthorized", appliance_id=None)
+        assert display._apply_status_to_auth(t, result) is False
+        assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNKNOWN
+
+    def test_first_refusal_logs_one_warning_then_silent(self, caplog):
+        aid = "5" * 20
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                display._apply_status_to_auth(t, self._refusal())
+        warnings = [r for r in caplog.records if "refused this dial" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "Hall" in warnings[0].getMessage()
+        assert "web UI" in warnings[0].getMessage()
+
+    def test_refusal_after_authorization_logs_again(self, caplog):
+        aid = "6" * 20
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        ok = _status_result(track_id=_track_id(), appliance_id=aid)
+        with caplog.at_level(logging.WARNING):
+            display._apply_status_to_auth(t, self._refusal())
+            display._apply_status_to_auth(t, ok)
+            display._apply_status_to_auth(t, self._refusal())
+        warnings = [r for r in caplog.records if "refused this dial" in r.getMessage()]
+        assert len(warnings) == 2
+
+    def test_typed_refusal_also_logs_once(self, caplog):
+        aid = "7" * 20
+        t = _target(name="Hall", service_name="Hall", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        typed = _status_result(status_error="unauthorized", appliance_id=aid)
+        with caplog.at_level(logging.WARNING):
+            display._apply_status_to_auth(t, typed)
+            display._apply_status_to_auth(t, typed)
+        assert len([r for r in caplog.records if "refused this dial" in r.getMessage()]) == 1
