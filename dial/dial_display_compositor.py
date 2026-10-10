@@ -67,10 +67,10 @@ text itself is drawn, so it stays legible whether the artwork behind it is
 light or dark. The appliance name (top-left) sits over the dimmed top band
 instead, which gives it enough contrast on its own, so it is drawn plain.
 The halo is drawn per element, confined to that element's own rectangle —
-never as a whole-frame effect — the same discipline _draw_glyph_supersampled()
-applies to the selector chassis's check mark and chevrons (rendered at a
-higher resolution and downsampled with LANCZOS, so small diagonal strokes
-read smoothly rather than aliasing).
+never as a whole-frame effect — the same discipline _draw_glyph() applies to
+the selector chassis's check mark and chevrons (rendered at a higher
+resolution and downsampled with LANCZOS, so small diagonal strokes read
+smoothly rather than aliasing).
 
 compose_list() builds the appliance-selector screen (a dark chassis with up
 to three rows and a back|down|up bar) from a ListState snapshot, sharing
@@ -163,7 +163,7 @@ _LIST_SEPARATOR_RGB = (48, 48, 48)
 # Small glyphs (the selector's check mark and back/down/up chevrons) are
 # drawn at this multiple of their target box size on a transparent layer,
 # then downsampled with LANCZOS — antialiasing applied per glyph, not to
-# the whole frame. See _draw_glyph_supersampled().
+# the whole frame. See _draw_glyph().
 _GLYPH_SUPERSAMPLE = 4
 
 # A disabled repeat-screen label (Start/Stop when the daemon state does not
@@ -580,9 +580,14 @@ def _load_font(size: int):
 
 
 def _reset_font_cache() -> None:
-    """Clear the memoised font cache. Test-only hook: lets a test exercise
-    the fallback chain from a clean slate without restarting the process."""
+    """Clear the memoised font cache, and with it the glyph-tile and
+    halo-layer caches — a font swap changes the font object identity the
+    halo cache keys on, but clearing here too keeps every memo's state
+    obviously consistent rather than relying on that alone. Test-only hook:
+    lets a test exercise the fallback chain from a clean slate without
+    restarting the process."""
     _load_font.cache_clear()
+    _reset_render_caches()
 
 
 def _draw_top_band_content(
@@ -618,9 +623,7 @@ def _draw_top_band_content(
     pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
-        _draw_glyph_supersampled(
-            frame, dots_rect, lambda d, w, h: _draw_two_dots(d, w, h, filled=dots_filled),
-        )
+        _draw_glyph(frame, dots_rect, GLYPH_TWO_DOTS, dots_filled)
 
 
 def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -665,15 +668,21 @@ def _draw_bottom_band(
 
 def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
     """Alpha-composite a translucent highlight wash over *rect* so a press
-    is visibly acknowledged. Confined strictly to the pressed zone's own
-    rectangle — nothing outside it is touched."""
+    is visibly acknowledged. Built and applied at *rect*'s own size only —
+    the same crop/composite/paste shape _draw_text_with_halo() and
+    _draw_glyph() use — so nothing outside the rectangle is even touched by
+    the composite, not merely left unfilled."""
     x0, y0, x1, y1 = rect
-    overlay_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    ImageDraw.Draw(overlay_layer).rectangle(
-        [x0, y0, x1 - 1, y1 - 1], fill=(*_PRESSED_FILL_RGB, _PRESSED_FILL_ALPHA)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    wash_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(wash_layer).rectangle(
+        [0, 0, w - 1, h - 1], fill=(*_PRESSED_FILL_RGB, _PRESSED_FILL_ALPHA)
     )
-    composited = Image.alpha_composite(image.convert("RGBA"), overlay_layer).convert("RGB")
-    image.paste(composited)
+    region = image.crop(rect).convert("RGBA")
+    composited = Image.alpha_composite(region, wash_layer).convert("RGB")
+    image.paste(composited, (x0, y0))
 
 
 def _zone_center_and_span(rect: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -903,12 +912,7 @@ def _draw_text_with_halo(
             stroke = metrics.halo_stroke
             radius = metrics.halo_blur
             local_xy = (xy[0] - rect[0], xy[1] - rect[1])
-            halo_layer = Image.new("RGBA", (rect_w, rect_h), (0, 0, 0, 0))
-            ImageDraw.Draw(halo_layer).text(
-                local_xy, truncated, font=font,
-                fill=_HALO_RGBA, stroke_width=stroke, stroke_fill=_HALO_RGBA,
-            )
-            halo_layer = halo_layer.filter(ImageFilter.GaussianBlur(radius))
+            halo_layer = _halo_layer(truncated, font, local_xy, rect_w, rect_h, stroke, radius)
             region = frame.crop(rect).convert("RGBA")
             composited = Image.alpha_composite(region, halo_layer).convert("RGB")
             frame.paste(composited, (rect[0], rect[1]))
@@ -918,38 +922,98 @@ def _draw_text_with_halo(
     _draw_text_safe(ImageDraw.Draw(frame), xy, truncated, font)
 
 
-def _draw_glyph_supersampled(frame: Image.Image, rect: tuple[int, int, int, int], draw_fn) -> None:
-    """Draw a small glyph antialiased: *draw_fn(draw, w, h)* renders into a
-    transparent (w, h) canvas at _GLYPH_SUPERSAMPLE times *rect*'s size,
-    which is then downsampled with LANCZOS and alpha-composited back into
-    *rect*. Used for the selector chassis's check mark and chevrons, whose
-    diagonal strokes would otherwise alias visibly at these small sizes —
-    the same per-element (never whole-frame) antialiasing the halo helper
-    above applies to text. Any Pillow failure is swallowed: a glyph that
-    fails to render simply does not appear, never an exception.
+@functools.lru_cache(maxsize=16)
+def _halo_layer(text: str, font, local_xy: tuple[int, int], w: int, h: int, stroke: int, radius: int):
+    """The blurred, dark-glow layer drawn behind a piece of halo text: a
+    pure function of the already-truncated text, the font object, the local
+    position the text is drawn at within a (w, h) layer, the stroke width
+    and the blur radius — memoised the same way _load_font() memoises a
+    loaded font. Keying on the font object itself (rather than, say, its
+    point size) means a font reload or a fallback to a different face is
+    always a fresh key, never a stale hit.
+    """
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).text(
+        local_xy, text, font=font, fill=_HALO_RGBA, stroke_width=stroke, stroke_fill=_HALO_RGBA,
+    )
+    return layer.filter(ImageFilter.GaussianBlur(radius))
+
+
+# Kinds for _draw_glyph()'s tile cache — an opaque paint callback cannot be
+# hashed as a cache key, so each small glyph identifies itself by one of
+# these string constants plus a tuple of hashable parameters. See
+# _GLYPH_PAINTERS (below the painter functions) and _glyph_tile().
+GLYPH_CHEVRON = "chevron"              # params: (direction, lit)
+GLYPH_TWO_DOTS = "two_dots"            # params: (filled,)
+GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
+GLYPH_SELECTED_DOT = "selected_dot"    # params: ()
+GLYPH_LOOP = "loop"                    # params: (rgb,) — colour explicit so
+                                        # more than one accent shade can share
+                                        # this one cache without colliding
+GLYPH_CROSS = "cross"                  # reserved for a future glyph; no
+                                        # painter is registered for it yet
+
+
+@functools.lru_cache(maxsize=48)
+def _glyph_tile(kind: str, params: tuple, w: int, h: int, supersample: int):
+    """The downsampled RGBA tile for one small glyph at one size: a
+    transparent canvas at *supersample* times (w, h) is painted by the
+    kind's entry in _GLYPH_PAINTERS, then downsampled with LANCZOS. A pure
+    function of its arguments, memoised the same way _load_font() memoises a
+    loaded font — see that function's statelessness note. Raises on a
+    Pillow failure so nothing is cached for a failed paint; the caller
+    (_draw_glyph) is responsible for swallowing that.
+    """
+    big_w, big_h = w * supersample, h * supersample
+    big = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+    _GLYPH_PAINTERS[kind](ImageDraw.Draw(big), big_w, big_h, *params)
+    return big.resize((w, h), _LANCZOS)
+
+
+def _draw_glyph(
+    frame: Image.Image, rect: tuple[int, int, int, int], kind: str, *params,
+    supersample: int = _GLYPH_SUPERSAMPLE,
+) -> None:
+    """Draw a small glyph antialiased into *rect*: *kind* plus *params*
+    identifies a memoised, downsampled tile (see _glyph_tile()), rendered at
+    _GLYPH_SUPERSAMPLE times *rect*'s size and downsampled with LANCZOS, then
+    alpha-composited over the cropped frame region and pasted back. Used for
+    the selector chassis's check mark and chevrons and the header's pager
+    dots, whose diagonal strokes and curves would otherwise alias visibly at
+    these small sizes — the same per-element (never whole-frame)
+    antialiasing the halo helper above applies to text. Any Pillow failure,
+    including one raised while painting a tile that therefore never gets
+    cached, is swallowed here: a glyph that fails to render simply does not
+    appear, never an exception.
     """
     x0, y0, x1, y1 = rect
     w, h = x1 - x0, y1 - y0
     if w <= 0 or h <= 0:
         return
     try:
-        big_w, big_h = w * _GLYPH_SUPERSAMPLE, h * _GLYPH_SUPERSAMPLE
-        big = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
-        draw_fn(ImageDraw.Draw(big), big_w, big_h)
-        small = big.resize((w, h), _LANCZOS)
+        tile = _glyph_tile(kind, tuple(params), w, h, supersample)
         region = frame.crop(rect).convert("RGBA")
-        composited = Image.alpha_composite(region, small).convert("RGB")
+        composited = Image.alpha_composite(region, tile).convert("RGB")
         frame.paste(composited, (x0, y0))
     except Exception:
         pass
 
 
+def _reset_render_caches() -> None:
+    """Clear the memoised glyph-tile and halo-layer caches. Test-only hook,
+    the same purpose _reset_font_cache() serves for the font cache — lets a
+    test exercise either from a clean slate without restarting the
+    process."""
+    _glyph_tile.cache_clear()
+    _halo_layer.cache_clear()
+
+
 def _draw_selected_dot(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     """A small filled white circle marking the selected row, centred in a
-    (w, h) canvas — see _draw_glyph_supersampled, which supplies the
-    supersampled canvas and downscales it for antialiasing. Deliberately
-    small so it marks the selection without competing with the label; only
-    the selected row gets one, the rest carry no marker."""
+    (w, h) canvas — see _draw_glyph, which supplies the supersampled canvas
+    and downscales it for antialiasing. Deliberately small so it marks the
+    selection without competing with the label; only the selected row gets
+    one, the rest carry no marker."""
     r = max(2, round(min(w, h) * 0.16))
     cx, cy = w / 2.0, h / 2.0
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_GLYPH_RGB)
@@ -957,8 +1021,8 @@ def _draw_selected_dot(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
 
 def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit: bool) -> None:
     """A simple two-segment chevron (back/down/up) into a (w, h) canvas —
-    see _draw_glyph_supersampled. *lit*=False dims it to OVERLAY_DIM_FACTOR
-    of the glyph colour, matching a disabled/no-more-pages affordance."""
+    see _draw_glyph. *lit*=False dims it to OVERLAY_DIM_FACTOR of the glyph
+    colour, matching a disabled/no-more-pages affordance."""
     stroke = max(1, min(w, h) // 7)
     color = _GLYPH_RGB if lit else tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
     cx, cy = w / 2, h / 2
@@ -972,15 +1036,20 @@ def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit
     draw.line(points, fill=color, width=stroke, joint="curve")
 
 
-def _draw_loop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+def _draw_loop_glyph(
+    draw: ImageDraw.ImageDraw, w: int, h: int, rgb: tuple[int, int, int] = _LOOP_GLYPH_RGB,
+) -> None:
     """A small looping-arrow glyph — the appliance selector's "currently
-    replaying" row marker (see LOOP_GLYPH). Drawn in the accent colour
-    (_LOOP_GLYPH_RGB) rather than plain glyph white, into a (w, h) canvas —
-    see _draw_glyph_supersampled."""
+    replaying" row marker (see LOOP_GLYPH). Drawn in *rgb* (the accent
+    colour _LOOP_GLYPH_RGB by default) rather than plain glyph white, into a
+    (w, h) canvas — see _draw_glyph. *rgb* is an explicit parameter (rather
+    than always reading the module constant) so it participates in the tile
+    cache's key: a different colour is simply a different cached tile, never
+    a stale one."""
     cx, cy = w / 2.0, h / 2.0
     r = min(w, h) * 0.28
     stroke = max(1, min(w, h) // 8)
-    draw.arc([cx - r, cy - r, cx + r, cy + r], start=30, end=300, fill=_LOOP_GLYPH_RGB, width=stroke)
+    draw.arc([cx - r, cy - r, cx + r, cy + r], start=30, end=300, fill=rgb, width=stroke)
     ax, ay = cx + r * 0.5, cy - r * 0.87
     draw.polygon(
         [
@@ -988,7 +1057,7 @@ def _draw_loop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
             (ax + stroke * 1.6, ay + stroke * 0.4),
             (ax - stroke * 0.4, ay + stroke * 1.6),
         ],
-        fill=_LOOP_GLYPH_RGB,
+        fill=rgb,
     )
 
 
@@ -996,7 +1065,7 @@ def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int) -> No
     """Two small circles side by side, one of them (*filled*: 0 for the
     left one, 1 for the right) drawn solid and the other outlined — the
     main/repeat screen pager dots. Rendered into a (w, h) canvas — see
-    _draw_glyph_supersampled."""
+    _draw_glyph."""
     r = max(2, round(min(w, h) * 0.12))
     cy = h / 2.0
     gap = r * 3
@@ -1015,7 +1084,7 @@ def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> Non
     *armed* (the appliance will auto-start a replay on its own), hollow
     (outline only) when disarmed — the same dot size _draw_selected_dot
     uses for the appliance-selector's row marker. Rendered into a (w, h)
-    canvas — see _draw_glyph_supersampled."""
+    canvas — see _draw_glyph."""
     r = max(2, round(min(w, h) * 0.16))
     cx, cy = w / 2.0, h / 2.0
     box = [cx - r, cy - r, cx + r, cy + r]
@@ -1023,6 +1092,19 @@ def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> Non
         draw.ellipse(box, fill=_GLYPH_RGB)
     else:
         draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
+
+
+# Dispatch table for _glyph_tile()'s kinded paint step — built here, after
+# every painter above is defined, and looked up by name at call time so its
+# own position in the module relative to _glyph_tile()/_draw_glyph() (defined
+# earlier, alongside the halo-text helper they mirror) does not matter.
+_GLYPH_PAINTERS = {
+    GLYPH_CHEVRON: _draw_chevron,
+    GLYPH_TWO_DOTS: _draw_two_dots,
+    GLYPH_ARM_DOT: _draw_arm_dot,
+    GLYPH_SELECTED_DOT: _draw_selected_dot,
+    GLYPH_LOOP: _draw_loop_glyph,
+}
 
 
 def _draw_label(
@@ -1133,7 +1215,7 @@ def _body_repeat_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
     label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
     _draw_label(draw, label_rect, "Repeat Play", row_font, pad)
-    _draw_glyph_supersampled(img, dot_rect, lambda d, w, h: _draw_arm_dot(d, w, h, body.armed))
+    _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, body.armed)
 
 
 def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -1168,17 +1250,17 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
         right_edge = x1 - pad
         if is_loop:
             loop_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph_supersampled(img, loop_rect, _draw_loop_glyph)
+            _draw_glyph(img, loop_rect, GLYPH_LOOP, _LOOP_GLYPH_RGB)
             draw = ImageDraw.Draw(img)
             right_edge -= check_box
             if checked:
                 check_rect = (right_edge - check_box, y0, right_edge, y1)
-                _draw_glyph_supersampled(img, check_rect, _draw_selected_dot)
+                _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT)
                 draw = ImageDraw.Draw(img)
                 right_edge -= check_box
         elif checked:
             check_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph_supersampled(img, check_rect, _draw_selected_dot)
+            _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT)
             draw = ImageDraw.Draw(img)
             right_edge -= check_box
 
@@ -1236,9 +1318,9 @@ def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foo
 
 def _footer_list_bar(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     ll = list_layout_for(metrics.width, metrics.height, metrics=metrics)
-    _draw_glyph_supersampled(img, ll.back, lambda d, w, h: _draw_chevron(d, w, h, "left", True))
-    _draw_glyph_supersampled(img, ll.down, lambda d, w, h: _draw_chevron(d, w, h, "down", footer.has_next))
-    _draw_glyph_supersampled(img, ll.up, lambda d, w, h: _draw_chevron(d, w, h, "up", footer.has_prev))
+    _draw_glyph(img, ll.back, GLYPH_CHEVRON, "left", True)
+    _draw_glyph(img, ll.down, GLYPH_CHEVRON, "down", footer.has_next)
+    _draw_glyph(img, ll.up, GLYPH_CHEVRON, "up", footer.has_prev)
 
 
 _FOOTER_RENDERERS = {

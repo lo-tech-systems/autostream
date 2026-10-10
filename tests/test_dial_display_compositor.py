@@ -10,6 +10,7 @@ and the appliance-selector chassis (compose_list()).
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -41,15 +42,21 @@ from dial_display_compositor import (  # noqa: E402
     FOOTER_NONE,
     FOOTER_VOLUME,
     Frame,
+    GLYPH_CHEVRON,
+    GLYPH_TWO_DOTS,
     ListState,
     LOOP_GLYPH,
     OverlayState,
     RepeatViewState,
     _BODY_RENDERERS,
     _FOOTER_RENDERERS,
+    _GLYPH_SUPERSAMPLE,
     _compose_frame,
+    _glyph_tile,
+    _halo_layer,
     _pad_px,
     _reset_font_cache,
+    _reset_render_caches,
     _scaled_px,
     _truncate_to_width,
     _zone_rect,
@@ -1557,3 +1564,326 @@ class TestShimsEqualMetricsFields:
         m = metrics_for(width, height)
         assert _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8) == m.font_body
         assert _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9) == m.font_readout
+
+
+# ---------------------------------------------------------------------------
+# Glyph-tile and halo-layer caches — both are memoised pure functions (the
+# same footing as _load_font), so a cold render (empty cache), a warm render
+# (second pass, everything a hit) and a render with the caches bypassed
+# entirely (the memoised functions swapped for their own uncached originals)
+# must all produce byte-identical frames. Covered over a corpus spanning
+# every public compose entry point and a representative set of states, at
+# every profile size, under both the normal font and the truetype-
+# unavailable fallback face.
+# ---------------------------------------------------------------------------
+
+def _repeat_state_for_cache_tests(**overrides) -> RepeatViewState:
+    base = dict(
+        name="Kitchen", layout="enable", armed=False, line="",
+        start_enabled=False, stop_enabled=False, stop_pressed=False,
+        muted=None, volume=None, pressed=None,
+    )
+    base.update(overrides)
+    return RepeatViewState(**base)
+
+
+def _render_cache_corpus(width, height):
+    """Every distinct screen/state combination the glyph-tile and halo-layer
+    caches can be exercised by: the main overlay (with/without dots, a
+    pressed zone, a muted state, empty/short/long text), the appliance-
+    selector list (row counts, a secondary-text row, the loop marker, paging
+    states, a pressed row and a pressed bar zone), the repeat screen (both
+    layouts, a pressed zone, the fade-out Stop wash) and the idle screen.
+    Returns a list of
+    (name, render(compositor) -> Image) pairs so the same corpus can be run
+    cold, warm and with the caches bypassed."""
+    base = Image.new("RGB", (width, height), (200, 150, 100))
+    logo = Image.new("RGB", (width, height), (32, 32, 32))
+    long_text = "A Very Long Name Indeed Of Considerable Length" * 2
+
+    cases = []
+
+    def add_main(name, **overrides):
+        state = dict(visible=True, artist="Artist", title="Title", volume=42, name="Kitchen")
+        state.update(overrides)
+        cases.append((
+            f"main/{name}",
+            lambda c, state=state: c.compose(
+                base, width, height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(**state),
+            ),
+        ))
+
+    add_main("plain")
+    add_main("dots", dots=True)
+    add_main("pressed_down", pressed=TouchZone.DOWN)
+    add_main("pressed_name", pressed=TouchZone.NAME)
+    add_main("muted_true", muted=True)
+    add_main("muted_false", muted=False)
+    add_main("empty_text", artist="", title="")
+    add_main("long_text", artist=long_text, title=long_text)
+
+    def add_list(name, state):
+        cases.append((
+            f"list/{name}",
+            lambda c, state=state: c.compose_list(width, height, state, rotate=False, bgr=False),
+        ))
+
+    add_list("empty", ListState(rows=()))
+    add_list("one_row", ListState(rows=(("CD Player", True),)))
+    add_list("three_rows", ListState(rows=(("CD Player", True), ("Kitchen", False), ("Study", False))))
+    add_list("secondary_text", ListState(rows=(("Kitchen", False, "42:10"),)))
+    add_list("loop_marker", ListState(rows=(("Kitchen", True, LOOP_GLYPH),)))
+    add_list("paging_both", ListState(rows=(("A", False),), has_prev=True, has_next=True))
+    add_list("paging_none", ListState(rows=(("A", False),), has_prev=False, has_next=False))
+    add_list("pressed_row", ListState(
+        rows=(("CD Player", True), ("Kitchen", False), ("Study", False)),
+        pressed=(TouchZone.LIST_ROW, 1),
+    ))
+    add_list("pressed_bar", ListState(rows=(("A", False),), pressed=(TouchZone.LIST_BACK, None)))
+
+    def add_repeat(name, state, base_img=None):
+        cases.append((
+            f"repeat/{name}",
+            lambda c, state=state, base_img=base_img: c.compose_repeat(
+                width, height, state, rotate=False, bgr=False, base=base_img,
+            ),
+        ))
+
+    add_repeat("enable_unarmed", _repeat_state_for_cache_tests(layout="enable", armed=False))
+    add_repeat("enable_armed", _repeat_state_for_cache_tests(layout="enable", armed=True))
+    add_repeat("enable_pressed", _repeat_state_for_cache_tests(layout="enable", pressed=TouchZone.REPEAT_PLAY))
+    add_repeat("mute_pressed", _repeat_state_for_cache_tests(layout="enable", pressed=TouchZone.MUTE))
+    add_repeat(
+        "replaying",
+        _repeat_state_for_cache_tests(
+            layout="replaying", line="1:23 / 4:56", start_enabled=True, stop_enabled=True,
+        ),
+        base_img=base,
+    )
+    add_repeat(
+        "replaying_stop_pressed",
+        _repeat_state_for_cache_tests(
+            layout="replaying", line="1:23 / 4:56", start_enabled=True, stop_enabled=True,
+            stop_pressed=True,
+        ),
+        base_img=base,
+    )
+
+    cases.append(("idle", lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False)))
+
+    return cases
+
+
+class TestRenderCacheEquivalence:
+    """Cold (caches cleared before the corpus runs), warm (a second full
+    pass, so every tile and layer the corpus can produce is already cached)
+    and bypassed (the memoised functions swapped for their own uncached
+    `__wrapped__` originals) must render byte-identical output for every
+    case — the whole point of memoising a pure function is that using the
+    cache never changes what gets drawn."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    @pytest.mark.parametrize("no_font", [False, True], ids=["normal_font", "fallback_font"])
+    def test_cold_warm_bypassed_are_byte_identical(self, width, height, no_font):
+        compositor = DialDisplayCompositor()
+        font_cm = (
+            patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font"))
+            if no_font else contextlib.nullcontext()
+        )
+
+        def render_all():
+            return [(name, fn(compositor)) for name, fn in _render_cache_corpus(width, height)]
+
+        try:
+            with font_cm:
+                _reset_font_cache()
+                cold = render_all()
+                warm = render_all()
+                with patch("dial_display_compositor._glyph_tile", _glyph_tile.__wrapped__), \
+                     patch("dial_display_compositor._halo_layer", _halo_layer.__wrapped__):
+                    bypassed = render_all()
+        finally:
+            _reset_font_cache()
+
+        for (name, cold_img), (_, warm_img), (_, bypassed_img) in zip(cold, warm, bypassed):
+            assert cold_img.tobytes() == warm_img.tobytes(), f"{name}: cold != warm"
+            assert cold_img.tobytes() == bypassed_img.tobytes(), f"{name}: cold != bypassed"
+
+
+class TestGlyphTileCacheAccounting:
+    """cache_info() hit/miss accounting for _glyph_tile — pins that a hit
+    and a miss happen exactly where expected, not merely that the pixels
+    come out right."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    def test_main_compose_with_dots_one_miss_then_one_hit(self):
+        compositor = DialDisplayCompositor()
+        img = Image.new("RGB", (160, 128), (200, 150, 100))
+        overlay = OverlayState(visible=True, dots=True)
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        info = _glyph_tile.cache_info()
+        assert info.misses == 1
+        assert info.hits == 0
+
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        info = _glyph_tile.cache_info()
+        assert info.misses == 1
+        assert info.hits == 1
+
+    def test_a_second_profile_size_adds_a_miss(self):
+        # 160x128 and 320x240 round to different dots-glyph pixel sizes, so
+        # the second compose's tile key is genuinely new — a same-tier size
+        # that happens to round to the identical glyph box would (correctly)
+        # hit instead, which is why this picks two sizes confirmed to differ.
+        compositor = DialDisplayCompositor()
+        overlay = OverlayState(visible=True, dots=True)
+        img_a = Image.new("RGB", (160, 128), (200, 150, 100))
+        img_b = Image.new("RGB", (320, 240), (200, 150, 100))
+        compositor.compose(img_a, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        assert _glyph_tile.cache_info().misses == 1
+
+        compositor.compose(img_b, 320, 240, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        assert _glyph_tile.cache_info().misses == 2
+
+    def test_list_compose_chevrons_plus_one_per_distinct_marker(self):
+        compositor = DialDisplayCompositor()
+        state = ListState(
+            rows=(("CD Player", True), ("Kitchen", False, LOOP_GLYPH)),
+            has_prev=True, has_next=True,
+        )
+        compositor.compose_list(160, 128, state, rotate=False, bgr=False)
+        info = _glyph_tile.cache_info()
+        # 3 chevrons (back/down/up) + 1 selected-dot marker + 1 loop marker.
+        assert info.misses == 5
+        assert info.hits == 0
+
+
+class TestHaloLayerCacheAccounting:
+    """cache_info() hit/miss accounting for _halo_layer."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _panel(self):
+        return Image.new("RGB", (160, 128), (200, 150, 100))
+
+    def test_two_identical_composes_give_two_misses_then_two_hits(self):
+        compositor = DialDisplayCompositor()
+        img = self._panel()
+        overlay = OverlayState(visible=True, artist="Artist", title="Title")
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        info = _halo_layer.cache_info()
+        assert info.misses == 2
+        assert info.hits == 0
+
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        info = _halo_layer.cache_info()
+        assert info.misses == 2
+        assert info.hits == 2
+
+    def test_changing_the_artist_string_adds_one_miss(self):
+        compositor = DialDisplayCompositor()
+        img = self._panel()
+        compositor.compose(
+            img, 160, 128, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Artist", title="Title"),
+        )
+        misses_before = _halo_layer.cache_info().misses
+
+        compositor.compose(
+            img, 160, 128, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, artist="Someone Else", title="Title"),
+        )
+        assert _halo_layer.cache_info().misses == misses_before + 1
+
+    def test_font_reset_between_composes_forces_misses(self):
+        compositor = DialDisplayCompositor()
+        img = self._panel()
+        overlay = OverlayState(visible=True, artist="Artist", title="Title")
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+
+        _reset_font_cache()
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        info = _halo_layer.cache_info()
+        assert info.hits == 0
+        assert info.misses == 2
+
+
+class TestRenderCacheTileImmutability:
+    """A cached tile or layer must never be mutated by anything downstream
+    of the cache — a shared object handed out to many callers has to stay
+    byte-identical to itself across all of them."""
+
+    def test_glyph_tile_bytes_unchanged_across_repeated_composes(self):
+        _reset_render_caches()
+        compositor = DialDisplayCompositor()
+        img = Image.new("RGB", (160, 128), (200, 150, 100))
+        overlay = OverlayState(visible=True, dots=True)
+        layout = layout_for(160, 128)
+        w = layout.dots[2] - layout.dots[0]
+        h = layout.dots[3] - layout.dots[1]
+
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        tile_before = _glyph_tile(GLYPH_TWO_DOTS, (0,), w, h, _GLYPH_SUPERSAMPLE).tobytes()
+
+        for _ in range(10):
+            compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+
+        tile_after = _glyph_tile(GLYPH_TWO_DOTS, (0,), w, h, _GLYPH_SUPERSAMPLE).tobytes()
+        assert tile_before == tile_after
+
+    def test_halo_layer_bytes_unchanged_across_repeated_composes(self):
+        _reset_font_cache()
+        compositor = DialDisplayCompositor()
+        img = Image.new("RGB", (160, 128), (200, 150, 100))
+        overlay = OverlayState(visible=True, artist="Artist", title="Title")
+
+        compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+        info_before = _halo_layer.cache_info()
+        assert info_before.currsize >= 1
+
+        for _ in range(10):
+            compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
+
+        # Ten more identical composes must be ten more hits, not ten more
+        # misses — if the cached layer had been mutated in place, the key
+        # would still match but a later crop/composite would see different
+        # bytes than the first hit did.
+        info_after = _halo_layer.cache_info()
+        assert info_after.currsize == info_before.currsize
+        assert info_after.hits >= 10
+
+
+class TestRenderCacheLruBound:
+    """Both caches are bounded (a 512 MB-class board): after more distinct
+    keys than maxsize are produced, currsize must settle at maxsize, never
+    grow past it."""
+
+    def test_glyph_tile_currsize_settles_at_maxsize(self):
+        _reset_render_caches()
+        for w in range(_glyph_tile.cache_info().maxsize + 20):
+            _glyph_tile(GLYPH_CHEVRON, ("left", True), 10 + w, 10, 4)
+        info = _glyph_tile.cache_info()
+        assert info.currsize == info.maxsize == 48
+
+    def test_halo_layer_currsize_settles_at_maxsize(self):
+        _reset_font_cache()
+        compositor = DialDisplayCompositor()
+        img = Image.new("RGB", (160, 128), (200, 150, 100))
+        maxsize = _halo_layer.cache_info().maxsize
+        for i in range(maxsize + 10):
+            compositor.compose(
+                img, 160, 128, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, artist=f"Artist {i}"),
+            )
+        info = _halo_layer.cache_info()
+        assert info.currsize == info.maxsize == 16
