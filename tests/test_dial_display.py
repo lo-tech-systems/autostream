@@ -1299,7 +1299,7 @@ class TestPushFrameWindowed:
         boxes = [(x0, y0, x1, y1) for x0, y0, x1, y1, _ in new_windows]
         assert boxes == [(10, 0, 19, 127)]
 
-    def test_too_many_bands_fall_back_to_one_window(self):
+    def test_four_bands_are_four_windows(self):
         display, fb, gt = _make_display(backend=FakeWindowBackend())
         display.enable()
         a = _frame(fb, (0, 0, 0))
@@ -1313,9 +1313,186 @@ class TestPushFrameWindowed:
 
         new_windows = fb.windows[windows_before:]
         boxes = [(x0, y0, x1, y1) for x0, y0, x1, y1, _ in new_windows]
+        assert boxes == [(0, 0, 127, 7), (0, 40, 127, 47), (0, 80, 127, 87), (0, 120, 127, 127)]
+
+    def test_twelve_spots_fall_back_to_the_bounding_box(self):
         from PIL import ImageChops
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        windows_before = len(fb.windows)
+        displayed_before = len(fb.displayed)
+
+        b = a.copy()
+        for i in range(12):
+            x = 4 + 30 * (i % 3)
+            y = 4 + 12 * i
+            b.paste((255, 0, 0), (x, y, x + 6, y + 4))
+        _push(display, b)
+
+        new_windows = fb.windows[windows_before:]
+        boxes = [(x0, y0, x1, y1) for x0, y0, x1, y1, _ in new_windows]
         diff_bbox = ImageChops.difference(a, b).getbbox()
         assert boxes == [(diff_bbox[0], diff_bbox[1], diff_bbox[2] - 1, diff_bbox[3] - 1)]
+        assert len(fb.displayed) == displayed_before
+
+    def test_windows_are_written_top_to_bottom(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        windows_before = len(fb.windows)
+
+        b = a.copy()
+        b.paste((255, 0, 0), (30, 120, 60, 128))
+        b.paste((255, 0, 0), (0, 0, fb.width, 8))
+        _push(display, b)
+
+        ys = [y0 for _, y0, _, _, _ in fb.windows[windows_before:]]
+        assert len(ys) == 2
+        assert ys == sorted(ys)
+
+    def test_planner_unavailable_uses_the_bounding_box_path(self, monkeypatch, caplog):
+        import logging
+        monkeypatch.setattr(dd, "frame_words", lambda *a, **k: None)
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        windows_before = len(fb.windows)
+
+        b = a.copy()
+        b.paste((255, 0, 0), (0, 0, fb.width, 8))
+        b.paste((255, 0, 0), (30, 120, 60, 128))
+        with caplog.at_level(logging.WARNING):
+            _push(display, b)
+
+        boxes = [(x0, y0, x1, y1) for x0, y0, x1, y1, _ in fb.windows[windows_before:]]
+        assert boxes == [(0, 0, 127, 7), (30, 120, 59, 127)]
+        assert not [r for r in caplog.records if "planning" in r.message]
+
+    def test_planner_failure_is_logged_once_and_falls_back(self, monkeypatch, caplog):
+        import logging
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("plan exploded")
+
+        monkeypatch.setattr(dd, "plan_windows", boom)
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        windows_before = len(fb.windows)
+        displayed_before = len(fb.displayed)
+
+        with caplog.at_level(logging.WARNING):
+            frame = a
+            for i in range(3):
+                frame = frame.copy()
+                frame.paste((255, i * 40, 0), (10, 10, 30, 20))
+                _push(display, frame)
+
+        assert len(fb.windows) - windows_before == 3
+        assert len(fb.displayed) == displayed_before
+        assert len([r for r in caplog.records if "change-region planning failed" in r.message]) == 1
+
+    def test_words_cache_follows_last_frame_identity(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        b = a.copy()
+        b.paste((255, 0, 0), (10, 10, 20, 20))
+        _push(display, b)
+        assert display._panel_words[0] is display._last_frame
+        assert display._last_frame is b
+
+        displayed_before = len(fb.displayed)
+        with display._lock:
+            display._last_frame = None
+        c = b.copy()
+        c.paste((0, 255, 0), (30, 30, 40, 40))
+        _push(display, c)
+        assert len(fb.displayed) == displayed_before + 1  # nothing to diff against: whole frame
+        assert display._panel_words is None
+
+        d = c.copy()
+        d.paste((0, 0, 255), (50, 50, 60, 60))
+        windows_before = len(fb.windows)
+        _push(display, d)
+        assert [w[:4] for w in fb.windows[windows_before:]] == [(50, 50, 59, 59)]
+        assert display._panel_words[0] is display._last_frame
+        assert display._last_frame is d
+
+    def test_stale_words_cache_is_rebuilt_from_last_frame(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        b = a.copy()
+        b.paste((255, 0, 0), (10, 10, 20, 20))
+        _push(display, b)
+        # A cache naming some other frame must never be trusted.
+        display._panel_words = (a, display._panel_words[1])
+        c = b.copy()
+        c.paste((0, 255, 0), (30, 30, 40, 40))
+        windows_before = len(fb.windows)
+        _push(display, c)
+        assert [w[:4] for w in fb.windows[windows_before:]] == [(30, 30, 39, 39)]
+
+    def test_partial_window_failure_drops_the_words_cache(self):
+        class _RefusesSecondWindow(FakeWindowBackend):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self._calls = 0
+
+            def display_window(self, region, x0, y0, x1, y1):
+                self._calls += 1
+                if self._calls == 2:
+                    return False
+                return super().display_window(region, x0, y0, x1, y1)
+
+        fb = _RefusesSecondWindow()
+        display, fb, gt = _make_display(backend=fb)
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        displayed_before = len(fb.displayed)
+
+        b = a.copy()
+        b.paste((255, 0, 0), (0, 0, fb.width, 8))
+        b.paste((255, 0, 0), (0, 120, fb.width, 128))
+        _push(display, b)
+        assert len(fb.displayed) == displayed_before + 1
+        assert display._panel_words is None
+
+        c = b.copy()
+        c.paste((0, 255, 0), (10, 10, 20, 20))
+        windows_before = len(fb.windows)
+        _push(display, c)
+        assert len(fb.displayed) == displayed_before + 1
+        assert [w[:4] for w in fb.windows[windows_before:]] == [(10, 10, 19, 19)]
+        assert display._panel_words[0] is display._last_frame
+        assert display._last_frame is c
+
+    def test_identical_frame_after_planner_sends_nothing_and_keeps_the_cache(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        b = a.copy()
+        b.paste((255, 0, 0), (10, 10, 20, 20))
+        _push(display, b)
+        displayed_before, windows_before = len(fb.displayed), len(fb.windows)
+
+        c = b.copy()
+        _push(display, c)
+
+        assert len(fb.displayed) == displayed_before
+        assert len(fb.windows) == windows_before
+        assert display._last_frame is c
+        assert display._panel_words[0] is c
 
     def test_window_refused_midway_falls_back_to_a_full_write(self):
         class _RefusesSecondWindow(FakeWindowBackend):

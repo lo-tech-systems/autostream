@@ -94,6 +94,7 @@ from dial_display_profiles import (
     get_profile,
     layout_context_for,
 )
+from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
@@ -1006,6 +1007,13 @@ class DialDisplay:
         # Cleared whenever the panel no longer shows it (disable/sleep/
         # clear/backend swap). See latest_frame_png().
         self._last_frame: Image.Image | None = None
+        # The panel frame's own bytes, viewed as words for the change-region
+        # planner (see dial_display_windows), keyed by identity to the very
+        # frame object self._last_frame holds: (frame, words) or None. A
+        # cache, never authority: whenever the pair no longer names
+        # self._last_frame the view is rebuilt from that frame, so the
+        # places that drop self._last_frame need not know this exists.
+        self._panel_words = None
 
         # Idle/sleep state — set while the display has shown the logo with no
         # playing targets on the network; cleared on any activity or disable.
@@ -2212,15 +2220,16 @@ class DialDisplay:
 
     def _transmit_locked(self, composed) -> None:
         """Send *composed*, already at the panel's size and orientation, to
-        the backend, writing only the rectangle that differs from the frame
-        the panel already shows, or a few separated rectangles when the
-        changed rows are far enough apart for that to be cheaper (see
-        _dirty_windows), when the backend can write a window.
+        the backend, writing only the regions that differ from the frame the
+        panel already shows when the backend can write a window: as many
+        separate rectangles as the cost model says pay for themselves (see
+        dial_display_windows), or, on a dial without numpy, the bounding
+        box split in up to a few places (see _dirty_windows).
 
         The frame reaching here is final: rotate and colour order were
         applied by the compositor and the resample to physical size by the
         caller, and self._last_frame is kept in that same space. So the
-        bounding box of the pixel difference is in panel pixels and maps
+        rectangles of the pixel difference are in panel pixels and map
         straight onto the panel's address window, with no further
         transform. An identical frame sends nothing at all. A whole-frame
         write is used instead whenever the backend cannot window-write,
@@ -2239,29 +2248,75 @@ class DialDisplay:
             or last.size != composed.size
             or last.mode != composed.mode
         ):
+            self._panel_words = None
             backend.display(composed)
             return
         try:
-            diff = ImageChops.difference(composed, last)
-            bbox = diff.getbbox()
-            if bbox is None:
+            boxes, new_words = self._plan_transmit_locked(composed, last)
+            if boxes is None:
+                # No planner (numpy missing, or a plan failure): the
+                # bounding-box path, with its own vertical split.
+                diff = ImageChops.difference(composed, last)
+                bbox = diff.getbbox()
+                if bbox is None:
+                    return
+                boxes = _dirty_windows(diff, bbox)
+            elif not boxes:
+                self._panel_words = (composed, new_words)
                 return
             written = True
-            for box in _dirty_windows(diff, bbox):
+            for box in boxes:
                 left, upper, right, lower = box
-                # getbbox() is half-open on the right and bottom; the
+                # The boxes are half-open on the right and bottom; the
                 # panel's address window is inclusive at both corners.
+                # Written top to bottom, as planned.
                 if not backend.display_window(composed.crop(box), left, upper, right - 1, lower - 1):
                     written = False
                     break
             if written:
+                self._panel_words = (composed, new_words)
                 return
         except Exception as e:
             self._log_limiter.log(
                 logging.WARNING, "display_window_failed",
                 "dial display: window write failed, writing the whole frame: %s", e,
             )
+        self._panel_words = None
         backend.display(composed)
+
+    def _plan_transmit_locked(self, composed, last):
+        """(boxes, new_words) for the change-region planner: *boxes* is the
+        list of windows to write, top to bottom (empty: the frames are
+        identical), and *new_words* the planner's view of *composed* for the
+        caller to cache once it is on the panel. (None, None) when the
+        planner is unavailable (numpy missing, or a plan failure), in which
+        case the caller takes the bounding-box path. The previous frame's
+        words come from the cache when it still names *last*, else from
+        *last* itself. A planner failure is logged (rate-limited) and
+        reported as unavailable. Never raises. Caller holds self._lock."""
+        try:
+            if composed.mode != "RGB":
+                return None, None
+            new_words = frame_words(composed, *composed.size)
+            if new_words is None:
+                return None, None
+            cached = self._panel_words
+            if cached is not None and cached[0] is last:
+                last_words = cached[1]
+            else:
+                last_words = frame_words(last, *last.size)
+                if last_words is None:
+                    return None, None
+            boxes = plan_windows(new_words, last_words, *composed.size)
+            if boxes is None:
+                boxes = [bounding_box(new_words, last_words, *composed.size)]
+            return boxes, new_words
+        except Exception as e:
+            self._log_limiter.log(
+                logging.WARNING, "display_plan_failed",
+                "dial display: change-region planning failed, using the bounding box: %s", e,
+            )
+            return None, None
 
     def _display_locked(self, image) -> None:
         """Compose and write *image* to the backend — the single hand-off
