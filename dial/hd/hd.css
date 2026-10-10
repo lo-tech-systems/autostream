@@ -30,13 +30,42 @@ body.hd {
     padding: var(--top-inset) 14px 12px; gap: 14px;
 }
 
-/* Left column: appliances over speakers, scrolling as one */
+/* Left column: two fixed regions, appliances over speakers, each scrolling
+   on its own. A region's label is a translucent bar over the top of its
+   list; the list of the region above runs on under it by the bar's height,
+   so a card cut off at the edge shows through the bar and reads as more to
+   scroll. The bars and the column's foot let touches through. */
 .left {
-    min-width: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y;
-    display: flex; flex-direction: column; gap: 10px; padding-right: 2px;
-    scrollbar-width: none;
+    --label-h: 26px; --divider-h: 14px; --fade: 28px;
+    min-width: 0; min-height: 0; position: relative;
+    display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
 }
-.left::-webkit-scrollbar { display: none; }
+.region { position: relative; min-height: 0; pointer-events: none; }
+.region .section-label {
+    position: absolute; left: 0; right: 0; top: 0; height: var(--label-h); z-index: 1;
+    display: flex; align-items: center; pointer-events: none;
+    background: linear-gradient(var(--color-bg) 55%, transparent);
+}
+.region .list {
+    position: absolute; left: 0; right: 0; top: var(--label-h); bottom: calc(-1 * var(--divider-h));
+    overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; scrollbar-width: none;
+    padding: 0 2px var(--divider-h) 0; pointer-events: auto;
+    scroll-padding: var(--fade) 0 calc(var(--divider-h) + var(--fade)) 0;
+    --fade-top: 0px; --fade-bottom: 0px;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top),
+        #000 calc(100% - var(--fade-bottom)), transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top),
+        #000 calc(100% - var(--fade-bottom)), transparent 100%);
+}
+.region .list::-webkit-scrollbar { display: none; }
+.region .list.more-above { --fade-top: var(--fade); }
+.region .list.more-below { --fade-bottom: var(--fade); }
+#speakers-region .list { bottom: 0; }
+.left::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--divider-h);
+    z-index: 1; pointer-events: none;
+    background: linear-gradient(transparent, var(--color-bg));
+}
 .section-label {
     font-size: 0.73em; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
     color: var(--color-text-dim); padding: 0 4px;

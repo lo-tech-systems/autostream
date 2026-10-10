@@ -69,9 +69,13 @@ The screen has two sides. Everything is touch; there is no keyboard.
 
 ### Appliances and speakers
 
-The left side lists the appliances the dial can see, with their speakers
-below. Tap an appliance to make the dial follow it. The row for the one being
-followed is highlighted.
+The left side lists the appliances the dial can see in its top third, with
+the speakers of the followed appliance below. Each list scrolls on its own.
+When a list has more to show, the card at its edge fades out and the next
+heading sits over it, so you can tell there is more to scroll to. Tap an
+appliance to make the dial follow it. The row for the one being followed is
+highlighted, and it scrolls into view when the dial changes appliance by
+itself, unless you have just scrolled that list.
 
 - An appliance that is not answering shows **Not responding** and its
   controls are disabled while it is followed.

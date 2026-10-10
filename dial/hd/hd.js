@@ -17,7 +17,9 @@
         activityGapMs: 5000,        // at most one panel activity report in this time
         infoMaxAgeMs: 10000,        // the dial details are fetched again after this
         tapMovePx: 6,               // a press that moves less than this is a tap
-        dragCloseFraction: 3        // a pull-down moved more than 1/this of its height stays moved
+        dragCloseFraction: 3,       // a pull-down moved more than 1/this of its height stays moved
+        userScrollHoldMs: 3000,     // after the user scrolls a list, the page leaves it alone this long
+        autoScrollSettleMs: 400     // scroll events this soon after the page's own scroll are not the user's
     };
 
     // The first rule that matches gives an appliance row its label.
@@ -177,7 +179,8 @@
         state: null, stateAt: Date.now(), offline: false, vm: null,
         eqOpen: false, eqFor: null, sheetOpen: false, info: null, infoBusy: false,
         notice: null, viewing: null,
-        touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0
+        touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0,
+        focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0
     };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
@@ -471,6 +474,7 @@
             offline: offline,
             asleep: !!panel.asleep,
             appliances: appliances,
+            focusId: shownFocus,
             appliancesNote: s.started && !appliances.length ? "No appliances found." : "",
             speakersLabel: focus ? "Speakers on " + focus.name : "Speakers",
             speakers: speakers,
@@ -504,6 +508,7 @@
 
     const els = {
         app: $("app"), appliances: $("appliances"), appliancesNote: $("appliances-note"),
+        appliancesList: $("appliances-list"), speakersList: $("speakers-list"),
         speakers: $("speakers"), speakersNote: $("speakers-note"), speakersLabel: $("speakers-label"),
         right: $("right"), replay: $("replay-row"),
         art: $("art"), title: $("title"), sub: $("sub"), eq: $("eq-open"), mute: $("mute"),
@@ -766,6 +771,40 @@
         syncList(els.cardButtons, card.buttons, createCardButton);
     }
 
+    // The two scroll regions and the key each records its user scrolls under.
+    const LISTS = [["appliances", () => els.appliancesList], ["speakers", () => els.speakersList]];
+
+    // Mark a list with where it continues, from its own scroll metrics.
+    function markOverflow(list) {
+        list.classList.toggle("more-above", list.scrollTop > 1);
+        list.classList.toggle("more-below", list.scrollTop + list.clientHeight < list.scrollHeight - 1);
+    }
+
+    function markLists() { LISTS.forEach(([, get]) => markOverflow(get())); }
+
+    LISTS.forEach(([name, get]) => {
+        get().addEventListener("scroll", () => {
+            if (Date.now() >= ui.autoScrollUntil) { ui.listScrolledAt[name] = Date.now(); }
+            markOverflow(get());
+        }, { passive: true });
+    });
+    if (typeof ResizeObserver === "function") {
+        const sizes = new ResizeObserver(markLists);
+        LISTS.forEach(([, get]) => sizes.observe(get()));
+    }
+
+    // Bring the followed appliance's row into view when the focus moved on
+    // its own, unless the user has just been scrolling that list.
+    function followFocus(focusId) {
+        if (focusId === ui.focusShown) { return; }
+        ui.focusShown = focusId;
+        if (!focusId || Date.now() - ui.listScrolledAt.appliances < CONFIG.userScrollHoldMs) { return; }
+        const node = Array.from(els.appliances.children).find((n) => n.dataset.key === focusId);
+        if (!node) { return; }
+        ui.autoScrollUntil = Date.now() + CONFIG.autoScrollSettleMs;
+        node.scrollIntoView({ block: "nearest" });
+    }
+
     function paint(vm) {
         els.app.classList.toggle("offline", vm.offline);
         els.app.classList.toggle("dimmed", vm.settings.dim !== null);
@@ -776,6 +815,8 @@
         setText(els.speakersLabel, vm.speakersLabel);
         syncList(els.speakers, vm.speakers, createSpeakerCard);
         paintNote(els.speakersNote, vm.speakersNote);
+        followFocus(vm.focusId);
+        markLists();
 
         setText(els.title, vm.title);
         setText(els.sub, vm.sub);

@@ -565,12 +565,168 @@ class TestLayout:
         assert toggle["height"] >= 48 and toggle["width"] >= 48
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    def test_left_column_scrolls_as_one(self, page, hd, size):
+    def test_left_column_lists_scroll_separately(self, page, hd, size):
+        hd.show(crowded(8, 6))
         open_page(page, hd, size)
+        expect(rows(page)).to_have_count(8)
         info = page.evaluate(
-            "(() => { const l = document.getElementById('left');"
-            " return [getComputedStyle(l).overflowY, l.scrollHeight >= l.clientHeight]; })()")
-        assert info == ["auto", True]
+            """() => {
+                const css = id => getComputedStyle(document.getElementById(id)).overflowY;
+                const h = id => document.getElementById(id).getBoundingClientRect().height;
+                return [css('left'), css('appliances-list'), css('speakers-list'),
+                        h('appliances-region'), h('speakers-region'), h('left')];
+            }""")
+        assert info[:3] == ["visible", "auto", "auto"]
+        assert abs(info[3] - info[5] / 3) <= 2
+        assert abs(info[4] - info[5] * 2 / 3) <= 2
+        page.evaluate("document.getElementById('speakers-list').scrollTop = 120")
+        assert page.evaluate("document.getElementById('speakers-list').scrollTop") > 0
+        assert page.evaluate("document.getElementById('appliances-list').scrollTop") == 0
+
+
+LIST_IDS = ["a%d" % n for n in range(1, 13)]
+
+
+def crowded(appliance_count, speaker_count):
+    """The playing scenario with *appliance_count* appliances (the first is
+    focused) and *speaker_count* speakers on it."""
+    playing = scenario("playing_artwork")
+    first = playing.snapshot.appliances[0]
+    others = tuple(
+        dataclasses.replace(first, appliance_id=LIST_IDS[n], service_name="Unit %d" % n,
+                            name="Unit %d" % n, playing=False)
+        for n in range(1, appliance_count))
+    speakers = [OutputRow("o%d" % n, "Speaker %d" % n, n % 2 == 0, 30 + n) for n in range(speaker_count)]
+    return playing.with_snapshot(
+        appliances=(first,) + others, outputs=outputs_with(*speakers))
+
+
+def refocus(scenario_, appliance_id):
+    return scenario_.with_snapshot(
+        focus=dataclasses.replace(scenario_.snapshot.focus, reporting_id=appliance_id))
+
+
+def box(page, selector):
+    return page.evaluate(
+        "(s) => { const r = document.querySelector(s).getBoundingClientRect();"
+        " return {top: r.top, bottom: r.bottom}; }", selector)
+
+
+def scroll_list(page, list_id, to="end"):
+    page.evaluate(
+        "([id, to]) => { const l = document.getElementById(id);"
+        " l.scrollTop = to === 'end' ? l.scrollHeight : to; }", [list_id, to])
+
+
+class TestListCues:
+    def test_fade_classes_follow_the_scroll_position(self, page, hd):
+        hd.show(crowded(8, 6))
+        open_page(page, hd)
+        expect(rows(page)).to_have_count(8)
+        lst = page.locator("#appliances-list")
+        expect(lst).to_have_class(re.compile(r"\bmore-below\b"))
+        assert "more-above" not in lst.get_attribute("class")
+        mask = page.evaluate(
+            "(() => { const s = getComputedStyle(document.getElementById('appliances-list'));"
+            " return s.maskImage || s.webkitMaskImage; })()")
+        assert "linear-gradient" in mask
+        scroll_list(page, "appliances-list")
+        expect(lst).to_have_class(re.compile(r"\bmore-above\b"))
+        assert "more-below" not in lst.get_attribute("class")
+
+    def test_a_short_list_has_no_cue(self, page, hd):
+        open_page(page, hd)
+        expect(rows(page)).to_have_count(1)
+        cls = page.locator("#appliances-list").get_attribute("class")
+        assert "more-above" not in cls and "more-below" not in cls
+
+    def test_the_top_region_shows_two_cards_and_a_peek_at_800x480(self, page, hd):
+        hd.show(crowded(3, 2))
+        open_page(page, hd, (800, 480))
+        expect(rows(page)).to_have_count(3)
+        region = box(page, "#appliances-region")
+        first, second, third = (
+            page.evaluate(
+                "(i) => { const r = document.querySelectorAll('#appliances .appliance')[i]"
+                ".getBoundingClientRect(); return {top: r.top, bottom: r.bottom}; }", i)
+            for i in range(3))
+        for row in (first, second):
+            assert row["top"] >= region["top"] and row["bottom"] <= region["bottom"]
+        # The third card starts in the band the list shares with the speakers label.
+        shown = box(page, "#appliances-list")
+        assert region["bottom"] <= third["top"] < shown["bottom"] < third["bottom"]
+        expect(page.locator("#appliances-list")).to_have_class(re.compile(r"\bmore-below\b"))
+
+    def test_the_speakers_label_overlaps_the_last_visible_card_and_lets_taps_through(self, page, hd):
+        hd.show(crowded(3, 2))
+        open_page(page, hd, (800, 480))
+        expect(rows(page)).to_have_count(3)
+        label = box(page, "#speakers-label")
+        third = page.evaluate(
+            "(() => { const r = document.querySelectorAll('#appliances .appliance')[2]"
+            ".getBoundingClientRect(); return {top: r.top, bottom: r.bottom, x: r.left + 40}; })()")
+        assert third["top"] < label["bottom"] and third["bottom"] > label["top"]
+        sent = watch_actions(page)
+        y = (max(third["top"], label["top"]) + min(third["bottom"], label["bottom"])) / 2
+        page.mouse.click(third["x"], y)
+        page.wait_for_timeout(200)
+        assert [(name, body["appliance_id"]) for name, body in sent] == [("focus", LIST_IDS[2])]
+
+    def test_end_padding_lets_the_last_card_clear_the_divider(self, page, hd):
+        hd.show(crowded(8, 6))
+        open_page(page, hd, (800, 480))
+        expect(rows(page)).to_have_count(8)
+        scroll_list(page, "appliances-list")
+        last = page.evaluate(
+            "(() => { const l = document.querySelectorAll('#appliances .appliance');"
+            " return l[l.length - 1].getBoundingClientRect().bottom; })()")
+        assert last <= box(page, "#speakers-label")["top"] + 1
+
+    def test_focus_from_the_state_scrolls_the_row_into_view(self, page, hd):
+        hd.show(crowded(8, 6))
+        open_page(page, hd, (800, 480))
+        expect(rows(page)).to_have_count(8)
+        hd.show(refocus(crowded(8, 6), LIST_IDS[7]))
+        expect(rows(page).nth(7)).to_have_attribute("aria-current", "true")
+        page.wait_for_timeout(400)
+        region = box(page, "#appliances-region")
+        last = page.evaluate(
+            "document.querySelectorAll('#appliances .appliance')[7].getBoundingClientRect().bottom")
+        assert last <= region["bottom"] + 1
+
+    def test_a_recent_user_scroll_holds_the_focus_follow(self, page, hd):
+        hd.show(crowded(8, 6))
+        page.clock.install()
+        open_page(page, hd, (800, 480))
+        expect(rows(page)).to_have_count(8)
+        page.clock.run_for(5000)
+        scroll_list(page, "appliances-list", 20)
+        page.wait_for_timeout(200)
+        before = page.evaluate("document.getElementById('appliances-list').scrollTop")
+        hd.show(refocus(crowded(8, 6), LIST_IDS[7]))
+        expect(rows(page).nth(7)).to_have_attribute("aria-current", "true")
+        page.wait_for_timeout(300)
+        assert page.evaluate("document.getElementById('appliances-list').scrollTop") == before
+        page.clock.run_for(3100)
+        hd.show(refocus(crowded(8, 6), LIST_IDS[6]))
+        expect(rows(page).nth(6)).to_have_attribute("aria-current", "true")
+        page.wait_for_timeout(300)
+        assert page.evaluate("document.getElementById('appliances-list').scrollTop") > before
+
+    def test_scroll_positions_survive_a_state_event(self, page, hd):
+        hd.show(crowded(8, 6))
+        open_page(page, hd, (800, 480))
+        expect(rows(page)).to_have_count(8)
+        scroll_list(page, "appliances-list", 40)
+        scroll_list(page, "speakers-list", 60)
+        page.wait_for_timeout(100)
+        before = page.evaluate(
+            "['appliances-list', 'speakers-list'].map(i => document.getElementById(i).scrollTop)")
+        assert before[0] > 0 and before[1] > 0
+        hd.show(crowded(8, 6).with_snapshot(volume_readout=("Lounge", 61)))
+        page.wait_for_timeout(500)
+        assert page.evaluate(
+            "['appliances-list', 'speakers-list'].map(i => document.getElementById(i).scrollTop)") == before
 
 
 def column_boxes(page) -> list:

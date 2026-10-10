@@ -1142,7 +1142,9 @@ class TestControlsFade:
         open_page(page, hd)
         page.clock.run_for(7000)
         expect(page.locator("#volume-row")).to_be_hidden()
-        page.mouse.click(100, 450)                         # the empty foot of the left column
+        # The appliances label band: over the left column but over no card.
+        assert page.evaluate("!document.elementFromPoint(60, 34).closest('.appliance, .output-card')")
+        page.mouse.click(60, 34)
         page.wait_for_timeout(100)
         expect(page.locator("#volume-row")).to_be_hidden()
 

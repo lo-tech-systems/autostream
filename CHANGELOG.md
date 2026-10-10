@@ -16,6 +16,8 @@
   now-playing screen, and the appliance tells the dial when they change.
 - new: the dial can use a six-band equaliser on an appliance that has one (the
   HD dial's equaliser page); the small screen keeps bass and treble.
+- improvement: on the HD dial the appliances and speakers lists scroll
+  separately, and a list that has more to show fades at its edge.
 - new: the dial's Setup card shows Brightness and Sleep after for an HD dial
   in place of the SPI-only rows.
 - improvement: the HD dial's replay row shows only the controls that apply:
