@@ -48,7 +48,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DialSighting
+from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_players import ListOutputsResult, OutputInfo, ActionResult
 from autostream_webui_api import (
     calculate_master_volume,
@@ -190,55 +190,11 @@ class TestAuthorization:
         assert code == 400
         assert body == {"ok": False, "error": "missing_dial_id"}
 
-    def test_unauthorized_dial_id_returns_412(self):
-        code, body, _ = _invoke({"dial_id": DIAL_ID}, authorized=False)
-        assert code == 412
-        assert body == {
-            "ok": False,
-            "error": "dial_not_authorized",
-            "appliance_id": TEST_APPLIANCE_ID,
-        }
-
-    def test_unsighted_dial_gets_403_empty_body(self):
-        """An unauthorized dial that is not currently sighted is treated as
-        legacy: bare 403 with an empty JSON object."""
-        handler = _make_handler()
-        with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_NOT_AUTHORIZED),
-            patch("autostream_dials.get_dial_sighting", return_value=None),
-        ):
-            send_dial_status_post_json(handler, WebUIState(
-                config_path="dummy.json", state_path="dummy-state.json"), {"dial_id": DIAL_ID})
-        assert _response(handler) == (403, {})
-        assert handler.wfile.getvalue() == b"{}"
-
-    def test_sighted_v2_dial_gets_typed_412(self):
-        handler = _make_handler()
-        sighting = DialSighting(uuid=DIAL_ID, name="D", version="x", ip="10.0.0.9",
-                                port=7842, pin_recovery=False, dial_proto="v2")
-        with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_NOT_AUTHORIZED),
-            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
-            patch("autostream_dials.get_dial_sighting", return_value=sighting),
-        ):
-            send_dial_status_post_json(handler, WebUIState(
-                config_path="dummy.json", state_path="dummy-state.json"), {"dial_id": DIAL_ID})
-        assert _response(handler) == (412, {
-            "ok": False, "error": "dial_not_authorized", "appliance_id": TEST_APPLIANCE_ID,
-        })
-
-    def test_sighted_legacy_dial_gets_403_empty_body(self):
-        handler = _make_handler()
-        sighting = DialSighting(uuid=DIAL_ID, name="D", version="x", ip="10.0.0.9",
-                                port=7842, pin_recovery=False)
-        with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_NOT_AUTHORIZED),
-            patch("autostream_dials.get_dial_sighting", return_value=sighting),
-        ):
-            send_dial_status_post_json(handler, WebUIState(
-                config_path="dummy.json", state_path="dummy-state.json"), {"dial_id": DIAL_ID})
-        assert _response(handler) == (403, {})
-        assert handler.wfile.getvalue() == b"{}"
+    # The unauthorized, unsighted, legacy and auth_unavailable replies are
+    # pinned for every dial route in test_webui_dial_refusal.py; the cases
+    # below are the status route's own gate rules. An unreadable dials store
+    # is signalled as 200 ok:false, never 503, because nginx would rewrite a
+    # raw 503 to a 302 before it reached the dial, hiding the token.
 
     def test_legacy_dial_still_gets_400_and_auth_unavailable_unchanged(self):
         code, body, _ = _invoke({}, speaks_v2=False)
@@ -251,14 +207,6 @@ class TestAuthorization:
         code, body, _ = _invoke({"dial_id": DIAL_ID}, authorized=False, appliance_id=None)
         assert code == 412
         assert body["appliance_id"] is None
-
-    def test_auth_unavailable_returns_200_ok_false(self):
-        """Q1: an unreadable dials store is signalled as 200 ok:false, never
-        503 -- nginx would rewrite a raw 503 to a 302 before it reached the
-        dial, hiding the auth_unavailable token."""
-        code, body, _ = _invoke({"dial_id": DIAL_ID}, auth_state=AUTH_UNAVAILABLE)
-        assert code == 200
-        assert body == {"ok": False, "error": "auth_unavailable"}
 
     def test_authorized_dial_id_returns_200_ok(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID})

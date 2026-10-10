@@ -177,17 +177,9 @@ class TestOutputsListAuth:
         assert code == 400
         assert body == {"ok": False, "error": "missing_dial_id"}
 
-    def test_auth_unavailable_is_200_ok_false(self):
-        code, body = _invoke_list({"dial_id": DIAL_ID}, auth_state=AUTH_UNAVAILABLE)
-        assert code == 200
-        assert body == {"ok": False, "error": "auth_unavailable"}
-
-    def test_unauthorized_is_412(self):
-        code, body = _invoke_list({"dial_id": DIAL_ID}, auth_state=AUTH_NOT_AUTHORIZED)
-        assert code == 412
-        assert body == {
-            "ok": False, "error": "dial_not_authorized", "appliance_id": TEST_APPLIANCE_ID,
-        }
+    # The unauthorized and auth_unavailable replies of the list route are
+    # pinned for every dial route in test_webui_dial_refusal.py; the set
+    # route cases below also check that nothing is mutated.
 
 
 # ---------------------------------------------------------------------------
