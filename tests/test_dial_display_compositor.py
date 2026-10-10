@@ -3525,13 +3525,47 @@ class TestCompactGlyphTiles:
         half = side // 2
         assert abs(pixels[cx - half + 1, cy][3] - pixels[cx + half - 1, cy][3]) <= 4
 
-    def test_restart_tile_is_open_at_the_arrowhead_end(self):
-        # An open circle: the centre itself must be transparent (nothing
-        # filled inside the arc), unlike the filled Stop square.
+    def test_restart_tile_is_a_bar_then_two_widening_triangles(self):
+        # The seek-to-start "|<<" icon, read left to right: a full-height
+        # bar, a transparent gap, a triangle narrowing toward the bar
+        # (its apex) and widening away from it (its base), a second
+        # transparent gap, then a second triangle shaped the same way —
+        # checked structurally (per-column opaque extent) rather than at
+        # one hand-picked pixel, so it does not depend on exact rounding.
         w = h = 40
         tile = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), w, h, 4)
         pixels = tile.load()
-        assert pixels[w // 2, h // 2][3] == 0
+
+        def col_extent(x):
+            ys = [y for y in range(h) if pixels[x, y][3] > 100]
+            return (min(ys), max(ys)) if ys else None
+
+        cx = w // 2
+        short = min(w, h)
+        r = short * 0.28
+        left = round(cx - r)
+        right = round(cx + r)
+        bar_w = max(2, round(short / 8))
+
+        # The bar: constant (full) height across its own width.
+        bar_extent = col_extent(left + 1)
+        assert bar_extent is not None
+        assert col_extent(left + bar_w - 1) == bar_extent
+
+        # A fully transparent gap separates the bar from the first triangle.
+        assert col_extent(left + bar_w + 1) is None
+
+        # The remaining span narrows toward the bar (its shared apex side)
+        # and widens toward the glyph's own right edge (the triangles'
+        # bases) — compare a column near each end.
+        near_apex = col_extent(left + bar_w + 3)
+        near_base = col_extent(right - 2)
+        assert near_apex is not None and near_base is not None
+        assert (near_apex[1] - near_apex[0]) < (near_base[1] - near_base[0])
+
+        # Outside the glyph's own box entirely: transparent.
+        assert col_extent(1) is None
+        assert col_extent(w - 2) is None
 
     def test_lit_and_dimmed_are_distinct_cache_keys_and_pixels(self):
         _reset_render_caches()

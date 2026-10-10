@@ -98,7 +98,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import math
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
@@ -1298,35 +1297,39 @@ def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB
 
 
 def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
-    """The compact tier's Restart control: an open circle (an arc from 30
-    to 330 degrees, leaving the top-right open) with a small filled
-    arrowhead at the open end, pointing in the arc's own clockwise
-    direction of travel — the conventional "restart"/"replay" glyph.
-    Rendered into a (w, h) canvas — see _draw_glyph."""
-    stroke = max(1, min(w, h) // 7)
+    """The compact tier's Restart control: the conventional media-player
+    "seek to start" icon ("|<<") — a vertical bar near the left edge of the
+    glyph's own box, then two filled triangles beside it, both pointing
+    left (apex on the left, base on the right), toward the bar. Rendered
+    into a (w, h) canvas — see _draw_glyph."""
+    short = min(w, h)
+    r = short * 0.28
     cx, cy = w / 2, h / 2
-    r = min(w, h) * 0.28
-    draw.arc([cx - r, cy - r, cx + r, cy + r], start=30, end=330, fill=color, width=stroke)
+    left = cx - r
+    right = cx + r
 
-    # The arrowhead sits at the arc's open end (30 degrees, image-space
-    # angles growing clockwise from "east"), pointing along the tangent in
-    # the direction the arc travels (increasing angle, i.e. clockwise).
-    angle = math.radians(30)
-    tip = (cx + r * math.cos(angle), cy - r * math.sin(angle))
-    tangent = math.radians(30 - 90)
-    dx, dy = math.cos(tangent), -math.sin(tangent)
-    nx, ny = -dy, dx
-    head = max(2.0, stroke * 2.2)
-    base_x, base_y = tip[0] - dx * head, tip[1] - dy * head
-    spread = head * 0.6
-    draw.polygon(
-        [
-            tip,
-            (base_x + nx * spread, base_y + ny * spread),
-            (base_x - nx * spread, base_y - ny * spread),
-        ],
-        fill=color,
-    )
+    # The bar: a filled rectangle at the icon's own left edge.
+    bar_w = max(2, round(short / 8))
+    bar_h = 2 * r * 0.85
+    bar_x0, bar_x1 = left, left + bar_w
+    bar_y0, bar_y1 = cy - bar_h / 2, cy + bar_h / 2
+    draw.rectangle([bar_x0, bar_y0, bar_x1, bar_y1], fill=color)
+
+    # Two left-pointing triangles sharing the remaining width to the
+    # icon's right edge, separated from the bar and from each other by the
+    # same small gap.
+    gap = max(1, bar_w / 2)
+    area_x0 = bar_x1 + gap
+    tri_w = (right - area_x0 - gap) / 2
+
+    def _triangle(x0: float) -> None:
+        draw.polygon(
+            [(x0, cy), (x0 + tri_w, cy - bar_h / 2), (x0 + tri_w, cy + bar_h / 2)],
+            fill=color,
+        )
+
+    _triangle(area_x0)
+    _triangle(area_x0 + tri_w + gap)
 
 
 def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
