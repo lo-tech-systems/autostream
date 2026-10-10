@@ -67,6 +67,10 @@ from dial_display_compositor import (
     OutputViewState,
     OverlayState,
     RepeatViewState,
+    WIFI_GREY,
+    WIFI_OFF,
+    WIFI_RED,
+    WIFI_SIGNAL,
     format_mmss,
 )
 from dial_display_image import (
@@ -1054,6 +1058,17 @@ class DialDisplay:
         # for the current incident. Plain bool, both writers are single
         # assignments.
         self._wifi_dismissed = False
+        # Whether any poll since this process started has reported the link
+        # connected. Poller thread only (set in on_network_view), never
+        # reset — not by a later down/ignored poll and not by disable()/
+        # enable() or a backend swap: it describes this boot, not the panel.
+        # Read lock-free by the auto-prompt gate on the poller thread and
+        # under self._lock by the idle painter. It splits a DOWN link into
+        # two looks: a dial still connecting after boot (never connected
+        # yet) flashes the icon grey/blank and raises no prompt, while a
+        # dial that has lost a link it had flashes grey/red and raises the
+        # No-WiFi page — the alarm is for a loss, not for booting.
+        self._wifi_ever_connected = False
         # The two new screens' own states — same write/read discipline as
         # self._info (opener under self._lock, cleared by
         # _close_secondary_locked via the policy table).
@@ -1283,6 +1298,31 @@ class DialDisplay:
             if self._showing == "logo":
                 return
             self._render_logo_locked()
+
+    def show_starting(self) -> None:
+        """Paint the boot splash ("Starting...") as the panel's very first
+        frame. Called once by dial_main before any display thread exists:
+        opens the backend if it is not open yet (the same single backend
+        start() would otherwise open — start()'s own open is then a no-op)
+        without the usual logo first frame, and pushes the splash. The
+        first poll replaces it: show_logo()/_show_artwork dedupe on
+        "logo"/"artwork" and this marks self._showing "starting", so
+        neither mistakes the splash for already showing something. A
+        repaint tick before that first poll leaves it alone because no base
+        image exists yet. Unfitted: a no-op. A failed backend open degrades
+        exactly as start() does (backend_open_failed recorded, no-op
+        display). Never raises."""
+        with self._lock:
+            try:
+                if not self._config.fitted:
+                    return
+                if not self._backend_open:
+                    self._enable_locked(render_logo=False)
+                if not (self._backend_open and self._backend is not None):
+                    return
+                self._display_starting_locked()
+            except Exception:
+                logging.warning("dial display: boot splash failed", exc_info=True)
 
     def display(self, image) -> None:
         with self._lock:
@@ -1593,7 +1633,7 @@ class DialDisplay:
 
     # ---- backend lifecycle (caller must hold self._lock) -------------------
 
-    def _enable_locked(self) -> None:
+    def _enable_locked(self, *, render_logo: bool = True) -> None:
         if self._backend_open:
             return
         backend = self._backend_factory()
@@ -1618,11 +1658,15 @@ class DialDisplay:
             "dial display: backend %s open (%dx%d)",
             self._backend_name, backend.width, backend.height,
         )
-        # Rendering the logo here is the awake state — reset any stale idle
-        # timer/sleep flag from before this open.
+        # Opening here is the awake state — reset any stale idle timer/sleep
+        # flag from before this open. The logo is the normal first frame; the
+        # boot splash (show_starting) opens with render_logo=False and pushes
+        # its own frame instead, so the panel's first image is the splash
+        # rather than a logo that the splash immediately covers.
         self._idle_started_at = None
         self._display_sleeping = False
-        self._render_logo_locked()
+        if render_logo:
+            self._render_logo_locked()
 
     def _rebuild_backend_factory_locked(self, screen_type: str) -> None:
         """Rebuild self._backend_factory for *screen_type* via the injected
@@ -3255,6 +3299,18 @@ class DialDisplay:
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
+    def _display_starting_locked(self) -> None:
+        """Compose and push the "Starting..." frame and mark it as what is
+        showing. Caller holds self._lock and has checked the backend is
+        open. Leaves the base-image cache empty on purpose: the first poll
+        must paint the logo or artwork over this, not find a stale base."""
+        metrics = self._metrics_locked()
+        self._push_frame_locked(lambda: self._compositor.compose_starting(
+            metrics.width, metrics.height,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+        self._showing = "starting"
+
     def _display_list_locked(self) -> None:
         """Compose and push whichever list-chassis screen is open (the
         appliance selector, the replay picker, the outputs list or the
@@ -3505,20 +3561,25 @@ class DialDisplay:
         locked), exactly like on_repeat_result().
 
         connected: the streak and the dismissal both reset (the incident is
-        over) and an open No-WiFi page closes on its own.
+        over), the ever-connected latch is set, and an open No-WiFi page
+        closes on its own.
         down: the streak grows; at NOWIFI_PROMPT_STREAK the page opens
-        unless it was dismissed for this incident, is already open or
-        requested, another screen is in the way (never stomp on a list or
-        the repeat/EQ pages the user is looking at), or the dial is
+        unless the dial has never been connected since it started (still
+        connecting: the icon flashes grey/blank instead and only a tap on
+        it opens the page), it was dismissed for this incident, is already
+        open or requested, another screen is in the way (never stomp on a
+        list or the repeat/EQ pages the user is looking at), or the dial is
         restarting.
         ignored (setup mode, reboot pending): the streak resets but the
-        dismissal is kept — only a connected poll ends an incident.
+        dismissal and the latch are kept — only a connected poll ends an
+        incident.
         unknown (a failed read): nothing changes at all — one missed poll
         never flips the icon or the prompt.
         Never raises."""
         try:
             self._network = view
             if view.link == LINK_CONNECTED:
+                self._wifi_ever_connected = True
                 self._wifi_down_streak = 0
                 self._wifi_dismissed = False
                 if self._screen == "nowifi":
@@ -3528,7 +3589,8 @@ class DialDisplay:
             elif view.link == LINK_DOWN:
                 self._wifi_down_streak += 1
                 if (
-                    self._wifi_down_streak >= NOWIFI_PROMPT_STREAK
+                    self._wifi_ever_connected
+                    and self._wifi_down_streak >= NOWIFI_PROMPT_STREAK
                     and not self._wifi_dismissed
                     and self._screen == "main"
                     and self._screen_request is None
@@ -3560,30 +3622,38 @@ class DialDisplay:
 
     @staticmethod
     def _wifi_alarm_phase(now: float) -> bool:
-        """Which half of the flash *now* falls in: True is the red half."""
+        """Which half of the flash *now* falls in: True is the emphasised
+        half (red after a lost link, blank while still connecting), False
+        the grey half."""
         return int(now // WIFI_FLASH_HALF_PERIOD_S) % 2 == 0
 
-    def _idle_wifi_args_locked(self) -> "tuple[int, bool]":
-        """(wifi_bars, wifi_alarm) for compose_idle(): steady lit arcs while
-        connected, the flash's current phase while down (grey = 0 bars, no
-        alarm; red = alarm), and a steady all-grey glyph while the link is
-        ignored or unknown. Caller holds self._lock."""
+    def _idle_wifi_args_locked(self) -> "tuple[int, str]":
+        """(wifi_bars, wifi_style) for compose_idle(): steady lit arcs
+        while connected; while down, the flash's current half — grey, and
+        on the emphasised half either red (the link was lost after having
+        connected since boot) or nothing at all (never connected yet: the
+        dial is still connecting, which is not an alarm); and a steady
+        all-grey glyph while the link is ignored or unknown. Caller holds
+        self._lock."""
         view = self._network
         if view is None:
-            return 0, False
+            return 0, WIFI_GREY
         if view.link == LINK_CONNECTED:
-            return view.bars, False
+            return view.bars, WIFI_SIGNAL
         if view.link == LINK_DOWN:
-            return 0, self._wifi_alarm_phase(time.monotonic())
-        return 0, False
+            if not self._wifi_alarm_phase(time.monotonic()):
+                return 0, WIFI_GREY
+            return 0, (WIFI_RED if self._wifi_ever_connected else WIFI_OFF)
+        return 0, WIFI_GREY
 
     def open_nowifi(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_WIFI
         tap): open the No-WiFi page while the link is down — the manual
-        route back to Restart after a Dismiss, so it ignores the dismissal.
-        Inert while connected/unknown (the corner square is always in the
-        idle table; only a flashing icon means anything). Plain write plus
-        a repaint signal."""
+        route to Restart after a Dismiss (it ignores the dismissal) and the
+        only route while the dial has never connected since boot (the
+        page never auto-opens in that state). Inert while connected/
+        unknown (the corner square is always in the idle table; only a
+        flashing icon means anything). Plain write plus a repaint signal."""
         if self._wifi_link() != LINK_DOWN:
             return
         self._screen_request = "nowifi"
@@ -3619,10 +3689,11 @@ class DialDisplay:
         logo (the arrows-on-disc image) whenever the idle affordance is due,
         else the plain logo already stored as the current base — either
         way with the "i" information badge and the Wi-Fi status glyph
-        top-left (steady bars while connected, the grey/red flash while
-        down) and no volume/mute controls overlay (nothing is playing, so
-        there is nothing else on this screen to control). Reached whenever
-        nothing is playing (see
+        top-left (steady bars while connected; while down, the grey/red
+        flash after a lost link or the grey/blank flash while still
+        connecting) and no volume/mute controls overlay (nothing is
+        playing, so there is nothing else on this screen to control).
+        Reached whenever nothing is playing (see
         _idle_chassis_due_locked), not only while a replay is available;
         degrades to the plain base if the replay image cannot be loaded.
         Caller holds self._lock; a no-op if the backend is closed or nothing
@@ -3636,11 +3707,11 @@ class DialDisplay:
             (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._idle_affordance else None)
             or self._current_base_image
         )
-        wifi_bars, wifi_alarm = self._idle_wifi_args_locked()
+        wifi_bars, wifi_style = self._idle_wifi_args_locked()
         self._push_frame_locked(lambda: self._compositor.compose_idle(
             base, metrics.width, metrics.height,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-            wifi_bars=wifi_bars, wifi_alarm=wifi_alarm,
+            wifi_bars=wifi_bars, wifi_style=wifi_style,
         ))
 
     # ---- polling loop ----------------------------------------------------

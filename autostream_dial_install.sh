@@ -162,6 +162,13 @@ enable_spi0
 enable_spi1
 enable_i2c
 
+# ---- Boot-time trim (fresh install and --update) ----------------------------
+# One call on the unconditional path rather than inside the fresh-only block
+# above: the flag file is idempotent, and dials installed before this existed
+# must gain the faster boot on their next --update without a re-image — the
+# same reasoning as install_recovery_packages/install_image_packages.
+disable_cloud_init
+
 # ---- Deploy images ----------------------------------------------------------
 mkdir -p /opt/autostream/images
 install -m 0644 "$DEPLOY/images/autostream-dial-badge.png" /opt/autostream/images/

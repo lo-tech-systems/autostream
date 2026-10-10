@@ -627,20 +627,32 @@ def main() -> None:
 
     _create_running_marker()
 
-    _reconcile_update_timer(cfg.auto_update)
-    _announce_self(cfg)
-
-    led = DialLED(cfg.led_gpio)
-
-    # Imported lazily so a Pillow/display-stack import failure (e.g. an
-    # incomplete apt install) degrades to a no-op display rather than taking
-    # down the whole service — volume control must not depend on Pillow.
+    # The display is built and lit before anything else that costs time
+    # (the update-timer reconcile and the announce verb both fork
+    # subprocesses), so the panel shows "Starting..." as early as the
+    # process can manage. Imported lazily so a Pillow/display-stack import
+    # failure (e.g. an incomplete apt install) degrades to a no-op display
+    # rather than taking down the whole service — volume control must not
+    # depend on Pillow.
     try:
         from dial_display import create_dial_display
         display = create_dial_display(cfg, get_display_targets)
     except ImportError as e:
         logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
         display = NoOpDisplayStatusProvider()
+    # The boot splash: opens the manager's one backend and paints
+    # "Starting..." now, before any display thread exists; display.start()
+    # below reuses that open and the first poll replaces the splash.
+    # getattr guards the NoOpDisplayStatusProvider fallback, which has no
+    # screen. show_starting() never raises.
+    show_starting = getattr(display, "show_starting", None)
+    if show_starting is not None:
+        show_starting()
+
+    _reconcile_update_timer(cfg.auto_update)
+    _announce_self(cfg)
+
+    led = DialLED(cfg.led_gpio)
 
     http_server = DialHTTPServer(
         cfg, display_status_provider=display,

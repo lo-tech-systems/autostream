@@ -251,11 +251,24 @@ _COMPACT_SMALL_GLYPH_FRACTION = 0.4
 # The replay picker's own title-bar text.
 _COMPACT_PICKER_TITLE = "Replay"
 
-# The No-WiFi page's fixed strings and the restart screen's one line.
+# The No-WiFi page's fixed strings and the two centred-label screens' one line
+# each: the restart screen and the boot splash.
 NOWIFI_MESSAGE_TEXT = "No WiFi"
 NOWIFI_DISMISS_TEXT = "Dismiss"
 NOWIFI_RESTART_TEXT = "Restart"
 RESTARTING_TEXT = "Restarting..."
+STARTING_TEXT = "Starting..."
+
+# How the idle screen's Wi-Fi glyph is drawn. The manager owns the link
+# state and the flash clock and passes one of these per frame, so this
+# module stays stateless. WIFI_SIGNAL lights wifi_bars arcs (0 = all grey,
+# byte-identical to WIFI_GREY); WIFI_GREY dims every part; WIFI_RED paints
+# every part in alarm red (the offline flash's alarm half); WIFI_OFF draws
+# no glyph at all (the "still connecting" flash's blank half).
+WIFI_SIGNAL = "signal"
+WIFI_GREY = "grey"
+WIFI_RED = "red"
+WIFI_OFF = "off"
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -596,8 +609,8 @@ class Body:
     stop_enabled: bool = True     # BODY_COMPACT_REPLAY: Stop drawn full-brightness vs dimmed
     bass_db: "int | None" = None    # BODY_EQ_BARS
     treble_db: "int | None" = None  # BODY_EQ_BARS
-    wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3); 0 draws it all grey
-    wifi_alarm: bool = False      # BODY_IDLE_BADGE: the offline flash's red phase — every part of the glyph in alarm red
+    wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3) under WIFI_SIGNAL; 0 draws it all grey
+    wifi_style: str = WIFI_SIGNAL # BODY_IDLE_BADGE: WIFI_SIGNAL / WIFI_GREY / WIFI_RED / WIFI_OFF — see the constants
 
 
 @dataclass(frozen=True)
@@ -845,7 +858,7 @@ class DialDisplayCompositor:
 
     def compose_idle(
         self, base, width: int, height: int, *, rotate: bool, bgr: bool,
-        metrics: LayoutMetrics | None = None, wifi_bars: int = 0, wifi_alarm: bool = False,
+        metrics: LayoutMetrics | None = None, wifi_bars: int = 0, wifi_style: str = WIFI_SIGNAL,
     ):
         """Build one display-ready frame for the idle screen: *base* — the
         logo the manager chose (the plain disc, or the replay-available
@@ -854,18 +867,20 @@ class DialDisplayCompositor:
         nothing on this screen to control, plus the small "i" information
         badge in the top-right corner and the Wi-Fi status glyph in the
         top-left one (see BODY_IDLE_BADGE) on every idle frame regardless of
-        which logo is showing. wifi_bars (0..3) is how many of the glyph's
-        arcs are lit; 0 draws the whole glyph dimmed. wifi_alarm=True draws
-        the whole glyph, dot included, in alarm red — the manager passes the
-        red half of its offline flash here, so this module stays stateless.
-        *base* is assumed already panel-sized (the manager's own logo load).
-        rotate/bgr are applied last, in the same order compose() uses. Never
-        raises beyond a None passthrough. metrics: see compose()."""
+        which logo is showing. wifi_style picks the glyph's look: WIFI_SIGNAL
+        lights wifi_bars (0..3) arcs, 0 drawing the whole glyph dimmed;
+        WIFI_GREY dims every part; WIFI_RED paints every part in alarm red;
+        WIFI_OFF draws no glyph at all. The manager passes the current half of
+        its offline flash here (red or off against grey), so this module
+        stays stateless. *base* is assumed already panel-sized (the manager's
+        own logo load). rotate/bgr are applied last, in the same order
+        compose() uses. Never raises beyond a None passthrough. metrics: see
+        compose()."""
         if base is None:
             return base
         return _compose_frame(
             base, width, height,
-            Frame(BG_BASE, body=Body(BODY_IDLE_BADGE, wifi_bars=wifi_bars, wifi_alarm=wifi_alarm)),
+            Frame(BG_BASE, body=Body(BODY_IDLE_BADGE, wifi_bars=wifi_bars, wifi_style=wifi_style)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -898,10 +913,36 @@ class DialDisplayCompositor:
         BODY_CENTRED_LABEL). Shown from a Restart tap until the reboot
         takes the panel down. Never raises: a font failure leaves the flat
         fill alone. metrics: see compose()."""
+        return self._compose_centred_label(
+            width, height, RESTARTING_TEXT, rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
+    def compose_starting(
+        self, width: int, height: int, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """Build the "Starting..." frame: the same flat chassis and centred
+        string as compose_restarting(), with the boot splash's own text.
+        The manager pushes it as the very first frame after the backend
+        opens at boot, before any of its threads exist, and the first poll
+        replaces it with the logo or artwork. Never raises: a font failure
+        leaves the flat fill alone. metrics: see compose()."""
+        return self._compose_centred_label(
+            width, height, STARTING_TEXT, rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
+    def _compose_centred_label(
+        self, width: int, height: int, text: str, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None,
+    ):
+        """One string centred on a flat chassis fill, identical on every
+        tier — the shared body of compose_restarting()/compose_starting()
+        (see BODY_CENTRED_LABEL and _body_centred_label). rotate/bgr last,
+        as always."""
         if metrics is None:
             metrics = metrics_for(width, height)
         return _compose_frame(
-            None, width, height, Frame(BG_CHASSIS, body=Body(BODY_CENTRED_LABEL, line=RESTARTING_TEXT)),
+            None, width, height, Frame(BG_CHASSIS, body=Body(BODY_CENTRED_LABEL, line=text)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -1896,14 +1937,25 @@ def _body_idle_badge(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     """The idle screen's own corner glyphs, drawn regardless of which base
     image (the plain logo or the replay-available one) is showing
     underneath — see compose_idle(): the "i" information badge top-right,
-    and the Wi-Fi status glyph top-left, lit to body.wifi_bars arcs, or
-    entirely alarm red when body.wifi_alarm is set."""
+    and the Wi-Fi status glyph top-left as body.wifi_style says. WIFI_SIGNAL
+    lights body.wifi_bars arcs, WIFI_GREY dims every part, WIFI_RED paints
+    every part in alarm red, and WIFI_OFF draws no glyph at all — the base
+    shows through untouched, so the flash's blank half really is blank (no
+    tile is built or cached for it). An unrecognised style is treated as
+    WIFI_SIGNAL."""
     layout = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
     x0, y0, x1, y1 = layout.info
     side = round(min(x1 - x0, y1 - y0) * _INFO_GLYPH_FRACTION)
     _draw_glyph(img, _centred_box(layout.info, side), GLYPH_INFO, supersample=metrics.supersample)
-    lit = 3 if body.wifi_alarm else max(0, min(3, int(body.wifi_bars)))
-    color = _ALARM_RGB if body.wifi_alarm else _GLYPH_RGB
+    style = body.wifi_style
+    if style == WIFI_OFF:
+        return
+    if style == WIFI_RED:
+        lit, color = 3, _ALARM_RGB
+    elif style == WIFI_GREY:
+        lit, color = 0, _GLYPH_RGB
+    else:
+        lit, color = max(0, min(3, int(body.wifi_bars))), _GLYPH_RGB
     _draw_glyph(img, layout.wifi, GLYPH_WIFI, lit, color, supersample=metrics.supersample)
 
 
@@ -2295,7 +2347,7 @@ def _body_nowifi(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
 
 def _body_centred_label(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """One string (body.line) centred on the whole panel at the readout
-    size — the "Restarting..." screen."""
+    size — the "Restarting..." and "Starting..." screens."""
     draw = ImageDraw.Draw(img)
     _draw_label_centered(draw, (0, 0, metrics.width, metrics.height), body.line, _load_font(metrics.font_readout))
 

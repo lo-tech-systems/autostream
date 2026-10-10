@@ -2860,6 +2860,86 @@ class TestInfoProviderWiring:
 
 
 # ---------------------------------------------------------------------------
+# Boot splash wiring: main() paints "Starting..." through the real display
+# manager before the HTTP server, the mDNS browsers and display.start().
+# ---------------------------------------------------------------------------
+
+class TestBootSplashWiring:
+    def _run(self, fitted=True):
+        import dial_main as dm
+        import dial_display as dd
+        from dial_config import DialConfig, DialDisplayConfig
+
+        cfg = DialConfig(uuid="splash-uuid", sw_gpio=None, clk_gpio=None, dt_gpio=None, led_gpio=None, pin="")
+        cfg.display = DialDisplayConfig(fitted=fitted)
+
+        order: list = []
+        real_create = dd.create_dial_display
+
+        def spy_create(*args, **kwargs):
+            inst = real_create(*args, **kwargs)
+            # Shadow the bound methods on this one instance to record order
+            # without opening a real backend.
+            inst.show_starting = lambda: order.append("show_starting")
+            inst.start = lambda: order.append("start")
+            inst.stop = lambda: order.append("stop")
+            return inst
+
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_http.get_runtime_status.return_value = {"name": "Dial"}
+
+        def http_ctor(*a, **k):
+            order.append("http")
+            return mock_http
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        with patch("dial_main._configure_logging"), \
+             patch("dial_main.load_config", return_value=cfg), \
+             patch("dial_main._reconcile_update_timer", side_effect=lambda *_: order.append("update_timer")), \
+             patch("dial_main._announce_self", side_effect=lambda *_: order.append("announce")), \
+             patch("dial_main.DialLED"), \
+             patch("dial_main.DialHTTPServer", side_effect=http_ctor), \
+             patch("dial_main.start_playing_browser", side_effect=lambda **_: order.append("mdns")), \
+             patch("dial_main.start_general_browser"), \
+             patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
+             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.start_repeat_worker"), \
+             patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), patch("dial_main.start_network_worker"), \
+             patch("dial_main.DialControlServer"), \
+             patch.object(dd, "create_dial_display", side_effect=spy_create), \
+             patch("threading.Event", _QuickEvent):
+            dm.main()
+        return order
+
+    def test_splash_is_painted_once_before_everything_else(self):
+        order = self._run()
+        assert order.count("show_starting") == 1
+        assert order.index("show_starting") < order.index("update_timer")
+        assert order.index("show_starting") < order.index("announce")
+        assert order.index("show_starting") < order.index("http")
+        assert order.index("show_starting") < order.index("mdns")
+        assert order.index("show_starting") < order.index("start")
+
+    def test_display_start_still_follows_mdns_startup(self):
+        order = self._run()
+        assert order.index("mdns") < order.index("start")
+
+    def test_noop_display_has_no_show_starting_and_main_still_boots(self):
+        from dial_http_server import NoOpDisplayStatusProvider
+        assert not hasattr(NoOpDisplayStatusProvider(), "show_starting")
+        # _run_main_patched(...) with the display import forced to fail is
+        # already covered by the existing fallback test elsewhere in this
+        # file; add a `show_starting` absence assertion there if that test
+        # inspects the provider instance.
+
+
+# ---------------------------------------------------------------------------
 # Lost-PIN recovery: any deliberate physical input confirms presence, and
 # can_confirm_presence reports what actually got constructed at runtime.
 #

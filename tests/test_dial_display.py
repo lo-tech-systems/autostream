@@ -33,7 +33,7 @@ for _p in (_DIAL, _CORE):
 
 import dial_auth
 from dial_config import DialDisplayConfig
-from dial_display_compositor import OverlayState
+from dial_display_compositor import OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL, _LIST_BG_RGB
 from dial_display_profiles import (
     DEFAULT_PROFILE_KEY,
     effective_diagonal_inches,
@@ -47,6 +47,7 @@ from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, 
 from dial_touch_layout import TouchZone, list_layout_for, metrics_for
 import dial_display as dd
 from dial_display import (
+    NOWIFI_PROMPT_STREAK,
     SCREEN_POLICIES,
     SELECTOR_TIMEOUT_SECONDS,
     DialDisplay,
@@ -7648,37 +7649,41 @@ def _fold(display):
 
 
 class TestNoWifiStateMachine:
-    def _idle_display(self):
+    def _idle_display(self, connected=True):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         display._poll_once()          # nothing playing: idle screen, _now_playing None
         _fold(display)
+        if connected:
+            # The common case for the incident tests below: a link that was
+            # up since boot and is now lost.
+            display.on_network_view(_view(LINK_CONNECTED, bars=3))
         return display, fb
 
     def test_unknown_before_first_poll_draws_steady_grey(self):
-        display, fb = self._idle_display()
+        display, fb = self._idle_display(connected=False)
         with display._lock:
-            assert display._idle_wifi_args_locked() == (0, False)
+            assert display._idle_wifi_args_locked() == (0, WIFI_GREY)
         assert display._wifi_flashing() is False
 
     def test_connected_view_gives_steady_bars(self):
         display, fb = self._idle_display()
         display.on_network_view(_view(LINK_CONNECTED, bars=2))
         with display._lock:
-            assert display._idle_wifi_args_locked() == (2, False)
+            assert display._idle_wifi_args_locked() == (2, WIFI_SIGNAL)
         assert display._wifi_flashing() is False
         assert display._screen_request is None
 
-    def test_down_flashes_with_the_monotonic_phase(self):
+    def test_down_after_a_connection_flashes_grey_red_with_the_monotonic_phase(self):
         display, fb = self._idle_display()
         display.on_network_view(_view(LINK_DOWN))
         assert display._wifi_flashing() is True
         with patch("dial_display.time.monotonic", return_value=1000.0):
             with display._lock:
-                assert display._idle_wifi_args_locked() == (0, True)
+                assert display._idle_wifi_args_locked() == (0, WIFI_RED)
         with patch("dial_display.time.monotonic", return_value=1000.5):
             with display._lock:
-                assert display._idle_wifi_args_locked() == (0, False)
+                assert display._idle_wifi_args_locked() == (0, WIFI_GREY)
 
     def test_flash_deadline_is_the_next_half_period(self):
         display, fb = self._idle_display()
@@ -7783,6 +7788,93 @@ class TestNoWifiStateMachine:
         assert display._screen_request == "nowifi"
         _fold(display)
         assert display._screen == "nowifi"
+
+    def test_first_connected_poll_sets_the_ever_connected_latch(self):
+        display, fb = self._idle_display(connected=False)
+        assert display._wifi_ever_connected is False
+        display.on_network_view(_view(LINK_CONNECTED, bars=1))
+        assert display._wifi_ever_connected is True
+
+    def test_latch_survives_down_ignored_and_unknown(self):
+        display, fb = self._idle_display()
+        for link in (LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, LINK_DOWN):
+            display.on_network_view(_view(link))
+        assert display._wifi_ever_connected is True
+
+    def test_latch_survives_disable_and_enable(self):
+        display, fb = self._idle_display()
+        display.disable()
+        display.enable()
+        assert display._wifi_ever_connected is True
+
+    def test_never_connected_down_flashes_grey_off_with_the_monotonic_phase(self):
+        display, fb = self._idle_display(connected=False)
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._wifi_flashing() is True
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            with display._lock:
+                assert display._idle_wifi_args_locked() == (0, WIFI_OFF)
+        with patch("dial_display.time.monotonic", return_value=1000.5):
+            with display._lock:
+                assert display._idle_wifi_args_locked() == (0, WIFI_GREY)
+
+    def test_flash_turns_red_once_a_connection_has_been_lost(self):
+        display, fb = self._idle_display(connected=False)
+        display.on_network_view(_view(LINK_DOWN))
+        with patch("dial_display.time.monotonic", return_value=1000.0), display._lock:
+            assert display._idle_wifi_args_locked() == (0, WIFI_OFF)
+        display.on_network_view(_view(LINK_CONNECTED, bars=2))
+        display.on_network_view(_view(LINK_DOWN))
+        with patch("dial_display.time.monotonic", return_value=1000.0), display._lock:
+            assert display._idle_wifi_args_locked() == (0, WIFI_RED)
+
+    def test_no_auto_prompt_before_the_first_connection(self):
+        display, fb = self._idle_display(connected=False)
+        for _ in range(NOWIFI_PROMPT_STREAK + 3):
+            display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request is None
+        assert display._wifi_down_streak == NOWIFI_PROMPT_STREAK + 3   # still counted
+        assert display._wifi_flashing() is True                        # icon still flashes
+        _fold(display)
+        assert display._screen == "main"
+
+    def test_auto_prompt_after_a_loss_following_a_connection(self):
+        display, fb = self._idle_display(connected=False)
+        for _ in range(4):
+            display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request is None
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        for expected in (None, None, "nowifi"):
+            display.on_network_view(_view(LINK_DOWN))
+            assert display._screen_request == expected
+
+    def test_icon_tap_opens_the_page_before_the_first_connection(self):
+        display, fb = self._idle_display(connected=False)
+        display.on_network_view(_view(LINK_DOWN))
+        display.open_nowifi()
+        assert display._screen_request == "nowifi"
+        _fold(display)
+        assert display._screen == "nowifi"
+        assert display.touch_surface() == ("nowifi", False, False, False)
+
+    def test_idle_frame_is_composed_with_the_off_style_on_the_blank_half(self):
+        display, fb = self._idle_display(connected=False)
+        display.on_network_view(_view(LINK_DOWN))
+        with patch.object(display._compositor, "compose_idle",
+                          wraps=display._compositor.compose_idle) as compose, \
+             patch("dial_display.time.monotonic", return_value=1000.0):
+            _fold(display)
+        assert compose.call_args.kwargs["wifi_style"] == WIFI_OFF
+        assert compose.call_args.kwargs["wifi_bars"] == 0
+
+    def test_idle_frame_is_composed_with_the_red_style_after_a_loss(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_DOWN))
+        with patch.object(display._compositor, "compose_idle",
+                          wraps=display._compositor.compose_idle) as compose, \
+             patch("dial_display.time.monotonic", return_value=1000.0):
+            _fold(display)
+        assert compose.call_args.kwargs["wifi_style"] == WIFI_RED
 
     def test_auto_open_never_stomps_on_another_screen(self):
         display, fb = self._idle_display()
@@ -7903,8 +7995,94 @@ class TestNoWifiStateMachine:
         display.enable()
         display._poll_once()
         _fold(display)
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
         for _ in range(3):
             display.on_network_view(_view(LINK_DOWN))
         before = len(fb.displayed)
         _fold(display)
         assert display._screen == "nowifi" and len(fb.displayed) == before + 1
+
+
+# ---------------------------------------------------------------------------
+# The boot splash: show_starting() opens the one backend and paints
+# "Starting..." first; the first poll replaces it.
+# ---------------------------------------------------------------------------
+
+class TestBootSplash:
+    def test_show_starting_opens_the_backend_and_paints_the_splash_first(self):
+        display, fb, gt = _make_display(targets=[])
+        with patch.object(display._compositor, "compose_starting",
+                          wraps=display._compositor.compose_starting) as compose:
+            display.show_starting()
+        assert fb.opened is True
+        compose.assert_called_once()
+        assert len(fb.displayed) == 1                       # no logo frame before it
+        assert display.get_status()["showing"] == "starting"
+        assert display.get_status()["active"] is True
+        frame = fb.displayed[0]
+        # Flat chassis with ink in the middle — the centred-label look.
+        assert frame.getpixel((0, 0)) == _LIST_BG_RGB
+        assert any(frame.getpixel((x, frame.height // 2)) != _LIST_BG_RGB for x in range(frame.width))
+
+    def test_start_after_show_starting_reuses_the_open_backend(self):
+        display, fb, gt = _make_display(targets=[])
+        display.show_starting()
+        frames = len(fb.displayed)
+        with display._lock:
+            display._enable_locked()          # what start() does first
+        assert len(fb.displayed) == frames    # no reopen, no logo repaint
+        assert display.get_status()["showing"] == "starting"
+
+    def test_first_poll_replaces_the_splash_with_the_logo(self):
+        display, fb, gt = _make_display(targets=[])
+        display.show_starting()
+        display._poll_once()
+        assert display.get_status()["showing"] == "logo"
+        assert len(fb.displayed) == 2
+
+    def test_first_poll_with_artwork_replaces_the_splash(self):
+        # The same artwork-path fixture the existing "showing == artwork"
+        # test elsewhere in this file uses.
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.show_starting()
+        fake_image = Image.new("RGB", (128, 160))
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=fake_image), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+            display._poll_once()
+        assert display.get_status()["showing"] == "artwork"
+        assert len(fb.displayed) >= 2      # the splash, then artwork (a transition frame may sit between)
+
+    def test_repaint_before_the_first_poll_keeps_the_splash(self):
+        display, fb, gt = _make_display(targets=[])
+        display.show_starting()
+        _fold(display)
+        assert len(fb.displayed) == 1
+        assert display.get_status()["showing"] == "starting"
+
+    def test_unfitted_show_starting_is_a_noop(self):
+        display, fb, gt = _make_display(fitted=False)
+        display.show_starting()
+        assert fb.opened is False and fb.displayed == []
+        assert display.get_status()["showing"] == "noop"
+
+    def test_backend_open_failure_degrades_without_raising(self):
+        display, fb, gt = _make_display(backend=FakeBackend(fail_open=True))
+        display.show_starting()
+        status = display.get_status()
+        assert status["showing"] == "noop" and status["active"] is False
+        assert status["last_error"] == "backend_open_failed"
+
+    def test_display_write_failure_is_recorded_not_raised(self):
+        display, fb, gt = _make_display(backend=FakeBackend(fail_display=True))
+        display.show_starting()
+        assert display.get_status()["last_error"] == "display_write_failed"
+
+    def test_enable_alone_still_paints_the_logo_first(self):
+        # The render_logo default is what every non-splash open relies on.
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        assert len(fb.displayed) == 1
+        assert display.get_status()["showing"] == "logo"

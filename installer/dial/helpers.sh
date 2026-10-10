@@ -176,6 +176,24 @@ disable_system_dnsmasq() {
     systemctl mask dnsmasq.service
 }
 
+disable_cloud_init() {
+    # cloud-init's per-boot stage costs a large fraction of every dial boot
+    # and its provisioning job is finished by the time this installer runs.
+    # The supported way to stop the per-boot run without purging the package
+    # is an empty, root-owned /etc/cloud/cloud-init.disabled flag file: it is
+    # reversible and survives package updates. Idempotent, so it runs on fresh
+    # installs and on every --update alike (existing dials pick it up on their
+    # next update). Only created when cloud-init is actually installed; a
+    # failure warns and continues — a slower boot must never fail an install.
+    if dpkg -s cloud-init >/dev/null 2>&1; then
+        echo "Disabling cloud-init per-boot runs"
+        { mkdir -p /etc/cloud && install -m 0644 -o root -g root /dev/null /etc/cloud/cloud-init.disabled; } \
+            || echo "WARNING: could not create /etc/cloud/cloud-init.disabled — cloud-init will keep running at boot" >&2
+    else
+        echo "cloud-init not installed; skipping disable flag."
+    fi
+}
+
 generate_dial_id() {
     # Derive the Dial identity from the CPU serial (SHA-256 hash, 20 hex chars)
     # or create and store a cryptographically secure random fallback identity.

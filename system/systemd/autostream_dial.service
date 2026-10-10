@@ -6,8 +6,13 @@
 
 [Unit]
 Description=autostream dial
-After=network-online.target avahi-daemon.service
-Wants=network-online.target
+# Deliberately not ordered after the network reaching an online state: the
+# dial's own discovery (avahi-browse via avahi-daemon) and its link poller
+# (a loopback read of the local watcher) both cope with the network arriving
+# later, and waiting for it kept the panel dark for the whole Wi-Fi
+# association. The panel shows "Starting..." as soon as the service is up
+# instead.
+After=avahi-daemon.service
 
 [Service]
 Type=simple

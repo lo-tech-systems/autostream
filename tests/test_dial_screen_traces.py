@@ -417,6 +417,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "network": None if network is None else {
             "link": network.link, "bars": network.bars,
             "down_streak": d._wifi_down_streak, "dismissed": d._wifi_dismissed,
+            "ever_connected": d._wifi_ever_connected,
         },
         "nowifi_open": d._nowifi is not None,
         "restarting_open": d._restarting is not None,
@@ -1373,6 +1374,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_streak_of_three_opens_then_connected_closes", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("repaint",),
         ("network", LINK_DOWN),
         ("repaint",),
@@ -1387,6 +1389,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_dismiss_suppresses_until_connected", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
@@ -1407,6 +1410,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_unknown_does_not_break_the_streak", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_UNKNOWN),
@@ -1417,6 +1421,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_ignored_resets_the_streak", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_IGNORED),
@@ -1428,6 +1433,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_icon_tap_reopens_after_dismiss", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
@@ -1441,6 +1447,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_never_opens_over_the_info_page", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("open_info",),
         ("repaint",),
         ("network", LINK_DOWN),
@@ -1457,6 +1464,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_restart_shows_restarting_then_times_out", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
@@ -1471,6 +1479,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_flash_tick_repaints_idle", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("tick_wifi_flash",),
         ("repaint",),
@@ -1482,11 +1491,45 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     add("nowifi_sleep_pops_the_page", [
         ("targets", []),
         ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("repaint",),
         ("sleep_locked",),
+        ("repaint",),
+    ])
+
+    add("nowifi_never_connected_flashes_but_never_prompts", [
+        ("targets", []),
+        ("poll",),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),                      # still main: no auto-prompt before a first connection
+        ("tick_wifi_flash",),
+        ("advance", 0.5),
+        ("repaint",),
+        ("network", LINK_CONNECTED, 2),   # first connection: latch set
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),                      # now a loss: the page opens
+    ])
+
+    add("nowifi_never_connected_icon_tap_opens_the_page", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("open_nowifi",),
+        ("repaint",),
+        ("nowifi_dismiss",),
         ("repaint",),
     ])
 
@@ -1610,6 +1653,7 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
         [
             ("targets", []),
             ("poll",),
+            ("network", LINK_CONNECTED, 3),
             ("repaint",),  # touch_surface == "idle"
             ("network", LINK_DOWN),
             ("network", LINK_DOWN),
@@ -1695,6 +1739,7 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
         [
             ("targets", []),
             ("poll",),
+            ("network", LINK_CONNECTED, 3),
             ("repaint",),  # touch_surface == "idle"
             ("network", LINK_DOWN),
             ("network", LINK_DOWN),

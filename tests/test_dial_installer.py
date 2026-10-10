@@ -21,6 +21,11 @@ Covers:
 - Reboot prompt at end of fresh install (not on --update).
 - network_state_phase records active non-AP WiFi connection name on fresh install.
 """
+import os
+import re
+import subprocess
+import sys
+
 import pytest
 from pathlib import Path
 
@@ -28,6 +33,23 @@ REPO_ROOT = Path(__file__).parent.parent
 DIAL_INSTALLER = REPO_ROOT / "autostream_dial_install.sh"
 HELPERS_SH = REPO_ROOT / "installer" / "dial" / "helpers.sh"
 SUDOERS = REPO_ROOT / "system" / "sudoers" / "autostream_dial"
+
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+from conftest import bash_can_run_script_at_windows_path
+
+bash_capable = pytest.mark.skipif(
+    not bash_can_run_script_at_windows_path(),
+    reason="bash cannot execute scripts at this path (MSYS2 limitation on Windows)",
+)
+
+
+def _extract_function(src: str, name: str) -> str:
+    """Pull a single top-level bash function's full text (signature through
+    its closing brace) out of installer source, so the round-trip test runs
+    the real current function body rather than a hand-maintained duplicate."""
+    m = re.search(re.escape(name) + r"\(\)\s*\{.*?\n\}\n", src, re.S)
+    assert m is not None, f"could not locate function {name}() in source"
+    return m.group(0)
 UPDATER = REPO_ROOT / "supervisor" / "autostream_dial_updater"
 
 
@@ -1284,3 +1306,115 @@ class TestDialNetworkStatePhase:
         assert network_pos > create_dirs_pos, (
             "network_state_phase must be called after create_dirs so /opt/autostream exists"
         )
+
+
+# ---------------------------------------------------------------------------
+# Boot-time trim: no wait for network-online.target, and cloud-init's
+# per-boot run disabled on both fresh installs and updates.
+# ---------------------------------------------------------------------------
+
+class TestDialServiceBootOrdering:
+    def _service_content(self):
+        return (REPO_ROOT / "system" / "systemd" / "autostream_dial.service").read_text(encoding="utf-8")
+
+    def test_service_does_not_wait_for_network_online(self):
+        content = self._service_content()
+        assert "network-online.target" not in content
+        assert "Wants=" not in content
+
+    def test_service_still_orders_after_avahi(self):
+        content = self._service_content()
+        assert "After=avahi-daemon.service" in content
+
+
+class TestCloudInitDisable:
+    def test_helper_defined_with_dpkg_guard_and_flag_file(self):
+        content = HELPERS_SH.read_text(encoding="utf-8")
+        start = content.find("disable_cloud_init()")
+        assert start != -1, "disable_cloud_init() not found in installer/dial/helpers.sh"
+        body = content[start: content.find("\n}\n", start)]
+        assert "dpkg -s cloud-init" in body
+        assert "install -m 0644 -o root -g root /dev/null /etc/cloud/cloud-init.disabled" in body
+        assert "mkdir -p /etc/cloud" in body
+        assert 'echo "WARNING:' in body     # non-fatal on failure
+
+    def test_called_on_both_fresh_install_and_update(self):
+        content = DIAL_INSTALLER.read_text(encoding="utf-8")
+        call_pos = content.find("\ndisable_cloud_init\n")
+        assert call_pos != -1, "disable_cloud_init not called in autostream_dial_install.sh"
+        # After the fresh-only block (which closes before the Python deploy)
+        # and before the final service restart.
+        assert call_pos > content.find("# ---- Deploy Python files")
+        assert call_pos < content.find("systemctl restart autostream_dial")
+        assert content.count("\ndisable_cloud_init\n") == 1
+
+    def _run_disable_cloud_init(self, tmp_path, *, present_pkgs: set[str]):
+        """Run the real disable_cloud_init() body with a stubbed dpkg on
+        PATH and a fake root under tmp_path, so the flag file never touches
+        the real filesystem."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        present = " ".join(sorted(present_pkgs))
+        dpkg_stub = bin_dir / "dpkg"
+        dpkg_stub.write_text(
+            f'''#!/bin/bash
+if [ "$1" = "-s" ]; then
+  for p in {present}; do
+    if [ "$2" = "$p" ]; then
+      exit 0
+    fi
+  done
+  exit 1
+fi
+exit 0
+''',
+            encoding="utf-8",
+        )
+        dpkg_stub.chmod(0o755)
+
+        fake_etc_cloud = tmp_path / "etc" / "cloud"
+        flag_path = fake_etc_cloud / "cloud-init.disabled"
+
+        func_src = _extract_function(HELPERS_SH.read_text(encoding="utf-8"), "disable_cloud_init")
+        func_src_local = func_src.replace(
+            "/etc/cloud/cloud-init.disabled", flag_path.as_posix()
+        ).replace(
+            "mkdir -p /etc/cloud", f"mkdir -p {fake_etc_cloud.as_posix()}"
+        )
+
+        # The dial helper defines no info/warn, matching its plain-echo
+        # logging convention, so no stubs for them are needed here.
+        script = f'''
+set -uo pipefail
+{func_src_local}
+disable_cloud_init
+echo "EXIT:$?"
+'''
+        env = dict(os.environ)
+        env["PATH"] = bin_dir.as_posix() + os.pathsep + env.get("PATH", "")
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True, text=True, timeout=20, env=env,
+        )
+        return result, flag_path
+
+    @bash_capable
+    def test_creates_flag_when_cloud_init_present(self, tmp_path):
+        result, flag_path = self._run_disable_cloud_init(tmp_path, present_pkgs={"cloud-init"})
+        assert "EXIT:0" in result.stdout
+        assert flag_path.exists()
+        assert flag_path.read_bytes() == b""
+
+    @bash_capable
+    def test_no_flag_when_cloud_init_absent(self, tmp_path):
+        result, flag_path = self._run_disable_cloud_init(tmp_path, present_pkgs=set())
+        assert "EXIT:0" in result.stdout
+        assert not flag_path.exists()
+        assert "skipping" in result.stdout
+
+    @bash_capable
+    def test_idempotent_against_the_same_fake_root(self, tmp_path):
+        first, flag_path = self._run_disable_cloud_init(tmp_path, present_pkgs={"cloud-init"})
+        second, flag_path2 = self._run_disable_cloud_init(tmp_path, present_pkgs={"cloud-init"})
+        assert "EXIT:0" in first.stdout and "EXIT:0" in second.stdout
+        assert flag_path.exists() and flag_path2.exists()

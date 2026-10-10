@@ -77,6 +77,11 @@ from dial_display_compositor import (  # noqa: E402
     OverlayState,
     RepeatViewState,
     RESTARTING_TEXT,
+    STARTING_TEXT,
+    WIFI_GREY,
+    WIFI_OFF,
+    WIFI_RED,
+    WIFI_SIGNAL,
     _BODY_RENDERERS,
     _ALARM_RGB,
     _CARD_FILL_RGB,
@@ -423,7 +428,9 @@ class TestStatelessness:
         compositor.compose_nowifi(None, 240, 240, NoWifiView(pressed=TouchZone.NOWIFI_RESTART),
                                   rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973))
         compositor.compose_restarting(160, 128, rotate=False, bgr=False)
-        compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=2, wifi_alarm=True)
+        compositor.compose_starting(160, 128, rotate=False, bgr=False)
+        compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=2, wifi_style=WIFI_RED)
+        compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF)
         after = dict(vars(compositor))
         assert before == after == {}
 
@@ -1912,7 +1919,7 @@ class TestComposeIdleWifi:
 
     def test_alarm_paints_red_in_the_wifi_box(self, compositor):
         base = self._logo()
-        frame = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_alarm=True)
+        frame = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_RED)
         wifi = idle_layout_for(160, 128).wifi
         reds = [p for p in frame.crop(wifi).getdata() if p[0] > 150 and p[1] < 130 and p[2] < 130]
         assert reds
@@ -1925,6 +1932,40 @@ class TestComposeIdleWifi:
             list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=3).getdata())
         assert list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=-1).getdata()) == \
             list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=0).getdata())
+
+    def test_off_style_draws_no_wifi_glyph_at_all(self, compositor):
+        base = self._logo()
+        off = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF)
+        grey = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_GREY)
+        wifi = idle_layout_for(160, 128).wifi
+        # Nothing at all in the wifi box: the base shows through untouched.
+        assert list(off.crop(wifi).getdata()) == list(base.crop(wifi).getdata())
+        assert list(grey.crop(wifi).getdata()) != list(base.crop(wifi).getdata())
+        # And the rest of the frame (info badge included) is byte-identical.
+        for y in range(128):
+            for x in range(160):
+                if wifi[0] <= x < wifi[2] and wifi[1] <= y < wifi[3]:
+                    continue
+                assert off.getpixel((x, y)) == grey.getpixel((x, y))
+
+    def test_grey_style_is_byte_identical_to_signal_with_zero_bars(self, compositor):
+        base = self._logo()
+        grey = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_GREY)
+        zero = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=0)
+        assert list(grey.getdata()) == list(zero.getdata())
+
+    def test_red_style_ignores_bars(self, compositor):
+        base = self._logo()
+        a = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_RED, wifi_bars=0)
+        b = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_RED, wifi_bars=3)
+        assert list(a.getdata()) == list(b.getdata())
+
+    def test_off_style_builds_no_wifi_tile(self, compositor):
+        # Off means the painter is never invoked: only the "i" badge's tile
+        # is built (one lru miss), nothing is cached for the wifi corner.
+        _reset_render_caches()
+        compositor.compose_idle(self._logo(), 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF)
+        assert _glyph_tile.cache_info().misses == 1
 
     def test_info_badge_disc_radius_is_a_quarter_of_the_zone(self, compositor):
         # 0.42 * _INFO_GLYPH_FRACTION == 0.25 (to within a pixel at 320x240).
@@ -2095,6 +2136,59 @@ class TestComposeRestarting:
         with patch("dial_display_compositor._load_font", return_value=None):
             frame = compositor.compose_restarting(160, 128, rotate=False, bgr=False)
         assert set(frame.getdata()) == {_LIST_BG_RGB}
+
+
+# ---------------------------------------------------------------------------
+# compose_starting — the boot splash: the restart screen's chassis and centred
+# label with its own text.
+# ---------------------------------------------------------------------------
+
+class TestComposeStarting:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_flat_chassis_with_centred_text(self, compositor, width, height):
+        frame = compositor.compose_starting(width, height, rotate=False, bgr=False)
+        for xy in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+            assert frame.getpixel(xy) == _LIST_BG_RGB
+        row = [frame.getpixel((x, height // 2)) for x in range(width)]
+        ink_x = [x for x, p in enumerate(row) if p != _LIST_BG_RGB]
+        assert ink_x
+        bbox_mid = (min(ink_x) + max(ink_x)) / 2
+        assert abs(bbox_mid - width / 2) <= max(6, width * 0.08)
+
+    def test_font_failure_leaves_the_flat_fill(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = compositor.compose_starting(160, 128, rotate=False, bgr=False)
+        assert set(frame.getdata()) == {_LIST_BG_RGB}
+
+    def test_differs_from_restarting_only_by_its_text(self, compositor):
+        starting = compositor.compose_starting(160, 128, rotate=False, bgr=False)
+        restarting = compositor.compose_restarting(160, 128, rotate=False, bgr=False)
+        assert list(starting.getdata()) != list(restarting.getdata())
+        assert STARTING_TEXT != RESTARTING_TEXT
+
+    def test_restarting_is_byte_identical_to_the_shared_centred_label(self, compositor):
+        # The refactor onto one shared helper must not move a pixel of the
+        # restart screen.
+        via_helper = compositor._compose_centred_label(
+            160, 128, RESTARTING_TEXT, rotate=False, bgr=False, metrics=None,
+        )
+        assert list(via_helper.getdata()) == \
+            list(compositor.compose_restarting(160, 128, rotate=False, bgr=False).getdata())
+
+    def test_rotate_and_bgr_apply_like_every_other_screen(self, compositor):
+        # Same convention the compose() rotate/bgr tests near lines 211-252
+        # pin: rotate is a 180-degree transpose, bgr a channel reversal.
+        plain = compositor.compose_starting(160, 128, rotate=False, bgr=False)
+        rotated = compositor.compose_starting(160, 128, rotate=True, bgr=False)
+        assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
+        swapped = compositor.compose_starting(160, 128, rotate=False, bgr=True)
+        assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
 
 
 # ---------------------------------------------------------------------------
@@ -2482,12 +2576,16 @@ def _render_cache_corpus(width, height, metrics=None):
     cases.append((
         "idle_alarm",
         lambda c: c.compose_idle(
-            logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_alarm=True,
+            logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_style=WIFI_RED,
         ),
     ))
     cases.append((
         "idle_bars3",
         lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_bars=3),
+    ))
+    cases.append((
+        "idle_off",
+        lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_style=WIFI_OFF),
     ))
     cases.append((
         "nowifi",
@@ -2505,6 +2603,10 @@ def _render_cache_corpus(width, height, metrics=None):
     cases.append((
         "restarting",
         lambda c: c.compose_restarting(width, height, rotate=False, bgr=False, metrics=metrics),
+    ))
+    cases.append((
+        "starting",
+        lambda c: c.compose_starting(width, height, rotate=False, bgr=False, metrics=metrics),
     ))
 
     return cases

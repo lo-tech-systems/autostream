@@ -5905,6 +5905,58 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
       "frame_count": 1,
       "frame_sizes": [
         [
@@ -5915,7 +5967,13 @@
       "idle_started": true,
       "info": null,
       "manual_focus_id": null,
-      "network": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
       "now_playing": null,
       "nowifi_open": false,
       "output_detail": null,
@@ -5965,6 +6023,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -6016,6 +6075,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -6067,6 +6127,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -6123,6 +6184,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -6174,6 +6236,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -6230,6 +6293,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12604,9 +12668,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12658,6 +12775,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12709,6 +12827,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12765,6 +12884,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12816,6 +12936,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12872,6 +12993,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12915,6 +13037,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 4,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -12958,6 +13081,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 5,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13001,6 +13125,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 6,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13049,6 +13174,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 6,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13092,6 +13218,7 @@
         "bars": 2,
         "dismissed": false,
         "down_streak": 0,
+        "ever_connected": true,
         "link": "connected"
       },
       "now_playing": null,
@@ -13135,6 +13262,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13178,6 +13306,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13221,6 +13350,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13269,6 +13399,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13395,9 +13526,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13449,6 +13633,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13505,6 +13690,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13556,6 +13742,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13607,6 +13794,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13663,6 +13851,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13797,9 +13986,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13851,6 +14093,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13902,6 +14145,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -13958,6 +14202,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14009,6 +14254,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14065,6 +14311,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14108,6 +14355,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14156,6 +14404,7 @@
         "bars": 0,
         "dismissed": true,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14282,9 +14531,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14336,6 +14638,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14387,6 +14690,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 0,
+        "ever_connected": true,
         "link": "ignored"
       },
       "now_playing": null,
@@ -14438,6 +14742,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14489,6 +14794,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14545,6 +14851,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14571,6 +14878,1405 @@
         "page": 0,
         "rows": 0
       },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    }
+  ],
+  "nowifi_never_connected_flashes_but_never_prompts": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 2,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 3,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 4,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 5,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 5,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 5,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 5,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 5,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 2,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 2,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": true,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 2,
+        "ever_connected": true,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 3,
+        "ever_connected": true,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "nowifi",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 3,
+        "ever_connected": true,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": true,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "nowifi",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "nowifi",
+        false,
+        false,
+        false
+      ]
+    }
+  ],
+  "nowifi_never_connected_icon_tap_opens_the_page": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "nowifi",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": false,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": true,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "nowifi",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "nowifi",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": true,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": true,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "nowifi",
+      "screen_request": "main",
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "nowifi",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 0,
+        "dismissed": true,
+        "down_streak": 1,
+        "ever_connected": false,
+        "link": "down"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": null,
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
@@ -14678,7 +16384,65 @@
       "idle_started": true,
       "info": null,
       "manual_focus_id": null,
-      "network": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
       "now_playing": null,
       "nowifi_open": false,
       "output_detail": null,
@@ -14733,7 +16497,13 @@
         "rows": 6
       },
       "manual_focus_id": null,
-      "network": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
       "now_playing": null,
       "nowifi_open": false,
       "output_detail": null,
@@ -14787,6 +16557,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14842,6 +16613,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14897,6 +16669,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -14952,6 +16725,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 4,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15012,6 +16786,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 4,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15067,6 +16842,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 4,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15123,6 +16899,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 4,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15166,6 +16943,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 5,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15214,6 +16992,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 5,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15340,9 +17119,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15394,6 +17226,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15445,6 +17278,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15501,6 +17335,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15552,6 +17387,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15608,6 +17444,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15659,6 +17496,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15710,6 +17548,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15758,6 +17597,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15884,9 +17724,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15938,6 +17831,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -15989,6 +17883,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16045,6 +17940,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16096,6 +17992,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16144,6 +18041,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16264,6 +18162,58 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
       "frame_count": 1,
       "frame_sizes": [
         [
@@ -16274,7 +18224,13 @@
       "idle_started": true,
       "info": null,
       "manual_focus_id": null,
-      "network": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
       "now_playing": null,
       "nowifi_open": false,
       "output_detail": null,
@@ -16324,6 +18280,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16380,6 +18337,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16431,6 +18389,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16487,6 +18446,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16538,6 +18498,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16594,6 +18555,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16645,6 +18607,7 @@
         "bars": 3,
         "dismissed": false,
         "down_streak": 0,
+        "ever_connected": true,
         "link": "connected"
       },
       "now_playing": null,
@@ -16701,6 +18664,7 @@
         "bars": 3,
         "dismissed": false,
         "down_streak": 0,
+        "ever_connected": true,
         "link": "connected"
       },
       "now_playing": null,
@@ -16827,9 +18791,62 @@
       "info": null,
       "manual_focus_id": null,
       "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16881,6 +18898,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -16932,6 +18950,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "unknown"
       },
       "now_playing": null,
@@ -16983,6 +19002,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -17039,6 +19059,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -70985,6 +73006,58 @@
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
       "frame_count": 1,
       "frame_sizes": [
         [
@@ -70995,7 +73068,13 @@
       "idle_started": true,
       "info": null,
       "manual_focus_id": null,
-      "network": null,
+      "network": {
+        "bars": 3,
+        "dismissed": false,
+        "down_streak": 0,
+        "ever_connected": true,
+        "link": "connected"
+      },
       "now_playing": null,
       "nowifi_open": false,
       "output_detail": null,
@@ -71045,6 +73124,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 1,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71096,6 +73176,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 2,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71147,6 +73228,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71203,6 +73285,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71254,6 +73337,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71310,6 +73394,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71361,6 +73446,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71412,6 +73498,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
@@ -71460,6 +73547,7 @@
         "bars": 0,
         "dismissed": false,
         "down_streak": 3,
+        "ever_connected": true,
         "link": "down"
       },
       "now_playing": null,
