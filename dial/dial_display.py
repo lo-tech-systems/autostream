@@ -5479,6 +5479,7 @@ class DialDisplay:
                 [pin_target] + [t for t in targets if t is not pin_target]
                 if pin_target is not None else targets
             )
+            identified_without_art = None
             for target in ordered:
                 is_focus = pin_target is not None and target is pin_target
                 if target.auth == AUTH_UNAUTHORIZED:
@@ -5525,8 +5526,10 @@ class DialDisplay:
                     if not status_error:
                         records[target.service_name] = result
                         track_id = result.get("track_id")
-                        if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
-                            selected_url = track_id["artwork_url"]
+                        if track_id and track_id.get("state") == "identified":
+                            # A track identified without artwork still has
+                            # its title and artist to show, over the logo.
+                            selected_url = track_id.get("artwork_url") or None
                             selected_artist = track_id.get("artist", "")
                             selected_title = track_id.get("title", "")
                             selected_album = track_id.get("album", "")
@@ -5547,6 +5550,17 @@ class DialDisplay:
                     selected_title = track_id.get("title", "")
                     selected_album = track_id.get("album", "")
                     break
+                if track_id and track_id.get("state") == "identified" and identified_without_art is None:
+                    # Artwork still wins the walk, but the first target
+                    # identified without any is shown (title and artist
+                    # over the logo) when no target has artwork at all.
+                    identified_without_art = (target.service_name, track_id)
+            else:
+                if identified_without_art is not None:
+                    selected_service, track_id = identified_without_art
+                    selected_artist = track_id.get("artist", "")
+                    selected_title = track_id.get("title", "")
+                    selected_album = track_id.get("album", "")
 
         # Reporting-from target: the idle focus when one is pinned; else
         # the identified (or focused) source, else the oldest playing

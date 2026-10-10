@@ -10694,3 +10694,63 @@ class TestAcceptedReplayShowsAsPlaying:
         )
         display.request_poll.assert_not_called()
         assert display._accepted_replay is None
+
+
+class TestIdentifiedWithoutArtwork:
+    """A track identified without artwork still shows its title and artist,
+    over the logo, rather than the generic playing label."""
+
+    def test_single_target_shows_title_and_artist_over_the_logo(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        no_art = _track_id(title="Song", artist="The Artist", album="LP", artwork_url="")
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=no_art)), \
+                patch.object(display, "_show_artwork") as show_artwork:
+            display._poll_once()
+        show_artwork.assert_not_called()
+        assert display.get_status()["showing"] == "logo"
+        assert display.current_source_service_name() == t.service_name
+        assert display._now_playing.title == "Song"
+        assert display._now_playing.artist == "The Artist"
+        assert display._now_playing.album == "LP"
+
+    def test_pinned_target_shows_title_and_artist_over_the_logo(self):
+        t = _target(appliance_id="a" * 20)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        display._manual_focus_id = "a" * 20
+        no_art = _track_id(title="Song", artist="The Artist", artwork_url="")
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=no_art)), \
+                patch.object(display, "_show_artwork") as show_artwork:
+            display._poll_once()
+        show_artwork.assert_not_called()
+        assert display._now_playing.title == "Song"
+        assert display._now_playing.artist == "The Artist"
+
+    def test_a_target_with_artwork_still_wins_the_walk(self):
+        first = _target(name="Kitchen", ip="192.168.1.10", playing_since=100.0)
+        second = _target(name="Lounge", ip="192.168.1.11", playing_since=200.0)
+        display, fb, gt = _make_display(targets=[first, second])
+        display.enable()
+        results = {
+            "Kitchen": _status_result(track_id=_track_id(title="No art", artwork_url="")),
+            "Lounge": _status_result(track_id=_track_id(title="With art")),
+        }
+        with patch("dial_display.fetch_target_status",
+                   side_effect=lambda target, *a, **k: results[target.service_name]), \
+                patch.object(display, "_show_artwork") as show_artwork:
+            display._poll_once()
+        show_artwork.assert_called_once_with("https://provider.example/x.jpg")
+        assert display.current_source_service_name() == "Lounge"
+        assert display._now_playing.title == "With art"
+
+    def test_an_unidentified_track_still_reads_as_playing(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        waiting = _track_id(state="analysing", title="", artist="", album="", artwork_url="")
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=waiting)):
+            display._poll_once()
+        assert display._now_playing.title == ""
+        assert display._now_playing.artist == ""
