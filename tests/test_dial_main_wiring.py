@@ -7,7 +7,7 @@ import builtins
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import DEFAULT, MagicMock, call, patch
 
 REPO_ROOT = Path(__file__).parent.parent
 for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
@@ -25,10 +25,11 @@ def _make_cfg():
     cfg.dt_gpio = None
     cfg.sw_gpio = None
     cfg.port = 7845
+    cfg.hd_port = 7843
     return cfg
 
 
-def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None):
+def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, hd_error=None):
     """Run main() against a real core (and, unless the display stack is made
     to fail, a real DialDisplay), recording the order things start and stop
     in and what each worker callback was wired to."""
@@ -40,13 +41,22 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None):
     cfg.display.poll_interval_s = 4
     if screen_type is not None:
         cfg.display.screen_type = screen_type
+    mock_hd = MagicMock()
+    mock_hd.start.side_effect = lambda: order.append("hd.start")
+    mock_hd.stop.side_effect = lambda: order.append("hd.stop")
+    mock_hd_class = MagicMock(return_value=mock_hd, side_effect=hd_error)
+    mock_hub = MagicMock()
+    mock_hub.start.side_effect = lambda: order.append("hub.start")
+    mock_hub.stop.side_effect = lambda: order.append("hub.stop")
+    mock_hub_class = MagicMock(return_value=mock_hub)
     mock_http = MagicMock()
     mock_http._server = MagicMock()
     mock_http.get_runtime_status.return_value = {"name": "Kitchen Dial"}
     mock_http.effective_mute_scope = "current"
     mock_http.effective_volume_scope = "current"
     order = []
-    captured = {"order": order, "http": mock_http}
+    captured = {"order": order, "http": mock_http, "hd": mock_hd, "hd_class": mock_hd_class,
+                "hub": mock_hub, "hub_class": mock_hub_class}
 
     class _QuickEvent(threading.Event):
         def wait(self, timeout=None):
@@ -86,7 +96,7 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None):
          patch("dial_main.load_config", return_value=cfg), \
          patch("dial_main._reconcile_update_timer"), \
          patch("dial_main._announce_self"), \
-         patch("dial_main.DialLED"), \
+         patch.multiple("dial_main", DialLED=DEFAULT, HdServer=mock_hd_class, ChangeHub=mock_hub_class), \
          patch("dial_main.DialHTTPServer", return_value=mock_http), \
          patch("dial_main.start_playing_browser"), \
          patch("dial_main.start_general_browser"), \
@@ -215,6 +225,50 @@ class TestKioskSurfaceWiring:
         captured = _run_core_wiring(fitted=True, screen_type="st7735s_160x128")
         assert "display built" in captured["order"]
         assert captured["core"].snapshot().dial.inputs == ()
+
+
+class TestHdServerWiring:
+    def test_the_hd_server_is_built_on_every_dial_with_the_core_and_the_configured_port(self):
+        for screen_type in (None, "hd_kiosk"):
+            captured = _run_core_wiring(fitted=True, screen_type=screen_type)
+            args, kwargs = captured["hd_class"].call_args
+            assert args[1] is captured["core"]
+            assert kwargs["http_server"] is captured["http"]
+            assert kwargs["port"] == 7843
+
+    def test_it_is_started_before_the_core_and_stopped_before_it(self):
+        order = _run_core_wiring()["order"]
+        assert order.index("hd.start") < order.index("core.start")
+        assert order.count("hd.stop") == 1
+        assert order.index("hd.stop") < order.index("core.stop")
+
+    def test_a_port_that_cannot_be_bound_costs_the_page_not_the_dial(self):
+        captured = _run_core_wiring(hd_error=OSError(98, "Address already in use"))
+        assert "core.start" in captured["order"]
+        assert "core.stop" in captured["order"]
+        assert "hd.stop" not in captured["order"]
+
+    def test_the_hub_is_built_on_the_core_and_given_to_the_server(self):
+        captured = _run_core_wiring()
+        captured["hub_class"].assert_called_once_with(captured["core"])
+        assert captured["hd_class"].call_args.kwargs["hub"] is captured["hub"]
+
+    def test_the_hub_starts_before_the_server_and_stops_after_it(self):
+        order = _run_core_wiring()["order"]
+        assert order.index("hub.start") < order.index("hd.start") < order.index("core.start")
+        assert order.index("hd.stop") < order.index("hub.stop") < order.index("core.stop")
+
+    def test_a_config_change_publishes_to_the_hub(self):
+        captured = _run_core_wiring()
+        (callback,), _ = captured["http"].add_cfg_listener.call_args
+        captured["hub"].publish.assert_not_called()
+        callback(object())
+        captured["hub"].publish.assert_called_once_with()
+
+    def test_the_hub_is_stopped_when_the_server_cannot_bind(self):
+        captured = _run_core_wiring(hd_error=OSError(98, "Address already in use"))
+        assert "hub.stop" in captured["order"]
+        captured["http"].add_cfg_listener.assert_not_called()
 
 
 class TestBuildDisplay:

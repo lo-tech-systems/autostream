@@ -502,3 +502,15 @@ class TestNginxValidity:
         assert result.returncode == 0 or "syntax is ok" in combined, (
             f"nginx -t failed with syntax errors:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
+
+
+class TestHdListenerIsNotProxied:
+    def test_hd_listener_is_not_proxied(self):
+        conf = _conf()
+        assert "7843" not in conf
+        assert "7844" not in conf
+
+    def test_the_only_upstream_ports_are_the_management_and_watcher_ports(self):
+        ports = set(re.findall(r"proxy_pass\s+https?://[\w.\-$]+:(\d+)", _conf()))
+        ports |= set(re.findall(r"set\s+\$backend\s+https?://[\w.\-]+:(\d+)", _conf()))
+        assert ports == {"7842", "9080"}

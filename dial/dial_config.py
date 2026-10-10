@@ -85,6 +85,10 @@ BRIGHTNESS_MIN = 5
 BRIGHTNESS_MAX = 100
 BRIGHTNESS_DEFAULT = 80
 
+# The loopback port the HD page is served on; the hardware config file may
+# override it with hd_port.
+HD_PORT_DEFAULT = 7843
+
 
 @dataclass
 class DialDisplayConfig:
@@ -165,6 +169,7 @@ class DialConfig:
     sw_gpio:        int | None = 22
     led_gpio:       int | None = None
     port:           int        = 7842
+    hd_port:        int        = HD_PORT_DEFAULT
     uuid:           str        = ''
     step_percent:   int        = 2
     name:           str        = ''
@@ -462,6 +467,18 @@ def _resolve_persisted_poll_interval(value: object) -> int:
     return POLL_INTERVAL_DEFAULT_S
 
 
+def _resolve_persisted_hd_port(value: object) -> int:
+    """Resolve the hardware file's hd_port, falling back to HD_PORT_DEFAULT for
+    anything that is not a usable unprivileged port. Missing (None) silently
+    means the default."""
+    if value is None:
+        return HD_PORT_DEFAULT
+    if not isinstance(value, bool) and isinstance(value, int) and 1024 <= value <= 65535:
+        return value
+    logging.warning("dial config: unusable hd_port %r — falling back to %d", value, HD_PORT_DEFAULT)
+    return HD_PORT_DEFAULT
+
+
 def _resolve_persisted_sleep_after(value: object) -> int:
     """Resolve a persisted sleep_after_s value, falling back to
     SLEEP_AFTER_DEFAULT_S with a warning log for anything unusable, rather
@@ -531,6 +548,7 @@ def load_config() -> DialConfig:
     cfg.sw_gpio   = hw.get('sw_gpio', cfg.sw_gpio)
     cfg.led_gpio  = hw.get('led_gpio')
     cfg.port      = hw.get('port', cfg.port)
+    cfg.hd_port   = _resolve_persisted_hd_port(hw.get('hd_port'))
     cfg.uuid      = hw.get('uuid', '')
 
     hw_display = hw.get('display')

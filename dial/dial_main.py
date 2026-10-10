@@ -19,6 +19,8 @@ from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_con
 from dial_display_profiles import get_profile_or_default
 from dial_control import DialControlServer
 from dial_core import create_dial_core
+from dial_hd_events import ChangeHub
+from dial_hd_server import HdServer
 from dial_http_server import (
     ADMIN_CMD,
     VERSION,
@@ -771,6 +773,24 @@ def main() -> None:
     )
     http_server.start()
 
+    # The HD page's loopback server runs on every dial. A port that cannot be
+    # bound costs the page, never the dial.
+    hd_server = None
+    hd_hub = None
+    try:
+        hd_hub = ChangeHub(core)
+        hd_server = HdServer(cfg, core, http_server=http_server, hub=hd_hub, port=cfg.hd_port)
+        hd_hub.start()
+        hd_server.start()
+        # Screen settings are part of the state the page shows.
+        http_server.add_cfg_listener(lambda new_cfg: hd_hub.publish())
+    except OSError as e:
+        logging.warning("HD server not started: %s", e)
+        if hd_hub is not None:
+            hd_hub.stop()
+        hd_server = None
+        hd_hub = None
+
     # What the core publishes about this dial, and how far a mute reaches,
     # read live from the HTTP server so a /configure or /screen/settings
     # change applies without a restart. Set once the server exists, before
@@ -967,6 +987,10 @@ def main() -> None:
             led.set_playing() if targets else led.set_idle()
     finally:
         _remove_running_marker()
+        if hd_server is not None:
+            hd_server.stop()
+        if hd_hub is not None:
+            hd_hub.stop()
         stop_playing_browser()
         stop_general_browser()
         if touch_source is not None:

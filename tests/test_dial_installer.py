@@ -1508,3 +1508,30 @@ def test_write_dial_settings_includes_sd_health_monitoring():
     assert start != -1
     body = text[start:start + 600]
     assert "'sd_health_monitoring': False" in body
+
+
+class TestHdPageDeployment:
+    """The HD page's files travel in the staged code set: the dial/hd
+    directory comes with the dial package copy and the shared stylesheet is
+    installed beside it."""
+
+    def test_the_stylesheet_is_installed_into_the_code_tree_after_the_package_copy(self):
+        fn = _extract_function(HELPERS_SH.read_text(encoding="utf-8"), "install_code_tree")
+        assert '"$DEPLOY/nginx/static/theme.css" "${dest}/hd/theme.css"' in fn
+        assert fn.index("cp -a") < fn.index("nginx/static/theme.css")
+
+    @pytest.mark.skipif(
+        __import__("shutil").which("bash") is None or sys.platform == "win32",
+        reason="bash not available or not compatible on Windows",
+    )
+    def test_the_installed_tree_carries_the_page_files(self, tmp_path):
+        fn = _extract_function(HELPERS_SH.read_text(encoding="utf-8"), "install_code_tree")
+        dest = tmp_path / "code"
+        script = f"set -euo pipefail\nDEPLOY={REPO_ROOT}\n{fn}\ninstall_code_tree {dest}\n"
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        for name in ("index.html", "hd.css", "hd.js"):
+            assert (dest / "hd" / name).read_bytes() == (REPO_ROOT / "dial" / "hd" / name).read_bytes()
+        assert (dest / "hd" / "theme.css").read_bytes() == (
+            REPO_ROOT / "nginx" / "static" / "theme.css").read_bytes()
+        assert (dest / "dial_hd_server.py").is_file()

@@ -686,6 +686,10 @@ install_code_tree() {
     [[ ${#own[@]} -eq 0 ]] || chown -R root:root "${dest}"
     install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/dial/autostream_dial_control.py" \
         "${dest}/autostream_dial_control.py"
+    # The HD page shares the appliance WebUI's stylesheet and serves it from
+    # beside the page files, so it travels with the staged code set.
+    mkdir -p "${dest}/hd"
+    install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/nginx/static/theme.css" "${dest}/hd/theme.css"
     install -m 0755 ${own[@]+"${own[@]}"} "$DEPLOY/platform/wifi_watcher.py" \
         "${dest}/autostream_wifi_watcher"
     sed -i 's/\r$//' "${dest}/autostream_wifi_watcher"

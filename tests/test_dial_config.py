@@ -84,6 +84,22 @@ class TestLoadConfigHardwareOverlay:
         assert cfg.led_gpio == 7
         assert cfg.port == 9000
 
+    def test_hd_port_defaults_and_is_overridden_by_the_hardware_file(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            assert load_config().hd_port == 7843
+        _write_hw(hw, hd_port=9100)
+        with _redirect(tmp_path, hw_path=hw):
+            assert load_config().hd_port == 9100
+
+    @pytest.mark.parametrize("bad", [0, 80, 70000, "7843", True, 7843.5, None])
+    def test_an_unusable_hd_port_falls_back_to_the_default(self, tmp_path, bad):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, hd_port=bad)
+        with _redirect(tmp_path, hw_path=hw):
+            assert load_config().hd_port == 7843
+
     def test_mutable_settings_overlay_applied(self, tmp_path):
         hw = tmp_path / "hw.json"
         _write_hw(hw)

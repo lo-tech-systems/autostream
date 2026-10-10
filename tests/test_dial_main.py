@@ -28,6 +28,15 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 
+@pytest.fixture(autouse=True)
+def _no_hd_listener():
+    """main() builds the HD page's server and hub; none of these tests may
+    bind its real port."""
+    import dial_main
+    with patch.object(dial_main, "HdServer"), patch.object(dial_main, "ChangeHub"):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
