@@ -66,6 +66,7 @@ from dial_display_compositor import (
     EqViewState,
     InfoValueView,
     ListState,
+    NOT_AUTHORISED_TEXT,
     NOWIFI_DISMISS_TEXT,
     NOWIFI_MESSAGE_TEXT,
     NOWIFI_RESTART_TEXT,
@@ -622,6 +623,9 @@ class SelectorRow:
     label: str        # appliance_display_name(service_name)
     current: bool     # this row is the focus (manual, else the reporting-from target)
     playing: bool = False  # the appliance is playing now, live or replay
+    # False for an appliance confirmed to have refused this dial: listed but
+    # marked, never focused or controlled (see selector_pick).
+    authorized: bool = True
 
 
 @dataclass(frozen=True)
@@ -629,8 +633,9 @@ class SelectorState:
     """Immutable snapshot of the appliance-selector screen's rows and
     paging, as last built by the poll thread (_refresh_selector_rows).
 
-    rows: every AUTHORIZED, identified appliance on the merged roster, idle
-        or playing — see _refresh_selector_rows for the exact filter. ALL
+    rows: every AUTHORIZED or confirmed-UNAUTHORIZED identified appliance
+        on the merged roster, idle or playing — see _refresh_selector_rows
+        for the exact filter. ALL
         rows across every page, not just the current one; the compositor's
         ListState (built separately, at repaint time) slices out the
         current page.
@@ -722,9 +727,15 @@ class InfoValueState:
     """The compact info page's own drill-in: which field is showing (an
     absolute index into InfoState.rows, read fresh at paint — see
     DialDisplay._display_info_value_locked, so a gather landing while the
-    view is open still shows up) and the inactivity clock."""
+    view is open still shows up) and the inactivity clock.
+
+    hint: (label, text) when the view was opened from the appliance
+    selector to explain an unauthorised row (see selector_pick) instead of
+    showing an info field; such a view ignores index and its back returns to
+    the selector."""
     index: int
     opened_at: float
+    hint: "tuple[str, str] | None" = None
 
 
 @dataclass(frozen=True)
@@ -847,7 +858,15 @@ def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed
 
 
 def _selector_list_row(row: SelectorRow) -> tuple:
+    if not row.authorized:
+        return (row.label, False, NOT_AUTHORISED_TEXT)
     return (row.label, row.current, PLAY_GLYPH) if row.playing else (row.label, row.current)
+
+
+def _unauthorised_hint(label: str) -> tuple[str, str]:
+    """The (title, text) the value view shows for a tap on an unauthorised
+    selector row."""
+    return NOT_AUTHORISED_TEXT, f"Allow this dial in {label}'s web UI (Setup, Dials)"
 
 
 def _picker_list_row(row: PickerRow) -> tuple:
@@ -1280,6 +1299,10 @@ class DialDisplay:
         # info list chose, consumed by the value view's opener — the
         # self._output_open_id shape.
         self._info_value_index: int | None = None
+        # Touch-thread plain write: the (label, text) hint a tap on an
+        # unauthorised selector row asks the value view to show, consumed
+        # by the view's opener like self._info_value_index.
+        self._info_value_hint: tuple[str, str] | None = None
         # Zero-arg callable -> tuple[InfoRow, ...], wired by set_info_provider()
         # at startup (dial_main.py, after the HTTP server exists). None
         # (e.g. a NoOpDisplayStatusProvider stand-in, or before wiring runs)
@@ -2897,6 +2920,10 @@ class DialDisplay:
         back_to. Lock-free plain reads."""
         if screen == "outputs":
             return self._outputs_return
+        if screen == "info_value":
+            view = self._info_value
+            if view is not None and view.hint is not None:
+                return "selector"
         return _policy(screen).back_to
 
     def _request_back(self, screen: str) -> None:
@@ -2940,7 +2967,16 @@ class DialDisplay:
         if selector is not None and selector.rows:
             page_rows = self._current_page_rows(selector)
             if 0 <= index < len(page_rows):
-                self.set_manual_focus(page_rows[index].appliance_id)
+                row = page_rows[index]
+                if not row.authorized:
+                    # An appliance that refused this dial cannot be
+                    # controlled: no focus change, and the selector stays
+                    # open underneath a short hint whose back returns here.
+                    self._info_value_hint = _unauthorised_hint(row.label)
+                    self._screen_request = "info_value"
+                    self._overlay_signal.set()
+                    return
+                self.set_manual_focus(row.appliance_id)
         self.close_list()
 
     def list_row_tap(self, index: int) -> None:
@@ -3430,9 +3466,11 @@ class DialDisplay:
         restarted inactivity clock, carrying over whatever rows were last
         built. Deliberately does not clear another screen's own state on a
         direct switch (e.g. from repeat) — _close_secondary_locked is the
-        one place that does."""
+        one place that does. A return from the unauthorised-row hint keeps
+        the page the row was tapped on."""
         rows = self._selector.rows if self._selector is not None else ()
-        self._selector = SelectorState(rows=rows, page=0, opened_at=time.monotonic())
+        page = self._selector.page if (self._screen == "info_value" and self._selector is not None) else 0
+        self._selector = SelectorState(rows=rows, page=page, opened_at=time.monotonic())
         self._screen = "selector"
         return True
 
@@ -3466,7 +3504,18 @@ class DialDisplay:
         stays showing) when the info list is not open or the touch-chosen
         index (self._info_value_index, set by info_row_tap()) no longer
         names a row in it — either way self._info is left untouched, since
-        the view is the list's child and its own back_to returns there."""
+        the view is the list's child and its own back_to returns there.
+
+        A pending hint (self._info_value_hint, from an unauthorised selector
+        row) opens the view over the selector instead, only while the
+        selector is showing; the selector's state is left untouched."""
+        hint, self._info_value_hint = self._info_value_hint, None
+        if hint is not None:
+            if self._screen != "selector":
+                return False
+            self._info_value = InfoValueState(index=0, opened_at=time.monotonic(), hint=hint)
+            self._screen = "info_value"
+            return True
         state, index = self._info, self._info_value_index
         self._info_value_index = None
         if self._screen != "info" or state is None or index is None or not (0 <= index < len(state.rows)):
@@ -3933,7 +3982,8 @@ class DialDisplay:
         Rows: every roster entry with a non-empty appliance_id whose auth is
         AUTHORIZED (not just "not unauthorized" — an unknown appliance is
         controllable but not yet confirmed, so it stays off the list until
-        a probe confirms it). *current* marks the manual focus when one is
+        a probe confirms it) or UNAUTHORIZED (listed, marked "not
+        authorised", never current or playing — see selector_pick). *current* marks the manual focus when one is
         set, else the reporting-from appliance (*reporting_id*, the playing
         reporting target or, with nothing playing, the idle focus). *playing*
         marks a row whose appliance is in the playing set, live or replay —
@@ -3950,11 +4000,12 @@ class DialDisplay:
             SelectorRow(
                 appliance_id=r.appliance_id,
                 label=appliance_display_name(r.service_name),
-                current=(r.appliance_id == current_id),
-                playing=r.playing,
+                current=(r.auth == AUTH_AUTHORIZED and r.appliance_id == current_id),
+                playing=(r.auth == AUTH_AUTHORIZED and r.playing),
+                authorized=(r.auth == AUTH_AUTHORIZED),
             )
             for r in roster
-            if r.appliance_id and r.auth == AUTH_AUTHORIZED
+            if r.appliance_id and r.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
         )
         with self._lock:
             prev = self._selector
@@ -4134,9 +4185,12 @@ class DialDisplay:
         _display_locked() entirely, like every other list-chassis screen's
         own compose path. Caller holds self._lock."""
         view_state = self._info_value
-        rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
-        row = rows[view_state.index] if view_state is not None and 0 <= view_state.index < len(rows) else None
-        view = InfoValueView(label=row.label if row else "", value=row.value if row else "-")
+        if view_state is not None and view_state.hint is not None:
+            view = InfoValueView(label=view_state.hint[0], value=view_state.hint[1])
+        else:
+            rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
+            row = rows[view_state.index] if view_state is not None and 0 <= view_state.index < len(rows) else None
+            view = InfoValueView(label=row.label if row else "", value=row.value if row else "-")
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_info_value(
             metrics.width, metrics.height, view,

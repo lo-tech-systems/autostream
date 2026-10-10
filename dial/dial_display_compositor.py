@@ -229,6 +229,11 @@ _GLYPH_SUPERSAMPLE = 4
 # own disabled state.
 _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
 
+# The appliance selector's secondary text for an appliance that has refused
+# this dial. A row carrying exactly this text is drawn dimmed throughout
+# (label and secondary) so it reads as unavailable next to the live rows.
+NOT_AUTHORISED_TEXT = "Not authorised"
+
 # The compact tier's muted mute-cell: a solid wash (see the main-screen
 # frame builder) plus the glyph inverted to black, so "muted" reads at a
 # glance on a cell too small for the large tiers' translucent wash to read
@@ -2456,6 +2461,12 @@ def _draw_timer_line(img: Image.Image, text: str, alpha: float, metrics: LayoutM
 _MARKER_BOX_FRACTION = 0.75
 
 
+def _row_text_color(secondary) -> tuple:
+    """The text colour of a list row: dimmed when its secondary text is the
+    selector's "not authorised" label, the plain glyph colour otherwise."""
+    return _DIMMED_GLYPH_RGB if secondary == NOT_AUTHORISED_TEXT else _GLYPH_RGB
+
+
 def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
     draw = ImageDraw.Draw(img)
@@ -2469,6 +2480,7 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
         row = body.rows[i]
         label = row[0]
         secondary = row[2] if len(row) > 2 else ""
+        row_color = _row_text_color(secondary)
         cy = (y0 + y1) // 2
         right_edge = x1 - pad
 
@@ -2490,7 +2502,9 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
                 sec_w, sec_h, sec_bbox = measured_sec
                 sec_left, sec_top, _, _ = sec_bbox
                 sec_x = right_edge - sec_w
-                _draw_text_safe(draw, (sec_x - sec_left, cy - sec_h // 2 - sec_top), secondary, row_font)
+                _draw_text_safe(
+                    draw, (sec_x - sec_left, cy - sec_h // 2 - sec_top), secondary, row_font, fill=row_color,
+                )
                 right_edge = sec_x - pad
 
         if label and row_font is not None and right_edge > x0 + pad:
@@ -2500,7 +2514,7 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
                 if measured is not None:
                     text_w, text_h, bbox = measured
                     left, top, _, _ = bbox
-                    _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font)
+                    _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font, fill=row_color)
 
 
 # ---------------------------------------------------------------------------
@@ -2616,13 +2630,14 @@ def _draw_compact_list_row(
     label_rect = upper if has_secondary else cell
     draw = ImageDraw.Draw(img)
     max_w = x1 - x0 - 2 * pad
+    color = _row_text_color(secondary)
     label = row[0]
     if label and font is not None and max_w > 0:
         text = _truncate_to_width(draw, label, font, max_w)
-        _draw_label_centered(draw, label_rect, text, font)
+        _draw_label_centered(draw, label_rect, text, font, color)
     if has_secondary and font is not None and max_w > 0:
         text = _truncate_to_width(draw, secondary, font, max_w)
-        _draw_label_centered(draw, lower, text, font)
+        _draw_label_centered(draw, lower, text, font, color)
 
 
 def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:

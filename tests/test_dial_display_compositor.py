@@ -73,6 +73,7 @@ from dial_display_compositor import (  # noqa: E402
     Header,
     InfoValueView,
     ListState,
+    NOT_AUTHORISED_TEXT,
     NoWifiView,
     OutputViewState,
     PLAY_GLYPH,
@@ -1190,6 +1191,30 @@ class TestComposeList:
             metrics=metrics,
         )
         assert list(result.crop(layout.rail_down).getdata()) != list(no_next.crop(layout.rail_down).getdata())
+
+    @staticmethod
+    def _brightest(img):
+        return max(max(px) for px in img.getdata())
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _COMPACT_240, _COMPACT_128, metrics_for(160, 128)])
+    def test_selector_row_secondary_text_dimmed(self, compositor, metrics):
+        w, h = metrics.width, metrics.height
+        if metrics.content_tier == CONTENT_COMPACT:
+            row_rect = compact_picker_layout_for(w, h, metrics=metrics).row0
+        else:
+            row_rect = list_layout_for(w, h, metrics=metrics).rows[0]
+
+        def render(secondary):
+            state = ListState(rows=(("Kitchen", False, secondary),))
+            return compositor.compose_list(w, h, state, rotate=False, bgr=False, metrics=metrics).crop(row_rect)
+
+        dimmed = render(NOT_AUTHORISED_TEXT)
+        normal = render("Not authorised.")  # a plain secondary string: drawn at full white
+        assert self._brightest(normal) > _DIMMED_GLYPH_RGB[0]
+        # Label and secondary are both drawn, and nothing in the row is brighter than the dim colour.
+        blank = render("")
+        assert list(dimmed.getdata()) != list(blank.getdata())
+        assert self._brightest(dimmed) <= max(_DIMMED_GLYPH_RGB)
 
 
 # ---------------------------------------------------------------------------

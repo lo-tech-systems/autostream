@@ -4983,7 +4983,7 @@ class TestManualFocus:
 # ---------------------------------------------------------------------------
 
 class TestSelectorRows:
-    def test_rows_only_authorized_targets_with_nonempty_id(self):
+    def test_rows_only_authorized_or_unauthorized_targets_with_nonempty_id(self):
         good = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
         unauth = _target(name="B", service_name="B", appliance_id="b" * 20, auth="unauthorized")
         unknown = _target(name="C", service_name="C", appliance_id="c" * 20, auth="unknown")
@@ -4992,8 +4992,9 @@ class TestSelectorRows:
         display.enable()
         with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
             display._poll_once()
-        assert [r.label for r in display._selector.rows] == ["A"]
-        assert [r.appliance_id for r in display._selector.rows] == ["a" * 20]
+        assert [r.label for r in display._selector.rows] == ["A", "B"]
+        assert [r.appliance_id for r in display._selector.rows] == ["a" * 20, "b" * 20]
+        assert [r.authorized for r in display._selector.rows] == [True, False]
 
     def test_current_follows_manual_focus(self):
         a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized", playing_since=1.0)
@@ -5218,6 +5219,124 @@ class TestSelectorOpenCloseAndRepaint:
         with display._lock:
             display._repaint_current_locked()
         assert display.persistent_overlay_shown() is False
+
+
+_HINT_TIERS = [
+    pytest.param(320, 240, 0.1778, id="rich_320x240"),
+    pytest.param(128, 128, 25.9 / 128, id="compact_128x128"),
+    pytest.param(160, 128, None, id="compact_160x128"),
+    pytest.param(240, 240, 23.4 / 240, id="compact_240x240"),
+]
+
+
+class TestSelectorUnauthorizedRows:
+    def _display(self, proto=0, authorized_count=1):
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                    auth="authorized", playing_since=float(i))
+            for i in range(authorized_count)
+        ]
+        targets.append(_target(
+            name="Lounge", service_name="Lounge", appliance_id="9" * 20, ip="192.168.1.99",
+            auth="unauthorized", dial_proto_version=proto, playing_since=50.0,
+        ))
+        targets.append(_target(
+            name="Maybe", service_name="Maybe", appliance_id="8" * 20, ip="192.168.1.98", auth="unknown",
+        ))
+        display, fb, gt = _make_display(targets=targets)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        return display
+
+    @pytest.mark.parametrize("proto", [0, 2])
+    def test_selector_lists_unauthorized_rows_with_marker(self, proto):
+        display = self._display(proto=proto)
+        rows = display._selector.rows
+        # Unknown appliances stay unlisted; the unauthorised one is listed, marked.
+        assert [r.label for r in rows] == ["T0", "Lounge"]
+        lounge = rows[1]
+        assert lounge.authorized is False
+        assert lounge.current is False
+        assert lounge.playing is False
+        assert rows[0].authorized is True
+        assert dd._selector_list_row(lounge) == ("Lounge", False, dd_compositor.NOT_AUTHORISED_TEXT)
+        assert dd._selector_list_row(rows[0])[2] is dd.PLAY_GLYPH
+
+    def test_unauthorized_row_is_never_current_even_when_it_is_the_focus_id(self):
+        display = self._display()
+        display.set_manual_focus("9" * 20)
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        lounge = next(r for r in display._selector.rows if r.appliance_id == "9" * 20)
+        assert lounge.current is False
+
+    def test_selector_pick_on_unauthorized_opens_hint(self):
+        display = self._display()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        display.selector_pick(1)  # the unauthorised row
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.manual_focus_id() is None
+        assert display._screen == "info_value"
+        assert display._info_value.hint == (
+            dd_compositor.NOT_AUTHORISED_TEXT, "Allow this dial in Lounge's web UI (Setup, Dials)",
+        )
+
+    def test_hint_back_returns_to_selector_on_same_page(self):
+        display = self._display(authorized_count=4)  # rows: T0..T3 then Lounge on page 1
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        display.selector_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1
+        display.selector_pick(1)  # Lounge, the second row of page 1
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "info_value"
+        display.close_list()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+        assert display._selector.page == 1
+        assert display.manual_focus_id() is None
+
+    def test_pick_on_authorized_row_still_sets_focus_and_closes(self):
+        display = self._display()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        display.selector_pick(0)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.manual_focus_id() == "0" * 20
+        assert display._screen == "main"
+
+    @pytest.mark.parametrize("width,height,mm_per_px", _HINT_TIERS)
+    @pytest.mark.parametrize("name", ["Lounge", "CD Player", "Living Room Hi-Fi"])
+    def test_hint_text_fits_without_truncation(self, width, height, mm_per_px, name):
+        from PIL import ImageDraw
+        from dial_touch_layout import info_value_layout_for
+
+        metrics = metrics_for(width, height, mm_per_px)
+        label, text = dd._unauthorised_hint(name)
+        layout = info_value_layout_for(width, height, metrics=metrics)
+        draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+        lines, font = dd_compositor._fit_value_lines(
+            draw, text, (metrics.font_readout, metrics.font_body), layout.value,
+        )
+        assert lines and font is not None
+        assert " ".join(lines) == text  # nothing dropped, no ellipsis
+        max_w = layout.value[2] - layout.value[0]
+        for line in lines:
+            assert dd_compositor._text_size(draw, line, font)[0] <= max_w
+        # The title in the label band fits on one line too.
+        title_w = dd_compositor._text_size(draw, label, dd_compositor._load_font(metrics.font_body))[0]
+        assert title_w <= width - 2 * metrics.pad
 
 
 class TestSelectorPickAndPage:
