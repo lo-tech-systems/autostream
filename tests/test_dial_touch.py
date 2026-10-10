@@ -1272,6 +1272,18 @@ class TestSetSurface:
         actions = sm.on_filter_event(press_event(NAME_XY), now=0.0)
         assert actions == []  # dead zone: name_active is False
 
+    def test_inactive_name_does_not_swallow_a_press_just_below_the_band(self):
+        # The NAME zone reaches below the band; with it switched off the
+        # press falls through to the artwork drawn there, while a press on
+        # the band itself still finds nothing.
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0)
+        sm._overlay_visible = True
+        x0, y0, x1, y1 = _ZONES[TouchZone.NAME]
+        actions = sm.on_filter_event(press_event(((x0 + x1) // 2, y1 + 2)), now=0.0)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.ARTWORK
+
     def test_name_zone_active_emits_zone_tap(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_HIDDEN, True, now=0.0)

@@ -666,18 +666,22 @@ class TouchStateMachine:
 
     def _arm(self, x: int, y: int, now: float) -> list[TouchAction]:
         geometry = _GEOMETRY_FOR_SURFACE.get(self._surface, GEOMETRY_MAIN)
-        hit = hit_test(geometry, x, y, self._width, self._height, metrics=self._metrics)
+        # DOTS/NAME/OUTPUTS are gated by their own "is it currently
+        # tappable" flag. A switched-off one is skipped by the hit-test
+        # rather than swallowing the touch, so a press in the strip its
+        # reach covers below the band lands on whatever is drawn there; a
+        # press on the band itself still finds nothing (nothing else
+        # overlaps the band). The gates only matter where these zones
+        # appear.
+        skip = frozenset(
+            gated for gated, active in (
+                (TouchZone.DOTS, self._dots_active),
+                (TouchZone.NAME, self._name_active),
+                (TouchZone.OUTPUTS, self._outputs_active),
+            ) if not active
+        )
+        hit = hit_test(geometry, x, y, self._width, self._height, metrics=self._metrics, skip=skip)
         zone, index = (hit.zone, hit.index) if hit is not None else (None, None)
-        # DOTS/NAME are gated by their own "is it currently tappable" flag —
-        # meaningful on the main and repeat geometries only; applying the
-        # gate unconditionally is equivalent since neither zone appears in
-        # the list or idle tables, so the gate never sees them there.
-        if zone == TouchZone.DOTS and not self._dots_active:
-            zone = None
-        if zone == TouchZone.NAME and not self._name_active:
-            zone = None
-        if zone == TouchZone.OUTPUTS and not self._outputs_active:
-            zone = None
         if zone is None:
             # Landed/arrived in a dead zone — nothing to actuate; still
             # counts as a contact sample toward dismiss.

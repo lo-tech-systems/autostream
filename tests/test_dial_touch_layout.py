@@ -121,15 +121,20 @@ class TestExactTiling:
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_every_pixel_is_zone_or_dead_zone(self, width, height):
-        zones = zones_for(width, height)
+        # The top band's controls reach below the band, so membership is
+        # tested against each entry's touch rect (zones_for gives the drawn
+        # rects only).
+        touch_rects = [
+            entry.touch_rect for entry in zone_rects_for(GEOMETRY_MAIN, width, height)
+        ]
         for y in range(height):
             for x in range(width):
                 z = zone_at(x, y, width, height)
                 in_some_rect = any(
-                    x0 <= x < x1 and y0 <= y < y1 for (x0, y0, x1, y1) in zones.values()
+                    x0 <= x < x1 and y0 <= y < y1 for (x0, y0, x1, y1) in touch_rects
                 )
                 # zone_at agrees with manual rectangle membership: a hit
-                # means exactly one rectangle contains the point, a miss
+                # means some touch rectangle contains the point, a miss
                 # (dead zone, the relocated artist line, middle band, or
                 # out-of-bounds) means none does. The NAME zone now covers
                 # what used to be the non-actuating artist area; the
@@ -274,11 +279,23 @@ class TestBandLayout:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_middle_rows_are_entirely_the_artwork_zone(self, width, height):
         # The inter-band strip is the ARTWORK zone (a tap there hides the
-        # bands) — it is not a dead zone at all.
+        # bands) — it is not a dead zone at all — except where the top
+        # band's controls reach down into it: there a tap takes the control
+        # whose touch rect covers the point.
         layout = layout_for(width, height)
+        reaching = [
+            entry for entry in zone_rects_for(GEOMETRY_MAIN, width, height)
+            if entry.zone in (TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS)
+        ]
         for y in range(layout.top_band[3], layout.bottom_band[1]):
             for x in range(width):
-                assert zone_at(x, y, width, height) == TouchZone.ARTWORK
+                expected = TouchZone.ARTWORK
+                for entry in reaching:
+                    x0, y0, x1, y1 = entry.touch_rect
+                    if x0 <= x < x1 and y0 <= y < y1:
+                        expected = entry.zone
+                        break
+                assert zone_at(x, y, width, height) == expected
 
 
 def test_reference_geometry_exact():
@@ -465,8 +482,11 @@ class TestRepeatSurface:
         row."""
         metrics = metrics_for(320, 240, 0.1778)
         layout = repeat_layout_for(320, 240, metrics=metrics)
-        assert layout.row[1] > layout.top_band[3]
-        gap_y = (layout.top_band[3] + layout.row[1]) // 2
+        # The top band's controls reach below the band; the artwork gap is
+        # what is left between that reach and the row.
+        reach_bottom = metrics.band_h + metrics.band_h // 3
+        assert layout.row[1] > reach_bottom >= layout.top_band[3]
+        gap_y = (reach_bottom + layout.row[1]) // 2
         row_y = (layout.row[1] + layout.row[3]) // 2
         hit = hit_test(GEOMETRY_REPEAT, 160, gap_y, 320, 240, metrics=metrics)
         assert hit is not None and hit.zone == TouchZone.ARTWORK
@@ -1509,17 +1529,18 @@ class TestRailListLayout:
 
 
 class TestRailZoneTable:
-    def test_order_is_rows_then_up_back_down(self):
+    def test_order_is_up_back_down_then_rows(self):
+        # The rail controls reach left over the rows, so they come first.
         entries = zone_rects_for(GEOMETRY_LIST, 320, 240, metrics=_RICH_320x240)
         assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.LIST_UP, None),
+            (TouchZone.LIST_BACK, None),
+            (TouchZone.LIST_DOWN, None),
             (TouchZone.LIST_ROW, 0),
             (TouchZone.LIST_ROW, 1),
             (TouchZone.LIST_ROW, 2),
             (TouchZone.LIST_ROW, 3),
             (TouchZone.LIST_ROW, 4),
-            (TouchZone.LIST_UP, None),
-            (TouchZone.LIST_BACK, None),
-            (TouchZone.LIST_DOWN, None),
         ]
 
     def test_base_order_is_unaffected(self):
@@ -1557,18 +1578,21 @@ class TestRailListHitTestExhaustive:
         metrics = _RICH_320x240
         width, height = metrics.width, metrics.height
         layout = list_layout_for(width, height, metrics=metrics)
+        left = layout.rail[0] - metrics.band_h // 3
 
         def reference(x, y):
-            for i, (x0, y0, x1, y1) in enumerate(layout.rows):
-                if x0 <= x < x1 and y0 <= y < y1:
-                    return (TouchZone.LIST_ROW, i)
+            # Each rail control reaches left from the drawn rail's left edge
+            # by a third of a band, ahead of the rows.
             for zone, (x0, y0, x1, y1) in (
                 (TouchZone.LIST_UP, layout.rail_up),
                 (TouchZone.LIST_BACK, layout.rail_cancel),
                 (TouchZone.LIST_DOWN, layout.rail_down),
             ):
-                if x0 <= x < x1 and y0 <= y < y1:
+                if left <= x < x1 and y0 <= y < y1:
                     return (zone, None)
+            for i, (x0, y0, x1, y1) in enumerate(layout.rows):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return (TouchZone.LIST_ROW, i)
             return None
 
         for y in range(height):
@@ -1597,14 +1621,18 @@ class TestRailListHitTestExhaustive:
         gap_x = (layout.rail_cancel[0] + layout.rail_cancel[2]) // 2
         assert hit_test(GEOMETRY_LIST, gap_x, gap_y, metrics.width, metrics.height, metrics=metrics) is None
 
-    def test_row_right_edge_leaves_the_dead_gap_before_the_rail(self):
-        # The gap between a row's right edge and the rail is chassis-
-        # coloured dead space: a point there resolves to neither.
+    def test_row_right_edge_gap_before_the_rail_is_covered_by_the_rail_reach(self):
+        # The gap between a row's right edge and the drawn rail is
+        # chassis-coloured, but the rail control at that height reaches over
+        # it, so a point there resolves to the rail control rather than to
+        # nothing.
         metrics = _RICH_320x240
         layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert layout.rows[0][2] < layout.rail[0]
         gap_x = (layout.rows[0][2] + layout.rail[0]) // 2
         gap_y = layout.rows[0][1]
-        assert hit_test(GEOMETRY_LIST, gap_x, gap_y, metrics.width, metrics.height, metrics=metrics) is None
+        hit = hit_test(GEOMETRY_LIST, gap_x, gap_y, metrics.width, metrics.height, metrics=metrics)
+        assert hit is not None and hit.zone == TouchZone.LIST_UP
 
 
 # ---------------------------------------------------------------------------
@@ -2294,12 +2322,18 @@ class TestEqHitTestExhaustive:
         metrics = _RICH_320x240
         width, height = metrics.width, metrics.height
         layout = eq_layout_for(width, height, metrics=metrics)
+        reach_bottom = metrics.band_h + metrics.band_h // 3
+
+        def reach(rect):
+            return (rect[0], rect[1], rect[2], reach_bottom)
 
         def reference(x, y):
+            # The top band's controls reach down to reach_bottom, ahead of
+            # the steppers.
             for zone, (x0, y0, x1, y1) in (
-                (TouchZone.DOTS, layout.dots),
-                (TouchZone.NAME, layout.name),
-                (TouchZone.OUTPUTS, layout.volume_cluster),
+                (TouchZone.DOTS, reach(layout.dots)),
+                (TouchZone.NAME, reach(layout.name)),
+                (TouchZone.OUTPUTS, reach(layout.volume_cluster)),
                 (TouchZone.EQ_BASS_DOWN, layout.bass.down),
                 (TouchZone.EQ_BASS_UP, layout.bass.up),
                 (TouchZone.EQ_TREBLE_DOWN, layout.treble.down),
@@ -2357,3 +2391,80 @@ class TestPurity:
             if isinstance(val, types.ModuleType)
         }
         assert module_names == set()
+
+
+class TestTouchReach:
+    """The top band's DOTS/NAME/OUTPUTS reach down below the band and the
+    list rail's controls reach left over the rows; the drawn rects do not
+    change."""
+
+    def _hit(self, geometry, x, y, **kwargs):
+        hit = hit_test(geometry, x, y, 320, 240, metrics=_RICH_320x240, **kwargs)
+        return hit.zone if hit is not None else None
+
+    @pytest.mark.parametrize("geometry", [GEOMETRY_MAIN, GEOMETRY_REPEAT, GEOMETRY_EQ])
+    def test_a_point_just_below_the_band_takes_the_band_control(self, geometry):
+        metrics = _RICH_320x240
+        layout = layout_for(320, 240, metrics=metrics)
+        y = metrics.band_h + 2
+        for zone, rect in (
+            (TouchZone.DOTS, layout.dots),
+            (TouchZone.NAME, layout.name),
+            (TouchZone.OUTPUTS, layout.volume_cluster),
+        ):
+            assert self._hit(geometry, (rect[0] + rect[2]) // 2, y) == zone
+
+    def test_a_point_past_the_reach_is_what_it_was_before(self):
+        metrics = _RICH_320x240
+        layout = layout_for(320, 240, metrics=metrics)
+        y = metrics.band_h + metrics.band_h // 3
+        for rect in (layout.dots, layout.name, layout.volume_cluster):
+            assert self._hit(GEOMETRY_MAIN, (rect[0] + rect[2]) // 2, y) == TouchZone.ARTWORK
+        eq = eq_layout_for(320, 240, metrics=metrics)
+        assert self._hit(GEOMETRY_EQ, (eq.dots[0] + eq.dots[2]) // 2, y) == TouchZone.EQ_BASS_DOWN
+
+    def test_rail_reach_resolves_to_the_rail_control_and_stops_short_of_the_rows(self):
+        metrics = _RICH_320x240
+        layout = list_layout_for(320, 240, metrics=metrics)
+        rail_x = layout.rail[0]
+        reach = metrics.band_h // 3
+        rail_rects = (
+            (TouchZone.LIST_UP, layout.rail_up),
+            (TouchZone.LIST_BACK, layout.rail_cancel),
+            (TouchZone.LIST_DOWN, layout.rail_down),
+        )
+        checked = 0
+        for row in layout.rows:
+            y = (row[1] + row[3]) // 2
+            expected = next((zone for zone, rect in rail_rects if rect[1] <= y < rect[3]), None)
+            if expected is not None:
+                assert self._hit(GEOMETRY_LIST, rail_x - 2, y) == expected
+                checked += 1
+            assert self._hit(GEOMETRY_LIST, rail_x - reach - 1, y) == TouchZone.LIST_ROW
+        assert checked > 0
+
+    def test_skip_passes_over_a_switched_off_zone(self):
+        metrics = _RICH_320x240
+        layout = layout_for(320, 240, metrics=metrics)
+        x = (layout.name[0] + layout.name[2]) // 2
+        skip = frozenset({TouchZone.NAME})
+        assert self._hit(GEOMETRY_MAIN, x, metrics.band_h + 2, skip=skip) == TouchZone.ARTWORK
+        assert self._hit(GEOMETRY_MAIN, x, 2, skip=skip) is None
+        assert self._hit(GEOMETRY_MAIN, x, 2) == TouchZone.NAME
+
+    @pytest.mark.parametrize("geometry", [
+        GEOMETRY_MAIN, GEOMETRY_REPEAT, GEOMETRY_EQ, GEOMETRY_LIST, GEOMETRY_INFO,
+    ])
+    def test_reach_always_contains_the_drawn_rect(self, geometry):
+        reaching = 0
+        for metrics in (_RICH_320x240, _LARGE_640x480):
+            for entry in zone_rects_for(geometry, metrics.width, metrics.height, metrics=metrics):
+                if entry.reach is None:
+                    assert entry.touch_rect == entry.rect
+                    continue
+                reaching += 1
+                assert entry.touch_rect == entry.reach
+                rx0, ry0, rx1, ry1 = entry.reach
+                x0, y0, x1, y1 = entry.rect
+                assert rx0 <= x0 and ry0 <= y0 and x1 <= rx1 and y1 <= ry1
+        assert reaching > 0

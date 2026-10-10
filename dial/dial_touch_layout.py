@@ -61,7 +61,11 @@ SURFACES: this module describes geometry for several hit-test geometries
 below), never mixed. Each geometry's tappable rectangles live in one ordered table —
 `zone_rects_for(geometry, width, height)` — that both `hit_test()` below
 and the compositor's pressed-zone wash read, so the two can never disagree
-about where a boundary sits.
+about where a boundary sits. A few controls reach further for a finger than
+they are drawn (see ZoneRect.reach): the top band's DOTS/NAME/OUTPUTS reach
+down into the strip below the band, and the list rail's controls reach left
+towards the rows, by 1/TOUCH_REACH_BAND_DIVISOR of a band either way. Only
+hit_test() reads the reach; the wash stays on the drawn rect.
 
 The MAIN geometry (`zone_at`/`zones_for`/`layout_for`) is the now-playing
 screen: DOTS, NAME, OUTPUTS, MUTE, DOWN, UP, plus ARTWORK (the inter-band
@@ -503,11 +507,42 @@ class ZoneRect:
     rect in compose-space, and, for LIST_ROW only, the row index. Index is
     carried on the entry rather than encoded in the zone because only
     LIST_ROW ever has one, and the touch layer already reports (zone,
-    index) as a pair."""
+    index) as a pair. reach, when set, is the larger rect a touch lands in
+    (always containing rect): the control takes a slightly-off finger
+    without being drawn any bigger. Tables list reaching entries ahead of
+    whatever they reach over, so first-match order settles the overlap."""
 
     zone: TouchZone
     rect: Rect
     index: int | None = None
+    reach: Rect | None = None
+
+    @property
+    def touch_rect(self) -> Rect:
+        """The rect hit_test() tests: reach when set, else rect."""
+        return self.reach if self.reach is not None else self.rect
+
+
+# How far a reaching control's touch rect extends past its drawn edge: this
+# fraction (1/n) of the band height (see _band_reach and _rail_reach).
+TOUCH_REACH_BAND_DIVISOR = 3
+
+
+def _touch_reach_px(metrics: "LayoutMetrics") -> int:
+    return metrics.band_h // TOUCH_REACH_BAND_DIVISOR
+
+
+def _band_reach(rect: Rect, metrics: "LayoutMetrics") -> Rect:
+    """A top-band control's touch rect: its own columns, from its top down
+    to the band's lower edge plus the reach, so a finger landing just under
+    the band still takes the control rather than the strip below."""
+    return (rect[0], rect[1], rect[2], metrics.band_h + _touch_reach_px(metrics))
+
+
+def _rail_reach(rect: Rect, rail: Rect, metrics: "LayoutMetrics") -> Rect:
+    """A list-rail control's touch rect: its own rows, from the drawn rail's
+    left edge less the reach across to its own right edge."""
+    return (rail[0] - _touch_reach_px(metrics), rect[1], rect[2], rect[3])
 
 
 def zone_rects_for(
@@ -539,16 +574,25 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
             ZoneRect(TouchZone.UP, c.br),
         )
     layout = layout_for(width, height, metrics=metrics)
-    return (
-        ZoneRect(TouchZone.DOTS, layout.dots),
-        ZoneRect(TouchZone.NAME, layout.name),
-        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster),
+    return _top_band_rects(layout, metrics) + (
         ZoneRect(TouchZone.MUTE, layout.footer_mute),
         ZoneRect(TouchZone.DOWN, layout.footer_down),
         ZoneRect(TouchZone.UP, layout.footer_up),
         # Last: the bands' own zones above do not overlap this strip at
         # all, so the order only matters for readability, not correctness.
         ZoneRect(TouchZone.ARTWORK, layout.artwork),
+    )
+
+
+def _top_band_rects(layout, metrics: "LayoutMetrics") -> tuple[ZoneRect, ...]:
+    """The top band's three controls, shared by the main, repeat and EQ
+    tables (any layout carrying dots/name/volume_cluster), each reaching
+    below the band (see _band_reach). Listed first in every table so the
+    reach wins over the artwork strip, repeat row or EQ steppers under it."""
+    return (
+        ZoneRect(TouchZone.DOTS, layout.dots, reach=_band_reach(layout.dots, metrics)),
+        ZoneRect(TouchZone.NAME, layout.name, reach=_band_reach(layout.name, metrics)),
+        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster, reach=_band_reach(layout.volume_cluster, metrics)),
     )
 
 
@@ -576,12 +620,15 @@ def _list_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
             ZoneRect(TouchZone.LIST_DOWN, layout.down),
             ZoneRect(TouchZone.LIST_UP, layout.up),
         )
-    # On the rail, top to bottom: previous page, back/cancel, next page.
-    return rows + (
-        ZoneRect(TouchZone.LIST_UP, layout.rail_up),
-        ZoneRect(TouchZone.LIST_BACK, layout.rail_cancel),
-        ZoneRect(TouchZone.LIST_DOWN, layout.rail_down),
-    )
+    # On the rail, top to bottom: previous page, back/cancel, next page,
+    # each reaching left over the rows' right ends (see _rail_reach), so
+    # listed ahead of the rows.
+    rail = layout.rail
+    return (
+        ZoneRect(TouchZone.LIST_UP, layout.rail_up, reach=_rail_reach(layout.rail_up, rail, metrics)),
+        ZoneRect(TouchZone.LIST_BACK, layout.rail_cancel, reach=_rail_reach(layout.rail_cancel, rail, metrics)),
+        ZoneRect(TouchZone.LIST_DOWN, layout.rail_down, reach=_rail_reach(layout.rail_down, rail, metrics)),
+    ) + rows
 
 
 def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
@@ -599,10 +646,7 @@ def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
             ZoneRect(TouchZone.REPEAT_PLAY, c.bottom_row),
         )
     layout = repeat_layout_for(width, height, metrics=metrics)
-    return (
-        ZoneRect(TouchZone.DOTS, layout.dots),
-        ZoneRect(TouchZone.NAME, layout.name),
-        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster),
+    return _top_band_rects(layout, metrics) + (
         ZoneRect(TouchZone.REPEAT_PLAY, layout.row),
         ZoneRect(TouchZone.REPEAT_START, layout.start),
         ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
@@ -691,11 +735,10 @@ def _eq_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = No
     surface, same rects layout_for() itself gives them) plus the bass and
     treble bars' own minus/plus steppers. The caption/track area between
     each bar's two controls is non-actuating -- there is no zone for it."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
     layout = eq_layout_for(width, height, metrics=metrics)
-    return (
-        ZoneRect(TouchZone.DOTS, layout.dots),
-        ZoneRect(TouchZone.NAME, layout.name),
-        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster),
+    return _top_band_rects(layout, metrics) + (
         ZoneRect(TouchZone.EQ_BASS_DOWN, layout.bass.down),
         ZoneRect(TouchZone.EQ_BASS_UP, layout.bass.up),
         ZoneRect(TouchZone.EQ_TREBLE_DOWN, layout.treble.down),
@@ -744,12 +787,18 @@ _GEOMETRY_BUILDERS = {
 
 def hit_test(
     geometry: str, x: int, y: int, width: int, height: int, metrics: "LayoutMetrics | None" = None,
+    skip: "frozenset[TouchZone]" = frozenset(),
 ) -> "ZoneRect | None":
-    """The first table entry of *geometry* containing compose-space point
-    (x, y), or None in a dead zone or outside the panel. The one hit-test
-    loop every per-geometry wrapper below is built from."""
+    """The first table entry of *geometry* whose touch rect (see
+    ZoneRect.touch_rect) contains compose-space point (x, y), or None in a
+    dead zone or outside the panel. Entries for zones in *skip* (controls
+    the caller has switched off) are passed over, so a touch in a reach
+    they would have taken falls through to whatever lies beneath. The one
+    hit-test loop every per-geometry wrapper below is built from."""
     for entry in zone_rects_for(geometry, width, height, metrics=metrics):
-        x0, y0, x1, y1 = entry.rect
+        if entry.zone in skip:
+            continue
+        x0, y0, x1, y1 = entry.touch_rect
         if x0 <= x < x1 and y0 <= y < y1:
             return entry
     return None
