@@ -180,6 +180,16 @@ def _reset_dial_mdns():
         if state_lock is not None:
             with state_lock:
                 m._target_state.clear()
+        general_browser = getattr(m, "_general_browser", None)
+        if general_browser is not None:
+            with general_browser._lock:
+                general_browser._by_key.clear()
+                general_browser._by_identity.clear()
+        general_lock = getattr(m, "_general_lock", None)
+        if general_lock is not None:
+            with general_lock:
+                m._general_svc.clear()
+                m._general_conflicts.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -228,6 +238,16 @@ def _reset_webui_api_fail_counts():
     m = _mod("autostream_webui_api")
     if m is not None:
         m._audio_status_fail_count = 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_dial_repeat_store():
+    """Clear the dial repeat store's module singleton after each test."""
+    yield
+    m = _mod("dial_repeat_store")
+    if m is not None:
+        with m.repeat_store._lock:
+            m.repeat_store._records.clear()
 
 
 @pytest.fixture(autouse=True)

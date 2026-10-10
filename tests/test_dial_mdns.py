@@ -384,3 +384,297 @@ class TestPlayingBrowserWrappers:
         with patch.object(dm._browser, "stop") as mock_stop:
             dm.stop_playing_browser()
         mock_stop.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# The _autostream._tcp general browser (dial phase 2, D1).
+# ---------------------------------------------------------------------------
+
+_VALID_ID2 = "b" * 20
+
+
+def _gen_add(iface="eth0", proto="IPv4", name="My-Appliance",
+             svc_type="_autostream._tcp", domain="local",
+             host="myappliance.local", ip="192.168.1.10",
+             port="80", txt=f"id={_VALID_ID} dial_api=v1") -> str:
+    """Build an avahi-browse add event line for the general browser."""
+    return f"=;{iface};{proto};{name};{svc_type};{domain};{host};{ip};{port};{txt}"
+
+
+def _gen_remove(iface="eth0", proto="IPv4", name="My-Appliance",
+                svc_type="_autostream._tcp", domain="local") -> str:
+    """Build an avahi-browse remove event line for the general browser."""
+    return f"-;{iface};{proto};{name};{svc_type};{domain}"
+
+
+def _clear_general():
+    with dm._general_browser._lock:
+        dm._general_browser._by_key.clear()
+        dm._general_browser._by_identity.clear()
+    with dm._general_lock:
+        dm._general_svc.clear()
+        dm._general_conflicts.clear()
+
+
+class TestGeneralBrowserParsing:
+    def setup_method(self):
+        _clear_general()
+
+    def test_requires_dial_api_v1(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID}"))
+        assert dm._general_browser.get_snapshot() == {}
+
+    def test_wrong_dial_api_version_ignored(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v2"))
+        assert dm._general_browser.get_snapshot() == {}
+
+    def test_requires_valid_id(self):
+        dm._general_browser._handle_line(_gen_add(txt="dial_api=v1"))
+        assert dm._general_browser.get_snapshot() == {}
+
+    def test_malformed_id_ignored(self):
+        dm._general_browser._handle_line(_gen_add(txt="dial_api=v1 id=not-hex-at-all"))
+        assert dm._general_browser.get_snapshot() == {}
+
+    def test_ui_and_federation_flags_not_required(self):
+        """ui/federation are appliance-to-appliance capabilities the dial has
+        no use for — their absence must not exclude an otherwise-valid row."""
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1"))
+        assert _VALID_ID in dm._general_browser.get_snapshot()
+
+    def test_control_flag_does_not_gate_the_general_browser(self):
+        """Dials are gated by per-dial authorization only, never the peer-
+        control setting — control=off must not exclude the row."""
+        dm._general_browser._handle_line(
+            _gen_add(txt=f"id={_VALID_ID} dial_api=v1 control=off"))
+        assert _VALID_ID in dm._general_browser.get_snapshot()
+
+    def test_repeat_v1_sets_repeat_true(self):
+        dm._general_browser._handle_line(
+            _gen_add(txt=f"id={_VALID_ID} dial_api=v1 repeat=v1"))
+        assert dm._general_browser.get_snapshot()[_VALID_ID].repeat is True
+
+    def test_repeat_absent_sets_repeat_false(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1"))
+        assert dm._general_browser.get_snapshot()[_VALID_ID].repeat is False
+
+    def test_valid_entry_fields_parsed(self):
+        dm._general_browser._handle_line(_gen_add(
+            name="Kitchen", host="kitchen.local", ip="10.0.0.5", port="8080",
+            txt=f"id={_VALID_ID} dial_api=v1 version=1.2.3",
+        ))
+        g = dm._general_browser.get_snapshot()[_VALID_ID]
+        assert g.appliance_id == _VALID_ID
+        assert g.service_name == "Kitchen"
+        assert g.hostname == "kitchen.local"
+        assert g.ip == "10.0.0.5"
+        assert g.port == 8080
+        assert g.version == "1.2.3"
+
+    def test_invalid_port_defaults_to_80(self):
+        dm._general_browser._handle_line(
+            _gen_add(port="notaport", txt=f"id={_VALID_ID} dial_api=v1"))
+        assert dm._general_browser.get_snapshot()[_VALID_ID].port == 80
+
+    def test_never_calls_note_sighting_directly(self):
+        """The general parser must never touch dial_auth — get_roster() is
+        the single feeder for general sightings."""
+        dial_auth.auth_map.reset()
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1"))
+        assert dial_auth.auth_map.states() == {}
+
+
+class TestGeneralBrowserConflict:
+    """Exercises the conflict bookkeeping (_general_svc/_general_conflicts)
+    directly at the parser and callback level — the same strategy
+    tests/test_appliance_discovery.py uses for the mirrored appliance-side
+    registry, and for the same reason: the real MdnsBrowser dedupes
+    _by_identity by identity_key (appliance_id here), so two DIFFERENT
+    service names sharing one id collapse to whichever was seen last, and
+    firing that collapse's on_change through _handle_line() end-to-end
+    would immediately self-resolve the very conflict it just raised. That
+    interaction is inherited unchanged from autostream_appliances.py."""
+
+    def setup_method(self):
+        _clear_general()
+
+    def _parts(self, service_name="SvcA", hostname="host-a.local",
+               ip="10.0.0.1", port="80"):
+        p = [""] * 9
+        p[3] = service_name
+        p[6] = hostname
+        p[7] = ip
+        p[8] = port
+        return p
+
+    def test_same_id_different_hostnames_causes_conflict(self):
+        r1 = dm._parse_general_event(
+            self._parts(service_name="SvcA", hostname="host-a.local"),
+            {"id": _VALID_ID, "dial_api": "v1"})
+        assert r1 is not None
+        r2 = dm._parse_general_event(
+            self._parts(service_name="SvcB", hostname="host-b.local"),
+            {"id": _VALID_ID, "dial_api": "v1"})
+        assert r2 is not None
+        assert _VALID_ID in dm._general_conflicts
+
+    def test_same_id_same_hostname_multiple_ips_no_conflict(self):
+        dm._parse_general_event(
+            self._parts(service_name="SvcA", hostname="host-a.local", ip="10.0.0.1"),
+            {"id": _VALID_ID, "dial_api": "v1"})
+        dm._parse_general_event(
+            self._parts(service_name="SvcB", hostname="host-a.local", ip="10.0.0.2"),
+            {"id": _VALID_ID, "dial_api": "v1"})
+        assert _VALID_ID not in dm._general_conflicts
+
+    def test_distinct_ids_no_conflict(self):
+        dm._parse_general_event(
+            self._parts(service_name="SvcA", hostname="host-a.local"),
+            {"id": _VALID_ID, "dial_api": "v1"})
+        dm._parse_general_event(
+            self._parts(service_name="SvcB", hostname="host-b.local"),
+            {"id": _VALID_ID2, "dial_api": "v1"})
+        assert dm._general_conflicts == set()
+
+    def test_on_general_change_resolves_conflict_when_one_side_removed(self):
+        sighting_a = dm.GeneralSighting(_VALID_ID, "SvcA", "host-a.local",
+                                         "10.0.0.1", 80, "", False)
+        sighting_b = dm.GeneralSighting(_VALID_ID, "SvcB", "host-b.local",
+                                         "10.0.0.2", 80, "", False)
+        dm._general_svc["SvcA"] = (_VALID_ID, "host-a.local")
+        dm._general_svc["SvcB"] = (_VALID_ID, "host-b.local")
+        dm._general_conflicts.add(_VALID_ID)
+        dm._on_general_change(_VALID_ID, sighting_a, sighting_b)
+        assert _VALID_ID not in dm._general_conflicts
+        assert "SvcA" not in dm._general_svc
+
+    def test_on_general_remove_clears_all_state_for_id(self):
+        dm._general_svc["SvcA"] = (_VALID_ID, "host-a.local")
+        dm._general_svc["SvcB"] = (_VALID_ID, "host-b.local")
+        dm._general_conflicts.add(_VALID_ID)
+        dm._on_general_remove(_VALID_ID, None)
+        assert dm._general_svc == {}
+        assert _VALID_ID not in dm._general_conflicts
+
+
+# ---------------------------------------------------------------------------
+# get_roster(): the merged playing + general view and its single feeder.
+# ---------------------------------------------------------------------------
+
+class TestGetRoster:
+    def setup_method(self):
+        _clear()
+        _clear_general()
+        dial_auth.auth_map.reset()
+
+    def _add_playing(self, name="Kitchen", ip="10.0.0.1", port=80, appliance_id=""):
+        txt = "dial_api=v1 dial_status=v1"
+        if appliance_id:
+            txt += f" id={appliance_id}"
+        dm._browser._handle_line(_av_add(name=name, ip=ip, port=str(port), txt=txt))
+
+    def _add_general(self, name="Kitchen", host="kitchen.local", ip="10.0.0.1",
+                      port=80, appliance_id=_VALID_ID, repeat=False):
+        txt = f"id={appliance_id} dial_api=v1"
+        if repeat:
+            txt += " repeat=v1"
+        dm._general_browser._handle_line(
+            _gen_add(name=name, host=host, ip=ip, port=str(port), txt=txt))
+
+    def test_playing_only_target_rostered(self):
+        self._add_playing(appliance_id=_VALID_ID)
+        roster = dm.get_roster()
+        assert len(roster) == 1
+        assert roster[0].appliance_id == _VALID_ID
+        assert roster[0].playing is True
+        assert roster[0].repeat_capable is False
+
+    def test_general_only_target_rostered_and_feeds_note_sighting(self):
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.9", port=9999)
+        roster = dm.get_roster()
+        assert len(roster) == 1
+        assert roster[0].appliance_id == _VALID_ID
+        assert roster[0].playing is False
+        assert _VALID_ID in dial_auth.auth_map.states()
+
+    def test_identityless_playing_target_never_rostered(self):
+        self._add_playing(appliance_id="")
+        assert dm.get_roster() == []
+
+    def test_conflicted_general_sighting_excluded(self):
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.1", port=80)
+        with dm._general_lock:
+            dm._general_conflicts.add(_VALID_ID)
+        assert dm.get_roster() == []
+
+    def test_repeat_capable_merged_onto_playing_entry(self):
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1", port=80)
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.1", port=80, repeat=True)
+        roster = dm.get_roster()
+        assert len(roster) == 1
+        assert roster[0].repeat_capable is True
+
+    def test_playing_address_is_canonical_and_general_never_refeeds_it(self):
+        """The playing sighting is the canonical (ip, port) for an id present
+        in both sets; get_roster() must not call note_sighting a second time
+        for the same id from the general side — the auth map cannot flap."""
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1", port=100)
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.2", port=200)
+        with patch.object(dial_auth.auth_map, "note_sighting") as mock_note:
+            roster = dm.get_roster()
+        mock_note.assert_not_called()
+        assert roster[0].ip == "10.0.0.1"
+        assert roster[0].port == 100
+
+    def test_single_feeder_no_flap_when_id_starts_playing(self):
+        """A general-only sighting feeds note_sighting; once the same id
+        starts playing (fed directly by the playing parser), get_roster()
+        must stop feeding the general address for it — the map never
+        alternates between the two addresses for one id."""
+        self._add_general(appliance_id=_VALID_ID, ip="10.0.0.9", port=9999)
+        dm.get_roster()
+        assert dial_auth.auth_map.state(_VALID_ID) == dial_auth.AUTH_UNKNOWN
+
+        self._add_playing(appliance_id=_VALID_ID, ip="10.0.0.1", port=80)
+        with patch.object(dial_auth.auth_map, "note_sighting") as mock_note:
+            dm.get_roster()
+        mock_note.assert_not_called()
+
+    def test_get_playing_and_display_targets_unaffected_by_roster(self):
+        self._add_playing(appliance_id=_VALID_ID)
+        self._add_general(appliance_id=_VALID_ID2, ip="10.0.0.50", port=1234)
+        before_playing = dm.get_playing_targets()
+        before_display = dm.get_display_targets()
+        dm.get_roster()
+        assert dm.get_playing_targets() == before_playing
+        assert dm.get_display_targets() == before_display
+
+    def test_sort_order_playing_rows_before_idle_rows(self):
+        self._add_general(name="Zeta", host="zeta.local",
+                           appliance_id="d" * 20, ip="10.0.1.1")
+        self._add_playing(name="Alpha", appliance_id="e" * 20, ip="10.0.2.1")
+        roster = dm.get_roster()
+        assert [r.playing for r in roster] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Start/stop wrappers for the general browser.
+# ---------------------------------------------------------------------------
+
+class TestGeneralBrowserWrappers:
+    def test_start_general_browser_forwards_shutdown_event(self):
+        import threading
+        ev = threading.Event()
+        with patch.object(dm._general_browser, "start") as mock_start:
+            dm.start_general_browser(shutdown_event=ev)
+        mock_start.assert_called_once_with(shutdown_event=ev)
+
+    def test_start_general_browser_without_event_passes_none(self):
+        with patch.object(dm._general_browser, "start") as mock_start:
+            dm.start_general_browser()
+        mock_start.assert_called_once_with(shutdown_event=None)
+
+    def test_stop_general_browser_delegates_to_browser(self):
+        with patch.object(dm._general_browser, "stop") as mock_stop:
+            dm.stop_general_browser()
+        mock_stop.assert_called_once()

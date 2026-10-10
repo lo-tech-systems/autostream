@@ -2,7 +2,13 @@
 
 Queries POST /api/dial/status on each discovered playing target that advertises
 dial_status=v1, enriching target records with live playing state, master volume,
-and (when present) grouped track_id now-playing state.
+and (when present) grouped track_id now-playing state and repeat/replay state.
+
+The optional `repeat` object is passed through as a raw dict (or None) —
+this module only checks that it is a dict, never its internal shape. The
+strict parse lives in dial_repeat_store.parse_repeat_object(), so an old
+appliance that omits the key, or a shape this dial does not understand yet,
+degrades to "no repeat state" rather than failing the whole status fetch.
 
 fetch_target_status() is the single-target status protocol helper shared by
 enrich_targets() (concurrent, name-sorted list presentation) and the display
@@ -122,6 +128,7 @@ def _base_record(target: "PlayingTarget") -> dict:
         "master_volume": None,
         "selected_output_count": None,
         "track_id": None,
+        "repeat": None,
         "status_error": None,
         "appliance_id": None,
     }
@@ -275,10 +282,18 @@ def fetch_target_status(
             record["status_error"] = "bad_response"
             return record
 
+    # The optional `repeat` object (phase-2 protocol). Nothing here
+    # validates its shape beyond "is it a dict" — dial_repeat_store's
+    # parser is the strict one, and an absent or malformed object must
+    # never fail an otherwise-good 200 (an older appliance simply omits
+    # the key).
+    raw_repeat = data.get("repeat")
+
     record["playing"] = playing
     record["master_volume"] = master_volume
     record["selected_output_count"] = selected_output_count
     record["track_id"] = track_id
+    record["repeat"] = raw_repeat if isinstance(raw_repeat, dict) else None
     record["appliance_id"] = _parse_appliance_id(data)
     return record
 

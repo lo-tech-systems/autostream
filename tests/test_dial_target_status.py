@@ -712,6 +712,75 @@ class TestTrackIdValidation:
 
 
 # ---------------------------------------------------------------------------
+# repeat object passthrough (dial phase 2, D2). This module only checks
+# "is it a dict" — the strict parse lives in
+# dial_repeat_store.parse_repeat_object(), tested separately.
+# ---------------------------------------------------------------------------
+
+def _repeat_obj(**overrides) -> dict:
+    base = {
+        "available": True, "state": "hold", "armed": False, "held": True,
+        "recording_seconds": 12.0,
+        "replay": {"active": False, "position_seconds": 0.0, "duration_seconds": 12.0},
+    }
+    base.update(overrides)
+    return base
+
+
+class TestRepeatFieldPassthrough:
+    def test_absent_repeat_is_none_and_still_a_good_200(self):
+        t = _target()
+        with _mock_conn(_ok_response()):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["repeat"] is None
+
+    def test_valid_repeat_object_passed_through_verbatim(self):
+        t = _target()
+        body = {**_ok_response(), "repeat": _repeat_obj()}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["repeat"] == _repeat_obj()
+
+    def test_non_dict_repeat_is_none_and_still_a_good_200(self):
+        t = _target()
+        body = {**_ok_response(), "repeat": "nope"}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["repeat"] is None
+
+    def test_null_repeat_is_none_and_still_a_good_200(self):
+        t = _target()
+        body = {**_ok_response(), "repeat": None}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["repeat"] is None
+
+    def test_malformed_repeat_shape_still_a_good_200(self):
+        """This module never validates the repeat object's internal shape —
+        an appliance advertising a next-version shape this dial does not
+        understand yet must not fail the whole status fetch."""
+        t = _target()
+        body = {**_ok_response(), "repeat": {"unexpected": "shape"}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["repeat"] == {"unexpected": "shape"}
+
+    def test_enrich_targets_agrees_with_fetch_target_status_on_repeat(self):
+        t = _target()
+        body = {**_ok_response(), "repeat": _repeat_obj()}
+        with _mock_conn(body):
+            direct = fetch_target_status(t, "dial-id")
+        with _mock_conn(body):
+            via_enrich = enrich_targets([t], "dial-id")[0]
+        assert direct["repeat"] == via_enrich["repeat"]
+
+
+# ---------------------------------------------------------------------------
 # Content-Type validation (finding #2)
 # ---------------------------------------------------------------------------
 

@@ -126,6 +126,13 @@ class AuthMap:
             if entry is None:
                 entry = AuthEntry()
                 self._entries[appliance_id] = entry
+            # A correlated status reply (body id == appliance id) is itself
+            # proof the appliance exists on the network — at least as strong
+            # as an mDNS sighting — so stamp last_seen here too. Otherwise an
+            # entry that is only ever created by apply() (a push-probe that
+            # lands before its sighting) carries last_seen=0.0 and is dropped
+            # by the very next prune(), losing the confirmed state.
+            entry.last_seen = now
             if outcome == OUTCOME_AUTHORIZED:
                 changed = entry.state != AUTH_AUTHORIZED
                 entry.state = AUTH_AUTHORIZED

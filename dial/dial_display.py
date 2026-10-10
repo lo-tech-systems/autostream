@@ -17,6 +17,15 @@ Display failure must always degrade to a no-op display; it must never affect
 volume control. Backend hardware code lives in dial_display_adafruit.py;
 Pillow-only image policy lives in dial_display_image.py.
 
+This manager also feeds dial_repeat_store's per-appliance repeat/replay
+belief, from the same two poll paths that feed the auth map: the sequential
+artwork walk (6 s cadence for the focused/reporting appliance) and the
+concurrent reconcile pass (60 s cadence, run over the merged roster —
+dial_mdns.get_roster() — so idle appliances are covered too, through
+enrich_targets() only; an idle row never becomes the artwork base and never
+sets _now_playing). The roster and the repeat store are display-side only —
+they are never read by the volume or mute resolvers.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
@@ -50,6 +59,8 @@ from dial_display_profiles import (
     get_profile,
 )
 from dial_mdns import appliance_display_name
+from dial_mdns import get_roster as _default_get_roster
+from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_touch_layout import list_layout_for
 from dial_volume import (
@@ -258,10 +269,16 @@ class DialDisplay:
         logo_path: str = DEFAULT_DISPLAY_LOGO_PATH,
         backend_factory=NoOpBackend,
         backend_factory_builder=None,
+        get_roster=_default_get_roster,
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
         self._get_display_targets = get_display_targets
+        # Merged playing+idle roster, injected like get_display_targets
+        # above (default dial_mdns.get_roster, for tests). Read only by the
+        # poll thread — the artwork walk and the reconcile pass — never by
+        # the volume/mute resolvers.
+        self._get_roster = get_roster
         self._dial_id = dial_id
         self._logo_path = logo_path
         self._backend_factory = backend_factory
@@ -1372,23 +1389,54 @@ class DialDisplay:
         self._apply_status_to_auth(target, result)
         return result
 
-    def _reconcile_pass(self, targets: list, visited: set[str]) -> None:
+    def _apply_status_to_repeat(self, appliance_id: str, result: dict, now: float) -> None:
+        """Feed dial_repeat_store from a fetch_target_status/enrich_targets
+        record — mirrors _apply_status_to_auth's three-way split: a good
+        200 updates the store from the record's repeat object (parsed
+        strictly by dial_repeat_store.parse_repeat_object, so a malformed
+        object degrades to "unavailable" rather than raising); a confirmed
+        412 clears it (this dial's authorization for the appliance was
+        revoked, so any cached repeat state is no longer this dial's to
+        show); everything else (timeout, unreachable, bad_response, ...) is
+        transient and leaves the record untouched — N2/N4 must not blank
+        mid-poll on a single bad response. A no-op for an identity-less
+        target (dial_repeat_store.update/clear both already guard on this,
+        checked again here so the intent reads at the call site)."""
+        if not appliance_id:
+            return
+        err = result.get("status_error")
+        if err is None:
+            repeat_store.update(appliance_id, parse_repeat_object(result.get("repeat"), now))
+        elif err == "unauthorized":
+            repeat_store.clear(appliance_id)
+
+    def _reconcile_pass(self, roster: list, visited: set[str]) -> None:
         """Concurrent fan-out over rows the sequential poll walk did not
         already fetch this tick, so an unauthorized row's re-probe backoff
         and every row's occasional re-confirmation happen without adding
-        sequential latency to the artwork-selection walk."""
+        sequential latency to the artwork-selection walk.
+
+        Runs over the MERGED roster (dial_mdns.get_roster()), not just the
+        playing set: an idle appliance is reconciled here — feeding the
+        auth map and the repeat store — but never gets an artwork fetch and
+        never sets _now_playing (that stays exclusively the playing walk's
+        job in _poll_once). After every pending row is processed,
+        dial_repeat_store is pruned to the roster's current id set so a
+        departed appliance's record does not linger forever.
+        """
         now = time.monotonic()
         auth_map.prune(now)
         pending = [
-            t for t in targets
-            if t.dial_status and t.appliance_id and t.service_name not in visited
-            and auth_map.due_for_probe(t.appliance_id, now)
+            r for r in roster
+            if r.dial_status and r.appliance_id and r.service_name not in visited
+            and auth_map.due_for_probe(r.appliance_id, now)
         ]
-        if not pending:
-            return
-        for record in enrich_targets(pending, self._dial_id):
-            target = next(t for t in pending if t.service_name == record["name"])
-            self._apply_status_to_auth(target, record)
+        if pending:
+            for record in enrich_targets(pending, self._dial_id):
+                target = next(t for t in pending if t.service_name == record["name"])
+                self._apply_status_to_auth(target, record)
+                self._apply_status_to_repeat(target.appliance_id, record, now)
+        repeat_store.prune({r.appliance_id for r in roster})
 
     def set_manual_focus(self, appliance_id: str | None) -> None:
         """Sticky manual focus: pins the display source to appliance_id
@@ -1410,6 +1458,12 @@ class DialDisplay:
             return
 
         targets = self._get_display_targets()
+        # The merged playing+idle roster — this is where general (idle)
+        # sightings get noted into the auth map (dial_mdns.get_roster()'s
+        # docstring). Computed unconditionally, whether or not anything is
+        # playing, so an idle appliance's presence is tracked at every poll
+        # tick, not only while something else happens to be playing.
+        roster = self._get_roster()
 
         # Resolve manual focus before anything else: a focused appliance
         # that is no longer rostered, or has since been confirmed
@@ -1499,6 +1553,7 @@ class DialDisplay:
             result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
             visited.add(target.service_name)
             self._apply_status_to_auth(target, result)
+            self._apply_status_to_repeat(target.appliance_id, result, time.monotonic())
             status_error = result.get("status_error")
 
             if is_focus and status_error == "unauthorized":
@@ -1586,7 +1641,7 @@ class DialDisplay:
 
         now = time.monotonic()
         if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
-            self._reconcile_pass(targets, visited)
+            self._reconcile_pass(roster, visited)
             self._last_reconcile_at = now
             self._reconcile_due = False
         self._refresh_selector_rows(targets, reporting_id)

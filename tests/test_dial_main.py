@@ -44,16 +44,19 @@ def _make_cfg():
     return cfg
 
 
-def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None):
+def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=True):
     """Run dial_main.main() with all hardware and service dependencies patched.
 
     shutdown_event_setter: callable(shutdown_event) called in a background thread
         to trigger shutdown.
     raise_in_loop: if provided, raised instead of executing the loop body.
+    fitted: cfg.display.fitted — gates whether the general mDNS browser is
+        started (see dial_main.main()'s startup wiring).
     """
     import dial_main as dm
 
     cfg = _make_cfg()
+    cfg.display.fitted = fitted
 
     loop_iterations = [0]
 
@@ -72,18 +75,28 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None):
     # Capture the shutdown event that main() creates.
     captured_event = {}
 
-    original_threading_event = threading.Event
+    import _thread
+
+    # Only the FIRST Event() constructed is main()'s own shutdown_event —
+    # every later one is internal to the display/http/control stack. Guard
+    # on that so the setter thread (and the capture) only ever fires once;
+    # spawning it via the low-level _thread module (not threading.Thread)
+    # avoids infinite recursion, since threading.Event is patched globally
+    # here and threading.Thread.__init__ itself constructs an Event().
+    _captured_once = []
 
     class _CapturingEvent(threading.Event):
         def __init__(self):
             super().__init__()
+            if _captured_once:
+                return
+            _captured_once.append(self)
             captured_event["ev"] = self
             if shutdown_event_setter is not None:
-                t = threading.Thread(
-                    target=lambda: (time.sleep(0.05), shutdown_event_setter(self)),
-                    daemon=True,
-                )
-                t.start()
+                def _fire():
+                    time.sleep(0.05)
+                    shutdown_event_setter(self)
+                _thread.start_new_thread(_fire, ())
 
         def wait(self, timeout=None):
             return super().wait(timeout=min(timeout, 0.1) if timeout else 0.1)
@@ -95,13 +108,45 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None):
          patch("dial_main.DialLED", return_value=mock_led), \
          patch("dial_main.DialHTTPServer", return_value=mock_http), \
          patch("dial_main.start_playing_browser"), \
+         patch("dial_main.start_general_browser") as mock_start_general_browser, \
          patch("dial_main.stop_playing_browser") as mock_stop_browser, \
+         patch("dial_main.stop_general_browser") as mock_stop_general_browser, \
          patch("dial_main.start_volume_worker"), \
          patch("dial_main.DialControlServer", return_value=mock_control), \
          patch("threading.Event", _CapturingEvent):
         dm.main()
 
-    return captured_event.get("ev"), mock_stop_browser, mock_http, mock_control
+    return (
+        captured_event.get("ev"), mock_stop_browser, mock_http, mock_control,
+        mock_start_general_browser, mock_stop_general_browser,
+    )
+
+
+# ---------------------------------------------------------------------------
+# General (_autostream._tcp) mDNS browser startup gating (dial phase 2, D1).
+# ---------------------------------------------------------------------------
+
+class TestGeneralBrowserStartup:
+    """The second, roster-feeding mDNS browser is an avahi-browse child
+    process — it must only ever be started when a screen is fitted, since an
+    unfitted dial has no roster/repeat UI to feed."""
+
+    def test_started_when_fitted(self):
+        _ev, _stop, _http, _ctrl, start_general, stop_general = _run_main_patched(
+            fitted=True, shutdown_event_setter=lambda ev: ev.set(),
+        )
+        start_general.assert_called_once()
+        stop_general.assert_called_once()
+
+    def test_not_started_when_not_fitted(self):
+        _ev, _stop, _http, _ctrl, start_general, stop_general = _run_main_patched(
+            fitted=False, shutdown_event_setter=lambda ev: ev.set(),
+        )
+        start_general.assert_not_called()
+        # stop_general_browser() is idempotent and unconditional in the
+        # shutdown path — it must still run even when the browser was never
+        # started, exactly like stop_playing_browser().
+        stop_general.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +191,9 @@ class TestOptionalGpioSetup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
@@ -249,7 +296,9 @@ class TestSignalHandlers:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer") as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
@@ -295,7 +344,9 @@ class TestSignalHandlers:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer") as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
@@ -348,7 +399,9 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser", side_effect=_mock_stop_browser), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
@@ -389,8 +442,10 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser",
                    side_effect=lambda: browser_stopped.append(True)), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _ExplodingEvent):
@@ -425,7 +480,9 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED", return_value=mock_led), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _ImmediateShutdownEvent):
@@ -458,7 +515,9 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker") as mock_vol_worker, \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
@@ -511,7 +570,9 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("dial_main.get_playing_targets", return_value=[with_id, without_id]), \
@@ -551,7 +612,9 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker") as mock_vol_worker, \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
@@ -589,7 +652,9 @@ class TestDialFinalCleanup:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
@@ -626,7 +691,9 @@ class TestRunningMarkerLifecycle:
             patch("dial_main.DialLED"),
             patch("dial_main.DialHTTPServer", return_value=mock_http),
             patch("dial_main.start_playing_browser"),
+            patch("dial_main.start_general_browser"),
             patch("dial_main.stop_playing_browser"),
+            patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
@@ -681,7 +748,9 @@ class TestRunningMarkerLifecycle:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
@@ -862,7 +931,9 @@ class TestRecoveryArmingDecision:
             patch("dial_main.DialLED"),
             patch("dial_main.DialHTTPServer", return_value=mock_http),
             patch("dial_main.start_playing_browser"),
+            patch("dial_main.start_general_browser"),
             patch("dial_main.stop_playing_browser"),
+            patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
@@ -1217,7 +1288,9 @@ class TestTouchConstruction:
             patch("dial_main.DialLED"),
             patch("dial_main.DialHTTPServer", return_value=mock_http),
             patch("dial_main.start_playing_browser"),
+            patch("dial_main.start_general_browser"),
             patch("dial_main.stop_playing_browser"),
+            patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
@@ -1374,7 +1447,9 @@ class TestTouchConstruction:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
@@ -1420,7 +1495,9 @@ class TestTouchConstruction:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
@@ -1922,6 +1999,41 @@ class TestMuteTargetsResolver:
 
 
 # ---------------------------------------------------------------------------
+# Invariant: the merged roster is display-side only —
+# volume and mute must never read it, even indirectly.
+# ---------------------------------------------------------------------------
+
+class TestVolumeAndMuteNeverReadRoster:
+    def test_volume_targets_fn_never_reads_roster(self):
+        import dial_main as dm
+        import dial_mdns
+
+        def _boom():
+            raise AssertionError("volume resolver must never call get_roster")
+
+        with patch.object(dial_mdns, "get_roster", side_effect=_boom):
+            display = MagicMock()
+            display.current_source_service_name = MagicMock(return_value=None)
+            resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [])
+            resolve()  # must not raise
+
+    def test_mute_targets_fn_never_reads_roster(self):
+        import dial_main as dm
+        import dial_mdns
+
+        def _boom():
+            raise AssertionError("mute resolver must never call get_roster")
+
+        with patch.object(dial_mdns, "get_roster", side_effect=_boom):
+            http_server = MagicMock()
+            http_server.mute_all_playing = True
+            resolve = dm._build_mute_targets_fn(
+                http_server, MagicMock(return_value=[]), get_all_targets=lambda: [],
+            )
+            resolve()  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # Both mute press entry points (touch mute zone AND the physical button)
 # must stay off DialDisplay._lock and off the network.
 #
@@ -1990,7 +2102,9 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer", return_value=mock_http), \
              patch("dial_main.start_playing_browser"), \
+             patch("dial_main.start_general_browser"), \
              patch("dial_main.stop_playing_browser"), \
+             patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.DialControlServer"), \
              patch("dial_touch_drivers.open_driver"), \
@@ -2114,7 +2228,9 @@ class TestPresenceConfirmationWiring:
             patch("dial_main.DialLED"),
             patch("dial_main.DialHTTPServer", return_value=server),
             patch("dial_main.start_playing_browser"),
+            patch("dial_main.start_general_browser"),
             patch("dial_main.stop_playing_browser"),
+            patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.DialControlServer", side_effect=_capture_control),
             patch("threading.Event", _QuickEvent),

@@ -131,11 +131,32 @@ class FakeBackend:
         self.wake_calls += 1
 
 
+def _roster_from_targets(targets) -> list:
+    """Default get_roster() stand-in for _make_display(): a RosterEntry per
+    identity-carrying target, mirroring dial_mdns.get_roster()'s own "no id,
+    never rostered" rule. Built fresh from whatever *targets* currently
+    holds each time it is called (see _make_display's lambda below), so
+    tests that mutate get_targets.return_value after construction (e.g. to
+    simulate a re-poll) see a consistent roster without wiring get_roster
+    explicitly."""
+    from dial_mdns import RosterEntry
+    return [
+        RosterEntry(
+            appliance_id=t.appliance_id, service_name=t.service_name, name=t.name,
+            ip=t.ip, port=t.port, playing=True, repeat_capable=False,
+            dial_api=t.dial_api, audio_status=t.audio_status, dial_status=t.dial_status,
+            auth=t.auth,
+        )
+        for t in targets if t.appliance_id
+    ]
+
+
 def _make_display(
     fitted=True, rotate=False, bgr=False, screen_type=DEFAULT_PROFILE_KEY,
     always_show_controls=False,
     targets=None, backend=None,
     get_targets=None,
+    get_roster=None,
     backend_factory_builder=None,
 ) -> tuple[DialDisplay, FakeBackend, MagicMock]:
     cfg = DialDisplayConfig(
@@ -144,6 +165,7 @@ def _make_display(
     )
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
+    gr = get_roster or (lambda: _roster_from_targets(gt()))
     display = DialDisplay(
         config=cfg,
         get_display_targets=gt,
@@ -151,6 +173,7 @@ def _make_display(
         logo_path=_TEST_LOGO_PATH,
         backend_factory=lambda: fb,
         backend_factory_builder=backend_factory_builder,
+        get_roster=gr,
     )
     return display, fb, gt
 
@@ -2102,6 +2125,133 @@ class TestReconcilePass:
              patch("dial_display.enrich_targets", side_effect=fake_enrich):
             display._poll_once()
         assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
+
+
+# ---------------------------------------------------------------------------
+# dial_repeat_store fed from both poll paths (dial phase 2, D2).
+# ---------------------------------------------------------------------------
+
+class TestRepeatStoreFeed:
+    def _repeat_obj(self, **overrides) -> dict:
+        base = {
+            "available": True, "state": "hold", "armed": False, "held": True,
+            "recording_seconds": 30.0,
+            "replay": {"active": False, "position_seconds": 0.0, "duration_seconds": 30.0},
+        }
+        base.update(overrides)
+        return base
+
+    def test_artwork_walk_feeds_the_store_for_the_reporting_target(self):
+        import dial_repeat_store as drs
+        aid = "1" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        result = _status_result(track_id=None, appliance_id=aid)
+        result["repeat"] = self._repeat_obj()
+
+        with patch("dial_display.fetch_target_status", return_value=result):
+            display._poll_once()
+
+        rec = drs.repeat_store.get(aid, now=time.monotonic())
+        assert rec is not None
+        assert rec.state == "hold"
+        assert rec.recording_seconds == 30.0
+
+    def test_confirmed_unauthorized_clears_the_stored_record(self):
+        import dial_repeat_store as drs
+        aid = "2" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        drs.repeat_store.update(aid, drs.parse_repeat_object(self._repeat_obj(), now=time.monotonic()))
+
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(status_error="unauthorized", appliance_id=aid)):
+            display._poll_once()
+
+        assert drs.repeat_store.get(aid, now=time.monotonic()) is None
+
+    def test_transient_error_leaves_the_stored_record_untouched(self):
+        import dial_repeat_store as drs
+        aid = "3" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        rec = drs.parse_repeat_object(self._repeat_obj(), now=time.monotonic())
+        drs.repeat_store.update(aid, rec)
+
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(status_error="timeout")):
+            display._poll_once()
+
+        assert drs.repeat_store.get(aid, now=time.monotonic()) == rec
+
+    def test_reconcile_pass_feeds_the_store_for_idle_roster_rows_only(self):
+        """An idle (non-playing) roster row is reconciled through
+        enrich_targets — feeding the repeat store — but is never walked for
+        artwork and never sets _now_playing; that stays exclusively the
+        playing target's job."""
+        import dial_repeat_store as drs
+        from dial_mdns import RosterEntry
+
+        aid_playing = "4" * 20
+        aid_idle = "5" * 20
+        t1 = _target(name="Playing", service_name="Playing",
+                      appliance_id=aid_playing, playing_since=1.0)
+
+        def get_roster():
+            return [
+                RosterEntry(
+                    appliance_id=aid_playing, service_name="Playing", name="Playing",
+                    ip=t1.ip, port=t1.port, playing=True, repeat_capable=False,
+                    dial_api=True, audio_status=True, dial_status=True, auth="unknown",
+                ),
+                RosterEntry(
+                    appliance_id=aid_idle, service_name="Idle", name="Idle",
+                    ip="10.0.0.9", port=9999, playing=False, repeat_capable=True,
+                ),
+            ]
+
+        display, fb, gt = _make_display(targets=[t1], get_roster=get_roster)
+        display.enable()
+
+        idle_repeat_obj = self._repeat_obj(state="replaying", armed=True,
+                                            replay={"active": True, "position_seconds": 1.0,
+                                                    "duration_seconds": 5.0})
+
+        def fake_enrich(targets, dial_id):
+            assert [t.service_name for t in targets] == ["Idle"]
+            return [{
+                "name": "Idle", "status_error": None, "appliance_id": aid_idle,
+                "repeat": idle_repeat_obj,
+            }]
+
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(), appliance_id=aid_playing)), \
+             patch("dial_display.enrich_targets", side_effect=fake_enrich):
+            display._poll_once()
+
+        idle_rec = drs.repeat_store.get(aid_idle, now=time.monotonic())
+        assert idle_rec is not None
+        assert idle_rec.state == "replaying"
+        # The idle row never became the artwork base or the reporting target.
+        assert display._now_playing is not None
+        assert display._now_playing.service_name == "Playing"
+        assert display._source_service_name == "Playing"
+
+    def test_reconcile_pass_prunes_ids_not_in_the_roster(self):
+        import dial_repeat_store as drs
+        aid_gone = "6" * 20
+        drs.repeat_store.update(aid_gone, drs.parse_repeat_object(self._repeat_obj(), now=time.monotonic()))
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id="7" * 20, playing_since=1.0)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+
+        assert drs.repeat_store.get(aid_gone, now=time.monotonic()) is None
 
 
 # ---------------------------------------------------------------------------

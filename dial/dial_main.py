@@ -28,7 +28,9 @@ from dial_led import DialLED
 from dial_mdns import (
     get_display_targets,
     get_playing_targets,
+    start_general_browser,
     start_playing_browser,
+    stop_general_browser,
     stop_playing_browser,
 )
 from dial_target_status import enrich_targets
@@ -548,6 +550,12 @@ def main() -> None:
         http_server.begin_recovery_window()
 
     start_playing_browser(shutdown_event=shutdown_event)
+    # The general-appliance browser feeds the roster/repeat-store machinery
+    # display.start() (and, later, touch) reads — an unfitted dial has no
+    # roster/repeat UI to feed, so it is not worth an extra avahi-browse
+    # child for that case.
+    if cfg.display.fitted:
+        start_general_browser(shutdown_event=shutdown_event)
     display.start()
 
     # Single-target volume/mute (see dial_volume.py's module docstring and
@@ -679,6 +687,7 @@ def main() -> None:
     finally:
         _remove_running_marker()
         stop_playing_browser()
+        stop_general_browser()
         if touch_source is not None:
             touch_source.stop()
         display.stop()
