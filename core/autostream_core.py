@@ -16,6 +16,7 @@ variable.
 
 import concurrent.futures
 import contextlib
+import copy
 import os
 import json
 import logging
@@ -502,10 +503,15 @@ _repeat_status_lock = threading.Lock()
 _repeat_status: Optional[dict] = None
 
 
-def _set_repeat_status(status: Optional[dict]) -> None:
+def _set_repeat_status_locked(status: Optional[dict]) -> None:
+    """Install *status*; the caller holds _repeat_status_lock."""
     global _repeat_status
+    _repeat_status = status if isinstance(status, dict) else None
+
+
+def _set_repeat_status(status: Optional[dict]) -> None:
     with _repeat_status_lock:
-        _repeat_status = status if isinstance(status, dict) else None
+        _set_repeat_status_locked(status)
 
 
 def get_repeat_status() -> Optional[dict]:
@@ -698,6 +704,149 @@ def _replay_origin_input(repeat_status: Optional[dict]) -> Optional[int]:
         return None
     origin = recording.get("origin_input")
     return origin if isinstance(origin, int) else None
+
+
+def _repeat_recording_origin(repeat_status: Optional[dict]) -> Optional[int]:
+    """Return repeat.recording.origin_input from a cached repeat block, or None.
+
+    Unlike _replay_origin_input() this does not require replay to be active:
+    the daemon retains the origin through Hold, so it is still meaningful for
+    an ack that is about to start a replay.
+    """
+    if not isinstance(repeat_status, dict):
+        return None
+    recording = repeat_status.get("recording")
+    if not isinstance(recording, dict):
+        return None
+    origin = recording.get("origin_input")
+    return origin if isinstance(origin, int) and not isinstance(origin, bool) else None
+
+
+_REPEAT_ACK_COMMANDS = ("repeat_seek", "repeat_stop", "set_repeat_armed")
+_REPEAT_ACK_STATES = (
+    "idle", "recording", "pending", "hold", "replaying", "fading_out",
+)
+
+
+def _overlay_repeat_status_from_ack(
+    status: dict, ack: dict,
+) -> tuple[dict, bool, bool]:
+    """Return (overlaid copy of *status*, started, sought) for an accepted ack.
+
+    Pure: *status* is never mutated (the cached dict may be in a reader's
+    hands). started is True when the ack moves the daemon from not replaying
+    to replaying; sought is True for a replaying repeat_seek ack.
+    """
+    new = copy.deepcopy(status)
+    replay = new.get("replay")
+    if not isinstance(replay, dict):
+        replay = {}
+        new["replay"] = replay
+    was_active = bool(replay.get("active"))
+    state = ack["state"]
+    command = ack["command"]
+    raw_position = ack.get("position_seconds")
+    ack_position = (
+        float(raw_position)
+        if isinstance(raw_position, (int, float)) and not isinstance(raw_position, bool)
+        and math.isfinite(raw_position)
+        else None
+    )
+
+    new["armed"] = bool(ack.get("armed"))
+
+    started = state == "replaying" and not was_active
+    if state in ("replaying", "fading_out"):
+        replay["active"] = True
+        replay["fading_out"] = state == "fading_out"
+        if command == "set_repeat_armed":
+            # An arm ack carries the engine's current position, which is
+            # stale when the arm starts a replay from Hold (that replay
+            # always begins at zero) and irrelevant when already replaying.
+            if started:
+                replay["position_seconds"] = 0.0
+        elif ack_position is not None:
+            replay["position_seconds"] = ack_position
+        if started:
+            recording = new.get("recording")
+            seconds = recording.get("seconds") if isinstance(recording, dict) else None
+            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+                # Both are total_bytes / byte_rate in the daemon, so the
+                # recording length is the replay length.
+                replay["duration_seconds"] = float(seconds)
+    elif state in ("hold", "idle"):
+        replay["active"] = False
+        replay["fading_out"] = False
+    # recording / pending: only "armed" can have changed.
+
+    sought = state == "replaying" and command == "repeat_seek"
+    return new, started, sought
+
+
+def _rearm_replay_identification(origin_input: Optional[int], in_session: bool) -> None:
+    """Re-arm track identification on the replay origin's monitor.
+
+    Called from apply_repeat_ack on the API thread. in_session is False when
+    the ack starts a replay from Hold (the coordinator's session_started
+    will publish the session's now-playing) and True for a seek within a
+    running replay. Currently a no-op.
+    """
+    return None
+
+
+def _announce_replay_playing() -> None:
+    """Advertise the appliance as playing as soon as a replay start is acked.
+
+    Called from apply_repeat_ack on the API thread. Currently a no-op.
+    """
+    return None
+
+
+def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
+    """Fold an accepted transport/arm ack into the coordinator's view.
+
+    Called on the API thread by send_live_repeat_transport and
+    set_live_repeat_armed_ack, so every entry point (dial, Web UI, gateway)
+    gets it. Returns *ack* unchanged. No-op for None, ok:false, or a shape
+    the daemon never produces. The next poll cycle overwrites everything
+    written here with the daemon's own report; this only closes the gap
+    between the ack and that cycle.
+
+    Identification is re-armed here, at the ack, rather than by bumping the
+    daemon's replay track_change_seq on a seek: this runs on the API thread
+    so it is immediate, and every seek goes through
+    send_live_repeat_transport so it covers every caller. A daemon-side bump
+    would only be read on the coordinator's next poll and would re-arm a
+    second time for the same seek.
+    """
+    if not (isinstance(ack, dict) and ack.get("ok")):
+        return ack
+    if ack.get("state") not in _REPEAT_ACK_STATES:
+        return ack
+    if ack.get("command") not in _REPEAT_ACK_COMMANDS:
+        return ack
+
+    with _repeat_status_lock:
+        # Nothing to overlay (older daemon, or not yet polled), and no
+        # recording origin to resolve.
+        if not isinstance(_repeat_status, dict):
+            return ack
+        new_status, started, sought = _overlay_repeat_status_from_ack(
+            _repeat_status, ack)
+        _set_repeat_status_locked(new_status)
+
+    if ack["state"] == "replaying" and not get_session_state()["active"]:
+        # fading_out is already an active session from the coordinator's
+        # view; hold/idle are left to its session_ended path so the OwnTone
+        # stop and now-playing end are not skipped.
+        _set_session_state(True, "replay")
+
+    if sought or started:
+        _rearm_replay_identification(
+            _repeat_recording_origin(new_status), in_session=not started)
+    if started:
+        _announce_replay_playing()
+    return ack
 
 
 def _empty_playback_snapshot() -> PlaybackSnapshot:
@@ -2292,7 +2441,9 @@ def set_live_repeat_armed_ack(
     this call. Disarming during replay triggers the daemon's fade-out.
     """
     with _connected_monitor(socket_path) as client:
-        return None if client is None else client.set_repeat_armed_ack(bool(armed))
+        if client is None:
+            return None
+        return apply_repeat_ack(client.set_repeat_armed_ack(bool(armed)))
 
 
 def set_live_repeat_armed(
@@ -2320,8 +2471,8 @@ def send_live_repeat_transport(
         if client is None:
             return None
         if action == "stop":
-            return client.repeat_stop()
-        return client.repeat_seek(position_seconds)
+            return apply_repeat_ack(client.repeat_stop())
+        return apply_repeat_ack(client.repeat_seek(position_seconds))
 
 
 def build_output_eq_bands(

@@ -1598,3 +1598,247 @@ class TestLiveSetters:
         with patch.object(client, "_command", return_value={"ok": True}) as cmd:
             client.repeat_seek(0)
         cmd.assert_called_once_with({"type": "repeat_seek", "position_seconds": 0.0})
+
+
+# ── apply_repeat_ack ──────────────────────────────────────────────────────────
+
+def _cached_block(*, replay=None, armed=False, seconds=342.0, origin_input=1):
+    return {
+        "enabled": True,
+        "armed": armed,
+        "recording": {"active": False, "seconds": seconds, "origin_input": origin_input},
+        "replay": replay if replay is not None else {
+            "active": False, "fading_out": False,
+            "position_seconds": 0.0, "duration_seconds": 0.0,
+        },
+    }
+
+
+def _replaying_block(position=100.0, **kw):
+    return _cached_block(
+        replay={"active": True, "fading_out": False,
+                "position_seconds": position, "duration_seconds": 342.0},
+        armed=True, **kw)
+
+
+def _ack(command, state, *, armed=True, position=0.0, ok=True):
+    return {"type": "ack", "command": command, "ok": ok, "state": state,
+            "armed": armed, "position_seconds": position}
+
+
+class TestApplyRepeatAck:
+    @pytest.fixture(autouse=True)
+    def _isolate_caches(self):
+        _set_repeat_status(None)
+        _set_session_state(False, None)
+        with patch("autostream_core._rearm_replay_identification") as rearm, \
+             patch("autostream_core._announce_replay_playing") as announce:
+            self.rearm = rearm
+            self.announce = announce
+            yield
+        _set_repeat_status(None)
+        _set_session_state(False, None)
+
+    def test_seek_ack_from_hold_marks_replay_active_at_ack_position(self):
+        _set_repeat_status(_cached_block())
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=0.0))
+        rs = get_repeat_status()
+        assert rs["replay"] == {
+            "active": True, "fading_out": False,
+            "position_seconds": 0.0, "duration_seconds": 342.0,
+        }
+        assert rs["armed"] is True
+
+    def test_seek_ack_during_replay_updates_position_and_keeps_duration(self):
+        _set_repeat_status(_replaying_block(position=200.0))
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=30.0))
+        replay = get_repeat_status()["replay"]
+        assert replay["position_seconds"] == 30.0
+        assert replay["duration_seconds"] == 342.0
+        assert replay["active"] is True
+
+    def test_arm_ack_starting_from_hold_uses_position_zero_not_engine_position(self):
+        _set_repeat_status(_cached_block())
+        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying", position=217.5))
+        replay = get_repeat_status()["replay"]
+        assert replay["active"] is True
+        assert replay["position_seconds"] == 0.0
+        assert replay["duration_seconds"] == 342.0
+
+    def test_arm_ack_while_replaying_keeps_the_cached_position(self):
+        _set_repeat_status(_replaying_block(position=88.0))
+        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying", position=90.0))
+        assert get_repeat_status()["replay"]["position_seconds"] == 88.0
+
+    def test_arm_ack_while_recording_only_changes_armed(self):
+        before = _cached_block()
+        before["recording"]["active"] = True
+        _set_repeat_status(before)
+        core.apply_repeat_ack(_ack("set_repeat_armed", "recording", armed=True))
+        after = get_repeat_status()
+        assert after["armed"] is True
+        assert after["replay"] == before["replay"]
+        assert after["recording"] == before["recording"]
+
+    def test_stop_ack_marks_fading_out_and_disarmed(self):
+        _set_repeat_status(_replaying_block(position=50.0))
+        core.apply_repeat_ack(
+            _ack("repeat_stop", "fading_out", armed=False, position=51.0))
+        rs = get_repeat_status()
+        assert rs["armed"] is False
+        assert rs["replay"]["active"] is True
+        assert rs["replay"]["fading_out"] is True
+        assert rs["replay"]["position_seconds"] == 51.0
+
+    def test_hold_ack_marks_replay_inactive(self):
+        _set_repeat_status(_replaying_block())
+        core.apply_repeat_ack(
+            _ack("set_repeat_armed", "hold", armed=False, position=10.0))
+        rs = get_repeat_status()
+        assert rs["armed"] is False
+        assert rs["replay"]["active"] is False
+        assert rs["replay"]["fading_out"] is False
+
+    def test_rejected_ack_leaves_caches_untouched(self):
+        block = _cached_block()
+        _set_repeat_status(block)
+        ack = {"type": "ack", "command": "repeat_seek", "ok": False,
+               "error": "source_active", "state": "recording",
+               "armed": True, "position_seconds": 0.0}
+        assert core.apply_repeat_ack(ack) is ack
+        assert get_repeat_status() is block
+        assert get_session_state() == {"active": False, "source": None}
+        self.rearm.assert_not_called()
+        self.announce.assert_not_called()
+
+    def test_none_ack_is_a_noop_and_returned(self):
+        block = _cached_block()
+        _set_repeat_status(block)
+        assert core.apply_repeat_ack(None) is None
+        assert get_repeat_status() is block
+
+    @pytest.mark.parametrize("ack", [
+        {"ok": True, "command": "repeat_seek", "state": "bogus", "armed": True},
+        {"ok": True, "command": "set_log_level", "state": "replaying", "armed": True},
+        {"ok": True, "command": "repeat_seek", "armed": True},
+    ])
+    def test_unknown_shapes_are_a_noop(self, ack):
+        block = _cached_block()
+        _set_repeat_status(block)
+        assert core.apply_repeat_ack(ack) is ack
+        assert get_repeat_status() is block
+        assert get_session_state()["active"] is False
+
+    def test_no_cached_block_is_a_noop(self):
+        ack = _ack("repeat_seek", "replaying")
+        assert core.apply_repeat_ack(ack) is ack
+        assert get_repeat_status() is None
+        assert get_session_state()["active"] is False
+        self.rearm.assert_not_called()
+        self.announce.assert_not_called()
+
+    def test_overlay_does_not_mutate_the_previously_cached_dict(self):
+        block = _cached_block()
+        _set_repeat_status(block)
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying"))
+        assert block["replay"]["active"] is False
+        assert block["armed"] is False
+        assert get_repeat_status() is not block
+
+    def test_replaying_ack_marks_session_active_replay(self):
+        _set_repeat_status(_cached_block())
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying"))
+        assert get_session_state() == {"active": True, "source": "replay"}
+
+    def test_replaying_ack_leaves_an_already_active_session_source_alone(self):
+        _set_repeat_status(_replaying_block())
+        _set_session_state(True, "input2")
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=5.0))
+        assert get_session_state() == {"active": True, "source": "input2"}
+
+    def test_fading_out_ack_leaves_session_state_unchanged(self):
+        _set_repeat_status(_replaying_block())
+        core.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
+        assert get_session_state() == {"active": False, "source": None}
+
+    def test_hold_ack_leaves_session_state_unchanged(self):
+        _set_repeat_status(_replaying_block())
+        _set_session_state(True, "replay")
+        core.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
+        assert get_session_state() == {"active": True, "source": "replay"}
+
+    def test_seek_from_hold_hooks_identify_origin_as_starting(self):
+        _set_repeat_status(_cached_block(origin_input=2))
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying"))
+        self.rearm.assert_called_once_with(2, in_session=False)
+        self.announce.assert_called_once_with()
+
+    def test_seek_during_replay_hooks_identify_origin_as_in_session(self):
+        _set_repeat_status(_replaying_block(origin_input=2))
+        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=12.0))
+        self.rearm.assert_called_once_with(2, in_session=True)
+        self.announce.assert_not_called()
+
+    def test_arm_from_hold_hooks_fire_but_arm_while_replaying_does_not(self):
+        _set_repeat_status(_cached_block())
+        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
+        self.rearm.assert_called_once_with(1, in_session=False)
+        self.announce.assert_called_once_with()
+        self.rearm.reset_mock()
+        self.announce.reset_mock()
+        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
+        self.rearm.assert_not_called()
+        self.announce.assert_not_called()
+
+    def test_stop_and_hold_acks_fire_no_hooks(self):
+        _set_repeat_status(_replaying_block())
+        core.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
+        core.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
+        self.rearm.assert_not_called()
+        self.announce.assert_not_called()
+
+    def test_repeat_recording_origin_reads_origin_without_active_replay(self):
+        assert core._repeat_recording_origin(_cached_block(origin_input=2)) == 2
+        assert core._repeat_recording_origin({"recording": {}}) is None
+        assert core._repeat_recording_origin({"recording": {"origin_input": True}}) is None
+        assert core._repeat_recording_origin(None) is None
+
+    def test_send_live_repeat_transport_applies_the_ack(self):
+        ack = _ack("repeat_seek", "replaying")
+        client = MagicMock()
+        client.repeat_seek.return_value = ack
+        with patch("autostream_core._connected_monitor") as cm, \
+                patch("autostream_core.apply_repeat_ack",
+                      side_effect=lambda a: a) as apply:
+            cm.return_value.__enter__.return_value = client
+            assert send_live_repeat_transport("seek", 0.0) is ack
+        apply.assert_called_once_with(ack)
+
+    def test_send_live_repeat_transport_stop_applies_the_ack(self):
+        ack = _ack("repeat_stop", "fading_out", armed=False)
+        client = MagicMock()
+        client.repeat_stop.return_value = ack
+        with patch("autostream_core._connected_monitor") as cm, \
+                patch("autostream_core.apply_repeat_ack",
+                      side_effect=lambda a: a) as apply:
+            cm.return_value.__enter__.return_value = client
+            assert send_live_repeat_transport("stop") is ack
+        apply.assert_called_once_with(ack)
+
+    def test_send_live_repeat_transport_unreachable_returns_none(self):
+        with patch("autostream_core._connected_monitor") as cm, \
+                patch("autostream_core.apply_repeat_ack") as apply:
+            cm.return_value.__enter__.return_value = None
+            assert send_live_repeat_transport("seek", 0.0) is None
+        apply.assert_not_called()
+
+    def test_set_live_repeat_armed_ack_applies_the_ack(self):
+        ack = _ack("set_repeat_armed", "replaying")
+        client = MagicMock()
+        client.set_repeat_armed_ack.return_value = ack
+        with patch("autostream_core._connected_monitor") as cm, \
+                patch("autostream_core.apply_repeat_ack",
+                      side_effect=lambda a: a) as apply:
+            cm.return_value.__enter__.return_value = client
+            assert set_live_repeat_armed_ack(True) is ack
+        apply.assert_called_once_with(ack)

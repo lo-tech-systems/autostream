@@ -106,6 +106,7 @@ def _invoke(
     playing: bool = False,
     track_id_snapshot: TrackIdentificationSnapshot | None = None,
     repeat_status: dict | None = None,
+    session_state: dict | None = None,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_status_post_json and return (status, body, update_mock).
 
@@ -115,7 +116,8 @@ def _invoke(
     get_appliance_id() returns (None for an identity-less appliance).
     repeat_status is what the patched get_repeat_status() returns (None by
     default -- no cached daemon "repeat" block, e.g. an older monitor binary
-    or no poll yet).
+    or no poll yet). session_state, when given, is what the patched
+    get_session_state() returns instead of one derived from `playing`.
     """
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
@@ -143,7 +145,8 @@ def _invoke(
         patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
         patch("autostream_webui_api.get_session_state",
-              return_value={"active": playing, "source": "input1" if playing else None}),
+              return_value=session_state if session_state is not None
+              else {"active": playing, "source": "input1" if playing else None}),
         patch("autostream_webui_api.get_repeat_status", return_value=repeat_status),
         patch("autostream_core.get_active_track_identification_snapshot",
               return_value=track_id_snapshot),
@@ -293,6 +296,28 @@ class TestPlayingField:
         ):
             send_dial_status_post_json(handler, state, {"dial_id": DIAL_ID})
         code, body = _response(handler)
+        assert body["playing"] is True
+
+    def test_playing_is_true_immediately_after_a_replaying_ack(self):
+        """A replaying ack folded into the coordinator's caches makes the
+        very next status poll report playing, before any daemon poll."""
+        import autostream_core as core
+        core._set_repeat_status(_daemon_block(
+            recording={"active": False, "seconds": 42.0, "origin_input": 1}))
+        core._set_session_state(False, None)
+        try:
+            core.apply_repeat_ack({
+                "ok": True, "command": "repeat_seek", "state": "replaying",
+                "armed": True, "position_seconds": 0.0,
+            })
+            code, body, _ = _invoke(
+                {"dial_id": DIAL_ID},
+                session_state=core.get_session_state(),
+                repeat_status=core.get_repeat_status(),
+            )
+        finally:
+            core._set_repeat_status(None)
+            core._set_session_state(False, None)
         assert body["playing"] is True
 
     def test_playing_independent_of_outputs(self):
@@ -509,6 +534,29 @@ class TestRepeatField:
         code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=block)
         assert body["repeat"]["state"] == "fading_out"
         assert body["repeat"]["held"] is False
+
+    def test_repeat_object_is_replaying_immediately_after_a_seek_ack(self):
+        import autostream_core as core
+        core._set_repeat_status(_daemon_block(
+            recording={"active": False, "seconds": 42.0, "origin_input": 1}))
+        core._set_session_state(False, None)
+        try:
+            core.apply_repeat_ack({
+                "ok": True, "command": "repeat_seek", "state": "replaying",
+                "armed": True, "position_seconds": 0.0,
+            })
+            code, body, _ = _invoke(
+                {"dial_id": DIAL_ID}, repeat_status=core.get_repeat_status())
+        finally:
+            core._set_repeat_status(None)
+            core._set_session_state(False, None)
+        assert code == 200
+        assert body["repeat"]["state"] == "replaying"
+        assert body["repeat"]["held"] is False
+        assert body["repeat"]["armed"] is True
+        assert body["repeat"]["replay"]["position_seconds"] == 0.0
+        assert body["repeat"]["replay"]["duration_seconds"] == 42.0
+        assert body["repeat"]["recording_seconds"] == 42.0
 
 
 # ---------------------------------------------------------------------------
