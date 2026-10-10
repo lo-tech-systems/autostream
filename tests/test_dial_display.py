@@ -1767,10 +1767,10 @@ class TestNoncompositedNotification:
 
 
 # ---------------------------------------------------------------------------
-# "Always show controls" held-visible overlay (B/A.4 held-visible parts):
-# persistent_overlay_shown(), _current_base_is_artwork tracking via
-# _display_locked's is_artwork_base parameter, and the forced-visible merge
-# in _effective_overlay_locked().
+# "Always show controls" held-visible overlay: persistent_overlay_shown(),
+# the "a controllable appliance is shown" gate (self._now_playing is not
+# None) that _display_locked's base image no longer needs to track, and the
+# forced-visible merge in _effective_overlay_locked().
 # ---------------------------------------------------------------------------
 
 def _poll_with_artwork(display, fb):
@@ -1784,93 +1784,71 @@ def _poll_with_artwork(display, fb):
         display._poll_once()
 
 
-class TestIsArtworkBaseTracking:
-    def test_render_logo_locked_clears_artwork_flag(self):
-        display, fb, gt = _make_display(targets=[])
+class TestLogoOverlayGating:
+    """A track change swaps the base image to the placeholder logo and
+    clears artist/title, but must not by itself drop a held overlay: the
+    gate is "a controllable appliance is shown" (self._now_playing is not
+    None), which stays true across that swap. Only the genuinely idle logo
+    (nothing playing, self._now_playing is None) is bare."""
+
+    def test_placeholder_logo_while_playing_keeps_held_overlay(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
         display.enable()
+        _poll_with_artwork(display, fb)
+        assert display._now_playing is not None
         with display._lock:
-            display._current_base_is_artwork = True
+            # Simulate the track-change base-image swap to the placeholder
+            # logo — self._now_playing is left as-is, exactly as the poll
+            # does when it clears artist/title but keeps reporting a
+            # playing appliance.
             display._render_logo_locked()
-        assert display._current_base_is_artwork is False
+        assert display.get_status()["showing"] == "logo"
+        assert display.persistent_overlay_shown() is True
+        result = display._effective_overlay_locked(OverlayState(visible=False))
+        assert result.visible is True
 
-    def test_show_artwork_sets_artwork_flag(self):
-        t = _target()
-        display, fb, gt = _make_display(targets=[t])
+    def test_idle_logo_with_nothing_playing_is_bare(self):
+        display, fb, gt = _make_display(targets=[], always_show_controls=True)
         display.enable()
-        assert display._current_base_is_artwork is False
-        _poll_with_artwork(display, fb)
-        assert display._current_base_is_artwork is True
-
-    def test_show_artwork_cached_reuse_path_keeps_artwork_flag(self):
-        t = _target()
-        display, fb, gt = _make_display(targets=[t])
-        display.enable()
-        _poll_with_artwork(display, fb)
-        assert display._current_base_is_artwork is True
-        cached_url = display._source_artwork_url
-        with display._lock:
-            # Force past the "unchanged url + already showing artwork"
-            # early no-op return so the call below actually reaches the
-            # cached-reuse branch of _show_artwork (same url, cached image
-            # still set, but _showing no longer says "artwork").
-            display._showing = "logo"
-            display._current_base_is_artwork = False
-        display._show_artwork(cached_url)
-        assert display._current_base_is_artwork is True
-
-    def test_redisplay_current_locked_keeps_artwork_flag_true(self):
-        t = _target()
-        display, fb, gt = _make_display(targets=[t])
-        display.enable()
-        _poll_with_artwork(display, fb)
-        with display._lock:
-            display._current_base_is_artwork = False
-            display._redisplay_current_locked()
-        assert display._current_base_is_artwork is True
+        assert display._now_playing is None
+        assert display.get_status()["showing"] == "logo"
+        assert display.persistent_overlay_shown() is False
+        result = display._effective_overlay_locked(OverlayState(visible=False))
+        assert result.visible is False
 
     def test_redisplay_current_locked_renders_logo_when_nothing_cached(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
         with display._lock:
-            display._current_base_is_artwork = True
             display._redisplay_current_locked()
-        assert display._current_base_is_artwork is False
+        assert display.get_status()["showing"] == "logo"
 
-    def test_repaint_current_locked_does_not_change_artwork_flag(self):
+    def test_clear_sleep_disable_swap_leave_no_overlay_held(self):
         t = _target()
-        display, fb, gt = _make_display(targets=[t])
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
         display.enable()
         _poll_with_artwork(display, fb)
-        assert display._current_base_is_artwork is True
-        with display._lock:
-            display._repaint_current_locked()
-        assert display._current_base_is_artwork is True
-
-    def test_clear_sleep_disable_swap_clear_artwork_flag(self):
-        t = _target()
-        display, fb, gt = _make_display(targets=[t])
-        display.enable()
-        _poll_with_artwork(display, fb)
-        assert display._current_base_is_artwork is True
+        assert display.persistent_overlay_shown() is True
         with display._lock:
             display._clear_locked()
-        assert display._current_base_is_artwork is False
+        assert display.persistent_overlay_shown() is False
 
-        display2, fb2, gt2 = _make_display(targets=[t])
+        display2, fb2, gt2 = _make_display(targets=[t], always_show_controls=True)
         display2.enable()
         _poll_with_artwork(display2, fb2)
         with display2._lock:
             display2._sleep_locked()
-        assert display2._current_base_is_artwork is False
+        assert display2.persistent_overlay_shown() is False
 
-        display3, fb3, gt3 = _make_display(targets=[t])
+        display3, fb3, gt3 = _make_display(targets=[t], always_show_controls=True)
         display3.enable()
         _poll_with_artwork(display3, fb3)
         with display3._lock:
             display3._disable_locked()
-        assert display3._current_base_is_artwork is False
+        assert display3.persistent_overlay_shown() is False
 
-    def test_swap_backend_locked_clears_artwork_flag(self):
+    def test_swap_backend_locked_reopens_on_the_main_screen(self):
         t = _target()
         fb_old = FakeBackend()
         fb_new = FakeBackend()
@@ -1883,15 +1861,13 @@ class TestIsArtworkBaseTracking:
         )
         display.enable()
         _poll_with_artwork(display, fb_old)
-        assert display._current_base_is_artwork is True
+        assert display.get_status()["showing"] == "artwork"
         with display._lock:
             display._rebuild_backend_factory_locked("st7789_240x240")
             display._swap_backend_locked()
-        # The swap itself calls _enable_locked() -> _render_logo_locked(),
-        # which sets the flag back to False via is_artwork_base=False — the
-        # net observable result is the same "no artwork on screen" state
-        # _swap_backend_locked's own reset line guarantees even before that.
-        assert display._current_base_is_artwork is False
+        # The swap drops the cached frame and reopens on the logo — the
+        # reopened backend has nothing to base a "showing artwork" claim on.
+        assert display.get_status()["showing"] == "logo"
 
 
 class TestPersistentOverlayShown:
@@ -1961,7 +1937,7 @@ class TestHeldOverlay:
         assert display_on.persistent_overlay_shown() is True
         assert list(held_frame.getdata()) != list(no_overlay_frame.getdata())
 
-    def test_logo_never_gets_the_overlay_even_when_held(self):
+    def test_idle_logo_is_bare_even_when_always_show_controls_is_on(self):
         display, fb, gt = _make_display(targets=[], always_show_controls=True)
         display.enable()
         fb.displayed.clear()
@@ -1970,12 +1946,33 @@ class TestHeldOverlay:
         logo_frame = fb.displayed[-1]
 
         # Compose the same base without any overlay merge for comparison —
-        # the held path must not have drawn anything on top of the logo.
+        # with nothing playing, the held path must not have drawn anything
+        # on top of the idle logo.
         expected = display._compositor.compose(
             logo_frame, logo_frame.width, logo_frame.height,
             rotate=False, bgr=False, is_artwork=False, overlay=None,
         )
         assert list(logo_frame.getdata()) == list(expected.getdata())
+
+    def test_placeholder_logo_while_playing_gets_the_held_overlay(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display._now_playing is not None
+        fb.displayed.clear()
+        with display._lock:
+            # A track change: the base image swaps to the placeholder logo,
+            # but a controllable appliance is still on screen, so the held
+            # overlay must be drawn over it, unlike the idle case above.
+            display._render_logo_locked()
+        logo_frame = fb.displayed[-1]
+
+        bare = display._compositor.compose(
+            display._current_base_image, logo_frame.width, logo_frame.height,
+            rotate=False, bgr=False, is_artwork=False, overlay=None,
+        )
+        assert list(logo_frame.getdata()) != list(bare.getdata())
 
     def test_always_show_controls_false_and_snapshot_hidden_matches_no_overlay(self):
         t = _target()
@@ -2586,11 +2583,11 @@ class TestSelectorOpenCloseAndRepaint:
 
     def test_persistent_overlay_shown_false_while_open(self):
         display, fb, gt = self._display_with_one_row(always_show_controls=True)
-        # Force the "artwork on screen" precondition directly rather than
-        # faking a full artwork fetch — this test is only about the
-        # selector's own gate on persistent_overlay_shown().
+        # Force the "a controllable appliance is shown" precondition
+        # directly rather than faking a full artwork fetch — this test is
+        # only about the selector's own gate on persistent_overlay_shown().
         with display._lock:
-            display._current_base_is_artwork = True
+            display._now_playing = dd.NowPlaying("T0", "Artist", "Title", 50)
         assert display.persistent_overlay_shown() is True
         display.open_selector()
         with display._lock:
