@@ -31,6 +31,10 @@ from dial_display_compositor import (  # noqa: E402
     _ARTIST_FONT_PX_AT_REFERENCE,
     _VOLUME_FONT_PX_AT_REFERENCE,
     BG_BASE,
+    BODY_COMPACT_CONTROLS,
+    BODY_COMPACT_LIST,
+    BODY_COMPACT_REPLAY,
+    BODY_COMPACT_TOGGLE,
     BODY_LIST_ROWS,
     BODY_NONE,
     BODY_NOW_PLAYING,
@@ -50,6 +54,8 @@ from dial_display_compositor import (  # noqa: E402
     GLYPH_CROSS,
     GLYPH_MUTE,
     GLYPH_PLAY,
+    GLYPH_RESTART,
+    GLYPH_STOP,
     GLYPH_TWO_DOTS,
     Header,
     ListState,
@@ -58,8 +64,15 @@ from dial_display_compositor import (  # noqa: E402
     OverlayState,
     RepeatViewState,
     _BODY_RENDERERS,
+    _DIMMED_GLYPH_RGB,
     _FOOTER_RENDERERS,
+    _GLYPH_RGB,
     _GLYPH_SUPERSAMPLE,
+    _INVERTED_GLYPH_RGB,
+    OVERLAY_DIM_FACTOR,
+    _compact_controls_frame,
+    _compact_list_frame,
+    _compact_repeat_frame,
     _compose_frame,
     _draw_speaker_glyph,
     _glyph_tile,
@@ -67,6 +80,7 @@ from dial_display_compositor import (  # noqa: E402
     _load_font,
     _now_playing_frame,
     _pad_px,
+    _repeat_frame,
     _reset_font_cache,
     _reset_render_caches,
     _scaled_px,
@@ -76,13 +90,17 @@ from dial_display_compositor import (  # noqa: E402
 )
 from dial_touch_layout import (  # noqa: E402
     CONTENT_BASE,
+    CONTENT_COMPACT,
     CONTENT_LARGE,
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
+    GEOMETRY_REPEAT_REPLAY,
+    CompactLayout,
     TouchZone,
+    compact_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -120,6 +138,10 @@ _METRICS_EQUIVALENCE_CASES = [
 # one (640x480), used by the rail-specific render/pressed-wash tests below.
 _RICH_METRICS = metrics_for(320, 240, 0.1778)
 _LARGE_METRICS = metrics_for(640, 480, 0.127)
+
+# The two shipped compact panels — 1.3in 240x240 and 1.44in 128x128.
+_COMPACT_240 = metrics_for(240, 240, 0.0973)
+_COMPACT_128 = metrics_for(128, 128, 0.2021)
 
 
 def _marked_image(size=(4, 4)):
@@ -1016,7 +1038,14 @@ class TestComposeList:
 _MARKER_GOLDEN_CASES = [
     (160, 128, metrics_for(160, 128)),
     (128, 128, metrics_for(128, 128)),
-    (240, 240, metrics_for(240, 240, 0.0973)),
+    # A 240x240 base-tier case with density left unknown (None): PLAY_GLYPH
+    # is an appliance-selector-only marker, never reachable on the compact
+    # tier (appliance selection is unreachable there), so this must stay
+    # off the compact gate — any real density fine enough to have exercised
+    # the old touch_short veto at this pixel size (e.g. 0.0973) now
+    # resolves compact instead (COMPACT_MAX_SHORT_SIDE_MM is deliberately
+    # looser than that veto's own implied screen size).
+    (240, 240, metrics_for(240, 240)),
     (320, 240, _RICH_METRICS),
     (320, 240, metrics_for(320, 240, 0.2778)),
     (640, 480, _LARGE_METRICS),
@@ -2074,10 +2103,17 @@ class TestPlayGlyphTile:
         _reset_render_caches()
 
     def test_every_glyph_kind_has_a_registered_painter(self):
-        from dial_display_compositor import GLYPH_ARM_DOT, GLYPH_MUTE, _GLYPH_PAINTERS
+        from dial_display_compositor import (
+            GLYPH_ARM_DOT,
+            GLYPH_MUTE,
+            GLYPH_RESTART,
+            GLYPH_STOP,
+            _GLYPH_PAINTERS,
+        )
 
         assert set(_GLYPH_PAINTERS) == {
             GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
+            GLYPH_RESTART, GLYPH_STOP,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):
@@ -3091,3 +3127,460 @@ class TestBodyToggleRowByteIdentity:
         frame = _repeat_frame(_repeat_state(layout="enable", armed=False), 160, 128, metrics_for(160, 128))
         assert frame.body.kind == BODY_REPEAT_ROW
         assert frame.body.label == "Repeat Play"
+
+
+# ---------------------------------------------------------------------------
+# The compact tier: physically tiny panels get a 2x2 grid instead of the
+# band+body+footer layouts — a whole-frame dim (Frame.dim_all) behind white
+# dividers and white controls, with no name/readout anywhere. Pinned at both
+# shipped compact sizes (240x240 at 1.3in, 128x128 at 1.44in).
+# ---------------------------------------------------------------------------
+
+
+class TestCompactStatelessness:
+    def test_vars_empty_after_composing_every_compact_screen(self, compositor):
+        metrics = _COMPACT_240
+        base = Image.new("RGB", (metrics.width, metrics.height), (120, 130, 140))
+        compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True, dots=True), metrics=metrics,
+        )
+        compositor.compose_list(
+            metrics.width, metrics.height,
+            ListState(rows=(("Kitchen", True, "1:23"), ("Lounge", False, "4:56")), has_prev=True, has_next=True),
+            rotate=False, bgr=False, metrics=metrics, base=base,
+        )
+        compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        assert vars(compositor) == {}
+
+
+class TestCompactDimAll:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_whole_panel_dimmed_outside_drawn_content(self, compositor, metrics):
+        base_rgb = (200, 150, 100)
+        base = Image.new("RGB", (metrics.width, metrics.height), base_rgb)
+        result = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        # (2, 2) is inside the tl cell but well clear of the centred dots
+        # glyph box (57px/30px, centred) and the divider lines.
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in base_rgb)
+        assert result.getpixel((2, 2)) == expected
+
+    def test_playing_screen_never_sets_dim_top_or_dim_bottom(self):
+        frame = _compact_controls_frame(OverlayState(visible=True), 240, 240, _COMPACT_240)
+        assert frame.dim_all is True
+        assert frame.dim_top is False
+        assert frame.dim_bottom is False
+
+
+class TestCompactDividers:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_playing_screen_has_a_full_cross(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        result = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
+        assert result.getpixel((metrics.width - 5, c.divider_y)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, 5)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, metrics.height - 5)) == (255, 255, 255)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_picker_screen_has_a_full_cross(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=False)
+        result = compositor.compose_list(
+            metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, 5)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, metrics.height - 5)) == (255, 255, 255)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_repeat_enable_screen_has_horizontal_only(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, 5)) != (255, 255, 255)
+        assert result.getpixel((c.divider_x, metrics.height - 5)) != (255, 255, 255)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_repeat_replaying_screen_has_bottom_row_vertical_only(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        result = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, 5)) != (255, 255, 255)
+        assert result.getpixel((c.divider_x, metrics.height - 5)) == (255, 255, 255)
+
+
+class TestCompactPlayingScreen:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_minus_and_plus_present_in_bl_and_br(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        result = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        assert _has_near_white_pixel(result.crop(c.bl))
+        assert _has_near_white_pixel(result.crop(c.br))
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_dots_dimmed_when_inert_lit_when_active(self, compositor, metrics):
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        inert = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=False), metrics=metrics,
+        )
+        active = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True), metrics=metrics,
+        )
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert list(inert.crop(c.tl).getdata()) != list(active.crop(c.tl).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_muted_cell_is_a_solid_white_wash_with_a_black_glyph(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        muted = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True), metrics=metrics,
+        )
+        unmuted = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False), metrics=metrics,
+        )
+        # The wash: every pixel of tr not part of the glyph itself is solid
+        # white on the muted frame.
+        x0, y0, x1, y1 = c.tr
+        corner = muted.getpixel((x0 + 2, y0 + 2))
+        assert corner == (255, 255, 255)
+        # The glyph itself is drawn in black over that white wash.
+        pixels = list(muted.crop(c.tr).getdata())
+        assert any(p == (0, 0, 0) for p in pixels)
+        # Unmuted: no wash (the corner stays dimmed background, not white).
+        assert unmuted.getpixel((x0 + 2, y0 + 2)) != (255, 255, 255)
+
+    def test_no_text_anywhere_on_the_playing_screen(self, compositor):
+        # No name, no volume digits, no artist/title — a plain dimmed frame
+        # plus four glyphs and the dividers is everything drawn.
+        metrics = _COMPACT_240
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        with_state = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="Kitchen", volume=42, artist="Artist", title="Title"),
+            metrics=metrics,
+        )
+        without_state = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="", volume=None, artist="", title=""),
+            metrics=metrics,
+        )
+        assert list(with_state.getdata()) == list(without_state.getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_pressed_up_washes_only_br(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        unpressed = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        pressed = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, pressed=TouchZone.UP), metrics=metrics,
+        )
+        assert list(unpressed.crop(c.br).getdata()) != list(pressed.crop(c.br).getdata())
+        assert list(unpressed.crop(c.bl).getdata()) == list(pressed.crop(c.bl).getdata())
+
+
+class TestCompactPicker:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_two_rows_land_in_tl_and_bl(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", True, "4:56")), has_prev=False, has_next=False)
+        blank = compositor.compose_list(
+            metrics.width, metrics.height, ListState(rows=(("", False, ""), ("", False, "")), has_prev=False, has_next=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        result = compositor.compose_list(
+            metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(result.crop(c.tl).getdata()) != list(blank.crop(c.tl).getdata())
+        assert list(result.crop(c.bl).getdata()) != list(blank.crop(c.bl).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_current_row_gets_the_highlight_wash(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        not_current = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", False, "4:56")))
+        current = ListState(rows=(("Kitchen", True, "1:23"), ("Lounge", False, "4:56")))
+        a = compositor.compose_list(metrics.width, metrics.height, not_current, rotate=False, bgr=False, metrics=metrics)
+        b = compositor.compose_list(metrics.width, metrics.height, current, rotate=False, bgr=False, metrics=metrics)
+        assert list(a.crop(c.tl).getdata()) != list(b.crop(c.tl).getdata())
+        assert list(a.crop(c.bl).getdata()) == list(b.crop(c.bl).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_more_chevron_lit_iff_more_than_one_page(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        one_page = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=False)
+        two_pages = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=True)
+        a = compositor.compose_list(metrics.width, metrics.height, one_page, rotate=False, bgr=False, metrics=metrics)
+        b = compositor.compose_list(metrics.width, metrics.height, two_pages, rotate=False, bgr=False, metrics=metrics)
+        assert list(a.crop(c.tr).getdata()) != list(b.crop(c.tr).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_placeholder_row_lands_alone_in_tl(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        blank = ListState(rows=(("", False, ""),))
+        placeholder = ListState(rows=(("Nothing to replay", False),))
+        a = compositor.compose_list(metrics.width, metrics.height, blank, rotate=False, bgr=False, metrics=metrics)
+        b = compositor.compose_list(metrics.width, metrics.height, placeholder, rotate=False, bgr=False, metrics=metrics)
+        assert list(a.crop(c.tl).getdata()) != list(b.crop(c.tl).getdata())
+        assert list(a.crop(c.bl).getdata()) == list(b.crop(c.bl).getdata())
+
+    def test_base_is_dimmed_behind_when_given(self, compositor):
+        metrics = _COMPACT_240
+        base = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        result = compositor.compose_list(
+            metrics.width, metrics.height, ListState(rows=(("Kitchen", False, "1:23"),)),
+            rotate=False, bgr=False, metrics=metrics, base=base,
+        )
+        # A corner of the tl cell, clear of any label text, reflects the
+        # dimmed base colour rather than the flat chassis fill.
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in (200, 150, 100))
+        assert result.getpixel((2, 2)) == expected
+
+    def test_falls_back_to_chassis_when_base_is_none(self, compositor):
+        metrics = _COMPACT_240
+        result = compositor.compose_list(
+            metrics.width, metrics.height, ListState(rows=(("Kitchen", False, "1:23"),)),
+            rotate=False, bgr=False, metrics=metrics, base=None,
+        )
+        from dial_display_compositor import _LIST_BG_RGB
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        assert result.getpixel((2, 2)) == expected
+
+
+class TestCompactRepeatEnable:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_label_and_arm_dot_present(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        disarmed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        armed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(disarmed.crop(c.top_row).getdata()) != list(armed.crop(c.top_row).getdata())
+        assert _has_near_white_pixel(armed.crop(c.top_row))
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_cancel_cross_in_bottom_row(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert _has_near_white_pixel(result.crop(c.bottom_row))
+
+
+class TestCompactRepeatReplaying:
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_line_drawn_in_top_row(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        blank = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        with_line = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        assert list(blank.crop(c.top_row).getdata()) != list(with_line.crop(c.top_row).getdata())
+
+    def test_too_long_a_line_falls_back_to_the_position_half(self, compositor):
+        # A pathologically long duration string overflows even the 240x240
+        # top row; the renderer must fall back to the part before " / "
+        # rather than let _draw_text_with_halo silently ellipsis the whole
+        # thing (which would show a truncated duration, not a position).
+        metrics = _COMPACT_240
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        long_line = "12:34 / " + "9" * 40 + ":00"
+        with_fallback = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line=long_line, start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        position_only = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="12:34", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        assert list(with_fallback.crop(c.top_row).getdata()) == list(position_only.crop(c.top_row).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_restart_and_stop_dimmed_when_disabled(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        enabled = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        disabled = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=False, stop_enabled=False),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        assert list(enabled.crop(c.bl).getdata()) != list(disabled.crop(c.bl).getdata())
+        assert list(enabled.crop(c.br).getdata()) != list(disabled.crop(c.br).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_stop_pressed_washes_br_while_fading_out(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        not_pressed = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(
+                layout="replaying", line="0:10 / 1:00", start_enabled=False, stop_enabled=True,
+                stop_pressed=False,
+            ),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        fading_out = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(
+                layout="replaying", line="0:10 / 1:00", start_enabled=False, stop_enabled=True,
+                stop_pressed=True,
+            ),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        assert list(not_pressed.crop(c.br).getdata()) != list(fading_out.crop(c.br).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_pressed_restart_resolves_against_the_replay_table(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        unpressed = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        pressed = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(
+                layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True,
+                pressed=TouchZone.REPEAT_START,
+            ),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        assert list(unpressed.crop(c.bl).getdata()) != list(pressed.crop(c.bl).getdata())
+        assert list(unpressed.crop(c.br).getdata()) == list(pressed.crop(c.br).getdata())
+
+
+class TestCompactGlyphTiles:
+    def test_restart_and_stop_tiles_are_non_empty(self):
+        restart = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), 32, 32, 4)
+        stop = _glyph_tile(GLYPH_STOP, (_GLYPH_RGB,), 32, 32, 4)
+        assert any(p[3] > 0 for p in restart.getdata())
+        assert any(p[3] > 0 for p in stop.getdata())
+
+    def test_stop_tile_is_a_centred_filled_square(self):
+        w = h = 40
+        tile = _glyph_tile(GLYPH_STOP, (_GLYPH_RGB,), w, h, 4)
+        pixels = tile.load()
+        cx, cy = w // 2, h // 2
+        assert pixels[cx, cy][3] > 0
+        # Roughly symmetric about the centre (a filled square is) — a small
+        # tolerance absorbs the supersample/LANCZOS downsample's own
+        # antialiasing at the edge, which need not be bit-exact.
+        side = round(min(w, h) * 0.56)
+        half = side // 2
+        assert abs(pixels[cx - half + 1, cy][3] - pixels[cx + half - 1, cy][3]) <= 4
+
+    def test_restart_tile_is_open_at_the_arrowhead_end(self):
+        # An open circle: the centre itself must be transparent (nothing
+        # filled inside the arc), unlike the filled Stop square.
+        w = h = 40
+        tile = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), w, h, 4)
+        pixels = tile.load()
+        assert pixels[w // 2, h // 2][3] == 0
+
+    def test_lit_and_dimmed_are_distinct_cache_keys_and_pixels(self):
+        _reset_render_caches()
+        lit = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), 32, 32, 4)
+        dimmed = _glyph_tile(GLYPH_RESTART, (_DIMMED_GLYPH_RGB,), 32, 32, 4)
+        assert _glyph_tile.cache_info().misses == 2
+        assert list(lit.getdata()) != list(dimmed.getdata())
+
+    def test_existing_glyph_kinds_keep_byte_identical_default_tiles(self):
+        # Every existing call site still passes no colour param at all, so
+        # the tile key (kind, (), w, h, ss) — and therefore its pixels —
+        # must be unaffected by the new trailing colour parameter.
+        two_dots_default = _glyph_tile(GLYPH_TWO_DOTS, (0,), 24, 24, 4)
+        two_dots_explicit_default_color = _glyph_tile(GLYPH_TWO_DOTS, (0, _GLYPH_RGB), 24, 24, 4)
+        assert list(two_dots_default.getdata()) == list(two_dots_explicit_default_color.getdata())
+
+        mute_default = _glyph_tile(GLYPH_MUTE, (), 24, 24, 4)
+        mute_explicit_default_color = _glyph_tile(GLYPH_MUTE, (_GLYPH_RGB,), 24, 24, 4)
+        assert list(mute_default.getdata()) == list(mute_explicit_default_color.getdata())
+
+
+class TestCompactNeverRaises:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_no_font_available_still_composes_every_compact_screen(self, compositor):
+        metrics = _COMPACT_240
+        base = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            playing = compositor.compose(
+                base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, muted=True), metrics=metrics,
+            )
+            picker = compositor.compose_list(
+                metrics.width, metrics.height, ListState(rows=(("Kitchen", False, "1:23"),)),
+                rotate=False, bgr=False, metrics=metrics, base=base,
+            )
+            enable = compositor.compose_repeat(
+                metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
+                rotate=False, bgr=False, metrics=metrics,
+            )
+            replaying = compositor.compose_repeat(
+                metrics.width, metrics.height,
+                _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+                rotate=False, bgr=False, base=base, metrics=metrics,
+            )
+        for result in (playing, picker, enable, replaying):
+            assert result.size == (metrics.width, metrics.height)

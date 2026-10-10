@@ -98,22 +98,27 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
+    CONTENT_COMPACT,
     FONT_BODY_PX_AT_REFERENCE,
     FONT_READOUT_PX_AT_REFERENCE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
+    GEOMETRY_REPEAT_REPLAY,
+    CompactLayout,
     LayoutMetrics,
     OverlayLayout,
     Rect,
     TouchZone,
+    compact_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -201,6 +206,19 @@ _GLYPH_SUPERSAMPLE = 4
 # colour — the same OVERLAY_DIM_FACTOR the overlay's chevrons use for their
 # own disabled state.
 _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
+
+# The compact tier's muted mute-cell: a solid wash (see the main-screen
+# frame builder) plus the glyph inverted to black, so "muted" reads at a
+# glance on a cell too small for the large tiers' translucent wash to read
+# clearly against a white glyph.
+_INVERTED_GLYPH_RGB = (0, 0, 0)
+
+# Fraction of a compact cell's own short side a cell's centred glyph box
+# occupies (0.5): 57px at the 240x240 reference, 30px at 128x128. Minus/
+# plus are the one exception — they are drawn straight onto the cell rect
+# via the existing _draw_minus_glyph/_draw_plus_glyph, which derive their
+# own reach from the rect's own size.
+_COMPACT_GLYPH_FRACTION = 0.5
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -395,6 +413,11 @@ BODY_REPEAT_ROW = "repeat_row"     # "Repeat Play" label + arm dot
 BODY_TOGGLE_ROW = "toggle_row"     # a label + arm dot for any on/off row (repeat, per-output)
 BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
 BODY_LIST_ROWS = "list_rows"       # selector/picker rows
+# Compact-tier (2x2) bodies — see the module's compact frame builders below.
+BODY_COMPACT_CONTROLS = "compact_controls"  # the playing screen: dots/mute/minus/plus
+BODY_COMPACT_LIST = "compact_list"          # the replay picker's two rows + more/cancel
+BODY_COMPACT_TOGGLE = "compact_toggle"      # the repeat screen's "Repeat Play" row + cancel
+BODY_COMPACT_REPLAY = "compact_replay"      # the repeat screen's time line + Restart/Stop
 
 # Footer kinds — the bottom band's content, dispatched through
 # _FOOTER_RENDERERS.
@@ -433,11 +456,17 @@ class Body:
     kind: str = BODY_NONE
     title: str = ""        # BODY_NOW_PLAYING
     artist: str = ""       # BODY_NOW_PLAYING
-    armed: bool = False    # BODY_REPEAT_ROW / BODY_TOGGLE_ROW
-    label: str = ""        # BODY_REPEAT_ROW / BODY_TOGGLE_ROW — the row's own text
-    line: str = ""         # BODY_REPEAT_LINE
-    rows: tuple = ()       # BODY_LIST_ROWS — same row tuples ListState.rows carries
+    armed: bool = False    # BODY_REPEAT_ROW / BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE
+    label: str = ""        # BODY_REPEAT_ROW / BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE — the row's own text
+    line: str = ""         # BODY_REPEAT_LINE / BODY_COMPACT_REPLAY
+    rows: tuple = ()       # BODY_LIST_ROWS / BODY_COMPACT_LIST — same row tuples ListState.rows carries
     album: str = ""        # BODY_NOW_PLAYING — drawn only where the layout has an album rect
+    # Compact-tier fields — see the BODY_COMPACT_* constants above.
+    muted: bool = False           # BODY_COMPACT_CONTROLS: the mute cell's inverted-wash state
+    dots_lit: bool = False        # BODY_COMPACT_CONTROLS: whether the pager-dots cell is tappable
+    has_more: bool = False        # BODY_COMPACT_LIST: whether the "more" chevron is lit
+    start_enabled: bool = True    # BODY_COMPACT_REPLAY: Restart drawn full-brightness vs dimmed
+    stop_enabled: bool = True     # BODY_COMPACT_REPLAY: Stop drawn full-brightness vs dimmed
 
 
 @dataclass(frozen=True)
@@ -463,6 +492,12 @@ class Frame:
     background: str
     dim_top: bool = False
     dim_bottom: bool = False
+    # The compact tier's own dim: the whole panel (not just the top/bottom
+    # bands) scaled to OVERLAY_DIM_FACTOR — "dimmed artwork behind white
+    # controls" for a screen with no undimmed band left at all. Applied
+    # after dim_top/dim_bottom, before any highlight/wash/pressed rect, so
+    # a compact frame need never also set those two.
+    dim_all: bool = False
     pressed: tuple[Rect, ...] = ()     # rects to wash, in the order they should be drawn
     highlights: tuple[Rect, ...] = ()  # rects to wash at the row-highlight strength, under any press
     washes: tuple[tuple[Rect, int], ...] = ()  # (rect, alpha) pairs for a persistent state wash, drawn after highlights and before pressed
@@ -519,14 +554,18 @@ class DialDisplayCompositor:
         if overlay is None or not overlay.visible:
             return _finish(image, rotate, bgr)
 
-        frame = _now_playing_frame(overlay, image.width, image.height, metrics)
+        frame = (
+            _compact_controls_frame(overlay, image.width, image.height, metrics)
+            if metrics.content_tier == CONTENT_COMPACT
+            else _now_playing_frame(overlay, image.width, image.height, metrics)
+        )
         return _compose_frame(
             image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
     def compose_list(
         self, width: int, height: int, state: ListState, *, rotate: bool, bgr: bool,
-        metrics: LayoutMetrics | None = None,
+        metrics: LayoutMetrics | None = None, base=None,
     ):
         """Build one display-ready frame for the appliance-selector screen.
 
@@ -544,9 +583,20 @@ class DialDisplayCompositor:
         truth for where each row and bar zone sits. Never raises: a font or
         glyph failure degrades to a plainer row, matching compose()'s own
         text-failure discipline. metrics: see compose().
+
+        *base* is used only on the compact tier — the picker's own 2x2
+        screen dims the manager's current base image behind it, same as
+        every other compact screen (see _compact_list_frame); every other
+        tier ignores it entirely and keeps its flat chassis background,
+        byte-identical to before this parameter existed.
         """
         if metrics is None:
             metrics = metrics_for(width, height)
+        if metrics.content_tier == CONTENT_COMPACT:
+            return _compose_frame(
+                base, width, height, _compact_list_frame(state, width, height, metrics),
+                rotate=rotate, bgr=bgr, metrics=metrics,
+            )
         return _compose_frame(
             None, width, height, _list_frame(state, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
@@ -833,7 +883,9 @@ def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int],
     draw.line([(cx, cy - r), (cx, cy + r)], fill=color, width=stroke)
 
 
-def _draw_speaker_glyph(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None) -> None:
+def _draw_speaker_glyph(
+    draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None, color=_GLYPH_RGB,
+) -> None:
     """Draw a simple speaker glyph: a body (rectangle + triangle "cone") plus
     sound-wave arcs when unmuted, or a diagonal slash through the body when
     muted. Sized from a square *box* (the glyph's own bounding box, not a
@@ -858,7 +910,7 @@ def _draw_speaker_glyph(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int
     body_h = max(2, r)
     body_left = cx - r
     rect_box = [body_left, cy - body_h // 2, body_left + body_w, cy + body_h // 2]
-    draw.rectangle(rect_box, fill=_GLYPH_RGB)
+    draw.rectangle(rect_box, fill=color)
     cone_tip_x = body_left + body_w + r // 2
     draw.polygon(
         [
@@ -867,14 +919,14 @@ def _draw_speaker_glyph(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int
             (cone_tip_x, cy - r),
             (cone_tip_x, cy + r),
         ],
-        fill=_GLYPH_RGB,
+        fill=color,
     )
 
     if muted:
         # Diagonal slash through the whole glyph footprint.
         draw.line(
             [(cx - r, cy - r), (cx + r, cy + r)],
-            fill=_GLYPH_RGB,
+            fill=color,
             width=stroke,
         )
     else:
@@ -887,7 +939,7 @@ def _draw_speaker_glyph(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int
                 cone_tip_x + offset,
                 cy + offset,
             ]
-            draw.arc(box_arc, start=-45, end=45, fill=_GLYPH_RGB, width=stroke)
+            draw.arc(box_arc, start=-45, end=45, fill=color, width=stroke)
 
 
 def _text_size(
@@ -1068,11 +1120,13 @@ def _halo_layer(text: str, font, local_xy: tuple[int, int], w: int, h: int, stro
 # these string constants plus a tuple of hashable parameters. See
 # _GLYPH_PAINTERS (below the painter functions) and _glyph_tile().
 GLYPH_CHEVRON = "chevron"              # params: (direction, lit)
-GLYPH_TWO_DOTS = "two_dots"            # params: (filled,)
+GLYPH_TWO_DOTS = "two_dots"            # params: (filled,) or (filled, color)
 GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
-GLYPH_MUTE = "mute"                    # params: () — the main screen's footer mute cell
+GLYPH_MUTE = "mute"                    # params: () or (color,) — the main screen's footer mute cell
+GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
+GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
 
 
 @functools.lru_cache(maxsize=48)
@@ -1176,11 +1230,12 @@ def _draw_play_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     )
 
 
-def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int) -> None:
+def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int, color=_GLYPH_RGB) -> None:
     """Two small circles side by side, one of them (*filled*: 0 for the
     left one, 1 for the right) drawn solid and the other outlined — the
-    main/repeat screen pager dots. Rendered into a (w, h) canvas — see
-    _draw_glyph."""
+    main/repeat screen pager dots (also reused, dimmed when inert, as the
+    compact tier's own repeat-quadrant glyph). Rendered into a (w, h)
+    canvas — see _draw_glyph."""
     r = max(2, round(min(w, h) * 0.12))
     cy = h / 2.0
     gap = r * 3
@@ -1189,9 +1244,9 @@ def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int) -> No
     for i, cx in enumerate((cx0, cx1)):
         box = [cx - r, cy - r, cx + r, cy + r]
         if i == filled:
-            draw.ellipse(box, fill=_GLYPH_RGB)
+            draw.ellipse(box, fill=color)
         else:
-            draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
+            draw.ellipse(box, outline=color, width=max(1, r // 3))
 
 
 def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
@@ -1226,19 +1281,62 @@ def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
 _MUTE_GLYPH_BOX_FRACTION = 0.56
 
 
-def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
     """The main screen's own footer mute glyph: the crossed speaker, drawn
     via the same painter the header readout uses (_draw_speaker_glyph),
     always in its muted variant — this cell IS the mute control, so there
     is no unmuted state for it to distinguish. Rendered into a (w, h)
     canvas — see _draw_glyph. Integer box arithmetic throughout: Pillow's
     stroke widths must be ints, and _draw_speaker_glyph derives its own
-    stroke width from this box's size."""
+    stroke width from this box's size. *color* lets the compact tier's
+    muted cell invert it to black over its own solid white wash."""
     side = round(min(w, h) * _MUTE_GLYPH_BOX_FRACTION)
     cx, cy = w // 2, h // 2
     half = side // 2
     box = (cx - half, cy - half, cx - half + side, cy - half + side)
-    _draw_speaker_glyph(draw, box, muted=True)
+    _draw_speaker_glyph(draw, box, muted=True, color=color)
+
+
+def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
+    """The compact tier's Restart control: an open circle (an arc from 30
+    to 330 degrees, leaving the top-right open) with a small filled
+    arrowhead at the open end, pointing in the arc's own clockwise
+    direction of travel — the conventional "restart"/"replay" glyph.
+    Rendered into a (w, h) canvas — see _draw_glyph."""
+    stroke = max(1, min(w, h) // 7)
+    cx, cy = w / 2, h / 2
+    r = min(w, h) * 0.28
+    draw.arc([cx - r, cy - r, cx + r, cy + r], start=30, end=330, fill=color, width=stroke)
+
+    # The arrowhead sits at the arc's open end (30 degrees, image-space
+    # angles growing clockwise from "east"), pointing along the tangent in
+    # the direction the arc travels (increasing angle, i.e. clockwise).
+    angle = math.radians(30)
+    tip = (cx + r * math.cos(angle), cy - r * math.sin(angle))
+    tangent = math.radians(30 - 90)
+    dx, dy = math.cos(tangent), -math.sin(tangent)
+    nx, ny = -dy, dx
+    head = max(2.0, stroke * 2.2)
+    base_x, base_y = tip[0] - dx * head, tip[1] - dy * head
+    spread = head * 0.6
+    draw.polygon(
+        [
+            tip,
+            (base_x + nx * spread, base_y + ny * spread),
+            (base_x - nx * spread, base_y - ny * spread),
+        ],
+        fill=color,
+    )
+
+
+def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
+    """The compact tier's Stop control: a filled square, reach 0.28 of the
+    short side (side 0.56 of it), centred — the conventional "stop" glyph.
+    Rendered into a (w, h) canvas — see _draw_glyph."""
+    side = min(w, h) * 0.56
+    cx, cy = w / 2, h / 2
+    half = side / 2
+    draw.rectangle([cx - half, cy - half, cx + half, cy + half], fill=color)
 
 
 # Dispatch table for _glyph_tile()'s kinded paint step — built here, after
@@ -1252,6 +1350,8 @@ _GLYPH_PAINTERS = {
     GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
     GLYPH_MUTE: _draw_mute_glyph,
+    GLYPH_RESTART: _draw_restart_glyph,
+    GLYPH_STOP: _draw_stop_glyph,
 }
 
 
@@ -1362,20 +1462,29 @@ def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
     _draw_text_with_halo(img, layout.artist, body.artist, font, metrics)
 
 
+def _draw_toggle_row(
+    img: Image.Image, metrics: LayoutMetrics, row_rect: tuple[int, int, int, int], label: str, armed: bool,
+) -> None:
+    """A label plus an on/off dot marker drawn into *row_rect* — shared by
+    the repeat screen's "Repeat Play" enable row, the per-output detail
+    page's own enable row (both pass repeat_layout_for(...).row) and the
+    compact tier's own enable screen (which passes its top_row instead)."""
+    pad = metrics.pad
+    row_font = _load_font(metrics.font_body)
+    draw = ImageDraw.Draw(img)
+    dot_box = row_rect[3] - row_rect[1]
+    dot_rect = (row_rect[2] - pad - dot_box, row_rect[1], row_rect[2] - pad, row_rect[3])
+    label_rect = (row_rect[0], row_rect[1], dot_rect[0] - pad, row_rect[3])
+    _draw_label(draw, label_rect, label, row_font, pad)
+    _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, armed, supersample=metrics.supersample)
+
+
 def _body_toggle_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """A label plus an on/off dot marker on the shared toggle-row rect —
     the repeat screen's "Repeat Play" enable row and the per-output detail
     page's own enable row are the same layout with a different label."""
     layout = repeat_layout_for(metrics.width, metrics.height, metrics=metrics)
-    pad = metrics.pad
-    row_font = _load_font(metrics.font_body)
-    draw = ImageDraw.Draw(img)
-    row = layout.row
-    dot_box = row[3] - row[1]
-    dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
-    label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
-    _draw_label(draw, label_rect, body.label, row_font, pad)
-    _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, body.armed, supersample=metrics.supersample)
+    _draw_toggle_row(img, metrics, layout.row, body.label, body.armed)
 
 
 def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -1438,6 +1547,141 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
                     _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font)
 
 
+# ---------------------------------------------------------------------------
+# Compact-tier (2x2) body renderers. Every one of them draws straight onto
+# the compact_layout_for() grid — the four cells plus the two divider
+# lines, always drawn last so they sit on top of any glyph's own edges —
+# rather than layout_for()'s band/body/footer rects, which the compact
+# screens never use for drawing (only zone_rects_for() reads them, and only
+# off the compact tier).
+# ---------------------------------------------------------------------------
+
+
+def _compact_glyph_box(rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """A glyph box centred within *rect*, sized at _COMPACT_GLYPH_FRACTION
+    of its own short side — the compact tier's one glyph-sizing rule,
+    shared by every compact cell/row except minus/plus (which are drawn
+    straight onto the cell rect by the existing _draw_minus_glyph/_draw_
+    plus_glyph, which derive their own reach from the rect's own size)."""
+    x0, y0, x1, y1 = rect
+    side = round(min(x1 - x0, y1 - y0) * _COMPACT_GLYPH_FRACTION)
+    return _centred_box(rect, side)
+
+
+def _draw_compact_dividers(
+    img: Image.Image, layout: "CompactLayout", metrics: LayoutMetrics, *, vertical: str,
+) -> None:
+    """The compact tier's own white divider lines, drawn last so they sit
+    on top of any glyph's own edges. The horizontal line at divider_y,
+    spanning the full width, is always drawn; *vertical* selects how much
+    of the line at divider_x is drawn: "full" (both rows — the playing 2x2
+    and the replay picker), "bottom" (the bottom row only — the repeat
+    screen's replaying layout, whose top row is a single time strip) or
+    "none" (the repeat screen's enable layout, whose top row is a single
+    toggle strip)."""
+    draw = ImageDraw.Draw(img)
+    w = metrics.divider_w
+    draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
+    if vertical == "full":
+        draw.line([(layout.divider_x, 0), (layout.divider_x, metrics.height - 1)], fill=_DIVIDER_RGB, width=w)
+    elif vertical == "bottom":
+        y0 = layout.bottom_row[1]
+        draw.line([(layout.divider_x, y0), (layout.divider_x, metrics.height - 1)], fill=_DIVIDER_RGB, width=w)
+
+
+def _body_compact_controls(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The compact tier's playing screen: pager dots (dimmed when there is
+    no repeat record to open), mute (inverted over a solid wash while
+    muted — the wash itself is a Frame.washes entry, drawn before this body
+    runs), minus and plus."""
+    c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    ss = metrics.supersample
+    dots_color = _GLYPH_RGB if body.dots_lit else _DIMMED_GLYPH_RGB
+    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 0, dots_color, supersample=ss)
+    mute_color = _INVERTED_GLYPH_RGB if body.muted else _GLYPH_RGB
+    _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_MUTE, mute_color, supersample=ss)
+    draw = ImageDraw.Draw(img)
+    _draw_minus_glyph(draw, c.bl)
+    _draw_plus_glyph(draw, c.br)
+    _draw_compact_dividers(img, c, metrics, vertical="full")
+
+
+def _draw_compact_list_row(
+    img: Image.Image, cell: tuple[int, int, int, int], row: tuple, font, pad: int,
+) -> None:
+    """One compact-picker row: the label centred in the cell's upper half,
+    the secondary "m:ss" string (when it is a plain string — the compact
+    picker never carries the appliance-selector's PLAY_GLYPH sentinel)
+    centred in the lower half. No halo: the whole compact frame is already
+    dimmed by Frame.dim_all, unlike the base tier's own artwork-backed
+    labels."""
+    x0, y0, x1, y1 = cell
+    mid = (y0 + y1) // 2
+    upper = (x0, y0, x1, mid)
+    lower = (x0, mid, x1, y1)
+    draw = ImageDraw.Draw(img)
+    max_w = x1 - x0 - 2 * pad
+    label = row[0]
+    if label and font is not None and max_w > 0:
+        text = _truncate_to_width(draw, label, font, max_w)
+        _draw_label_centered(draw, upper, text, font)
+    secondary = row[2] if len(row) > 2 else ""
+    if isinstance(secondary, str) and secondary and font is not None and max_w > 0:
+        text = _truncate_to_width(draw, secondary, font, max_w)
+        _draw_label_centered(draw, lower, text, font)
+
+
+def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The compact tier's replay picker: the two visible rows on the left
+    (current-row highlighting is a Frame.highlights entry, drawn before
+    this body runs), "more" (lit when a second page exists — the compact
+    tier wraps rather than clamping, see the manager's own paging) top
+    right, cancel bottom right."""
+    c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    row_font = _load_font(metrics.font_body)
+    pad = metrics.pad
+    for cell, row in zip((c.tl, c.bl), body.rows):
+        _draw_compact_list_row(img, cell, row, row_font, pad)
+    ss = metrics.supersample
+    _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_CHEVRON, "down", body.has_more, supersample=ss)
+    _draw_glyph(img, _compact_glyph_box(c.br), GLYPH_CROSS, supersample=ss)
+    _draw_compact_dividers(img, c, metrics, vertical="full")
+
+
+def _body_compact_toggle(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The compact tier's repeat-enable screen: "Repeat Play" plus its arm
+    dot on the top row, cancel (the cross glyph) on the bottom row."""
+    c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    _draw_toggle_row(img, metrics, c.top_row, body.label, body.armed)
+    _draw_glyph(img, _compact_glyph_box(c.bottom_row), GLYPH_CROSS, supersample=metrics.supersample)
+    _draw_compact_dividers(img, c, metrics, vertical="none")
+
+
+def _body_compact_replay(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The compact tier's repeat-replaying screen: the position line
+    centred (with a halo, like the base tier's own repeat line) in the top
+    row — falling back to the position-only half of the line when the full
+    "m:ss / m:ss" string does not fit — Restart bottom-left and Stop
+    bottom-right, each dimmed when its own action is not currently
+    accepted."""
+    c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    font = _load_font(metrics.font_readout)
+    line = body.line
+    if font is not None and line and " / " in line:
+        draw = ImageDraw.Draw(img)
+        max_w = c.top_row[2] - c.top_row[0] - 2 * metrics.pad
+        measured = _text_size(draw, line, font)
+        if measured is not None and measured[0] > max_w:
+            line = line.split(" / ", 1)[0]
+    _draw_text_with_halo(img, c.top_row, line, font, metrics, align="center")
+    ss = metrics.supersample
+    start_color = _GLYPH_RGB if body.start_enabled else _DIMMED_GLYPH_RGB
+    stop_color = _GLYPH_RGB if body.stop_enabled else _DIMMED_GLYPH_RGB
+    _draw_glyph(img, _compact_glyph_box(c.bl), GLYPH_RESTART, start_color, supersample=ss)
+    _draw_glyph(img, _compact_glyph_box(c.br), GLYPH_STOP, stop_color, supersample=ss)
+    _draw_compact_dividers(img, c, metrics, vertical="bottom")
+
+
 _BODY_RENDERERS = {
     BODY_NONE: _body_none,
     BODY_NOW_PLAYING: _body_now_playing,
@@ -1445,6 +1689,10 @@ _BODY_RENDERERS = {
     BODY_TOGGLE_ROW: _body_toggle_row,
     BODY_REPEAT_LINE: _body_repeat_line,
     BODY_LIST_ROWS: _body_list_rows,
+    BODY_COMPACT_CONTROLS: _body_compact_controls,
+    BODY_COMPACT_LIST: _body_compact_list,
+    BODY_COMPACT_TOGGLE: _body_compact_toggle,
+    BODY_COMPACT_REPLAY: _body_compact_replay,
 }
 
 
@@ -1567,6 +1815,8 @@ def _compose_frame(
         _dim_rect(img, layout.top_band)
     if frame.dim_bottom:
         _dim_rect(img, layout.bottom_band)
+    if frame.dim_all:
+        _dim_rect(img, (0, 0, width, height))
     for rect in frame.highlights:
         _draw_row_highlight(img, rect)
     for rect, alpha in frame.washes:
@@ -1607,6 +1857,24 @@ def _main_pressed_rects(
     return (rect,) if rect is not None else ()
 
 
+def _compact_controls_frame(overlay: OverlayState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    """The compact tier's playing screen: dimmed base behind, the mute
+    cell's own solid wash when muted (before the body's inverted glyph
+    draws over it — see _compose_frame's draw order), pressed resolved
+    against the compact MAIN table automatically (GEOMETRY_MAIN itself
+    branches on the tier)."""
+    c = compact_layout_for(width, height, metrics=metrics)
+    return Frame(
+        background=BG_BASE,
+        dim_all=True,
+        pressed=_main_pressed_rects(overlay.pressed, width, height, metrics),
+        washes=((c.tr, 255),) if overlay.muted else (),
+        header=None,
+        body=Body(BODY_COMPACT_CONTROLS, muted=bool(overlay.muted), dots_lit=overlay.dots),
+        footer=Footer(FOOTER_NONE),
+    )
+
+
 def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     layout = layout_for(width, height, metrics=metrics)
     return Frame(
@@ -1635,17 +1903,52 @@ def _repeat_pressed_rects(
 ) -> tuple[Rect, ...]:
     """The repeat screen's pressed-rect lookup: a genuine touch first, then
     the fade-out-in-flight Stop wash layered on top of it when replaying —
-    same order the two highlights are drawn in today."""
+    same order the two highlights are drawn in today. Resolved against
+    GEOMETRY_REPEAT_REPLAY, rather than GEOMETRY_REPEAT, exactly when the
+    compact tier's own replaying layout is showing — the only tier/layout
+    combination the two geometries actually disagree about (see
+    dial_touch_layout.zone_rects_for)."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    replaying = state.layout == "replaying"
+    geometry = GEOMETRY_REPEAT_REPLAY if (metrics.content_tier == CONTENT_COMPACT and replaying) else GEOMETRY_REPEAT
     rects = []
-    rect = _zone_rect(GEOMETRY_REPEAT, state.pressed, None, width, height, metrics)
+    rect = _zone_rect(geometry, state.pressed, None, width, height, metrics)
     if rect is not None:
         rects.append(rect)
-    if state.layout == "replaying" and state.stop_pressed:
-        rects.append(_zone_rect(GEOMETRY_REPEAT, TouchZone.REPEAT_STOP, None, width, height, metrics))
+    if replaying and state.stop_pressed:
+        stop_rect = _zone_rect(geometry, TouchZone.REPEAT_STOP, None, width, height, metrics)
+        if stop_rect is not None:
+            rects.append(stop_rect)
     return tuple(rects)
 
 
+def _compact_repeat_frame(state: RepeatViewState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    """The compact tier's repeat screen: dimmed base behind both of its own
+    states (enable and replaying alike — the compact tier's own shared
+    rendering discipline), no header (no NAME/OUTPUTS on compact), pressed
+    resolved against
+    whichever of GEOMETRY_REPEAT/GEOMETRY_REPEAT_REPLAY _repeat_pressed_
+    rects picks for this state."""
+    replaying = state.layout == "replaying"
+    body = (
+        Body(BODY_COMPACT_REPLAY, line=state.line, start_enabled=state.start_enabled, stop_enabled=state.stop_enabled)
+        if replaying
+        else Body(BODY_COMPACT_TOGGLE, armed=state.armed, label="Repeat Play")
+    )
+    return Frame(
+        background=BG_BASE,
+        dim_all=True,
+        pressed=_repeat_pressed_rects(state, width, height, metrics),
+        header=None,
+        body=body,
+        footer=Footer(FOOTER_NONE),
+    )
+
+
 def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    if metrics.content_tier == CONTENT_COMPACT:
+        return _compact_repeat_frame(state, width, height, metrics)
     replaying = state.layout == "replaying"
     if replaying:
         body = Body(BODY_REPEAT_LINE, line=state.line)
@@ -1714,6 +2017,30 @@ def _list_highlight_rects(rows: tuple, layout) -> tuple[Rect, ...]:
     whose tuple marks it current. Extra rows beyond the page are ignored,
     never indexed (the body renderer skips them from the other side)."""
     return tuple(layout.rows[i] for i, row in enumerate(rows[:len(layout.rows)]) if row[1])
+
+
+def _compact_list_highlight_rects(rows: tuple, layout: "CompactLayout") -> tuple[Rect, ...]:
+    """The compact picker's own current-row wash: the same rule
+    _list_highlight_rects() applies, over the two compact cells (tl/bl)
+    instead of list_layout_for()'s own row rects."""
+    cells = (layout.tl, layout.bl)
+    return tuple(cells[i] for i, row in enumerate(rows[:len(cells)]) if row[1])
+
+
+def _compact_list_frame(state: ListState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    """The compact tier's replay picker: dimmed base behind (the manager's
+    own current base image, passed through compose_list()'s *base*),
+    pressed and the current-row wash resolved against the compact grid."""
+    c = compact_layout_for(width, height, metrics=metrics)
+    return Frame(
+        background=BG_BASE,
+        dim_all=True,
+        pressed=_list_pressed_rects(state, width, height, metrics),
+        highlights=_compact_list_highlight_rects(state.rows, c),
+        header=None,
+        body=Body(BODY_COMPACT_LIST, rows=state.rows, has_more=state.has_prev or state.has_next),
+        footer=Footer(FOOTER_NONE),
+    )
 
 
 def _list_frame(state: ListState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
