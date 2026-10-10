@@ -245,6 +245,26 @@ def send_logs_page(
     send_html(handler, 200, html_body)
 
 
+BUNDLE_LOG_DIR = Path("/var/log/autostream")
+BUNDLE_OWNTONE_LOG = Path("/var/log/owntone.log")
+
+# A log's three most recent rotations. Logs rotate with delaycompress, so the
+# newest rotation is .1 and older ones are .N.gz; either form is accepted.
+_RECENT_ROTATION_SUFFIXES = (".1", ".1.gz", ".2", ".2.gz", ".3", ".3.gz")
+
+
+def _bundle_members(log_dir: Path, owntone_log: Path) -> list[tuple[Path, str]]:
+    """(file, name in the zip) for every log the bundle carries: everything
+    in *log_dir*, every rotation included, since the appliance's journal is
+    volatile and these files are its history; and *owntone_log* with its
+    three most recent rotations."""
+    members = [(p, f"autostream/{p.name}") for p in sorted(log_dir.glob("*")) if p.is_file()]
+    for p in [owntone_log, *(owntone_log.with_name(owntone_log.name + s) for s in _RECENT_ROTATION_SUFFIXES)]:
+        if p.is_file():
+            members.append((p, f"owntone/{p.name}"))
+    return members
+
+
 def handle_logs_download(handler) -> None:
     """Build and stream a zip bundle of autostream log files."""
     fname = f"autostream-logs-{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
@@ -252,16 +272,9 @@ def handle_logs_download(handler) -> None:
     try:
         os.close(tmp_fd)
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for p in sorted(Path("/var/log/autostream").glob("*")):
-                if p.is_file():
-                    try:
-                        zf.write(p, f"autostream/{p.name}")
-                    except OSError:
-                        pass
-            owntone_log = Path("/var/log/owntone.log")
-            if owntone_log.is_file():
+            for path, arcname in _bundle_members(BUNDLE_LOG_DIR, BUNDLE_OWNTONE_LOG):
                 try:
-                    zf.write(owntone_log, "owntone/owntone.log")
+                    zf.write(path, arcname)
                 except OSError:
                     pass
         size = os.path.getsize(tmp_path)

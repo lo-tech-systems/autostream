@@ -233,3 +233,52 @@ class TestLogsDownloadRouting:
                         )
                         return
         pytest.fail("ALLOWLIST_PATHS not found in autostream_auth.py")
+
+
+# ---------------------------------------------------------------------------
+# Tests: which files the bundle carries
+# ---------------------------------------------------------------------------
+
+class TestLogsBundleMembers:
+    def _names(self, tmp_path):
+        from autostream_webui_page_logs import _bundle_members
+        log_dir = tmp_path / "autostream"
+        return {name for _, name in _bundle_members(log_dir, tmp_path / "owntone.log")}
+
+    def test_autostream_logs_include_every_rotation(self, tmp_path):
+        log_dir = tmp_path / "autostream"
+        log_dir.mkdir()
+        for name in ("autostream.log", "autostream.log.1", "autostream.log.2.gz", "autostream.log.14.gz"):
+            (log_dir / name).write_bytes(b"x")
+        names = self._names(tmp_path)
+        assert {f"autostream/{n}" for n in ("autostream.log", "autostream.log.1",
+                                            "autostream.log.2.gz", "autostream.log.14.gz")} <= names
+
+    def test_owntone_log_comes_with_its_three_latest_rotations(self, tmp_path):
+        (tmp_path / "autostream").mkdir()
+        (tmp_path / "owntone.log").write_text("current\n")
+        (tmp_path / "owntone.log.1").write_text("yesterday\n")
+        for n in (2, 3, 4):
+            (tmp_path / f"owntone.log.{n}.gz").write_bytes(b"\x1f\x8b")
+        names = self._names(tmp_path)
+        assert {"owntone/owntone.log", "owntone/owntone.log.1",
+                "owntone/owntone.log.2.gz", "owntone/owntone.log.3.gz"} <= names
+        assert "owntone/owntone.log.4.gz" not in names
+
+    def test_rotations_bundled_without_a_current_owntone_log(self, tmp_path):
+        (tmp_path / "autostream").mkdir()
+        (tmp_path / "owntone.log.1").write_text("yesterday\n")
+        assert self._names(tmp_path) == {"owntone/owntone.log.1"}
+
+    def test_zip_carries_the_bundle_members(self, tmp_path, monkeypatch):
+        import autostream_webui_page_logs as logs
+        log_dir = tmp_path / "autostream"
+        log_dir.mkdir()
+        (log_dir / "autostream.log").write_text("x\n")
+        (tmp_path / "owntone.log.1").write_text("y\n")
+        monkeypatch.setattr(logs, "BUNDLE_LOG_DIR", log_dir)
+        monkeypatch.setattr(logs, "BUNDLE_OWNTONE_LOG", tmp_path / "owntone.log")
+        handler = _MockHandler()
+        logs.handle_logs_download(handler)
+        names = set(zipfile.ZipFile(io.BytesIO(handler.response_bytes)).namelist())
+        assert names == {"autostream/autostream.log", "owntone/owntone.log.1"}

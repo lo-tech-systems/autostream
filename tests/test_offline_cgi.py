@@ -118,3 +118,59 @@ def test_same_origin_post_with_origin_header_passes(script):
     assert "Status: 403" not in result.stdout
     assert "Status: 400" not in result.stdout
     assert "Status: 405" not in result.stdout
+
+
+def _appliance_bundle(log_dir: Path, owntone_log: Path) -> set[str]:
+    """Run the appliance download-logs.cgi against scratch log locations and
+    return the names inside the ZIP it sends."""
+    import io
+    import zipfile
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "REQUEST_METHOD": "POST",
+        "HTTP_HOST": "autostream.local",
+        "HTTP_X_REQUESTED_WITH": "XMLHttpRequest",
+        "CONTENT_LENGTH": "0",
+        "AUTOSTREAM_LOG_DIR": str(log_dir),
+        "AUTOSTREAM_OWNTONE_LOG": str(owntone_log),
+    }
+    result = subprocess.run(
+        ["bash", str(CGI_DIR / "download-logs.cgi")],
+        capture_output=True, env=env, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    sep = result.stdout.find(b"\r\n\r\n")
+    assert sep != -1
+    names = zipfile.ZipFile(io.BytesIO(result.stdout[sep + 4:])).namelist()
+    return {n for n in names if not n.endswith("/")}
+
+
+@skip_no_bash
+@pytest.mark.skipif(not Path("/usr/bin/zip").exists(), reason="/usr/bin/zip not available")
+class TestApplianceLogBundle:
+    def test_autostream_logs_include_every_rotation(self, tmp_path):
+        log_dir = tmp_path / "autostream"
+        log_dir.mkdir()
+        for name in ("autostream.log", "autostream.log.1", "autostream.log.2.gz", "autostream.log.14.gz"):
+            (log_dir / name).write_bytes(b"x")
+        names = _appliance_bundle(log_dir, tmp_path / "owntone.log")
+        for name in ("autostream.log", "autostream.log.1", "autostream.log.2.gz", "autostream.log.14.gz"):
+            assert f"autostream/{name}" in names
+
+    def test_owntone_log_comes_with_its_three_latest_rotations(self, tmp_path):
+        log_dir = tmp_path / "autostream"
+        log_dir.mkdir()
+        owntone = tmp_path / "owntone.log"
+        owntone.write_text("current\n")
+        (tmp_path / "owntone.log.1").write_text("yesterday\n")
+        for n in (2, 3, 4):
+            (tmp_path / f"owntone.log.{n}.gz").write_bytes(b"\x1f\x8b")
+        names = _appliance_bundle(log_dir, owntone)
+        for name in ("owntone.log", "owntone.log.1", "owntone.log.2.gz", "owntone.log.3.gz"):
+            assert f"owntone/{name}" in names, sorted(names)
+        assert "owntone/owntone.log.4.gz" not in names
+
+    def test_no_logs_gives_a_readme(self, tmp_path):
+        log_dir = tmp_path / "autostream"
+        log_dir.mkdir()
+        assert _appliance_bundle(log_dir, tmp_path / "owntone.log") == {"README.txt"}

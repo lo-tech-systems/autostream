@@ -53,10 +53,18 @@ trap cleanup EXIT
 
 mkdir -p "${STAGE_DIR}/autostream" "${STAGE_DIR}/owntone"
 
+# Where the logs live; overridable so tests can point at scratch files (CGI
+# clients cannot set these: request headers only ever arrive as HTTP_*
+# variables).
+LOG_DIR="${AUTOSTREAM_LOG_DIR:-/var/log/autostream}"
+OWNTONE_LOG="${AUTOSTREAM_OWNTONE_LOG:-/var/log/owntone.log}"
+
 added_any=0
 
+# Everything in the autostream log directory, every rotation included: the
+# appliance's journal is volatile, so these files are its history.
 shopt -s nullglob
-for src in /var/log/autostream/*; do
+for src in "${LOG_DIR}"/*; do
   if [ -f "${src}" ] && [ -r "${src}" ]; then
     cp -f "${src}" "${STAGE_DIR}/autostream/$(basename "${src}")"
     added_any=1
@@ -64,18 +72,23 @@ for src in /var/log/autostream/*; do
 done
 shopt -u nullglob
 
-if [ -f /var/log/owntone.log ] && [ -r /var/log/owntone.log ]; then
-  cp -f /var/log/owntone.log "${STAGE_DIR}/owntone/owntone.log"
-  added_any=1
-fi
+# OwnTone's log with its three most recent rotations (.1 uncompressed under
+# delaycompress, older ones .N.gz; either form accepted for each).
+for f in "${OWNTONE_LOG}" "${OWNTONE_LOG}.1" "${OWNTONE_LOG}.1.gz" "${OWNTONE_LOG}.2" \
+         "${OWNTONE_LOG}.2.gz" "${OWNTONE_LOG}.3" "${OWNTONE_LOG}.3.gz"; do
+  if [ -f "${f}" ] && [ -r "${f}" ]; then
+    cp -f "${f}" "${STAGE_DIR}/owntone/$(basename "${f}")"
+    added_any=1
+  fi
+done
 
 if [ "${added_any}" -eq 0 ]; then
-  cat > "${STAGE_DIR}/README.txt" <<'EOF'
+  cat > "${STAGE_DIR}/README.txt" <<EOF
 No readable log files were found for bundling.
 
 Checked:
-- /var/log/autostream/*
-- /var/log/owntone.log
+- ${LOG_DIR}/*
+- ${OWNTONE_LOG}, with its three most recent rotations
 
 Some files may exist but be unreadable to the nginx/fcgiwrap user.
 EOF

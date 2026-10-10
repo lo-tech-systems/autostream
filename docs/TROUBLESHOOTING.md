@@ -963,7 +963,8 @@ whether the Web UI is reachable.
    `GET /logs/download` (route registered in `core/autostream_webui_routes.py`,
    built by `handle_logs_download()` in `core/autostream_webui_page_logs.py`).
    It requires the appliance PIN if one is set, and returns a ZIP containing
-   every file under `/var/log/autostream/` plus `/var/log/owntone.log`.
+   every file under `/var/log/autostream/` (every rotation included) plus
+   `/var/log/owntone.log` and its three most recent rotations.
 
    **This button is hidden when autostream is opened from an iPhone Home
    Screen shortcut (standalone/PWA mode).** The page detects iPhone +
@@ -983,15 +984,19 @@ whether the Web UI is reachable.
    same-origin POST check is the only gate, because this page is reachable
    only in AP/setup mode or from the local LAN - and it returns a ZIP of the
    same files: everything under `/var/log/autostream/` plus
-   `/var/log/owntone.log`.
+   `/var/log/owntone.log` and its three most recent rotations.
 
    **autostream-dial** serves this same page at the same paths
    (`/offline/`, `/offline/download-logs`). The dial has no Web UI of its
    own, so opening the dial's address (`http://<dial-hostname>.local/` or its
    IP address) shows these recovery tools too, with a note that the dial is
    running normally and is managed from your autostream appliance. Its ZIP
-   only contains dial and Wi-Fi-watcher logs (`dial-*.log`, `autostream_wifi_watcher.log`), since
-   OwnTone doesn't run on a dial device. The dial's factory-reset holding
+   only contains dial and Wi-Fi-watcher logs (`autostream-dial.log`,
+   `dial-*.log`, `autostream_wifi_watcher.log`), each with its three most
+   recent rotations, since OwnTone doesn't run on a dial device. The dial
+   logs at WARNING by default to spare the SD card, so the current file is
+   often empty; the rotations hold the last few days, and every start and
+   stop is logged with the dial's version whatever the level. The dial's factory-reset holding
    page also references the `autostream-dial_XXXX` hotspot name, not
    `autostream_XXXX`.
 

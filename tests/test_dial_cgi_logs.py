@@ -244,6 +244,59 @@ class TestDialCGIArchiveContents:
             f"Dial log ZIP must not contain owntone entries: {owntone_entries}"
         )
 
+    def _bundle(self, log_dir: Path) -> set[str]:
+        result = self._run_valid_post({"DIAL_LOG_DIR": str(log_dir)})
+        assert result.returncode == 0, result.stderr
+        # Directory entries are skipped: only the files matter here.
+        return {n for n in self._extract_zip(result.stdout).namelist() if not n.endswith("/")}
+
+    def test_each_log_comes_with_its_three_latest_rotations(self, tmp_path):
+        """The current file can be empty for most of a day at the default
+        WARNING level, so every dial log is bundled with .1 (uncompressed,
+        delaycompress) and .2/.3 (compressed); older rotations stay out."""
+        for base in ("autostream-dial.log", "autostream_wifi_watcher.log", "dial-install.log"):
+            (tmp_path / base).write_text("current\n")
+            (tmp_path / f"{base}.1").write_text("yesterday\n")
+            for n in (2, 3, 4, 14):
+                (tmp_path / f"{base}.{n}.gz").write_bytes(b"\x1f\x8b")
+        names = self._bundle(tmp_path)
+        for base in ("autostream-dial.log", "autostream_wifi_watcher.log", "dial-install.log"):
+            for name in (base, f"{base}.1", f"{base}.2.gz", f"{base}.3.gz"):
+                assert f"autostream-dial/{name}" in names, (name, sorted(names))
+            for name in (f"{base}.4.gz", f"{base}.14.gz"):
+                assert f"autostream-dial/{name}" not in names, (name, sorted(names))
+
+    def test_rotations_are_bundled_even_when_the_current_log_is_empty(self, tmp_path):
+        (tmp_path / "autostream-dial.log").write_text("")
+        (tmp_path / "autostream-dial.log.1").write_text("dial starting\n")
+        names = self._bundle(tmp_path)
+        assert "autostream-dial/autostream-dial.log.1" in names
+        assert not any("README" in n.upper() for n in names)
+
+    def test_either_rotation_form_is_accepted(self, tmp_path):
+        """.1 is normally uncompressed and .2 compressed, but a changed
+        rotation policy must not lose them."""
+        (tmp_path / "autostream-dial.log.1.gz").write_bytes(b"\x1f\x8b")
+        (tmp_path / "autostream-dial.log.2").write_text("uncompressed\n")
+        names = self._bundle(tmp_path)
+        assert "autostream-dial/autostream-dial.log.1.gz" in names
+        assert "autostream-dial/autostream-dial.log.2" in names
+
+    def test_other_products_logs_stay_out(self, tmp_path):
+        (tmp_path / "autostream-dial.log").write_text("x\n")
+        (tmp_path / "autostream.log").write_text("appliance\n")
+        (tmp_path / "autostream.log.1").write_text("appliance\n")
+        names = self._bundle(tmp_path)
+        assert not any(n.endswith(("autostream.log", "autostream.log.1")) for n in names), sorted(names)
+
+    def test_no_logs_readme_names_the_directory_checked(self, tmp_path):
+        names = self._bundle(tmp_path)
+        assert names == {"README.txt"}
+        result = self._run_valid_post({"DIAL_LOG_DIR": str(tmp_path)})
+        readme = self._extract_zip(result.stdout).read("README.txt").decode()
+        assert f"{tmp_path}/autostream-dial.log" in readme
+        assert "three most recent rotations" in readme
+
 
 # ---------------------------------------------------------------------------
 # Deployment: installer deploys the dial CGI

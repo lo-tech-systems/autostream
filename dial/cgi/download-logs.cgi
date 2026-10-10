@@ -53,36 +53,45 @@ trap cleanup EXIT
 
 mkdir -p "${STAGE_DIR}/autostream-dial"
 
+# Where the dial's logs live; overridable so tests can point at a scratch
+# directory (CGI clients cannot set it: request headers only ever arrive as
+# HTTP_* variables).
+LOG_DIR="${DIAL_LOG_DIR:-/var/log/autostream}"
+
 added_any=0
+
+# One log with its three most recent rotations. Logs rotate daily with
+# delaycompress, so the newest rotation is .1 and older ones are .N.gz;
+# either form is accepted for each. The current file alone can be empty
+# for most of a day at the default WARNING level.
+add_log() {
+  local base="$1" f
+  for f in "${base}" "${base}.1" "${base}.1.gz" "${base}.2" "${base}.2.gz" "${base}.3" "${base}.3.gz"; do
+    if [ -f "${f}" ] && [ -r "${f}" ]; then
+      cp -f "${f}" "${STAGE_DIR}/autostream-dial/$(basename "${f}")"
+      added_any=1
+    fi
+  done
+}
 
 # Collect dial-specific logs only. OwnTone does not run on a dial device.
 shopt -s nullglob
-for src in /var/log/autostream/dial-*.log; do
-  if [ -f "${src}" ] && [ -r "${src}" ]; then
-    cp -f "${src}" "${STAGE_DIR}/autostream-dial/$(basename "${src}")"
-    added_any=1
-  fi
+for src in "${LOG_DIR}"/dial-*.log; do
+  add_log "${src}"
 done
 shopt -u nullglob
 
-if [ -f /var/log/autostream/autostream-dial.log ] && [ -r /var/log/autostream/autostream-dial.log ]; then
-  cp -f /var/log/autostream/autostream-dial.log "${STAGE_DIR}/autostream-dial/autostream-dial.log"
-  added_any=1
-fi
-
-if [ -f /var/log/autostream/autostream_wifi_watcher.log ] && [ -r /var/log/autostream/autostream_wifi_watcher.log ]; then
-  cp -f /var/log/autostream/autostream_wifi_watcher.log "${STAGE_DIR}/autostream-dial/autostream_wifi_watcher.log"
-  added_any=1
-fi
+add_log "${LOG_DIR}/autostream-dial.log"
+add_log "${LOG_DIR}/autostream_wifi_watcher.log"
 
 if [ "${added_any}" -eq 0 ]; then
-  cat > "${STAGE_DIR}/README.txt" <<'EOF'
+  cat > "${STAGE_DIR}/README.txt" <<EOF
 No readable log files were found for bundling.
 
-Checked:
-- /var/log/autostream/dial-*.log
-- /var/log/autostream/autostream-dial.log
-- /var/log/autostream/autostream_wifi_watcher.log
+Checked, each with its three most recent rotations:
+- ${LOG_DIR}/dial-*.log
+- ${LOG_DIR}/autostream-dial.log
+- ${LOG_DIR}/autostream_wifi_watcher.log
 
 Some files may exist but be unreadable to the nginx/fcgiwrap user.
 EOF
