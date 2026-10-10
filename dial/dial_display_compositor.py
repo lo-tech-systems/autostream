@@ -158,6 +158,14 @@ _PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
 _ROW_HIGHLIGHT_RGB = (255, 255, 255)
 _ROW_HIGHLIGHT_ALPHA = 21
 
+# A persistent STATE wash on a dimmed band (currently: the mute cell while
+# muted) — stronger than the row highlight above, which was tuned for the
+# undimmed list chassis and all but disappears over a dimmed footer band
+# under a white glyph. 96 lifts a mid-dark dimmed region clearly above its
+# surroundings while still reading as lighter, not "already pressed", under
+# the separate momentary press wash (_PRESSED_FILL_ALPHA) on top of it.
+_MUTE_WASH_ALPHA = 96
+
 # Divider-line colour: pure white, matching the glyph/text colour, so the
 # single boundary line between DOWN and UP reads as clean structure against
 # the dimmed backdrop rather than blending into it.
@@ -353,8 +361,8 @@ class OutputViewState:
     "output" is beyond a name, an on/off state and a level.
 
     name: the appliance's display name, drawn in the NAME zone (reused from
-        the main surface) with the header's own back chevron in place of
-        the pager dots (see Header.back).
+        the main surface) with the header's own back control (an X) in
+        place of the pager dots (see Header.back).
     output_name: this output's own name — the toggle row's label.
     selected: whether this output is currently enabled — the toggle row's
         dot marker (solid when True, hollow when False, the same glyph the
@@ -457,6 +465,7 @@ class Frame:
     dim_bottom: bool = False
     pressed: tuple[Rect, ...] = ()     # rects to wash, in the order they should be drawn
     highlights: tuple[Rect, ...] = ()  # rects to wash at the row-highlight strength, under any press
+    washes: tuple[tuple[Rect, int], ...] = ()  # (rect, alpha) pairs for a persistent state wash, drawn after highlights and before pressed
     header: Header | None = None
     body: Body = Body()
     footer: Footer = Footer()
@@ -579,7 +588,7 @@ class DialDisplayCompositor:
         A thin adapter like compose_repeat(): a dark chassis background (no
         artwork here either, matching the appliance selector/replay picker
         and the repeat screen's own enable layout), the shared top band
-        with a back chevron in place of the pager dots (Header.back) and
+        with a back control (an X) in place of the pager dots (Header.back) and
         this output's own level in the readout in place of the master
         volume, the toggle row (this output's own name plus its enable
         dot, through the same renderer the repeat screen's "Repeat Play"
@@ -811,17 +820,17 @@ def _zone_center_and_span(rect: tuple[int, int, int, int]) -> tuple[int, int, in
     return cx, cy, radius
 
 
-def _draw_minus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int]) -> None:
+def _draw_minus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], color=_GLYPH_RGB) -> None:
     cx, cy, r = _zone_center_and_span(rect)
     width = max(1, r // 3)
-    draw.line([(cx - r, cy), (cx + r, cy)], fill=_GLYPH_RGB, width=width)
+    draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=width)
 
 
-def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int]) -> None:
+def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], color=_GLYPH_RGB) -> None:
     cx, cy, r = _zone_center_and_span(rect)
     stroke = max(1, r // 3)
-    draw.line([(cx - r, cy), (cx + r, cy)], fill=_GLYPH_RGB, width=stroke)
-    draw.line([(cx, cy - r), (cx, cy + r)], fill=_GLYPH_RGB, width=stroke)
+    draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=stroke)
+    draw.line([(cx, cy - r), (cx, cy + r)], fill=color, width=stroke)
 
 
 def _draw_speaker_glyph(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None) -> None:
@@ -1332,11 +1341,12 @@ def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetric
         metrics=metrics,
     )
     if header.back:
-        # The per-output detail page's own back control, drawn into the
-        # same rect the pager dots would otherwise occupy — the two are
-        # mutually exclusive (dots_filled is suppressed above whenever
-        # back is set).
-        _draw_glyph(img, layout.dots, GLYPH_CHEVRON, "left", True, supersample=metrics.supersample)
+        # The per-output detail page's own back control: an X, the same
+        # glyph and icon-sized box the rail's own cancel control uses,
+        # drawn into the same rect the pager dots would otherwise occupy —
+        # the two are mutually exclusive (dots_filled is suppressed above
+        # whenever back is set).
+        _draw_glyph(img, _centred_box(layout.dots, metrics.icon), GLYPH_CROSS, supersample=metrics.supersample)
 
 
 def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -1443,10 +1453,18 @@ def _footer_none(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foote
 
 
 def _footer_volume(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
+    """The two-way minus/plus footer (the repeat screen's replaying layout,
+    the per-output detail page). Each glyph dims to _DIMMED_GLYPH_RGB when
+    its own side is disabled (Footer.left_enabled/right_enabled) — the
+    detail page's own steppers when the output is not selected, matching
+    the shade the disabled Restart/Stop labels already use elsewhere."""
+    left_color = _GLYPH_RGB if footer.left_enabled else _DIMMED_GLYPH_RGB
+    right_color = _GLYPH_RGB if footer.right_enabled else _DIMMED_GLYPH_RGB
     _draw_bottom_band(
         img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
-        draw_left=_draw_minus_glyph, draw_right=_draw_plus_glyph,
+        draw_left=lambda d, r: _draw_minus_glyph(d, r, color=left_color),
+        draw_right=lambda d, r: _draw_plus_glyph(d, r, color=right_color),
     )
 
 
@@ -1532,13 +1550,14 @@ def _compose_frame(
     Dimming happens before the pressed wash so a highlighted zone still
     reads brighter than its dimmed surroundings, matching the dimmed band
     it sits on; the wash happens before any content so text/glyphs always
-    land on top of it. The row highlight sits under the pressed wash so a
-    pressed highlighted row still reads brighter than an unpressed one.
-    Body and footer never overlap, so their relative order does not
-    matter. No blanket exception handling here: every draw helper already
-    degrades on its own (a missing font or a Pillow failure simply skips
-    that one element), and an unrecognised body/footer kind is a
-    programming error that should raise rather than be swallowed.
+    land on top of it. The row highlight sits under a persistent state
+    wash, which itself sits under the pressed wash — a genuine touch always
+    reads as an additional flash over any state already shown. Body and
+    footer never overlap, so their relative order does not matter. No
+    blanket exception handling here: every draw helper already degrades on
+    its own (a missing font or a Pillow failure simply skips that one
+    element), and an unrecognised body/footer kind is a programming error
+    that should raise rather than be swallowed.
     """
     if metrics is None:
         metrics = metrics_for(width, height)
@@ -1550,6 +1569,8 @@ def _compose_frame(
         _dim_rect(img, layout.bottom_band)
     for rect in frame.highlights:
         _draw_row_highlight(img, rect)
+    for rect, alpha in frame.washes:
+        _draw_wash(img, rect, _PRESSED_FILL_RGB, alpha)
     for rect in frame.pressed:
         _draw_pressed_highlight(img, rect)
     if frame.header is not None:
@@ -1596,7 +1617,10 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
         # The persistent mute wash: brighter than the dimmed footer band
         # while muted, independent of any genuine touch — a tap still adds
         # its own momentary wash on top (see _compose_frame's draw order).
-        highlights=(layout.footer_mute,) if overlay.muted else (),
+        # A dedicated (stronger) strength from the row-highlight wash below,
+        # which was tuned for the undimmed list chassis and all but
+        # disappears over a dimmed footer band under a white glyph.
+        washes=((layout.footer_mute, _MUTE_WASH_ALPHA),) if overlay.muted else (),
         header=Header(
             name=overlay.name, volume=overlay.volume, muted=overlay.muted,
             dots_filled=0 if overlay.dots else None,
@@ -1644,11 +1668,16 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
 
 
 def _output_pressed_rects(
-    pressed: "TouchZone | None", width: int, height: int, metrics: "LayoutMetrics | None" = None,
+    pressed: "TouchZone | None", enabled: bool, width: int, height: int,
+    metrics: "LayoutMetrics | None" = None,
 ) -> tuple[Rect, ...]:
     """The per-output detail page's pressed-rect lookup: a stale or
     unrecognised zone (e.g. one that belongs to a different geometry)
-    washes nothing."""
+    washes nothing, and neither does a stepper tap while the output is
+    disabled — the steppers are touch-inert then, not just dimmed, so a
+    tap on them neither lights nor acts."""
+    if pressed in (TouchZone.OUTPUT_UP, TouchZone.OUTPUT_DOWN) and not enabled:
+        return ()
     rect = _zone_rect(GEOMETRY_OUTPUT, pressed, None, width, height, metrics)
     return (rect,) if rect is not None else ()
 
@@ -1658,12 +1687,12 @@ def _output_frame(state: "OutputViewState", width: int, height: int, metrics: La
         background=BG_CHASSIS,
         dim_top=True,
         dim_bottom=True,
-        pressed=_output_pressed_rects(state.pressed, width, height, metrics),
+        pressed=_output_pressed_rects(state.pressed, state.selected, width, height, metrics),
         header=Header(
             name=state.name, volume=state.level, muted=None, dots_filled=None, back=True,
         ),
         body=Body(BODY_TOGGLE_ROW, armed=state.selected, label=state.output_name),
-        footer=Footer(FOOTER_VOLUME),
+        footer=Footer(FOOTER_VOLUME, left_enabled=state.selected, right_enabled=state.selected),
     )
 
 

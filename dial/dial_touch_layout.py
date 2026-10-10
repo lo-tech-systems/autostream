@@ -455,7 +455,7 @@ def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
     return (
         ZoneRect(TouchZone.DOTS, layout.dots),
         ZoneRect(TouchZone.NAME, layout.name),
-        ZoneRect(TouchZone.MUTE, layout.volume_cluster),
+        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster),
         ZoneRect(TouchZone.REPEAT_PLAY, layout.row),
         ZoneRect(TouchZone.REPEAT_START, layout.start),
         ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
@@ -537,15 +537,15 @@ class RepeatLayout:
     """Full repeat-screen geometry for one panel size. `dots`, `name` and
     `volume_cluster` are the identical rectangles OverlayLayout uses (same
     geometry as the main screen's top band): the dots and the name label
-    stay tappable here (== the DOTS/NAME zones); the volume cluster is
-    drawn but never hit-tested (the readout is display-only on this
-    screen — see repeat_zone_at()). `row` is the full-width middle row
-    used by the enable layout's "Repeat Play" toggle (== the REPEAT_PLAY
-    zone); `line` shares that same rectangle for the replaying layout's
-    centred "m:ss / m:ss" position text — only one of the two layouts is
-    ever on screen at a time, so the two never actually compete for it.
-    `start`/`stop` are exactly the DOWN/UP zone rectangles, relabelled
-    Restart/Stop text glyphs for the replaying layout."""
+    stay tappable here (== the DOTS/NAME zones); the volume cluster opens
+    the outputs list, same as main (== the OUTPUTS zone — see
+    repeat_zone_at()). `row` is the full-width middle row used by the
+    enable layout's "Repeat Play" toggle (== the REPEAT_PLAY zone); `line`
+    shares that same rectangle for the replaying layout's centred
+    "m:ss / m:ss" position text — only one of the two layouts is ever on
+    screen at a time, so the two never actually compete for it. `start`/
+    `stop` are exactly the DOWN/UP zone rectangles, relabelled Restart/Stop
+    text glyphs for the replaying layout."""
 
     dots: Rect
     name: Rect
@@ -894,9 +894,9 @@ def repeat_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
 
 def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     """Hit-test the repeat screen's surface: DOTS first (pops back to
-    main), then NAME (opens the appliance selector), then MUTE (the
-    mute/volume readout, toggles mute like the main screen), then the
-    middle row (REPEAT_PLAY), then START, then STOP, else None (a dead
+    main), then NAME (opens the appliance selector), then OUTPUTS (the
+    volume readout, opens the outputs list, same as the main screen), then
+    the middle row (REPEAT_PLAY), then START, then STOP, else None (a dead
     zone). State-agnostic like every other hit-test here — the display
     decides whether a hit means anything in the CURRENT layout (REPEAT_PLAY
     is drawn only in the enable layout, START/STOP only in the replaying

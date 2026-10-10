@@ -1140,11 +1140,15 @@ class DialDisplay:
         is always meaningful while it is showing (it only ever opens for a
         focused/reporting appliance, and closes before that appliance's
         name could go stale — see toggle_repeat_screen() and the empty-
-        target branch of _poll_once).
+        target branch of _poll_once). A row whose own tuple asks for the
+        outputs zone (the repeat screen's own top-right readout) still
+        gates on the live self._outputs_available, same as main; a row
+        that carries False there is unaffected.
         """
         policy = _policy(self._screen)
         if policy.surface is not None:
-            return policy.surface
+            s = policy.surface
+            return (s[0], s[1], s[2], s[3] and self._outputs_available)
         if self._now_playing is None:
             return ("idle" if self._idle_affordance else "hidden", False, False, False)
         name_active = True
@@ -3364,7 +3368,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "repeat": ScreenPolicy(
-        name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True, False),
+        name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True, True),
         open=DialDisplay._open_repeat_locked, paint=DialDisplay._display_repeat_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,

@@ -1399,10 +1399,11 @@ NAME_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.NAME])
 REPEAT_PLAY_XY = _rect_center(_REPEAT_LAYOUT.row)
 REPEAT_START_XY = _rect_center(_REPEAT_LAYOUT.start)
 REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
-# The repeat screen's own MUTE zone is the volume_cluster readout (top-right,
-# unchanged) — NOT the main surface's MUTE_XY, which now lands in the main
-# screen's own three-way footer cell instead.
-REPEAT_MUTE_XY = _rect_center(_REPEAT_LAYOUT.volume_cluster)
+# The repeat screen's own OUTPUTS zone is the volume_cluster readout
+# (top-right, unchanged) — NOT the main surface's MUTE_XY, which lands in
+# the main screen's own three-way footer cell; the repeat screen has no
+# mute control of its own.
+REPEAT_OUTPUTS_XY = _rect_center(_REPEAT_LAYOUT.volume_cluster)
 IDLE_XY = (WIDTH // 2, HEIGHT - 1)
 
 
@@ -1424,11 +1425,21 @@ class TestNewSurfacesArmImmediately:
         actions = sm.on_filter_event(press_event(REPEAT_PLAY_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
 
-    def test_mute_toggles_on_the_repeat_surface(self):
+    def test_outputs_zone_opens_outputs_list_on_the_repeat_surface(self):
+        # The repeat screen's own top-right readout opens the outputs list,
+        # same as main -- it has no mute control of its own.
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        sm.set_surface(SURFACE_REPEAT, False, now=0.0)
-        actions = sm.on_filter_event(press_event(REPEAT_MUTE_XY), now=0.1)
-        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_MUTE_TOGGLE]
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0, outputs_active=True)
+        actions = sm.on_filter_event(press_event(REPEAT_OUTPUTS_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.OUTPUTS
+
+    def test_outputs_zone_dead_on_the_repeat_surface_when_unavailable(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_REPEAT, False, now=0.0, outputs_active=False)
+        actions = sm.on_filter_event(press_event(REPEAT_OUTPUTS_XY), now=0.1)
+        assert actions == []
 
     def test_idle_replay_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)

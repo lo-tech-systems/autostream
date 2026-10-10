@@ -428,14 +428,15 @@ class TestRepeatSurface:
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_PLAY
 
-    def test_repeat_zone_at_resolves_mute(self):
-        """The top band's mute/volume readout toggles mute on the repeat
-        screen too (same as the main screen), so a tap there resolves to
-        MUTE."""
+    def test_repeat_zone_at_resolves_outputs(self):
+        """The top band's volume readout opens the outputs list on the
+        repeat screen too (same as the main screen), so a tap there
+        resolves to OUTPUTS, not MUTE -- the repeat screen has no mute
+        control of its own."""
         layout = repeat_layout_for(160, 128)
         x0, y0, x1, y1 = layout.volume_cluster
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.MUTE
+        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.OUTPUTS
 
     def test_repeat_zone_at_resolves_start_and_stop(self):
         layout = repeat_layout_for(160, 128)
@@ -535,7 +536,7 @@ class TestZoneRectsOrder:
         assert [(e.zone, e.index) for e in entries] == [
             (TouchZone.DOTS, None),
             (TouchZone.NAME, None),
-            (TouchZone.MUTE, None),
+            (TouchZone.OUTPUTS, None),
             (TouchZone.REPEAT_PLAY, None),
             (TouchZone.REPEAT_START, None),
             (TouchZone.REPEAT_STOP, None),
@@ -589,7 +590,7 @@ class TestZoneRectsMatchLayoutFields:
         entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_REPEAT, width, height)}
         assert entries[TouchZone.DOTS] == layout.dots
         assert entries[TouchZone.NAME] == layout.name
-        assert entries[TouchZone.MUTE] == layout.volume_cluster
+        assert entries[TouchZone.OUTPUTS] == layout.volume_cluster
         assert entries[TouchZone.REPEAT_PLAY] == layout.row
         assert entries[TouchZone.REPEAT_START] == layout.start
         assert entries[TouchZone.REPEAT_STOP] == layout.stop

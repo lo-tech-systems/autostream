@@ -3726,6 +3726,19 @@ class TestTouchSurface:
             display._screen = "repeat"
         assert display.touch_surface() == ("repeat", True, True, False)
 
+    def test_repeat_screen_outputs_active_follows_live_availability(self):
+        aid = "1" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with display._lock:
+            display._screen = "repeat"
+            display._outputs_available = True
+        assert display.touch_surface() == ("repeat", True, True, True)
+        with display._lock:
+            display._outputs_available = False
+        assert display.touch_surface() == ("repeat", True, True, False)
+
     def test_picker_while_open(self):
         display, fb, gt = _make_display(targets=[])
         display.enable()
@@ -5725,3 +5738,9 @@ class TestScreenPolicyTable:
 
     def test_output_back_to_is_outputs_not_main(self):
         assert SCREEN_POLICIES["output"].back_to == "outputs"
+
+    def test_repeat_surface_tuple_opens_outputs_not_mute(self):
+        # The repeat screen's top-right readout opens the outputs list, the
+        # same as main -- mute is no longer reachable from this screen (the
+        # physical button and DOTS-back-to-main still mute from anywhere).
+        assert SCREEN_POLICIES["repeat"].surface == ("repeat", True, True, True)

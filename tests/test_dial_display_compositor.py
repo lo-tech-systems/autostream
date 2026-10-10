@@ -1496,15 +1496,14 @@ class TestComposeRepeatReplayingLayout:
         assert result.size == (160, 128)
 
 
-class TestRepeatMuteWash:
+class TestRepeatOutputsWash:
     """Reading the shared zone table gives the repeat screen's pressed-rect
-    lookup a MUTE entry it never had before: a tap there has always resolved
-    to MUTE and toggled it (repeat_zone_at() already did this), so drawing
-    its wash the same way every other tappable zone's wash is drawn is the
-    consistent behaviour, not a special case. No manager-produced state
-    reaches this today — the repeat screen's own pressed channel is only
-    ever populated for the repeat screen's own zones — so this documents the
-    input-space difference deliberately rather than leaving it accidental."""
+    lookup an OUTPUTS entry: a tap there resolves to OUTPUTS and opens the
+    outputs list (repeat_zone_at() already does this), so drawing its wash
+    the same way every other tappable zone's wash is drawn is the
+    consistent behaviour, not a special case. The repeat screen has no MUTE
+    zone of its own at all -- a stale MUTE press (e.g. carried over from
+    another screen) washes nothing here."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
@@ -1512,17 +1511,25 @@ class TestRepeatMuteWash:
         yield
         _reset_font_cache()
 
-    def test_pressed_mute_washes_the_volume_cluster_and_nothing_else(self, compositor):
+    def test_pressed_outputs_washes_the_volume_cluster_and_nothing_else(self, compositor):
         layout = repeat_layout_for(160, 128)
         unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
         pressed = compositor.compose_repeat(
-            160, 128, _repeat_state(pressed=TouchZone.MUTE), rotate=False, bgr=False,
+            160, 128, _repeat_state(pressed=TouchZone.OUTPUTS), rotate=False, bgr=False,
         )
         assert list(unpressed.crop(layout.volume_cluster).getdata()) != list(
             pressed.crop(layout.volume_cluster).getdata()
         )
         for rect in (layout.dots, layout.name, layout.row, layout.start, layout.stop):
             assert list(unpressed.crop(rect).getdata()) == list(pressed.crop(rect).getdata())
+
+    def test_stale_mute_press_washes_nothing_on_the_repeat_surface(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
+        pressed = compositor.compose_repeat(
+            160, 128, _repeat_state(pressed=TouchZone.MUTE), rotate=False, bgr=False,
+        )
+        assert list(unpressed.getdata()) == list(pressed.getdata())
 
 
 # ---------------------------------------------------------------------------
@@ -2826,6 +2833,28 @@ class TestPersistentMuteWash:
         for rect in (layout.footer_down, layout.footer_up):
             assert list(unmuted.crop(rect).getdata()) == list(muted.crop(rect).getdata())
 
+    def test_wash_clearly_visible_over_a_dimmed_mid_grey_base(self, compositor):
+        """Regression: the old row-highlight alpha (21, tuned for the
+        undimmed list chassis) added only about 20 levels over a dimmed
+        mid-grey band -- all but invisible under the white glyph. The
+        dedicated mute-wash alpha must clear that by a wide margin."""
+        size = (320, 240)
+        img = Image.new("RGB", size, (150, 150, 150))
+        layout = layout_for(*size, metrics=_RICH_METRICS)
+        corner = (layout.footer_mute[0] + 1, layout.footer_mute[3] - 2)
+        unmuted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=False), metrics=_RICH_METRICS,
+        )
+        muted = compositor.compose(
+            img, *size, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True), metrics=_RICH_METRICS,
+        )
+        old_alpha_delta_summed = 3 * 20   # today's near-invisible delta, per the finding above
+        delta = sum(muted.getpixel(corner)) - sum(unmuted.getpixel(corner))
+        assert delta > old_alpha_delta_summed
+        assert delta >= 3 * 60  # at least 60 levels per channel, summed across RGB
+
 
 class TestHeaderNeverSlashedRegardlessOfMuted:
     def test_main_screen_header_unaffected_by_muted(self, compositor):
@@ -2978,6 +3007,62 @@ class TestComposeOutput:
              patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
         assert result.size == (160, 128)
+
+    def test_disabled_steppers_are_dimmed_not_white(self, compositor):
+        """When the output is not selected, the minus/plus glyphs dim to
+        the same shade the disabled Restart/Stop labels use, instead of
+        staying full white."""
+        layout = layout_for(160, 128)
+        enabled = compositor.compose_output(160, 128, _output_state(selected=True), rotate=False, bgr=False)
+        disabled = compositor.compose_output(160, 128, _output_state(selected=False), rotate=False, bgr=False)
+        assert list(enabled.crop(layout.down).getdata()) != list(disabled.crop(layout.down).getdata())
+        assert list(enabled.crop(layout.up).getdata()) != list(disabled.crop(layout.up).getdata())
+        assert _has_near_white_pixel(enabled.crop(layout.down))
+        assert not _has_near_white_pixel(disabled.crop(layout.down))
+        assert _has_near_white_pixel(enabled.crop(layout.up))
+        assert not _has_near_white_pixel(disabled.crop(layout.up))
+
+    def test_disabled_stepper_press_washes_nothing(self, compositor):
+        """A tap on a disabled stepper neither lights nor acts -- the zone
+        table still carries OUTPUT_UP/OUTPUT_DOWN (they exist, they just do
+        nothing and show nothing while disabled)."""
+        unpressed = compositor.compose_output(160, 128, _output_state(selected=False), rotate=False, bgr=False)
+        pressed_up = compositor.compose_output(
+            160, 128, _output_state(selected=False, pressed=TouchZone.OUTPUT_UP), rotate=False, bgr=False,
+        )
+        pressed_down = compositor.compose_output(
+            160, 128, _output_state(selected=False, pressed=TouchZone.OUTPUT_DOWN), rotate=False, bgr=False,
+        )
+        assert list(unpressed.getdata()) == list(pressed_up.getdata())
+        assert list(unpressed.getdata()) == list(pressed_down.getdata())
+
+    def test_enabled_stepper_press_still_washes(self, compositor):
+        # Same press, but the output is selected -- the press wash still
+        # applies, proving the previous test's absence is about the
+        # disabled state and not a blanket loss of the press wash.
+        layout = layout_for(160, 128)
+        unpressed = compositor.compose_output(160, 128, _output_state(selected=True), rotate=False, bgr=False)
+        pressed_up = compositor.compose_output(
+            160, 128, _output_state(selected=True, pressed=TouchZone.OUTPUT_UP), rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(layout.up).getdata()) != list(pressed_up.crop(layout.up).getdata())
+
+    def test_back_control_is_confined_to_a_small_centred_box(self, compositor):
+        """Item 7b: the back control is an X drawn into a small centred box
+        (the same size the rail's own cancel control uses), not a chevron
+        stretched across the whole dots zone — a corner of the dots rect,
+        outside that box, must be untouched chrome."""
+        from dial_display_compositor import OVERLAY_DIM_FACTOR, _LIST_BG_RGB, _centred_box
+        metrics = metrics_for(160, 128)
+        layout = layout_for(160, 128, metrics=metrics)
+        box = _centred_box(layout.dots, metrics.icon)
+        corner = (layout.dots[0], layout.dots[1])
+        assert corner[0] < box[0] and corner[1] < box[1]
+        with_back = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
+        # compose_output's own chassis background, dimmed the same way the
+        # top band always is — the plain, glyph-free corner colour.
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        assert with_back.getpixel(corner) == expected
 
 
 # ---------------------------------------------------------------------------
