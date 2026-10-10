@@ -63,8 +63,6 @@ from dial_display import (
     DialDisplay,
     DisplayBackend,
     NoOpBackend,
-    _fetch_artwork,
-    artwork_url_eligible,
     create_dial_display,
 )
 from dial_warnings import WarningManager, WarningStore

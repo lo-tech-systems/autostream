@@ -32,8 +32,6 @@ import functools
 import io
 import logging
 import math
-import os
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -61,7 +59,6 @@ from dial_display_compositor import (
     format_mmss,
 )
 from dial_display_image import (
-    MAX_ARTWORK_RESPONSE_BYTES,
     decode_artwork,
     load_logo,
 )
@@ -96,7 +93,6 @@ from dial_repeat_store import (
     interpolated_position,
     repeat_store,
 )
-from dial_target_status import enrich_targets, fetch_target_status
 from dial_warning_text import (  # re-exported: the warning table and its text live there
     APPLIANCE_WARNING_SCREEN,
     SDHEALTH_CRITICAL_SNOOZE_S,
@@ -126,9 +122,6 @@ from dial_touch_layout import (
     metrics_for,
 )
 from dial_volume import (
-    forget_mute_states_except,
-    observe_master_volume,
-    observe_mute_state,
     shown_muted,
     shown_volume,
 )
@@ -138,18 +131,6 @@ from dial_warnings import (
     WarningDescriptor,
     WarningManager,
 )
-
-# The artwork fetch is shared with the OwnTone metadata publisher, which also
-# turns provider URLs into images. It faces the open internet, so it lives in
-# one place rather than being copied here (see core/autostream_artwork.py).
-# The dial deployment copies core modules alongside the dial package; in the
-# repo they live in core/, which may or may not be on sys.path.
-try:
-    from autostream_artwork import artwork_url_eligible, fetch_artwork
-except ImportError:
-    _core = os.path.join(os.path.dirname(__file__), '..', 'core')
-    sys.path.insert(0, os.path.abspath(_core))
-    from autostream_artwork import artwork_url_eligible, fetch_artwork
 
 DEFAULT_DISPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-centred-dark.png"
 # Shown on the idle screen in place of the plain logo whenever a held
@@ -357,11 +338,6 @@ def _resample_filter(source: tuple[int, int], target: tuple[int, int]):
     if target[0] < source[0] or target[1] < source[1]:
         return _RESAMPLE_BOX
     return _RESAMPLE_NEAREST
-
-
-def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
-    """Fetch artwork for the panel, at the dial's own size ceiling."""
-    return fetch_artwork(url, timeout, MAX_ARTWORK_RESPONSE_BYTES)
 
 
 def _dirty_windows(diff, bbox) -> list:
