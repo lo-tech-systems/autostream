@@ -1,6 +1,7 @@
 """Tests for the poll the core runs: a tick's publishes, its settings, and
 the dial-core thread with its housekeeping."""
 import os
+import queue
 import sys
 import threading
 import time
@@ -12,10 +13,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 import pytest
 
 import dial_core
+import dial_volume as dv
 from dial_auth import AUTH_UNAUTHORIZED, auth_map
-from dial_core import DEFAULT_POLL_INTERVAL_S, DialCore, PollIO
+from dial_core import DEFAULT_POLL_INTERVAL_S, FOCUS_PENDING_GRACE_S, DialCore, PollIO
 from dial_core_state import NowPlaying, artwork_key
 from dial_test_support import (
+    _FakeClock,
     _roster_entry,
     _roster_from_targets,
     _status_result,
@@ -44,13 +47,13 @@ def _quiet_io(fetch=None, **overrides):
     return PollIO(**values)
 
 
-def _make(targets=(), roster=None, fetch=None, polling=True, **io_overrides):
+def _make(targets=(), roster=None, fetch=None, polling=True, clock=None, **io_overrides):
     gt = MagicMock(return_value=list(targets))
     gr = (lambda: roster) if roster is not None else (lambda: _roster_from_targets(gt()))
     core = DialCore(
         "dial-1", gt, gr,
         warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None)),
-        io=_quiet_io(fetch, **io_overrides),
+        io=_quiet_io(fetch, **io_overrides), clock=clock,
     )
     if polling:
         core.set_polling(True)
@@ -263,8 +266,412 @@ class TestTickPublishes:
         assert core.snapshot().artwork is None
 
 
+class _Replies:
+    """A fetch_status stand-in answering from a dict by service name, read at
+    each call so a test can change the answers between ticks, and keeping the
+    names it was asked in order."""
+
+    def __init__(self, results):
+        self.results = results
+        self.asked = []
+
+    def __call__(self, target, dial_id, timeout_seconds=None):
+        self.asked.append(target.service_name)
+        return self.results[target.service_name]
+
+
+def _artwork_log():
+    """A fetch_artwork stand-in that records the URLs it is asked for."""
+    asked = []
+
+    def fetch_artwork(url, timeout):
+        asked.append(url)
+        return b"picture", ""
+    return asked, fetch_artwork
+
+
+class TestTickSelection:
+    """Which appliances a tick asks and what it settles on to show: the order
+    of the walk, what counts as usable artwork, the text-only fallback and a
+    focus pinning the walk."""
+
+    def test_a_refused_target_is_never_asked_or_shown(self):
+        aid = _fresh_id("sel1")
+        fetch = MagicMock()
+        core, gt = _make([_target(appliance_id=aid, auth="unauthorized")], fetch=fetch)
+        core.poll_once()
+        fetch.assert_not_called()
+        snap = core.snapshot()
+        assert snap.visible_playing == () and snap.now_playing is None
+        assert snap.focus.reporting_id is None and snap.focus.source_service_name is None
+        assert snap.artwork is None
+
+    @pytest.mark.parametrize("track_id, title, source", [
+        (None, "", None),
+        (_track_id(artwork_url=""), "Song", "Kitchen"),
+        (_track_id(state="analysing"), "", None),
+    ], ids=["no_track_id", "empty_artwork_url", "not_identified"])
+    def test_a_reply_without_usable_artwork_selects_none(self, track_id, title, source):
+        aid = _fresh_id("sel3")
+        asked, fetch_artwork = _artwork_log()
+        core, gt = _make(
+            [_target(appliance_id=aid, auth="authorized")],
+            fetch=lambda target, dial_id, timeout_seconds=None: _status_result(
+                track_id=track_id, appliance_id=aid),
+            fetch_artwork=fetch_artwork,
+        )
+        core.poll_once()
+        snap = core.snapshot()
+        assert asked == [] and snap.artwork is None
+        assert snap.focus.source_service_name == source
+        assert snap.now_playing.service_name == "Kitchen" and snap.now_playing.title == title
+        assert snap.now_playing.playing is True
+
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_an_identified_track_without_artwork_is_shown_as_text(self, pinned):
+        aid = _fresh_id("sel7")
+        no_art = _track_id(title="Song", artist="The Artist", album="LP", artwork_url="")
+        asked, fetch_artwork = _artwork_log()
+        core, gt = _make(
+            [_target(appliance_id=aid)],
+            fetch=lambda target, dial_id, timeout_seconds=None: _status_result(
+                track_id=no_art, appliance_id=aid),
+            fetch_artwork=fetch_artwork,
+        )
+        if pinned:
+            core.set_focus(aid)
+        core.poll_once()
+        snap = core.snapshot()
+        assert asked == [] and snap.artwork is None
+        assert snap.focus.source_service_name == "Kitchen"
+        playing = snap.now_playing
+        assert (playing.title, playing.artist, playing.album) == ("Song", "The Artist", "LP")
+
+    def test_a_target_with_artwork_wins_over_an_earlier_text_only_one(self):
+        first = _target(name="Kitchen", appliance_id=_fresh_id("sel8a"), playing_since=100.0)
+        second = _target(name="Lounge", ip="192.168.1.11", appliance_id=_fresh_id("sel8b"),
+                         playing_since=200.0)
+        replies = _Replies({
+            "Kitchen": _status_result(track_id=_track_id(title="No art", artwork_url="")),
+            "Lounge": _status_result(track_id=_track_id(title="With art")),
+        })
+        core, gt = _make([first, second], fetch=replies)
+        core.poll_once()
+        snap = core.snapshot()
+        assert replies.asked == ["Kitchen", "Lounge"]
+        assert snap.focus.source_service_name == "Lounge" and snap.now_playing.title == "With art"
+        assert snap.artwork.key == artwork_key("https://provider.example/x.jpg")
+
+    @pytest.mark.parametrize("focus_has_artwork", [False, True])
+    def test_a_focused_target_is_asked_first_and_the_walk_never_leaves_it(self, focus_has_artwork):
+        aid = _fresh_id("sel9")
+        focus_t = _target(name="Focus", appliance_id=aid, playing_since=5.0)
+        other_t = _target(name="Other", appliance_id=_fresh_id("sel9o"), playing_since=1.0)
+        replies = _Replies({
+            "Focus": _status_result(track_id=_track_id() if focus_has_artwork else None, appliance_id=aid),
+            "Other": _status_result(track_id=_track_id()),
+        })
+        core, gt = _make([other_t, focus_t], fetch=replies)
+        core.set_focus(aid)
+        core.poll_once()
+        snap = core.snapshot()
+        assert replies.asked == ["Focus"]
+        assert snap.focus.source_service_name == "Focus" and snap.now_playing.service_name == "Focus"
+        assert (snap.artwork is not None) is focus_has_artwork
+
+    def test_the_selector_marks_the_reported_target_and_a_focus_takes_over(self):
+        a = _target(name="A", appliance_id="a" * 20, auth="authorized", playing_since=1.0)
+        b = _target(name="B", appliance_id="b" * 20, auth="authorized", playing_since=2.0)
+        core, gt = _make(
+            [a, b],
+            fetch=lambda target, dial_id, timeout_seconds=None: _status_result(
+                track_id=None, appliance_id=target.appliance_id),
+        )
+        core.poll_once()
+        # Nothing identified: the oldest playing target is the one reported.
+        assert core.snapshot().focus.reporting_id == a.appliance_id
+        assert {r.appliance_id for r in core.snapshot().selector_rows() if r.current} == {a.appliance_id}
+        core.set_focus(b.appliance_id)
+        core.poll_once()
+        assert {r.appliance_id for r in core.snapshot().selector_rows() if r.current} == {b.appliance_id}
+
+    def test_the_source_service_is_set_before_the_artwork_fetch(self):
+        """A volume press landing during a slow artwork fetch reads the
+        source service name; it must already be the selected target."""
+        older = _target(name="Older", service_name="older", appliance_id=_fresh_id("sel10a"),
+                        playing_since=10.0)
+        newer = _target(name="Newer", service_name="newer", appliance_id=_fresh_id("sel10b"),
+                        playing_since=20.0)
+        replies = _Replies({
+            "older": _status_result(track_id=None),
+            "newer": _status_result(track_id=_track_id()),
+        })
+        seen = []
+
+        def fetch_artwork(url, timeout):
+            seen.append(core.current_source_service_name())
+            return None, "stub"
+
+        core, gt = _make([older, newer], fetch=replies, fetch_artwork=fetch_artwork)
+        core.poll_once()
+        assert seen == ["newer"]
+
+
+class TestTickBinding:
+    """The binding beneath manual focus: the appliance a tick settled on is
+    pinned on the next tick, so one newly identified elsewhere cannot steal
+    the screen, and the binding is released when its appliance goes."""
+
+    @staticmethod
+    def _two():
+        return (
+            _target(name="Alpha", service_name="alpha", playing_since=1.0),
+            _target(name="Bravo", service_name="bravo", playing_since=2.0),
+        )
+
+    def test_it_binds_on_the_first_tick(self):
+        a = self._two()[0]
+        core, gt = _make([a], fetch=_Replies({"alpha": _status_result(track_id=None)}))
+        assert core.snapshot().focus.bound_id is None
+        core.poll_once()
+        focus = core.snapshot().focus
+        assert (focus.bound_id, focus.reporting_id) == (a.appliance_id, a.appliance_id)
+
+    def test_a_second_starter_with_artwork_does_not_steal(self):
+        a, b = self._two()
+        replies = _Replies({
+            "alpha": _status_result(track_id=None),
+            "bravo": _status_result(track_id=_track_id()),
+        })
+        asked, fetch_artwork = _artwork_log()
+        core, gt = _make([a], fetch=replies, fetch_artwork=fetch_artwork)
+        core.poll_once()
+        gt.return_value = [a, b]
+        del replies.asked[:]
+        core.poll_once()
+        focus = core.snapshot().focus
+        assert focus.bound_id == a.appliance_id and focus.reporting_id == a.appliance_id
+        assert core.current_source_service_name() == "alpha"
+        assert replies.asked == ["alpha"]
+        assert asked == [] and core.snapshot().artwork is None
+
+    def test_a_bound_target_that_stops_with_a_survivor_rebinds(self):
+        a, b = self._two()
+        both = _Replies({"alpha": _status_result(track_id=None), "bravo": _status_result(track_id=None)})
+        core, gt = _make([a, b], fetch=both)
+        core.poll_once()
+        assert core.snapshot().focus.bound_id == a.appliance_id
+        gt.return_value = [b]
+        core.poll_once()
+        focus = core.snapshot().focus
+        assert focus.bound_id == b.appliance_id and focus.reporting_id == b.appliance_id
+
+    def test_a_bound_target_that_stops_with_nothing_left_releases_to_none(self):
+        a = self._two()[0]
+        core, gt = _make([a], fetch=_Replies({"alpha": _status_result(track_id=None)}))
+        core.poll_once()
+        assert core.snapshot().focus.bound_id == a.appliance_id
+        gt.return_value = []
+        core.poll_once()
+        focus = core.snapshot().focus
+        assert focus.bound_id is None and focus.reporting_id is None
+
+    def test_a_binding_revoked_mid_tick_is_released_and_the_walk_goes_on(self):
+        a, b = self._two()
+        replies = _Replies({"alpha": _status_result(track_id=None), "bravo": _status_result(track_id=None)})
+        asked, fetch_artwork = _artwork_log()
+        core, gt = _make([a, b], fetch=replies, fetch_artwork=fetch_artwork)
+        core.poll_once()
+        assert core.snapshot().focus.bound_id == a.appliance_id
+        replies.results["alpha"] = _status_result(status_error="unauthorized", appliance_id=a.appliance_id)
+        replies.results["bravo"] = _status_result(track_id=_track_id())
+        del replies.asked[:]
+        core.poll_once()
+        focus = core.snapshot().focus
+        assert replies.asked == ["alpha", "bravo"]
+        assert focus.bound_id == b.appliance_id and focus.reporting_id == b.appliance_id
+        assert core.current_source_service_name() == "bravo"
+        url = "https://provider.example/x.jpg"
+        assert asked == [url] and core.snapshot().artwork.key == artwork_key(url)
+
+    def test_a_manual_focus_is_mirrored_into_the_binding(self):
+        a, b = self._two()
+        both = _Replies({"alpha": _status_result(track_id=None), "bravo": _status_result(track_id=None)})
+        core, gt = _make([a, b], fetch=both)
+        core.poll_once()
+        assert core.snapshot().focus.bound_id == a.appliance_id
+        core.set_focus(b.appliance_id)
+        core.poll_once()
+        focus = core.snapshot().focus
+        assert focus.bound_id == b.appliance_id and focus.reporting_id == b.appliance_id
+        assert core.manual_focus_id() == b.appliance_id
+
+
+class TestTickMuteOrdering:
+    """The mute flag a tick reads is ordered against presses by when its
+    request was sent, through the real observation store."""
+
+    @staticmethod
+    def _reset():
+        dv.observe_mute_state(None, None)
+        while True:
+            try:
+                dv._queue.get_nowait()
+            except queue.Empty:
+                break
+
+    @pytest.fixture(autouse=True)
+    def _clean_mute_state(self):
+        """The observation store and its press queue are process-wide."""
+        self._reset()
+        yield
+        self._reset()
+
+    @staticmethod
+    def _core(targets, clock, fetch):
+        """A core whose mute and volume observations go to the real store."""
+        gt = MagicMock(return_value=list(targets))
+        core = DialCore(
+            "dial-1", gt, lambda: _roster_from_targets(gt()),
+            warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None)), clock=clock,
+            io=PollIO(
+                fetch_status=fetch, enrich=lambda targets, dial_id: [],
+                fetch_artwork=lambda url, timeout: (None, "unused"), artwork_eligible=lambda url: False,
+            ),
+        )
+        core.set_polling(True)
+        return core, gt
+
+    def test_a_poll_sent_before_a_mute_press_never_reverts_the_shown_mute(self):
+        """A press lands while a status request is in flight: the reply to
+        that request describes the world from before the press, so it must
+        not put the glyph back."""
+        t = _target(dial_proto_version=2)
+        clock = _FakeClock(5.0)
+        answer = {"fn": lambda *a, **k: _status_result(track_id=None, muted=False)}
+        core, gt = self._core([t], clock, lambda *a, **k: answer["fn"](*a, **k))
+        with patch("dial_volume.time.monotonic", clock):
+            core.poll_once()
+            assert dv.shown_muted(t.service_name) is False
+
+            def fetch_during_press(target, *a, **k):
+                # The request was sent at 9.9; the press happens at 10.0 and
+                # its response has since arrived (nothing in flight now).
+                clock.t = 10.0
+                dv.enqueue_mute(False)
+                dv._clear_mute_inflight(t.service_name)
+                return _status_result(track_id=None, muted=False)
+
+            answer["fn"] = fetch_during_press
+            clock.t = 9.9
+            core.poll_once()
+        assert dv.shown_muted(t.service_name) is True
+
+    def test_a_poll_sent_after_the_mute_press_applies(self):
+        t = _target(dial_proto_version=2)
+        clock = _FakeClock(5.0)
+        core, gt = self._core(
+            [t], clock, lambda *a, **k: _status_result(track_id=None, muted=False))
+        with patch("dial_volume.time.monotonic", clock):
+            core.poll_once()
+            clock.t = 10.0
+            dv.enqueue_mute(False)
+            dv._clear_mute_inflight(t.service_name)
+            assert dv.shown_muted(t.service_name) is True
+            clock.t = 10.5
+            core.poll_once()
+        assert dv.shown_muted(t.service_name) is False
+
+    def test_a_legacy_target_poll_after_the_settle_clears_the_mute(self):
+        """An earlier-release appliance never reports the flag: once a mute
+        reply has settled, the next poll sent after it clears the highlight."""
+        t = _target()       # protocol version 0: its status carries no mute flag
+        clock = _FakeClock(5.0)
+        core, gt = self._core(
+            [t], clock, lambda *a, **k: _status_result(track_id=None, muted=None))
+        with patch("dial_volume.time.monotonic", clock):
+            dv.observe_mute_state(t.service_name, True)     # a mute reply
+            assert dv.shown_muted(t.service_name) is True
+            clock.t = 20.0
+            core.poll_once()
+        assert dv.shown_muted(t.service_name) is False
+
+    def test_every_walked_target_is_observed(self):
+        """Neither target is identified, so the walk visits both: each gets
+        its own entry in the real observation store, not only the one the
+        tick reports from."""
+        older = _target(name="Older", service_name="older", playing_since=10.0)
+        newer = _target(name="Newer", service_name="newer", playing_since=20.0)
+        results = {
+            "older": _status_result(track_id=None, muted=False),
+            "newer": _status_result(track_id=None, muted=True),
+        }
+        core, gt = self._core(
+            [older, newer], _FakeClock(5.0), lambda target, *a, **k: results[target.service_name])
+        core.poll_once()
+        assert core.snapshot().focus.reporting_id == older.appliance_id
+        assert set(dv._observed_muted) == {"older", "newer"}
+        assert dv.shown_muted("older") is False
+        assert dv.shown_muted("newer") is True
+
+
+class TestTickTimers:
+    """The windows a tick enforces from the core's own clock."""
+
+    def test_a_pending_focus_lasts_to_just_inside_the_grace_and_clears_just_past_it(self):
+        """A pending focus on an appliance that never appears survives to
+        just inside the grace and is cleared just past it."""
+        aid = _fresh_id("tm1")
+        clock = _FakeClock(1000.0)
+        core, gt = _make(clock=clock)
+        start = clock.t
+        core.set_focus_pending(aid, "Kitchen", start + FOCUS_PENDING_GRACE_S)
+        core.request_poll()
+        clock.t = start + FOCUS_PENDING_GRACE_S - 0.01
+        core.poll_once()
+        assert core.manual_focus_id() == aid
+        assert core.snapshot().focus.pending is not None
+        clock.t = start + FOCUS_PENDING_GRACE_S + 0.01
+        core.poll_once()
+        assert core.manual_focus_id() is None
+        assert core.snapshot().focus.pending is None
+        assert FOCUS_PENDING_GRACE_S == 10.0
+
+    def test_a_refused_playing_appliance_is_probed_once_per_backoff(self):
+        """The appliance has been refused and keeps advertising playback. It
+        is never fetched by the walk; only the reconcile pass re-checks it,
+        and only once its backoff has run out. The reconcile pass runs every
+        RECONCILE_INTERVAL_S, so with the backoff starting at 30 s and
+        doubling per refusal the re-checks land at 0, 60, 120, 240 and 480 s
+        rather than on a fixed cadence."""
+        t = _target(name="Hall", service_name="Hall", appliance_id="9" * 20,
+                    auth="unauthorized", dial_status=True)
+        clock = _FakeClock(1000.0)
+        start = clock.t
+        probed_at = []
+
+        def fake_enrich(targets, dial_id):
+            probed_at.extend([clock.t - start] * len(targets))
+            return [
+                {"name": x.service_name, "status_error": "unauthorized",
+                 "appliance_id": x.appliance_id}
+                for x in targets
+            ]
+
+        walk_fetch = MagicMock()
+        core, gt = _make([t], fetch=walk_fetch, enrich=fake_enrich, clock=clock)
+        with patch("dial_core_poll.time.monotonic", clock):
+            for _ in range(61):         # 10 s ticks across 600 s
+                core.poll_once()
+                clock.t += 10.0
+        walk_fetch.assert_not_called()
+        assert probed_at == [0.0, 60.0, 120.0, 240.0, 480.0]
+        assert core.snapshot().focus.reporting_id is None
+        assert auth_map.state(t.appliance_id) == AUTH_UNAUTHORIZED
+
+
 class TestPollSettings:
-    @pytest.mark.parametrize("value", [None, True, False, 0, -2, "6", float("nan")])
+    @pytest.mark.parametrize("value", [None, True, False, 0, -2, "6", float("nan"), object()])
     def test_an_unusable_interval_reads_as_the_default(self, value):
         core, gt = _make()
         core.set_poll_interval(3)

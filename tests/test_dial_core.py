@@ -1140,6 +1140,7 @@ class TestOutputsResult:
         assert not core.on_outputs_result("fetch", AID, 500, None)
         assert not core.on_outputs_result("fetch", AID, 200, {"ok": True, "outputs": [{"id": "1"}]})
         assert core.snapshot().outputs.rows == rows
+        assert core.snapshot().outputs.loaded is True
 
     def _tapped(self, clock, at):
         """A core holding the rows with a set for output 1 made at *at*."""
@@ -1563,6 +1564,11 @@ class TestEq:
         assert not core.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": True, "treble_db": 1})
         assert core.snapshot().seq == seq
 
+    def test_a_result_with_nothing_held_is_dropped(self):
+        core = _io_core()
+        assert not core.on_eq_result("fetch", AID, 200, _eq_body(1, 1))
+        assert core.snapshot().eq is None
+
     def test_a_step_clamps_to_the_band_range_and_keeps_the_other_control(self):
         clock = _Clock(1000.0)
         core = self._watching(clock)
@@ -1573,12 +1579,39 @@ class TestEq:
         assert core.snapshot().eq.optimistic == (("bass", 6), ("treble", -3))
         assert core.snapshot().eq.optimistic_expires_at == 1002.0
         assert send.call_args[0][1] == {"bass": 6}
-        assert send.call_args[0][0].appliance_id == AID
+        target = send.call_args[0][0]
+        assert (target.appliance_id, target.ip, target.port) == (AID, "192.0.2.10", 80)
+
+    @pytest.mark.parametrize("band, read, delta, expected", [
+        ("bass", 2, +1, 3),
+        ("bass", 6, +1, 6),
+        ("treble", -6, -1, -6),
+        ("treble", -3, +1, -2),
+    ])
+    def test_a_step_starts_from_the_reading_and_stops_at_the_limits(self, band, read, delta, expected):
+        core = self._watching(_Clock(1000.0))
+        other = "treble" if band == "bass" else "bass"
+        other_read = {"bass": 1, "treble": -3}[other]
+        reading = {band: read, other: other_read}
+        core.on_eq_result("fetch", AID, 200, _eq_body(reading["bass"], reading["treble"]))
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.step_eq(AID, band, delta).accepted
+        assert send.call_args[0][1] == {band: expected}
+        assert dict(core.eq_override()[0]) == {band: expected, other: other_read}
+
+    def test_a_step_starts_from_the_tap_still_shown(self):
+        core = self._watching(_Clock(1000.0))
+        core.on_eq_result("fetch", AID, 200, _eq_body(2, 0))
+        core.set_eq_override((("bass", 5),), 1010.0)
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.step_eq(AID, "bass", +1).accepted
+        assert send.call_args[0][1] == {"bass": 6}
 
     def test_a_step_before_the_first_reading_starts_from_zero(self):
         core = self._watching(_Clock(1000.0))
-        with patch("dial_core._enqueue_eq_set"):
+        with patch("dial_core._enqueue_eq_set") as send:
             core.step_eq(AID, "treble", -2)
+        assert send.call_args[0][1] == {"treble": -2}
         assert core.eq_override() == ((("treble", -2),), 1002.0)
 
     def test_the_tap_window_ends_at_its_boundary(self):
@@ -2058,10 +2091,58 @@ class TestWarningSnapshot:
         assert again.snapshot().due_warning_id is None
         assert _row(again, "sdhealth").snoozed_until is not None
 
+    @pytest.mark.parametrize("percent, snooze_s", [
+        (15, 7 * 86400.0), (3, 7 * 86400.0), (2, 86400.0),
+    ])
+    def test_a_dismissal_snoozes_for_the_period_the_reading_sets(self, percent, snooze_s):
+        core, manager, wall = _warning_core()
+        core.warning_active("sdhealth", percent)
+        core.dismiss_warning("sdhealth")
+        assert _row(core, "sdhealth").snoozed_until == pytest.approx(wall.t + snooze_s)
+
+    @pytest.mark.parametrize("percent, snooze_s", [(50, 7 * 86400.0), (1, 86400.0)])
+    def test_a_persisted_snooze_survives_a_restart_and_runs_out(self, tmp_path, percent, snooze_s):
+        path = tmp_path / "warnings.json"
+        wall = _Clock(1_000_000.0)
+        core, manager, _ = _warning_core(wall=wall, store_path=str(path))
+        core.warning_active("sdhealth", percent)
+        core.dismiss_warning("sdhealth")
+        assert manager.is_snoozed("sdhealth") is True
+        core.flush_warnings()
+        assert "sdhealth" in json.loads(path.read_text(encoding="utf-8"))
+
+        # A restart: a fresh core over the same file, the condition still holding.
+        wall.t += 3600.0
+        again, manager2, _ = _warning_core(wall=wall, store_path=str(path))
+        again.warning_active("sdhealth", percent)
+        assert manager2.is_snoozed("sdhealth") is True
+        assert again.snapshot().due_warning_id is None
+
+        # Past the snooze it is due again.
+        wall.t += snooze_s
+        third, manager3, _ = _warning_core(wall=wall, store_path=str(path))
+        third.warning_active("sdhealth", percent)
+        assert manager3.is_snoozed("sdhealth") is False
+        assert third.snapshot().due_warning_id == "sdhealth"
+
+    def test_a_cleared_source_forgets_the_persisted_snooze(self, tmp_path):
+        path = str(tmp_path / "warnings.json")
+        wall = _Clock(1_000_000.0)
+        core, manager, _ = _warning_core(wall=wall, store_path=path)
+        core.warning_active("sdhealth", 50)
+        core.dismiss_warning("sdhealth")
+        core.flush_warnings()
+        core.warning_cleared("sdhealth")
+        core.flush_warnings()
+        again, manager2, _ = _warning_core(wall=wall, store_path=path)
+        again.warning_active("sdhealth", 50)
+        assert manager2.is_snoozed("sdhealth") is False
+
 
 class TestNetworkSource:
     def test_a_connected_reading_sets_the_latch_and_the_view(self):
         core, manager, _ = _warning_core()
+        assert core.snapshot().wifi_ever_connected is False
         effects = core.on_network_view(_net(LINK_CONNECTED))
         snap = core.snapshot()
         assert snap.wifi_ever_connected is True and snap.network == _net(LINK_CONNECTED)
@@ -2106,6 +2187,21 @@ class TestNetworkSource:
         assert effects.changes == ()
         assert core.wifi_down_streak() == 1
         assert core.snapshot().network == _net(LINK_UNKNOWN)
+        assert core.snapshot().wifi_ever_connected is True
+        core.on_network_view(_net(LINK_DOWN))
+        assert core.snapshot().wifi_ever_connected is True
+
+    def test_a_dismissal_outlives_ignored_and_unknown_readings(self):
+        core, manager, _ = _warning_core()
+        core.on_network_view(_net(LINK_CONNECTED))
+        for _ in range(NOWIFI_PROMPT_STREAK):
+            core.on_network_view(_net(LINK_DOWN))
+        core.dismiss_warning("nowifi")
+        core.on_network_view(_net(LINK_IGNORED))
+        core.on_network_view(_net(LINK_UNKNOWN))
+        assert manager.is_snoozed("nowifi")
+        core.on_network_view(_net(LINK_CONNECTED))
+        assert not manager.is_snoozed("nowifi")
 
     def test_connected_ends_the_incident_and_forgets_the_dismissal(self):
         core, manager, _ = _warning_core()
@@ -2327,6 +2423,7 @@ class TestApplianceWarningsFeed:
         }
         assert max(priorities.values()) < min(d.priority for d in WARNING_DESCRIPTORS)
         assert core.snapshot().due_warning_id == appliance_warning_key(BID, "c")
+        assert not any(manager.descriptor(appliance_warning_key(BID, w)).interrupting for w in "abc")
 
     def test_a_dial_warning_outranks_an_appliance_warning(self):
         core, manager, _ = _lounge_core()
@@ -2378,7 +2475,7 @@ class TestApplianceWarningsFeed:
 
     def test_a_notice_is_never_written_to_the_snooze_file(self, tmp_path):
         path = tmp_path / "warnings.json"
-        core, manager, _ = _lounge_core(store_path=str(path))
+        core, manager, wall = _lounge_core(store_path=str(path))
         core.set_appliance_warnings(BID, (
             _stylus(id="n", dismissal="none"), _stylus(id="w", dismissal="week"),
         ))
@@ -2386,6 +2483,8 @@ class TestApplianceWarningsFeed:
         core.dismiss_warning(appliance_warning_key(BID, "w"))
         core.flush_warnings()
         assert set(json.loads(path.read_text())) == {appliance_warning_key(BID, "w")}
+        assert json.loads(path.read_text())[appliance_warning_key(BID, "w")] == pytest.approx(
+            wall.t + 7 * 86400.0)
 
     def test_escalation_keeps_a_snooze_taken_at_the_lower_severity(self):
         core, manager, wall = _lounge_core()
@@ -2492,6 +2591,8 @@ class TestApplianceWarningsFeed:
         core.set_appliance_warnings(BID, (_stylus(dismissal="day"),))
         core.dismiss_warning(appliance_warning_key(BID, "stylus"))
         core.flush_warnings()
+        assert json.loads((tmp_path / "warnings.json").read_text())[appliance_warning_key(BID, "stylus")] == (
+            pytest.approx(1_000_000.0 + 86400.0))
         wall.t += 3600
         again, manager2, _ = _lounge_core(wall=wall, store_path=path)
         wall.t += 86400

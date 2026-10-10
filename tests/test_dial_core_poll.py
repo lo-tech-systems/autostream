@@ -65,9 +65,11 @@ class _Fetcher:
     def __init__(self, replies: dict):
         self.replies = replies
         self.calls: list[str] = []
+        self.asked: list[tuple] = []
 
     def __call__(self, target, dial_id, timeout_seconds=None):
         self.calls.append(target.service_name)
+        self.asked.append((target.service_name, dial_id, timeout_seconds))
         return self.replies[target.service_name]
 
 
@@ -159,6 +161,16 @@ class TestApplyStatusToAuth:
     def test_transient_error_moves_nothing(self):
         t = _target("Hall")
         cp.apply_status_to_auth(t, {"status_error": "timeout", "appliance_id": t.appliance_id})
+        assert auth_map.state(t.appliance_id) == AUTH_UNKNOWN
+
+    def test_a_typed_refusal_naming_the_appliance_marks_it(self):
+        t = _target("Hall")
+        assert cp.apply_status_to_auth(t, _refusal(t.appliance_id)) is True
+        assert auth_map.state(t.appliance_id) == AUTH_UNAUTHORIZED
+
+    def test_a_good_reply_naming_another_appliance_moves_nothing(self):
+        t = _target("Hall")
+        cp.apply_status_to_auth(t, _ok(_id("Other")))
         assert auth_map.state(t.appliance_id) == AUTH_UNKNOWN
 
     def test_first_refusal_warns_once(self, caplog):
@@ -311,6 +323,28 @@ class TestWalk:
         assert fetch.calls == []
         assert w.status_sent_at == {"A": 2.5}
         assert w.selection.service == "A"
+
+    def test_each_ask_carries_the_dial_id_and_the_status_timeout(self):
+        a, b = _target("A"), _target("B")
+        fetch = _Fetcher({"A": _ok(a.appliance_id, track_id=None), "B": _ok(b.appliance_id, track_id=None)})
+        cp.walk([a, b], {}, "dial-uuid", None, fetch=fetch)
+        assert fetch.asked == [
+            ("A", "dial-uuid", cp.DIAL_STATUS_TIMEOUT_SECONDS),
+            ("B", "dial-uuid", cp.DIAL_STATUS_TIMEOUT_SECONDS),
+        ]
+
+    def test_a_failed_fetch_is_skipped_without_marking_and_the_walk_goes_on(self):
+        a, b = _target("A"), _target("B")
+        fetch = _Fetcher({
+            "A": {"status_error": "timeout", "appliance_id": a.appliance_id},
+            "B": _ok(b.appliance_id, track_id=_track("Two")),
+        })
+        w = cp.walk([a, b], {}, "d", None, fetch=fetch)
+        assert fetch.calls == ["A", "B"]
+        assert w.selection.service == "B"
+        assert w.errors == {"A": "timeout"} and set(w.records) == {"B"}
+        assert w.visited == {"A", "B"}
+        assert auth_map.state(a.appliance_id) == AUTH_UNKNOWN
 
     def test_skips_unauthorised_and_unsupported_rows(self):
         bad = _target("Bad", auth=AUTH_UNAUTHORIZED)

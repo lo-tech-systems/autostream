@@ -339,6 +339,8 @@ class TestAcceptedReplayShowsAsPlaying:
         assert fetch.call_args[0][0].appliance_id == self.AID
         assert display.core.snapshot().focus.reporting_id == self.AID
         assert display.core.snapshot().now_playing is not None and display.core.snapshot().now_playing.playing
+        assert display.core.snapshot().now_playing.title == ""
+        assert display.core.snapshot().now_playing.artist == ""
 
     def test_replaying_ack_for_the_followed_appliance_polls_at_once(self):
         display = self._display(state="hold", accepted=False)
