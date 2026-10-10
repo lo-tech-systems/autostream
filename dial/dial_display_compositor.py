@@ -281,7 +281,7 @@ class DialDisplayCompositor:
 
         Always starts from a flat dark background (_LIST_BG_RGB) — there is
         no artwork on this screen. Draws up to ListLayout.rows_per_page rows
-        (label, plus a check glyph on the row `state` marks checked), a 1px
+        (label, plus a small selection dot on the row `state` marks selected), a 1px
         separator under each row, and the bottom back|down|up bar (dimmed
         like compose()'s bottom band, with the down/up chevrons drawn at
         OVERLAY_DIM_FACTOR brightness when no next/previous page exists).
@@ -711,15 +711,15 @@ def _draw_glyph_supersampled(frame: Image.Image, rect: tuple[int, int, int, int]
         pass
 
 
-def _draw_check_tick(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
-    """Two-segment check mark into a (w, h) canvas — see
-    _draw_glyph_supersampled, which supplies the supersampled canvas."""
-    stroke = max(1, min(w, h) // 6)
-    x0, y0 = w * 0.12, h * 0.55
-    x1, y1 = w * 0.42, h * 0.82
-    x2, y2 = w * 0.88, h * 0.18
-    draw.line([(x0, y0), (x1, y1)], fill=_GLYPH_RGB, width=stroke, joint="curve")
-    draw.line([(x1, y1), (x2, y2)], fill=_GLYPH_RGB, width=stroke, joint="curve")
+def _draw_selected_dot(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """A small filled white circle marking the selected row, centred in a
+    (w, h) canvas — see _draw_glyph_supersampled, which supplies the
+    supersampled canvas and downscales it for antialiasing. Deliberately
+    small so it marks the selection without competing with the label; only
+    the selected row gets one, the rest carry no marker."""
+    r = max(2, round(min(w, h) * 0.16))
+    cx, cy = w / 2.0, h / 2.0
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_GLYPH_RGB)
 
 
 def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit: bool) -> None:
@@ -787,7 +787,7 @@ def _draw_list(width: int, height: int, state: ListState) -> Image.Image:
                     _draw_text_safe(draw, (x0 + pad - left, cy - text_h // 2 - top), text, row_font)
         if checked:
             check_rect = (x1 - pad - check_box, y0, x1 - pad, y1)
-            _draw_glyph_supersampled(frame, check_rect, _draw_check_tick)
+            _draw_glyph_supersampled(frame, check_rect, _draw_selected_dot)
             draw = ImageDraw.Draw(frame)
 
     _dim_rect(frame, layout.bar)
