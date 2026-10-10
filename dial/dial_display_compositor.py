@@ -107,6 +107,7 @@ from dial_touch_layout import (
     CONTENT_COMPACT,
     FONT_BODY_PX_AT_REFERENCE,
     FONT_READOUT_PX_AT_REFERENCE,
+    GEOMETRY_EQ,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_OUTPUT,
@@ -120,6 +121,7 @@ from dial_touch_layout import (
     TouchZone,
     compact_layout_for,
     compact_picker_layout_for,
+    eq_layout_for,
     idle_layout_for,
     info_value_layout_for,
     layout_for,
@@ -275,6 +277,10 @@ class OverlayState:
         where the layout provides an album rect (the content tier with
         room for it); ignored elsewhere. Appended last so existing
         positional construction keeps working.
+    eq_pages: whether a third page (the EQ page) exists for the appliance
+        currently shown — draws three pager dots instead of two whenever
+        `dots` is also True. False (the default, byte-identical to before
+        this field existed) draws the existing two-dot glyph.
     """
 
     visible: bool = False
@@ -286,6 +292,7 @@ class OverlayState:
     title: str = ""
     dots: bool = False
     album: str = ""
+    eq_pages: bool = False
 
 
 @dataclass(frozen=True)
@@ -381,6 +388,9 @@ class RepeatViewState:
         needed" rather than merely dimmed.
     pressed: the TouchZone currently being pressed by a genuine touch, or
         None. Mirrors OverlayState.pressed/ListState.pressed.
+    eq_pages: whether a third page (the EQ page) exists for this screen's
+        own appliance — draws three pager dots (the second one filled)
+        instead of two. Mirrors OverlayState.eq_pages.
     """
 
     name: str
@@ -393,6 +403,7 @@ class RepeatViewState:
     muted: bool | None = None
     volume: int | None = None
     pressed: "TouchZone | None" = None
+    eq_pages: bool = False
 
 
 @dataclass(frozen=True)
@@ -422,6 +433,38 @@ class OutputViewState:
     output_name: str
     selected: bool
     level: "int | None" = None
+    pressed: "TouchZone | None" = None
+
+
+@dataclass(frozen=True)
+class EqViewState:
+    """Immutable snapshot of what the EQ page should show — the
+    compose_eq() counterpart to RepeatViewState/OutputViewState. Built by
+    the display manager from its EqScreenState (dial_display.py) on the
+    repeat-screen compose path; this module has no idea what a PEQ band is,
+    only two optional dB values to draw as bars.
+
+    name: the appliance's display name, drawn in the NAME zone (reused from
+        the main surface).
+    bass_db, treble_db: the two bars' own current values, -6..+6, or None
+        while the first fetch has not yet landed (drawn as "-" with a
+        dimmed, unmarked track and dimmed controls).
+    loaded: whether the first fetch has landed for this screen's appliance
+        — kept alongside bass_db/treble_db rather than inferred from them
+        being non-None, since a fetch can legitimately land on 0 for both.
+    muted, volume: the top band's mute/volume readout — display-only on
+        this page (no touch zone; the encoder still steps volume), mirroring
+        RepeatViewState.muted/volume.
+    pressed: the TouchZone currently being pressed, or None. Mirrors
+        OverlayState.pressed/RepeatViewState.pressed.
+    """
+
+    name: str
+    bass_db: "int | None"
+    treble_db: "int | None"
+    loaded: bool
+    muted: "bool | None" = None
+    volume: "int | None" = None
     pressed: "TouchZone | None" = None
 
 
@@ -457,6 +500,13 @@ BODY_COMPACT_LIST = "compact_list"          # the replay picker's two rows + mor
 BODY_COMPACT_TOGGLE = "compact_toggle"      # the repeat screen's "Repeat Play" row + cancel
 BODY_COMPACT_REPLAY = "compact_replay"      # the repeat screen's time line + Restart/Stop
 BODY_INFO_VALUE = "info_value"              # the compact info page's own drill-in: label + wrapped value
+BODY_EQ_BARS = "eq_bars"                    # the EQ page's own bass/treble bar rows
+
+# The EQ bars' own +/-6 dB range — how far the marker can travel each way
+# from centre_x. Duplicated (not imported) from the appliance/manager side:
+# a pure compositor constant, the same number both ends independently clamp
+# to.
+EQ_LIMIT_DB = 6
 
 # Footer kinds — the bottom band's content, dispatched through
 # _FOOTER_RENDERERS.
@@ -477,12 +527,17 @@ class Header:
     slashed readout anywhere -- mute has one home, the main screen's own
     footer glyph and wash. back=True draws a left chevron into the dots
     rect instead (the per-output detail page's own back control), taking
-    priority over dots_filled."""
+    priority over dots_filled. dots_count (2, the default, or 3) selects
+    which pager-dots glyph is drawn -- two dots for an appliance with no EQ
+    page, three (the third one filled by the EQ page itself) for one that
+    has it; a value other than 3 draws the existing two-dot glyph, so every
+    caller that never sets it is unaffected."""
 
     name: str = ""
     volume: int | None = None
     muted: bool | None = None
     dots_filled: int | None = None
+    dots_count: int = 2
     back: bool = False
 
 
@@ -506,6 +561,8 @@ class Body:
     has_more: bool = False        # BODY_COMPACT_LIST: whether the "more" chevron is lit
     start_enabled: bool = True    # BODY_COMPACT_REPLAY: Restart drawn full-brightness vs dimmed
     stop_enabled: bool = True     # BODY_COMPACT_REPLAY: Stop drawn full-brightness vs dimmed
+    bass_db: "int | None" = None    # BODY_EQ_BARS
+    treble_db: "int | None" = None  # BODY_EQ_BARS
 
 
 @dataclass(frozen=True)
@@ -704,6 +761,28 @@ class DialDisplayCompositor:
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
+    def compose_eq(
+        self, width: int, height: int, state: "EqViewState", *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """Build one display-ready frame for the EQ page: a dark chassis
+        background (no artwork, matching the repeat/outputs screens), the
+        shared top band with three pager dots (the third one filled) and
+        the master-volume readout (display-only here — the encoder still
+        steps volume from this page; there is no OUTPUTS zone on it), and
+        the bass/treble bar rows (see BODY_EQ_BARS/_body_eq_bars). rotate/
+        bgr are applied last, in the same order every other compose*() call
+        uses. Never raises: a font or glyph failure degrades to a plainer
+        frame, matching every other screen's discipline. metrics: see
+        compose().
+        """
+        if metrics is None:
+            metrics = metrics_for(width, height)
+        return _compose_frame(
+            None, width, height, _eq_frame(state, width, height, metrics),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
     def compose_info_value(
         self, width: int, height: int, view: InfoValueView, *, rotate: bool, bgr: bool,
         metrics: LayoutMetrics | None = None,
@@ -830,6 +909,7 @@ def _draw_top_band_content(
     volume: int | None,
     muted: bool | None,
     metrics: LayoutMetrics,
+    dots_count: int = 2,
 ) -> None:
     """Draw the top band's pager dots, appliance name and mute/volume
     readout into *frame* in place — the piece of the top band shared by the
@@ -843,6 +923,8 @@ def _draw_top_band_content(
     other draw-onto-frame helper here — text/glyphs always land on top of
     both. dots_rect=None (or dots_filled=None) omits the dots entirely —
     used when the caller's overlay snapshot says they should not be drawn.
+    dots_count selects the two-dot glyph (any value other than 3) or the
+    three-dot page glyph (exactly 3) — see Header.dots_count.
 
     *muted* is accepted for the caller's convenience but never reaches the
     readout glyph: the header speaker is never slashed on any screen — mute
@@ -857,7 +939,10 @@ def _draw_top_band_content(
     pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
-        _draw_glyph(frame, dots_rect, GLYPH_TWO_DOTS, dots_filled, supersample=metrics.supersample)
+        if dots_count == 3:
+            _draw_glyph(frame, dots_rect, GLYPH_PAGE_DOTS, 3, dots_filled, supersample=metrics.supersample)
+        else:
+            _draw_glyph(frame, dots_rect, GLYPH_TWO_DOTS, dots_filled, supersample=metrics.supersample)
 
 
 def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -1278,6 +1363,7 @@ def _halo_layer(text: str, font, local_xy: tuple[int, int], w: int, h: int, stro
 # _GLYPH_PAINTERS (below the painter functions) and _glyph_tile().
 GLYPH_CHEVRON = "chevron"              # params: (direction, lit)
 GLYPH_TWO_DOTS = "two_dots"            # params: (filled,) or (filled, color)
+GLYPH_PAGE_DOTS = "page_dots"          # params: (count, filled) or (count, filled, color)
 GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
@@ -1417,6 +1503,26 @@ def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int, color
             draw.ellipse(box, outline=color, width=max(1, r // 3))
 
 
+def _draw_page_dots(draw: ImageDraw.ImageDraw, w: int, h: int, count: int, filled: int, color=_GLYPH_RGB) -> None:
+    """*count* small circles evenly spaced, one of them (*filled*) drawn
+    solid and the rest outlined — generalises _draw_two_dots for a page
+    count other than two (currently only 3, the EQ page's own third dot);
+    a smaller radius (0.10 of the short side, against two-dot's 0.12) so
+    three dots still fit the same band-high box. Rendered into a (w, h)
+    canvas — see _draw_glyph."""
+    r = max(2, round(min(w, h) * 0.10))
+    cy = h / 2.0
+    gap = r * 3
+    start = w / 2.0 - gap * (count - 1) / 2.0
+    for i in range(count):
+        cx = start + gap * i
+        box = [cx - r, cy - r, cx + r, cy + r]
+        if i == filled:
+            draw.ellipse(box, fill=color)
+        else:
+            draw.ellipse(box, outline=color, width=max(1, r // 3))
+
+
 def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
     """The enable layout's "Repeat Play" row marker: solid white when
     *armed* (the appliance will auto-start a replay on its own), hollow
@@ -1543,6 +1649,7 @@ def _draw_info_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
 _GLYPH_PAINTERS = {
     GLYPH_CHEVRON: _draw_chevron,
     GLYPH_TWO_DOTS: _draw_two_dots,
+    GLYPH_PAGE_DOTS: _draw_page_dots,
     GLYPH_ARM_DOT: _draw_arm_dot,
     GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
@@ -1580,6 +1687,27 @@ def _draw_label(
     x = rect[0] + pad
     y = cy - text_h // 2
     _draw_text_safe(draw, (x - left, y - top), truncated, font, fill=color)
+
+
+def _draw_label_right(
+    draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, pad: int,
+    color=_GLYPH_RGB,
+) -> None:
+    """Draw *text* right-aligned inside *rect*, no halo and no truncation —
+    the right-aligned secondary-text path _body_list_rows() draws inline,
+    factored out here so the EQ page's caption row (label left, dB right)
+    can share it. Same degrade-gracefully discipline as _draw_label()."""
+    if not text or font is None:
+        return
+    measured = _text_size(draw, text, font)
+    if measured is None:
+        return
+    text_w, text_h, bbox = measured
+    left, top, _, _ = bbox
+    cy = (rect[1] + rect[3]) // 2
+    x = rect[2] - pad - text_w
+    y = cy - text_h // 2
+    _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
 
 
 def _draw_label_centered(
@@ -1633,6 +1761,7 @@ def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetric
         img,
         dots_rect=layout.dots if (header.dots_filled is not None and not header.back) else None,
         dots_filled=None if header.back else header.dots_filled,
+        dots_count=header.dots_count,
         name_rect=layout.name, name_text=header.name,
         volume_cluster_rect=layout.volume_cluster,
         volume=header.volume, muted=header.muted,
@@ -1973,6 +2102,60 @@ def _body_info_value(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
         _draw_label_centered(draw, row_rect, line, font)
 
 
+def _eq_caption_text(value: "int | None") -> str:
+    """The dB caption a bar's right side shows: "-" while unloaded, else a
+    signed whole-dB reading ("+2 dB", "0 dB", "-3 dB")."""
+    if value is None:
+        return "-"
+    return f"{value:+d} dB" if value != 0 else "0 dB"
+
+
+def _draw_eq_bar(img: Image.Image, bar, label: str, value: "int | None", metrics: LayoutMetrics) -> None:
+    """One EQ bar row (bass or treble): the caption (label left, dB right),
+    the dimmed track line with a white centre tick, a white fill from
+    centre to the marker when the value is known, the marker disc itself,
+    and the minus/plus controls — dimmed at the range's own limit or while
+    the value has not yet loaded."""
+    draw = ImageDraw.Draw(img)
+    font = _load_font(metrics.font_body)
+    pad = metrics.pad
+    _draw_label(draw, bar.caption, label, font, pad)
+    _draw_label_right(draw, bar.caption, _eq_caption_text(value), font, pad)
+
+    w = metrics.divider_w
+    draw.line([(bar.track_x0, bar.track_y), (bar.track_x1, bar.track_y)], fill=_DIMMED_GLYPH_RGB, width=w)
+    draw.line(
+        [(bar.centre_x, bar.track_y - 2 * w), (bar.centre_x, bar.track_y + 2 * w)], fill=_GLYPH_RGB, width=w,
+    )
+    if value is not None:
+        marker_x = bar.centre_x + round(value * (bar.track_x1 - bar.centre_x) / EQ_LIMIT_DB)
+        x0, x1 = sorted((bar.centre_x, marker_x))
+        draw.line([(x0, bar.track_y), (x1, bar.track_y)], fill=_GLYPH_RGB, width=3 * w)
+        r = max(3, pad // 2)
+        draw.ellipse([marker_x - r, bar.track_y - r, marker_x + r, bar.track_y + r], fill=_GLYPH_RGB)
+
+    at_min = value is not None and value <= -EQ_LIMIT_DB
+    at_max = value is not None and value >= EQ_LIMIT_DB
+    minus_color = _DIMMED_GLYPH_RGB if (value is None or at_min) else _GLYPH_RGB
+    plus_color = _DIMMED_GLYPH_RGB if (value is None or at_max) else _GLYPH_RGB
+    _draw_minus_glyph(draw, bar.down, color=minus_color)
+    _draw_plus_glyph(draw, bar.up, color=plus_color)
+
+
+def _body_eq_bars(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The EQ page's own body: the bass bar over the treble bar (see
+    eq_layout_for), plus a thin white divider between the two rows at the
+    midpoint of the gap between them — the band-divider colour, matching
+    every other inter-row boundary in the compositor."""
+    layout = eq_layout_for(metrics.width, metrics.height, metrics=metrics)
+    _draw_eq_bar(img, layout.bass, "Bass", body.bass_db, metrics)
+    _draw_eq_bar(img, layout.treble, "Treble", body.treble_db, metrics)
+    divider_y = (layout.bass.row[3] + layout.treble.row[1]) // 2
+    ImageDraw.Draw(img).line(
+        [(0, divider_y), (metrics.width - 1, divider_y)], fill=_DIVIDER_RGB, width=metrics.divider_w,
+    )
+
+
 _BODY_RENDERERS = {
     BODY_NONE: _body_none,
     BODY_NOW_PLAYING: _body_now_playing,
@@ -1986,6 +2169,7 @@ _BODY_RENDERERS = {
     BODY_COMPACT_TOGGLE: _body_compact_toggle,
     BODY_COMPACT_REPLAY: _body_compact_replay,
     BODY_INFO_VALUE: _body_info_value,
+    BODY_EQ_BARS: _body_eq_bars,
 }
 
 
@@ -2185,6 +2369,7 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
         header=Header(
             name=overlay.name, volume=overlay.volume, muted=overlay.muted,
             dots_filled=0 if overlay.dots else None,
+            dots_count=3 if overlay.eq_pages else 2,
         ),
         body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist, album=overlay.album),
         footer=Footer(FOOTER_VOLUME_MUTE),
@@ -2257,9 +2442,36 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
         dim_top=True,
         dim_bottom=replaying,
         pressed=_repeat_pressed_rects(state, width, height, metrics),
-        header=Header(name=state.name, volume=state.volume, muted=state.muted, dots_filled=1),
+        header=Header(
+            name=state.name, volume=state.volume, muted=state.muted, dots_filled=1,
+            dots_count=3 if state.eq_pages else 2,
+        ),
         body=body,
         footer=footer,
+    )
+
+
+def _eq_pressed_rects(
+    pressed: "TouchZone | None", width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
+    """The EQ page's pressed-rect lookup: a stale or unrecognised zone (one
+    that belongs to a different geometry) washes nothing — the same
+    _output_pressed_rects shape, minus the enabled/disabled gate (every EQ
+    zone is always tappable once the page is open)."""
+    rect = _zone_rect(GEOMETRY_EQ, pressed, None, width, height, metrics)
+    return (rect,) if rect is not None else ()
+
+
+def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    return Frame(
+        background=BG_CHASSIS,
+        dim_top=True,
+        pressed=_eq_pressed_rects(state.pressed, width, height, metrics),
+        header=Header(
+            name=state.name, volume=state.volume, muted=state.muted, dots_filled=2, dots_count=3,
+        ),
+        body=Body(BODY_EQ_BARS, bass_db=state.bass_db, treble_db=state.treble_db),
+        footer=Footer(FOOTER_NONE),
     )
 
 

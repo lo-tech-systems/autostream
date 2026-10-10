@@ -36,6 +36,7 @@ from dial_display_compositor import (  # noqa: E402
     BODY_COMPACT_LIST,
     BODY_COMPACT_REPLAY,
     BODY_COMPACT_TOGGLE,
+    BODY_EQ_BARS,
     BODY_IDLE_BADGE,
     BODY_INFO_VALUE,
     BODY_LIST_ROWS,
@@ -44,8 +45,10 @@ from dial_display_compositor import (  # noqa: E402
     BODY_REPEAT_LINE,
     BODY_REPEAT_ROW,
     BODY_TOGGLE_ROW,
+    EQ_LIMIT_DB,
     Body,
     DialDisplayCompositor,
+    EqViewState,
     FOOTER_LABELS,
     FOOTER_LIST_BAR,
     FOOTER_LIST_RAIL,
@@ -57,6 +60,7 @@ from dial_display_compositor import (  # noqa: E402
     GLYPH_CROSS,
     GLYPH_INFO,
     GLYPH_MUTE,
+    GLYPH_PAGE_DOTS,
     GLYPH_PLAY,
     GLYPH_RESTART,
     GLYPH_STOP,
@@ -88,6 +92,8 @@ from dial_display_compositor import (  # noqa: E402
     _compose_frame,
     _draw_compact_list_row,
     _draw_speaker_glyph,
+    _eq_frame,
+    _eq_pressed_rects,
     _fit_value_lines,
     _glyph_tile,
     _halo_layer,
@@ -109,6 +115,7 @@ from dial_touch_layout import (  # noqa: E402
     CONTENT_LARGE,
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
+    GEOMETRY_EQ,
     GEOMETRY_INFO,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
@@ -120,6 +127,7 @@ from dial_touch_layout import (  # noqa: E402
     TouchZone,
     compact_layout_for,
     compact_picker_layout_for,
+    eq_layout_for,
     idle_layout_for,
     info_value_layout_for,
     layout_for,
@@ -2264,13 +2272,14 @@ class TestPlayGlyphTile:
         from dial_display_compositor import (
             GLYPH_ARM_DOT,
             GLYPH_MUTE,
+            GLYPH_PAGE_DOTS,
             GLYPH_RESTART,
             GLYPH_STOP,
             _GLYPH_PAINTERS,
         )
 
         assert set(_GLYPH_PAINTERS) == {
-            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
+            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
             GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO,
         }
 
@@ -4449,3 +4458,267 @@ class TestCompactNeverRaises:
             )
         for result in (playing, picker, enable, replaying):
             assert result.size == (metrics.width, metrics.height)
+
+
+# ---------------------------------------------------------------------------
+# Three pager dots (GLYPH_PAGE_DOTS / Header.dots_count) — the EQ page's
+# own third page indicator, drawn only when dots_count == 3; every existing
+# two-dot tile/key stays untouched.
+# ---------------------------------------------------------------------------
+
+class TestPageDotsGlyphTiles:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    def test_three_tiles_are_distinct_and_keyed_separately(self):
+        tiles = [_glyph_tile(GLYPH_PAGE_DOTS, (3, k), 40, 16, 4) for k in range(3)]
+        for a in range(3):
+            for b in range(a + 1, 3):
+                assert list(tiles[a].getdata()) != list(tiles[b].getdata())
+
+    def test_right_dot_solid_only_for_k_2(self):
+        """The third dot (rightmost) is filled only when filled == 2 — a
+        cheap proxy: sample a pixel at the tile's own right edge, which the
+        filled dot's own more solid coverage should differ."""
+        filled_2 = _glyph_tile(GLYPH_PAGE_DOTS, (3, 2), 40, 16, 4)
+        filled_0 = _glyph_tile(GLYPH_PAGE_DOTS, (3, 0), 40, 16, 4)
+        assert list(filled_2.getdata()) != list(filled_0.getdata())
+
+    def test_two_dot_tiles_and_keys_untouched(self):
+        """GLYPH_TWO_DOTS keeps its own kind string and painter — adding
+        GLYPH_PAGE_DOTS must not perturb it."""
+        assert GLYPH_TWO_DOTS != GLYPH_PAGE_DOTS
+        assert _GLYPH_PAINTERS[GLYPH_TWO_DOTS] is not _GLYPH_PAINTERS[GLYPH_PAGE_DOTS]
+        two_dots = _glyph_tile(GLYPH_TWO_DOTS, (0,), 24, 24, 4)
+        assert two_dots.size == (24, 24)
+
+    def test_page_dots_registered_in_glyph_painters(self):
+        assert GLYPH_PAGE_DOTS in _GLYPH_PAINTERS
+
+
+class TestHeaderDotsCount:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_default_dots_count_is_two(self):
+        assert Header().dots_count == 2
+
+    def test_now_playing_frame_draws_two_dots_when_eq_pages_false(self, compositor):
+        layout = layout_for(160, 128)
+        two = compositor.compose(
+            _marked_image(size=(160, 128)), 160, 128, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True, eq_pages=False),
+        )
+        three = compositor.compose(
+            _marked_image(size=(160, 128)), 160, 128, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True, eq_pages=True),
+        )
+        assert list(two.crop(layout.dots).getdata()) != list(three.crop(layout.dots).getdata())
+
+    def test_now_playing_frame_byte_identical_outside_dots_when_eq_pages_false(self, compositor):
+        """eq_pages=False renders byte-identical to before this field
+        existed, everywhere outside the dots box."""
+        layout = layout_for(160, 128)
+        base = _marked_image(size=(160, 128))
+        default = compositor.compose(
+            base, 160, 128, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True, artist="X", volume=40),
+        )
+        explicit_false = compositor.compose(
+            base, 160, 128, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True, artist="X", volume=40, eq_pages=False),
+        )
+        assert list(default.getdata()) == list(explicit_false.getdata())
+
+    def test_repeat_frame_draws_three_dots_second_solid_when_eq_pages_true(self, compositor):
+        layout = repeat_layout_for(320, 240, metrics=_RICH_METRICS)
+        two = compositor.compose_repeat(
+            320, 240, _repeat_state(eq_pages=False), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        three = compositor.compose_repeat(
+            320, 240, _repeat_state(eq_pages=True), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(two.crop(layout.dots).getdata()) != list(three.crop(layout.dots).getdata())
+
+    def test_repeat_frame_byte_identical_when_eq_pages_false(self, compositor):
+        result_a = compositor.compose_repeat(
+            320, 240, _repeat_state(armed=True, eq_pages=False), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        result_b = compositor.compose_repeat(
+            320, 240, _repeat_state(armed=True), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(result_a.getdata()) == list(result_b.getdata())
+
+
+# ---------------------------------------------------------------------------
+# compose_eq() — the EQ page: chassis background, dimmed top band, three
+# pager dots (third filled), bass/treble bars.
+# ---------------------------------------------------------------------------
+
+def _eq_state(**overrides) -> "EqViewState":
+    base = dict(
+        name="Kitchen", bass_db=0, treble_db=0, loaded=True,
+        muted=None, volume=None, pressed=None,
+    )
+    base.update(overrides)
+    return EqViewState(**base)
+
+
+class TestComposeEq:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        _reset_render_caches()
+        yield
+        _reset_font_cache()
+        _reset_render_caches()
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_returns_panel_sized_frame(self, compositor, metrics):
+        result = compositor.compose_eq(
+            metrics.width, metrics.height, _eq_state(), rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.size == (metrics.width, metrics.height)
+
+    def test_third_dot_solid(self, compositor):
+        layout = layout_for(320, 240, metrics=_RICH_METRICS)
+        result = compositor.compose_eq(320, 240, _eq_state(), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        two_dots_frame = compositor.compose(
+            _marked_image(size=(320, 240)), 320, 240, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True), metrics=_RICH_METRICS,
+        )
+        assert list(result.crop(layout.dots).getdata()) != list(two_dots_frame.crop(layout.dots).getdata())
+
+    def test_top_band_is_dimmed(self, compositor):
+        from dial_display_compositor import _LIST_BG_RGB
+        result = compositor.compose_eq(320, 240, _eq_state(name=""), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        layout = layout_for(320, 240, metrics=_RICH_METRICS)
+        corner = (layout.top_band[0], layout.top_band[1])
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        assert result.getpixel(corner) == expected
+
+    def test_labels_and_db_text_drawn_in_captions(self, compositor):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        blank = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=None, treble_db=None, loaded=False),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        loaded = compositor.compose_eq(320, 240, _eq_state(bass_db=3, treble_db=-2), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        assert list(blank.crop(layout.bass.caption).getdata()) != list(loaded.crop(layout.bass.caption).getdata())
+        assert list(blank.crop(layout.treble.caption).getdata()) != list(loaded.crop(layout.treble.caption).getdata())
+
+    @pytest.mark.parametrize("value,expected_side", [(0, "centre"), (6, "right"), (-6, "left")])
+    def test_marker_position_at_limits_and_centre(self, compositor, value, expected_side):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        bar = layout.bass
+        result = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=value), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        expected_x = {
+            "centre": bar.centre_x, "right": bar.track_x1, "left": bar.track_x0,
+        }[expected_side]
+        # A white pixel should appear at (or immediately around) the expected
+        # marker x on the track row.
+        found = any(
+            result.getpixel((x, bar.track_y)) == _GLYPH_RGB
+            for x in range(max(0, expected_x - 2), min(320, expected_x + 3))
+        )
+        assert found
+
+    def test_fill_drawn_on_the_correct_side_of_centre(self, compositor):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        bar = layout.bass
+        positive = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=6), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        negative = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=-6), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        right_of_centre = (bar.centre_x + 10, bar.track_y)
+        left_of_centre = (bar.centre_x - 10, bar.track_y)
+        assert positive.getpixel(right_of_centre) == _GLYPH_RGB
+        assert negative.getpixel(left_of_centre) == _GLYPH_RGB
+
+    def test_unloaded_shows_dash_and_dimmed_controls(self, compositor):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        result = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=None, treble_db=None, loaded=False),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        # Controls dimmed, not white, while unloaded.
+        assert not _has_near_white_pixel(result.crop(layout.bass.down))
+        assert not _has_near_white_pixel(result.crop(layout.bass.up))
+        assert not _has_near_white_pixel(result.crop(layout.treble.down))
+        assert not _has_near_white_pixel(result.crop(layout.treble.up))
+
+    def test_loaded_controls_are_white_away_from_the_limits(self, compositor):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        result = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=0, treble_db=0), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert _has_near_white_pixel(result.crop(layout.bass.down))
+        assert _has_near_white_pixel(result.crop(layout.bass.up))
+
+    def test_minus_dimmed_at_minus_six_plus_dimmed_at_plus_six(self, compositor):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        at_min = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=-EQ_LIMIT_DB), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        at_max = compositor.compose_eq(
+            320, 240, _eq_state(bass_db=EQ_LIMIT_DB), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert not _has_near_white_pixel(at_min.crop(layout.bass.down))
+        assert _has_near_white_pixel(at_min.crop(layout.bass.up))
+        assert _has_near_white_pixel(at_max.crop(layout.bass.down))
+        assert not _has_near_white_pixel(at_max.crop(layout.bass.up))
+
+    def test_pressed_wash_on_tapped_control_only(self, compositor):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        unpressed = compositor.compose_eq(320, 240, _eq_state(), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        pressed = compositor.compose_eq(
+            320, 240, _eq_state(pressed=TouchZone.EQ_BASS_UP), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(unpressed.crop(layout.bass.up).getdata()) != list(pressed.crop(layout.bass.up).getdata())
+        assert list(unpressed.crop(layout.bass.down).getdata()) == list(pressed.crop(layout.bass.down).getdata())
+        assert list(unpressed.crop(layout.treble.up).getdata()) == list(pressed.crop(layout.treble.up).getdata())
+
+    def test_pressed_zone_from_a_different_geometry_washes_nothing(self, compositor):
+        unpressed = compositor.compose_eq(320, 240, _eq_state(), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        pressed = compositor.compose_eq(
+            320, 240, _eq_state(pressed=TouchZone.OUTPUT_UP), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(unpressed.getdata()) == list(pressed.getdata())
+
+    def test_statelessness(self, compositor):
+        before = dict(vars(compositor))
+        compositor.compose_eq(320, 240, _eq_state(), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        after = dict(vars(compositor))
+        assert before == after == {}
+
+    def test_same_inputs_produce_same_output(self, compositor):
+        first = compositor.compose_eq(320, 240, _eq_state(bass_db=2), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        second = compositor.compose_eq(320, 240, _eq_state(bass_db=2), rotate=False, bgr=False, metrics=_RICH_METRICS)
+        assert list(first.getdata()) == list(second.getdata())
+
+    def test_never_raises_with_no_font(self, compositor):
+        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+            result = compositor.compose_eq(
+                320, 240, _eq_state(bass_db=3, treble_db=-2), rotate=False, bgr=False, metrics=_RICH_METRICS,
+            )
+        assert result.size == (320, 240)
+
+    def test_body_eq_bars_registered_in_body_renderers(self):
+        assert BODY_EQ_BARS in _BODY_RENDERERS
+
+    def test_eq_pressed_rects_resolve_against_geometry_eq(self):
+        layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
+        assert _eq_pressed_rects(TouchZone.EQ_TREBLE_DOWN, 320, 240, _RICH_METRICS) == (layout.treble.down,)
+        assert _eq_pressed_rects(None, 320, 240, _RICH_METRICS) == ()
+        assert _eq_pressed_rects(TouchZone.OUTPUT_UP, 320, 240, _RICH_METRICS) == ()
