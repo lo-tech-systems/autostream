@@ -5,7 +5,7 @@
 import { CONFIG, INFO_URL, REPLAY_BUTTONS } from "./hd-tables.js";
 import { els } from "./hd-dom.js";
 import { ui, PIN_IDLE, pending, press, setPending, clockPosition, hooks } from "./hd-state.js";
-import { post, sendDrag, get, followPointer, lanes, trackDrag } from "./hd-requests.js";
+import { post, sendDrag, get, followPointer, forgetLane, trackDrag } from "./hd-requests.js";
 
 // ---- Actions from the page ------------------------------------------
 
@@ -95,7 +95,7 @@ function onEqReset() {
     const keys = ui.vm.eq.bands.map((b) => "eq:" + b.id);
     keys.forEach((key) => {
         setPending(key, 0);
-        delete lanes[key];
+        forgetLane(key);
     });
     hooks.render();
     post("eq_reset", { appliance_id: focusId() }, keys);

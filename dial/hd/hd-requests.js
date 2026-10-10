@@ -55,30 +55,43 @@ export function post(action, body, keys, quiet) {
 }
 
 // While a slider is dragged: the first change goes out at once, later ones
-// at most once per gap (the newest wins), and the final one always goes.
+// at most once per gap (the newest wins), and the final one always goes. A
+// lane has one request in flight: a newer value waits for the answer, since
+// two on the wire can reach the dial in either order.
 export const lanes = {};
 
+function newLane() {
+    return { timer: 0, queued: null, last: "", busy: false };
+}
+
+function flush(lane) {
+    if (lane.busy || !lane.queued) { return; }
+    const [action, body, keys] = lane.queued;
+    lane.queued = null;
+    lane.last = JSON.stringify(body);
+    lane.busy = true;
+    post(action, body, keys).finally(() => {
+        lane.busy = false;
+        flush(lane);
+    });
+}
+
 export function sendDrag(key, action, body, final, keys) {
-    const lane = lanes[key] || (lanes[key] = { timer: 0, queued: null, last: "" });
-    const text = JSON.stringify(body);
+    const lane = lanes[key] || (lanes[key] = newLane());
+    const queued = [action, body, keys];
     if (final) {
         clearTimeout(lane.timer);
         lane.timer = 0;
-        lane.queued = null;
-        if (text !== lane.last) { lane.last = text; post(action, body, keys); }
+        lane.queued = JSON.stringify(body) === lane.last ? null : queued;
+        flush(lane);
         return;
     }
-    if (lane.timer) {
-        lane.queued = [action, body, keys];
-        return;
-    }
-    lane.last = text;
-    post(action, body, keys);
+    lane.queued = queued;
+    if (lane.timer) { return; }
+    flush(lane);
     lane.timer = setTimeout(() => {
-        const queued = lane.queued;
         lane.timer = 0;
-        lane.queued = null;
-        if (queued) { sendDrag(key, queued[0], queued[1], false, queued[2]); }
+        if (lane.queued) { sendDrag(key, ...lane.queued, false); }
     }, CONFIG.sendGapMs);
 }
 
@@ -87,9 +100,15 @@ export function sendDrag(key, action, body, final, keys) {
 export function trackDrag(slider, key) {
     slider.addEventListener("pointerdown", (event) => {
         dragging.add(key());
-        delete lanes[key()];
+        forgetLane(key());
         followPointer(event, null, () => dragging.delete(key()));
     });
+}
+
+// Forgets the value a lane last sent, so the next one goes out whatever it
+// is; a request still in flight keeps the lane's place.
+export function forgetLane(key) {
+    if (lanes[key]) { lanes[key].last = ""; }
 }
 
 // Follows the pointer that began a drag from the document, so the drag

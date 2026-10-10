@@ -1150,6 +1150,28 @@ class TestPullDown:
         page.wait_for_timeout(300)
         expect(page.locator("#brightness-num")).to_have_text("75")
 
+    def test_a_drag_keeps_one_settings_request_in_flight(self, page, hd):
+        # Two requests on the wire at once can reach the dial in either order,
+        # and the older value would then be the one it keeps.
+        open_page(page, hd)
+        open_sheet(page)
+        open_now, most, order = [0], [0], []
+
+        def handler(route):
+            order.append(route.request.post_data_json["brightness"])
+            open_now[0] += 1
+            most[0] = max(most[0], open_now[0])
+            reply = route.fetch()
+            open_now[0] -= 1
+            route.fulfill(response=reply)
+
+        page.route("**/api/v1/settings", handler)
+        drag_input(page, "#brightness", [60, 65, 70], final=75)
+        expect(page.locator("#brightness-num")).to_have_text("75")
+        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.panel.brightness === 75)")
+        assert most[0] == 1
+        assert order[0] == 60 and order[-1] == 75
+
     def test_sleep_after_posts_the_chosen_seconds(self, page, hd):
         sent = watch_posts(page)
         open_page(page, hd)
