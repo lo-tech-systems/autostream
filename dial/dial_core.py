@@ -22,7 +22,8 @@ runs, so a waiter that loops on the `seq` it last saw never misses the latest
 state (it may skip intermediate ones).
 
 The core also runs the poll. `start()` runs one thread, `dial-core`: it
-polls the appliances every poll interval (or sooner when asked), and once a
+polls the appliances every poll interval (or sooner when asked or when an
+appliance pushes a change, paced to a few ticks a second), and once a
 second does the housekeeping (the update watch, expiring warnings, the
 snooze write, the refresh of watched outputs and EQ). The poll's writes are
 published as they are made; the snapshot that ends a tick carries a new
@@ -99,6 +100,11 @@ DEFAULT_POLL_INTERVAL_S = 6
 RECONCILE_INTERVAL_S = 60
 # The housekeeping tick, and so the longest the core thread sleeps.
 HOUSEKEEPING_INTERVAL_S = 1.0
+# A tick asked for (a push, a touch, a focus change) within this long of
+# the last tick's end waits for the gap, so a burst of pushes costs one tick
+# per gap and the core is never a tight loop of status requests. The
+# periodic poll is not paced; its interval is longer than this.
+PUSH_POLL_MIN_GAP_S = 0.4
 # An appliance's warnings are fetched when it pushes a change, and again at
 # this interval as the repair for a push that never arrived. Each appliance
 # carries its own offset inside the spread, derived from its id, so a roster
@@ -199,6 +205,16 @@ _SNAPSHOT_FIELDS = tuple(
 _CAPABILITY_FLAGS = {
     "dial_outputs": "outputs", "dial_eq": "eq", "repeat_capable": "repeat",
     "dial_status": "status",
+}
+
+# What a pushed change makes the core ask for again, when it is watching
+# that appliance: the kinds that move the outputs list, and the EQ. A hint
+# that names nothing refreshes both. A kind in neither set (the track, say,
+# or one the core does not know) asks for nothing beyond the status the
+# tick fetches.
+_REFETCH_KINDS = {
+    "outputs": frozenset({"outputs", "volume", "mute", "session", "any"}),
+    "eq": frozenset({"eq", "any"}),
 }
 
 
@@ -1930,8 +1946,8 @@ class DialCore:
     def notify_state_changed(self, appliance_id: str, changed: tuple = ()) -> None:
         """Record that *appliance_id* pushed a state change: queue the id with
         what it said changed and wake the core thread, which asks the
-        appliance for its status on the tick that follows. No I/O; any
-        thread."""
+        appliance for its status on the tick that follows and refetches the
+        outputs or EQ it is watching for it. No I/O; any thread."""
         kinds = set(changed) or {"any"}
         with self._push_lock:
             self._state_pending.setdefault(appliance_id, set()).update(kinds)
@@ -1987,18 +2003,28 @@ class DialCore:
         """The core thread: poll every interval (or when woken), and do the
         housekeeping on every wake, never waiting longer than a second. The
         interval runs from the end of a tick, so a slow poll never backlogs.
-        The loop keeps its own time with a clock nothing replaces."""
+        A wake within `PUSH_POLL_MIN_GAP_S` of the last tick's end waits for
+        the gap (cut short by a stop), and the hints that arrive meanwhile
+        join the tick. The loop keeps its own time with a clock nothing
+        replaces."""
         next_poll = 0.0
+        last_tick_end = float("-inf")
         while not self._stop.is_set():
             now = time.perf_counter()
-            if self._poll_wake.is_set() or now >= next_poll:
+            woken = self._poll_wake.is_set()
+            if woken or now >= next_poll:
+                earliest = last_tick_end + PUSH_POLL_MIN_GAP_S
+                if woken and now < earliest and self._stop.wait(earliest - now):
+                    break
                 self._poll_wake.clear()
                 try:
                     self._drain_push_probes()
+                    self._drain_state_pushes()
                     self.poll_once()
                 except Exception:
                     logging.debug("dial core: poll iteration raised", exc_info=True)
-                next_poll = time.perf_counter() + self._poll_interval
+                last_tick_end = time.perf_counter()
+                next_poll = last_tick_end + self._poll_interval
             try:
                 self._housekeeping(self._clock())
             except Exception:
@@ -2172,6 +2198,33 @@ class DialCore:
                 state.auth_promotions += len(promoted)
             self._publish(mutate)
         return "probed"
+
+    def _drain_state_pushes(self) -> None:
+        """Act on the state pushes queued since the last tick: refetch the
+        outputs and EQ watched for each appliance, as its hint warrants; the
+        status itself is the tick's own job. A watched outputs list is left
+        to the outputs worker's own refetch while this dial's output request
+        to that appliance is still pending, so a reading cannot clear the
+        request's shown value before the appliance has applied it. The fetches
+        only enqueue; no lock is held while they do."""
+        with self._push_lock:
+            pushed, self._state_pending = self._state_pending, {}
+        if not pushed:
+            return
+        with self._lock:
+            watching_outputs = set(self._state.outputs_watch.values())
+            watching_eq = set(self._state.eq_watch.values())
+            request = self._state.outputs_request
+        for appliance_id, kinds in pushed.items():
+            logging.debug("dial core: state push from %s (%s)", appliance_id, ",".join(sorted(kinds)))
+            pending_here = (
+                request is not None and request.state == "pending"
+                and request.appliance_id == appliance_id
+            )
+            if kinds & _REFETCH_KINDS["outputs"] and appliance_id in watching_outputs and not pending_here:
+                self.fetch_outputs(appliance_id)
+            if kinds & _REFETCH_KINDS["eq"] and appliance_id in watching_eq:
+                self.fetch_eq(appliance_id)
 
     def _probe_auth(self, target) -> dict:
         return dial_core_poll.probe_auth(target, self._dial_id, fetch=self._io.fetch_status)

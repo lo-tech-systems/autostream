@@ -16,7 +16,7 @@ import dial_core
 import dial_volume as dv
 from dial_auth import AUTH_UNAUTHORIZED, auth_map
 from dial_core import DEFAULT_POLL_INTERVAL_S, FOCUS_PENDING_GRACE_S, DialCore, PollIO
-from dial_core_state import NowPlaying, artwork_key
+from dial_core_state import NowPlaying, TransportRequest, artwork_key
 from dial_test_support import (
     _FakeClock,
     _roster_entry,
@@ -916,6 +916,95 @@ class TestCoreThread:
         finally:
             core.stop()
 
+    def test_a_wake_just_after_a_tick_waits_for_the_gap(self):
+        core, gt = _make()
+        core.set_poll_interval(60)
+        starts, ends = [], []
+
+        def tick():
+            starts.append(time.perf_counter())
+            ends.append(time.perf_counter())
+
+        with patch.object(core, "poll_once", side_effect=tick):
+            core.start()
+            assert self._wait_for(lambda: len(starts) == 1)
+            time.sleep(0.02)
+            core.notify_state_changed("a" * 20, ("mute",))
+            assert self._wait_for(lambda: len(starts) == 2, limit=3.0)
+            core.stop()
+        assert starts[1] - ends[0] >= dial_core.PUSH_POLL_MIN_GAP_S
+
+    def test_a_stream_of_wakes_costs_one_tick_per_gap(self):
+        core, gt = _make()
+        core.set_poll_interval(60)
+        starts = []
+        with patch.object(core, "poll_once", side_effect=lambda: starts.append(time.perf_counter())):
+            core.start()
+            assert self._wait_for(lambda: len(starts) == 1)
+            began = time.perf_counter()
+            while time.perf_counter() - began < 1.0:
+                core.notify_state_changed("a" * 20, ("volume",))
+                time.sleep(0.01)
+            core.stop()
+        gaps = [b - a for a, b in zip(starts, starts[1:])]
+        assert gaps and all(gap >= dial_core.PUSH_POLL_MIN_GAP_S for gap in gaps)
+        assert len(starts) <= 4
+
+    def test_the_periodic_poll_is_not_paced(self):
+        core, gt = _make()
+        core.set_poll_interval(0.05)
+        starts = []
+        with patch.object(core, "poll_once", side_effect=lambda: starts.append(time.perf_counter())):
+            core.start()
+            assert self._wait_for(lambda: len(starts) >= 5)
+            core.stop()
+        gaps = [b - a for a, b in zip(starts, starts[1:])]
+        assert min(gaps) < dial_core.PUSH_POLL_MIN_GAP_S
+
+    def test_a_stop_during_the_gap_does_not_wait_it_out(self, monkeypatch):
+        monkeypatch.setattr(dial_core, "PUSH_POLL_MIN_GAP_S", 30.0)
+        core, gt = _make()
+        core.set_poll_interval(60)
+        polls = []
+        with patch.object(core, "poll_once", side_effect=lambda: polls.append(1)):
+            core.start()
+            assert self._wait_for(lambda: len(polls) == 1)
+            thread = core._thread
+            core.request_poll()
+            time.sleep(0.1)
+            started = time.monotonic()
+            core.stop()
+            assert time.monotonic() - started < 1.5
+        assert not thread.is_alive()
+        assert len(polls) == 1
+
+    def test_a_hint_that_lands_while_the_gap_runs_joins_the_tick_that_follows(self, monkeypatch):
+        monkeypatch.setattr(dial_core, "PUSH_POLL_MIN_GAP_S", 1.0)
+        core, gt = _make()
+        core.set_poll_interval(60)
+        polls, drained = [], []
+        real_drain = core._drain_state_pushes
+
+        def drain():
+            drained.append({k: set(v) for k, v in core._state_pending.items()})
+            real_drain()
+
+        def tick():
+            polls.append(1)
+
+        with patch.object(core, "poll_once", side_effect=tick), \
+                patch.object(core, "_drain_state_pushes", side_effect=drain):
+            core.start()
+            assert self._wait_for(lambda: len(polls) == 1)
+            core.request_poll()
+            time.sleep(0.1)
+            core.notify_state_changed("a" * 20, ("mute",))
+            assert self._wait_for(lambda: len(polls) == 2, limit=4.0)
+            time.sleep(0.3)
+            core.stop()
+        assert len(polls) == 2
+        assert drained[-1] == {"a" * 20: {"mute"}}
+
 
 class TestHousekeeping:
     def _core_with_watcher(self, view):
@@ -972,3 +1061,146 @@ class TestHousekeeping:
                 time.sleep(0.01)
             core.stop()
         assert len(polls) >= 3
+
+class TestDrainStatePushes:
+    """What a pushed change makes the core ask for again."""
+
+    AID = _fresh_id("ds1")
+    OTHER = _fresh_id("ds2")
+
+    def _watching(self, outputs=True, eq=True, roster_ids=None):
+        ids = roster_ids or (self.AID, self.OTHER)
+        core, gt = _make()
+        core.set_roster([
+            _roster_entry(appliance_id=i, name=f"Room {n}", ip=f"192.0.2.{10 + n}", dial_outputs=True, dial_eq=True)
+            for n, i in enumerate(ids)
+        ])
+        core.set_field("reporting_id", self.AID)
+        with patch("dial_core.enqueue_fetch"), patch("dial_core._enqueue_eq_fetch"):
+            if outputs:
+                core.watch_outputs(self.AID, "hd", True, fetch=False)
+            if eq:
+                core.watch_eq(self.AID, "hd", True, fetch=False)
+        return core
+
+    def _drain(self, core, kinds, appliance_id=None):
+        """The drain after a push naming *kinds*: the appliance ids asked for
+        outputs and for EQ."""
+        with patch("dial_core.enqueue_fetch") as outputs, patch("dial_core._enqueue_eq_fetch") as eq:
+            core.notify_state_changed(appliance_id or self.AID, kinds)
+            core._drain_state_pushes()
+        return (
+            [c.args[0].appliance_id for c in outputs.call_args_list],
+            [c.args[0].appliance_id for c in eq.call_args_list],
+        )
+
+    def _pending_request(self, core, appliance_id, state="pending"):
+        def mutate(s):
+            s.outputs_request = TransportRequest(appliance_id, "output_set", 1.0, state, 1.0, None)
+        core._publish(mutate)
+
+    def test_nothing_queued_asks_for_nothing(self):
+        core = self._watching()
+        with patch("dial_core.enqueue_fetch") as outputs, patch("dial_core._enqueue_eq_fetch") as eq:
+            core._drain_state_pushes()
+        outputs.assert_not_called()
+        eq.assert_not_called()
+
+    @pytest.mark.parametrize("kind", ["outputs", "volume", "mute", "session"])
+    def test_a_kind_that_moves_the_speakers_refetches_only_the_outputs(self, kind):
+        assert self._drain(self._watching(), (kind,)) == ([self.AID], [])
+
+    def test_the_eq_kind_refetches_only_the_eq(self):
+        assert self._drain(self._watching(), ("eq",)) == ([], [self.AID])
+
+    def test_a_hint_naming_nothing_refetches_both(self):
+        core = self._watching()
+        with patch("dial_core.enqueue_fetch") as outputs, patch("dial_core._enqueue_eq_fetch") as eq:
+            core.notify_state_changed(self.AID)
+            core._drain_state_pushes()
+        assert outputs.call_count == 1 and eq.call_count == 1
+
+    @pytest.mark.parametrize("kinds", [("track",), ("repeat",), ("nonsense",), ("track", "nonsense")])
+    def test_a_kind_with_no_refetch_asks_for_nothing_beyond_the_poll(self, kinds):
+        assert self._drain(self._watching(), kinds) == ([], [])
+
+    def test_an_unknown_kind_beside_a_known_one_does_not_stop_it(self):
+        assert self._drain(self._watching(), ("nonsense", "volume", "eq")) == ([self.AID], [self.AID])
+
+    def test_an_appliance_nobody_watches_is_not_refetched(self):
+        assert self._drain(self._watching(), ("volume", "eq"), appliance_id=self.OTHER) == ([], [])
+
+    def test_only_the_lists_that_are_watched_are_refetched(self):
+        assert self._drain(self._watching(eq=False), ("any",)) == ([self.AID], [])
+        assert self._drain(self._watching(outputs=False), ("any",)) == ([], [self.AID])
+
+    def test_a_watched_appliance_that_has_left_the_roster_is_not_refetched(self):
+        core = self._watching()
+        core.set_roster([])
+        assert self._drain(core, ("any",)) == ([], [])
+
+    def test_a_pending_output_request_to_the_appliance_holds_back_its_outputs_refetch(self):
+        core = self._watching()
+        self._pending_request(core, self.AID)
+        assert self._drain(core, ("volume", "eq")) == ([], [self.AID])
+
+    @pytest.mark.parametrize("state", ["accepted", "rejected"])
+    def test_a_settled_output_request_does_not_hold_back_the_refetch(self, state):
+        core = self._watching()
+        self._pending_request(core, self.AID, state)
+        assert self._drain(core, ("volume",)) == ([self.AID], [])
+
+    def test_a_pending_output_request_to_another_appliance_does_not_hold_it_back(self):
+        core = self._watching()
+        self._pending_request(core, self.OTHER)
+        assert self._drain(core, ("volume",)) == ([self.AID], [])
+
+    def test_a_drain_empties_the_queue_and_a_second_asks_for_nothing(self):
+        core = self._watching()
+        assert self._drain(core, ("volume", "eq")) == ([self.AID], [self.AID])
+        assert core._state_pending == {}
+        with patch("dial_core.enqueue_fetch") as outputs, patch("dial_core._enqueue_eq_fetch") as eq:
+            core._drain_state_pushes()
+        outputs.assert_not_called()
+        eq.assert_not_called()
+
+    def test_a_hint_that_lands_while_the_drain_fetches_waits_for_the_next_tick(self):
+        core = self._watching()
+
+        def late(target, **kwargs):
+            core.notify_state_changed(self.AID, ("eq",))
+
+        with patch("dial_core.enqueue_fetch", side_effect=late), patch("dial_core._enqueue_eq_fetch"):
+            core.notify_state_changed(self.AID, ("volume",))
+            core._drain_state_pushes()
+        assert core._state_pending == {self.AID: {"eq"}}
+
+    def test_the_drain_holds_no_lock_while_it_fetches(self):
+        core = self._watching()
+        held = []
+
+        def probe(target, **kwargs):
+            held.append((core._lock.locked(), core._push_lock.locked()))
+
+        with patch("dial_core.enqueue_fetch", side_effect=probe), patch("dial_core._enqueue_eq_fetch"):
+            core.notify_state_changed(self.AID, ("volume",))
+            core._drain_state_pushes()
+        assert held == [(False, False)]
+
+    def test_the_thread_refetches_the_watched_speakers_when_a_hint_arrives(self):
+        core = self._watching()
+        core.set_poll_interval(60)
+        asked = []
+        with patch.object(core, "poll_once"), patch.object(core, "refresh_watched"), \
+                patch("dial_core.enqueue_fetch", side_effect=lambda t, **k: asked.append(t.appliance_id)), \
+                patch("dial_core._enqueue_eq_fetch"):
+            core.start()
+            try:
+                time.sleep(0.05)
+                core.notify_state_changed(self.AID, ("mute",))
+                deadline = time.monotonic() + 3.0
+                while not asked and time.monotonic() < deadline:
+                    time.sleep(0.005)
+            finally:
+                core.stop()
+        assert asked == [self.AID]

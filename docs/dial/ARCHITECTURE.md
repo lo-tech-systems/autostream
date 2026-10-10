@@ -47,7 +47,7 @@ view](#the-hd-page-is-a-second-view).
 
 | Thread | Owner | What it does |
 |---|---|---|
-| `dial-core` | core | Polls appliances every poll interval, or sooner when asked or when an appliance pushes a change. Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and refreshing watched outputs and EQ. |
+| `dial-core` | core | Polls appliances every poll interval, or sooner when asked or when an appliance pushes a change (a poll asked for within 0.4 s of the last one's end waits for that gap). Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and refreshing watched outputs and EQ. |
 | `dial-display-repaint` | view | Waits for a core snapshot or an overlay signal, folds the newest snapshot into the screen and paints. This is the only thread that composes and pushes frames. |
 | `touch-event-source` | touch | Reads the touch controller and turns touches into taps. Taps call core actions (never while holding the view lock) and the view's own screen changes. |
 | `volume-worker`, `eq-worker`, `outputs-worker`, `repeat-worker`, `network-worker` | workers | Do the slow appliance and system calls. Their results are handed back to the core, which folds them into state and queues what they mean for the screen. |
@@ -88,8 +88,16 @@ pushes from an appliance: `/auth-changed`, `/warnings-changed` and
 only queues the appliance id (a state push also carries what it said changed)
 and wakes the core thread; nothing is fetched on the HTTP thread. The core's
 reaction is a poll, so the push brings the next status request forward and the
-poll is still the truth. A push that is lost or never sent costs nothing but
-the wait for the regular poll.
+poll is still the truth. A state push also asks again for the speakers list
+or the equaliser when the dial is watching that appliance and the kinds the
+push names could have changed it (a push naming nothing asks for both); the
+speakers list is left alone while this dial's own speaker request to that
+appliance is still pending, and a kind the core does not recognise asks for
+nothing beyond the poll. A poll woken within 0.4 s of the last one's end waits
+for the gap, and hints that arrive meanwhile join that poll, so a burst of
+pushes costs one poll per gap; the regular poll is not delayed. A push that is
+lost or never sent costs nothing but the wait for the regular poll (and, for
+the speakers list, its own periodic refresh).
 
 **The effects queue.** Some things the core learns are not state but an event
 the screen should react to once: a warning source began or cleared an incident,
