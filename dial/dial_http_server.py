@@ -33,6 +33,7 @@ from dial_display_profiles import (
     list_profiles,
 )
 from dial_touch_controllers import list_controllers
+from dial_touch_layout import metrics_for
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
@@ -68,6 +69,34 @@ def _profile_for(display_cfg):
         return get_profile(display_cfg.screen_type)
     except UnknownDisplayProfileError:
         return get_profile(DEFAULT_PROFILE_KEY)
+
+
+def _layout_report_for(display_cfg) -> dict:
+    """What *display_cfg*'s screen_type, screen_size_inches and layout_size
+    resolve to: the logical size the display composes and hit-tests at, the
+    physical panel size it resamples to, and the content tier and touch-
+    target assessment for that combination. Computed from the persisted
+    configuration (not the open backend), so the answer is available before
+    a panel is fitted or open — the display manager's own
+    layout_context_for()/metrics_for() pair, applied here to the request's
+    own config snapshot. Pure and lock-free: a few multiplications on that
+    snapshot. Never raises: an unknown screen_type resolves to the default
+    profile inside layout_context_for()."""
+    ctx = layout_context_for(display_cfg)
+    m = metrics_for(
+        ctx.logical_width, ctx.logical_height,
+        mm_per_px=ctx.mm_per_px, size_chosen=ctx.size_chosen,
+    )
+    return {
+        "logical_width": ctx.logical_width,
+        "logical_height": ctx.logical_height,
+        "physical_width": ctx.physical_width,
+        "physical_height": ctx.physical_height,
+        "resampled": ctx.resamples,
+        "size_chosen": ctx.size_chosen,
+        "content_tier": m.content_tier,
+        "touch_short": m.touch_short,
+    }
 
 
 # ---- Name validation --------------------------------------------------------
@@ -552,6 +581,7 @@ class DialHTTPServer:
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
                         'layout_sizes':   layout_size_options(_profile_for(cfg.display)),
+                        'layout':         _layout_report_for(cfg.display),
                         'runtime':        runtime,
                     })
 
@@ -922,6 +952,7 @@ class DialHTTPServer:
                             'layout_size': cfg.display.layout_size,
                         },
                         'layout_sizes': layout_size_options(_profile_for(cfg.display)),
+                        'layout': _layout_report_for(cfg.display),
                         'runtime': runtime,
                     })
                     return
@@ -970,6 +1001,7 @@ class DialHTTPServer:
                         'layout_size': new_cfg.display.layout_size,
                     },
                     'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
+                    'layout':           _layout_report_for(new_cfg.display),
                     'runtime':          runtime,
                     'restart_required': touch_type_changed,
                 }

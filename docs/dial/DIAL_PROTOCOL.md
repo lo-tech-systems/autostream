@@ -690,6 +690,16 @@ values from this endpoint.
     {"key": "medium", "text": "Medium (320x240)"},
     {"key": "large", "text": "Large (640x480)"}
   ],
+  "layout": {
+    "logical_width": 160,
+    "logical_height": 128,
+    "physical_width": 160,
+    "physical_height": 128,
+    "resampled": false,
+    "size_chosen": false,
+    "content_tier": "base",
+    "touch_short": false
+  },
   "runtime": {
     "fitted": false,
     "rotate": false,
@@ -720,6 +730,12 @@ values from this endpoint.
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
 | `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
 | `layout_sizes` | array | The logical render sizes this dial can compose the *current* `screen_type` at, as `[{"key", "text"}, ...]` (e.g. `{"key": "medium", "text": "Medium (320x240)"}`). The panel's own native resolution is not listed here - a client represents it as `screen.layout_size: null`. **Its presence is the capability gate for this field** - see **Layout-size capability gate** below |
+| `layout.logical_width`, `layout.logical_height` | int | The size every screen is composed and hit-tested at: the chosen `screen.layout_size`, or the panel's own resolution when none is chosen |
+| `layout.physical_width`, `layout.physical_height` | int | The configured profile's panel size - the size the composed frame is resampled to before it is sent |
+| `layout.resampled` | bool | `true` when the logical size differs from the physical size, i.e. the frame is scaled to the panel before it is sent |
+| `layout.size_chosen` | bool | `true` when `screen.layout_size` is set, meaning the automatic small-screen fallback (see `layout.touch_short`) does not apply |
+| `layout.content_tier` | string | The chrome density the logical size resolves to: `"base"`, `"rich"`, or `"large"`. Informational - clients should not assume this set is closed |
+| `layout.touch_short` | bool | `true` when the quarter-height control band on this glass works out below the comfortable-touch floor (a fixed 6 mm), so on-screen controls are shorter than a fingertip |
 | `runtime.fitted` | bool | Effective fitted flag currently applied by the display manager |
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
 | `runtime.screen_type` | string | The **active** display profile key - see **Configured vs. active** below |
@@ -782,6 +798,18 @@ this capability from `supported`/`supported_touch`. `layout_sizes` reflects the
 **currently configured** `screen_type` - a client re-fetches or reads the array returned
 by `POST /screen/settings` after changing `screen_type`, rather than assuming the
 previous list still applies.
+
+**Layout report.** `layout` reports what the persisted `screen` settings resolve to: the
+logical size the dial composes and hit-tests at, the physical panel size it resamples to,
+and the content tier and touch-target assessment for that combination. It is informational
+and computed from the **persisted** configuration, so it is meaningful even before a panel
+is fitted or open - never from the open backend; compare `screen.screen_type` with
+`runtime.screen_type` for what is actually open. Its presence indicates the dial publishes
+this report; a client never sends any of it back. `layout.content_tier` names one of three
+tiers today, but clients should not assume the set is closed. `layout.touch_short` is an
+assessment against a fixed 6 mm control-band floor, and `layout.size_chosen` records
+whether a deliberate layout-size choice overrides the automatic fallback to the smallest
+tier. `layout.resampled` means the composed frame is scaled to the panel before it is sent.
 
 ### `POST /screen/settings`
 
@@ -896,6 +924,11 @@ capability gate** above: gate on `supported_touch`, not on `supported`.
 `layout_size` follows the identical rule as its **own, separate** capability - see
 **Layout-size capability gate** above: gate on `layout_sizes`, not on `supported` or
 `supported_touch`.
+
+Both response shapes below also carry a `layout` object (see **Layout report** above) for
+the configuration they echo: the success path's `layout` reflects the newly-saved `screen`,
+and the `screen_apply_failed` path's `layout` reflects the still-persisted `screen` it
+echoes instead.
 
 **Validation:**
 

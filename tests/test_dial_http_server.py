@@ -1415,6 +1415,189 @@ class TestLayoutSizeSetting:
 
 
 # ---------------------------------------------------------------------------
+# Layout report — what the persisted screen settings resolve to. Computed
+# from the configured (not active) display, the same layout_context_for()/
+# metrics_for() pair the display manager itself composes and hit-tests
+# with, so the pinned rows below are a characterisation of that shared
+# arithmetic, not a second derivation of it.
+# ---------------------------------------------------------------------------
+
+class TestLayoutReportHelper:
+    """Pins _layout_report_for() for every confirmed profile/size combination."""
+
+    @pytest.mark.parametrize(
+        "screen_type, screen_size_inches, layout_size, expected",
+        [
+            ("st7735s_160x128", None, None, {
+                "logical_width": 160, "logical_height": 128,
+                "physical_width": 160, "physical_height": 128,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "base", "touch_short": False,
+            }),
+            ("st7735s_160x128", None, "medium", {
+                "logical_width": 320, "logical_height": 240,
+                "physical_width": 160, "physical_height": 128,
+                "resampled": True, "size_chosen": True,
+                "content_tier": "rich", "touch_short": False,
+            }),
+            ("st7735s_160x128", None, "large", {
+                "logical_width": 640, "logical_height": 480,
+                "physical_width": 160, "physical_height": 128,
+                "resampled": True, "size_chosen": True,
+                "content_tier": "large", "touch_short": False,
+            }),
+            ("st7735s_128x128", None, None, {
+                "logical_width": 128, "logical_height": 128,
+                "physical_width": 128, "physical_height": 128,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "base", "touch_short": False,
+            }),
+            ("st7789_240x240", None, None, {
+                "logical_width": 240, "logical_height": 240,
+                "physical_width": 240, "physical_height": 240,
+                "resampled": False, "size_chosen": False,
+                # Vetoed back to base: the quarter-height band on this glass
+                # is short of the touch floor, and no size was chosen.
+                "content_tier": "base", "touch_short": True,
+            }),
+            ("st7789_320x240", None, None, {
+                "logical_width": 320, "logical_height": 240,
+                "physical_width": 320, "physical_height": 240,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "rich", "touch_short": False,
+            }),
+            ("ili9341_320x240", None, None, {
+                "logical_width": 320, "logical_height": 240,
+                "physical_width": 320, "physical_height": 240,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "rich", "touch_short": False,
+            }),
+            ("st7789_320x240", None, "medium", {
+                "logical_width": 320, "logical_height": 240,
+                "physical_width": 320, "physical_height": 240,
+                "resampled": False, "size_chosen": True,
+                "content_tier": "rich", "touch_short": False,
+            }),
+            ("st7789_320x240", 2.8, "small", {
+                "logical_width": 160, "logical_height": 128,
+                "physical_width": 320, "physical_height": 240,
+                "resampled": True, "size_chosen": True,
+                "content_tier": "base", "touch_short": False,
+            }),
+            ("st7789_320x240", 2.8, "large", {
+                "logical_width": 640, "logical_height": 480,
+                "physical_width": 320, "physical_height": 240,
+                "resampled": True, "size_chosen": True,
+                "content_tier": "large", "touch_short": False,
+            }),
+            # touch_short is True at 240x240's default size...
+            ("st7789_240x240", 1.3, None, {
+                "logical_width": 240, "logical_height": 240,
+                "physical_width": 240, "physical_height": 240,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "base", "touch_short": True,
+            }),
+            # ...and moves with the glass: the same 320x240 panel, set to a
+            # smaller physical size than its 2.8in default, also reports
+            # touch_short True (this is the case the setup-card warning
+            # exists for).
+            ("st7789_320x240", 1.5, None, {
+                "logical_width": 320, "logical_height": 240,
+                "physical_width": 320, "physical_height": 240,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "base", "touch_short": True,
+            }),
+            # An unknown screen_type falls back to the default profile.
+            ("no-such-profile", None, None, {
+                "logical_width": 160, "logical_height": 128,
+                "physical_width": 160, "physical_height": 128,
+                "resampled": False, "size_chosen": False,
+                "content_tier": "base", "touch_short": False,
+            }),
+        ],
+    )
+    def test_pinned_rows(self, screen_type, screen_size_inches, layout_size, expected):
+        cfg = DialDisplayConfig(
+            screen_type=screen_type,
+            screen_size_inches=screen_size_inches,
+            layout_size=layout_size,
+        )
+        assert dhs._layout_report_for(cfg) == expected
+
+    def test_every_value_is_int_bool_or_str_never_none(self):
+        for screen_type in ("st7735s_160x128", "st7789_240x240", "no-such-profile"):
+            report = dhs._layout_report_for(DialDisplayConfig(screen_type=screen_type))
+            for key, value in report.items():
+                assert value is not None, f"{key} is None for {screen_type}"
+                assert isinstance(value, (int, bool, str)), (
+                    f"{key}={value!r} for {screen_type} is {type(value)}, not int/bool/str"
+                )
+
+
+class TestLayoutReportWiring:
+    def test_get_layout_matches_helper_for_default_config(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
+        r = _call_handler("/screen/settings", method="GET", cfg=cfg)
+        assert r["data"]["layout"] == dhs._layout_report_for(cfg.display)
+
+    def test_get_layout_matches_helper_for_large_configured_display(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, screen_type="st7789_320x240", layout_size="large",
+        ))
+        r = _call_handler("/screen/settings", method="GET", cfg=cfg)
+        assert r["data"]["layout"] == dhs._layout_report_for(cfg.display)
+
+    def test_get_layout_present_alongside_unchanged_runtime_keys(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
+        r = _call_handler("/screen/settings", method="GET", cfg=cfg)
+        assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
+        assert "layout" not in r["data"]["runtime"]
+
+    def test_post_success_layout_reflects_new_config(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, screen_type="st7789_320x240",
+        ))
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_320x240", "layout_size": "large"}},
+            cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["data"]["ok"] is True
+        assert r["data"]["layout"] == {
+            "logical_width": 640, "logical_height": 480,
+            "physical_width": 320, "physical_height": 240,
+            "resampled": True, "size_chosen": True,
+            "content_tier": "large", "touch_short": False,
+        }
+
+    def test_post_body_without_layout_size_reports_size_chosen_false(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["data"]["layout"]["size_chosen"] is False
+
+    def test_post_apply_failed_layout_reflects_persisted_config(self):
+        """On a failed screen_type apply, the response echoes the persisted
+        (previous) screen — layout must match, not the rejected request."""
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=False, screen_type="st7735s_160x128",
+        ))
+        server = FakeDialServer(cfg)
+        server._display_status = _FailingDisplayStatusProvider()
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
+            setup_server=server,
+        )
+        assert r["data"]["error"] == "screen_apply_failed"
+        assert r["data"]["layout"] == dhs._layout_report_for(cfg.display)
+        # The rejected request's screen_type report differs — proves this
+        # isn't accidentally matching both.
+        assert r["data"]["layout"] != dhs._layout_report_for(
+            DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
+        )
+
+
+# ---------------------------------------------------------------------------
 # Screen-size setting (physical diagonal, inches) — same save/echo path as
 # the other screen fields; applies live (no restart), so it never sets
 # restart_required.
