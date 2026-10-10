@@ -362,12 +362,21 @@ class TestSpecialSchemeRouteParity:
             "/api/dial/pin_recovery/status/",
             "/api/dial/update/status/",
             "/api/dial/screen/settings/",
+            "/api/dial/screen/image/",
         }
         actual = {
             r.prefix for r in routes_mod.ROUTES
             if r.prefix in expected_prefixes and "GET" in r.methods
         }
         assert actual == expected_prefixes
+
+    def test_dial_screen_image_prefix_registered(self):
+        matches = [r for r in routes_mod.ROUTES
+                   if r.prefix == "/api/dial/screen/image/" and "GET" in r.methods]
+        assert len(matches) == 1
+        assert matches[0].auth is AuthRequirement.FULL
+        assert matches[0].kind == "api"
+        assert matches[0].allow_unconfigured is False
 
     def test_gateway_routes_registered(self):
         get_exact = routes_mod._resolve("/api/appliances", "GET")

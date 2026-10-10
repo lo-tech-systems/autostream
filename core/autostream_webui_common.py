@@ -107,6 +107,27 @@ def send_html(handler, code: int, html_str: str, *, extra_headers: Optional[dict
         return
 
 
+def send_bytes(handler, code: int, content_type: str, body: bytes, *,
+               extra_headers: Optional[dict] = None) -> None:
+    """Write a binary response, mirroring send_html()'s shape.
+
+    Sends status/headers, writes the body, and guards the write against a
+    client that has already disconnected.
+    """
+    try:
+        handler.send_response(code)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Content-Length", str(len(body)))
+        if extra_headers:
+            for name, value in extra_headers.items():
+                handler.send_header(name, value)
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client navigated away / refreshed / closed the tab mid-response.
+        return
+
+
 def build_hostname_redirect_url(handler, hostname: str, path: str = "/") -> str:
     """Build an absolute .local URL for a hostname change redirect."""
     host_header = handler.headers.get("Host", "")

@@ -540,6 +540,7 @@ def _dial_card_html(
     fw_version: str = "",
     needs_update: bool = False,
     pin_recovery: bool = False,
+    ip: str = "",
 ) -> str:
     """Normalised dial card for any authorization/online state.
 
@@ -556,6 +557,9 @@ def _dial_card_html(
     recovery window, the PIN-recovery modal's own status poller keeps the
     badge in sync (add/remove) for a card while that modal is open — see
     openDialPinRecoveryModal()/_dialSetRecoveryBadge() below.
+
+    ip is the live mDNS-resolved address, shown under "Current name" only
+    while the dial is online; display-only, no persisted copy.
     """
     su = html.escape(uuid)
     nv = html.escape(name or "")
@@ -591,8 +595,16 @@ def _dial_card_html(
         '<button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"'
         ' data-dial-action="update">Update firmware</button>'
     ) if (online and needs_update) else ""
-    pin_btn_margin_top = "0.5rem" if fw_update_btn else "0.75rem"
+    show_screen_btn = (
+        '<button type="button" class="pill-btn small" style="width:100%;margin-top:0.75rem;"'
+        ' data-dial-action="show-screen">Show dial screen</button>'
+    ) if online else ""
+    pin_btn_margin_top = "0.5rem" if (fw_update_btn or show_screen_btn) else "0.75rem"
     current_name_display = nv if nv else html.escape("(unnamed)")
+    ip_html = (
+        f'<div style="margin-top:0.25rem;font-size:0.8rem;color:var(--color-text-muted);">'
+        f'IP: <span class="dial-current-ip">{html.escape(ip)}</span></div>'
+    ) if (online and ip) else ""
 
     card_html = settings_card_html(f"""
           <div class="dial-card" data-dial-uuid="{su}"
@@ -621,6 +633,7 @@ def _dial_card_html(
             {last_seen_html}<div style="font-size:0.7rem;color:var(--color-text-muted);word-break:break-all;margin-top:0.25rem;">UUID: {su}</div>
             <input type="hidden" class="dial-name" value="{nv}">
             <div style="margin-top:0.5rem;font-size:0.9rem;">Current name: <strong class="dial-current-name">{current_name_display}</strong></div>
+            {ip_html}
             <div class="dial-config"{config_display}>
               <div class="dial-locked-section dial-section-locked">
                 <div class="dial-locked-header">
@@ -711,7 +724,7 @@ def _dial_card_html(
                           data-dial-action="change-pin">Change Dial PIN</button>
                 </div>
               </div>
-              {fw_update_btn}
+              {show_screen_btn}{fw_update_btn}
               <button type="button" class="pill-btn small" style="width:100%;margin-top:{pin_btn_margin_top};"
                       data-dial-action="recover-pin">Reset Lost PIN</button>
               <p class="dial-pin-no-confirm-msg" style="display:none;margin-top:0.5rem;font-size:0.85em;color:var(--color-text-secondary,#888);">
@@ -1675,6 +1688,7 @@ def _setup_dial_cards_html() -> tuple:
             fw_version=_fw,
             needs_update=_needs_upd,
             pin_recovery=_pin_recovery,
+            ip=(_sighting.ip if _sighting else ""),
         )
     for _sighting in _all_sightings:
         if _sighting.uuid not in _authorized_uuids:
@@ -1688,6 +1702,7 @@ def _setup_dial_cards_html() -> tuple:
                 fw_version=_new_fw,
                 needs_update=_new_needs_upd,
                 pin_recovery=bool(_sighting.pin_recovery),
+                ip=_sighting.ip,
             )
     if not _dial_cards_html:
         _dial_cards_html = (
@@ -2121,6 +2136,21 @@ def send_setup_page(
     </div>
   </div>
 </div>"""
+    _dial_screen_modal_div = """\
+<div id="dialScreenModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialScreenModalTitle">
+  <div class="panel modal-panel" style="--modal-width:44rem;">
+    <div class="hdr modal-hdr" id="dialScreenModalTitle">Dial screen</div>
+    <div class="bd modal-bd" style="text-align:center;">
+      <p id="dialScreenModalMsg" style="color:var(--color-text-muted);"></p>
+      <img id="dialScreenModalImg" alt="Current dial screen"
+           style="display:none;max-width:100%;height:auto;image-rendering:pixelated;border-radius:8px;">
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialScreenModalRefresh">Refresh</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialScreenModalClose">Close</button>
+    </div>
+  </div>
+</div>"""
     _dial_name_modal_div = """\
 <div id="dialNameModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialNameModalTitle">
   <div class="panel modal-panel">
@@ -2212,7 +2242,8 @@ def send_setup_page(
 </div>"""
     _body_prefix = (
         f"{factory_reset_modal}\n{reboot_modal}\n{_pin_modal_div}\n{_sd_health_modal_div}\n{_hostname_modal_div}\n"
-        f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_dial_result_modal_div}\n{_wifi_hotspot_modal_div}\n"
+        f"{_dial_pin_modal_div}\n{_dial_pin_recovery_modal_div}\n{_dial_name_modal_div}\n{_dial_result_modal_div}\n"
+        f"{_dial_screen_modal_div}\n{_wifi_hotspot_modal_div}\n"
         f"{_bt_pairing_modal_div}\n"
         f"{INFO_MODAL_HTML}"
     )
@@ -3928,6 +3959,7 @@ def send_setup_page(
             'wrong_pin': 'Incorrect PIN',
             'too_many_attempts': 'Too many attempts; try again later',
             'screen_apply_failed': 'Screen settings could not be applied',
+            'no_frame': 'The dial is not showing anything right now',
           }};
           return map[String(error || '')] || String(error || 'Unknown error');
         }}
@@ -4018,6 +4050,59 @@ def send_setup_page(
         function _dialCloseResultModal() {{
           var modal = document.getElementById('dialResultModal');
           if (modal) modal.classList.remove('show');
+        }}
+
+        // One-shot "Show dial screen" modal: fetches the current panel
+        // image through the appliance's binary proxy and shows it, or a
+        // message when there is nothing to show. Refresh re-runs the same
+        // fetch; the object URL behind the <img> is revoked on every state
+        // change and on close so repeated use cannot leak blobs.
+        var _dialScreenModalUuid = '';
+        var _dialScreenObjectUrl = null;
+
+        function _dialScreenSetState(msg, imgUrl) {{
+          var msgEl = document.getElementById('dialScreenModalMsg');
+          var imgEl = document.getElementById('dialScreenModalImg');
+          if (msgEl) {{ msgEl.textContent = msg || ''; msgEl.style.display = msg ? '' : 'none'; }}
+          if (imgEl) {{
+            if (_dialScreenObjectUrl) {{ URL.revokeObjectURL(_dialScreenObjectUrl); _dialScreenObjectUrl = null; }}
+            if (imgUrl) {{ _dialScreenObjectUrl = imgUrl; imgEl.src = imgUrl; imgEl.style.display = ''; }}
+            else {{ imgEl.removeAttribute('src'); imgEl.style.display = 'none'; }}
+          }}
+        }}
+
+        async function _dialScreenFetch() {{
+          if (!_dialScreenModalUuid) return;
+          _dialScreenSetState('Loading…', null);
+          try {{
+            var r = await fetch('/api/dial/screen/image/' + encodeURIComponent(_dialScreenModalUuid),
+                                {{cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}}});
+            var ct = (r.headers.get('Content-Type') || '').toLowerCase();
+            if (r.ok && ct.indexOf('image/png') === 0) {{
+              var blob = await r.blob();
+              _dialScreenSetState('', URL.createObjectURL(blob));
+              return;
+            }}
+            var parsed = await _parseDialResponse(r);
+            _dialScreenSetState(_dialErrorMessage(parsed.error), null);
+          }} catch (e) {{
+            _dialScreenSetState('Network error', null);
+          }}
+        }}
+
+        function dialShowScreen(card) {{
+          _dialScreenModalUuid = dialUUID(card);
+          var modal = document.getElementById('dialScreenModal');
+          if (!modal || !_dialScreenModalUuid) return;
+          modal.classList.add('show');
+          _dialScreenFetch();
+        }}
+
+        function _dialCloseScreenModal() {{
+          var modal = document.getElementById('dialScreenModal');
+          if (modal) modal.classList.remove('show');
+          _dialScreenSetState('', null);
+          _dialScreenModalUuid = '';
         }}
 
         function _dialFinishTouchRestartPoll(card, badgeState, message, ok) {{
@@ -4967,6 +5052,10 @@ def send_setup_page(
           }});
           var resultOk = document.getElementById('dialResultModalOk');
           if (resultOk) resultOk.addEventListener('click', _dialCloseResultModal);
+          var dialScreenClose = document.getElementById('dialScreenModalClose');
+          var dialScreenRefresh = document.getElementById('dialScreenModalRefresh');
+          if (dialScreenClose) dialScreenClose.addEventListener('click', _dialCloseScreenModal);
+          if (dialScreenRefresh) dialScreenRefresh.addEventListener('click', _dialScreenFetch);
           var dialNameOk = document.getElementById('dialNameModalOk');
           var dialNameCancel = document.getElementById('dialNameModalCancel');
           var dialNameInput = document.getElementById('dialNameModalInput');
@@ -4986,6 +5075,8 @@ def send_setup_page(
             if (ev.key === 'Escape' && rm && rm.classList.contains('show')) closeDialPinRecoveryModal();
             var nm = document.getElementById('dialNameModal');
             if (ev.key === 'Escape' && nm && nm.classList.contains('show')) closeDialNameModal();
+            var sm = document.getElementById('dialScreenModal');
+            if (ev.key === 'Escape' && sm && sm.classList.contains('show')) _dialCloseScreenModal();
           }});
         }});
         // Dials card (lazy-loaded): the .dial-card bindings below used
@@ -5060,6 +5151,7 @@ def send_setup_page(
               if (!target || target.tagName === 'INPUT') return;
               var action = target.dataset.dialAction;
               if (action === 'revoke') dialRevoke(card);
+              if (action === 'show-screen') dialShowScreen(card);
               if (action === 'update') dialUpdateFirmware(card);
               if (action === 'change-pin') dialChangePIN(card);
               if (action === 'recover-pin') openDialPinRecoveryModal(card);

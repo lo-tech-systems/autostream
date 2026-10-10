@@ -30,11 +30,14 @@ from autostream_webui_dials import (
     handle_dial_configure_post,
     handle_dial_screen_settings_get,
     handle_dial_screen_settings_post,
+    handle_dial_screen_image_get,
     handle_dial_recovery_arm_post,
     handle_dial_recovery_disarm_post,
     _proxy_get,
     _proxy_post,
+    _proxy_get_bytes,
     _MAX_PROXY_RESPONSE_BYTES,
+    _MAX_PROXY_IMAGE_BYTES,
 )
 
 
@@ -71,6 +74,18 @@ def _conn_success(body: bytes = b'{"ok":true}', status: int = 200):
     return conn
 
 
+def _conn_bytes(body: bytes, status: int = 200, content_type: str = "image/png"):
+    """A mock HTTPConnection whose response also answers getheader(), for
+    _proxy_get_bytes() (which reads Content-Type off the response)."""
+    conn = MagicMock()
+    resp = MagicMock()
+    resp.status = status
+    resp.getheader.return_value = content_type
+    resp.read.return_value = body
+    conn.getresponse.return_value = resp
+    return conn
+
+
 def _capture_sent(fn, *args, **kwargs) -> list[tuple[int, dict]]:
     """Call fn(*args, **kwargs), capturing every send_json / send_browser_api_error call."""
     sent = []
@@ -80,6 +95,27 @@ def _capture_sent(fn, *args, **kwargs) -> list[tuple[int, dict]]:
 
     with patch("autostream_webui_dials.send_json", side_effect=fake_send_json), \
          patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+        fn(*args, **kwargs)
+
+    return sent
+
+
+def _capture_sent_bytes(fn, *args, **kwargs) -> list:
+    """Like _capture_sent(), but for a handler that may answer through
+    either send_json/send_browser_api_error (JSON error path) or
+    send_bytes (binary success path). Each captured item is either
+    ('json', code, dict) or ('bytes', code, content_type, body, extra_headers)."""
+    sent: list = []
+
+    def fake_send_json(handler, code, data):
+        sent.append(("json", code, dict(data)))
+
+    def fake_send_bytes(handler, code, content_type, body, extra_headers=None):
+        sent.append(("bytes", code, content_type, body, dict(extra_headers or {})))
+
+    with patch("autostream_webui_dials.send_json", side_effect=fake_send_json), \
+         patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+         patch("autostream_webui_dials.send_bytes", side_effect=fake_send_bytes):
         fn(*args, **kwargs)
 
     return sent
@@ -520,6 +556,148 @@ class TestProxyGetContracts:
             _proxy_get(MagicMock(), "uuid", "/recovery_status")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/recovery_status"
+
+
+# ---------------------------------------------------------------------------
+# _proxy_get_bytes: binary proxy contract (screenshot pass-through)
+# ---------------------------------------------------------------------------
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+class TestProxyGetBytesContracts:
+    def _call(self, uuid: str, conn_mock=None, dial_path="/screen/image") -> list:
+        def run():
+            if conn_mock is not None:
+                with patch("autostream_webui_dials.http.client.HTTPConnection",
+                           return_value=conn_mock):
+                    _proxy_get_bytes(MagicMock(), uuid, dial_path, accept_type="image/png")
+            else:
+                _proxy_get_bytes(MagicMock(), uuid, dial_path, accept_type="image/png")
+
+        return _capture_sent_bytes(run)
+
+    def test_unknown_uuid_tunneled_dial_offline(self):
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+            sent = self._call("unknown-uuid")
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data["error"] == "dial_offline"
+        assert data["error_status"] == 404
+
+    def test_connection_error_tunneled_dial_unreachable(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = MagicMock()
+        conn.request.side_effect = OSError("refused")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data["error"] == "dial_unreachable"
+        assert data["error_status"] == 502
+        conn.close.assert_called_once()
+
+    def test_png_body_passed_through_byte_for_byte(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        png_bytes = _PNG_SIGNATURE + b"the-rest-of-a-fake-encoded-frame"
+        conn = _conn_bytes(png_bytes, status=200, content_type="image/png")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, content_type, body, extra_headers = sent[0]
+        assert kind == "bytes"
+        assert code == 200
+        assert content_type == "image/png"
+        assert body == png_bytes
+        assert extra_headers.get("Cache-Control") == "no-store"
+        conn.close.assert_called_once()
+
+    def test_dial_404_no_frame_tunneled_as_200_with_error_status_404(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_bytes(b'{"ok":false,"error":"no_frame"}', status=404,
+                          content_type="application/json")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data == {"ok": False, "error": "no_frame", "error_status": 404}
+
+    def test_3xx_tunneled_dial_bad_response(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_bytes(b"", status=302, content_type="text/html")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data["error"] == "dial_bad_response"
+        assert data["error_status"] == 502
+
+    def test_oversized_body_tunneled_dial_bad_response(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        oversized = _PNG_SIGNATURE + b"a" * _MAX_PROXY_IMAGE_BYTES
+        conn = _conn_bytes(oversized, status=200, content_type="image/png")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data["error"] == "dial_bad_response"
+        assert data["error_status"] == 502
+
+    def test_wrong_content_type_on_200_tunneled_dial_bad_response(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_bytes(b"not an image", status=200, content_type="text/plain")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data["error"] == "dial_bad_response"
+        assert data["error_status"] == 502
+
+    def test_malformed_json_on_non_matching_response_tunneled_dial_bad_response(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_bytes(b"not-json", status=500, content_type="application/json")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert kind == "json"
+        assert code == 200
+        assert data["error"] == "dial_bad_response"
+        assert data["error_status"] == 502
+
+    def test_connection_closed_on_success(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_bytes(_PNG_SIGNATURE, status=200, content_type="image/png")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            self._call("uuid", conn_mock=conn)
+        conn.close.assert_called_once()
+
+    def test_connection_closed_on_read_error(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = MagicMock()
+        resp = MagicMock()
+        resp.status = 200
+        resp.getheader.return_value = "image/png"
+        resp.read.side_effect = OSError("connection closed")
+        conn.getresponse.return_value = resp
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            sent = self._call("uuid", conn_mock=conn)
+        kind, code, data = sent[0]
+        assert data["error"] == "dial_unreachable"
+        conn.close.assert_called_once()
+
+    def test_correct_path_and_method_forwarded(self):
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_bytes(_PNG_SIGNATURE, status=200, content_type="image/png")
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+            self._call("uuid", conn_mock=conn, dial_path="/screen/image")
+        method, path = conn.request.call_args[0][:2]
+        assert method == "GET"
+        assert path == "/screen/image"
 
 
 # ---------------------------------------------------------------------------

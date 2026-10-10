@@ -256,6 +256,20 @@
     </div>
   </div>
 </div>
+<div id="dialScreenModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialScreenModalTitle">
+  <div class="panel modal-panel" style="--modal-width:44rem;">
+    <div class="hdr modal-hdr" id="dialScreenModalTitle">Dial screen</div>
+    <div class="bd modal-bd" style="text-align:center;">
+      <p id="dialScreenModalMsg" style="color:var(--color-text-muted);"></p>
+      <img id="dialScreenModalImg" alt="Current dial screen"
+           style="display:none;max-width:100%;height:auto;image-rendering:pixelated;border-radius:8px;">
+    </div>
+    <div class="ft modal-ft">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="dialScreenModalRefresh">Refresh</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialScreenModalClose">Close</button>
+    </div>
+  </div>
+</div>
 <div id="wifiHotspotModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="wifiHotspotModalTitle">
   <div class="panel modal-panel">
     <div class="hdr modal-hdr" id="wifiHotspotModalTitle">Change Wi-Fi Network</div>
@@ -1886,6 +1900,7 @@
             'wrong_pin': 'Incorrect PIN',
             'too_many_attempts': 'Too many attempts; try again later',
             'screen_apply_failed': 'Screen settings could not be applied',
+            'no_frame': 'The dial is not showing anything right now',
           };
           return map[String(error || '')] || String(error || 'Unknown error');
         }
@@ -1976,6 +1991,59 @@
         function _dialCloseResultModal() {
           var modal = document.getElementById('dialResultModal');
           if (modal) modal.classList.remove('show');
+        }
+
+        // One-shot "Show dial screen" modal: fetches the current panel
+        // image through the appliance's binary proxy and shows it, or a
+        // message when there is nothing to show. Refresh re-runs the same
+        // fetch; the object URL behind the <img> is revoked on every state
+        // change and on close so repeated use cannot leak blobs.
+        var _dialScreenModalUuid = '';
+        var _dialScreenObjectUrl = null;
+
+        function _dialScreenSetState(msg, imgUrl) {
+          var msgEl = document.getElementById('dialScreenModalMsg');
+          var imgEl = document.getElementById('dialScreenModalImg');
+          if (msgEl) { msgEl.textContent = msg || ''; msgEl.style.display = msg ? '' : 'none'; }
+          if (imgEl) {
+            if (_dialScreenObjectUrl) { URL.revokeObjectURL(_dialScreenObjectUrl); _dialScreenObjectUrl = null; }
+            if (imgUrl) { _dialScreenObjectUrl = imgUrl; imgEl.src = imgUrl; imgEl.style.display = ''; }
+            else { imgEl.removeAttribute('src'); imgEl.style.display = 'none'; }
+          }
+        }
+
+        async function _dialScreenFetch() {
+          if (!_dialScreenModalUuid) return;
+          _dialScreenSetState('Loading…', null);
+          try {
+            var r = await fetch('/api/dial/screen/image/' + encodeURIComponent(_dialScreenModalUuid),
+                                {cache: 'no-store', headers: {'X-CSRF-Token': window.__CSRF || ''}});
+            var ct = (r.headers.get('Content-Type') || '').toLowerCase();
+            if (r.ok && ct.indexOf('image/png') === 0) {
+              var blob = await r.blob();
+              _dialScreenSetState('', URL.createObjectURL(blob));
+              return;
+            }
+            var parsed = await _parseDialResponse(r);
+            _dialScreenSetState(_dialErrorMessage(parsed.error), null);
+          } catch (e) {
+            _dialScreenSetState('Network error', null);
+          }
+        }
+
+        function dialShowScreen(card) {
+          _dialScreenModalUuid = dialUUID(card);
+          var modal = document.getElementById('dialScreenModal');
+          if (!modal || !_dialScreenModalUuid) return;
+          modal.classList.add('show');
+          _dialScreenFetch();
+        }
+
+        function _dialCloseScreenModal() {
+          var modal = document.getElementById('dialScreenModal');
+          if (modal) modal.classList.remove('show');
+          _dialScreenSetState('', null);
+          _dialScreenModalUuid = '';
         }
 
         function _dialFinishTouchRestartPoll(card, badgeState, message, ok) {
@@ -2925,6 +2993,10 @@
           });
           var resultOk = document.getElementById('dialResultModalOk');
           if (resultOk) resultOk.addEventListener('click', _dialCloseResultModal);
+          var dialScreenClose = document.getElementById('dialScreenModalClose');
+          var dialScreenRefresh = document.getElementById('dialScreenModalRefresh');
+          if (dialScreenClose) dialScreenClose.addEventListener('click', _dialCloseScreenModal);
+          if (dialScreenRefresh) dialScreenRefresh.addEventListener('click', _dialScreenFetch);
           var dialNameOk = document.getElementById('dialNameModalOk');
           var dialNameCancel = document.getElementById('dialNameModalCancel');
           var dialNameInput = document.getElementById('dialNameModalInput');
@@ -2944,6 +3016,8 @@
             if (ev.key === 'Escape' && rm && rm.classList.contains('show')) closeDialPinRecoveryModal();
             var nm = document.getElementById('dialNameModal');
             if (ev.key === 'Escape' && nm && nm.classList.contains('show')) closeDialNameModal();
+            var sm = document.getElementById('dialScreenModal');
+            if (ev.key === 'Escape' && sm && sm.classList.contains('show')) _dialCloseScreenModal();
           });
         });
         // Dials card (lazy-loaded): the .dial-card bindings below used
@@ -3018,6 +3092,7 @@
               if (!target || target.tagName === 'INPUT') return;
               var action = target.dataset.dialAction;
               if (action === 'revoke') dialRevoke(card);
+              if (action === 'show-screen') dialShowScreen(card);
               if (action === 'update') dialUpdateFirmware(card);
               if (action === 'change-pin') dialChangePIN(card);
               if (action === 'recover-pin') openDialPinRecoveryModal(card);

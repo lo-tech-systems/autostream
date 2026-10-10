@@ -132,6 +132,7 @@ from autostream_webui_dials import (
     dispatch_dial_management_post,
     handle_dial_configure_get,
     handle_dial_pin_recovery_status,
+    handle_dial_screen_image_get,
     handle_dial_screen_settings_get,
     handle_dial_screen_settings_post,
     handle_dial_update_post,
@@ -878,6 +879,10 @@ def _route_get_dial_update_status(handler, state):
 
 def _route_get_dial_screen_settings(handler, state):
     handle_dial_screen_settings_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_screen_image(handler, state):
+    handle_dial_screen_image_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
 
 
 # send_html() (matching send_json()'s shape) now lives in

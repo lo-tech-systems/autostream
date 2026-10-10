@@ -1856,3 +1856,14 @@ register(
         allow_unconfigured=False,
     )
 )
+
+register(
+    Route(
+        prefix="/api/dial/screen/image/",
+        methods=("GET",),
+        handler="_route_get_dial_screen_image",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+    )
+)

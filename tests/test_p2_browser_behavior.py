@@ -2066,6 +2066,193 @@ class TestDialCardHtmlStructure:
         )
         assert "Update firmware" not in result
 
+    # ── IP address row (under "Current name") ────────────────────────────────
+
+    def test_online_card_with_ip_shows_ip_row_after_current_name(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True, ip="10.0.0.23",
+        )
+        assert "IP:" in result
+        assert '<span class="dial-current-ip">10.0.0.23</span>' in result
+        name_idx = result.find("Current name:")
+        ip_idx = result.find("dial-current-ip")
+        assert 0 <= name_idx < ip_idx
+
+    def test_offline_card_with_ip_shows_no_ip_row(self):
+        """An offline dial's last-known address is not live, so nothing is shown."""
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=False, ip="10.0.0.23",
+        )
+        assert "dial-current-ip" not in result
+        assert "IP:" not in result
+
+    def test_new_online_card_with_ip_shows_ip_row(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="New Dial", authorized=False, online=True, ip="192.168.1.50",
+        )
+        assert '<span class="dial-current-ip">192.168.1.50</span>' in result
+
+    def test_online_card_with_empty_ip_shows_no_ip_row(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True, ip="",
+        )
+        assert "dial-current-ip" not in result
+        assert "IP:" not in result
+
+    def test_ip_row_escapes_hostile_value(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True,
+            ip='"><script>alert(1)</script>',
+        )
+        assert "<script>alert(1)</script>" not in result
+
+    # ── "Show dial screen" button ─────────────────────────────────────────────
+
+    def test_show_screen_btn_present_when_online(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        assert 'data-dial-action="show-screen"' in result
+        assert "Show dial screen" in result
+
+    def test_show_screen_btn_absent_when_offline(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=False)
+        assert 'data-dial-action="show-screen"' not in result
+
+    def test_show_screen_btn_absent_for_unauthorized_offline_new_card(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="", authorized=False, online=False)
+        assert 'data-dial-action="show-screen"' not in result
+
+    def test_show_screen_btn_appears_before_fw_update_btn(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(
+            uuid="u1", name="My Dial", authorized=True, online=True,
+            fw_version="1.0.0", needs_update=True,
+        )
+        screen_idx = result.find('data-dial-action="show-screen"')
+        fw_idx = result.find('data-dial-action="update"')
+        assert screen_idx >= 0 and fw_idx >= 0
+        assert screen_idx < fw_idx
+
+    def test_show_screen_btn_appears_before_reset_pin_btn(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        screen_idx = result.find('data-dial-action="show-screen"')
+        pin_idx = result.find('data-dial-action="recover-pin"')
+        assert screen_idx >= 0 and pin_idx >= 0
+        assert screen_idx < pin_idx
+
+    def test_show_screen_btn_inside_dial_config(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        config_idx = result.find("dial-config")
+        screen_idx = result.find('data-dial-action="show-screen"')
+        assert config_idx >= 0 and screen_idx >= 0
+        assert config_idx < screen_idx
+
+    # ── Dial screen modal markup ──────────────────────────────────────────────
+
+    def test_dial_screen_modal_present_in_page(self):
+        src = _setup_page_src()
+        assert 'id="dialScreenModal"' in src
+        assert 'id="dialScreenModalMsg"' in src
+        assert 'id="dialScreenModalImg"' in src
+
+    def test_dial_screen_modal_has_refresh_and_close_buttons(self):
+        src = _setup_page_src()
+        idx = src.find('id="dialScreenModal"')
+        assert idx >= 0
+        end_idx = src.find("</div>\n</div>\"\"\"", idx)
+        block = src[idx:end_idx] if end_idx > 0 else src[idx:idx + 2000]
+        assert 'id="dialScreenModalRefresh"' in block
+        assert 'id="dialScreenModalClose"' in block
+        assert "Refresh" in block
+        assert "Close" in block
+
+    def test_dial_screen_modal_image_uses_pixelated_rendering(self):
+        src = _setup_page_src()
+        idx = src.find('id="dialScreenModalImg"')
+        assert idx >= 0
+        tag_end = src.find(">", idx)
+        tag = src[idx:tag_end]
+        assert "image-rendering:pixelated" in tag
+
+    # ── Dispatch and fetch logic (source-contract) ────────────────────────────
+
+    def test_show_screen_action_dispatches_to_dial_show_screen(self):
+        src = _setup_page_src()
+        assert "if (action === 'show-screen') dialShowScreen(card);" in src
+
+    def test_dial_show_screen_function_present(self):
+        src = _setup_page_src()
+        assert "function dialShowScreen(card)" in src
+
+    def test_dial_screen_fetch_uses_the_proxy_route(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function _dialScreenFetch")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function dialShowScreen", fn_idx)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 1500]
+        assert "/api/dial/screen/image/" in body
+
+    def test_dial_screen_fetch_branches_on_content_type(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function _dialScreenFetch")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function dialShowScreen", fn_idx)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 1500]
+        assert "image/png" in body
+        assert "_parseDialResponse" in body
+        assert "_dialErrorMessage" in body
+
+    def test_dial_screen_close_revokes_object_url(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function _dialScreenSetState")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        async function _dialScreenFetch", fn_idx)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 1000]
+        assert "URL.revokeObjectURL" in body
+
+    def test_dial_close_screen_modal_clears_state(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function _dialCloseScreenModal")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn] if next_fn > 0 else src[fn_idx:fn_idx + 800]
+        assert "_dialScreenSetState('', null)" in body
+
+    def test_dial_screen_modal_close_and_refresh_wired(self):
+        src = _setup_page_src()
+        assert "dialScreenClose.addEventListener('click', _dialCloseScreenModal)" in src
+        assert "dialScreenRefresh.addEventListener('click', _dialScreenFetch)" in src
+
+    def test_dial_screen_modal_escape_closes(self):
+        src = _setup_page_src()
+        assert (
+            "if (ev.key === 'Escape' && sm && sm.classList.contains('show')) "
+            "_dialCloseScreenModal();"
+        ) in src
+
+    def test_no_frame_message_mapped(self):
+        assert "The dial is not showing anything right now" in _setup_page_src()
+
 
 # ---------------------------------------------------------------------------
 # Lost-PIN recovery UX: wording covers every input type, PIN controls are

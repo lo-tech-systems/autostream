@@ -33,12 +33,17 @@ from autostream_dials import (
 )
 from autostream_rpi import get_appliance_id
 from autostream_webui_api import send_json, send_browser_api_error, _NGINX_INTERCEPTED_STATUSES
+from autostream_webui_common import send_bytes
 
 _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
 
 # Maximum target-response body size. A body of exactly 65,536 bytes is accepted;
 # 65,537 bytes is rejected as dial_bad_response before JSON parsing.
 _MAX_PROXY_RESPONSE_BYTES = 64 * 1024  # 65,536
+
+# Maximum size for a binary proxy response (e.g. a screenshot) — a
+# 640x480 PNG of the panel is well under this.
+_MAX_PROXY_IMAGE_BYTES = 2 * 1024 * 1024
 
 # Default error identifiers for tunneled target statuses.
 _TARGET_STATUS_ERRORS: dict[int, str] = {
@@ -185,6 +190,45 @@ def _proxy_post(handler, uuid: str, dial_path: str, body_dict) -> None:
         send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
         return
     _normalize_target_response(handler, target_status, data)
+
+
+def _proxy_get_bytes(handler, uuid: str, dial_path: str, *, accept_type: str) -> None:
+    """Proxy a binary GET to the dial: the body is streamed back with the
+    dial's content type when it is *accept_type*; the dial's JSON error
+    replies (and every transport failure) are normalized exactly as
+    _proxy_get() normalizes them, so the browser sees the same error
+    contract for an image as for a settings call."""
+    sighting = _get_sighting_or_error(handler, uuid)
+    if sighting is None:
+        return
+    conn = http.client.HTTPConnection(sighting.ip, sighting.port, timeout=_PROXY_TIMEOUT)
+    try:
+        conn.request("GET", dial_path)
+        resp = conn.getresponse()
+        status = resp.status
+        content_type = (resp.getheader("Content-Type") or "").split(";", 1)[0].strip().lower()
+        raw = resp.read(_MAX_PROXY_IMAGE_BYTES + 1)
+    except OSError as e:
+        logging.debug("dial proxy GET %s: %s", dial_path, e)
+        send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
+        return
+    finally:
+        conn.close()
+    if len(raw) > _MAX_PROXY_IMAGE_BYTES or 300 <= status <= 399:
+        send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
+        return
+    if status == 200 and content_type == accept_type:
+        send_bytes(handler, 200, accept_type, raw, extra_headers={"Cache-Control": "no-store"})
+        return
+    if content_type == "application/json":
+        try:
+            data = _json.loads(raw)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            _normalize_target_response(handler, status, data)
+            return
+    send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -381,3 +425,11 @@ def handle_dial_screen_settings_post(handler, json_obj: dict) -> None:
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/screen/settings", body)
+
+
+# ---------------------------------------------------------------------------
+# Screen image (proxy to dial's /screen/image endpoint)
+# ---------------------------------------------------------------------------
+
+def handle_dial_screen_image_get(handler, uuid: str) -> None:
+    _proxy_get_bytes(handler, uuid, "/screen/image", accept_type="image/png")
