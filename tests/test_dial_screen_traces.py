@@ -113,11 +113,12 @@ class FakeBackend:
 
 def _target(
     name: str, appliance_id: str, auth: str = "authorized", playing_since: float = 1.0,
-    dial_outputs: bool = False,
+    dial_outputs: bool = False, dial_eq: bool = False,
 ) -> PlayingTarget:
     return PlayingTarget(
         ip="192.168.1.10", port=80, name=name,
         dial_api=True, audio_status=True, dial_status=True, dial_outputs=dial_outputs,
+        dial_eq=dial_eq,
         service_name=name, playing_since=playing_since,
         appliance_id=appliance_id, auth=auth,
     )
@@ -125,12 +126,13 @@ def _target(
 
 def _idle_row(
     name: str, appliance_id: str, auth: str = "authorized", repeat_capable: bool = False,
-    dial_outputs: bool = False,
+    dial_outputs: bool = False, dial_eq: bool = False,
 ) -> RosterEntry:
     return RosterEntry(
         appliance_id=appliance_id, service_name=name, name=name,
         ip="192.168.1.20", port=80, playing=False, repeat_capable=repeat_capable,
-        dial_api=True, audio_status=True, dial_status=True, dial_outputs=dial_outputs, auth=auth,
+        dial_api=True, audio_status=True, dial_status=True, dial_outputs=dial_outputs,
+        dial_eq=dial_eq, auth=auth,
     )
 
 
@@ -139,7 +141,7 @@ def _roster_row_for_target(t: PlayingTarget) -> RosterEntry:
         appliance_id=t.appliance_id, service_name=t.service_name, name=t.name,
         ip=t.ip, port=t.port, playing=True, repeat_capable=False,
         dial_api=t.dial_api, audio_status=t.audio_status, dial_status=t.dial_status,
-        dial_outputs=t.dial_outputs, auth=t.auth,
+        dial_outputs=t.dial_outputs, dial_eq=t.dial_eq, auth=t.auth,
     )
 
 
@@ -265,6 +267,16 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.open_info()
     elif kind == "toggle_repeat":
         d.toggle_repeat_screen()
+    elif kind == "cycle_pages":
+        d.cycle_pages()
+    elif kind == "eq_step":
+        d.eq_step(step[1], step[2])
+    elif kind == "eq_result":
+        # ("eq_result", appliance_id, status, body) -- feeds the EQ
+        # worker's on_eq_result callback directly, the same shape the
+        # worker itself calls it with after a fetch.
+        _, aid, status, body = step
+        d.on_eq_result("fetch", aid, status, body, {})
     elif kind == "close_list":
         d.close_list()
     elif kind == "pop_secondary":
@@ -367,6 +379,11 @@ def _snapshot(ctx: _Ctx) -> dict:
         "appliance_id": detail.appliance_id, "output_id": detail.output_id,
         "opened_at": detail.opened_at,
     }
+    eq = d._eq
+    eq_repr = None if eq is None else {
+        "appliance_id": eq.appliance_id, "opened_at": eq.opened_at,
+        "bass_db": eq.bass_db, "treble_db": eq.treble_db, "loaded": eq.loaded,
+    }
 
     return {
         "screen": d._screen,
@@ -380,6 +397,9 @@ def _snapshot(ctx: _Ctx) -> dict:
         "outputs": outputs_repr,
         "output_detail": detail_repr,
         "outputs_optimistic": list(d._outputs_optimistic) if d._outputs_optimistic is not None else None,
+        "eq": eq_repr,
+        "eq_optimistic": list(d._eq_optimistic) if d._eq_optimistic is not None else None,
+        "eq_available": d._eq_available,
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
@@ -1475,6 +1495,34 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
         {"cfg": cfg, "backend": fb},
     ))
 
+    # The EQ page on the rich tier: an EQ-capable appliance with no held
+    # repeat record cycles straight from main to eq (skipping repeat), a
+    # bass step shows an optimistic value at once, a fetch result folds in
+    # and clears it, then cycling again closes back to main.
+    cfg2, fb2 = _rich_display_args()
+    eq_aid = _aid("eqrich")
+    eq_target = _target("EqLiving", eq_aid, dial_eq=True)
+    scenarios.append((
+        "rich_eq_page_cycle_step_and_close",
+        [
+            ("targets", [eq_target]),
+            ("status", {eq_aid: _status_result(appliance_id=eq_aid)}),
+            ("poll",),
+            ("repaint",),  # main, three dots (eq available, no repeat record)
+            ("cycle_pages",),  # main -> eq
+            ("repaint",),
+            ("eq_result", eq_aid, 200, {"ok": True, "bass_db": 0, "treble_db": 0}),
+            ("repaint",),  # bars now loaded at 0/0
+            ("eq_step", "bass", 1),
+            ("repaint",),  # optimistic bass=1 shown at once
+            ("eq_result", eq_aid, 200, {"ok": True, "bass_db": 1, "treble_db": 0}),
+            ("repaint",),  # reconciled, optimistic cleared
+            ("cycle_pages",),  # eq -> main
+            ("repaint",),
+        ],
+        {"cfg": cfg2, "backend": fb2},
+    ))
+
     return scenarios
 
 
@@ -1701,6 +1749,9 @@ def _strip_new_fields(step: dict) -> dict:
     stripped.pop("bound_appliance_id", None)
     stripped.pop("source_artwork_url", None)
     stripped.pop("info", None)
+    stripped.pop("eq", None)
+    stripped.pop("eq_optimistic", None)
+    stripped.pop("eq_available", None)
     if "touch_surface" in stripped:
         stripped["touch_surface"] = stripped["touch_surface"][:3]
     return stripped
@@ -1790,6 +1841,9 @@ def _strip_binding_fields(step: dict) -> dict:
     stripped.pop("bound_appliance_id", None)
     stripped.pop("source_artwork_url", None)
     stripped.pop("info", None)
+    stripped.pop("eq", None)
+    stripped.pop("eq_optimistic", None)
+    stripped.pop("eq_available", None)
     return stripped
 
 

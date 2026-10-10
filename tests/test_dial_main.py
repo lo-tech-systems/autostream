@@ -114,6 +114,7 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
          patch("dial_main.start_volume_worker"), \
          patch("dial_main.start_repeat_worker") as mock_start_repeat_worker, \
          patch("dial_main.start_outputs_worker"), \
+         patch("dial_main.start_eq_worker"), \
          patch("dial_main.DialControlServer", return_value=mock_control), \
          patch("threading.Event", _CapturingEvent):
         dm.main()
@@ -220,6 +221,7 @@ class TestOptionalGpioSetup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
              patch("builtins.__import__", side_effect=_fake_import), \
@@ -326,6 +328,7 @@ class TestSignalHandlers:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
              patch("threading.Event", _CapEvent):
@@ -375,6 +378,7 @@ class TestSignalHandlers:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
              patch("threading.Event", _CapEvent):
@@ -431,6 +435,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
             dm.main()
@@ -476,6 +481,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _ExplodingEvent):
             with pytest.raises(RuntimeError):
@@ -514,6 +520,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _ImmediateShutdownEvent):
             dm.main()
@@ -550,6 +557,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker") as mock_vol_worker, \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
             dm.main()
@@ -606,6 +614,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("dial_main.get_playing_targets", return_value=[with_id, without_id]), \
              patch("threading.Event", _QuickEvent):
@@ -649,6 +658,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker") as mock_vol_worker, \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
              patch("builtins.__import__", side_effect=_fake_import):
@@ -690,6 +700,7 @@ class TestDialFinalCleanup:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
             with pytest.raises(OSError, match="socket bind failed"):
@@ -730,6 +741,7 @@ class TestRunningMarkerLifecycle:
             patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.start_outputs_worker"),
+            patch("dial_main.start_eq_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
             patch("dial_main.RUNNING_MARKER_PATH", marker_path),
@@ -788,6 +800,7 @@ class TestRunningMarkerLifecycle:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
              patch("dial_main.RUNNING_MARKER_PATH", marker):
@@ -972,6 +985,7 @@ class TestRecoveryArmingDecision:
             patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.start_outputs_worker"),
+            patch("dial_main.start_eq_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
             patch("dial_main.RUNNING_MARKER_PATH", running_marker),
@@ -1330,6 +1344,7 @@ class TestTouchConstruction:
             patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.start_outputs_worker"),
+            patch("dial_main.start_eq_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
             patch("dial_main._build_touch_source", build_mock),
@@ -1490,6 +1505,7 @@ class TestTouchConstruction:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
              patch("dial_main._build_touch_source", side_effect=RuntimeError("boom")), \
@@ -1539,6 +1555,7 @@ class TestTouchConstruction:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
              patch("dial_main._build_touch_source", build_mock), \
@@ -1851,12 +1868,40 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_zone_tap"](TouchZone.NAME, None)
         confirm.assert_called_once()
 
-    def test_on_zone_tap_dots_toggles_repeat_screen(self):
+    def test_on_zone_tap_dots_cycles_pages(self):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone.DOTS, None)
-            display.toggle_repeat_screen.assert_called_once()
+            display.cycle_pages.assert_called_once()
+
+    def test_on_zone_tap_eq_bass_down_steps_bass_down(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_BASS_DOWN, None)
+            display.eq_step.assert_called_once_with("bass", -1)
+
+    def test_on_zone_tap_eq_bass_up_steps_bass_up(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_BASS_UP, None)
+            display.eq_step.assert_called_once_with("bass", +1)
+
+    def test_on_zone_tap_eq_treble_down_steps_treble_down(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_TREBLE_DOWN, None)
+            display.eq_step.assert_called_once_with("treble", -1)
+
+    def test_on_zone_tap_eq_treble_up_steps_treble_up(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.EQ_TREBLE_UP, None)
+            display.eq_step.assert_called_once_with("treble", +1)
 
     def test_on_zone_tap_repeat_play_toggles_arm(self):
         from dial_touch_layout import TouchZone
@@ -2641,6 +2686,7 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer"), \
              patch("dial_touch_drivers.open_driver"), \
              patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
@@ -2766,6 +2812,7 @@ class TestInfoProviderWiring:
              patch("dial_main.stop_general_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.start_outputs_worker"), \
+             patch("dial_main.start_eq_worker"), \
              patch("dial_main.DialControlServer"), \
              patch.object(dd, "create_dial_display", side_effect=spy_create_dial_display), \
              patch("threading.Event", _QuickEvent):
@@ -2890,6 +2937,7 @@ class TestPresenceConfirmationWiring:
             patch("dial_main.stop_general_browser"),
             patch("dial_main.start_volume_worker"),
             patch("dial_main.start_outputs_worker"),
+            patch("dial_main.start_eq_worker"),
             patch("dial_main.DialControlServer", side_effect=_capture_control),
             patch("threading.Event", _QuickEvent),
             # RecoveryWindow.open() is real here (cfg.pin is set) — mock out

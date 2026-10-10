@@ -80,6 +80,7 @@ def _roster_entry(
     name="Kitchen", ip="192.168.1.10", port=80,
     dial_status=True, appliance_id="a" * 20, auth="unknown",
     service_name=None, playing=False, repeat_capable=False, dial_outputs=False,
+    dial_eq=False,
 ):
     """A merged-roster entry — the RosterEntry counterpart to _target(),
     for tests that need an idle (playing=False) or explicitly playing row
@@ -89,7 +90,7 @@ def _roster_entry(
         appliance_id=appliance_id, service_name=service_name or name, name=name,
         ip=ip, port=port, playing=playing, repeat_capable=repeat_capable,
         dial_api=True, audio_status=True, dial_status=dial_status, dial_outputs=dial_outputs,
-        auth=auth,
+        dial_eq=dial_eq, auth=auth,
     )
 
 
@@ -6095,6 +6096,406 @@ class TestOutputsTouchEntries:
         assert mock_set.call_args[1]["volume"] == 0
 
 
+# ---------------------------------------------------------------------------
+# The EQ page: availability, opener, touch entries, on_eq_result, cycle_pages.
+# ---------------------------------------------------------------------------
+
+def _make_eq_display(dial_eq=True, auth="unknown", appliance_id="a" * 20):
+    display, fb, gt = _make_display(targets=[])
+    display._reporting_appliance_id = appliance_id
+    display._last_roster = [_roster_entry(appliance_id=appliance_id, auth=auth, dial_eq=dial_eq)]
+    display._update_eq_available()
+    return display
+
+
+class TestEqAvailable:
+    def test_reporting_appliance_advertises_dial_eq(self):
+        aid = "a" * 20
+        t = _target(appliance_id=aid)
+        roster = [_roster_entry(appliance_id=aid, playing=True, dial_eq=True)]
+        display, fb, gt = _make_display(targets=[t], roster=roster)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        assert display._reporting_appliance_id == aid
+        assert display._eq_available is True
+
+    def test_reporting_appliance_without_dial_eq(self):
+        aid = "a" * 20
+        t = _target(appliance_id=aid)
+        roster = [_roster_entry(appliance_id=aid, playing=True, dial_eq=False)]
+        display, fb, gt = _make_display(targets=[t], roster=roster)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        assert display._eq_available is False
+
+    def test_unauthorized_reporting_entry_is_false(self):
+        t = _target(appliance_id="a" * 20, auth="unauthorized")
+        roster = [_roster_entry(appliance_id="a" * 20, playing=True, dial_eq=True, auth="unauthorized")]
+        display, fb, gt = _make_display(targets=[t], roster=roster)
+        display.enable()
+        display._poll_once()
+        assert display._eq_available is False
+
+    def test_nothing_playing_no_focus_is_false(self):
+        display, fb, gt = _make_display(targets=[], roster=[])
+        display.enable()
+        display._poll_once()
+        assert display._eq_available is False
+
+    def test_unfitted_display_is_false(self):
+        display, fb, gt = _make_display(fitted=False)
+        display._eq_available = True
+        display._poll_once()
+        assert display._eq_available is False
+
+    def test_false_on_the_compact_tier_even_when_capable(self):
+        aid = "a" * 20
+        t = _target(appliance_id=aid)
+        roster = [_roster_entry(appliance_id=aid, playing=True, dial_eq=True)]
+        display, fb, gt = _make_display(
+            targets=[t], roster=roster, screen_size_inches=1.3,
+        )
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        assert display._compact_tier() is True
+        assert display._eq_available is False
+
+    def test_dots_active_true_with_eq_and_no_repeat_record(self):
+        display = _make_eq_display(dial_eq=True)
+        display._update_dots_active(time.monotonic())
+        assert display._dots_active is True
+
+
+class TestEqOpener:
+    def test_refuses_with_no_focus_or_reporting_id(self):
+        display, fb, gt = _make_display(targets=[])
+        assert display._open_eq_locked() is False
+        assert display._eq is None
+
+    def test_refuses_without_dial_eq_capability(self):
+        display = _make_eq_display(dial_eq=False)
+        assert display._open_eq_locked() is False
+        assert display._eq is None
+
+    def test_refuses_when_unauthorized(self):
+        display = _make_eq_display(auth="unauthorized")
+        assert display._open_eq_locked() is False
+
+    def test_refuses_on_the_compact_tier(self):
+        display = _make_eq_display(dial_eq=True)
+        display._eq_available = False  # the compact veto, already computed by the poll
+        assert display._open_eq_locked() is False
+
+    def test_opens_for_an_authorized_capable_appliance(self):
+        display = _make_eq_display()
+        assert display._open_eq_locked() is True
+        assert display._screen == "eq"
+        assert display._eq.appliance_id == "a" * 20
+        assert display._eq.bass_db is None
+        assert display._eq.treble_db is None
+        assert display._eq.loaded is False
+
+    def test_keeps_values_on_reopen_for_the_same_appliance(self):
+        display = _make_eq_display()
+        display._open_eq_locked()
+        display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=-1, loaded=True)
+        display._screen = "main"
+        display._open_eq_locked()
+        assert display._eq.bass_db == 2
+        assert display._eq.treble_db == -1
+        assert display._eq.loaded is True
+
+    def test_resets_values_for_a_different_appliance(self):
+        display = _make_eq_display(appliance_id="a" * 20)
+        display._open_eq_locked()
+        display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=-1, loaded=True)
+        display._screen = "main"
+        display._reporting_appliance_id = "b" * 20
+        display._last_roster = [_roster_entry(appliance_id="b" * 20, dial_eq=True)]
+        display._update_eq_available()
+        display._open_eq_locked()
+        assert display._eq.appliance_id == "b" * 20
+        assert display._eq.bass_db is None
+        assert display._eq.treble_db is None
+        assert display._eq.loaded is False
+
+
+class TestEqStep:
+    def _opened(self):
+        display = _make_eq_display()
+        display._open_eq_locked()
+        return display
+
+    def test_noop_without_an_open_eq_screen(self):
+        display, fb, gt = _make_display(targets=[])
+        with patch("dial_display._enqueue_eq_set") as mock_set:
+            display.eq_step("bass", +1)
+        mock_set.assert_not_called()
+
+    def test_steps_from_zero_when_unloaded(self):
+        display = self._opened()
+        with patch("dial_display._enqueue_eq_set") as mock_set:
+            display.eq_step("bass", +1)
+        assert display._eq_optimistic[0] == 1
+        target, kwargs = mock_set.call_args[0][0], mock_set.call_args[1]
+        assert kwargs == {"bass_db": 1}
+
+    def test_steps_from_current_state_value(self):
+        display = self._opened()
+        display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=0, loaded=True)
+        with patch("dial_display._enqueue_eq_set"):
+            display.eq_step("bass", +1)
+        assert display._eq_optimistic[0] == 3
+
+    def test_steps_from_optimistic_value(self):
+        display = self._opened()
+        display._eq = dataclasses.replace(display._eq, bass_db=2, loaded=True)
+        display._eq_optimistic = (5, None, time.monotonic() + 10.0)
+        with patch("dial_display._enqueue_eq_set"):
+            display.eq_step("bass", +1)
+        assert display._eq_optimistic[0] == 6
+
+    def test_clamps_at_plus_six(self):
+        display = self._opened()
+        display._eq = dataclasses.replace(display._eq, bass_db=6, loaded=True)
+        with patch("dial_display._enqueue_eq_set") as mock_set:
+            display.eq_step("bass", +1)
+        assert display._eq_optimistic[0] == 6
+        assert mock_set.call_args[1]["bass_db"] == 6
+
+    def test_clamps_at_minus_six(self):
+        display = self._opened()
+        display._eq = dataclasses.replace(display._eq, treble_db=-6, loaded=True)
+        with patch("dial_display._enqueue_eq_set") as mock_set:
+            display.eq_step("treble", -1)
+        assert display._eq_optimistic[1] == -6
+
+    def test_stepping_one_control_preserves_the_others_shown_value(self):
+        display = self._opened()
+        display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=-3, loaded=True)
+        with patch("dial_display._enqueue_eq_set"):
+            display.eq_step("treble", +1)
+        assert display._eq_optimistic == (2, -2, display._eq_optimistic[2])
+
+    def test_target_is_the_open_eq_screens_own_appliance(self):
+        display = self._opened()
+        with patch("dial_display._enqueue_eq_set") as mock_set:
+            display.eq_step("bass", +1)
+        target = mock_set.call_args[0][0]
+        assert target.appliance_id == display._eq.appliance_id
+        assert target.ip == display._eq.ip
+        assert target.port == display._eq.port
+
+
+class TestOnEqResult:
+    def _opened(self, appliance_id="a" * 20):
+        display = _make_eq_display(appliance_id=appliance_id)
+        display._open_eq_locked()
+        return display
+
+    def test_non_fetch_kind_is_a_no_op(self):
+        display = self._opened()
+        state = display._eq
+        display.on_eq_result("set", "a" * 20, 200, {"ok": True, "bass_db": 1, "treble_db": 0}, {})
+        assert display._eq is state
+
+    def test_fetch_folds_bass_and_treble_and_sets_loaded(self):
+        display = self._opened()
+        display._overlay_signal.clear()
+        display.on_eq_result("fetch", "a" * 20, 200, {"ok": True, "bass_db": 2, "treble_db": -1}, {})
+        assert display._eq.bass_db == 2
+        assert display._eq.treble_db == -1
+        assert display._eq.loaded is True
+        assert display._overlay_signal.is_set()
+
+    def test_late_result_for_a_different_appliance_is_dropped(self):
+        display = self._opened(appliance_id="a" * 20)
+        state = display._eq
+        display.on_eq_result("fetch", "b" * 20, 200, {"ok": True, "bass_db": 1, "treble_db": 1}, {})
+        assert display._eq is state
+
+    def test_no_eq_screen_open_is_a_no_op(self):
+        display, fb, gt = _make_display(targets=[])
+        display._eq = None
+        display.on_eq_result("fetch", "a" * 20, 200, {"ok": True, "bass_db": 1, "treble_db": 1}, {})
+        assert display._eq is None
+
+    def test_malformed_result_is_dropped(self):
+        display = self._opened()
+        display.on_eq_result("fetch", "a" * 20, 500, None, {})
+        assert display._eq.loaded is False
+        display.on_eq_result("fetch", "a" * 20, 200, {"ok": False}, {})
+        assert display._eq.loaded is False
+        display.on_eq_result("fetch", "a" * 20, 200, {"ok": True, "bass_db": "2", "treble_db": 1}, {})
+        assert display._eq.loaded is False
+
+    def test_stale_optimistic_override_cleared(self):
+        display = self._opened()
+        display._eq_optimistic = (3, None, time.monotonic() - 1.0)
+        display.on_eq_result("fetch", "a" * 20, 200, {"ok": True, "bass_db": 3, "treble_db": 0}, {})
+        assert display._eq_optimistic is None
+
+    def test_future_stamped_optimistic_override_kept(self):
+        display = self._opened()
+        override = (3, None, time.monotonic() + 10.0)
+        display._eq_optimistic = override
+        display.on_eq_result("fetch", "a" * 20, 200, {"ok": True, "bass_db": 3, "treble_db": 0}, {})
+        assert display._eq_optimistic == override
+
+
+class TestEqViewBuild:
+    def test_view_reads_the_override_then_the_state(self):
+        display = _make_eq_display()
+        display._open_eq_locked()
+        display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=-1, loaded=True)
+        view = display._build_eq_view_locked(display._eq, time.monotonic())
+        assert (view.bass_db, view.treble_db) == (2, -1)
+        display._eq_optimistic = (5, None, time.monotonic() + 10.0)
+        view = display._build_eq_view_locked(display._eq, time.monotonic())
+        assert (view.bass_db, view.treble_db) == (5, -1)
+
+    def test_none_screen_builds_a_blank_view(self):
+        display, fb, gt = _make_display(targets=[])
+        view = display._build_eq_view_locked(None, time.monotonic())
+        assert view.name == ""
+        assert view.bass_db is None
+        assert view.treble_db is None
+        assert view.loaded is False
+
+
+class TestCyclePages:
+    def _setup(self, appliance_id="a" * 20, repeat_available=False, eq_available=False):
+        t = _target(appliance_id=appliance_id)
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        result = _status_result(track_id=_track_id(), appliance_id=appliance_id)
+        if repeat_available:
+            result = dict(result)
+            result["repeat"] = _repeat_obj(state="idle", available=True)
+        roster = [_roster_entry(appliance_id=appliance_id, playing=True, dial_eq=eq_available)]
+        with patch("dial_display.fetch_target_status", return_value=result), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (160, 128))), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=Image.new("RGB", (160, 128))):
+            display._last_roster = roster
+            display._poll_once()
+            display._last_roster = roster
+            display._update_eq_available()
+            display._update_dots_active(time.monotonic())
+        return display
+
+    def _apply(self, display):
+        with display._lock:
+            display._apply_screen_requests_locked()
+
+    def test_main_to_repeat_to_eq_to_main_when_all_available(self):
+        display = self._setup(repeat_available=True, eq_available=True)
+        assert display._screen == "main"
+
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "repeat"
+
+        with patch("dial_display._enqueue_eq_fetch"):
+            display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "eq"
+
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "main"
+
+    def test_main_to_eq_to_main_when_no_repeat_record(self):
+        display = self._setup(repeat_available=False, eq_available=True)
+        with patch("dial_display._enqueue_eq_fetch"):
+            display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "eq"
+
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "main"
+
+    def test_main_to_repeat_to_main_when_no_eq(self):
+        display = self._setup(repeat_available=True, eq_available=False)
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "repeat"
+
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "main"
+
+    def test_noop_when_nothing_available(self):
+        display = self._setup(repeat_available=False, eq_available=False)
+        display._screen_request = None
+        display.cycle_pages()
+        assert display._screen_request is None
+        assert display._screen == "main"
+
+    def test_opening_eq_enqueues_one_fetch(self):
+        display = self._setup(repeat_available=False, eq_available=True)
+        with patch("dial_display._enqueue_eq_fetch") as mock_fetch:
+            display.cycle_pages()
+        mock_fetch.assert_called_once()
+
+    def test_compact_always_two_way(self):
+        """On the compact tier _eq_available is always False (see
+        TestEqAvailable), so cycling never reaches "eq" -- a two-way
+        main<->repeat toggle exactly like before this feature existed."""
+        t = _target(appliance_id="a" * 20)
+        roster = [_roster_entry(appliance_id="a" * 20, playing=True, dial_eq=True)]
+        display, fb, gt = _make_display(targets=[t], roster=roster, screen_size_inches=1.3)
+        display.enable()
+        result = _status_result(track_id=_track_id(), appliance_id="a" * 20)
+        result["repeat"] = _repeat_obj(state="idle", available=True)
+        with patch("dial_display.fetch_target_status", return_value=result), \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+             patch("dial_display.decode_artwork", return_value=Image.new("RGB", (240, 240))), \
+             patch("dial_display_compositor.transform_artwork_for_panel", return_value=Image.new("RGB", (240, 240))):
+            display._poll_once()
+        assert display._compact_tier() is True
+        assert display._eq_available is False
+
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "repeat"
+
+        display.cycle_pages()
+        self._apply(display)
+        assert display._screen == "main"
+
+
+class TestEqPageClosing:
+    def test_closes_on_focus_clear(self):
+        display = _make_eq_display()
+        display._open_eq_locked()
+        display._screen = "eq"
+        assert dd._policy("eq").closes_on_focus_clear is True
+
+    def test_closes_when_appliance_changes(self):
+        display = _make_eq_display(appliance_id="a" * 20)
+        display._open_eq_locked()
+        display._reporting_appliance_id = "b" * 20
+        display._close_bound_screen_if_unfocused()
+        assert display._screen == "main"
+        assert display._eq is None
+
+    def test_no_inactivity_timeout(self):
+        assert dd._policy("eq").inactivity_timeout_s is None
+
+    def test_touch_surface_reports_eq_with_outputs_gate(self):
+        display = _make_eq_display()
+        display._open_eq_locked()
+        display._outputs_available = False
+        assert display.touch_surface() == ("eq", True, True, False)
+        display._outputs_available = True
+        assert display.touch_surface() == ("eq", True, True, True)
+
+
 class TestOutputsPaintBuilders:
     def test_list_row_enabled_shows_volume_right_aligned_slot(self):
         assert dd._output_list_row(
@@ -6175,9 +6576,9 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_eight_screens(self):
+    def test_table_has_exactly_the_nine_screens(self):
         assert set(SCREEN_POLICIES) == {
-            "main", "selector", "picker", "info", "info_value", "repeat", "outputs", "output",
+            "main", "selector", "picker", "info", "info_value", "repeat", "eq", "outputs", "output",
         }
 
     def test_info_value_back_to_is_info(self):
@@ -6214,9 +6615,9 @@ class TestScreenPolicyTable:
         # deliberate, reviewed product decision with its own test.
         assert SCREEN_POLICIES["picker"].touch_extends_timeout is True
 
-    def test_bound_to_appliance_is_exactly_outputs_and_output(self):
+    def test_bound_to_appliance_is_exactly_outputs_output_and_eq(self):
         bound = {name for name, policy in SCREEN_POLICIES.items() if policy.bound_to_appliance}
-        assert bound == {"outputs", "output"}
+        assert bound == {"outputs", "output", "eq"}
 
     def test_surface_is_a_four_tuple_or_none_for_every_row(self):
         for policy in SCREEN_POLICIES.values():

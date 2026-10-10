@@ -56,6 +56,7 @@ from dial_auth import (
 from dial_display_compositor import (
     PLAY_GLYPH,
     DialDisplayCompositor,
+    EqViewState,
     InfoValueView,
     ListState,
     OutputViewState,
@@ -74,6 +75,9 @@ from dial_display_profiles import (
     get_profile,
     layout_context_for,
 )
+from dial_eq import _EqTarget
+from dial_eq import enqueue_fetch as _enqueue_eq_fetch
+from dial_eq import enqueue_set as _enqueue_eq_set
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
@@ -138,6 +142,15 @@ SELECTOR_TIMEOUT_SECONDS = 18
 # away, whenever an outputs screen opens (open_outputs()), so this cadence
 # only covers staying open past that first fetch.
 OUTPUTS_REFRESH_S = 2.0
+
+# The EQ page's own bass/treble range -- both ends (this manager's eq_step
+# and the appliance's own apply_eq_fields) independently clamp to it.
+EQ_LIMIT_DB = 6
+
+# The page-dots cycle order — see cycle_pages(). "main" is always available
+# (the fallback every cycle lands on); "repeat" and "eq" are skipped when
+# _repeat_page_available()/self._eq_available says there is nothing to show.
+_PAGE_ORDER = ("main", "repeat", "eq")
 
 # How long a picker-started replay's manual focus is held "pending" while
 # the appliance has not yet reached the playing set — see
@@ -497,6 +510,23 @@ class OutputDetailState:
     appliance_id: str
     output_id: str
     opened_at: float
+
+
+@dataclass(frozen=True)
+class EqScreenState:
+    """The EQ page: which appliance it is showing and the last fetched
+    bass/treble pair. bass_db/treble_db are None until the first fetch for
+    THIS appliance lands (loaded False draws "-" and dimmed controls); a
+    reopen for the same appliance keeps the last known pair rather than
+    blanking the bars (see _open_eq_locked)."""
+    appliance_id: str
+    service_name: str
+    ip: str
+    port: int
+    opened_at: float
+    bass_db: "int | None" = None
+    treble_db: "int | None" = None
+    loaded: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -941,6 +971,26 @@ class DialDisplay:
         # Whether the top-right OUTPUTS zone is currently live — poll thread
         # only (_update_outputs_available); read lock-free by touch_surface().
         self._outputs_available = False
+        # The EQ page's own state — same write/read discipline as
+        # self._outputs: written under self._lock by its opener and by
+        # on_eq_result's fold (worker thread); read lock-free by the touch
+        # thread's eq_step() entry.
+        self._eq: "EqScreenState | None" = None
+        # Touch-thread plain write: a pending optimistic (bass, treble,
+        # expires_at) override shown immediately after an eq_step() tap,
+        # before the worker's reconciling fetch lands — same plain-reference
+        # discipline as self._outputs_optimistic. Either element of the pair
+        # may be None (only one control was just stepped); cleared once a
+        # fetch result stamped after it lands (on_eq_result) or once it
+        # expires.
+        self._eq_optimistic: "tuple[int | None, int | None, float] | None" = None
+        # Whether the EQ page is available for the currently focused/
+        # reporting appliance — poll thread only (_update_eq_available);
+        # read lock-free by cycle_pages()/touch_surface()/
+        # _effective_overlay_locked()/_build_repeat_view_locked(). False on
+        # the compact tier even when the appliance advertises dial_eq (no
+        # EQ page there).
+        self._eq_available = False
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -1878,7 +1928,7 @@ class DialDisplay:
         dots = self._dots_active and self._screen == "main"
         return dataclasses.replace(
             snapshot, visible=True, artist=artist, title=title, album=album, volume=volume, muted=muted,
-            name=name, dots=dots, pressed=pressed,
+            name=name, dots=dots, pressed=pressed, eq_pages=self._eq_available,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -2140,41 +2190,77 @@ class DialDisplay:
         _, page_rows = _page_slice(state.rows, state.page, self._rows_per_page())
         return page_rows
 
-    def toggle_repeat_screen(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a DOTS tap):
-        open or close the repeat screen.
-
-        Closing is unconditional, and also arms self._repeat_close_reveal
-        — a one-shot flag consumed by TouchEventSource._poll_surface() to
-        bring the main screen back showing its volume overlay rather than
-        bare artwork (see the flag's own comment in __init__ and
-        dial_touch.TouchStateMachine.force_overlay_visible()). Opening
-        reads self._now_playing, self._manual_focus_id and
+    def _repeat_page_available(self) -> bool:
+        """Whether the repeat page has anything to show right now: a
+        controllable appliance (self._now_playing is not None) whose
+        focused/reporting id has a fresh, available repeat-store record.
+        Reads self._now_playing, self._manual_focus_id and
         self._reporting_appliance_id (all plain reference reads, same
         discipline as set_manual_focus()) and the repeat store's own leaf
-        lock — it only opens when the focused/reporting appliance has a
-        fresh, available record; an appliance this dial cannot see repeat
-        state for has nothing to show on the repeat screen. No poll/
-        reconcile is forced here: unlike open_selector()/open_picker(), the
-        repeat screen's own content is entirely driven by whatever the
-        repeat store already holds.
-        """
-        if self._screen == "repeat":
-            if _policy(self._screen).close_reveals_overlay:
-                self._repeat_close_reveal = True
-            self._screen_request = "main"
-            self._overlay_signal.set()
-            return
+        lock — an appliance this dial cannot see repeat state for has
+        nothing to show on the repeat page."""
         if self._now_playing is None:
-            return
+            return False
         appliance_id = self._manual_focus_id or self._reporting_appliance_id
         if not appliance_id:
-            return
+            return False
         rec = repeat_store.get(appliance_id, time.monotonic())
-        if rec is None or not rec.available:
-            return
-        self._screen_request = "repeat"
-        self._overlay_signal.set()
+        return rec is not None and rec.available
+
+    def cycle_pages(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a DOTS tap):
+        advance to the next available page — main -> repeat -> eq -> main,
+        wrapping, and skipping a page with nothing to show (no held repeat
+        record, or no EQ-capable focused/reporting appliance) so a dot
+        never comes to mean two different pages. Reaching "eq" also enqueues
+        a fresh fetch on the EQ worker, so its bars are at most one round
+        trip away (open_outputs()'s own discipline); no poll/reconcile is
+        forced for repeat (unlike open_selector()/open_picker(), its content
+        is entirely driven by whatever the repeat store already holds).
+
+        A TRUE no-op (self._screen_request left untouched) when starting
+        from "main" (or a screen outside the three-page set entirely, e.g.
+        the selector) and nothing is available to open — the original
+        two-way toggle_repeat_screen()'s own exact behaviour, preserved so
+        an appliance with neither capability keeps its byte-identical
+        trace. Leaving "repeat" or "eq" for "main" (nothing further around
+        the wrap), by contrast, always fires — there is a real secondary
+        screen to close — and arms self._repeat_close_reveal exactly when
+        the screen just left carries close_reveals_overlay (both do): the
+        one-shot flag TouchEventSource._poll_surface() consumes to bring
+        the main screen back showing its volume overlay rather than bare
+        artwork (see the flag's own comment in __init__ and
+        dial_touch.TouchStateMachine.force_overlay_visible()).
+        """
+        current = self._screen if self._screen in _PAGE_ORDER else "main"
+        leaving_page = current != "main"
+        i = _PAGE_ORDER.index(current)
+        for step in range(1, len(_PAGE_ORDER) + 1):
+            candidate = _PAGE_ORDER[(i + step) % len(_PAGE_ORDER)]
+            if candidate == "repeat" and self._repeat_page_available():
+                self._screen_request = "repeat"
+                self._overlay_signal.set()
+                return
+            if candidate == "eq" and self._eq_available:
+                target = self._eq_target_lockfree()
+                if target is not None:
+                    _enqueue_eq_fetch(_EqTarget(target.appliance_id, target.ip, target.port))
+                    self._screen_request = "eq"
+                    self._overlay_signal.set()
+                    return
+            if candidate == "main":
+                if leaving_page:
+                    if _policy(self._screen).close_reveals_overlay:
+                        self._repeat_close_reveal = True
+                    self._screen_request = "main"
+                    self._overlay_signal.set()
+                return
+
+    def toggle_repeat_screen(self) -> None:
+        """Alias kept for existing direct callers/tests — see
+        cycle_pages(), which replaced this method's own open/close logic
+        with the three-page cycle."""
+        self.cycle_pages()
 
     def consume_repeat_close_reveal(self) -> bool:
         """Touch-thread-only read-and-clear of the one-shot flag
@@ -2357,6 +2443,21 @@ class DialDisplay:
         for r in self._last_roster:
             if r.appliance_id == appliance_id:
                 return r if (r.dial_outputs and r.auth != AUTH_UNAUTHORIZED) else None
+        return None
+
+    def _eq_target_lockfree(self):
+        """The roster entry the EQ page acts on: the focused/reporting
+        appliance when it advertises dial_eq and is not confirmed
+        unauthorized; else None. The compact-tier veto lives in
+        self._eq_available (computed once per poll tick), not here — this
+        mirrors _outputs_target_lockfree() exactly, tier-agnostic like every
+        other *_target_lockfree() helper."""
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        if not appliance_id:
+            return None
+        for r in self._last_roster:
+            if r.appliance_id == appliance_id:
+                return r if (r.dial_eq and r.auth != AUTH_UNAUTHORIZED) else None
         return None
 
     def open_outputs(self) -> None:
@@ -2560,6 +2661,30 @@ class DialDisplay:
             return False
         self._repeat_screen = screen
         self._screen = "repeat"
+        return True
+
+    def _open_eq_locked(self) -> bool:
+        """The EQ row's opener: refuse when there is no focused/reporting
+        appliance advertising the capability, or the current tier has no EQ
+        page (see self._eq_available); otherwise open, keeping the last
+        fetched bass/treble when re-opening for the SAME appliance (so a
+        quick cycle away and back does not blank the bars), resetting them
+        for a different one."""
+        if not self._eq_available:
+            return False
+        entry = self._eq_target_lockfree()
+        if entry is None:
+            return False
+        prev = self._eq
+        keep = prev is not None and prev.appliance_id == entry.appliance_id
+        self._eq = EqScreenState(
+            appliance_id=entry.appliance_id, service_name=entry.service_name,
+            ip=entry.ip, port=entry.port, opened_at=time.monotonic(),
+            bass_db=prev.bass_db if keep else None,
+            treble_db=prev.treble_db if keep else None,
+            loaded=keep and prev.loaded,
+        )
+        self._screen = "eq"
         return True
 
     def _open_outputs_locked(self) -> bool:
@@ -3042,10 +3167,15 @@ class DialDisplay:
         as it takes the next poll to notice a manual focus change.
         """
         pressed = self._pressed[0] if self._pressed is not None else None
+        # Feeds the shared top band's third page dot — see
+        # OverlayState.eq_pages/_effective_overlay_locked for the identical
+        # main-screen computation.
+        eq_pages = self._eq_available
         if screen is None:
             return RepeatViewState(
                 name="", layout="enable", armed=False, line="",
                 start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
+                eq_pages=eq_pages,
             )
         name = appliance_display_name(screen.service_name)
         muted = shown_muted(screen.service_name)
@@ -3055,13 +3185,13 @@ class DialDisplay:
             return RepeatViewState(
                 name=name, layout="enable", armed=False, line="",
                 start_enabled=False, stop_enabled=False, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed,
+                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state in ("recording", "pending", "idle"):
             return RepeatViewState(
                 name=name, layout="enable", armed=rec.armed, line="",
                 start_enabled=False, stop_enabled=False, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed,
+                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state == "hold":
             # Already reads 0:00 — there is nothing running yet for the
@@ -3070,7 +3200,7 @@ class DialDisplay:
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=False, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed,
+                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state == "replaying":
             pos = _interpolate_repeat_position(rec, now)
@@ -3087,7 +3217,7 @@ class DialDisplay:
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=True, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed,
+                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         # fading_out: the line freezes at the last observed position (no
         # interpolation — the fade is a fixed-length event, not a running
@@ -3097,7 +3227,7 @@ class DialDisplay:
         return RepeatViewState(
             name=name, layout="replaying", armed=rec.armed, line=line,
             start_enabled=False, stop_enabled=True, stop_pressed=True,
-            muted=muted, volume=volume, pressed=pressed,
+            muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
         )
 
     def _display_repeat_locked(self) -> None:
@@ -3122,6 +3252,111 @@ class DialDisplay:
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
             controls=controls,
         ))
+
+    def _shown_eq(self, state: "EqScreenState", control: str) -> "int | None":
+        """The bass or treble value *control* should currently show: the
+        pending optimistic override's own slot for *control* when it has
+        not expired and is not None, else the screen's own last-fetched
+        value (None until the first fetch lands for this appliance). The
+        _shown_output_level() shape, for the EQ page's pair instead of one
+        output's single level."""
+        override = self._eq_optimistic
+        if override is not None and override[2] > time.monotonic():
+            value = override[0] if control == "bass" else override[1]
+            if value is not None:
+                return value
+        return state.bass_db if control == "bass" else state.treble_db
+
+    def _build_eq_view_locked(self, screen: "EqScreenState | None", now: float) -> EqViewState:
+        """Build the compositor's EqViewState from *screen* — reads
+        bass/treble through the optimistic override (see _shown_eq()) so a
+        just-tapped stepper moves on the same frame as the tap, before the
+        worker's reconciling fetch lands. muted/volume feed the top band's
+        display-only readout, the same reading the repeat screen's own top
+        band shows, addressed at *screen*'s own appliance. Caller holds
+        self._lock (called from _display_eq_locked)."""
+        pressed = self._pressed[0] if self._pressed is not None else None
+        if screen is None:
+            return EqViewState(name="", bass_db=None, treble_db=None, loaded=False, pressed=pressed)
+        name = appliance_display_name(screen.service_name)
+        muted = shown_muted(screen.service_name)
+        volume = shown_volume(screen.service_name)
+        return EqViewState(
+            name=name,
+            bass_db=self._shown_eq(screen, "bass"),
+            treble_db=self._shown_eq(screen, "treble"),
+            loaded=screen.loaded,
+            muted=muted, volume=volume, pressed=pressed,
+        )
+
+    def _display_eq_locked(self) -> None:
+        """Compose and push the EQ-page frame — the compose_eq()
+        counterpart to _display_repeat_locked(). Bypasses _display_locked()
+        entirely: this screen has its own dark-chassis compose path and
+        must never pick up the main now-playing overlay. Caller holds
+        self._lock."""
+        view = self._build_eq_view_locked(self._eq, time.monotonic())
+        metrics = self._metrics_locked()
+        self._push_frame_locked(lambda: self._compositor.compose_eq(
+            metrics.width, metrics.height, view,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+
+    def eq_step(self, control: str, delta: int) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for an EQ_BASS_*/
+        EQ_TREBLE_* tap, repeating): absolute clamp(shown + delta, -6, +6)
+        for *control* ("bass" or "treble") — the same shape as
+        output_volume_tap(): the appliance clamps again defensively.
+        Optimistic override shown at once; the worker's fetch-after-set
+        reconciles it. A no-op when the EQ page is not open for any
+        appliance."""
+        state = self._eq
+        if state is None:
+            return
+        shown = self._shown_eq(state, control)
+        if shown is None:
+            shown = 0
+        new = max(-EQ_LIMIT_DB, min(EQ_LIMIT_DB, shown + delta))
+        prev_bass = self._shown_eq(state, "bass")
+        prev_treble = self._shown_eq(state, "treble")
+        self._eq_optimistic = (
+            new if control == "bass" else prev_bass,
+            new if control == "treble" else prev_treble,
+            time.monotonic() + 2.0,
+        )
+        _enqueue_eq_set(
+            _EqTarget(state.appliance_id, state.ip, state.port), **{f"{control}_db": new},
+        )
+        self._overlay_signal.set()
+
+    def on_eq_result(self, kind: str, appliance_id: str, status, body, request) -> None:
+        """Worker-thread entry (dial_eq's start_eq_worker on_result
+        callback): fold a "fetch" result into self._eq under self._lock — a
+        "set" result is not applied here, the worker's own fetch-after-set
+        does that. Mirrors on_outputs_result(). Drops a result for another
+        appliance (the EQ page moved on, or closed, while the request was
+        in flight) and any malformed/failed body. Clears the optimistic
+        override once it has expired — the same _outputs_optimistic
+        discipline on_outputs_result() follows, so a fetch that raced a
+        still-fresh tap never flashes the pre-tap value back onto screen."""
+        if kind != "fetch":
+            return
+        if not isinstance(body, dict) or not body.get("ok"):
+            return
+        bass, treble = body.get("bass_db"), body.get("treble_db")
+        if isinstance(bass, bool) or not isinstance(bass, int):
+            return
+        if isinstance(treble, bool) or not isinstance(treble, int):
+            return
+        with self._lock:
+            state = self._eq
+            if state is None or state.appliance_id != appliance_id:
+                return
+            self._eq = dataclasses.replace(state, bass_db=bass, treble_db=treble, loaded=True)
+            override = self._eq_optimistic
+            if override is not None and override[2] <= time.monotonic():
+                self._eq_optimistic = None
+        self._overlay_signal.set()
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
@@ -3424,13 +3659,15 @@ class DialDisplay:
                 self._close_secondary_locked()
 
     def _update_dots_active(self, now: float) -> None:
-        """Recompute whether the repeat screen's dots are currently
-        tappable, from the currently focused/reporting appliance's fresh
-        repeat-store record. Poll thread only; read lock-free by
+        """Recompute whether the page dots are currently tappable: the
+        currently focused/reporting appliance has a fresh, available
+        repeat-store record, OR the EQ page is available for it (see
+        _update_eq_available() — call that one first each tick, since this
+        reads its result). Poll thread only; read lock-free by
         touch_surface() and _effective_overlay_locked()."""
         appliance_id = self._manual_focus_id or self._reporting_appliance_id
         rec = repeat_store.get(appliance_id, now) if appliance_id else None
-        self._dots_active = rec is not None and rec.available
+        self._dots_active = (rec is not None and rec.available) or self._eq_available
 
     def _update_outputs_available(self) -> None:
         """Recompute whether the top-right OUTPUTS zone is currently live,
@@ -3444,6 +3681,24 @@ class DialDisplay:
         ) if appliance_id else None
         self._outputs_available = (
             entry is not None and entry.dial_outputs and entry.auth != AUTH_UNAUTHORIZED
+        )
+
+    def _update_eq_available(self) -> None:
+        """Recompute whether the EQ page is available for the currently
+        focused/reporting appliance — poll thread only; read lock-free by
+        cycle_pages()/touch_surface()/_effective_overlay_locked()/
+        _build_repeat_view_locked(). Mirrors _update_outputs_available(),
+        with an extra veto: no EQ page exists on the compact tier even when
+        the appliance itself advertises dial_eq. Call before
+        _update_dots_active() each tick — the dots computation reads this
+        result."""
+        appliance_id = self._manual_focus_id or self._reporting_appliance_id
+        entry = next(
+            (r for r in self._last_roster if r.appliance_id == appliance_id), None,
+        ) if appliance_id else None
+        self._eq_available = (
+            entry is not None and entry.dial_eq and entry.auth != AUTH_UNAUTHORIZED
+            and not self._compact_tier()
         )
 
     def _maybe_show_transition(self, previous_reporting_id: "str | None") -> None:
@@ -3493,6 +3748,7 @@ class DialDisplay:
             self._reporting_appliance_id = None
             self._dots_active = False
             self._outputs_available = False
+            self._eq_available = False
             return
 
         # Captured before anything below can change it — compared against
@@ -3678,6 +3934,7 @@ class DialDisplay:
                     self._reporting_appliance_id = idle_focus.appliance_id
                     self._source_service_name = idle_focus.service_name
                     self._now_playing = NowPlaying(idle_focus.service_name, "", "", master_volume, playing=False)
+                    self._update_eq_available()
                     self._update_dots_active(now)
                     self._update_outputs_available()
             if idle_focus is None:
@@ -3691,11 +3948,13 @@ class DialDisplay:
                     pending = self._focus_pending
                     self._now_playing = NowPlaying(pending[1], "", "", None, playing=False)
                     self._reporting_appliance_id = pending[0]
+                    self._update_eq_available()
                     self._update_dots_active(now)
                     self._update_outputs_available()
                 else:
                     self._now_playing = None
                     self._reporting_appliance_id = None
+                    self._update_eq_available()
                     self._update_dots_active(now)
                     self._update_outputs_available()
 
@@ -3854,6 +4113,7 @@ class DialDisplay:
         # rationale. reporting_id can still be None here (e.g. every target
         # unauthorized this tick); the mirror releases to None the same way.
         self._bound_appliance_id = focus_id if focus_id is not None else reporting_id
+        self._update_eq_available()
         self._update_dots_active(time.monotonic())
         self._update_outputs_available()
         self._maybe_show_transition(previous_reporting_id)
@@ -4058,6 +4318,18 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         # would be, Restart/Stop in place of the enable layout's own row —
         # see GEOMETRY_REPEAT_REPLAY and touch_surface().
         replay_surface=("repeat_replay", True, True, False),
+    ),
+    # The EQ page: a third page, reached from the same dots as the repeat
+    # screen (see cycle_pages()), rich/large only. No inactivity timeout —
+    # the dots (or the poll's own closes) are its only exit, same as
+    # repeat.
+    "eq": ScreenPolicy(
+        name="eq", state_attr="_eq", surface=("eq", True, True, True),
+        open=DialDisplay._open_eq_locked, paint=DialDisplay._display_eq_locked, paged=False,
+        inactivity_timeout_s=None, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
+        close_reveals_overlay=True, closes_on_focus_clear=True, back_to="main",
+        bound_to_appliance=True,
     ),
     "outputs": ScreenPolicy(
         name="outputs", state_attr="_outputs", surface=("outputs", False, False, False),

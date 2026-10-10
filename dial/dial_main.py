@@ -24,6 +24,7 @@ from dial_http_server import (
     NoOpDisplayStatusProvider,
     _announce_self,
 )
+from dial_eq import start_eq_worker
 from dial_info import gather_dial_info
 from dial_led import DialLED
 from dial_mdns import (
@@ -475,17 +476,19 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         display.set_overlay(OverlayState(visible=True))
 
     def on_zone_tap(zone, index) -> None:
-        # NAME opens the appliance selector (from either the main or the
-        # repeat screen); the LIST_* zones act on whichever list-chassis
-        # screen (selector, picker or outputs) is open; DOTS opens/closes
-        # the repeat screen (closing it also reveals the main screen's
-        # volume overlay on return — see display.toggle_repeat_screen());
-        # REPEAT_* act on the repeat screen; IDLE_REPLAY opens the replay
-        # picker; IDLE_INFO opens the idle screen's read-only info page;
-        # OUTPUTS opens the outputs list; OUTPUT_* act on the per-output
-        # detail page; ARTWORK hides the main screen's own bands for a few
-        # seconds — see dial_touch.py's SURFACES paragraph for how a press
-        # ever reaches one of these zones in the first place.
+        # NAME opens the appliance selector (from either the main, repeat
+        # or EQ screen); the LIST_* zones act on whichever list-chassis
+        # screen (selector, picker or outputs) is open; DOTS cycles the
+        # pages (main -> repeat -> eq -> main, skipping one with nothing to
+        # show — closing back to main also reveals the main screen's volume
+        # overlay on return — see display.cycle_pages()); REPEAT_* act on
+        # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
+        # bars; IDLE_REPLAY opens the replay picker; IDLE_INFO opens the
+        # idle screen's read-only info page; OUTPUTS opens the outputs
+        # list; OUTPUT_* act on the per-output detail page; ARTWORK hides
+        # the main screen's own bands for a few seconds — see
+        # dial_touch.py's SURFACES paragraph for how a press ever reaches
+        # one of these zones in the first place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
@@ -499,7 +502,15 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         elif zone == TouchZone.LIST_ROW:
             display.list_row_tap(index)
         elif zone == TouchZone.DOTS:
-            display.toggle_repeat_screen()
+            display.cycle_pages()
+        elif zone == TouchZone.EQ_BASS_DOWN:
+            display.eq_step("bass", -1)
+        elif zone == TouchZone.EQ_BASS_UP:
+            display.eq_step("bass", +1)
+        elif zone == TouchZone.EQ_TREBLE_DOWN:
+            display.eq_step("treble", -1)
+        elif zone == TouchZone.EQ_TREBLE_UP:
+            display.eq_step("treble", +1)
         elif zone == TouchZone.REPEAT_PLAY:
             display.repeat_toggle_tap()
         elif zone == TouchZone.REPEAT_START:
@@ -685,6 +696,12 @@ def main() -> None:
     # (see dial_outputs.py's module docstring). on_result degrades to a
     # no-op for a NoOpDisplayStatusProvider (no on_outputs_result method).
     start_outputs_worker(cfg, on_result=getattr(display, "on_outputs_result", None))
+
+    # The EQ page's bass/treble sender: its own thread, queue and HTTP
+    # client, entirely separate from every other worker above (see
+    # dial_eq.py's module docstring). on_result degrades to a no-op for a
+    # NoOpDisplayStatusProvider (no on_eq_result method).
+    start_eq_worker(cfg, on_result=getattr(display, "on_eq_result", None))
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch
