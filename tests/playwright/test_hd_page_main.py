@@ -433,6 +433,30 @@ class TestSpeakers:
         expect(patio.locator("input[type=checkbox]")).not_to_be_checked()
         expect(patio.locator(".level-row")).to_be_hidden()
 
+    def test_the_default_speaker_carries_a_default_badge(self, page, hd):
+        open_page(page, hd)
+        badge = card(page, "Lounge L + R").locator(".output-card-default")
+        expect(badge).to_be_visible()
+        expect(badge).to_have_text("Default")
+        expect(card(page, "Patio").locator(".output-card-default")).to_be_hidden()
+        chip = card(page, "Lounge L + R").locator(".output-state-chip")
+        assert abs(badge.bounding_box()["y"] - chip.bounding_box()["y"]) < 2
+
+    def test_the_badge_does_not_change_the_card_height(self, page, hd):
+        open_page(page, hd)
+        marked = card(page, "Patio").bounding_box()["height"]
+        hd.show(scenario("playing_artwork", outputs=outputs_with(
+            OutputRow("o1", "Lounge L + R", True, 45),
+            OutputRow("o2", "Patio", False, 30, is_default=True))))
+        expect(card(page, "Patio").locator(".output-card-default")).to_be_visible()
+        assert abs(card(page, "Patio").bounding_box()["height"] - marked) < 2
+
+    def test_a_state_without_the_field_shows_no_badge(self, page, hd):
+        open_page(page, hd)
+        hd.show(scenario("playing_artwork", outputs=outputs_with(OutputRow("x", "Old", True, 10))))
+        expect(card(page, "Old")).to_be_visible()
+        expect(card(page, "Old").locator(".output-card-default")).to_be_hidden()
+
     def test_toggle_sends_output_and_shows_the_slider(self, page, hd):
         sent = watch_actions(page)
         open_page(page, hd)

@@ -442,6 +442,7 @@
                 : { text: on ? "On" : "Off", tone: on ? "on" : "off" };
             return {
                 id: row.id, name: row.name, on: on, chip: chip, inUse: !!row.in_use,
+                isDefault: !!row.default,
                 level: settle("out:" + row.id + ":volume", row.volume),
                 enabled: usable && !row.in_use
             };
@@ -563,6 +564,7 @@
         const head = node.appendChild(make("div", "output-card-head"));
         const meta = head.appendChild(make("div", "output-card-meta"));
         const name = meta.appendChild(make("div", "output-card-name"));
+        const badge = meta.appendChild(make("span", "output-card-default", "Default"));
         const chip = meta.appendChild(make("span", "output-state-chip"));
         const toggle = head.appendChild(make("label", "output-toggle"));
         const box = toggle.appendChild(make("input"));
@@ -586,6 +588,7 @@
             node.classList.toggle("output-card-off", !item.on || item.inUse);
             node.classList.toggle("output-card-in-use", item.inUse);
             setText(name, item.name);
+            badge.hidden = !item.isDefault;
             setText(chip, item.chip.text);
             chip.className = "output-state-chip " + item.chip.tone;
             box.setAttribute("aria-label", item.name);

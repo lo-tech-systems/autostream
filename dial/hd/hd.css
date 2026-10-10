@@ -102,6 +102,7 @@ body.hd {
 .speakers .output-card { margin: 0; padding: 9px 12px 8px; flex: none; }
 .speakers .output-card .output-card-head { min-height: 31px; }
 .speakers .output-card-name { font-size: 1em; }
+.speakers .output-card-default[hidden] { display: none; }
 .speakers .output-card-in-use { cursor: default; }
 .speakers .output-card-in-use:hover { opacity: 0.7; }
 .hd .output-toggle { position: relative; padding: 12px 0 12px 14px; }

@@ -84,6 +84,8 @@ itself, unless you have just scrolled that list.
   web UI (Setup, Dials). See [Getting Started](GETTING-STARTED.md#authorizing-the-dial).
 - A speaker in use by another autostream appliance is dimmed and cannot be
   switched, with **In Use by** and the other appliance's name when it is known.
+- The appliance's default speaker carries a Default label, as on the appliance's
+  Home page.
 - Speakers have their own on/off switch and volume slider.
 
 ### Now playing and volume
