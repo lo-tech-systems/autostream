@@ -2841,14 +2841,14 @@ class TestListStateForHelper:
         assert state.has_prev is False
         assert state.has_next is False
 
-    def test_replaying_selector_row_maps_to_loop_glyph_triple(self):
-        rows = (dd.SelectorRow(appliance_id="a", label="A", current=False, replaying=True),)
+    def test_playing_selector_row_maps_to_play_glyph_triple(self):
+        rows = (dd.SelectorRow(appliance_id="a", label="A", current=False, playing=True),)
         selector = dd.SelectorState(rows=rows, page=0, opened_at=0.0)
         state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
-        assert state.rows == (("A", False, dd.LOOP_GLYPH),)
+        assert state.rows == (("A", False, dd.PLAY_GLYPH),)
 
-    def test_non_replaying_selector_row_maps_to_pair(self):
-        rows = (dd.SelectorRow(appliance_id="a", label="A", current=True, replaying=False),)
+    def test_non_playing_selector_row_maps_to_pair(self):
+        rows = (dd.SelectorRow(appliance_id="a", label="A", current=True, playing=False),)
         selector = dd.SelectorState(rows=rows, page=0, opened_at=0.0)
         state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
         assert state.rows == (("A", True),)

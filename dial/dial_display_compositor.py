@@ -9,8 +9,9 @@ state, and no lock of its own; every call is independent of every other.
 
 Every screen (the now-playing overlay, the repeat screen, the appliance
 selector, the idle screen) is drawn by one pipeline, _compose_frame():
-background, then dims, then a pressed-zone wash, then the header, then the
-body, then the footer, then rotate/BGR. What differs between screens is
+background, then dims, then any row highlights, then a pressed-zone wash,
+then the header, then the body, then the footer, then rotate/BGR. What
+differs between screens is
 only the data — a frozen Frame descriptor made of a background choice plus
 a Header/Body/Footer triple — never the drawing order. Each of the four
 public entry points (compose(), compose_list(), compose_repeat(),
@@ -68,12 +69,13 @@ light or dark. The appliance name (top-left) sits over the dimmed top band
 instead, which gives it enough contrast on its own, so it is drawn plain.
 The halo is drawn per element, confined to that element's own rectangle —
 never as a whole-frame effect — the same discipline _draw_glyph() applies to
-the selector chassis's check mark and chevrons (rendered at a higher
-resolution and downsampled with LANCZOS, so small diagonal strokes read
-smoothly rather than aliasing).
+the list's play marker and chevrons (rendered at a higher resolution and
+downsampled with LANCZOS, so small diagonal strokes read smoothly rather
+than aliasing).
 
-compose_list() builds the appliance-selector screen (a dark chassis with up
-to three rows and a back|down|up bar) from a ListState snapshot, sharing
+compose_list() builds the appliance-selector screen (a dark chassis with a
+page of rows, the current one washed, and a back|down|up bar) from a
+ListState snapshot, sharing
 dial_touch_layout.list_layout_for()'s geometry with dial_touch.py's
 selector-surface hit-test — the same single-source-of-truth discipline the
 overlay's own geometry follows. Like compose(), it applies rotate/BGR last
@@ -136,6 +138,15 @@ _GLYPH_RGB = (255, 255, 255)
 _PRESSED_FILL_RGB = (255, 255, 255)
 _PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
 
+# The current-row wash on the list chassis: the same translucent white
+# wash a press uses, at a fraction of the strength, drawn under any press
+# so a pressed current row still reads brighter than an unpressed one.
+# Alpha 21 lifts the (16,16,16) chassis to (36,36,36): visibly lighter
+# than the chassis, still darker than the (48,48,48) separators, and far
+# from competing with white text or the marker.
+_ROW_HIGHLIGHT_RGB = (255, 255, 255)
+_ROW_HIGHLIGHT_ALPHA = 21
+
 # Divider-line colour: pure white, matching the glyph/text colour, so the
 # single boundary line between DOWN and UP reads as clean structure against
 # the dimmed backdrop rather than blending into it.
@@ -171,12 +182,6 @@ _GLYPH_SUPERSAMPLE = 4
 # colour — the same OVERLAY_DIM_FACTOR the overlay's chevrons use for their
 # own disabled state.
 _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
-
-# The selector/picker row "currently replaying" marker (see LOOP_GLYPH
-# below) is drawn in this accent colour rather than the plain glyph white,
-# so it reads as a status marker distinct from the check mark and chevrons.
-_LOOP_GLYPH_RGB = (100, 149, 237)
-
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -237,13 +242,16 @@ class ListState:
 
     rows: (label, checked) pairs for the CURRENT page only — at most
         ListLayout.rows_per_page entries (3 on every shipped profile).
-        checked marks the row that is the current focus. A row may instead
-        be a (label, checked, secondary) triple: secondary is drawn right-
-        aligned when it is a plain non-empty string (the replay picker's
-        buffer length, e.g. "42:10"), or, when it is the LOOP_GLYPH
-        sentinel, draws the accent-coloured "currently replaying" marker in
-        the row's dot box instead of text (used by the appliance selector).
-        A 2-tuple row is byte-identical to before this field existed.
+        checked marks the row that is CURRENT — the pipeline washes that
+        row before any content is drawn (see _list_frame/_list_highlight_
+        rects), rather than the body renderer drawing a marker for it. A
+        row may instead be a (label, checked, secondary) triple: secondary
+        is drawn right-aligned when it is a plain non-empty string (the
+        replay picker's buffer length, e.g. "42:10"), or, when it is the
+        PLAY_GLYPH sentinel, draws the white play marker in the row's
+        marker box instead of text (the appliance selector's "playing"
+        mark). A 2-tuple row is byte-identical to before this field
+        existed.
     has_prev: whether a previous page exists — gates whether the LIST_UP
         chevron is drawn lit (see dial_touch_layout.ListLayout.up and the
         LIST_UP -> selector_page(-1) dispatch in dial_main.py).
@@ -260,16 +268,16 @@ class ListState:
     pressed: tuple[TouchZone, int | None] | None = None
 
 
-class _LoopGlyphSentinel:
+class _PlayGlyphSentinel:
     """Unique marker for a ListState row's secondary slot — see ListState's
-    docstring. A dedicated object (rather than a string like "loop") so it
+    docstring. A dedicated object (rather than a string like "play") so it
     can never collide with genuine row text."""
 
     def __repr__(self) -> str:
-        return "LOOP_GLYPH"
+        return "PLAY_GLYPH"
 
 
-LOOP_GLYPH = _LoopGlyphSentinel()
+PLAY_GLYPH = _PlayGlyphSentinel()
 
 
 @dataclass(frozen=True)
@@ -392,7 +400,8 @@ class Frame:
     background: str
     dim_top: bool = False
     dim_bottom: bool = False
-    pressed: tuple[Rect, ...] = ()   # rects to wash, in the order they should be drawn
+    pressed: tuple[Rect, ...] = ()     # rects to wash, in the order they should be drawn
+    highlights: tuple[Rect, ...] = ()  # rects to wash at the row-highlight strength, under any press
     header: Header | None = None
     body: Body = Body()
     footer: Footer = Footer()
@@ -459,9 +468,10 @@ class DialDisplayCompositor:
 
         Always starts from a flat dark background (_LIST_BG_RGB) — there is
         no artwork on this screen. Draws up to ListLayout.rows_per_page rows
-        (label, plus a small selection dot on the row `state` marks selected), a 1px
-        separator under each row, and the bottom back|down|up bar (dimmed
-        like compose()'s bottom band, with the down/up chevrons drawn at
+        (label, plus a faint wash on the row `state` marks current, and the
+        play marker on rows whose secondary is PLAY_GLYPH), a 1px separator
+        under each row, and the bottom back|down|up bar (dimmed like
+        compose()'s bottom band, with the down/up chevrons drawn at
         OVERLAY_DIM_FACTOR brightness when no next/previous page exists).
         rotate/bgr are applied last, in the same order compose() uses.
 
@@ -671,23 +681,32 @@ def _draw_bottom_band(
     _draw_band_divider(draw, layout, metrics)
 
 
-def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
-    """Alpha-composite a translucent highlight wash over *rect* so a press
-    is visibly acknowledged. Built and applied at *rect*'s own size only —
-    the same crop/composite/paste shape _draw_text_with_halo() and
-    _draw_glyph() use — so nothing outside the rectangle is even touched by
-    the composite, not merely left unfilled."""
+def _draw_wash(image: Image.Image, rect: tuple[int, int, int, int], rgb, alpha: int) -> None:
+    """Alpha-composite a translucent *rgb* wash at *alpha* over *rect*.
+    Built and applied at *rect*'s own size only — the same crop/composite/
+    paste shape _draw_text_with_halo() and _draw_glyph() use — so nothing
+    outside the rectangle is even touched by the composite. The pressed
+    highlight and the list's current-row wash are both this, at different
+    strengths."""
     x0, y0, x1, y1 = rect
     w, h = x1 - x0, y1 - y0
     if w <= 0 or h <= 0:
         return
     wash_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    ImageDraw.Draw(wash_layer).rectangle(
-        [0, 0, w - 1, h - 1], fill=(*_PRESSED_FILL_RGB, _PRESSED_FILL_ALPHA)
-    )
+    ImageDraw.Draw(wash_layer).rectangle([0, 0, w - 1, h - 1], fill=(*rgb, alpha))
     region = image.crop(rect).convert("RGBA")
     composited = Image.alpha_composite(region, wash_layer).convert("RGB")
     image.paste(composited, (x0, y0))
+
+
+def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
+    """The pressed-zone wash: _draw_wash at the press strength."""
+    _draw_wash(image, rect, _PRESSED_FILL_RGB, _PRESSED_FILL_ALPHA)
+
+
+def _draw_row_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
+    """The list's current-row wash: _draw_wash at the fainter row strength."""
+    _draw_wash(image, rect, _ROW_HIGHLIGHT_RGB, _ROW_HIGHLIGHT_ALPHA)
 
 
 def _zone_center_and_span(rect: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -951,10 +970,7 @@ def _halo_layer(text: str, font, local_xy: tuple[int, int], w: int, h: int, stro
 GLYPH_CHEVRON = "chevron"              # params: (direction, lit)
 GLYPH_TWO_DOTS = "two_dots"            # params: (filled,)
 GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
-GLYPH_SELECTED_DOT = "selected_dot"    # params: ()
-GLYPH_LOOP = "loop"                    # params: (rgb,) — colour explicit so
-                                        # more than one accent shade can share
-                                        # this one cache without colliding
+GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
 
 
@@ -982,8 +998,8 @@ def _draw_glyph(
     identifies a memoised, downsampled tile (see _glyph_tile()), rendered at
     _GLYPH_SUPERSAMPLE times *rect*'s size and downsampled with LANCZOS, then
     alpha-composited over the cropped frame region and pasted back. Used for
-    the selector chassis's check mark and chevrons and the header's pager
-    dots, whose diagonal strokes and curves would otherwise alias visibly at
+    the list's play marker and chevrons and the header's pager dots, whose
+    diagonal strokes and curves would otherwise alias visibly at
     these small sizes — the same per-element (never whole-frame)
     antialiasing the halo helper above applies to text. Any Pillow failure,
     including one raised while painting a tile that therefore never gets
@@ -1012,17 +1028,6 @@ def _reset_render_caches() -> None:
     _halo_layer.cache_clear()
 
 
-def _draw_selected_dot(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
-    """A small filled white circle marking the selected row, centred in a
-    (w, h) canvas — see _draw_glyph, which supplies the supersampled canvas
-    and downscales it for antialiasing. Deliberately small so it marks the
-    selection without competing with the label; only the selected row gets
-    one, the rest carry no marker."""
-    r = max(2, round(min(w, h) * 0.16))
-    cx, cy = w / 2.0, h / 2.0
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_GLYPH_RGB)
-
-
 def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit: bool) -> None:
     """A simple two-segment chevron (back/down/up) into a (w, h) canvas —
     see _draw_glyph. *lit*=False dims it to OVERLAY_DIM_FACTOR of the glyph
@@ -1040,28 +1045,21 @@ def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit
     draw.line(points, fill=color, width=stroke, joint="curve")
 
 
-def _draw_loop_glyph(
-    draw: ImageDraw.ImageDraw, w: int, h: int, rgb: tuple[int, int, int] = _LOOP_GLYPH_RGB,
-) -> None:
-    """A small looping-arrow glyph — the appliance selector's "currently
-    replaying" row marker (see LOOP_GLYPH). Drawn in *rgb* (the accent
-    colour _LOOP_GLYPH_RGB by default) rather than plain glyph white, into a
-    (w, h) canvas — see _draw_glyph. *rgb* is an explicit parameter (rather
-    than always reading the module constant) so it participates in the tile
-    cache's key: a different colour is simply a different cached tile, never
-    a stale one."""
-    cx, cy = w / 2.0, h / 2.0
+def _draw_play_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """A filled right-pointing triangle — the appliance selector's
+    "playing" row marker. Same reach rule as _draw_chevron and
+    _draw_cross_glyph (0.28 of the short side) so the list's glyphs read
+    as one family; filled rather than stroked because a play mark is
+    conventionally solid. Nudged right by a third of its reach so its
+    centroid, not its bounding box, sits on the canvas centre — a
+    box-centred triangle reads left-heavy. Rendered into a (w, h) canvas —
+    see _draw_glyph."""
     r = min(w, h) * 0.28
-    stroke = max(1, min(w, h) // 8)
-    draw.arc([cx - r, cy - r, cx + r, cy + r], start=30, end=300, fill=rgb, width=stroke)
-    ax, ay = cx + r * 0.5, cy - r * 0.87
+    cx, cy = w / 2, h / 2
+    s = r / 3
     draw.polygon(
-        [
-            (ax, ay - stroke),
-            (ax + stroke * 1.6, ay + stroke * 0.4),
-            (ax - stroke * 0.4, ay + stroke * 1.6),
-        ],
-        fill=rgb,
+        [(cx - r + s, cy - r), (cx - r + s, cy + r), (cx + r + s, cy)],
+        fill=_GLYPH_RGB,
     )
 
 
@@ -1086,9 +1084,8 @@ def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int) -> No
 def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
     """The enable layout's "Repeat Play" row marker: solid white when
     *armed* (the appliance will auto-start a replay on its own), hollow
-    (outline only) when disarmed — the same dot size _draw_selected_dot
-    uses for the appliance-selector's row marker. Rendered into a (w, h)
-    canvas — see _draw_glyph."""
+    (outline only) when disarmed — radius 0.16 of the box. Rendered into a
+    (w, h) canvas — see _draw_glyph."""
     r = max(2, round(min(w, h) * 0.16))
     cx, cy = w / 2.0, h / 2.0
     box = [cx - r, cy - r, cx + r, cy + r]
@@ -1118,8 +1115,7 @@ _GLYPH_PAINTERS = {
     GLYPH_CHEVRON: _draw_chevron,
     GLYPH_TWO_DOTS: _draw_two_dots,
     GLYPH_ARM_DOT: _draw_arm_dot,
-    GLYPH_SELECTED_DOT: _draw_selected_dot,
-    GLYPH_LOOP: _draw_loop_glyph,
+    GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
 }
 
@@ -1241,6 +1237,13 @@ def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
     _draw_text_with_halo(img, layout.line, body.line, font, metrics, align="center")
 
 
+# The row marker's box side as a fraction of the row height. At 0.75 the
+# glyph's reach (0.28 of the box each way) gives a 25 px triangle on a
+# 60 px row against a 24 px body font: the marker reads at the text's own
+# size rather than taller than it, as a row-height box did.
+_MARKER_BOX_FRACTION = 0.75
+
+
 def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
     draw = ImageDraw.Draw(img)
@@ -1252,34 +1255,22 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
         if i >= len(body.rows):
             continue
         row = body.rows[i]
-        label, checked = row[0], row[1]
+        label = row[0]
         secondary = row[2] if len(row) > 2 else ""
-        is_loop = secondary is LOOP_GLYPH
-        check_box = layout.row_h
         cy = (y0 + y1) // 2
-
-        # Right-hand reserved space, built up right to left: the loop
-        # glyph (if any), then the selected dot (if any), then free-text
-        # secondary (e.g. a buffer length) just left of whatever glyph
-        # space is reserved. A plain 2-tuple row (secondary == "") takes
-        # exactly the "checked reserves one box" path below, byte-identical
-        # to before the secondary slot existed.
         right_edge = x1 - pad
-        if is_loop:
-            loop_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph(img, loop_rect, GLYPH_LOOP, _LOOP_GLYPH_RGB, supersample=metrics.supersample)
+
+        # One marker box at the row's right, smaller than the row and in
+        # the plain glyph white: the play marker when the row carries one,
+        # else nothing. "Current" is not a marker: the pipeline washes the
+        # current row before any content is drawn (see _list_frame).
+        if secondary is PLAY_GLYPH:
+            box = max(2, round(layout.row_h * _MARKER_BOX_FRACTION))
+            top = y0 + (layout.row_h - box) // 2
+            marker_rect = (right_edge - box, top, right_edge, top + box)
+            _draw_glyph(img, marker_rect, GLYPH_PLAY, supersample=metrics.supersample)
             draw = ImageDraw.Draw(img)
-            right_edge -= check_box
-            if checked:
-                check_rect = (right_edge - check_box, y0, right_edge, y1)
-                _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT, supersample=metrics.supersample)
-                draw = ImageDraw.Draw(img)
-                right_edge -= check_box
-        elif checked:
-            check_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT, supersample=metrics.supersample)
-            draw = ImageDraw.Draw(img)
-            right_edge -= check_box
+            right_edge -= box
 
         if isinstance(secondary, str) and secondary and row_font is not None:
             measured_sec = _text_size(draw, secondary, row_font)
@@ -1372,20 +1363,23 @@ def _compose_frame(
     metrics: LayoutMetrics | None = None,
 ) -> Image.Image:
     """The one pipeline every screen frame is built from: background, dims,
-    pressed wash, header, body, footer, then rotate/BGR. *frame* carries
-    everything screen-specific; the geometry itself always comes from
-    layout_for() (plus list_layout_for()/repeat_layout_for() inside the
-    renderers that need them) — never computed here. *metrics*=None means
-    metrics_for(width, height) — today's geometry, density-unaware.
+    then any row highlights, pressed wash, header, body, footer, then
+    rotate/BGR. *frame* carries everything screen-specific; the geometry
+    itself always comes from layout_for() (plus list_layout_for()/
+    repeat_layout_for() inside the renderers that need them) — never
+    computed here. *metrics*=None means metrics_for(width, height) —
+    today's geometry, density-unaware.
 
     Dimming happens before the pressed wash so a highlighted zone still
     reads brighter than its dimmed surroundings, matching the dimmed band
     it sits on; the wash happens before any content so text/glyphs always
-    land on top of it. Body and footer never overlap, so their relative
-    order does not matter. No blanket exception handling here: every draw
-    helper already degrades on its own (a missing font or a Pillow failure
-    simply skips that one element), and an unrecognised body/footer kind is
-    a programming error that should raise rather than be swallowed.
+    land on top of it. The row highlight sits under the pressed wash so a
+    pressed highlighted row still reads brighter than an unpressed one.
+    Body and footer never overlap, so their relative order does not
+    matter. No blanket exception handling here: every draw helper already
+    degrades on its own (a missing font or a Pillow failure simply skips
+    that one element), and an unrecognised body/footer kind is a
+    programming error that should raise rather than be swallowed.
     """
     if metrics is None:
         metrics = metrics_for(width, height)
@@ -1395,6 +1389,8 @@ def _compose_frame(
         _dim_rect(img, layout.top_band)
     if frame.dim_bottom:
         _dim_rect(img, layout.bottom_band)
+    for rect in frame.highlights:
+        _draw_row_highlight(img, rect)
     for rect in frame.pressed:
         _draw_pressed_highlight(img, rect)
     if frame.header is not None:
@@ -1496,6 +1492,13 @@ def _list_pressed_rects(
     return (rect,) if rect is not None else ()
 
 
+def _list_highlight_rects(rows: tuple, layout) -> tuple[Rect, ...]:
+    """The row rects that get the current-row wash: every visible row
+    whose tuple marks it current. Extra rows beyond the page are ignored,
+    never indexed (the body renderer skips them from the other side)."""
+    return tuple(layout.rows[i] for i, row in enumerate(rows[:len(layout.rows)]) if row[1])
+
+
 def _list_frame(state: ListState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     layout = list_layout_for(width, height, metrics=metrics)
     rail = layout.rail is not None
@@ -1504,6 +1507,7 @@ def _list_frame(state: ListState, width: int, height: int, metrics: LayoutMetric
         dim_top=False,
         dim_bottom=not rail,
         pressed=_list_pressed_rects(state, width, height, metrics),
+        highlights=_list_highlight_rects(state.rows, layout),
         header=None,
         body=Body(BODY_LIST_ROWS, rows=state.rows),
         footer=Footer(

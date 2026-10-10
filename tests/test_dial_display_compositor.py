@@ -45,9 +45,10 @@ from dial_display_compositor import (  # noqa: E402
     Frame,
     GLYPH_CHEVRON,
     GLYPH_CROSS,
+    GLYPH_PLAY,
     GLYPH_TWO_DOTS,
     ListState,
-    LOOP_GLYPH,
+    PLAY_GLYPH,
     OverlayState,
     RepeatViewState,
     _BODY_RENDERERS,
@@ -974,7 +975,7 @@ class TestComposeList:
     def test_two_tuple_rows_byte_identical_to_before(self, compositor):
         """A 2-tuple row must render identically whether or not the module
         knows about the 3-tuple secondary slot — the regression guard for
-        the LOOP_GLYPH/secondary-text feature."""
+        the PLAY_GLYPH/secondary-text feature."""
         state = ListState(rows=(("CD Player", True), ("Kitchen", False)), has_prev=True, has_next=True)
         result = compositor.compose_list(160, 128, state, rotate=False, bgr=False)
         # Re-run with an explicitly empty secondary on each row: must be
@@ -985,36 +986,201 @@ class TestComposeList:
         result_explicit = compositor.compose_list(160, 128, state_explicit, rotate=False, bgr=False)
         assert list(result.getdata()) == list(result_explicit.getdata())
 
-    def test_loop_glyph_drawn_in_theme_colour(self, compositor):
-        layout = list_layout_for(160, 128)
-        plain = compositor.compose_list(160, 128, ListState(rows=(("Kitchen", False),)), rotate=False, bgr=False)
-        looping = compositor.compose_list(
-            160, 128, ListState(rows=(("Kitchen", False, LOOP_GLYPH),)), rotate=False, bgr=False,
-        )
-        assert list(plain.crop(layout.rows[0]).getdata()) != list(looping.crop(layout.rows[0]).getdata())
 
-    def test_loop_glyph_and_checked_dot_both_drawn(self, compositor):
-        """When a row is both the current focus AND replaying, the check
-        dot and the loop glyph must both appear (side by side), never one
-        silently overwriting the other."""
-        layout = list_layout_for(160, 128)
-        checked_only = compositor.compose_list(
-            160, 128, ListState(rows=(("Kitchen", True),)), rotate=False, bgr=False,
+# ---------------------------------------------------------------------------
+# The play marker — a filled white right-pointing triangle drawn in every
+# row whose secondary slot is PLAY_GLYPH, on every panel size/density.
+# ---------------------------------------------------------------------------
+
+_MARKER_GOLDEN_CASES = [
+    (160, 128, metrics_for(160, 128)),
+    (128, 128, metrics_for(128, 128)),
+    (240, 240, metrics_for(240, 240, 0.0973)),
+    (320, 240, _RICH_METRICS),
+    (320, 240, metrics_for(320, 240, 0.2778)),
+    (640, 480, _LARGE_METRICS),
+]
+
+
+def _marker_rect_for(width, height, metrics):
+    """Re-derive the marker rect from the layout and the module's own
+    _MARKER_BOX_FRACTION — pins the placement rule, not one literal."""
+    from dial_display_compositor import _MARKER_BOX_FRACTION
+
+    layout = list_layout_for(width, height, metrics=metrics)
+    row_h = layout.row_h
+    pad = metrics.pad
+    x0, y0, x1, y1 = layout.rows[0]
+    box = max(2, round(row_h * _MARKER_BOX_FRACTION))
+    top = y0 + (row_h - box) // 2
+    return (x1 - pad - box, top, x1 - pad, top + box), layout.rows[0], row_h, pad
+
+
+class TestPlayMarker:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @pytest.mark.parametrize("width,height,metrics", _MARKER_GOLDEN_CASES)
+    def test_marker_present_white_and_right_pointing(self, compositor, width, height, metrics):
+        marker_rect, row_rect, row_h, pad = _marker_rect_for(width, height, metrics)
+        mx0, my0, mx1, my1 = marker_rect
+        result = compositor.compose_list(
+            width, height, ListState(rows=(("Kitchen", False, PLAY_GLYPH),)),
+            rotate=False, bgr=False, metrics=metrics,
         )
-        checked_and_looping = compositor.compose_list(
-            160, 128, ListState(rows=(("Kitchen", True, LOOP_GLYPH),)), rotate=False, bgr=False,
+        cx, cy = (mx0 + mx1) // 2, (my0 + my1) // 2
+
+        centre = result.getpixel((cx, cy))
+        assert min(centre) > 200
+        assert centre[0] == centre[1] == centre[2]
+
+        marker_w = mx1 - mx0
+        marker_pixels = list(result.crop(marker_rect).getdata())
+        assert all(p[0] == p[1] == p[2] for p in marker_pixels)
+
+        half = marker_w // 2
+        left_bright = sum(
+            1 for i, p in enumerate(marker_pixels) if (i % marker_w) < half and min(p) > 128
         )
-        assert list(checked_only.crop(layout.rows[0]).getdata()) != list(
-            checked_and_looping.crop(layout.rows[0]).getdata()
+        right_bright = sum(
+            1 for i, p in enumerate(marker_pixels) if (i % marker_w) >= half and min(p) > 128
+        )
+        assert left_bright > right_bright
+
+    @pytest.mark.parametrize("width,height,metrics", _MARKER_GOLDEN_CASES)
+    def test_marker_confined_and_smaller_than_the_row(self, compositor, width, height, metrics):
+        marker_rect, row_rect, row_h, pad = _marker_rect_for(width, height, metrics)
+        mx0, my0, mx1, my1 = marker_rect
+        x0, y0, x1, y1 = row_rect
+        cx, cy = (mx0 + mx1) // 2, (my0 + my1) // 2
+
+        plain = compositor.compose_list(
+            width, height, ListState(rows=(("Kitchen", False),)), rotate=False, bgr=False, metrics=metrics,
+        )
+        marked = compositor.compose_list(
+            width, height, ListState(rows=(("Kitchen", False, PLAY_GLYPH),)),
+            rotate=False, bgr=False, metrics=metrics,
         )
 
-    def test_loop_glyph_never_raises_with_no_font(self, compositor):
+        region = (x1 - pad - row_h, y0, x1 - pad, y1)
+        rx0, ry0, rx1, ry1 = region
+        plain_region = list(plain.crop(region).getdata())
+        marked_region = list(marked.crop(region).getdata())
+        rw = rx1 - rx0
+        for i, (p_px, m_px) in enumerate(zip(plain_region, marked_region)):
+            if p_px == m_px:
+                continue
+            rx, ry = rx0 + (i % rw), ry0 + (i // rw)
+            assert mx0 <= rx < mx1 and my0 <= ry < my1, (
+                f"pixel {(rx, ry)} differs outside the marker rect"
+            )
+
+        chassis = plain.getpixel((0, 0))
+        assert marked.getpixel((mx0 - 2, cy)) == chassis
+        assert marked.getpixel((cx, my0 - 1)) == chassis
+        for x in range(mx0, mx1):
+            assert min(marked.getpixel((x, y0))) <= 128
+            assert min(marked.getpixel((x, y1 - 2))) <= 128
+
+    @pytest.mark.parametrize("width,height,metrics", _MARKER_GOLDEN_CASES)
+    def test_marker_absent_when_not_playing(self, compositor, width, height, metrics):
+        # A plain row draws no marker at all. A picker row's free-text
+        # secondary ("42:10") is right-aligned to the same edge the marker
+        # box anchors to and can be wider than the box itself, so pixel
+        # equality with a bare row is not a safe probe here — the code-path
+        # guarantee ("only a PLAY_GLYPH secondary reaches _draw_glyph with
+        # GLYPH_PLAY") is what actually matters, checked directly instead.
+        from dial_display_compositor import GLYPH_PLAY, _draw_glyph as real_draw_glyph
+
+        calls = []
+
+        def spy(img, rect, kind, *params, **kwargs):
+            calls.append(kind)
+            return real_draw_glyph(img, rect, kind, *params, **kwargs)
+
+        with patch("dial_display_compositor._draw_glyph", side_effect=spy):
+            compositor.compose_list(
+                width, height, ListState(rows=(("Kitchen", False),)), rotate=False, bgr=False, metrics=metrics,
+            )
+            compositor.compose_list(
+                width, height, ListState(rows=(("Kitchen", False, "42:10"),)),
+                rotate=False, bgr=False, metrics=metrics,
+            )
+        assert GLYPH_PLAY not in calls
+
+    def test_marker_never_raises_with_no_font(self, compositor):
         with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
              patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_list(
-                160, 128, ListState(rows=(("Kitchen", True, LOOP_GLYPH),)), rotate=False, bgr=False,
+                160, 128, ListState(rows=(("Kitchen", True, PLAY_GLYPH),)), rotate=False, bgr=False,
             )
         assert result.size == (160, 128)
+
+
+class TestRowWash:
+    """The current-row wash — a faint, persistent version of the pressed
+    wash, drawn under any press, marking the row the pipeline considers
+    CURRENT independently of the play marker."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @pytest.mark.parametrize(
+        "width,height,sample_col,sep_row",
+        [(160, 128, 158, 31), (320, 240, 246, 59)],
+    )
+    def test_wash_pixels_match_the_documented_table(self, compositor, width, height, sample_col, sep_row):
+        metrics = _RICH_METRICS if width == 320 else None
+        cases = [
+            (("A", False), None, (16, 16, 16)),
+            (("A", False, PLAY_GLYPH), None, (16, 16, 16)),
+            (("A", True), None, (36, 36, 36)),
+            (("A", True, PLAY_GLYPH), None, (36, 36, 36)),
+            (("A", True, PLAY_GLYPH), (TouchZone.LIST_ROW, 0), (96, 96, 96)),
+            (("A", False), (TouchZone.LIST_ROW, 0), (82, 82, 82)),
+        ]
+        for row, pressed, expected in cases:
+            result = compositor.compose_list(
+                width, height, ListState(rows=(row,), pressed=pressed),
+                rotate=False, bgr=False, metrics=metrics,
+            )
+            assert result.getpixel((sample_col, 1)) == expected, row
+            assert result.getpixel((sample_col, sep_row)) == (48, 48, 48)
+
+    def test_wash_confined_to_its_own_row(self, compositor):
+        layout = list_layout_for(160, 128)
+        unwashed = compositor.compose_list(
+            160, 128, ListState(rows=(("A", False), ("B", False), ("C", False))),
+            rotate=False, bgr=False,
+        )
+        washed = compositor.compose_list(
+            160, 128, ListState(rows=(("A", True), ("B", False), ("C", False))),
+            rotate=False, bgr=False,
+        )
+        for i in (1, 2):
+            assert list(unwashed.crop(layout.rows[i]).getdata()) == list(washed.crop(layout.rows[i]).getdata())
+
+    def test_current_and_playing_marker_matches_playing_only_marker(self, compositor):
+        marker_rect, _row_rect, _row_h, _pad = _marker_rect_for(160, 128, metrics_for(160, 128))
+        playing_only = compositor.compose_list(
+            160, 128, ListState(rows=(("Kitchen", False, PLAY_GLYPH),)), rotate=False, bgr=False,
+        )
+        current_and_playing = compositor.compose_list(
+            160, 128, ListState(rows=(("Kitchen", True, PLAY_GLYPH),)), rotate=False, bgr=False,
+        )
+        bright = lambda img: {
+            (x, y)
+            for x in range(marker_rect[0], marker_rect[2])
+            for y in range(marker_rect[1], marker_rect[3])
+            if min(img.getpixel((x, y))) > 200
+        }
+        assert bright(playing_only) == bright(current_and_playing)
 
 
 # ---------------------------------------------------------------------------
@@ -1492,6 +1658,24 @@ class TestComposeFramePipeline:
         result = _compose_frame(base, *size, Frame(BG_BASE), rotate=False, bgr=False)
         assert result is not base
 
+    def test_highlights_wash_before_pressed_and_nowhere_else(self):
+        size = (160, 128)
+        base = Image.new("RGB", size, (16, 16, 16))
+        rect = (10, 10, 30, 30)
+        outside = (100, 100, 120, 120)
+
+        highlighted = _compose_frame(base, *size, Frame(BG_BASE, highlights=(rect,)), rotate=False, bgr=False)
+        assert highlighted.getpixel((15, 15)) == (36, 36, 36)
+        assert highlighted.getpixel(outside[:2]) == (16, 16, 16)
+
+        both = _compose_frame(
+            base, *size, Frame(BG_BASE, highlights=(rect,), pressed=(rect,)), rotate=False, bgr=False,
+        )
+        assert both.getpixel((15, 15)) == (96, 96, 96)
+
+        pressed_only = _compose_frame(base, *size, Frame(BG_BASE, pressed=(rect,)), rotate=False, bgr=False)
+        assert pressed_only.getpixel((15, 15)) == (82, 82, 82)
+
 
 # ---------------------------------------------------------------------------
 # Physical-size metrics: passing a LayoutMetrics (any density, including one
@@ -1654,7 +1838,15 @@ def _render_cache_corpus(width, height, metrics=None):
     add_list("one_row", ListState(rows=(("CD Player", True),)))
     add_list("three_rows", ListState(rows=(("CD Player", True), ("Kitchen", False), ("Study", False))))
     add_list("secondary_text", ListState(rows=(("Kitchen", False, "42:10"),)))
-    add_list("loop_marker", ListState(rows=(("Kitchen", True, LOOP_GLYPH),)))
+    add_list("play_marker", ListState(rows=(("Kitchen", True, PLAY_GLYPH),)))
+    add_list("play_marker_unchecked", ListState(rows=(("Kitchen", False, PLAY_GLYPH),)))
+    add_list("mixed_markers", ListState(rows=(
+        ("A", True), ("B", False, PLAY_GLYPH), ("C", True, PLAY_GLYPH),
+    )))
+    add_list("current_pressed", ListState(
+        rows=(("CD Player", True), ("Kitchen", False), ("Study", False)),
+        pressed=(TouchZone.LIST_ROW, 0),
+    ))
     add_list("paging_both", ListState(rows=(("A", False),), has_prev=True, has_next=True))
     add_list("paging_none", ListState(rows=(("A", False),), has_prev=False, has_next=False))
     add_list("pressed_row", ListState(
@@ -1804,6 +1996,30 @@ class TestCrossGlyph:
         pixels = tile.load()
         assert pixels[w // 2, h // 2][3] > 0  # the two diagonals cross here
         for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            assert pixels[corner][3] == 0
+
+
+class TestPlayGlyphTile:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    def test_every_glyph_kind_has_a_registered_painter(self):
+        from dial_display_compositor import GLYPH_ARM_DOT, _GLYPH_PAINTERS
+
+        assert set(_GLYPH_PAINTERS) == {
+            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS,
+        }
+
+    def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):
+        tile = _glyph_tile(GLYPH_PLAY, (), 24, 24, 4)
+        assert tile.size == (24, 24)
+        assert tile.mode == "RGBA"
+        pixels = tile.load()
+        assert pixels[10, 12][3] > 0  # left half, centre row — inside the triangle's base
+        for corner in ((0, 0), (23, 0), (0, 23), (23, 23)):
             assert pixels[corner][3] == 0
 
 
@@ -2022,14 +2238,36 @@ class TestGlyphTileCacheAccounting:
     def test_list_compose_chevrons_plus_one_per_distinct_marker(self):
         compositor = DialDisplayCompositor()
         state = ListState(
-            rows=(("CD Player", True), ("Kitchen", False, LOOP_GLYPH)),
+            rows=(("A", True), ("B", False, PLAY_GLYPH), ("C", True, PLAY_GLYPH)),
             has_prev=True, has_next=True,
         )
         compositor.compose_list(160, 128, state, rotate=False, bgr=False)
         info = _glyph_tile.cache_info()
-        # 3 chevrons (back/down/up) + 1 selected-dot marker + 1 loop marker.
-        assert info.misses == 5
-        assert info.hits == 0
+        # 3 chevrons (back/down/up) + 1 play tile; row C reuses row B's tile.
+        assert info.misses == 4
+        assert info.hits == 1
+
+        compositor.compose_list(160, 128, state, rotate=False, bgr=False)
+        info = _glyph_tile.cache_info()
+        assert info.misses == 4
+        assert info.hits == 6
+
+    def test_list_compose_chevrons_plus_one_per_distinct_marker_rail_tier(self):
+        compositor = DialDisplayCompositor()
+        state = ListState(
+            rows=(("A", True), ("B", False, PLAY_GLYPH), ("C", True, PLAY_GLYPH)),
+            has_prev=True, has_next=True,
+        )
+        compositor.compose_list(320, 240, state, rotate=False, bgr=False, metrics=_RICH_METRICS)
+        info = _glyph_tile.cache_info()
+        # up chevron, cross, down chevron + 1 play tile; row C reuses row B's tile.
+        assert info.misses == 4
+        assert info.hits == 1
+
+        compositor.compose_list(320, 240, state, rotate=False, bgr=False, metrics=_RICH_METRICS)
+        info = _glyph_tile.cache_info()
+        assert info.misses == 4
+        assert info.hits == 6
 
 
 class TestHaloLayerCacheAccounting:

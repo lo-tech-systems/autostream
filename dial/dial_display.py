@@ -48,7 +48,7 @@ from dial_auth import (
     auth_map,
 )
 from dial_display_compositor import (
-    LOOP_GLYPH,
+    PLAY_GLYPH,
     DialDisplayCompositor,
     ListState,
     OverlayState,
@@ -145,14 +145,6 @@ def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
     return fetch_artwork(url, timeout, MAX_ARTWORK_RESPONSE_BYTES)
 
 
-def _row_is_replaying(appliance_id: str, now: float) -> bool:
-    """True when appliance_id's fresh repeat-store record shows it
-    replaying or fading out — the appliance-selector row's loop-glyph
-    marker. Pure, no lock beyond the store's own leaf lock."""
-    rec = repeat_store.get(appliance_id, now)
-    return rec is not None and rec.state in ("replaying", "fading_out")
-
-
 def _interpolate_repeat_position(rec, now: float) -> float:
     """Local interpolation of the repeat screen's Replaying-line playback
     position between polls: advances the last observed position by elapsed
@@ -243,7 +235,7 @@ class SelectorRow:
     appliance_id: str
     label: str        # appliance_display_name(service_name)
     current: bool     # this row is the focus (manual, else the reporting-from target)
-    replaying: bool = False  # a fresh repeat-store record shows it replaying/fading out
+    playing: bool = False  # the appliance is playing now, live or replay
 
 
 @dataclass(frozen=True)
@@ -347,7 +339,7 @@ def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed
 
 
 def _selector_list_row(row: SelectorRow) -> tuple:
-    return (row.label, row.current, LOOP_GLYPH) if row.replaying else (row.label, row.current)
+    return (row.label, row.current, PLAY_GLYPH) if row.playing else (row.label, row.current)
 
 
 def _picker_list_row(row: PickerRow) -> tuple:
@@ -1795,10 +1787,9 @@ class DialDisplay:
         AUTHORIZED (not just "not unauthorized" — an unknown appliance is
         controllable but not yet confirmed, so it stays off the list until
         a probe confirms it). *current* marks the manual focus when one is
-        set, else the reporting-from target (*reporting_id*). *replaying*
-        marks a row whose fresh repeat-store record shows it replaying or
-        fading out — drawn as the loop-glyph secondary marker (see
-        _build_list_state_locked).
+        set, else the reporting-from target (*reporting_id*). *playing*
+        marks a row whose appliance is in the playing set — drawn as the
+        play marker (see _build_list_state_locked).
 
         The page is PRESERVED (clamped to the new row count) across each
         rebuild — resetting it to 0 here would make an open selector jump
@@ -1807,13 +1798,12 @@ class DialDisplay:
         """
         focus_id = self._manual_focus_id
         current_id = focus_id if focus_id is not None else reporting_id
-        now = time.monotonic()
         rows = tuple(
             SelectorRow(
                 appliance_id=t.appliance_id,
                 label=appliance_display_name(t.service_name),
                 current=(t.appliance_id == current_id),
-                replaying=_row_is_replaying(t.appliance_id, now),
+                playing=True,
             )
             for t in targets
             if t.appliance_id and t.auth == AUTH_AUTHORIZED
