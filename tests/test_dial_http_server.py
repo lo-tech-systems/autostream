@@ -2909,6 +2909,7 @@ class TestUpdateStatusResultFields:
         assert data["attempt"] == 2
         assert data["max_attempts"] == 4
         assert data["rolled_back"] is False
+        assert data["last_run_at"] == "2026-01-01T00:00:00+00:00"
 
         f.write_text("STATUS=success\nPHASE=done\nROLLED_BACK=0\n", encoding="utf-8")
         assert self._get(f)["state"] == "complete"
@@ -2925,6 +2926,7 @@ class TestUpdateStatusResultFields:
         assert data["state"] == "running"
         assert (data["phase"], data["tag"], data["previous_tag"]) == ("", "", "")
         assert (data["attempt"], data["max_attempts"]) == (0, 0)
+        assert data["last_run_at"] == ""
         assert data["rolled_back"] is False
 
     def test_missing_result_file_is_idle(self, tmp_path):

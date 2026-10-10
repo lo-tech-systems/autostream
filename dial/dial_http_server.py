@@ -266,6 +266,7 @@ def _read_update_fields() -> dict:
         'attempt':      _int('ATTEMPT', 99),
         'max_attempts': _int('MAX_ATTEMPTS', 99),
         'rolled_back':  env.get('ROLLED_BACK', '0') == '1',
+        'last_run_at':  env.get('LAST_RUN_AT', ''),
     }
 
 

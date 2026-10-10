@@ -775,6 +775,8 @@ def _dial_card_html(
               </p>
             </div>
             <div class="dial-card-msg" style="display:none;margin-top:0.5rem;"></div>
+            <div class="dial-update-bar" style="display:none;" role="progressbar"
+                 aria-valuemin="0" aria-valuemax="100"><div class="dial-update-bar-fill"></div></div>
           </div>
         """, margin_top="0")
     # Spacing between dial cards follows the setup list cards: a bottom margin
@@ -1761,7 +1763,8 @@ def _setup_dial_cards_html() -> tuple:
         )
     _dial_onload_js = (
         'document.querySelectorAll(\'.dial-card[data-authorized="true"]\').forEach(function(card) { '
-        "dialLoadConfig(card); dialLoadScreenSettings(card); dialLoadSdHealth(card); });"
+        "dialLoadConfig(card); dialLoadScreenSettings(card); dialLoadSdHealth(card); "
+        "dialShowRecentUpdateFailure(card); });"
     )
     return _dial_cards_html, _dials_summary, _dial_onload_js
 
@@ -2078,6 +2081,10 @@ def send_setup_page(
 .dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}
 .dial-card-title{font-weight:600;font-size:0.9rem;}
 .dial-card-msg{font-size:0.8rem;}
+.dial-update-bar{height:0.4rem;margin-top:0.4rem;border-radius:0.2rem;overflow:hidden;
+  background:var(--color-border,#ccc);}
+.dial-update-bar-fill{height:100%;width:0;background:var(--color-accent,#007bff);
+  transition:width 0.4s ease;}
 /* Matches the setup list cards' 0.62rem bottom margin so the Dials panel
    spaces its cards the same way the rest of the setup page does. */
 .dial-card-wrap{margin-bottom:0.62rem;}
@@ -4737,9 +4744,122 @@ def send_setup_page(
               method: 'POST', headers: {{'X-CSRF-Token': window.__CSRF || ''}}
             }});
             var updResult = await _parseDialResponse(r);
-            if (updResult.ok) dialMsg(card, 'Update started', true);
+            if (updResult.ok) {{
+              dialMsg(card, 'Update started', true);
+              dialWatchUpdate(card, uuid);
+            }}
             else dialMsg(card, _dialErrorMessage(updResult.error), false);
           }} catch(e) {{ dialMsg(card, 'Network error', false); }}
+        }}
+
+        // ── Dial firmware update: live progress and outcome ────────────────
+        // An update can take about 40 minutes, so the poll budget is an
+        // hour. The dial drops off the network while it reboots; an
+        // unanswered poll is expected and simply keeps the poll going.
+        var DIAL_UPDATE_POLL_MS = 3000;
+        var DIAL_UPDATE_BUDGET_MS = 60 * 60 * 1000;
+        var DIAL_UPDATE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+        var DIAL_UPDATE_STARTUP_GRACE_MS = 45000;
+
+        function dialUpdateFailureText(b) {{
+          var tag = b && b.tag ? String(b.tag) : '';
+          var prev = b && b.previous_tag ? String(b.previous_tag) : '';
+          var head = tag ? 'Update to ' + tag + ' failed' : 'Update failed';
+          if (!prev) return head;
+          return head + ' \\u2013 ' + (b.rolled_back ? 'restored ' + prev : prev + ' kept');
+        }}
+
+        function dialUpdateBar(card, pct) {{
+          var bar = card ? card.querySelector('.dial-update-bar') : null;
+          if (!bar) return;
+          if (pct === null) {{ bar.style.display = 'none'; return; }}
+          var p = Math.max(0, Math.min(100, Number(pct) || 0));
+          bar.style.display = '';
+          bar.setAttribute('aria-valuenow', String(p));
+          var fill = bar.querySelector('.dial-update-bar-fill');
+          if (fill) fill.style.width = p + '%';
+        }}
+
+        // Renders one status body on the card. Returns 'running', 'success'
+        // or 'failure' (terminal) so the caller can decide to keep polling.
+        function dialRenderUpdateStatus(card, b) {{
+          var state = b && b.state;
+          if (state === 'complete') {{
+            dialUpdateBar(card, null);
+            dialMsg(card, b.tag ? 'Updated to ' + b.tag : 'Updated', true);
+            return 'success';
+          }}
+          if (state === 'failed') {{
+            dialUpdateBar(card, null);
+            dialMsg(card, dialUpdateFailureText(b), false);
+            return 'failure';
+          }}
+          if (b && b.phase === 'reboot') {{
+            dialUpdateBar(card, null);
+            dialMsg(card, 'Restarting...', true);
+            return 'running';
+          }}
+          var pct = Number(b && b.percent) || 0;
+          var text = '';
+          if (Number(b && b.attempt) > 1) {{
+            text = 'Retrying update (attempt ' + b.attempt + ' of ' + (b.max_attempts || b.attempt) + ') - ';
+          }}
+          text += 'Updating... ' + pct + '%';
+          if (b && b.message) text += ' - ' + b.message;
+          dialUpdateBar(card, pct);
+          dialMsg(card, text, true);
+          return 'running';
+        }}
+
+        function dialWatchUpdate(card, uuid) {{
+          var startedAt = Date.now();
+          var seenActivity = false;
+          card.dataset.updateWatching = '1';
+          dialUpdateBar(card, 0);
+          function finish() {{ delete card.dataset.updateWatching; }}
+          dialPollUntil(DIAL_UPDATE_POLL_MS, DIAL_UPDATE_BUDGET_MS, async function() {{
+            var r;
+            try {{ r = await _dialGet('/api/dial/update/status/' + encodeURIComponent(uuid)); }}
+            catch(e) {{ r = null; }}
+            if (!r || !r.ok || !r.body) {{
+              // Offline or unreachable: the dial is restarting.
+              seenActivity = true;
+              dialUpdateBar(card, null);
+              dialMsg(card, 'Restarting...', true);
+              return false;
+            }}
+            var b = r.body;
+            // The result of the previous run can still be on the dial for a
+            // moment after the start request; do not mistake it for this
+            // run's outcome until activity has been seen (or a grace has passed).
+            var terminal = b.state === 'complete' || b.state === 'failed';
+            if (terminal && !seenActivity && (Date.now() - startedAt) < DIAL_UPDATE_STARTUP_GRACE_MS) return false;
+            if (!terminal) seenActivity = true;
+            var outcome = dialRenderUpdateStatus(card, b);
+            if (outcome === 'running') return false;
+            finish();
+            return true;
+          }}, function() {{
+            finish();
+            dialUpdateBar(card, null);
+            dialMsg(card, 'Update status unknown', false);
+          }});
+        }}
+
+        // On opening the Dials panel: show the failure (or rollback) of a
+        // recent update that nobody watched, e.g. a scheduled one. Needs the
+        // result's own timestamp; without one nothing is shown.
+        async function dialShowRecentUpdateFailure(card) {{
+          var uuid = dialUUID(card);
+          if (!uuid || card.dataset.online !== 'true' || card.dataset.updateWatching) return;
+          try {{
+            var r = await _dialGet('/api/dial/update/status/' + encodeURIComponent(uuid));
+            if (!r.ok || !r.body || r.body.state !== 'failed') return;
+            var when = Date.parse(r.body.last_run_at || '');
+            if (isNaN(when) || (Date.now() - when) > DIAL_UPDATE_STALE_MS) return;
+            if (card.dataset.updateWatching) return;
+            dialMsg(card, dialUpdateFailureText(r.body), false);
+          }} catch(e) {{}}
         }}
 
         // ── Dial SD card health monitoring row ─────────────────────────────
