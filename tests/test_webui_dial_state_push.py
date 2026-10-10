@@ -714,3 +714,135 @@ class TestDoc:
 
     def test_the_capability_table_has_a_row_for_the_route(self):
         assert "| (none) | the dial's `POST /state-changed` |" in self._text()
+
+
+class TestCallSites:
+    """Each call site hints with the literal kinds, after its change, and
+    never when nothing changed."""
+
+    def test_an_output_mutation_that_succeeds_hints_outputs_once(self):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models._apply_output_mutation",
+                   return_value={"ok": True, "id": "o"}) as inner, \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            result = models.apply_output_mutation(
+                "http://x", "o", {"id": "o", "selected": True},
+                offset_ms=5, mode="m", output_name="n",
+                initiated_by="user", requester="r")
+        assert result == {"ok": True, "id": "o"}
+        notify.assert_called_once_with("outputs")
+        inner.assert_called_once_with(
+            "http://x", "o", {"id": "o", "selected": True},
+            offset_ms=5, mode="m", output_name="n",
+            initiated_by="user", requester="r")
+
+    def test_an_output_mutation_that_fails_does_not_hint(self):
+        import autostream_appliance_models as models
+        failed = {"ok": False, "id": "o", "error": "x"}
+        with patch("autostream_appliance_models._apply_output_mutation",
+                   return_value=failed), \
+             patch("autostream_appliance_models.notify_state_changed") as notify:
+            result = models.apply_output_mutation(
+                "http://x", "o", {"id": "o", "selected": True}, initiated_by="system")
+        assert result is failed
+        notify.assert_not_called()
+
+    def test_an_output_mutation_that_raises_does_not_hint(self):
+        import autostream_appliance_models as models
+        with patch("autostream_appliance_models.notify_state_changed") as notify:
+            try:
+                models.apply_output_mutation("http://x", "o", {}, initiated_by="bogus")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("expected ValueError")
+        notify.assert_not_called()
+
+    def _mute(self, body, status=200):
+        import autostream_webui_api as api
+        calls = []
+        with patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
+             patch("autostream_webui_api.apply_mute_action", return_value=(status, body)), \
+             patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, b: calls.append(("send_json", c))), \
+             patch("autostream_webui_api.notify_state_changed",
+                   side_effect=lambda *k, **kw: calls.append(("notify", k, kw))):
+            api.send_dial_mute_post_json(
+                object(), object(), {"dial_id": "dial-1", "action": "mute"})
+        return calls
+
+    def test_a_mute_hints_after_the_reply_leaving_out_the_asking_dial(self):
+        assert self._mute({"ok": True, "muted": True}) == [
+            ("send_json", 200), ("notify", ("mute",), {"except_dial": "dial-1"})]
+
+    def test_a_mute_that_did_not_work_does_not_hint(self):
+        assert self._mute({"ok": False, "error": "backend_unavailable"}) == [
+            ("send_json", 200)]
+
+    def _volume(self, delta, *, muted=False, outputs=None, update_ok=None,
+                restore=None):
+        import autostream_webui_api as api
+        from autostream_players import ActionResult, ListOutputsResult, OutputInfo
+        calls = []
+        outs = outputs if outputs is not None else [
+            OutputInfo(id="a", name="a", selected=True, volume_percent=40),
+            OutputInfo(id="b", name="b", selected=True, volume_percent=20)]
+        updates = iter(update_ok if update_ok is not None else [True] * len(outs))
+        parsed = SimpleNamespace(owntone=SimpleNamespace(
+            base_url="http://x", volume_percent=20))
+
+        def notify(*kinds, **kw):
+            calls.append(("notify", kinds, kw, api._volume_lock.locked()))
+
+        with patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
+             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
+             patch("autostream_webui_api.list_outputs",
+                   return_value=ListOutputsResult(ok=True, outputs=tuple(outs))), \
+             patch("autostream_webui_api.update_output",
+                   side_effect=lambda *a, **kw: ActionResult(ok=next(updates))), \
+             patch("autostream_webui_api.mute_state.is_muted", return_value=muted), \
+             patch("autostream_webui_api._restore_locked",
+                   return_value=restore or (200, {"ok": True}, outs)), \
+             patch("autostream_webui_api.send_json",
+                   side_effect=lambda h, c, b: calls.append(("send_json", c, dict(b)))), \
+             patch("autostream_webui_api.notify_state_changed", side_effect=notify):
+            api.send_dial_volume_post_json(
+                object(), object(), {"dial_id": "dial-1", "delta": delta})
+        return calls
+
+    def test_a_volume_step_hints_after_the_reply_outside_the_lock(self):
+        calls = self._volume(5)
+        assert [c[0] for c in calls] == ["send_json", "notify"]
+        assert calls[1] == ("notify", ("volume",), {"except_dial": "dial-1"}, False)
+
+    def test_a_partly_failed_volume_step_still_hints(self):
+        calls = self._volume(5, update_ok=[True, False])
+        assert calls[0][2].get("partial") is True
+        assert calls[1] == ("notify", ("volume",), {"except_dial": "dial-1"}, False)
+
+    def test_a_volume_step_where_every_output_failed_does_not_hint(self):
+        calls = self._volume(5, update_ok=[False, False])
+        assert [c[0] for c in calls] == ["send_json"]
+        assert calls[0][2] == {"ok": False, "error": "all_outputs_failed"}
+
+    def test_volume_up_while_muted_hints_mute_and_volume_outside_the_lock(self):
+        calls = self._volume(5, muted=True)
+        assert [c[0] for c in calls] == ["send_json", "notify"]
+        assert calls[1] == (
+            "notify", ("mute", "volume"), {"except_dial": "dial-1"}, False)
+
+    def test_a_restore_that_failed_does_not_hint(self):
+        calls = self._volume(
+            5, muted=True, restore=(200, {"ok": False, "error": "x"}, []))
+        assert [c[0] for c in calls] == ["send_json"]
+
+    def test_volume_down_while_muted_changes_nothing_and_does_not_hint(self):
+        calls = self._volume(-5, muted=True)
+        assert [c[0] for c in calls] == ["send_json"]
+        assert calls[0][2]["muted"] is True
+
+    def test_a_volume_step_with_no_active_outputs_does_not_hint(self):
+        from autostream_players import OutputInfo
+        calls = self._volume(
+            5, outputs=[OutputInfo(id="a", name="a", selected=False, volume_percent=0)])
+        assert [c[0] for c in calls] == ["send_json"]

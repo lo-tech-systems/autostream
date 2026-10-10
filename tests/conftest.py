@@ -151,6 +151,22 @@ def _hermetic_playing_announcement(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _inert_dial_state_hints(monkeypatch):
+    """Keep the state hint to dials inert for every test.
+
+    The real coalescer would start the push worker thread and a trailing-edge
+    Timer. A test of the hint itself installs its own coalescer over this one.
+    """
+    repo_core = str(Path(__file__).parent.parent / "core")
+    if repo_core not in sys.path:
+        sys.path.insert(0, repo_core)
+    import autostream_dial_push as m
+    monkeypatch.setattr(m, "_coalescer", m.StateChangeCoalescer(
+        lambda kinds, except_dials: None, schedule=lambda delay, fn: None))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_player_state():
     """Save/restore player backend registry; clear detection cache after each test."""
     m = _mod("autostream_players")

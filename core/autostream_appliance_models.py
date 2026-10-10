@@ -40,6 +40,7 @@ from autostream_core import (
     set_live_output_gain,
     set_user_silence_latch,
 )
+from autostream_dial_push import notify_state_changed
 from autostream_player_service import (
     config_airplay_mode_to_backend,
     get_setting,
@@ -811,7 +812,36 @@ def apply_output_mutation(
     PIN that is not 4 to 8 digits and "rate_limited" when too many PINs were
     tried, with retry_after_s the seconds to wait; error is "encoder_capacity"
     when the appliance's buffered-encode admission control declines the enable).
+
+    A change that went through is hinted to the dials.
     """
+    result = _apply_output_mutation(
+        owntone_base_url,
+        out_id,
+        body,
+        offset_ms=offset_ms,
+        mode=mode,
+        output_name=output_name,
+        initiated_by=initiated_by,
+        requester=requester,
+    )
+    if result.get("ok"):
+        notify_state_changed("outputs")
+    return result
+
+
+def _apply_output_mutation(
+    owntone_base_url: str,
+    out_id: str,
+    body: dict,
+    *,
+    offset_ms: Optional[int] = None,
+    mode: Optional[str] = None,
+    output_name: str = "",
+    initiated_by: str,
+    requester: Optional[str] = None,
+) -> dict:
+    """The mutation behind apply_output_mutation, without the hint."""
     initiated_by_text = str(initiated_by or "").strip().lower()
     if initiated_by_text not in ("user", "system"):
         raise ValueError(f"Invalid initiated_by value: {initiated_by!r}")

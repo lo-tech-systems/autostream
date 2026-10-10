@@ -101,6 +101,7 @@ from autostream_dials import (
     dial_authorization,
     dial_speaks_v2,
 )
+from autostream_dial_push import notify_state_changed
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
     any_monitor_capturing,
@@ -944,6 +945,7 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
         send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
 
+    restored_ok = None
     with _volume_lock:
         result = list_outputs(base_url, timeout=3)
         if not result.ok:
@@ -969,27 +971,33 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
             status, body, restored = _restore_locked(base_url, default_vol, selected)
             body["volume"] = _master_of(restored) if body.get("ok") else None
             send_json(handler, status, body)
-            return
+            restored_ok = bool(body.get("ok"))
+        else:
+            current_master = round(sum(o.volume_percent for o in selected) / len(selected))
+            new_master = max(0, min(100, current_master + delta))
+            failed = 0
+            for output in selected:
+                new_vol = (new_master if current_master == 0
+                           else max(0, min(100,
+                               round(output.volume_percent * new_master / current_master))))
+                r = update_output(base_url, output.id, volume_percent=new_vol, timeout=3)
+                if not r.ok:
+                    logging.warning("update_output %s: %s", output.id, r.error)
+                    failed += 1
 
-        current_master = round(sum(o.volume_percent for o in selected) / len(selected))
-        new_master = max(0, min(100, current_master + delta))
-        failed = 0
-        for output in selected:
-            new_vol = (new_master if current_master == 0
-                       else max(0, min(100,
-                           round(output.volume_percent * new_master / current_master))))
-            r = update_output(base_url, output.id, volume_percent=new_vol, timeout=3)
-            if not r.ok:
-                logging.warning("update_output %s: %s", output.id, r.error)
-                failed += 1
-
+    if restored_ok is not None:
+        # The restore reply went out under the lock; the hint follows it, outside.
+        if restored_ok:
+            notify_state_changed("mute", "volume", except_dial=dial_id)
+        return
     if failed == len(selected):
         send_json(handler, 200, {"ok": False, "error": "all_outputs_failed"})
         return
     if failed:
         send_json(handler, 200, {"ok": True, "volume": new_master, "partial": True, "muted": False})
-        return
-    send_json(handler, 200, {"ok": True, "volume": new_master, "muted": False})
+    else:
+        send_json(handler, 200, {"ok": True, "volume": new_master, "muted": False})
+    notify_state_changed("volume", except_dial=dial_id)
 
 
 def calculate_master_volume(outputs) -> tuple:
@@ -1640,6 +1648,8 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
 
     status, body = apply_mute_action(state, action)
     send_json(handler, status, body)
+    if body.get("ok"):
+        notify_state_changed("mute", except_dial=dial_id)
 
 
 # ---------------------------------------------------------------------------
