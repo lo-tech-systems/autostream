@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- new: dials show a Starting... splash on an HDMI or DSI screen at boot and
+  Shutting down... at shutdown and reboot. Existing dials gain it on their
+  next update (one longer update while the boot files are rebuilt).
 - new: HD dial (preview). A dial can now drive a full-size HDMI or DSI
   touchscreen. The dial serves a touch page to a kiosk browser on the same
   board: appliances and speakers on the left; artwork, replay controls, track

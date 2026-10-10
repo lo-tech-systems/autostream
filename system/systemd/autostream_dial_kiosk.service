@@ -11,7 +11,7 @@
 
 [Unit]
 Description=autostream dial kiosk browser
-After=autostream_dial.service systemd-user-sessions.service getty@tty1.service
+After=autostream_dial.service systemd-user-sessions.service getty@tty1.service plymouth-quit-wait.service
 Wants=autostream_dial.service
 Conflicts=getty@tty1.service
 ConditionPathExists=/var/lib/autostream/hd-kiosk

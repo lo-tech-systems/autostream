@@ -149,6 +149,7 @@ class TestKioskUnit:
     def test_marker_condition_and_start_order(self):
         assert _unit_value("ConditionPathExists") == "/var/lib/autostream/hd-kiosk"
         assert "autostream_dial.service" in _unit_value("After").split()
+        assert "plymouth-quit-wait.service" in _unit_value("After").split()
         assert _unit_value("Wants") == "autostream_dial.service"
 
     def test_runs_unprivileged_and_restarts(self):

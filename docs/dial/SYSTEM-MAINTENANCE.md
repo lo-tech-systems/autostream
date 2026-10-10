@@ -208,6 +208,14 @@ the dial not appearing on the appliance's Setup page, volume commands not
 taking effect, or the dial being unreachable at all, see
 [Troubleshooting](../TROUBLESHOOTING.md).
 
+## Removing the dial software
+
+`autostream_dial_uninstall.sh`, run from the dial's checkout, removes the dial
+software and its services. It also takes back the boot splash: it removes the
+theme, the boot options and boot files the installer added (and only those),
+purges the splash packages the installer itself installed, and rebuilds the
+boot files. It is meant for a dedicated dial.
+
 ## Next steps
 
 - [Getting Started](GETTING-STARTED.md): authorizing, configuring, and using

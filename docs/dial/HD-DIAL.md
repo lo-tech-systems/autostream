@@ -52,6 +52,14 @@ On top of the normal dial install this:
 - installs and enables the kiosk service, `autostream_dial_kiosk`, and a
   small udev rule that lets the dial control a panel's backlight.
 
+Every dial install and update, SPI or HD, also adds a boot splash. A screen
+on the HDMI or DSI output shows "Starting..." while the dial boots, keeps it
+until the page paints, and shows "Shutting down..." at shutdown and reboot, so
+an SPI dial with a monitor attached shows it too. The dial's own small screen is
+not affected. To do this the installer adds Plymouth and rebuilds the boot
+files, so the first update on an existing dial takes a few minutes longer than
+usual. It also quietens the console during boot; the dial's logs are unchanged.
+
 Reboot when the installer finishes. The kiosk starts at boot and the dial
 service starts its page server first. A DSI panel may need its own overlay
 in the boot configuration; the installer leaves that to you, as the right
@@ -247,6 +255,11 @@ installer left its marker file; if you selected the HD screen type without
 installing with `--hd`, there is no kiosk. The kiosk waits for the dial's page
 server, so also check `systemctl status autostream_dial`. A black screen after a
 long idle is usually the dial's sleep, so touch it.
+
+**The screen shows Starting... and stays there.** The boot has finished but the
+kiosk has not painted its page yet, or has failed to start. Check
+`systemctl status autostream_dial_kiosk` and
+`journalctl -u autostream_dial_kiosk`.
 
 **The page says it is reconnecting.** The browser is running but the dial
 service is not answering. Restart `autostream_dial` and read its log.
