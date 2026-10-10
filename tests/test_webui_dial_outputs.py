@@ -234,7 +234,8 @@ class TestOutputsList:
         assert body["ok"] is True
         assert body["appliance_id"] == TEST_APPLIANCE_ID
         assert body["outputs"] == [
-            {"id": "1", "name": "Bedroom", "selected": True, "volume": 40, "remote_in_use": False},
+            {"id": "1", "name": "Bedroom", "selected": True, "volume": 40,
+             "remote_in_use": False, "remote_owner": ""},
         ]
 
     def test_hidden_unselected_output_excluded(self):
@@ -283,6 +284,28 @@ class TestOutputsList:
             usage_snapshot={"bedroom": usage},
         )
         assert body["outputs"][0]["remote_in_use"] is False
+
+    def test_reply_carries_remote_owner_for_in_use_rows_and_empty_otherwise(self):
+        from autostream_output_usage import OutputUsage
+        usage = OutputUsage(
+            output_name="bedroom", owner_name="other-box", owner_ip="192.168.1.50",
+            owner_port=80, service_name="autostream on other-box", observed_at=0.0,
+            expires_at=1e18,
+        )
+        code, body = _invoke_list(
+            {"dial_id": DIAL_ID},
+            list_result=_ok_list(
+                _output("1", "Bedroom", 0, selected=False),
+                _output("2", "Kitchen", 30, selected=True),
+            ),
+            usage_snapshot={"bedroom": usage, "kitchen": usage},
+        )
+        rows = {o["name"]: o for o in body["outputs"]}
+        assert rows["Bedroom"]["remote_in_use"] is True
+        assert rows["Bedroom"]["remote_owner"] == "other-box"
+        assert rows["Kitchen"]["remote_in_use"] is False
+        assert rows["Kitchen"]["remote_owner"] == ""
+        assert "remote_owner_service" not in rows["Bedroom"]
 
     def test_backend_unavailable_when_list_outputs_not_ok(self):
         code, body = _invoke_list({"dial_id": DIAL_ID}, list_result=_fail_list())

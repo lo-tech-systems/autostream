@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import math
 import threading
 import time
 from typing import Optional
@@ -22,6 +23,7 @@ from autostream_config import (
     save_config,
 )
 from autostream_core import (
+    OUTPUT_PEQ_BANDS,
     any_monitor_capturing,
     clear_user_silence_latch,
     get_active_track_identification_snapshot,
@@ -569,6 +571,43 @@ def bass_treble_from_eq(oeq) -> tuple:
     dial -- see the field's own read-back note where this is called."""
     clamp = lambda v: max(-EQ_BASS_TREBLE_LIMIT_DB, min(EQ_BASS_TREBLE_LIMIT_DB, int(round(v))))
     return clamp(oeq.peq1_db), clamp(oeq.peq6_db)
+
+
+def dial_eq_bands(oeq) -> list:
+    """Every output EQ band as the dial's band list: id (the stored field
+    name without its "_db" suffix), centre frequency, filter type, the stored
+    gain and the range a write is clamped to. Driven by OUTPUT_PEQ_BANDS, so a
+    band added there appears here without a second table."""
+    return [
+        {
+            "id": b["key"][:-3],
+            "frequency_hz": int(b["freq_hz"]),
+            "type": b["type"],
+            "gain_db": float(getattr(oeq, b["key"])),
+            "min_db": int(_OUTPUT_EQ_DB_MIN),
+            "max_db": int(_OUTPUT_EQ_DB_MAX),
+        }
+        for b in OUTPUT_PEQ_BANDS
+    ]
+
+
+def eq_fields_for_bands(bands) -> Optional[dict]:
+    """The output_eq band fields a dial "bands" write sets, from an
+    {id: gain} object. Gains are ints or finite floats (not bools), clamped to
+    the band range; only the named bands are returned. None when the object is
+    empty or not a dict, an id is not a band, or a gain is not a finite
+    number."""
+    if not isinstance(bands, dict) or not bands:
+        return None
+    known = {b["key"][:-3] for b in OUTPUT_PEQ_BANDS}
+    fields: dict = {}
+    for band_id, raw in bands.items():
+        if band_id not in known:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            return None
+        fields[f"{band_id}_db"] = max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, float(raw)))
+    return fields
 
 
 def apply_eq_fields(config_path: str, values: dict, *, settings=None) -> tuple:

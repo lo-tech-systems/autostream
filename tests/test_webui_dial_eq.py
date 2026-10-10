@@ -16,7 +16,11 @@ Covers:
 3.  POST /api/dial/eq: returns the rounded/clamped bass_db/treble_db pair
     read from the stored output_eq bands; config_error when the config
     cannot be loaded.
-4.  POST /api/dial/eq/set: only bass_db/treble_db ever reach apply_eq_fields;
+3b. The reply also carries every band (id, frequency, type, stored gain,
+    range); POST /api/dial/eq/set accepts a "bands" {id: gain} object beside
+    the legacy fields (clamped, unknown ids / bools / non-finite / empty
+    refused, mixed bodies applied once).
+4.  POST /api/dial/eq/set: only the named fields ever reach apply_eq_fields;
     a value outside +/-6 is clamped before mapping; a non-int or bool value
     is rejected; an empty body is rejected; a failed apply reports
     eq_apply_failed while the store update still happened.
@@ -162,6 +166,21 @@ class TestEqMappingHelpers:
 # apply_eq_fields
 # ---------------------------------------------------------------------------
 
+class TestBandHelpers:
+    def test_dial_eq_bands_follows_the_band_table(self):
+        from autostream_core import OUTPUT_PEQ_BANDS
+        bands = models.dial_eq_bands(_oeq(peq3=1.25))
+        assert [b["id"] for b in bands] == [b["key"][:-3] for b in OUTPUT_PEQ_BANDS]
+        assert bands[2]["gain_db"] == 1.25
+
+    def test_eq_fields_for_bands_accepts_ints_and_floats(self):
+        assert models.eq_fields_for_bands({"peq2": 3, "peq5": -0.5}) == {"peq2_db": 3.0, "peq5_db": -0.5}
+
+    def test_eq_fields_for_bands_refuses_empty_and_unknown(self):
+        assert models.eq_fields_for_bands({}) is None
+        assert models.eq_fields_for_bands({"treble": 1}) is None
+
+
 class TestApplyEqFields:
     def test_leaves_peq3_and_peq4_at_stored_values(self, tmp_path):
         cfg_path = tmp_path / "autostream.json"
@@ -264,12 +283,34 @@ class TestEqRead:
             {"dial_id": DIAL_ID}, parsed=_parsed(_oeq(peq1=2.6, peq6=-8.0)),
         )
         assert code == 200
-        assert body == {"ok": True, "appliance_id": TEST_APPLIANCE_ID, "bass_db": 3, "treble_db": -6}
+        assert body["ok"] is True
+        assert body["appliance_id"] == TEST_APPLIANCE_ID
+        assert (body["bass_db"], body["treble_db"]) == (3, -6)
 
     def test_config_error_returns_config_error(self):
         code, body = _invoke_read({"dial_id": DIAL_ID}, config_error=True)
         assert code == 200
         assert body == {"ok": False, "error": "config_error"}
+
+    def test_reply_carries_six_bands_with_stored_gains(self):
+        code, body = _invoke_read(
+            {"dial_id": DIAL_ID},
+            parsed=_parsed(_oeq(peq1=2.0, peq2=2.0, peq3=0.0, peq4=-1.5, peq5=-0.5, peq6=-1.0)),
+        )
+        assert code == 200
+        assert body["bands"] == [
+            {"id": "peq1", "frequency_hz": 40, "type": "low_shelf", "gain_db": 2.0, "min_db": -12, "max_db": 12},
+            {"id": "peq2", "frequency_hz": 100, "type": "peak", "gain_db": 2.0, "min_db": -12, "max_db": 12},
+            {"id": "peq3", "frequency_hz": 300, "type": "peak", "gain_db": 0.0, "min_db": -12, "max_db": 12},
+            {"id": "peq4", "frequency_hz": 1000, "type": "peak", "gain_db": -1.5, "min_db": -12, "max_db": 12},
+            {"id": "peq5", "frequency_hz": 4000, "type": "peak", "gain_db": -0.5, "min_db": -12, "max_db": 12},
+            {"id": "peq6", "frequency_hz": 10000, "type": "high_shelf", "gain_db": -1.0, "min_db": -12, "max_db": 12},
+        ]
+
+    def test_bands_keep_gains_beyond_the_bass_treble_range(self):
+        code, body = _invoke_read({"dial_id": DIAL_ID}, parsed=_parsed(_oeq(peq1=9.0)))
+        assert body["bass_db"] == 6
+        assert body["bands"][0]["gain_db"] == 9.0
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +355,73 @@ class TestEqSetValidation:
         assert values == {"peq1_db": 2.0, "peq2_db": 2.0, "peq6_db": -3.0, "peq5_db": -1.5}
 
 
+class TestEqSetBands:
+    def test_bands_write_only_the_given_fields(self):
+        code, body, apply_mock = _invoke_set({"dial_id": DIAL_ID, "bands": {"peq3": 1.5, "peq4": -2}})
+        assert code == 200
+        apply_mock.assert_called_once()
+        assert apply_mock.call_args[0][1] == {"peq3_db": 1.5, "peq4_db": -2.0}
+        assert len(body["bands"]) == 6
+
+    def test_bands_clamp_to_the_band_range(self):
+        code, body, apply_mock = _invoke_set({"dial_id": DIAL_ID, "bands": {"peq1": 40, "peq6": -99.5}})
+        assert apply_mock.call_args[0][1] == {"peq1_db": 12.0, "peq6_db": -12.0}
+
+    @pytest.mark.parametrize("bands", [
+        {"bass": 1},
+        {"peq7": 1},
+        {"peq1_db": 1},
+        {"peq1": True},
+        {"peq1": "1"},
+        {"peq1": None},
+        {"peq1": float("nan")},
+        {"peq1": float("inf")},
+        {"peq1": 1, "peq9": 1},
+        {},
+        [],
+        ["peq1"],
+        "peq1",
+        None,
+        5,
+    ])
+    def test_invalid_bands_are_400_and_nothing_is_applied(self, bands):
+        code, body, apply_mock = _invoke_set({"dial_id": DIAL_ID, "bands": bands})
+        assert code == 400
+        assert body == {"ok": False, "error": "invalid_request_body"}
+        apply_mock.assert_not_called()
+
+    def test_mixed_legacy_and_bands_apply_once(self):
+        code, body, apply_mock = _invoke_set(
+            {"dial_id": DIAL_ID, "bass_db": 2, "bands": {"peq3": 1}},
+        )
+        assert code == 200
+        apply_mock.assert_called_once()
+        assert apply_mock.call_args[0][1] == {"peq1_db": 2.0, "peq2_db": 2.0, "peq3_db": 1.0}
+
+    def test_bands_win_over_legacy_on_the_same_band(self):
+        code, body, apply_mock = _invoke_set(
+            {"dial_id": DIAL_ID, "bass_db": 2, "bands": {"peq1": -3}},
+        )
+        assert apply_mock.call_args[0][1] == {"peq1_db": -3.0, "peq2_db": 2.0}
+
+    def test_invalid_legacy_field_still_refuses_a_mixed_body(self):
+        code, body, apply_mock = _invoke_set(
+            {"dial_id": DIAL_ID, "bass_db": "2", "bands": {"peq3": 1}},
+        )
+        assert code == 400
+        apply_mock.assert_not_called()
+
+    def test_legacy_only_body_applies_the_same_fields_as_before(self):
+        code, body, apply_mock = _invoke_set(
+            {"dial_id": DIAL_ID, "bass_db": 2, "treble_db": -3},
+            parsed=_parsed(_oeq(peq1=2.0, peq2=2.0)),
+        )
+        assert apply_mock.call_args[0][1] == {
+            "peq1_db": 2.0, "peq2_db": 2.0, "peq6_db": -3.0, "peq5_db": -1.5,
+        }
+        assert set(body) == {"ok", "appliance_id", "bass_db", "treble_db", "bands"}
+
+
 class TestEqSetMutation:
     def test_ok_result_returns_readback_pair(self):
         code, body, apply_mock = _invoke_set(
@@ -321,7 +429,9 @@ class TestEqSetMutation:
             parsed=_parsed(_oeq(peq1=2.0, peq6=0.0)),
         )
         assert code == 200
-        assert body == {"ok": True, "appliance_id": TEST_APPLIANCE_ID, "bass_db": 2, "treble_db": 0}
+        assert body["ok"] is True
+        assert body["appliance_id"] == TEST_APPLIANCE_ID
+        assert (body["bass_db"], body["treble_db"]) == (2, 0)
 
     def test_apply_failure_returns_eq_apply_failed(self):
         code, body, apply_mock = _invoke_set(

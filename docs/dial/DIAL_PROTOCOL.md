@@ -570,7 +570,8 @@ UUID-in-body auth via the same `_dial_auth_gate` guard as `POST /api/dial/status
 `400 missing_dial_id`, `412 dial_not_authorized`, `200 auth_unavailable`. Returns the
 appliance's own output list -- the same filtering and remote-occupancy annotation the
 setup page's output list uses. An output currently in use by another autostream instance
-is left out entirely.
+is still listed, with `remote_in_use` set to `true` and `remote_owner` naming that
+instance.
 
 **Request body:**
 ```json
@@ -580,9 +581,15 @@ is left out entirely.
 **Success response (200):**
 ```json
 {"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "outputs": [
-  {"id": "1", "name": "Living Room", "selected": true, "volume": 42, "remote_in_use": false}
+  {"id": "1", "name": "Living Room", "selected": true, "volume": 42,
+   "remote_in_use": false, "remote_owner": ""}
 ]}
 ```
+
+`remote_owner` is always present. It is the display name of the other autostream instance
+using the output when `remote_in_use` is `true`, and an empty string otherwise. Appliances
+from before this field existed omit it, so a reader should treat a missing value as an
+empty string.
 
 | `error` | Meaning |
 |---|---|
@@ -626,8 +633,23 @@ values the dial's Equaliser page shows, read from the stored output EQ bands.
 
 **Success response (200):**
 ```json
-{"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "bass_db": 2, "treble_db": -1}
+{"ok": true, "appliance_id": "a1b2c3d4e5f6a7b8c9d0", "bass_db": 2, "treble_db": -1,
+ "bands": [
+  {"id": "peq1", "frequency_hz": 40, "type": "low_shelf", "gain_db": 2.0, "min_db": -12, "max_db": 12},
+  {"id": "peq2", "frequency_hz": 100, "type": "peak", "gain_db": 2.0, "min_db": -12, "max_db": 12},
+  {"id": "peq3", "frequency_hz": 300, "type": "peak", "gain_db": 0.0, "min_db": -12, "max_db": 12},
+  {"id": "peq4", "frequency_hz": 1000, "type": "peak", "gain_db": 0.0, "min_db": -12, "max_db": 12},
+  {"id": "peq5", "frequency_hz": 4000, "type": "peak", "gain_db": -0.5, "min_db": -12, "max_db": 12},
+  {"id": "peq6", "frequency_hz": 10000, "type": "high_shelf", "gain_db": -1.0, "min_db": -12, "max_db": 12}
+]}
 ```
+
+`bass_db` and `treble_db` are unchanged and still describe the two-control page. `bands`
+lists every band the appliance's equaliser has, in frequency order. `gain_db` is the
+stored gain as a decimal number (the Equaliser page can store half steps, and a band can
+sit outside the +/-6 dB that `bass_db`/`treble_db` are clamped to). `min_db` and `max_db`
+are the range a write to that band is clamped to. A reader that only knows `bass_db` and
+`treble_db` can ignore `bands`.
 
 | `error` | Meaning |
 |---|---|
@@ -636,9 +658,9 @@ values the dial's Equaliser page shows, read from the stored output EQ bands.
 ### `POST /api/dial/eq/set`
 
 UUID-in-body auth via the same `_dial_auth_gate` guard. Sets an absolute bass and/or
-treble value -- the dial computes its own clamped target (`clamp(shown + delta, -6,
-+6)`) and sends the result, exactly as the per-output volume steppers do; this
-appliance clamps again defensively.
+treble value, and/or absolute gains for individual bands. The dial computes its own
+clamped target (`clamp(shown + delta, -6, +6)` for bass and treble) and sends the result,
+exactly as the per-output volume steppers do; this appliance clamps again defensively.
 
 Bass sets `peq1_db` (40 Hz low-shelf) and `peq2_db` (100 Hz peak) to the same value.
 Treble sets `peq6_db` (10 kHz high-shelf) to the full value and `peq5_db` (4 kHz peak)
@@ -650,14 +672,23 @@ Both fields are saved and applied to the running monitor in a single update.
 {"dial_id": "<id>", "bass_db": 2, "treble_db": -1}
 ```
 
-At least one of `bass_db`/`treble_db` must be present; either may be sent alone.
+At least one of `bass_db`, `treble_db` and `bands` must be present; any may be sent
+alone or together.
+
+`bands` is an object of band id to absolute gain in dB, for example
+`{"dial_id": "<id>", "bands": {"peq3": 1.5, "peq4": -2}}`. The ids are the ones the read
+reply lists. A gain may be an integer or a decimal number and is clamped to that band's
+`min_db`/`max_db`. Only the bands named are written; the rest keep their stored values.
+When a body names the same band through both `bass_db`/`treble_db` and `bands`, the
+`bands` value wins. Everything in one request is saved and applied in a single update.
 
 **Success response (200):** the same shape as `POST /api/dial/eq` above -- the
-read-back `bass_db`/`treble_db`, rounded and clamped to +/-6 dB, after the write.
+read-back `bass_db`/`treble_db`, rounded and clamped to +/-6 dB, and every band, after
+the write.
 
 | `error` | Meaning |
 |---|---|
-| `invalid_request_body` (`400`) | Neither field present, or a present field is not an integer (or is a boolean) |
+| `invalid_request_body` (`400`) | None of the fields present; `bass_db`/`treble_db` not an integer (or a boolean); or `bands` empty, not an object, naming an unknown id, or holding a gain that is not a finite number (a boolean counts as not a number). Nothing is written |
 | `eq_apply_failed` | The monitor daemon is unreachable; the stored config is still updated |
 
 ---
