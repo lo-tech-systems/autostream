@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -41,6 +44,8 @@ from dial_volume import forget_mute_states_except, observe_master_volume, observ
 
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
+# The largest artwork response the dial will take.
+MAX_ARTWORK_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 # ---- capabilities -----------------------------------------------------------
@@ -372,6 +377,52 @@ def drain_push_probes(
 
 
 # ---- artwork ------------------------------------------------------------------
+
+
+class RateLimitedLogger:
+    """Emits the first occurrence and every 10th consecutive repeat of a key.
+
+    A different key resets the count so its own first occurrence is visible
+    immediately, per the dial logging policy.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_key: str | None = None
+        self._count = 0
+
+    def log(self, level: int, key: str, msg: str, *args) -> None:
+        with self._lock:
+            if key != self._last_key:
+                self._last_key = key
+                self._count = 1
+            else:
+                self._count += 1
+            should_log = self._count == 1 or self._count % 10 == 0
+        if should_log:
+            logging.log(level, msg, *args)
+
+
+def _artwork_module():
+    """The shared artwork fetcher. The dial deployment copies core modules
+    alongside the dial package; in the repo they live in core/, which may
+    or may not be on sys.path."""
+    try:
+        import autostream_artwork
+    except ImportError:
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+        import autostream_artwork
+    return autostream_artwork
+
+
+def default_fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
+    """Fetch artwork at the dial's own size ceiling: (bytes_or_None, error_text)."""
+    return _artwork_module().fetch_artwork(url, timeout, MAX_ARTWORK_RESPONSE_BYTES)
+
+
+def default_artwork_eligible(url: str) -> bool:
+    """Whether *url* may be fetched at all (the shared fetcher's own rule)."""
+    return _artwork_module().artwork_url_eligible(url)
 
 
 def url_log_key(url: str) -> str:

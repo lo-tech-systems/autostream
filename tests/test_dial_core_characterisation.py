@@ -21,6 +21,7 @@ import dataclasses
 import json
 import logging
 import queue
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -257,11 +258,11 @@ class TestAcceptedReplayWindow:
             _accept_replay(display)
             accepted_at = clock.t
             clock.t = accepted_at + dd.ACCEPTED_REPLAY_GRACE_S - 0.01
-            kept = display._with_accepted_replay([], clock.t)
+            kept = display._core.with_accepted_replay([], clock.t)
             assert [t.appliance_id for t in kept] == [AID]
             assert display._accepted_replay is not None
             clock.t = accepted_at + dd.ACCEPTED_REPLAY_GRACE_S + 0.01
-            assert display._with_accepted_replay([], clock.t) == []
+            assert display._core.with_accepted_replay([], clock.t) == []
             assert display._accepted_replay is None
         assert dd.ACCEPTED_REPLAY_GRACE_S == 20.0
 
@@ -417,6 +418,7 @@ class TestBinding:
     @staticmethod
     def _poll(display, results):
         with patch("dial_display.fetch_target_status", side_effect=_fetch_by_service(results)) as fetch, \
+             patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
              patch.object(display, "_show_artwork") as shown:
             display._poll_once()
         return fetch, shown
@@ -480,7 +482,8 @@ class TestBinding:
         assert display._bound_appliance_id == b.appliance_id
         assert display._reporting_appliance_id == b.appliance_id
         assert display.current_source_service_name() == "bravo"
-        shown.assert_called_once_with("https://provider.example/x.jpg")
+        shown.assert_called_once()
+        assert shown.call_args.args[0].key == artwork_key("https://provider.example/x.jpg")
 
     def test_manual_focus_mirrors_into_the_binding(self):
         display, gt, a, b = self._two()
@@ -518,7 +521,8 @@ class TestFocusClearClosesPolicyScreens:
             display._screen = name
             if policy.state_attr is not None:
                 setattr(display, policy.state_attr, sentinel)
-        display._clear_focus("test")
+        display._core.clear_focus("test")
+        display._close_screens_for_cleared_focus()
         assert display.manual_focus_id() is None
         if policy.closes_on_focus_clear:
             assert display._screen == "main"
@@ -528,6 +532,17 @@ class TestFocusClearClosesPolicyScreens:
             assert display._screen == name
             if policy.state_attr is not None:
                 assert getattr(display, policy.state_attr) is sentinel
+
+
+    def test_a_tick_that_clears_the_focus_closes_the_screen(self):
+        display, fb, gt = make_display(targets=[])
+        display.enable()
+        display._manual_focus_id = AID      # not on the roster: the tick clears it
+        with display._lock:
+            display._screen = "outputs"
+        display._poll_once()
+        assert display.manual_focus_id() is None
+        assert display._screen == "main"
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +700,7 @@ def _eq_display():
     display, fb, gt = make_display(targets=[])
     display._reporting_appliance_id = AID
     display._last_roster = [_roster_entry(appliance_id=AID, dial_eq=True)]
-    display._update_eq_available()
+    display._core._update_availability(time.monotonic())
     return display
 
 

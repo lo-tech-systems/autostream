@@ -1,38 +1,43 @@
 """dial_display.py — Dial display manager facade.
 
-Owns threading, fallback policy (logo vs artwork), image identity dedupe,
-error handling, and the no-op path for display-disabled installs. Consumes
-the mDNS display-selection helper get_display_targets() — never the volume
-fan-out get_playing_targets(), which is unrelated and unaffected by display
-state.
+Owns the panel: threading of the repaint loop, fallback policy (logo vs
+artwork), image identity dedupe, error handling, and the no-op path for
+display-disabled installs. The poll itself belongs to the appliance model
+(dial_core.py), which runs it on its own thread from the mDNS
+display-selection helper get_display_targets() — never the volume fan-out
+get_playing_targets(), which is unrelated and unaffected by display state —
+and publishes immutable snapshots. This manager subscribes to them and its
+repaint thread folds each into the screen (_apply_snapshot): a finished poll
+tick shows its artwork or logo, rows and idle sleep; a playing appliance
+wakes a sleeping panel; a snapshot nothing on screen depends on paints
+nothing.
 
 Authorization gating reads target.auth (stamped by dial_mdns from dial_auth):
 a confirmed 412 (unauthorized) is skipped for display purposes; an unknown or
-authorized row is polled normally. This manager is one of the writers of
-dial_auth's map (via _apply_status_to_auth, from both the sequential poll and
-the concurrent reconcile pass) but never the sole source of truth for it — a
-push notification and the mDNS browser's own sightings write it too.
+authorized row is polled normally. The core is one of the writers of
+dial_auth's map (from both the sequential poll and the concurrent reconcile
+pass) but never the sole source of truth for it — a push notification and the
+mDNS browser's own sightings write it too.
 
 Display failure must always degrade to a no-op display; it must never affect
 volume control. Backend hardware code lives in dial_display_adafruit.py;
 Pillow-only image policy lives in dial_display_image.py.
 
-This manager also feeds dial_repeat_store's per-appliance repeat/replay
-belief, from the same two poll paths that feed the auth map: the sequential
-artwork walk (6 s cadence for the focused/reporting appliance) and the
-concurrent reconcile pass (60 s cadence, run over the merged roster —
+The core also feeds dial_repeat_store's per-appliance repeat/replay belief,
+from the same two poll paths that feed the auth map: the sequential artwork
+walk (every poll for the focused/reporting appliance) and the concurrent
+reconcile pass (every 60 s, run over the merged roster —
 dial_mdns.get_roster() — so idle appliances are covered too, through
 enrich_targets() only; an idle row never becomes the artwork base, though a
-manual focus resting on one is polled every tick and can set _now_playing
-with no artwork of its own — see focus_volume_target()). The roster and the
-repeat store are display-side only, read by the volume resolver only
-through the display's focus accessor.
+manual focus resting on one is polled every tick and can set the now-playing
+line with no artwork of its own — see focus_volume_target()). The roster and
+the repeat store are read by the volume resolver only through the display's
+focus accessor.
 
 This manager also consumes the network poller's view (dial_network.py, via
 on_network_view()) for the idle screen's Wi-Fi status icon and the No-WiFi
 page. Both the network view and the SD health reader feed the on-screen
-warning manager (dial_warnings.py) through _warning_active()/
-_warning_cleared().
+warning manager (dial_warnings.py) through the core.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -85,18 +90,16 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, NOWIFI_PROMPT_STREAK, EqBand, EqState, NowPlaying, OutputRow, PickerRow, SelectorRow, artwork_key, availability, choose_pin,
-    dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
-    eq_gain, reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
-    walk_order, with_accepted_replay,
+    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, NOWIFI_PROMPT_STREAK, EqBand, EqState, NowPlaying, OutputRow, PickerRow, SelectorRow, availability,
+    dots_active, picker_rows,
+    eq_gain, selector_rows, with_accepted_replay,
 )
 from dial_core_poll import (
-    ARTWORK_FETCH_TIMEOUT_SECONDS,
     DIAL_STATUS_TIMEOUT_SECONDS,
     url_log_key as _url_log_key,
 )
 import dial_core_poll
-from dial_core import DialCore
+from dial_core import DEFAULT_POLL_INTERVAL_S, RECONCILE_INTERVAL_S, DialCore, PollIO
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import (
@@ -190,10 +193,11 @@ DEFAULT_DISPLAY_REPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-repla
 _DEFAULT_PANEL_WIDTH = get_profile(DEFAULT_PROFILE_KEY).width
 _DEFAULT_PANEL_HEIGHT = get_profile(DEFAULT_PROFILE_KEY).height
 
-# Default poll interval; the live value is the screen setting poll_interval_s.
-DISPLAY_POLL_INTERVAL_SECONDS = 6
+# Default poll interval; the live value is the screen setting poll_interval_s,
+# which the core polls at.
+DISPLAY_POLL_INTERVAL_SECONDS = DEFAULT_POLL_INTERVAL_S
 DISPLAY_IDLE_SLEEP_SECONDS = 5 * 60
-RECONCILE_INTERVAL_SECONDS = 60
+RECONCILE_INTERVAL_SECONDS = RECONCILE_INTERVAL_S
 # How long the appliance-selector screen stays open with no touch activity
 # before it closes back to the main (now-playing) screen. Refreshed by any
 # touch activity while open — see _apply_touch_activity_locked. The replay
@@ -208,7 +212,7 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 
 # How long a picker-started replay's manual focus is held "pending" while
 # the appliance has not yet reached the playing set — see
-# set_manual_focus_pending() and the empty-targets branch of _poll_once.
+# set_manual_focus_pending() and the core's empty-targets branch.
 FOCUS_PENDING_GRACE_S = 10.0
 
 # The fixed inter-loop gap the appliance's replay engine inserts between
@@ -467,28 +471,40 @@ def _repeat_counter_value(rec, now: float) -> float:
 # Rate-limited logging
 # ---------------------------------------------------------------------------
 
-class _RateLimitedLogger:
-    """Emits the first occurrence and every 10th consecutive repeat of a key.
+_RateLimitedLogger = dial_core_poll.RateLimitedLogger
 
-    A different key resets the count so its own first occurrence is visible
-    immediately, per the dial logging policy.
-    """
+
+class _Signal(threading.Event):
+    """The repaint thread's wake-up. `set` asks for a repaint; `poke` only
+    wakes the thread so it reads the core's newest snapshot, and a wake that
+    nothing but pokes caused paints nothing (the snapshot's own effects
+    decide whether anything must be drawn)."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._last_key: str | None = None
-        self._count = 0
+        super().__init__()
+        self._request_lock = threading.Lock()
+        self._requested = False
 
-    def log(self, level: int, key: str, msg: str, *args) -> None:
-        with self._lock:
-            if key != self._last_key:
-                self._last_key = key
-                self._count = 1
-            else:
-                self._count += 1
-            should_log = self._count == 1 or self._count % 10 == 0
-        if should_log:
-            logging.log(level, msg, *args)
+    def set(self) -> None:
+        with self._request_lock:
+            self._requested = True
+            super().set()
+
+    def poke(self) -> None:
+        super().set()
+
+    def clear(self) -> None:
+        with self._request_lock:
+            self._requested = False
+            super().clear()
+
+    def consume(self) -> bool:
+        """Clear the signal; True when a repaint had been asked for since
+        the last call."""
+        with self._request_lock:
+            requested, self._requested = self._requested, False
+            super().clear()
+        return requested
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +543,7 @@ PLAYING_ARTIST_TEXT = "Playing"
 @dataclass(frozen=True)
 class SelectorState:
     """Immutable snapshot of the appliance-selector screen's rows and
-    paging, as last built by the poll thread (_refresh_selector_rows).
+    paging, as last built when a poll tick ended (_refresh_selector_rows).
 
     rows: every AUTHORIZED or confirmed-UNAUTHORIZED identified appliance
         on the merged roster, idle or playing — see _refresh_selector_rows
@@ -903,12 +919,6 @@ class DialDisplay:
         # _layout_metrics() read directly — always equal to self._layout.
         # mm_per_px.
         self._mm_per_px = self._layout.mm_per_px
-        self._get_display_targets = get_display_targets
-        # Merged playing+idle roster, injected like get_display_targets
-        # above (default dial_mdns.get_roster, for tests). Read only by the
-        # poll thread — the artwork walk and the reconcile pass — never by
-        # the volume/mute resolvers.
-        self._get_roster = get_roster
         self._dial_id = dial_id
         self._logo_path = logo_path
         self._replay_logo_path = replay_logo_path
@@ -962,8 +972,6 @@ class DialDisplay:
         self._idle_started_at: float | None = None
         self._display_sleeping = False
 
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
         self._log_limiter = _RateLimitedLogger()
 
         # ---- Touch overlay plumbing -----------------------------------
@@ -982,17 +990,31 @@ class DialDisplay:
         # touches self._lock — the touch thread never takes self._lock.
         self._overlay_snapshot_lock = threading.Lock()
         self._overlay_snapshot = OverlayState()
-        self._overlay_signal = threading.Event()
-        # The appliance model's published snapshots. The poll still signals
-        # its own repaints, so nothing here subscribes or reads the snapshot
-        # yet: a subscription would wake the repaint thread on every tick.
-        # The warning manager, update watcher and update marker path are
-        # handed to the core when the display builds it (tests inject them).
+        self._overlay_signal = _Signal()
+        # The appliance model, which runs the poll on its own thread and
+        # publishes snapshots. While started, this view subscribes and its
+        # repaint thread folds each new snapshot into the screen (see
+        # _apply_snapshot). The warning manager, update watcher and update
+        # marker path are handed to the core when the display builds it
+        # (tests inject them); a core built here is started and stopped
+        # with the display.
+        self._owns_core = core is None
         self._core = core if core is not None else DialCore(
             dial_id, get_display_targets, get_roster, warnings=warnings,
             update_watcher=update_watcher, update_seen_path=update_seen_path,
             reboot=lambda: _request_reboot(),
         )
+        self._core.set_io(self._poll_io())
+        self._core.set_eq_veto(self._compact_tier)
+        self._core.set_idle_hold(self._holds_idle_state)
+        self._core.set_polling(config.fitted)
+        self._core.set_poll_interval(getattr(config, "poll_interval_s", DEFAULT_POLL_INTERVAL_S))
+        self._subscription: int | None = None
+        # The last snapshot folded into the screen, and the lock that keeps
+        # two threads from folding at once (the repaint thread; a test
+        # driving the poll by hand).
+        self._applied = self._core.snapshot()
+        self._apply_lock = threading.Lock()
         # Set by notify_touch_activity() (touch thread, lock-free); consumed
         # by the repaint thread under self._lock.
         self._touch_activity_pending = False
@@ -1007,8 +1029,8 @@ class DialDisplay:
 
         # Now-playing state for the overlay, the artwork source's service
         # name, the focus and the roster live in the core (see the
-        # delegating properties below). The poll thread writes them; the
-        # repaint/poll threads read them under self._lock at compose time
+        # delegating properties below). The core's poll thread writes them;
+        # the repaint thread reads them under self._lock at compose time
         # and the HTTP/touch/worker threads read them lock-free.
         # Non-composited-state notification (screen cleared or asleep) for
         # the touch side to observe — see _mark_noncomposited_locked().
@@ -1016,28 +1038,8 @@ class DialDisplay:
         self._noncomposited_generation = 0
 
         # ---- Auth, focus and push plumbing ----------------------------
-        # Poll-thread wake: replaces the plain _stop_event.wait(6) so a
-        # push or a focus change can run a poll now instead of at the next
-        # tick. Set from any thread; cleared by the poll thread.
-        self._poll_wake = threading.Event()
-        # Push queue: appliance_ids whose auth changed, per the appliance's
-        # advisory POST /auth-changed. Guarded by a LEAF lock (never nested
-        # with self._lock, never held across I/O); drained by the poll
-        # thread. A set, so a burst of pushes for one id collapses to one
-        # probe.
-        self._push_lock = threading.Lock()
-        self._push_pending: set[str] = set()
-        # Reconcile bookkeeping (poll thread only, except for the wake-pass
-        # writes from the repaint thread noted at their call sites).
-        self._last_reconcile_at = 0.0
-        self._reconcile_due = True          # first tick reconciles
-        # The appliance_ids that were playing on the previous poll tick, so
-        # the poll can notice when one stops and reconcile immediately (poll
-        # thread only). See _poll_once: a shrinking playing set forces a
-        # reconcile so a just-ended source's retained-recording ("hold")
-        # state and now-idle authorization reach the idle screen and replay
-        # picker within one tick, not at the next 60s reconcile.
-        self._prev_playing_ids: set[str] = set()
+        # The poll, its wake, the push queue and the reconcile bookkeeping
+        # belong to the core.
         # The manual focus (the appliance_id the user chose, or None for
         # auto-pick; never persisted), the sticky binding beneath it, the
         # pending-focus grace of a picker-started replay, the reporting
@@ -1045,7 +1047,7 @@ class DialDisplay:
         # gate and the idle-affordance flag are all core state, reached
         # through the delegating properties below. The touch thread writes
         # the manual and pending focus (set_manual_focus(),
-        # set_manual_focus_pending()); the poll thread resolves and
+        # set_manual_focus_pending()); the core's poll thread resolves and
         # rewrites them; the core's lock makes each write atomic.
         # Monotonic deadline until which the controls bands are hidden after
         # an artwork tap (0.0, i.e. never, until something arms it) — set by
@@ -1100,8 +1102,8 @@ class DialDisplay:
         # ---- Selector, repeat and picker screen state -------------------
         # self._screen is written under self._lock — usually by the repaint
         # thread (_apply_screen_requests_locked()/_close_secondary_locked()),
-        # occasionally by the poll thread (the empty-target branch,
-        # _sleep_locked) — and read lock-free elsewhere (a plain str read is
+        # occasionally by the HTTP thread (update_config) and by the idle
+        # tick (_apply_idle_tick, _sleep_locked) — and read lock-free elsewhere (a plain str read is
         # atomic) — same discipline as the other lock-free-read fields above.
         # "main": the now-playing screen. "selector": the appliance list.
         # "repeat": the repeat screen. "picker": the replay picker.
@@ -1265,16 +1267,9 @@ class DialDisplay:
         with self._lock:
             if self._config.fitted:
                 self._enable_locked()
-        self._stop_event.clear()
         self._repaint_stop_event.clear()
-        try:
-            self._thread = threading.Thread(target=self._run, daemon=True, name="dial-display")
-            self._thread.start()
-        except Exception as e:
-            # Must never prevent the rest of dial_main.py's startup/shutdown
-            # sequence (volume control, mDNS, control socket) from running.
-            logging.warning("dial display: failed to start polling thread: %s", e)
-            self._thread = None
+        if self._subscription is None:
+            self._subscription = self._core.subscribe(self._core_changed)
         try:
             self._repaint_thread = threading.Thread(
                 target=self._repaint_run, daemon=True, name="dial-display-repaint",
@@ -1283,23 +1278,21 @@ class DialDisplay:
         except Exception as e:
             logging.warning("dial display: failed to start repaint thread: %s", e)
             self._repaint_thread = None
+        if self._owns_core:
+            self._core.start()
+        # Fold in whatever the core has published already.
+        self._overlay_signal.poke()
 
     def stop(self) -> None:
-        self._stop_event.set()
         self._repaint_stop_event.set()
         # Wake the repaint thread out of its Event.wait() so it notices
         # _repaint_stop_event promptly rather than at its next timeout tick.
         self._overlay_signal.set()
-        # Likewise for the poll thread's _poll_wake.wait().
-        self._poll_wake.set()
-        if self._thread is not None:
-            try:
-                self._thread.join(timeout=2)
-            except RuntimeError:
-                # Thread.start() had not finished registering when stop() ran
-                # right behind it — the daemon thread still exits on its own
-                # once _stop_event is set.
-                pass
+        if self._owns_core:
+            self._core.stop()
+        if self._subscription is not None:
+            self._core.unsubscribe(self._subscription)
+            self._subscription = None
         if self._repaint_thread is not None:
             try:
                 self._repaint_thread.join(timeout=2)
@@ -1419,7 +1412,7 @@ class DialDisplay:
                         self._current_base_image = None
                         self._close_secondary_locked()
                         self._render_logo_locked()
-                        self._poll_wake.set()
+                        self._core.request_poll()
                     else:
                         redisplay_changed = (
                             old_config.fitted and not screen_type_changed
@@ -1434,10 +1427,10 @@ class DialDisplay:
                             self._redisplay_current_locked()
             else:
                 self._disable_locked()
-        if old_config.poll_interval_s != config.poll_interval_s:
-            # The loop is parked in a wait of the old length: cut it short so
-            # the new interval applies from the next tick.
-            self._poll_wake.set()
+        # The core polls when the dial is fitted, at the setting's interval;
+        # a new interval cuts the wait in progress short.
+        self._core.set_polling(config.fitted)
+        self._core.set_poll_interval(getattr(config, "poll_interval_s", DEFAULT_POLL_INTERVAL_S))
         return self.get_status()
 
     def enable(self) -> None:
@@ -1494,14 +1487,13 @@ class DialDisplay:
     def notify_touch_activity(self) -> None:
         """Tell the display that touch activity happened right now.
 
-        Mirrors the two lines _poll_once() already runs when it finds
-        playing targets present (see the `if targets:` branch below):
-        resets the idle countdown and, if asleep, wakes.
+        Does what a snapshot with a visible playing appliance does (see
+        _apply_snapshot): resets the idle countdown and, if asleep, wakes.
 
         Deliberate consequence: this does NOT disable idle sleep, only
         resets it. With nothing playing, the very next poll tick (up to
-        DISPLAY_POLL_INTERVAL_SECONDS later) finds no targets and restarts
-        the idle countdown from this moment. A user who keeps touching the
+        the poll interval later) finds no targets and restarts the idle
+        countdown from this moment. A user who keeps touching the
         overlay for longer than DISPLAY_IDLE_SLEEP_SECONDS while nothing
         plays will still eventually see the display sleep underneath them —
         touch resets idle, it does not disable sleep.
@@ -1533,7 +1525,7 @@ class DialDisplay:
 
         Returns True when this call actually woke the display from sleep —
         the caller uses that to run the reconcile-on-wake side effects
-        (auth_map.force_due(), _poll_wake.set()) AFTER releasing self._lock,
+        (core.request_poll(reconcile=True)) AFTER releasing self._lock,
         since those must never be reached while self._lock is held (leaf
         locks are never nested with it in either direction).
         """
@@ -1924,9 +1916,8 @@ class DialDisplay:
         persistent_overlay_shown() and noncomposited_generation().
 
         outputs_active is true whenever the currently focused/reporting
-        appliance advertises dial_outputs — see _poll_once, which computes
-        it into self._outputs_available every tick via
-        _update_outputs_available(). False whenever nothing controllable
+        appliance advertises dial_outputs — see DialCore._update_availability,
+        which computes it every tick. False whenever nothing controllable
         is shown (there is no appliance for the top-right zone to act on).
 
         name_active is true whenever there is a controllable appliance
@@ -1943,7 +1934,7 @@ class DialDisplay:
 
         dots_active is true whenever the currently focused/reporting
         appliance has a fresh, available repeat-store record — see
-        _poll_once, which computes it into self._dots_active every tick.
+        DialCore._update_availability, which computes it every tick.
         "idle" is reported whenever nothing is playing, not only while the
         idle affordance is drawn — the info page's "i" affordance must be
         reachable on every idle dial. A replay tap on a plain logo still
@@ -1955,7 +1946,7 @@ class DialDisplay:
         is always meaningful while it is showing (it only ever opens for a
         focused/reporting appliance, and closes before that appliance's
         name could go stale — see toggle_repeat_screen() and the empty-
-        target branch of _poll_once). A row whose own tuple asks for the
+        target branch of _apply_idle_tick). A row whose own tuple asks for the
         outputs zone (the repeat screen's own top-right readout) still
         gates on the live self._outputs_available, same as main; a row
         that carries False there is unaffected.
@@ -2141,7 +2132,7 @@ class DialDisplay:
     def _sleep_locked(self) -> None:
         # Pop to the main screen before the backlight goes off — the
         # appliance list must never be the last thing left on screen
-        # (see also the empty-target branch in _poll_once, which is the
+        # (see also the empty-target branch in _apply_idle_tick, which is the
         # only path that can reach sleep with a fresh reason to check).
         self._close_secondary_locked()
         if self._backend_open and self._backend is not None:
@@ -2683,9 +2674,9 @@ class DialDisplay:
 
     # ---- overlay repaint loop ----------------------------------------------
     #
-    # A second, dedicated thread — separate from the poll thread below — so
-    # a touch-driven overlay update never waits behind (or gets coalesced
-    # with) the display's own 6-second poll cadence, and never has to be
+    # A dedicated thread — separate from the core's poll thread — so a
+    # touch-driven overlay update never waits behind (or gets coalesced
+    # with) the poll cadence, and never has to be
     # dispatched from the touch thread itself (which never takes self._lock;
     # see the LOCK ORDER comment in __init__).
 
@@ -2716,30 +2707,37 @@ class DialDisplay:
                 self._tick_controls_hidden()
                 self._tick_controls_shown()
                 self._tick_wifi_flash()
-                self._tick_update_watch()
-                self._tick_warnings()
+                self._tick_due_warning()
                 self._tick_controls_reveal()
                 self._tick_replay_timer()
                 continue
-            # Coalesce: clear the event BEFORE doing any work. Any
-            # set_overlay() call that lands after this clear() (including
-            # one that lands while we are still repainting below, under
-            # self._lock) leaves the event set again, so the next
-            # iteration's wait() returns immediately — several rapid
-            # signals that land before we get here collapse into this one
-            # wake, and _display_locked() below always reads whatever the
-            # NEWEST snapshot is at the moment it actually composes, not
-            # whichever one triggered this particular wake.
-            self._overlay_signal.clear()
-            with self._lock:
-                woke = self._repaint_current_locked()
-            self._sync_core_interest()
-            if woke:
-                # Outside the lock: force_due() takes the leaf dial_auth
-                # lock, which must never nest with self._lock.
-                self._reconcile_due = True
-                auth_map.force_due()
-                self._poll_wake.set()
+            self._repaint_once()
+
+    def _repaint_once(self) -> None:
+        """One wake of the repaint loop that something signalled."""
+        # Coalesce: clear the event BEFORE doing any work. Any
+        # set_overlay() call that lands after this clear() (including
+        # one that lands while we are still repainting below, under
+        # self._lock) leaves the event set again, so the next
+        # iteration's wait() returns immediately — several rapid
+        # signals that land before we get here collapse into this one
+        # wake, and _display_locked() below always reads whatever the
+        # NEWEST snapshot is at the moment it actually composes, not
+        # whichever one triggered this particular wake.
+        requested = self._overlay_signal.consume()
+        # Fold in what the core has published. A wake that only the core
+        # caused paints nothing unless that snapshot says something on
+        # screen changed (the fold then paints, or asks for a repaint).
+        self._apply_pending_snapshot()
+        if not requested:
+            return
+        with self._lock:
+            woke = self._repaint_current_locked()
+        self._sync_core_interest()
+        if woke:
+            # Outside the lock: request_poll(reconcile=True) takes the
+            # leaf dial_auth lock, which must never nest with self._lock.
+            self._core.request_poll(reconcile=True)
 
     def _repaint_current_locked(self) -> bool:
         """Recompose and push the current screen — used by the repaint
@@ -2807,9 +2805,7 @@ class DialDisplay:
         row is checked within about one poll interval of opening, rather
         than left stale for up to 60s."""
         self._screen_request = "selector"
-        self._reconcile_due = True
-        auth_map.force_due()
-        self._poll_wake.set()
+        self._core.request_poll(reconcile=True)
         self._overlay_signal.set()
 
     def close_list(self) -> None:
@@ -3105,10 +3101,10 @@ class DialDisplay:
         it PENDING for FOCUS_PENDING_GRACE_S — a picker-started replay has
         not yet reached the playing set, so the ordinary "gone from the
         roster" focus-clear must not fire before it has had a chance to
-        appear. See the empty-targets branch of _poll_once."""
+        appear. See the empty-targets branch of DialCore._poll_tick."""
         now = time.monotonic()
         self._core.set_focus_pending(appliance_id, service_name, now + FOCUS_PENDING_GRACE_S)
-        self._poll_wake.set()
+        self._core.request_poll()
 
     def open_picker(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_REPLAY
@@ -3122,9 +3118,7 @@ class DialDisplay:
         if not self._idle_affordance:
             return
         self._screen_request = "picker"
-        self._reconcile_due = True
-        auth_map.force_due()
-        self._poll_wake.set()
+        self._core.request_poll(reconcile=True)
         self._overlay_signal.set()
 
     def open_info(self) -> None:
@@ -3305,7 +3299,7 @@ class DialDisplay:
         list or the per-output detail page. Caller holds self._lock.
         Called from the repeat thread's own request-folding, from
         sleep/disable/swap (so a later wake/reopen never resumes on a
-        stale secondary screen), from the poll thread when the focused
+        stale secondary screen), from the repaint thread when the focused
         appliance changes while a bound screen is open, and is what a
         stale selector_pick()/picker_pick()/outputs_row_tap() index falls
         back to.
@@ -3600,8 +3594,8 @@ class DialDisplay:
         — see ScreenPolicy.inactivity_timeout_s.
 
         self._screen/self._selector/self._picker are read lock-free here:
-        all three are also written by the poll thread (_poll_once's
-        empty-target branch, _sleep_locked), not only the repeat thread,
+        all three are also written by the idle tick (_apply_idle_tick,
+        _sleep_locked), not only the repeat thread,
         but every write is already under self._lock and each is a plain
         reference/str assignment — the same "a stale read costs at most
         one harmless extra tick" discipline.
@@ -3921,8 +3915,8 @@ class DialDisplay:
 
     def _refresh_selector_rows(self, roster: list, reporting_id: str | None) -> None:
         """Rebuild the selector's row list from the merged *roster* (idle
-        and playing appliances alike). Runs on the poll thread at the end of
-        every _poll_once, in both the playing-targets branch and the empty-
+        and playing appliances alike). Runs when a poll tick ends (see
+        _apply_snapshot), in both the playing-targets branch and the empty-
         targets branch, whether or not the selector screen is actually open
         right now, so opening it always shows fresh rows without waiting for
         a poll. The touch thread never builds rows.
@@ -3957,8 +3951,8 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _refresh_picker_rows(self, roster: list, now: float) -> None:
-        """Rebuild the replay picker's row list from *roster* — poll thread
-        only, every tick regardless of whether the picker is actually open,
+        """Rebuild the replay picker's row list from *roster* — when a poll
+        tick ends (see _apply_snapshot), every tick regardless of whether the picker is actually open,
         mirroring _refresh_selector_rows(). Rows: every rostered,
         authorized, repeat-capable appliance currently in Hold — the only
         daemon state the picker can start a replay from. The page is
@@ -3970,18 +3964,6 @@ class DialDisplay:
             self._picker = PickerState(rows=rows, page=page, opened_at=opened_at)
             changed = prev is None or prev.rows != rows
         if changed and (self._screen == "picker" or self._screen_request == "picker"):
-            self._overlay_signal.set()
-
-    def _refresh_idle_affordance(self, roster: list, now: float) -> None:
-        """Recompute whether the idle screen's "tap to replay" affordance
-        should be drawn — poll thread only, every tick regardless of
-        whether anything is currently playing. True when at least one
-        rostered, authorized, repeat-capable appliance is currently held (a
-        retained recording with nothing else to show). A change signals
-        the repeat thread so the affordance appears/disappears promptly."""
-        affordance = idle_affordance(roster, repeat_store.held_ids(now))
-        if affordance != self._idle_affordance:
-            self._idle_affordance = affordance
             self._overlay_signal.set()
 
     def _build_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
@@ -4688,15 +4670,22 @@ class DialDisplay:
         if self._wifi_flashing():
             self._overlay_signal.set()
 
-    def _tick_warnings(self) -> None:
+    def _tick_due_warning(self) -> None:
         """Once a second from the repaint thread's own timeout branch:
-        raise a warning whose snooze has just run out (or one that was
-        due while a list or menu was open), and write any snooze a
-        Dismiss changed since the last write. Lock-free plain reads, the
-        _check_secondary_timeout() discipline; the file write runs with
-        no lock held. A warning that has been up for its
-        auto_clear_after_s is cleared here, through the same path a
-        source's clear takes."""
+        raise a warning whose snooze has just run out (or one that was due
+        while a list or menu was open). Lock-free plain reads, the
+        _check_secondary_timeout() discipline. The core's housekeeping
+        clears warnings that have been up for their auto_clear_after_s and
+        writes the snoozes; what that did reaches this view as queued
+        effects (see _apply_pending_snapshot)."""
+        self._request_due_warning()
+
+    def _tick_warnings(self) -> None:
+        """The core's warning housekeeping run by hand (it runs on the core
+        thread otherwise): clear warnings past their auto_clear_after_s,
+        turn that into screens, raise a warning whose snooze has just run
+        out, and write any snooze a Dismiss changed. Lock-free plain reads;
+        the file write runs with no lock held."""
         self._apply_source_effects(self._core.expire_warnings())
         self._request_due_warning()
         self._core.flush_warnings()
@@ -4704,9 +4693,10 @@ class DialDisplay:
     # ---- Software update: the warning cards ---------------------------------
 
     def _tick_update_watch(self) -> None:
-        """Once a second from the repaint thread's timeout branch: when the
-        update result file has changed, map it onto the update cards.
-        Lock-free, the on_network_view() discipline. Never raises."""
+        """The core's update watch run by hand (it runs on the core thread
+        otherwise): when the update result file has changed, map it onto the
+        update cards. Lock-free, the on_network_view() discipline. Never
+        raises."""
         try:
             effects = self._core.tick_update_watch(time.monotonic())
             if effects is not None:
@@ -4781,75 +4771,38 @@ class DialDisplay:
 
     # ---- polling loop ----------------------------------------------------
 
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            self._poll_wake.clear()
-            try:
-                self._drain_push_probes()
-                # Polled asleep too: _poll_once wakes the panel when something
-                # this dial may use starts playing, and otherwise stays dark
-                # (no repaint) until then.
-                self._poll_once()
-            except Exception:
-                logging.debug("dial display: poll iteration raised", exc_info=True)
-            # Wait from the end of this loop so slow polls never accumulate
-            # into a backlog. A push, a focus change or a wake sets
-            # _poll_wake to run this loop again sooner.
-            interval = getattr(self._config, "poll_interval_s", DISPLAY_POLL_INTERVAL_SECONDS)
-            if isinstance(interval, bool) or not isinstance(interval, (int, float)):
-                # A config without a usable interval must never stop the loop.
-                interval = DISPLAY_POLL_INTERVAL_SECONDS
-            self._poll_wake.wait(interval)
+    # The core runs the poll on its own thread and publishes snapshots; this
+    # view folds each into the screen on the repaint thread (see
+    # _apply_snapshot).
+
+    @property
+    def core(self) -> DialCore:
+        """The appliance model this view paints."""
+        return self._core
 
     def request_poll(self) -> None:
-        """Ask the poll thread to run _poll_once now instead of waiting for
-        the next tick. Lock-free."""
-        self._poll_wake.set()
+        """Ask the core to poll now instead of at the next tick. Lock-free."""
+        self._core.request_poll()
 
     def notify_auth_changed(self, appliance_id: str) -> None:
         """Record that appliance_id's auth-changed push arrived (from the
-        HTTP thread). Never probes here — only enqueues and wakes the poll
-        thread, which probes the appliance on its next tick (asleep or not)."""
-        with self._push_lock:
-            self._push_pending.add(appliance_id)
-        auth_map.force_due(appliance_id)
-        self._poll_wake.set()
+        HTTP thread): the core probes it on its next tick, asleep or not."""
+        self._core.notify_auth_changed(appliance_id)
 
-    def _drain_push_probes(self) -> str:
-        """Probe every appliance_id the push queue holds.
-
-        Returns "woke" when a probe confirmed a NEW authorization while
-        asleep (and the screen was woken), "probed" when anything was
-        probed, "" otherwise.
-        """
-        with self._push_lock:
-            ids = set(self._push_pending)
-            self._push_pending.clear()
-        if not ids:
-            return ""
-        targets = {t.appliance_id: t for t in self._get_display_targets() if t.appliance_id}
-        roster = {r.appliance_id: r for r in self._last_roster if r.appliance_id}
-        promoted = dial_core_poll.drain_push_probes(ids, targets, roster, self._dial_id, self._probe_auth)
-        woke = False
-        if promoted:
-            with self._lock:
-                if self._display_sleeping:
-                    self._idle_started_at = None      # same as _apply_touch_activity_locked
-                    self._wake_locked()
-                    woke = True
-        return "woke" if woke else "probed"
-
-    def _apply_status_to_auth(self, target, result: dict) -> bool:
-        return dial_core_poll.apply_status_to_auth(target, result)
-
-    def _probe_auth(self, target) -> dict:
-        return dial_core_poll.probe_auth(target, self._dial_id, fetch=fetch_target_status)
-
-    def _apply_status_to_repeat(self, appliance_id: str, result: dict, now: float) -> None:
-        dial_core_poll.apply_status_to_repeat(appliance_id, result, now)
-
-    def _reconcile_pass(self, roster: list, visited: set[str]) -> None:
-        dial_core_poll.reconcile(roster, visited, self._dial_id, enrich=enrich_targets)
+    def _poll_io(self) -> PollIO:
+        """The calls the core's poll makes, looked up in this module when
+        they run, so replacing one here (a test does) takes effect."""
+        return PollIO(
+            fetch_status=lambda *a, **k: fetch_target_status(*a, **k),
+            enrich=lambda *a, **k: enrich_targets(*a, **k),
+            fetch_artwork=lambda url, timeout: _fetch_artwork(url, timeout),
+            artwork_eligible=lambda url: artwork_url_eligible(url),
+            observe_mute=lambda *a, **k: observe_mute_state(*a, **k),
+            observe_volume=lambda *a, **k: observe_master_volume(*a, **k),
+            forget_mute=lambda *a, **k: forget_mute_states_except(*a, **k),
+            on_artwork_error=lambda error_id: self._record_error(error_id),
+            log_limiter=self._log_limiter,
+        )
 
     def on_repeat_result(self, kind: str, appliance_id: str, status: int | None, body) -> None:
         """Callback for the repeat-transport worker (dial_repeat.py). Runs
@@ -4894,8 +4847,7 @@ class DialDisplay:
             self._overlay_signal.set()
             return
 
-        self._reconcile_due = True
-        self.request_poll()
+        self._core.request_reconcile()
 
         if self._replay_timer_id == appliance_id:
             # The replay did not start: nothing for the timer line to show.
@@ -4955,61 +4907,18 @@ class DialDisplay:
         poll wake so the source switch lands within milliseconds, not at
         the next tick. Never persisted."""
         self._core.set_focus(appliance_id)
-        self._poll_wake.set()
+        self._core.request_poll()
 
     def manual_focus_id(self) -> str | None:
         return self._core.manual_focus_id()
 
-    def _clear_focus(self, reason: str) -> None:
-        """Poll thread only: drop the manual focus and any pending grace,
-        and close the current screen when its policy says a focus clear
-        should pop it (the repeat screen was opened for that focus)."""
-        self._core.clear_focus(reason)
-        if _policy(self._screen).closes_on_focus_clear:
-            with self._lock:
-                self._close_secondary_locked()
-
-    def _update_dots_active(self, now: float) -> None:
-        """Recompute whether the page dots are currently tappable: the
-        currently focused/reporting appliance has a fresh, available
-        repeat-store record, OR the EQ page is available for it (see
-        _update_eq_available() — call that one first each tick, since this
-        reads its result). Poll thread only; read lock-free by
-        touch_surface() and _effective_overlay_locked()."""
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        rec = repeat_store.get(appliance_id, now) if appliance_id else None
-        self._dots_active = dots_active(rec, self._eq_available)
-
-    def _update_outputs_available(self) -> None:
-        """Recompute whether the top-right OUTPUTS zone is currently live,
-        from the currently focused/reporting appliance's fresh roster row —
-        poll thread only; read lock-free by touch_surface(). Mirrors
-        _update_dots_active(), one tick behind the same focus/reporting
-        resolution."""
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        self._outputs_available = outputs_available(self._last_roster, appliance_id)
-
-    def _update_eq_available(self) -> None:
-        """Recompute whether the EQ page is available for the currently
-        focused/reporting appliance — poll thread only; read lock-free by
-        cycle_pages()/touch_surface()/_effective_overlay_locked()/
-        _build_repeat_view_locked(). Mirrors _update_outputs_available(),
-        with an extra veto: no EQ page exists on the compact tier even when
-        the appliance itself advertises dial_eq. Call before
-        _update_dots_active() each tick — the dots computation reads this
-        result."""
-        appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        self._eq_available = eq_available(
-            self._last_roster, appliance_id, self._compact_tier,
-        )
-
     def _maybe_show_transition(self, previous_reporting_id: "str | None") -> None:
         """Push a brief dark transition frame (_show_transition_locked())
         when self._reporting_appliance_id has just changed, this tick,
-        directly from one appliance to a DIFFERENT one — poll thread only;
-        call once the tick's own reporting id is final, in either branch of
-        _poll_once (something playing, or an idle focus taking over from a
-        stopped one). A no-op when it is unchanged, cleared (nothing
+        directly from one appliance to a DIFFERENT one — call once the
+        tick's own reporting id is final, in either branch of
+        _apply_snapshot (something playing, or an idle focus taking over
+        from a stopped one). A no-op when it is unchanged, cleared (nothing
         playing/focused now), or was previously unset: a fresh start (boot,
         or the first appliance ever seen) has no stale artwork on screen to
         guard against, so it goes straight to that appliance's own logo/
@@ -5024,7 +4933,7 @@ class DialDisplay:
                 self._show_transition_locked()
 
     def _close_bound_screen_if_unfocused(self) -> None:
-        """Poll thread: pop whichever screen is showing if its own policy
+        """Pop whichever screen is showing if its own policy
         says it is bound to an appliance (the outputs list, the per-output
         detail page) and that appliance is no longer the focused/reporting
         one this tick — an auto-pick change, a focus clear, or nothing
@@ -5041,157 +4950,65 @@ class DialDisplay:
             with self._lock:
                 self._close_secondary_locked()
 
-    def _with_accepted_replay(self, targets: list, now: float) -> list:
-        """*targets* (the mDNS playing set), plus the appliance whose replay
-        the dial has just had accepted (see on_repeat_result()), until its
-        own playing advertisement arrives. The appliance acknowledges a
-        seek at once, but that advertisement only reaches the dial a few
-        seconds later; in between, the replay the user just started is
-        shown as playing straight away, built from its roster entry, so the
-        ordinary playing path fetches its status and artwork. Only that
-        gap is bridged: the window ends as soon as the advertisement is
-        seen, when the dial stops following the appliance, when its repeat
-        record no longer says a replay is running, or after
-        ACCEPTED_REPLAY_GRACE_S, after which the playing set alone decides
-        again. Poll thread only (the touch/worker side only ever sets the
-        window); reads the roster published by the previous poll (the
-        picker only offers rostered appliances)."""
-        return self._core.with_accepted_replay(targets, now)
-
     def _poll_once(self) -> None:
-        self._poll_tick()
-        # Outside every display lock: the core takes only its own.
-        with self._lock:
-            fitted = self._config.fitted
-        now = time.monotonic()
-        repeats = {}
-        for r in self._last_roster:
-            appliance_id = getattr(r, "appliance_id", "")
-            if appliance_id:
-                repeats[appliance_id] = repeat_store.get(appliance_id, now)
-        self._core.publish_tick(polling=bool(fitted), repeats=repeats)
+        """Poll once on this thread and fold the result into the screen: the
+        core's tick, then the snapshot it ends in. The core's own thread and
+        the repaint thread do the same in production; this is the entry for
+        a caller that has neither running."""
+        self._core.poll_once()
+        self._apply_pending_snapshot()
 
-    def _poll_tick(self) -> None:
-        with self._lock:
-            fitted = self._config.fitted
-        if not fitted:
-            self._source_service_name = None
-            self._now_playing = None
-            self._reporting_appliance_id = None
-            self._dots_active = False
-            self._outputs_available = False
-            self._eq_available = False
+    def _core_changed(self) -> None:
+        """The core's subscriber callback. Only wakes the repaint thread to
+        read the newest snapshot; never paints, never blocks."""
+        self._overlay_signal.poke()
+
+    def _apply_pending_snapshot(self) -> None:
+        """Fold what the core has published since the last call into the
+        screen: the warning effects its housekeeping queued, then the newest
+        snapshot against the one last folded. Runs on the repaint thread
+        (or whoever drives the poll by hand), never with self._lock held.
+        A snapshot nothing on screen depends on costs a comparison and
+        paints nothing."""
+        with self._apply_lock:
+            for effects in self._core.take_effects():
+                self._apply_source_effects(effects)
+            new = self._core.snapshot()
+            prev = self._applied
+            if new is prev:
+                return
+            self._applied = new
+            self._apply_snapshot(prev, new)
+
+    def _apply_snapshot(self, prev, new) -> None:
+        """What a snapshot means for the screen. Anything that makes the
+        panel's frame is decided here or by the repaint it asks for; the core
+        never touches the panel.
+
+        A snapshot that records a pushed auth change confirming an appliance
+        wakes a sleeping panel. A snapshot with a visible playing appliance
+        (not refused, with an identity; unknown auth counts) resets the idle
+        clock and wakes a sleeping panel, so playback alone wakes it. A
+        snapshot that ends a poll tick (a new tick count) also carries the
+        tick's effects: the screens a cleared focus closes, the transition
+        frame between appliances, the artwork or logo, the selector and
+        picker rows, and with nothing playing the idle clock and sleep. Other
+        snapshots (a focus change, a reading, a warning) change what is read,
+        not what is drawn, until a repaint asks. A panel that is asleep stays
+        dark: nothing here paints for it."""
+        if not new.polling:
             return
-
-        # Captured before anything below can change it — compared against
-        # this tick's own final value at _maybe_show_transition()'s two call
-        # sites, one per branch (nothing playing vs. something playing).
-        previous_reporting_id = self._reporting_appliance_id
-
-        targets = self._with_accepted_replay(self._get_display_targets(), time.monotonic())
-        # A source that WAS playing and has now stopped drops out of the
-        # playing set but stays advertised (idle) in the general roster with
-        # a retained recording the appliance now reports as "hold". That
-        # transition must reach the idle screen's replay affordance and the
-        # replay picker promptly, not up to a full reconcile interval later,
-        # so force an immediate reconcile whenever the playing set shrinks.
-        # (Growing or unchanged sets need nothing here — the ordinary
-        # cadence already covers them.) force_due() takes the leaf dial_auth
-        # lock, so it is called here, before self._lock is taken below.
-        playing_ids = {t.appliance_id for t in targets if t.appliance_id}
-        # The targets this dial may act on: not confirmed unauthorized, and
-        # carrying an identity (an unresolved legacy or identity-less
-        # appliance cannot be addressed or tracked). Everything below that
-        # wakes, binds, reports or offers a volume target works from this
-        # list; the raw list still feeds the selector (via the roster) so a
-        # refused appliance stays listed.
-        visible = visible_targets(targets)
-        stopped_ids = self._prev_playing_ids - playing_ids
-        if stopped_ids:
-            self._reconcile_due = True
-            auth_map.force_due()
-        # A refused appliance that starts playing again is re-checked at
-        # once rather than at the end of its re-probe backoff: the usual way
-        # to fix a refusal is to allow the dial in the appliance's web UI and
-        # press play, and an appliance that pushes no auth change gives the
-        # dial no other prompt to look again.
-        refused_ids = started_refused(targets, self._prev_playing_ids)
-        for appliance_id in refused_ids:
-            auth_map.force_due(appliance_id)
-        if refused_ids:
-            self._reconcile_due = True
-        # An appliance that has just started playing and has never answered
-        # this dial (after a restart, say) is checked before anything below
-        # wakes the panel for it or shows it: otherwise one that refuses the
-        # dial would be shown as playing until a later poll hid it again.
-        # Only for an unpinned poll (a focus or a binding is checked by the
-        # walk itself, which releases it on a refusal), and in the walk's
-        # own order, stopping at the first appliance that does not refuse:
-        # that is the one the walk would have asked first anyway. The
-        # replies are kept for the walk, which uses them instead of asking
-        # again.
-        first_checks: dict[str, tuple[float, dict]] = {}
-        if self._manual_focus_id is None and self._bound_appliance_id is None:
-            first_checks = dial_core_poll.first_checks(
-                visible, self._prev_playing_ids, self._dial_id,
-                fetch=fetch_target_status, now_fn=time.monotonic,
-            )
-        if first_checks:
-            visible = [
-                t for t in visible if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED
-            ]
-        self._prev_playing_ids = playing_ids
-        # The merged playing+idle roster — this is where general (idle)
-        # sightings get noted into the auth map (dial_mdns.get_roster()'s
-        # docstring). Computed unconditionally, whether or not anything is
-        # playing, so an idle appliance's presence is tracked at every poll
-        # tick, not only while something else happens to be playing. Also
-        # published for the repeat thread's own use when it opens the
-        # repeat screen (see _build_repeat_screen_locked) — a plain
-        # reference write, read later under self._lock.
-        roster = self._get_roster()
-        self._last_roster = roster
-        now = time.monotonic()
-
-        # Resolve manual focus before anything else. focus_entry is the
-        # roster entry (playing or idle); focus_target is the same
-        # appliance only when it is in the playing set this tick. A focus
-        # is cleared when the appliance is no longer rostered at all (or is
-        # confirmed unauthorized), or when it was playing last tick and has
-        # just stopped — "the show is over". A focus resting on an idle
-        # appliance is otherwise kept even while something else plays: that
-        # is what lets a pick control an idle device. UNLESS a picker-
-        # started replay is still within its pending grace window (6), in
-        # which case the focus is kept and the empty-targets branch below
-        # shows the appliance's name over the logo instead of the ordinary
-        # idle screen.
-        focus_id = self._manual_focus_id
-        prev_pending = self._focus_pending
-        resolution = resolve_focus(
-            focus_id, prev_pending, roster, visible, stopped_ids, now, auth_map.state,
-        )
-        self._core.replace_pending(prev_pending, resolution.pending)
-        if resolution.clear_reason is not None:
-            self._clear_focus(resolution.clear_reason)
-        focus_entry = resolution.focus_entry
-        focus_target = resolution.focus_target
-
-        # An idle focus: a rostered focus with nothing playing under it.
-        # The walk/artwork-selection path below runs only when this is
-        # None; when it is set, one pinned status fetch replaces it (3.3),
-        # and it is what the empty-targets branch shows in place of the
-        # idle screen (5.2).
-        idle_focus = resolution.idle_focus
-
-        # Any visible playing target counts as activity, including
-        # status-erroring ones: the mDNS _autostream-playing._tcp presence
-        # alone means audio is playing on an appliance this dial can talk
-        # to. A confirmed-unauthorized appliance, or one with no identity
-        # after legacy resolution, does not count: the dial may not use it
-        # or control it, so its playback must neither wake the panel nor
-        # hold off idle sleep. (Unknown auth still counts: it is
-        # controllable until a refusal says otherwise.)
-        if visible:
+        if new.auth_promotions != prev.auth_promotions:
+            # A pushed auth change confirmed an appliance (playing or not)
+            # while this panel may be asleep: wake it, as a touch does.
+            with self._lock:
+                if self._display_sleeping:
+                    self._idle_started_at = None
+                    self._wake_locked()
+        tick = new.tick if new.ticks != prev.ticks else None
+        if tick is not None and tick.focus_cleared:
+            self._close_screens_for_cleared_focus()
+        if new.visible_playing:
             woke = False
             with self._lock:
                 self._idle_started_at = None
@@ -5199,283 +5016,122 @@ class DialDisplay:
                     self._wake_locked()
                     woke = True
             if woke:
-                # Outside the lock: force_due() takes the leaf dial_auth
-                # lock, which must never nest with self._lock.
-                self._reconcile_due = True
-                auth_map.force_due()
-                self._poll_wake.set()
-        else:
-            # Nothing playing anywhere: there is no reporting-from target any
-            # more, and a stale readout for a target that has since stopped
-            # must not survive to the next time something starts playing —
-            # unless a manual focus (idle, or a not-yet-rostered pending
-            # replay) has something of its own to show. The roster reconcile
-            # and the idle-affordance/picker/selector refresh still run here
-            # on their usual cadence — this is exactly the state the idle
-            # screen and the replay picker exist for, and the artwork walk
-            # below never runs in this branch to cover it another way.
-            self._source_service_name = None
-            observe_master_volume(None, None)
-            observe_mute_state(None, None)
-            if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
-                self._reconcile_pass(roster, set())
-                self._last_reconcile_at = now
-                self._reconcile_due = False
-            self._refresh_idle_affordance(roster, now)
-            self._refresh_picker_rows(roster, now)
-            self._refresh_selector_rows(roster, idle_focus.appliance_id if idle_focus is not None else None)
-
-            with self._lock:
-                # Each screen's own row says what a poll finding nothing
-                # playing does to it: IDLE_KEEP screens (the two list
-                # screens) are left alone — their own inactivity timeout
-                # closes them; IDLE_KEEP_WITH_FOCUS (repeat) closes unless
-                # an idle focus keeps it meaningful. A pending request for a
-                # screen that defers sleep (an open_* call just ran on the
-                # touch thread, the repaint thread has not applied it yet)
-                # counts as open too, so this poll never clobbers a list
-                # that is opening this very tick.
-                open_or_requested = [_policy(self._screen)]
-                if self._screen_request is not None:
-                    open_or_requested.append(_policy(self._screen_request))
-                list_open = any(p.defers_sleep for p in open_or_requested)
-                current = _policy(self._screen)
-                if (
-                    current.when_nothing_plays == IDLE_CLOSE
-                    or (current.when_nothing_plays == IDLE_KEEP_WITH_FOCUS and idle_focus is None)
-                ):
-                    self._close_secondary_locked()
-                if not list_open:
-                    if self._idle_started_at is None:
-                        self._idle_started_at = time.monotonic()
-                else:
-                    # An open list counts as activity: never sleep out from
-                    # under it (its timeout returns to main first, after
-                    # which the idle-sleep clock restarts).
-                    self._idle_started_at = None
-                if self._display_sleeping:
-                    # Stay dark — no repaint while asleep.
-                    return
-                should_sleep = (
-                    not list_open
-                    and time.monotonic() - self._idle_started_at >= DISPLAY_IDLE_SLEEP_SECONDS
-                )
-                if should_sleep:
-                    self._sleep_locked()
-                    return
-            if list_open:
-                # Re-render the list with the rows just refreshed above:
-                # the on-screen state was built from whatever rows existed
-                # when the open request was applied, which can race ahead
-                # of the reconcile that populates a just-stopped source's
-                # held recording.
-                self._overlay_signal.set()
-                return
-
-            # Showing an idle appliance (a focus with nothing playing under
-            # it) is not activity — the idle-sleep countdown above already
-            # ran regardless of what follows here.
-            if idle_focus is not None:
-                result = fetch_target_status(
-                    idle_focus, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS,
-                )
-                self._apply_status_to_auth(idle_focus, result)
-                self._apply_status_to_repeat(idle_focus.appliance_id, result, time.monotonic())
-                if result.get("status_error") == "unauthorized":
-                    self._clear_focus("appliance now unauthorized")
-                    idle_focus = None   # fall through to the plain idle screen below
-                else:
-                    master_volume = result.get("master_volume") if not result.get("status_error") else None
-                    self._reporting_appliance_id = idle_focus.appliance_id
-                    self._source_service_name = idle_focus.service_name
-                    self._now_playing = NowPlaying(idle_focus.service_name, "", "", master_volume, playing=False)
-                    self._update_eq_available()
-                    self._update_dots_active(now)
-                    self._update_outputs_available()
-            if idle_focus is None:
-                if self._focus_pending is not None:
-                    # A picker-started replay hasn't reached the playing set
-                    # yet, and its appliance is not rostered at all — keep
-                    # showing its name over the logo rather than falling
-                    # into the idle screen underneath it (the idle
-                    # affordance is suppressed too: _now_playing is not
-                    # None here, see _render_logo_locked/_display_idle_locked).
-                    pending = self._focus_pending
-                    self._now_playing = NowPlaying(pending[1], "", "", None, playing=False)
-                    self._reporting_appliance_id = pending[0]
-                    self._update_eq_available()
-                    self._update_dots_active(now)
-                    self._update_outputs_available()
-                else:
-                    self._now_playing = None
-                    self._reporting_appliance_id = None
-                    self._update_eq_available()
-                    self._update_dots_active(now)
-                    self._update_outputs_available()
-
-            # Mirror the binding to whatever is reporting now: a manual
-            # focus (idle or pending) always wins and the binding simply
-            # tracks it; with none, the binding tracks the (possibly None)
-            # reporting id directly, so it releases cleanly to nothing
-            # playing/focused and the next tick's walk starts unpinned.
-            self._bound_appliance_id = focus_id if focus_id is not None else self._reporting_appliance_id
-            self._maybe_show_transition(previous_reporting_id)
-            self._close_bound_screen_if_unfocused()
-            self._core.clear_artwork()
-            self.show_logo()
+                # Outside the lock: the core's reconcile request takes the
+                # leaf dial_auth lock, which must never nest with self._lock.
+                self._core.request_poll(reconcile=True)
+        if tick is None:
             return
-
-        selected_url = None
-        selected_service = None
-        selected_artist = ""
-        selected_title = ""
-        selected_album = ""
-        records: dict[str, dict] = {}
-        visited: set[str] = set(first_checks)  # already asked this tick
-        # Monotonic time each mute-feeding status request was sent, so the
-        # mute observation below can tell a stale reply from a fresh one. A
-        # service never fetched this tick counts as sent at 0.0: still a poll
-        # observation, never newer than anything a reply has settled.
-        status_sent_at: dict[str, float] = {}
-
-        if idle_focus is not None:
-            # One pinned status fetch in place of the whole walk: an idle
-            # focus has no artwork of its own, so selected_url/artist/title
-            # stay empty, but its auth/repeat state is refreshed and its
-            # visited entry stops the reconcile pass below re-probing it.
-            status_sent_at[idle_focus.service_name] = time.monotonic()
-            result = fetch_target_status(idle_focus, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
-            visited.add(idle_focus.service_name)
-            self._apply_status_to_auth(idle_focus, result)
-            self._apply_status_to_repeat(idle_focus.appliance_id, result, time.monotonic())
-            if result.get("status_error") == "unauthorized":
-                self._clear_focus("appliance now unauthorized")
-                idle_focus = None            # fall through to the ordinary walk this tick
-            else:
-                selected_service = idle_focus.service_name
-                if not result.get("status_error"):
-                    records[idle_focus.service_name] = result
-
-        if idle_focus is None:
-            # Automatic binding beneath manual focus, only when no manual
-            # focus is set: the appliance the screen was already bound to
-            # (see the mirror update after reporting resolution below and
-            # in the empty-targets branch above) is pinned the same way a
-            # manual focus is, so a newly-identified appliance elsewhere
-            # cannot steal the screen. Released — and the walk below runs
-            # unpinned — the moment the bound appliance stops, leaves the
-            # roster, or is confirmed unauthorized; whatever the unpinned
-            # walk then reports becomes the new binding at the end of the
-            # tick.
-            pin_target, bound_id = choose_pin(
-                focus_target, self._bound_appliance_id if focus_id is None else None, visible,
-            )
-            if focus_id is None and bound_id is None:
-                self._bound_appliance_id = None
-
-            # With a focus (or, absent one, a binding), it is polled first
-            # and pinned to unconditionally — the walk never falls through
-            # to another appliance's artwork. With neither, today's
-            # playing_since-ordered walk is unchanged.
-            ordered = walk_order(pin_target, visible)
-
-            def on_revoke() -> None:
-                # Revoked mid-tick: release whichever pin this was — a
-                # manual focus clears it, an automatic binding just
-                # releases — and the walk carries on over the remaining
-                # targets in this same poll, so the screen shows the
-                # auto-pick target immediately.
-                nonlocal focus_target
-                if focus_target is not None:
-                    self._clear_focus("appliance now unauthorized")
-                    focus_target = None
-                else:
-                    self._bound_appliance_id = None
-
-            walked = dial_core_poll.walk(
-                ordered, first_checks, self._dial_id, pin_target,
-                fetch=fetch_target_status, now_fn=time.monotonic, on_revoke=on_revoke,
-            )
-            records.update(walked.records)
-            status_sent_at.update(walked.status_sent_at)
-            visited |= walked.visited
-            selection = walked.selection
-            selected_url = selection.url
-            selected_service = selection.service
-            selected_artist = selection.artist
-            selected_title = selection.title
-            selected_album = selection.album
-
-        # Reporting-from target: the idle focus when one is pinned; else
-        # the identified (or focused) source, else the oldest playing
-        # CONTROLLABLE target (select_volume_target's fallback). Only
-        # auth != unauthorized targets are offered, matching the volume
-        # resolver's own filter (dial_main._build_volume_targets_fn) so the
-        # poll and the worker can never disagree about who volume/mute
-        # addresses.
-        reporting = reporting_for(idle_focus, visible, selected_service)
-        reporting_name = reporting.service_name if reporting is not None else None
-        reporting_id = reporting.appliance_id if reporting is not None else None
-        self._reporting_appliance_id = reporting_id
-        # Mirror the binding to whatever is reporting now — see the
-        # empty-targets branch's identical mirror update above for the full
-        # rationale. reporting_id can still be None here (e.g. every target
-        # unauthorized this tick); the mirror releases to None the same way.
-        self._bound_appliance_id = focus_id if focus_id is not None else reporting_id
-        self._update_eq_available()
-        self._update_dots_active(time.monotonic())
-        self._update_outputs_available()
-        self._maybe_show_transition(previous_reporting_id)
-        self._close_bound_screen_if_unfocused()
-        record = records.get(reporting_name) if reporting_name else None
-        master_volume = record.get("master_volume") if record else None
-        dial_core_poll.observe_tick(
-            records, reporting_name, status_sent_at, visible, master_volume,
-            observe_mute=observe_mute_state, observe_volume=observe_master_volume,
-            forget=forget_mute_states_except,
-        )
-
-        # Assigned before _show_artwork() below so a volume press landing
-        # during the artwork fetch already goes to the right target.
-        self._source_service_name = selected_service
-        new_now_playing = (
-            NowPlaying(
-                reporting_name, selected_artist, selected_title, master_volume, album=selected_album,
-                # An idle focus reporting here (targets present elsewhere,
-                # but the shown appliance itself has nothing playing) is not
-                # playing, same as the empty-targets branch's own idle
-                # focus above — see the rich/large artist-row fallback in
-                # _effective_overlay_locked. Every other path that reaches
-                # here (an identified or not-yet-identified playing target)
-                # keeps the default True.
-                playing=idle_focus is None,
-            )
-            if reporting_name is not None else None
-        )
-        changed = new_now_playing != self._now_playing
-        self._now_playing = new_now_playing
-        if changed:
-            self._overlay_signal.set()
-
-        if selected_url:
-            self._show_artwork(selected_url)
+        roster = self._core.roster()
+        if new.visible_playing:
+            self._apply_playing_tick(tick, new, roster)
         else:
-            self._core.clear_artwork()
-            self.show_logo()
+            self._apply_idle_tick(tick, new, roster)
 
-        now = time.monotonic()
-        if self._reconcile_due or now - self._last_reconcile_at >= RECONCILE_INTERVAL_SECONDS:
-            self._reconcile_pass(roster, visited)
-            self._last_reconcile_at = now
-            self._reconcile_due = False
-        self._refresh_selector_rows(roster, reporting_id)
-        self._refresh_idle_affordance(roster, now)
-        self._refresh_picker_rows(roster, now)
+    def _close_screens_for_cleared_focus(self) -> None:
+        """Close the screen showing when its policy says a cleared focus
+        should pop it (the repeat screen was opened for that focus)."""
+        if _policy(self._screen).closes_on_focus_clear:
+            with self._lock:
+                self._close_secondary_locked()
+
+    def _holds_idle_state(self, focus_cleared: bool) -> bool:
+        """True when a poll finding nothing playing must leave what the core
+        reports as it is: the panel is asleep, is about to sleep on this
+        tick's idle clock, or has a list up (or being opened) that its own
+        timeout closes. The same decision _apply_idle_tick acts on, taking
+        the screen a cleared focus closes as already closed; plain reads,
+        read on the core thread."""
+        if self._display_sleeping:
+            return True
+        screen = self._screen
+        if focus_cleared and _policy(screen).closes_on_focus_clear:
+            screen = "main"
+        open_or_requested = [_policy(screen)]
+        request = self._screen_request
+        if request is not None:
+            open_or_requested.append(_policy(request))
+        if any(p.defers_sleep for p in open_or_requested):
+            return True
+        started = self._idle_started_at
+        return started is not None and time.monotonic() - started >= DISPLAY_IDLE_SLEEP_SECONDS
+
+    def _apply_playing_tick(self, tick, new, roster: list) -> None:
+        """The end of a tick with something playing: the transition frame
+        when the reporting appliance changed, the artwork (or the logo when
+        there is none), and the rows."""
+        self._maybe_show_transition(tick.previous_reporting_id)
+        self._close_bound_screen_if_unfocused()
+        if new.now_playing != tick.previous_now_playing:
+            self._overlay_signal.set()
+        if new.artwork is not None:
+            self._show_artwork(new.artwork)
+        else:
+            self.show_logo()
+        self._refresh_selector_rows(roster, new.focus.reporting_id)
+        if new.idle_affordance != tick.previous_idle_affordance:
+            self._overlay_signal.set()
+        self._refresh_picker_rows(roster, time.monotonic())
+
+    def _apply_idle_tick(self, tick, new, roster: list) -> None:
+        """The end of a tick with nothing playing anywhere: the rows, what
+        the open screen does about it, the idle clock and sleep, and the
+        logo. A panel asleep, asleep by now, or showing a list stays as it
+        is (a list's own timeout closes it)."""
+        if new.idle_affordance != tick.previous_idle_affordance:
+            self._overlay_signal.set()
+        self._refresh_picker_rows(roster, time.monotonic())
+        self._refresh_selector_rows(roster, new.focus.reporting_id)
+
+        with self._lock:
+            # Each screen's own row says what a poll finding nothing
+            # playing does to it: IDLE_KEEP screens (the two list
+            # screens) are left alone — their own inactivity timeout
+            # closes them; IDLE_KEEP_WITH_FOCUS (repeat) closes unless
+            # an idle focus keeps it meaningful. A pending request for a
+            # screen that defers sleep (an open_* call just ran on the
+            # touch thread, the repaint thread has not applied it yet)
+            # counts as open too, so this never clobbers a list that is
+            # opening this very tick.
+            open_or_requested = [_policy(self._screen)]
+            if self._screen_request is not None:
+                open_or_requested.append(_policy(self._screen_request))
+            list_open = any(p.defers_sleep for p in open_or_requested)
+            current = _policy(self._screen)
+            if (
+                current.when_nothing_plays == IDLE_CLOSE
+                or (current.when_nothing_plays == IDLE_KEEP_WITH_FOCUS and not tick.idle_focus)
+            ):
+                self._close_secondary_locked()
+            if not list_open:
+                if self._idle_started_at is None:
+                    self._idle_started_at = time.monotonic()
+            else:
+                # An open list counts as activity: never sleep out from
+                # under it (its timeout returns to main first, after
+                # which the idle-sleep clock restarts).
+                self._idle_started_at = None
+            if self._display_sleeping:
+                # Stay dark — no repaint while asleep.
+                return
+            if (
+                not list_open
+                and time.monotonic() - self._idle_started_at >= DISPLAY_IDLE_SLEEP_SECONDS
+            ):
+                self._sleep_locked()
+                return
+        if list_open:
+            return
+        self._maybe_show_transition(tick.previous_reporting_id)
+        self._close_bound_screen_if_unfocused()
+        self.show_logo()
 
     # ---- artwork selection -------------------------------------------------
 
-    def _show_artwork(self, url: str) -> None:
-        key = artwork_key(url)
+    def _show_artwork(self, artwork) -> None:
+        """Draw the core's artwork: the picture already on screen or cached
+        for this track when there is one, else decode and fit it
+        (_apply_artwork)."""
+        key = artwork.key
         with self._lock:
             if not (self._backend_open and self._backend is not None):
                 return
@@ -5492,18 +5148,7 @@ class DialDisplay:
                 if was_showing == "logo":
                     logging.info("dial display: showing artwork")
                 return
-
-        # The core downloads the bytes (or hands back the copy it already
-        # holds for this track) outside the lock, so a slow network
-        # round-trip never blocks a settings change. This is the only thread
-        # that changes which artwork is SELECTED, so no mid-fetch
-        # cancellation is needed. Decoding and fitting follow in
-        # _apply_artwork().
-        artwork = self._core.fetch_artwork(
-            url, fetch=_fetch_artwork, log_limiter=self._log_limiter,
-            eligible=artwork_url_eligible, timeout=ARTWORK_FETCH_TIMEOUT_SECONDS,
-            on_error=self._record_error,
-        )
+        # Decoding and fitting follow in _apply_artwork().
         self._apply_artwork(artwork)
 
     def _apply_artwork(self, artwork) -> None:

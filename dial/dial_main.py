@@ -261,6 +261,51 @@ def _clear_recovery_request() -> None:
         )
 
 
+class _HeadlessDisplay(NoOpDisplayStatusProvider):
+    """Stands in for the display when its stack will not load: there is no
+    screen, but the appliance model still polls, so auth pushes are probed,
+    volume and mute follow the appliance the dial reports from, and warnings
+    and the update watch keep running. The poll follows the fitted flag the
+    way a real display's does."""
+
+    def __init__(self, core, display_config) -> None:
+        super().__init__()
+        self.core = core
+        self.update_config(display_config)
+
+    def update_config(self, config) -> dict:
+        status = super().update_config(config)
+        self.core.set_polling(config.fitted)
+        self.core.set_poll_interval(getattr(config, "poll_interval_s", None))
+        return status
+
+    def notify_auth_changed(self, appliance_id: str) -> None:
+        self.core.notify_auth_changed(appliance_id)
+
+    def current_source_service_name(self):
+        return self.core.current_source_service_name()
+
+    def focus_volume_target(self):
+        return self.core.focus_volume_target()
+
+    def start(self) -> None:
+        self.core.start()
+
+    def stop(self) -> None:
+        self.core.stop()
+
+
+def _headless_display(cfg) -> NoOpDisplayStatusProvider:
+    """The no-screen stand-in with its own appliance model, or the plain
+    no-op provider if even that will not build."""
+    try:
+        from dial_core import create_dial_core
+        return _HeadlessDisplay(create_dial_core(cfg, get_display_targets), cfg.display)
+    except Exception as e:
+        logging.warning("dial core: unavailable headless (%s) — dial will not poll", e)
+        return NoOpDisplayStatusProvider()
+
+
 def _build_volume_targets_fn(
     display, get_targets=get_display_targets, *, scope_fn=None, get_all_targets=get_playing_targets,
 ):
@@ -669,15 +714,15 @@ def main() -> None:
     # (the update-timer reconcile and the announce verb both fork
     # subprocesses), so the panel shows "Starting..." as early as the
     # process can manage. Imported lazily so a Pillow/display-stack import
-    # failure (e.g. an incomplete apt install) degrades to a no-op display
-    # rather than taking down the whole service — volume control must not
-    # depend on Pillow.
+    # failure (e.g. an incomplete apt install) degrades to a screenless
+    # display whose appliance model still polls, rather than taking down the
+    # whole service — volume control must not depend on Pillow.
     try:
         from dial_display import create_dial_display
         display = create_dial_display(cfg, get_display_targets)
     except ImportError as e:
         logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
-        display = NoOpDisplayStatusProvider()
+        display = _headless_display(cfg)
     # The boot splash: opens the manager's one backend and paints
     # "Starting..." now, before any display thread exists; display.start()
     # below reuses that open and the first poll replaces the splash.

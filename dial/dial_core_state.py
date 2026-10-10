@@ -4,8 +4,8 @@ pure decisions made over it.
 Frozen snapshot dataclasses (collections as tuples, no side-effecting
 methods) and reducers that take everything they need as arguments: no I/O,
 no threads, no locks, no clock reads (the time is always passed in), and no
-import of the display. Whoever owns the state (today the display's poll
-tick) does the fetching and the writing, and calls these to decide.
+import of the display. Whoever owns the state (the core's poll tick) does
+the fetching and the writing, and calls these to decide.
 
 Field order in every dataclass is append-only, so positional construction
 stays valid as fields are added at the end.
@@ -235,6 +235,20 @@ class DialInfo:               # this dial, for any surface
 
 
 @dataclass(frozen=True)
+class TickContext:
+    """What a poll tick started from, carried on the snapshot that ends it,
+    so a view can tell what that tick changed: the reporting appliance, the
+    now-playing line and the idle-screen affordance as they were before it,
+    whether it cleared the manual focus, and whether it found a focus
+    resting on an idle appliance."""
+    previous_reporting_id: str | None
+    previous_now_playing: NowPlaying | None
+    previous_idle_affordance: bool
+    focus_cleared: bool
+    idle_focus: bool
+
+
+@dataclass(frozen=True)
 class CoreSnapshot:
     seq: int
     at: float                           # monotonic publish time
@@ -258,6 +272,10 @@ class CoreSnapshot:
     volume_readout: tuple[str | None, int | None]  # (service_name, shown_volume)
     dial: DialInfo                      # this dial: name, version, address, inputs present
     dots_active: bool = False           # the page dots are tappable for the focused/reporting appliance
+    visible_playing: tuple[str, ...] = ()   # ids of the playing appliances this dial may use (not refused, identified)
+    ticks: int = 0                      # poll ticks completed; a snapshot with a new count ends a tick
+    tick: TickContext | None = None     # what the tick that ended in this snapshot started from
+    auth_promotions: int = 0            # appliances a pushed auth change has confirmed as newly authorised
 
     def appliance(self, appliance_id: str | None) -> ApplianceState | None:
         if appliance_id is None:

@@ -607,7 +607,7 @@ class TestDialFinalCleanup:
         _, kwargs = mock_http_cls.call_args
         display = kwargs["display_status_provider"]
         assert display.get_status()["fitted"] is False
-        assert display._thread is None or not display._thread.is_alive()
+        assert display._core._thread is None or not display._core._thread.is_alive()
 
         # start_volume_worker must be wired with the single-targeting
         # resolvers and the display's real request_repaint (a REAL
@@ -713,6 +713,53 @@ class TestDialFinalCleanup:
         _, vol_kwargs = mock_vol_worker.call_args
         assert vol_kwargs["on_readout_changed"] is None
         assert callable(vol_kwargs["mute_targets_fn"])
+
+    def test_display_stack_import_failure_still_polls_through_the_core(self):
+        """Without the display stack the dial has no screen, but its appliance
+        model is built, polls with the fitted flag, is started with the
+        service and stopped with it, and takes auth pushes."""
+        import builtins
+        import dial_main as dm
+
+        cfg = _make_cfg()
+        cfg.display.fitted = True
+        cfg.display.poll_interval_s = 3
+        mock_http = MagicMock()
+        mock_http._server = MagicMock()
+        mock_control = MagicMock()
+        started = []
+
+        class _QuickEvent(threading.Event):
+            def wait(self, timeout=None):
+                return True
+
+        real_import = builtins.__import__
+
+        def _fake_import(name, *args, **kwargs):
+            if name == "dial_display" or name.startswith("dial_display."):
+                raise ImportError("simulated missing Pillow/display stack")
+            return real_import(name, *args, **kwargs)
+
+        from dial_core import DialCore
+        real_start = DialCore.start
+
+        def _start(core):
+            real_start(core)
+            started.append(core._thread)
+
+        with patch("dial_main._configure_logging"),              patch("dial_main.load_config", return_value=cfg),              patch("dial_main._reconcile_update_timer"),              patch("dial_main._announce_self"),              patch("dial_main.DialLED"),              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls,              patch("dial_main.start_playing_browser"),              patch("dial_main.start_general_browser"),              patch("dial_main.stop_playing_browser"),              patch("dial_main.stop_general_browser"),              patch("dial_main.start_volume_worker"),              patch("dial_main.start_outputs_worker"),              patch("dial_main.start_eq_worker"), patch("dial_main.start_network_worker"),              patch("dial_main.DialControlServer", return_value=mock_control),              patch.object(DialCore, "start", _start),              patch("threading.Event", _QuickEvent),              patch("builtins.__import__", side_effect=_fake_import):
+            dm.main()
+
+        _, kwargs = mock_http_cls.call_args
+        display = kwargs["display_status_provider"]
+        assert isinstance(display, dm._HeadlessDisplay)
+        assert display.core.snapshot().polling is True
+        assert display.core._poll_interval == 3
+        assert len(started) == 1 and not started[0].is_alive()
+        display.notify_auth_changed("a" * 20)
+        assert display.core._push_pending == {"a" * 20}
+        display.update_config(type("Cfg", (), {"fitted": False})())
+        assert display.core.snapshot().polling is False
 
     def test_fatal_exception_propagates(self):
         """A non-shutdown exception from control_server.start() propagates out."""
