@@ -1,35 +1,41 @@
 """Tests for appliance-side mute state: the state module itself, the shared
 mute/restore core it backs, the mute-aware volume-delta rule, the status
-field, the output-mutation hooks, and the WebUI's own mute route.
+field, the output-mutation hooks, and the WebUI's now-playing header/level
+slot (the volume slider is the WebUI's only unmute path).
 
 Covers:
 1.  autostream_mute_state.py: begin_mute/end_mute/intended_level/
     remember_level/forget_output/reset_for_tests, and that the module has
     no persistence (no path constant, no load/persist functions).
 2.  apply_mute_action(): mute, restore, partial failures, idempotence --
-    used identically by the dial route and (in a later test class) the
-    WebUI route.
+    used by the dial route.
 3.  POST /api/dial/volume: a non-positive delta while muted is a no-op that
     reports the intended level and muted:true; a positive delta while muted
     restores with no step added and reports muted:false; the unmuted path
     is unchanged apart from carrying muted:false.
 4.  POST /api/dial/status: master_volume/muted while muted and unmuted.
 5.  apply_output_mutation(): enable-while-muted stays silent and remembers
-    the requested level; a volume-only write on an already-selected output
-    while muted skips the OwnTone write and remembers instead; disable
-    forgets any remembered level.
+    the requested level; a non-user volume-only write on an already-selected
+    output while muted skips the OwnTone write and remembers instead; an
+    explicit user-initiated volume write on an already-selected output
+    while muted ends the mute and writes normally instead; disable forgets
+    any remembered level.
 6.  build_output_list()/build_home_state(): intended levels and the muted
     flag.
 7.  Restart: a fresh module state reports unmuted with no memory of a prior
     mute.
 8.  Alignment's own volume writes never consult or update the mute flag.
-9.  The WebUI's POST /api/mute route: registration, restore behaviour,
-    invalid action.
+9.  The WebUI now-playing header text (not a separate control) is the only
+    mute indication; the old mute button/icon and the browser POST /api/mute
+    route are both gone.
+10. The now-playing level slot markup: VU meter only, no mute button, in
+    both the local and remote-shell renders.
+11. The now-playing header gains " (Muted)" while playing and muted, never
+    on "Ready", and never when unmuted.
 """
 from __future__ import annotations
 
 import io
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -256,10 +262,10 @@ class TestApplyMuteAction:
         assert body["muted"] is True
         assert body.get("partial") is True
 
-    def test_both_routes_share_apply_mute_action(self):
-        """The dial route (send_dial_mute_post_json) and the WebUI route
-        (send_mute_post_json) must both call the same shared core -- spy on
-        it and drive each entry point."""
+    def test_dial_route_calls_shared_apply_mute_action(self):
+        """The dial route (send_dial_mute_post_json) drives the shared core
+        -- spy on it and drive the entry point. The WebUI has no equivalent
+        route any more (see TestWebUIMuteControlRemoved below)."""
         import autostream_webui_api as api
         calls = []
 
@@ -273,7 +279,9 @@ class TestApplyMuteAction:
             api.send_dial_mute_post_json(
                 _handler(), MagicMock(), {"dial_id": "uid", "action": "mute"},
             )
-            api.send_mute_post_json(_handler(), MagicMock(), json.dumps({"action": "restore"}))
+            api.send_dial_mute_post_json(
+                _handler(), MagicMock(), {"dial_id": "uid", "action": "restore"},
+            )
 
         assert calls == ["mute", "restore"]
 
@@ -462,6 +470,8 @@ class TestApplyOutputMutationMuteHooks:
         assert mute_state.intended_level("o1", 0) == 55
 
     def test_slider_write_while_muted_skips_owntone_and_remembers(self):
+        """A non-user (system) write on an already-selected output while
+        muted keeps the old sticky behaviour: remember and skip."""
         import autostream_appliance_models as models
         mute_state.begin_mute({"o1": 40})
         with patch("autostream_appliance_models._resolve_output_info", return_value=("Speaker", True)), \
@@ -473,6 +483,28 @@ class TestApplyOutputMutationMuteHooks:
         assert result == {"ok": True, "id": "o1"}
         mock_update.assert_not_called()
         assert mute_state.intended_level("o1", 0) == 12
+        assert mute_state.is_muted() is True
+
+    def test_user_slider_write_while_muted_ends_mute_and_writes(self):
+        """The WebUI has no unmute control: an explicit user-initiated
+        volume set on an already-selected output while muted is the unmute
+        path -- the mute ends and the OwnTone write happens for real,
+        instead of being remembered and skipped."""
+        import autostream_appliance_models as models
+        mute_state.begin_mute({"o1": 40})
+        with patch("autostream_appliance_models._resolve_output_info", return_value=("Speaker", True)), \
+             patch("autostream_appliance_models.update_output", return_value=_update_result(True)) as mock_update, \
+             patch("autostream_appliance_models.request_nowplaying_republish"), \
+             patch("autostream_appliance_models.clear_user_silence_latch"), \
+             patch("autostream_appliance_models._update_cached_selected"), \
+             patch("autostream_appliance_models.note_user_output_action"):
+            result = models.apply_output_mutation(
+                "http://x", "o1", {"selected": True, "volume": 65}, initiated_by="user",
+            )
+        assert result == {"ok": True, "id": "o1"}
+        mock_update.assert_called_once()
+        assert mock_update.call_args.kwargs.get("volume_percent") == 65
+        assert mute_state.is_muted() is False
 
     def test_slider_write_while_unmuted_is_unchanged(self):
         import autostream_appliance_models as models
@@ -593,65 +625,29 @@ class TestAlignmentLeavesMuteFlagAlone:
 
 
 # ---------------------------------------------------------------------------
-# 9. WebUI POST /api/mute
+# 9. The WebUI mute button/route are gone; the header text is the only
+# mute indication and the volume slider is the only unmute path.
 # ---------------------------------------------------------------------------
 
-class TestWebUIMuteRoute:
-    def test_route_registered_with_csrf(self):
+class TestWebUIMuteControlRemoved:
+    def test_browser_mute_route_is_gone(self):
         import autostream_webui_routes as routes_mod
-        matches = [r for r in routes_mod.ROUTES if r.path == "/api/mute" and "POST" in r.methods]
+        matches = [r for r in routes_mod.ROUTES if r.path == "/api/mute"]
+        assert matches == []
+
+    def test_send_mute_post_json_handler_is_gone(self):
+        import autostream_webui_api as api
+        assert not hasattr(api, "send_mute_post_json")
+
+    def test_dial_mute_route_still_present(self):
+        """apply_mute_action stays alive for the dial's own mute button."""
+        import autostream_webui_routes as routes_mod
+        matches = [r for r in routes_mod.ROUTES if r.path == "/api/dial/mute" and "POST" in r.methods]
         assert len(matches) == 1
-        r = matches[0]
-        from autostream_webui_routes import AuthRequirement
-        assert r.auth is AuthRequirement.CSRF
-        assert r.kind == "api"
-        assert r.requires_body is True
-
-    def test_restore_through_route_clears_flag_and_returns_muted_false(self):
-        import autostream_webui_api as api
-        mute_state.begin_mute({"o1": 40})
-        parsed = _parsed_config()
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs", return_value=_list_result([_output("o1", 0)])), \
-             patch("autostream_webui_api.update_output", return_value=_update_result(True)):
-            api.send_mute_post_json(_handler(), MagicMock(), json.dumps({"action": "restore"}))
-        assert captured["body"]["ok"] is True
-        assert captured["body"]["muted"] is False
-        assert mute_state.is_muted() is False
-
-    def test_invalid_action_returns_400(self):
-        import autostream_webui_api as api
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json):
-            api.send_mute_post_json(_handler(), MagicMock(), json.dumps({"action": "nope"}))
-        assert captured["code"] == 400
-        assert captured["body"]["ok"] is False
-
-    def test_missing_body_returns_400(self):
-        import autostream_webui_api as api
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json):
-            api.send_mute_post_json(_handler(), MagicMock(), "")
-        assert captured["code"] == 400
 
     def test_mute_icon_markup_and_slash_path(self):
+        """ICON_SPEAKER_MUTED itself is kept (matches the dial's own glyph)
+        even though the WebUI no longer renders it anywhere."""
         from autostream_webui_assets import ICON_SPEAKER_MUTED
         assert "<svg" in ICON_SPEAKER_MUTED
         assert "currentColor" in ICON_SPEAKER_MUTED
@@ -659,12 +655,22 @@ class TestWebUIMuteRoute:
         # shifted glyph (see dial_display_compositor._draw_speaker_glyph).
         assert 'd="M1 5l14 14"' in ICON_SPEAKER_MUTED
 
-    def test_page_js_contains_mute_indicator_functions(self):
+    def test_page_js_no_longer_contains_mute_indicator_functions(self):
         import autostream_webui_assets as assets
         src = inspect_source(assets)
-        assert "updateMuteIndicator" in src
-        assert "unmuteMaster" in src
-        assert "updateMasterMuteCard" not in src
+        assert "updateMuteIndicator" not in src
+        assert "unmuteMaster" not in src
+
+    def test_page_airplay_js_no_longer_calls_mute_indicator_functions(self):
+        import autostream_webui_page_airplay as page_airplay
+        src = inspect_source(page_airplay)
+        assert "updateMuteIndicator" not in src
+        assert "unmuteMaster" not in src
+
+    def test_page_js_header_shows_muted_suffix(self):
+        import autostream_webui_assets as assets
+        src = inspect_source(assets)
+        assert "(Muted)" in src
 
 
 def inspect_source(module) -> str:
@@ -678,7 +684,7 @@ def inspect_source(module) -> str:
 # shifts the name/signal text beside it.
 # ---------------------------------------------------------------------------
 
-def _render_airplay_page_html(show_input_detail: bool = True) -> str:
+def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = False) -> str:
     """Invoke send_airplay_page() with every external dependency mocked and
     return the rendered HTML — trimmed down from test_track_id_home_render.py's
     own helper, this module's own copy so it stands on its own."""
@@ -718,6 +724,10 @@ def _render_airplay_page_html(show_input_detail: bool = True) -> str:
 
     list_result = MagicMock(ok=False, outputs=[])
     buf_result = MagicMock(ok=True, value="2250")
+    input_levels = (
+        [{"label": "Input 1", "is_above_threshold": True, "detected_hz": 0.0}]
+        if playing else []
+    )
 
     from contextlib import ExitStack
     patches = [
@@ -725,7 +735,7 @@ def _render_airplay_page_html(show_input_detail: bool = True) -> str:
         patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=input_levels),
         patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
@@ -738,6 +748,10 @@ def _render_airplay_page_html(show_input_detail: bool = True) -> str:
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
     return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _render_airplay_page_html_playing() -> str:
+    return _render_airplay_page_html(show_input_detail=True, playing=True)
 
 
 def _disabled_ti_snapshot():
@@ -778,17 +792,18 @@ def _render_remote_home_html() -> str:
 
 
 class TestNowPlayingLevelSlotMarkup:
-    def test_airplay_page_has_np_level_with_meter_and_mute_button(self):
+    def test_airplay_page_has_np_level_with_meter_and_no_mute_button(self):
         html = _render_airplay_page_html(show_input_detail=True)
         assert 'id="np-level"' in html
         assert 'id="np-vu"' in html
-        assert 'id="np_mute_btn"' in html
+        assert 'id="np_mute_btn"' not in html
+        assert 'np-mute-btn' not in html
 
-    def test_airplay_page_omits_the_meter_without_input_detail_but_keeps_the_button(self):
+    def test_airplay_page_omits_the_meter_without_input_detail_and_has_no_button(self):
         html = _render_airplay_page_html(show_input_detail=False)
         assert 'id="np-level"' in html
         assert 'id="np-vu"' not in html
-        assert 'id="np_mute_btn"' in html
+        assert 'id="np_mute_btn"' not in html
 
     def test_master_card_no_longer_has_a_mute_button(self):
         html = _render_airplay_page_html()
@@ -799,5 +814,29 @@ class TestNowPlayingLevelSlotMarkup:
     def test_remote_placeholder_page_mirrors_the_level_slot(self):
         html = _render_remote_home_html()
         assert 'id="np-level"' in html
-        assert 'id="np_mute_btn"' in html
+        assert 'id="np_mute_btn"' not in html
         assert 'master_mute_btn' not in html
+
+
+# ---------------------------------------------------------------------------
+# 11. The now-playing header text is the mute indication.
+# ---------------------------------------------------------------------------
+
+class TestNowPlayingHeaderMutedSuffix:
+    def test_header_gains_muted_suffix_when_playing_and_muted(self):
+        mute_state.begin_mute({})
+        html = _render_airplay_page_html_playing()
+        assert '>Now Playing (Muted)<' in html
+
+    def test_header_has_no_muted_suffix_when_playing_and_unmuted(self):
+        html = _render_airplay_page_html_playing()
+        assert '>Now Playing<' in html
+        assert '(Muted)<' not in html
+
+    def test_ready_header_never_gets_the_muted_suffix(self):
+        """Not playing: mute is real but there is no active session to
+        annotate, so "Ready" is shown plain, exactly as when unmuted."""
+        mute_state.begin_mute({})
+        html = _render_airplay_page_html(show_input_detail=True)
+        assert '>Ready<' in html
+        assert '(Muted)<' not in html

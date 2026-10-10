@@ -155,10 +155,11 @@ class TestReplayHeading:
     def test_heading_source_gate_present(self, home_html):
         # The local page leaves window.__REMOTE_HOSTNAME unset, so hdrSuffix
         # resolves to '' and the local heading renders with no hostname
-        # suffix.
+        # suffix. mutedSuffix similarly resolves to '' unless the appliance
+        # is actually muted while a session is active (see test_mute_state.py).
         assert (
             "hdrEl.textContent = (active ? (sessionSource === 'replay' ? "
-            "'Repeat Play' : 'Now Playing') : 'Ready') + hdrSuffix;" in home_html
+            "'Repeat Play' : 'Now Playing') : 'Ready') + mutedSuffix + hdrSuffix;" in home_html
         )
         assert (
             "var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';"

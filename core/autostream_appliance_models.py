@@ -798,12 +798,24 @@ def apply_output_mutation(
 
         volume = max(0, min(100, int(body.get("volume", 50))))
 
-        if locally_selected and mute_state.remember_level(out_id_text, volume):
+        if locally_selected and is_user_initiated and mute_state.is_muted():
+            # The WebUI has no dedicated unmute control: an explicit,
+            # user-initiated volume change on an already-selected output
+            # while muted IS the unmute path -- end the mute here and fall
+            # through to the normal write below so the output actually
+            # sounds at the level the user just chose (not the level that
+            # was remembered when the mute began). When the master slider
+            # writes several outputs in one gesture, only the first write
+            # sees is_muted() True; the rest already see it unmuted and
+            # simply write normally, which is fine.
+            mute_state.end_mute()
+        elif locally_selected and mute_state.remember_level(out_id_text, volume):
             # A volume-only change on an output that is already selected,
+            # made by something other than the user (coordinator/reconcile)
             # while the appliance is muted: the level it will return to on
             # restore moves, but the output itself must stay silent, so the
             # OwnTone write is skipped entirely -- muted keeps meaning
-            # silent no matter which client last moved a slider.
+            # silent no matter which non-user caller last touched a level.
             return {"ok": True, "id": out_id_text}
 
         update_result = update_output(

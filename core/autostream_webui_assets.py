@@ -674,29 +674,6 @@ HOME_CARDS_SCRIPT = """
     sl.disabled=inactive;
     if(String(sl.value)!==String(val)) sl.value=String(val);
   }
-  function updateMuteIndicator(muted){
-    var m=!!muted;
-    var vu=document.getElementById('np-vu');
-    var btn=document.getElementById('np_mute_btn');
-    if(vu) vu.hidden=m;
-    if(btn){ btn.hidden=!m; btn.disabled=false; }
-  }
-  async function unmuteMaster(){
-    var btn=document.getElementById('np_mute_btn');
-    if(btn) btn.disabled=true;
-    try{
-      var r=await fetch(window.__MUTE_URL||'/api/mute',{
-        method:'POST',
-        credentials:'same-origin',
-        headers:{'Content-Type':'application/json','X-CSRF-Token':window.__CSRF||''},
-        body:JSON.stringify({action:'restore'})
-      });
-      var j=null;
-      try{ j=await r.json(); }catch(e){ j=null; }
-      if(j&&j.ok) updateMuteIndicator(!!j.muted);
-    }catch(e){}
-    finally{ if(btn) btn.disabled=false; }
-  }
   function onMasterVolumeDragStart(){
     var sl=document.getElementById('master_vol_slider');
     if(!sl||sl.disabled) return;
@@ -1053,7 +1030,12 @@ HOME_CARDS_SCRIPT = """
     // identifies which appliance is being viewed; the local page leaves it
     // unset so its own header carries no suffix.
     var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';
-    if (hdrEl) hdrEl.textContent = (active ? (sessionSource === 'replay' ? 'Repeat Play' : 'Now Playing') : 'Ready') + hdrSuffix;
+    // The WebUI has no dedicated mute control any more (moving the volume
+    // slider is the only way to unmute), so a mute is surfaced in the
+    // header text instead -- only while a session is actually active;
+    // "Ready" never carries the suffix.
+    var mutedSuffix = (active && data && data.muted) ? ' (Muted)' : '';
+    if (hdrEl) hdrEl.textContent = (active ? (sessionSource === 'replay' ? 'Repeat Play' : 'Now Playing') : 'Ready') + mutedSuffix + hdrSuffix;
     if (!active) {
       _vuActiveIdx = -1;
       _vuQueue = {};
@@ -1705,13 +1687,14 @@ ICON_BLUETOOTH = (
     '</svg>'
 )
 
-# The mute indicator shown in place of the level meter while muted: a
-# speaker body/cone with a diagonal slash through it, matching the figure
+# A speaker body/cone with a diagonal slash through it, matching the figure
 # the dial's own footer glyph draws (see dial_display_compositor.
-# _draw_speaker_glyph(muted=True)) so the two UIs show the same symbol —
+# _draw_speaker_glyph(muted=True)) so the two UIs use the same symbol --
 # including that glyph's own slash centred on the speaker body rather than
-# the icon's box. currentColor so it follows the button's own color (see
-# .np-mute-btn) rather than carrying its own.
+# the icon's box. currentColor so it follows whatever color the caller
+# applies rather than carrying its own. The WebUI itself no longer renders
+# this icon (a mute is shown in the now-playing header text instead); kept
+# for the dial-parity note above and any future caller.
 ICON_SPEAKER_MUTED = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
     ' fill="none" stroke="currentColor" stroke-width="2"'

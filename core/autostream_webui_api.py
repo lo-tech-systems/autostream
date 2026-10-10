@@ -27,8 +27,7 @@ Contents:
   - send_dial_outputs_set_post_json -- POST /api/dial/outputs/set
   - send_dial_eq_post_json       -- POST /api/dial/eq
   - send_dial_eq_set_post_json   -- POST /api/dial/eq/set
-  - apply_mute_action            -- shared mute/restore core (dial + WebUI)
-  - send_mute_post_json          -- POST /api/mute (WebUI master-volume icon)
+  - apply_mute_action            -- shared mute/restore core (used by the dial)
 """
 
 from __future__ import annotations
@@ -435,6 +434,10 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         # Always present (unlike "repeat" below): the session tracker runs
         # regardless of whether the repeat feature/block exists at all.
         "session": session_state,
+        # Appliance-authoritative mute flag: the now-playing header text is
+        # the only place the WebUI surfaces a mute, so it needs this on
+        # every status poll, not just the outputs poll.
+        "muted": mute_state.is_muted(),
     }
     # Pass the daemon's "repeat" status block through verbatim when present.
     # An old binary that never reports it means the key is
@@ -1403,14 +1406,16 @@ def apply_mute_action(state: WebUIState, action: str) -> tuple[int, dict]:
     """Apply an explicit "mute" or "restore" action across all selected
     OwnTone outputs, and return the (status, body) to send.
 
-    Shared by the dial's POST /api/dial/mute (after its own 403 checks and
-    action validation) and the WebUI's POST /api/mute, so every client that
-    can request a mute/restore gets identical behaviour. The action is
-    dictated by the caller -- this never infers mute from output volumes
-    locally (alignment zeroes volumes for its own reasons, and a user can
-    drag a slider to 0; neither of those is a mute). Both actions are
-    idempotent: "mute" on an already-silent selection and "restore" on an
-    already-audible one succeed as no-ops.
+    Used by the dial's POST /api/dial/mute (after its own 403 checks and
+    action validation) -- the dial's pushbutton is the only client that
+    requests an explicit mute this way; the WebUI has no equivalent control
+    and instead ends a mute as a side effect of an explicit user volume
+    change (see apply_output_mutation in autostream_appliance_models.py).
+    The action is dictated by the caller -- this never infers mute from
+    output volumes locally (alignment zeroes volumes for its own reasons,
+    and a user can drag a slider to 0; neither of those is a mute). Both
+    actions are idempotent: "mute" on an already-silent selection and
+    "restore" on an already-audible one succeed as no-ops.
     """
     try:
         parsed = _config_snapshot(state)
@@ -1459,8 +1464,8 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
     """POST /api/dial/mute — UUID-auth only (no session/CSRF required).
 
     Validates authorization and the requested action, then runs the shared
-    mute/restore core (apply_mute_action) also used by the WebUI's
-    POST /api/mute -- see its docstring for the actual behaviour.
+    mute/restore core (apply_mute_action) -- see its docstring for the
+    actual behaviour.
     """
     dial_id = json_obj.get("dial_id", "")
     if not isinstance(dial_id, str) or not dial_id:
@@ -1477,27 +1482,6 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
 
     status, body = apply_mute_action(state, action)
     send_json(handler, status, body)
-
-
-def send_mute_post_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/mute — browser session route (CSRF-protected).
-
-    Request body: {"action": "mute"|"restore"}. Runs the identical
-    mute/restore core (apply_mute_action) the dial's POST /api/dial/mute
-    uses, so the WebUI's master-volume icon and the dial's mute button
-    always agree about what "muted" means.
-    """
-    try:
-        payload = json.loads(body or "{}")
-    except Exception:
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-        return
-    action = payload.get("action") if isinstance(payload, dict) else None
-    if action not in ("mute", "restore"):
-        send_json(handler, 400, {"ok": False, "error": "invalid_action"})
-        return
-    status, response_body = apply_mute_action(state, action)
-    send_json(handler, status, response_body)
 
 
 # ---------------------------------------------------------------------------

@@ -922,23 +922,6 @@ register(
 
 register(
     Route(
-        path="/api/mute",
-        methods=("POST",),
-        handler="send_mute_post_json",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=True,
-        requires_body=True,
-        comment=(
-            "The master volume card's mute/unmute icon. Runs the same "
-            "mute/restore core as the dial's POST /api/dial/mute (see "
-            "apply_mute_action in autostream_webui_api.py), different realm."
-        ),
-    )
-)
-
-register(
-    Route(
         path="/api/output_eq/config",
         methods=("POST",),
         handler="send_output_eq_config_json",

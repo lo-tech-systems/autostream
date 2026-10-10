@@ -84,7 +84,6 @@ from autostream_webui_api import (
     send_federation_repeat_json,
     send_federation_session_json,
     send_json,
-    send_mute_post_json,
     send_output_eq_config_json,
     send_output_eq_reset_json,
     send_output_eq_status_json,

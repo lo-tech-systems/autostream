@@ -22,6 +22,7 @@ from autostream_core import (
 )
 from autostream_player_service import get_setting, list_outputs
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
+from autostream_mute_state import is_muted as _appliance_is_muted
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname, reboot_system
 from autostream_webui_components import output_card_html, slider_html
@@ -35,7 +36,6 @@ from autostream_webui_assets import (
     HOME_CARDS_SCRIPT,
     ICON_BLUETOOTH,
     ICON_LINE_LEVEL,
-    ICON_SPEAKER_MUTED,
     ICON_TURNTABLE,
     INFO_MODAL_HTML,
     INFO_MODAL_SCRIPT,
@@ -74,9 +74,6 @@ _VU_STEREO_CSS = (
     ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
     "width:10px;flex:0 0 10px;}"
     ".np-level{display:flex;align-items:center;width:23px;flex:0 0 23px;}"
-    ".np-mute-btn{background:none;border:0;padding:0;cursor:pointer;display:inline-flex;"
-    "align-items:center;justify-content:center;width:23px;height:23px;color:var(--color-status-danger);}"
-    ".np-mute-btn svg{width:22px;height:22px;}"
 )
 
 # Shared extra_css for the two "Home page" renderers below (send_airplay_page,
@@ -90,7 +87,6 @@ function renderHomeState(data){
   renderNowPlayingCard(data);
   updateRepeatButton(data);
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
-  updateMuteIndicator(!!data.muted);
   if(Array.isArray(data.outputs)){
     var outputs=data.outputs;
     if(outputs.length===0){
@@ -505,7 +501,6 @@ def send_airplay_page(
             // treating this as a confirmed empty outputs list.
             return;
           }}
-          updateMuteIndicator(!!j.muted);
           if (typeof maybePromptForPin === 'function') {{
             try {{ maybePromptForPin(j.outputs); }} catch (e) {{}}
           }}
@@ -657,21 +652,19 @@ def send_airplay_page(
         f'<div class="vu-col" id="np-vu-r">{_vu_bar_html}</div>'
         f'</div>'
     ) if show_input_detail else ""
-    # The level slot always renders: the VU meter (when this appliance has
-    # input detail to show) plus a mute indicator hidden until the master
-    # is actually muted (see updateMuteIndicator()/np_mute_btn) — the two
-    # swap places in the same footprint so muting never shifts the
-    # name/signal text beside it (see _VU_STEREO_CSS's .np-level rule).
-    _vu_html = (
-        f'<div class="np-level" id="np-level">'
-        f'{_vu_meter_html}'
-        f'<button type="button" class="np-mute-btn" id="np_mute_btn" hidden'
-        f' aria-label="Unmute" title="Muted - tap to unmute" onclick="unmuteMaster()">'
-        f'{ICON_SPEAKER_MUTED}</button>'
-        f'</div>'
-    )
+    # The level slot always renders the VU meter (when this appliance has
+    # input detail to show); there is no separate mute indicator here any
+    # more -- a mute is now shown in the header text instead, and the VU
+    # meter itself simply stays visible whether the appliance is muted or
+    # not (see _VU_STEREO_CSS's .np-level rule for the slot's fixed width).
+    _vu_html = f'<div class="np-level" id="np-level">{_vu_meter_html}</div>'
     _np_card_cls = "" if _np_is_playing else " np-ready"
     _np_hdr_text = "Now Playing" if _np_is_playing else "Ready"
+    if _np_is_playing and _appliance_is_muted():
+        # The WebUI has no dedicated unmute control any more: moving the
+        # volume slider is the only way out of a mute, so the header text
+        # is what tells the user the appliance is currently muted.
+        _np_hdr_text += " (Muted)"
     _now_playing_card_html = (
         f'<div class="now-playing-card{_np_card_cls}" id="now-playing-card">'
         f'<div class="now-playing-hdr" id="np-hdr">{html.escape(_np_hdr_text)}</div>'
@@ -885,11 +878,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'<div class="now-playing-name" id="np-name">Connecting…</div>'
         f'<div class="now-playing-signal" id="np-signal"></div>'
         f'</div>'
-        f'<div class="np-level" id="np-level">'
-        f'<button type="button" class="np-mute-btn" id="np_mute_btn" hidden disabled'
-        f' aria-label="Unmute" title="Muted - tap to unmute" onclick="unmuteMaster()">'
-        f'{ICON_SPEAKER_MUTED}</button>'
-        f'</div>'
+        f'<div class="np-level" id="np-level"></div>'
         f'</div>'
         f'<div class="np-volume-wrap master-volume-inactive" id="master-volume-card" hidden>'
         f'<div class="slider-header"><span>Master Volume</span></div>'
