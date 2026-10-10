@@ -73,6 +73,7 @@ class TestDataclasses:
     def test_output_row_defaults(self):
         row = cs.OutputRow("o", "Out", True, 50)
         assert (row.remote_in_use, row.remote_owner) == (False, None)
+        assert row.is_default is False
 
     @pytest.mark.parametrize("cls", [
         cs.NowPlaying, cs.OutputRow, cs.SelectorRow, cs.PickerRow, cs.ApplianceState,

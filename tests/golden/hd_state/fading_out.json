@@ -73,7 +73,8 @@
         "selected": true,
         "volume": 45,
         "in_use": false,
-        "owner": ""
+        "owner": "",
+        "default": true
       },
       {
         "id": "o2",
@@ -81,7 +82,8 @@
         "selected": false,
         "volume": 30,
         "in_use": false,
-        "owner": ""
+        "owner": "",
+        "default": false
       },
       {
         "id": "o3",
@@ -89,7 +91,8 @@
         "selected": false,
         "volume": 20,
         "in_use": false,
-        "owner": ""
+        "owner": "",
+        "default": false
       }
     ]
   },

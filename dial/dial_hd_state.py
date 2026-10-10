@@ -230,6 +230,7 @@ def _outputs_block(snapshot) -> dict | None:
             "volume": volume,
             "in_use": bool(row.remote_in_use),
             "owner": row.remote_owner or "",
+            "default": bool(row.is_default),
         })
     return {"appliance_id": held.appliance_id, "loaded": bool(held.loaded), "rows": rows}
 

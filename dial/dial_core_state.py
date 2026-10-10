@@ -107,6 +107,7 @@ class OutputRow:
     volume: int          # 0..100, meaningful when selected
     remote_in_use: bool = False      # owned by another appliance
     remote_owner: str | None = None  # that appliance's name once known; None until then
+    is_default: bool = False         # the appliance's configured default output
 
 
 # ---- appliance snapshot types --------------------------------------------

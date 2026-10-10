@@ -452,7 +452,8 @@ def parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
     the caller keeps the last good rows. An output another appliance has
     taken is kept and marked (`remote_in_use`, with `remote_owner` when the
     reply names it) so a surface can show it dimmed; one that is not
-    well-formed is skipped, as it never made the result unusable."""
+    well-formed is skipped, as it never made the result unusable. The optional
+    `is_default` flag reads as false when absent."""
     if status != 200 or not isinstance(body, dict) or body.get("ok") is not True:
         return None
     raw = body.get("outputs")
@@ -478,6 +479,7 @@ def parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
             id=out_id, name=name, selected=selected, volume=max(0, min(100, volume)),
             remote_in_use=in_use,
             remote_owner=owner if in_use and isinstance(owner, str) and owner else None,
+            is_default=bool(o.get("is_default")),
         ))
     return tuple(rows)
 

@@ -600,6 +600,16 @@ class TestParseOutputsBody:
             ("1", False, None), ("2", True, "Hall"), ("3", True, None),
         ]
 
+    def test_is_default_is_read_and_absent_reads_false(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            _out("1", is_default=True), _out("2"),
+        ]})
+        assert rows[0].is_default is True and rows[1].is_default is False
+
+    def test_a_non_bool_is_default_does_not_fail_the_reply(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [_out("1", is_default="yes")]})
+        assert rows is not None and rows[0].is_default is True
+
     def test_an_owner_is_only_carried_for_a_row_in_use(self):
         rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
             _out("1", remote_in_use=False, remote_owner="Hall"),

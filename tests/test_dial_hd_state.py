@@ -236,8 +236,12 @@ class TestOutputs:
         rows = _state("in_use_speaker")["outputs"]["rows"]
         assert rows[2] == {
             "id": "o3", "name": "Bedroom", "selected": False, "volume": 20,
-            "in_use": True, "owner": "Kitchen"}
+            "in_use": True, "owner": "Kitchen", "default": False}
         assert _state("playing_artwork")["outputs"]["rows"][2]["owner"] == ""
+
+    def test_the_default_output_is_flagged(self):
+        rows = _state("playing_artwork")["outputs"]["rows"]
+        assert [r["default"] for r in rows] == [True, False, False]
 
     def test_the_optimistic_tap_overrides_the_row(self):
         scenario = hs.SCENARIOS["playing_artwork"]

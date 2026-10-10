@@ -97,7 +97,7 @@ def warning_states(active: dict | None = None, snoozed: dict | None = None, extr
 
 def rows(*, in_use=False):
     return (
-        OutputRow("o1", "Lounge L + R", True, 45),
+        OutputRow("o1", "Lounge L + R", True, 45, is_default=True),
         OutputRow("o2", "Patio", False, 30),
         OutputRow(
             "o3", "Bedroom", False, 20,
