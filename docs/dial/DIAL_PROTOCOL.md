@@ -1044,6 +1044,23 @@ written to disk, and is persisted only if the apply succeeded:
 
 ---
 
+### `GET /screen/image`
+
+Returns the frame currently on the panel, as a person standing at the dial would see it
+(rotation and colour-order settings already applied), at the panel's own pixel size.
+
+**Response (`200`):** `image/png` body, `Cache-Control: no-store`.
+
+**Response (`404`)**, when nothing is currently shown (never enabled, cleared, or asleep):
+```json
+{"ok": false, "error": "no_frame"}
+```
+
+No PIN or token required — a read of what is already visible in the room, the same
+convention as `GET /screen/settings` and the other read-only endpoints above.
+
+---
+
 ## 5. Capability Version Table
 
 | Capability | Endpoint | Notes |

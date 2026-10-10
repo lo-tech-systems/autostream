@@ -141,9 +141,16 @@ def _call_handler(
         result["status"] = code
         result["data"]   = {"ok": False, "error": f"http_{code}"}
 
+    def _send_bytes(status, content_type, body):
+        call_order.append("send_bytes")
+        result["status"]       = status
+        result["content_type"] = content_type
+        result["body"]         = body
+
     h._send_json  = _send_json
     h._send_429   = _send_429
     h.send_error  = _send_error
+    h._send_bytes = _send_bytes
 
     def _popen(*args, **kwargs):
         call_order.append("popen")
@@ -1353,6 +1360,91 @@ class TestScreenSettingsPost:
 
 
 # ---------------------------------------------------------------------------
+# GET /screen/image — one-shot screenshot of the panel
+# ---------------------------------------------------------------------------
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+class _FrameStatusProvider:
+    """Minimal display-status stand-in exposing only latest_frame_png(),
+    used to drive the endpoint without a real DialDisplay."""
+
+    def __init__(self, frame_png: bytes | None = None, raises: Exception | None = None) -> None:
+        self._frame_png = frame_png
+        self._raises = raises
+
+    def latest_frame_png(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._frame_png
+
+
+class TestScreenImageGet:
+    def test_returns_png_with_headers_when_frame_available(self):
+        png_bytes = _PNG_SIGNATURE + b"rest-of-a-fake-encoded-frame"
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        server._display_status = _FrameStatusProvider(frame_png=png_bytes)
+        r = _call_handler("/screen/image", method="GET", setup_server=server)
+        assert r["status"] == 200
+        assert r["content_type"] == "image/png"
+        assert r["body"] == png_bytes
+        assert r["body"].startswith(_PNG_SIGNATURE)
+
+    def test_none_frame_returns_404_no_frame(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        server._display_status = _FrameStatusProvider(frame_png=None)
+        r = _call_handler("/screen/image", method="GET", setup_server=server)
+        assert r["status"] == 404
+        assert r["data"] == {"ok": False, "error": "no_frame"}
+
+    def test_raising_accessor_returns_404_not_500(self):
+        server = FakeDialServer(DialConfig(uuid="test-uuid"))
+        server._display_status = _FrameStatusProvider(raises=RuntimeError("boom"))
+        r = _call_handler("/screen/image", method="GET", setup_server=server)
+        assert r["status"] == 404
+        assert r["data"] == {"ok": False, "error": "no_frame"}
+
+    def test_noop_provider_returns_404_no_frame(self):
+        r = _call_handler("/screen/image", method="GET")
+        assert r["status"] == 404
+        assert r["data"] == {"ok": False, "error": "no_frame"}
+
+
+class TestSendBytesHeaders:
+    """Exercises the real _send_bytes() implementation directly (not the
+    result-capturing stub _call_handler() installs for the branch tests
+    above), to pin down the actual header values it writes."""
+
+    def test_headers_and_body(self):
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        sent_status = []
+        sent_headers = []
+
+        def _send_response(status):
+            sent_status.append(status)
+
+        def _send_header(name, value):
+            sent_headers.append((name, value))
+
+        h.send_response = _send_response
+        h.send_header = _send_header
+        h.end_headers = lambda: None
+        h.wfile = io.BytesIO()
+
+        body = _PNG_SIGNATURE + b"payload"
+        h._send_bytes(200, "image/png", body)
+
+        assert sent_status == [200]
+        headers = dict(sent_headers)
+        assert headers["Content-Type"] == "image/png"
+        assert headers["Content-Length"] == str(len(body))
+        assert headers["Cache-Control"] == "no-store"
+        assert h.wfile.getvalue() == body
+
+
+# ---------------------------------------------------------------------------
 # Layout-size setting — same save/echo path as the other screen fields;
 # applies live via the display manager AND remaps the touch stack, so it
 # never sets restart_required.
@@ -1987,6 +2079,10 @@ class TestNoOpDisplayStatusProvider:
         provider = NoOpDisplayStatusProvider()
         status = provider.get_status()
         assert status["always_show_controls"] is False
+
+    def test_latest_frame_png_returns_none(self):
+        provider = NoOpDisplayStatusProvider()
+        assert provider.latest_frame_png() is None
 
 
 # ---------------------------------------------------------------------------

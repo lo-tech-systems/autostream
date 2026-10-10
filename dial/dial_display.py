@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import io
 import logging
 import math
 import os
@@ -624,6 +625,14 @@ class DialDisplay:
         self._source_artwork_url = ""
         self._current_rendered_image = None
 
+        # The frame most recently pushed to the panel (post-compose,
+        # post-resample, post-rotate/BGR) — retained for on-demand
+        # screenshotting only. Never mutated after a push (a later push
+        # assigns a new object), so holding the reference costs nothing.
+        # Cleared whenever the panel no longer shows it (disable/sleep/
+        # clear/backend swap). See latest_frame_png().
+        self._last_frame: Image.Image | None = None
+
         # Idle/sleep state — set while the display has shown the logo with no
         # playing targets on the network; cleared on any activity or disable.
         self._idle_started_at: float | None = None
@@ -907,6 +916,29 @@ class DialDisplay:
                 display_sleeping=self._display_sleeping,
                 display_idle_seconds=idle_seconds,
             ).to_dict()
+
+    def latest_frame_png(self) -> bytes | None:
+        """The frame most recently pushed to the panel, PNG-encoded as the
+        viewer sees it (rotation and colour-order undone), or None when no
+        frame is on the panel (never enabled, cleared, asleep). Takes
+        self._lock only to snapshot the reference and the two orientation
+        flags; the encode runs outside every lock. Never raises."""
+        with self._lock:
+            frame = self._last_frame
+            rotate, bgr = self._config.rotate, self._config.bgr
+        if frame is None:
+            return None
+        try:
+            if bgr:
+                frame = Image.merge("RGB", frame.split()[::-1])
+            if rotate:
+                frame = frame.transpose(Image.ROTATE_180)
+            buf = io.BytesIO()
+            frame.save(buf, format="PNG", compress_level=6)
+            return buf.getvalue()
+        except Exception as e:
+            logging.debug("dial display: screenshot encode failed: %s", e)
+            return None
 
     def update_config(self, config) -> dict:
         with self._lock:
@@ -1297,6 +1329,7 @@ class DialDisplay:
         self._showing = "noop"
         self._source_artwork_url = ""
         self._current_rendered_image = None
+        self._last_frame = None
         # A reopen after a screen_type swap starts on the main screen, not
         # wherever the list happened to be — the old panel's geometry is
         # gone anyway.
@@ -1317,6 +1350,7 @@ class DialDisplay:
         self._showing = "noop"
         self._source_artwork_url = ""
         self._current_rendered_image = None
+        self._last_frame = None
         self._idle_started_at = None
         self._display_sleeping = False
         # A later re-enable starts on the main screen.
@@ -1329,6 +1363,7 @@ class DialDisplay:
             except Exception as e:
                 logging.debug("dial display: backend clear raised: %s", e)
         self._showing = "noop"
+        self._last_frame = None
         self._mark_noncomposited_locked()
 
     def _sleep_locked(self) -> None:
@@ -1347,6 +1382,7 @@ class DialDisplay:
         self._showing = "sleeping"
         self._source_artwork_url = ""
         self._current_rendered_image = None
+        self._last_frame = None
         logging.info("dial display: idle %ds — sleeping", DISPLAY_IDLE_SLEEP_SECONDS)
         self._mark_noncomposited_locked()
 
@@ -1469,6 +1505,7 @@ class DialDisplay:
             if composed.size != physical:
                 composed = composed.resize(physical, _resample_filter(composed.size, physical))
             self._backend.display(composed)
+            self._last_frame = composed
         except Exception as e:
             self._record_error_locked("display_write_failed")
             self._log_limiter.log(

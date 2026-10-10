@@ -12,6 +12,7 @@ degradation, and shutdown.
 from __future__ import annotations
 
 import dataclasses
+import io
 import sys
 import threading
 import time
@@ -956,6 +957,165 @@ class TestPushFrameLocked:
         assert fb.displayed[-1] is sentinel
         assert len(fb.displayed) == before + 1
         assert display.get_status()["last_error"] == ""
+
+    def test_success_sets_last_frame_to_the_pushed_object(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        sentinel = Image.new("RGB", (fb.width, fb.height))
+        with display._lock:
+            display._push_frame_locked(lambda: sentinel)
+        assert display._last_frame is sentinel
+
+    def test_failed_push_keeps_the_previous_last_frame(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        previous = display._last_frame
+        assert previous is not None
+
+        def bad_compose():
+            raise RuntimeError("compose blew up")
+
+        with display._lock:
+            display._push_frame_locked(bad_compose)
+        assert display._last_frame is previous
+
+
+# ---------------------------------------------------------------------------
+# _last_frame lifecycle — retained across a push, dropped whenever the
+# panel no longer shows it.
+# ---------------------------------------------------------------------------
+
+class TestLastFrameLifecycle:
+    def test_none_on_a_fresh_display(self):
+        display, fb, gt = _make_display()
+        assert display._last_frame is None
+
+    def test_set_after_enable_renders_the_logo(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        assert display._last_frame is not None
+        assert display._last_frame.size == (fb.width, fb.height)
+
+    def test_cleared_by_disable_locked(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        assert display._last_frame is not None
+        with display._lock:
+            display._disable_locked()
+        assert display._last_frame is None
+
+    def test_cleared_by_sleep_locked(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        assert display._last_frame is not None
+        with display._lock:
+            display._sleep_locked()
+        assert display._last_frame is None
+
+    def test_cleared_by_clear_locked(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        assert display._last_frame is not None
+        with display._lock:
+            display._clear_locked()
+        assert display._last_frame is None
+
+    def test_cleared_by_swap_backend_locked(self):
+        t = _target()
+        fb_old = FakeBackend()
+        fb_new = FakeBackend()
+
+        def builder(screen_type):
+            return lambda: fb_new
+
+        display, _, gt = _make_display(
+            targets=[t], backend=fb_old, backend_factory_builder=builder,
+        )
+        display.enable()
+        assert display._last_frame is not None
+        with display._lock:
+            display._rebuild_backend_factory_locked("st7789_240x240")
+            display._swap_backend_locked()
+        # The reopen on the new backend renders the logo again, so a frame
+        # is present once more — but it belongs to the NEW backend, not a
+        # stale reference to the old one's dimensions.
+        assert display._last_frame is not None
+        assert display._last_frame.size == (fb_new.width, fb_new.height)
+
+
+# ---------------------------------------------------------------------------
+# latest_frame_png() — the one-shot screenshot accessor
+# ---------------------------------------------------------------------------
+
+class TestLatestFramePng:
+    def test_none_before_any_push(self):
+        display, fb, gt = _make_display()
+        assert display.latest_frame_png() is None
+
+    def test_round_trips_a_decodable_png_at_the_backend_size(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        marked = Image.new("RGB", (fb.width, fb.height), (10, 20, 30))
+        with display._lock:
+            display._push_frame_locked(lambda: marked)
+        png_bytes = display.latest_frame_png()
+        assert png_bytes is not None
+        assert png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+        decoded = Image.open(io.BytesIO(png_bytes))
+        decoded.load()
+        assert decoded.convert("RGB").size == (fb.width, fb.height)
+        assert decoded.convert("RGB").getpixel((0, 0)) == (10, 20, 30)
+
+    def test_rotate_true_undoes_the_180_rotation(self):
+        display, fb, gt = _make_display(rotate=True)
+        display.enable()
+        # The cache holds the already-rotated frame (as the panel shows
+        # it); a single corner marker makes a 180-degree undo visible.
+        marked = Image.new("RGB", (fb.width, fb.height), (0, 0, 0))
+        marked.putpixel((0, 0), (255, 0, 0))
+        with display._lock:
+            display._push_frame_locked(lambda: marked)
+        decoded = Image.open(io.BytesIO(display.latest_frame_png())).convert("RGB")
+        assert decoded.getpixel((fb.width - 1, fb.height - 1)) == (255, 0, 0)
+        assert decoded.getpixel((0, 0)) == (0, 0, 0)
+
+    def test_bgr_true_undoes_the_channel_swap(self):
+        display, fb, gt = _make_display(bgr=True)
+        display.enable()
+        marked = Image.new("RGB", (fb.width, fb.height), (10, 20, 30))
+        with display._lock:
+            display._push_frame_locked(lambda: marked)
+        decoded = Image.open(io.BytesIO(display.latest_frame_png())).convert("RGB")
+        assert decoded.getpixel((0, 0)) == (30, 20, 10)
+
+    def test_cleared_state_reports_none(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        assert display.latest_frame_png() is not None
+        with display._lock:
+            display._clear_locked()
+        assert display.latest_frame_png() is None
+
+    def test_encode_does_not_hold_the_lock(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        observed = {}
+        real_save = Image.Image.save
+
+        def spying_save(img_self, *args, **kwargs):
+            observed["locked"] = display._lock.locked()
+            return real_save(img_self, *args, **kwargs)
+
+        with patch.object(Image.Image, "save", spying_save):
+            png_bytes = display.latest_frame_png()
+        assert png_bytes is not None
+        assert observed.get("locked") is False
+
+    def test_encode_failure_is_swallowed(self):
+        display, fb, gt = _make_display()
+        display.enable()
+        with patch.object(Image.Image, "save", side_effect=RuntimeError("encode blew up")):
+            assert display.latest_frame_png() is None
 
 
 # ---------------------------------------------------------------------------

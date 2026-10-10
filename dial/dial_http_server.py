@@ -8,7 +8,8 @@ facing setup UI; dial configuration is done through the appliance web interface.
 
 Routes: GET /configure, POST /configure, GET /recovery_status,
 GET /update/status, GET /update/check, POST /update,
-POST /recovery/arm, POST /recovery/disarm, POST /auth-changed.
+POST /recovery/arm, POST /recovery/disarm, POST /auth-changed,
+GET /screen/settings, POST /screen/settings, GET /screen/image.
 """
 from __future__ import annotations
 
@@ -319,6 +320,9 @@ class NoOpDisplayStatusProvider:
         self._fitted = bool(config.fitted)
         return self.get_status()
 
+    def latest_frame_png(self):
+        return None
+
     def start(self) -> None:
         pass
 
@@ -502,6 +506,14 @@ class DialHTTPServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_bytes(self, status: int, content_type: str, body: bytes) -> None:
+                self.send_response(status)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+                self.wfile.write(body)
+
             def _send_429(self, wait_secs: int) -> None:
                 body = json.dumps({'ok': False, 'error': 'too_many_attempts'}).encode()
                 self.send_response(429)
@@ -584,6 +596,19 @@ class DialHTTPServer:
                         'layout':         _layout_report_for(cfg.display),
                         'runtime':        runtime,
                     })
+
+                elif self.path == '/screen/image':
+                    frame_png = None
+                    getter = getattr(dial_server._display_status, 'latest_frame_png', None)
+                    if getter is not None:
+                        try:
+                            frame_png = getter()
+                        except Exception as e:
+                            logging.debug("screen image: frame accessor raised: %s", e)
+                    if frame_png is None:
+                        self._send_json(404, {'ok': False, 'error': 'no_frame'})
+                    else:
+                        self._send_bytes(200, 'image/png', frame_png)
 
                 else:
                     self.send_error(404)
