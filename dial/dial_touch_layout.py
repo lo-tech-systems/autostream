@@ -167,6 +167,15 @@ ICON_GAP_PX_AT_REFERENCE = (3, 2)
 HALO_STROKE_PX_AT_REFERENCE = (2, 1)
 HALO_BLUR_PX_AT_REFERENCE = (2, 1)
 
+# On the large content tier the scaled text, icon and halo stop growing past
+# these pixel sizes: a panel with many times the pixels should carry more
+# content, not the same content at a much bigger glyph size. Padding,
+# margins, dividers and the artwork blur keep scaling linearly — they are
+# about proportion, not legibility.
+FONT_BODY_MAX_PX = 36
+FONT_READOUT_MAX_PX = 44
+HALO_MAX_PX = 3
+
 
 @dataclass(frozen=True)
 class LayoutMetrics:
@@ -184,6 +193,7 @@ class LayoutMetrics:
     touch_min_px: int | None     # ceil(TOUCH_MIN_MM / mm_per_px)
     touch_short: bool            # band_mm known and below TOUCH_SHORT_BELOW_BAND_MM
     list_rail: bool              # the list uses the right rail (rich/large) rather than the bottom bar
+    has_album_line: bool         # the now-playing body carries an album line above the title (large tier)
     supersample: int             # glyph tile supersample factor (see _draw_glyph in the compositor)
     margin: int                  # dead-zone margin
     band_h: int                  # header/footer height
@@ -238,6 +248,7 @@ def metrics_for(
         content_tier = CONTENT_BASE           # the veto: automatic tiering only
 
     touch_min_px = ceil(TOUCH_MIN_MM / mm_per_px) if mm_per_px else None
+    has_album_line = content_tier == CONTENT_LARGE
 
     if content_tier == CONTENT_BASE:
         band_h = quarter
@@ -257,21 +268,31 @@ def metrics_for(
         list_rail = True
         supersample = SUPERSAMPLE_LARGE if content_tier == CONTENT_LARGE else SUPERSAMPLE_DEFAULT
 
+    font_body = scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1])
+    font_readout = scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1])
+    icon = scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1])
+    halo_stroke = scale_px(HALO_STROKE_PX_AT_REFERENCE[0], width, height, HALO_STROKE_PX_AT_REFERENCE[1])
+    halo_blur = scale_px(HALO_BLUR_PX_AT_REFERENCE[0], width, height, HALO_BLUR_PX_AT_REFERENCE[1])
+    if content_tier == CONTENT_LARGE:
+        # More room buys more content, not bigger glyphs past a legible size.
+        font_body = min(font_body, FONT_BODY_MAX_PX)
+        font_readout = min(font_readout, FONT_READOUT_MAX_PX)
+        icon = min(icon, FONT_READOUT_MAX_PX)
+        halo_stroke = min(halo_stroke, HALO_MAX_PX)
+        halo_blur = min(halo_blur, HALO_MAX_PX)
+
     return LayoutMetrics(
         width=width, height=height, mm_per_px=mm_per_px, content_tier=content_tier,
         band_mm=band_mm, touch_min_px=touch_min_px, touch_short=touch_short,
-        list_rail=list_rail, supersample=supersample,
+        list_rail=list_rail, has_album_line=has_album_line, supersample=supersample,
         margin=scale_px(MARGIN_PX_AT_REFERENCE[0], width, height, MARGIN_PX_AT_REFERENCE[1]),
         band_h=band_h, row_h=row_h, rows_per_page=rows_per_page,
         divider_w=scale_px(DIVIDER_PX_AT_REFERENCE[0], width, height, DIVIDER_PX_AT_REFERENCE[1]),
         blur_radius=scale_px(BLUR_RADIUS_AT_REFERENCE[0], width, height, BLUR_RADIUS_AT_REFERENCE[1]),
-        font_body=scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, FONT_BODY_PX_AT_REFERENCE[1]),
-        font_readout=scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1]),
-        icon=scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, FONT_READOUT_PX_AT_REFERENCE[1]),
+        font_body=font_body, font_readout=font_readout, icon=icon,
         pad=scale_px(PAD_PX_AT_REFERENCE[0], width, height, PAD_PX_AT_REFERENCE[1]),
         icon_gap=scale_px(ICON_GAP_PX_AT_REFERENCE[0], width, height, ICON_GAP_PX_AT_REFERENCE[1]),
-        halo_stroke=scale_px(HALO_STROKE_PX_AT_REFERENCE[0], width, height, HALO_STROKE_PX_AT_REFERENCE[1]),
-        halo_blur=scale_px(HALO_BLUR_PX_AT_REFERENCE[0], width, height, HALO_BLUR_PX_AT_REFERENCE[1]),
+        halo_stroke=halo_stroke, halo_blur=halo_blur,
     )
 
 
@@ -415,9 +436,11 @@ class OverlayLayout:
     """Full overlay geometry for one panel size — the single source of truth
     for both where the compositor dims/draws and where the touch zones sit.
     `dots`, `name`, `volume_cluster`, `down` and `up` are exactly the
-    DOTS/NAME/MUTE/DOWN/UP zone rectangles zones_for() returns; `artist` and
-    the two band rectangles have no corresponding TouchZone because they
-    never actuate."""
+    DOTS/NAME/MUTE/DOWN/UP zone rectangles zones_for() returns; `artist`,
+    `title`, `album` and the two band rectangles have no corresponding
+    TouchZone because they never actuate. `album` is only populated on the
+    content tier with room for it; elsewhere it is None and the renderer
+    draws nothing there."""
 
     top_band: Rect        # full-width dim region, rows [0, band_h)
     bottom_band: Rect     # full-width dim region, rows [height-band_h, height)
@@ -429,6 +452,7 @@ class OverlayLayout:
     down: Rect            # bottom band, left half (== DOWN zone)
     up: Rect              # bottom band, right half (== UP zone)
     divider_x: int        # x of the vertical divider centre in the bottom band
+    album: Rect | None = None  # album line directly above the title (large tier only); None elsewhere, non-actuating
 
 
 @dataclass(frozen=True)
@@ -590,6 +614,12 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
     artist: Rect = (m, height - band_h - artist_h, width - m, height - band_h)
     # Track title sits one line directly above the artist, same height.
     title: Rect = (m, height - band_h - 2 * artist_h, width - m, height - band_h - artist_h)
+    # One more line above the title, same height, where the tier has room for
+    # it: the album name. None elsewhere, so the renderer draws nothing.
+    album: Rect | None = (
+        (m, height - band_h - 3 * artist_h, width - m, height - band_h - 2 * artist_h)
+        if metrics.has_album_line else None
+    )
 
     (dx0, dx1), (ux0, ux1) = _split(width, m, [1, 1])
     by0 = height - band_h + m
@@ -608,6 +638,7 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
         down=down,
         up=up,
         divider_x=divider_x,
+        album=album,
     )
 
 

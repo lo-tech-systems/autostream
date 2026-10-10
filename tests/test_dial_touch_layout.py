@@ -25,11 +25,14 @@ from dial_touch_layout import (  # noqa: E402
     CONTENT_BASE,
     CONTENT_LARGE,
     CONTENT_RICH,
+    FONT_BODY_MAX_PX,
+    FONT_READOUT_MAX_PX,
     GEOMETRIES,
     GEOMETRY_IDLE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
+    HALO_MAX_PX,
     LARGE_MIN_SHORT_SIDE_PX,
     RICH_MIN_SHORT_SIDE_PX,
     SUPERSAMPLE_DEFAULT,
@@ -249,6 +252,7 @@ def test_reference_geometry_exact():
     assert layout.down == (0, 99, 77, 128)
     assert layout.up == (83, 99, 160, 128)
     assert layout.divider_x == 80
+    assert layout.album is None
 
 
 class TestListLayout:
@@ -1059,6 +1063,118 @@ class TestRailListHitTestExhaustive:
         gap_x = (layout.rows[0][2] + layout.rail[0]) // 2
         gap_y = layout.rows[0][1]
         assert hit_test(GEOMETRY_LIST, gap_x, gap_y, metrics.width, metrics.height, metrics=metrics) is None
+
+
+# ---------------------------------------------------------------------------
+# The large content tier's now-playing body: capped fonts/icon/halo, and the
+# album line above the title. Base and rich pin their pre-change values
+# explicitly, proving the cap/gate never runs off the large tier.
+# ---------------------------------------------------------------------------
+
+class TestFontCaps:
+    def test_large_native_panel_caps_every_scaled_font(self):
+        m = _LARGE_640x480
+        assert m.font_body == FONT_BODY_MAX_PX == 36
+        assert m.font_readout == FONT_READOUT_MAX_PX == 44
+        assert m.icon == FONT_READOUT_MAX_PX == 44
+        assert m.halo_stroke == HALO_MAX_PX == 3
+        assert m.halo_blur == HALO_MAX_PX == 3
+        assert m.has_album_line is True
+        # Padding, margin and the divider are proportion, not legibility —
+        # they keep scaling past the font/icon/halo caps.
+        assert m.pad == 15
+        assert m.margin == 11
+        assert m.divider_w == 4
+
+    def test_large_preview_on_a_smaller_chosen_panel_caps_the_same_way(self):
+        m = metrics_for(640, 480, 0.0889, size_chosen=True)
+        assert m.band_h == 120
+        assert m.font_body == 36
+        assert m.font_readout == 44
+        assert m.icon == 44
+        assert m.halo_stroke == 3
+        assert m.halo_blur == 3
+        assert m.has_album_line is True
+
+    def test_rich_tier_is_uncapped_and_has_no_album_line(self):
+        # Pre-change values, pinned explicitly so the tier gate is proven.
+        m = _RICH_320x240
+        assert m.font_body == 24
+        assert m.font_readout == 28
+        assert m.icon == 28
+        assert m.halo_stroke == 4
+        assert m.halo_blur == 4
+        assert m.has_album_line is False
+
+    @pytest.mark.parametrize("width,height", [(160, 128), (128, 128)])
+    def test_base_tier_is_uncapped_and_has_no_album_line(self, width, height):
+        m = metrics_for(width, height)
+        assert m.font_body == 13
+        assert m.font_readout == 15
+        assert m.icon == 15
+        assert m.halo_stroke == 2
+        assert m.halo_blur == 2
+        assert m.has_album_line is False
+
+    def test_touch_short_vetoed_panel_is_uncapped_and_has_no_album_line(self):
+        # Vetoed back to base by its physical touch floor (see
+        # TestTierReporting.test_touch_short_veto_downgrades_an_automatic_size)
+        # despite a pixel size that would otherwise scale past the cap: the
+        # gate is the resolved tier, not the raw scaled value.
+        m = metrics_for(240, 240, 0.0973)
+        assert m.content_tier == CONTENT_BASE
+        assert m.font_body == round(240 * 13 / 128) == 24
+        assert m.font_readout == round(240 * 15 / 128) == 28
+        assert m.icon == round(240 * 15 / 128) == 28
+        assert m.has_album_line is False
+
+    def test_cap_is_a_minimum_not_a_constant(self):
+        # A smaller panel that still clears the large-tier pixel threshold
+        # (only reachable with size_chosen, since its physical band is too
+        # short for the automatic tier) scales to a lower uncapped value
+        # than the native panel, but both land on the same cap — the cap is
+        # a min(), not a hardcoded replacement for one specific size.
+        small_large = metrics_for(400, 400, 0.05, size_chosen=True)
+        assert small_large.content_tier == CONTENT_LARGE
+        assert small_large.font_body == 36        # round(400*13/128) = 41, capped
+        assert small_large.font_readout == 44      # round(400*15/128) = 47, capped
+        assert _LARGE_640x480.font_body == 36       # round(480*13/128) = 49, capped
+        assert _LARGE_640x480.font_readout == 44    # round(480*15/128) = 56, capped
+        # the uncapped fields still scale between the two sizes
+        assert small_large.pad != _LARGE_640x480.pad
+        assert small_large.margin != _LARGE_640x480.margin
+
+
+class TestAlbumLine:
+    def test_large_native_panel_album_title_artist_rects(self):
+        layout = layout_for(640, 480, metrics=_LARGE_640x480)
+        assert layout.album == (11, 244, 629, 291)
+        assert layout.title == (11, 291, 629, 338)
+        assert layout.artist == (11, 338, 629, 385)
+
+    def test_large_preview_panel_album_rect(self):
+        metrics = metrics_for(640, 480, 0.0889, size_chosen=True)
+        layout = layout_for(640, 480, metrics=metrics)
+        assert layout.album == (11, 180, 629, 240)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_base_tier_has_no_album_rect(self, width, height):
+        assert layout_for(width, height).album is None
+
+    def test_rich_tier_has_no_album_rect_and_title_artist_are_unchanged(self):
+        layout = layout_for(320, 240, metrics=_RICH_320x240)
+        today = layout_for(320, 240)
+        assert layout.album is None
+        assert layout.title == today.title
+        assert layout.artist == today.artist
+
+    def test_main_zone_table_unaffected_at_large(self):
+        # No touch/zone change: the album rect never enters the hit-test
+        # table, exactly like the artist and title rects it sits beside.
+        entries = zone_rects_for(GEOMETRY_MAIN, 640, 480, metrics=_LARGE_640x480)
+        assert [e.zone for e in entries] == [
+            TouchZone.DOTS, TouchZone.NAME, TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP,
+        ]
 
 
 # ---------------------------------------------------------------------------
