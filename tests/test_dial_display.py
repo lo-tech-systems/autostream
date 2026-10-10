@@ -362,6 +362,43 @@ class TestMuteBeliefReconciliationFromStatusPoll:
             display._poll_once()
         mock_note.assert_not_called()
 
+    def test_positive_volume_on_a_non_reporting_target_does_not_notify(self):
+        """Two targets, neither identified: the reporting-from target is the
+        oldest-playing (first) one. A positive volume on the OTHER, non-
+        reporting target must not notify the belief — restricting the
+        observation to the reporting-from target (C.5) is what stops a
+        mixed-fleet false "unmuted" belief once volume/mute address a
+        single target."""
+        t_reporting = _target(name="Older", service_name="older", playing_since=10.0)
+        t_other = _target(name="Newer", service_name="newer", playing_since=20.0)
+        display, fb, gt, mu = _make_display(targets=[t_reporting, t_other])
+        display.enable()
+
+        def fake_fetch(target, dial_id, timeout_seconds):
+            result = _status_result(track_id=None)
+            result["master_volume"] = 0 if target.service_name == "older" else 50
+            return result
+
+        with patch("dial_display.fetch_target_status", side_effect=fake_fetch), \
+             patch("dial_display.note_master_volume_positive") as mock_note:
+            display._poll_once()
+        mock_note.assert_not_called()
+
+    def test_fallback_reporting_target_is_oldest_when_nothing_identified(self):
+        """With nothing identified, the reporting-from target is
+        select_volume_target()'s fallback: targets[0], the oldest-playing
+        one — not whichever target the loop happens to process last."""
+        t_older = _target(name="Older", service_name="older", playing_since=10.0)
+        t_newer = _target(name="Newer", service_name="newer", playing_since=20.0)
+        display, fb, gt, mu = _make_display(targets=[t_older, t_newer])
+        display.enable()
+
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)), \
+             patch("dial_display.observe_master_volume") as mock_observe:
+            display._poll_once()
+
+        assert mock_observe.call_args[0][0] == "older"
+
     def test_positive_master_volume_actually_clears_the_real_belief(self):
         """End-to-end against the real dial_volume module (not a mock of
         note_master_volume_positive) — proves the two modules are actually
@@ -382,6 +419,72 @@ class TestMuteBeliefReconciliationFromStatusPoll:
             assert dv.is_muted() is False
         finally:
             dv._muted = original
+
+
+# ---------------------------------------------------------------------------
+# Now-playing state and artwork-source exposure (A.4): the poll thread keeps
+# title/artist/master_volume that used to be discarded, and exposes the
+# chosen artwork source's service name so the volume worker's resolver can
+# address it (see dial_main._build_volume_targets_fn).
+# ---------------------------------------------------------------------------
+
+class TestNowPlayingAndSource:
+    def test_identified_target_sets_source_and_now_playing(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(artist="The Artist"))), \
+             patch("dial_display.observe_master_volume") as mock_observe:
+            display._poll_once()
+
+        assert display.current_source_service_name() == t.service_name
+        assert display._now_playing is not None
+        assert display._now_playing.artist == "The Artist"
+        assert display._now_playing.service_name == t.service_name
+        # The reporting target's master_volume (from _status_result's
+        # default of 50) reaches observe_master_volume.
+        mock_observe.assert_called_once_with(t.service_name, 50)
+
+    def test_no_targets_clears_source_and_now_playing(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+        assert display.current_source_service_name() is not None
+
+        gt.return_value = []
+        with patch("dial_display.observe_master_volume") as mock_observe:
+            display._poll_once()
+
+        assert display.current_source_service_name() is None
+        assert display._now_playing is None
+        mock_observe.assert_called_once_with(None, None)
+
+    def test_not_fitted_clears_source_and_now_playing(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+        assert display.current_source_service_name() is not None
+
+        with display._lock:
+            display._config = DialDisplayConfig(fitted=False)
+        display._poll_once()
+
+        assert display.current_source_service_name() is None
+        assert display._now_playing is None
+
+    def test_now_playing_change_sets_overlay_signal(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        display._overlay_signal.clear()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+        assert display._overlay_signal.is_set()
 
 
 # Artwork URL eligibility and fetching now live in core/autostream_artwork.py,
@@ -1300,6 +1403,86 @@ class TestNotifyTouchActivity:
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             display._poll_once()  # crosses threshold again -> sleeps
         assert display.get_status()["display_sleeping"] is True
+
+
+# ---------------------------------------------------------------------------
+# _effective_overlay_locked(): merges now-playing state (artist, the
+# optimistic volume readout, mute belief fallback) into the touch-published
+# overlay snapshot at compose time (A.4).
+# ---------------------------------------------------------------------------
+
+class TestEffectiveOverlayMerge:
+    def test_invisible_snapshot_is_returned_unchanged(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        snapshot = OverlayState(visible=False, pressed=TouchZone.UP)
+        result = display._effective_overlay_locked(snapshot)
+        assert result is snapshot
+
+    def test_muted_none_is_filled_from_the_belief(self):
+        import dial_volume as dv
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        original = dv._muted
+        dv._muted = True
+        try:
+            result = display._effective_overlay_locked(OverlayState(visible=True))
+            assert result.muted is True
+        finally:
+            dv._muted = original
+
+    def test_explicit_muted_false_is_not_overridden_by_the_belief(self):
+        import dial_volume as dv
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        original = dv._muted
+        dv._muted = True  # belief says muted...
+        try:
+            # ...but the touch snapshot explicitly says otherwise, and wins.
+            result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
+            assert result.muted is False
+        finally:
+            dv._muted = original
+
+    def test_explicit_muted_true_is_not_overridden_by_the_belief(self):
+        import dial_volume as dv
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        original = dv._muted
+        dv._muted = False
+        try:
+            result = display._effective_overlay_locked(OverlayState(visible=True, muted=True))
+            assert result.muted is True
+        finally:
+            dv._muted = original
+
+    def test_visible_snapshot_merges_artist_and_readout_volume(self):
+        import dial_volume as dv
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "The Artist", "Title", 50)
+        dv.observe_master_volume("svc", 50)
+        try:
+            result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
+            assert result.artist == "The Artist"
+            assert result.volume == 50
+        finally:
+            dv.observe_master_volume(None, None)
+
+    def test_no_now_playing_merges_empty_artist_and_none_volume(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
+        assert result.artist == ""
+        assert result.volume is None
+
+    def test_pressed_and_visible_fields_survive_the_merge_unchanged(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        result = display._effective_overlay_locked(OverlayState(visible=True, pressed=TouchZone.DOWN))
+        assert result.visible is True
+        assert result.pressed == TouchZone.DOWN
 
 
 # ---------------------------------------------------------------------------

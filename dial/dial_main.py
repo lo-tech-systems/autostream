@@ -33,7 +33,13 @@ from dial_mdns import (
     stop_playing_browser,
 )
 from dial_target_status import enrich_targets
-from dial_volume import enqueue_delta, enqueue_mute, is_muted, start_volume_worker
+from dial_volume import (
+    enqueue_delta,
+    enqueue_mute,
+    is_muted,
+    select_volume_target,
+    start_volume_worker,
+)
 
 
 def _configure_logging() -> None:
@@ -230,7 +236,47 @@ def _clear_recovery_request() -> None:
         )
 
 
-def _build_touch_source(cfg, display, confirm_presence=None):
+def _build_volume_targets_fn(display, get_targets=get_display_targets):
+    """Zero-arg resolver for the volume worker: the display's artwork
+    source when it has one, else the oldest playing target, as a list of
+    zero or one PlayingTarget.
+
+    display may be any object — in particular NoOpDisplayStatusProvider,
+    which has no current_source_service_name() at all — a missing or
+    raising accessor degrades to the fallback so a NoOp or broken display
+    never blocks volume (display failure must never affect volume control).
+    get_targets defaults to the real dial_mdns.get_display_targets, imported
+    at module load time; tests override it directly for a fake target list.
+    """
+    getter = getattr(display, "current_source_service_name", None)
+
+    def resolve():
+        targets = get_targets()
+        preferred = None
+        if getter is not None:
+            try:
+                preferred = getter()
+            except Exception:
+                preferred = None
+        chosen = select_volume_target(targets, preferred)
+        return [chosen] if chosen is not None else []
+    return resolve
+
+
+def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_playing_targets):
+    """Zero-arg resolver for mute: every playing target when the live
+    mute_all_playing setting is on, else the same single target volume
+    uses. Reads the setting through http_server (not a captured cfg value)
+    so a /configure change applies without a restart, exactly like
+    step_percent does for the encoder today."""
+    def resolve():
+        if http_server.mute_all_playing:
+            return get_all_targets()
+        return volume_targets_fn()
+    return resolve
+
+
+def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     """Construct and wire a TouchEventSource for cfg.display against the
     already-built *display* manager.
 
@@ -243,6 +289,14 @@ def _build_touch_source(cfg, display, confirm_presence=None):
     try/except so a missing gpiozero/SPI/I2C library, or any other
     construction failure, degrades to no-touch without taking the display
     or volume control down with it.
+
+    step_percent, when supplied, is a zero-arg callable returning the
+    CURRENT step size — main() passes `lambda: http_server.step_percent` so
+    a live /configure change is honoured by touch immediately, matching the
+    encoder's nudge_up/nudge_down (which already read http_server.step_percent
+    rather than the startup cfg). When omitted, the callbacks fall back to
+    the startup cfg.step_percent, unchanged from before this parameter
+    existed.
     """
     from dial_display_compositor import OverlayState
     from dial_display_profiles import get_profile
@@ -316,12 +370,19 @@ def _build_touch_source(cfg, display, confirm_presence=None):
         display.set_overlay(OverlayState(visible=True, pressed=zone, muted=is_muted()))
 
     def on_volume_up() -> None:
+        # enqueue_delta() first, THEN notify_touch_activity() — the reverse
+        # of the order below until this feature: notify_touch_activity()
+        # sets the repaint signal, and the repaint must see the nudged
+        # pending readout value (see dial_volume.enqueue_delta()), not the
+        # pre-press one.
+        step = step_percent() if step_percent is not None else cfg.step_percent
+        enqueue_delta(step)
         display.notify_touch_activity()
-        enqueue_delta(cfg.step_percent)
 
     def on_volume_down() -> None:
+        step = step_percent() if step_percent is not None else cfg.step_percent
+        enqueue_delta(-step)
         display.notify_touch_activity()
-        enqueue_delta(-cfg.step_percent)
 
     def on_mute_toggle() -> None:
         display.notify_touch_activity()
@@ -430,7 +491,20 @@ def main() -> None:
 
     start_playing_browser(shutdown_event=shutdown_event)
     display.start()
-    start_volume_worker(cfg, get_playing_targets, led)
+
+    # Single-target volume/mute (see dial_volume.py's module docstring and
+    # the design notes' Workstream C): volume always addresses the display's
+    # reporting-from target; mute widens to every playing target only when
+    # mute_all_playing is on. Both resolvers degrade gracefully for a
+    # NoOpDisplayStatusProvider (no current_source_service_name) and for a
+    # bare mock http_server in tests — see _build_volume_targets_fn/
+    # _build_mute_targets_fn.
+    volume_targets_fn = _build_volume_targets_fn(display)
+    start_volume_worker(
+        cfg, volume_targets_fn, led,
+        mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
+        on_readout_changed=getattr(display, "request_repaint", None),
+    )
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch
@@ -455,7 +529,8 @@ def main() -> None:
     ):
         try:
             touch_source = _build_touch_source(
-                cfg, display, confirm_presence=http_server.confirm_volume
+                cfg, display, confirm_presence=http_server.confirm_volume,
+                step_percent=lambda: http_server.step_percent,
             )
             touch_source.start()
             touch_runtime = cfg.display.touch_type

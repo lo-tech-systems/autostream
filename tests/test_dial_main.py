@@ -459,7 +459,7 @@ class TestDialFinalCleanup:
              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
              patch("dial_main.stop_playing_browser"), \
-             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.start_volume_worker") as mock_vol_worker, \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent):
             dm.main()
@@ -470,6 +470,13 @@ class TestDialFinalCleanup:
         display = kwargs["display_status_provider"]
         assert display.get_status()["fitted"] is False
         assert display._thread is None or not display._thread.is_alive()
+
+        # start_volume_worker must be wired with the single-targeting
+        # resolvers and the display's real request_repaint (a REAL
+        # DialDisplay, not the NoOp fallback, so it has that method).
+        _, vol_kwargs = mock_vol_worker.call_args
+        assert callable(vol_kwargs["mute_targets_fn"])
+        assert vol_kwargs["on_readout_changed"] == display.request_repaint
 
     def test_display_stack_import_failure_degrades_to_noop(self):
         """If dial_display (e.g. Pillow) is unavailable, main() must degrade to
@@ -503,7 +510,7 @@ class TestDialFinalCleanup:
              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
              patch("dial_main.start_playing_browser"), \
              patch("dial_main.stop_playing_browser"), \
-             patch("dial_main.start_volume_worker"), \
+             patch("dial_main.start_volume_worker") as mock_vol_worker, \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
              patch("builtins.__import__", side_effect=_fake_import):
@@ -511,6 +518,13 @@ class TestDialFinalCleanup:
 
         _, kwargs = mock_http_cls.call_args
         assert isinstance(kwargs["display_status_provider"], NoOpDisplayStatusProvider)
+
+        # NoOpDisplayStatusProvider has no request_repaint() at all — the
+        # getattr(..., None) fallback in main() must produce None here, not
+        # raise, and volume must still be fully wired up regardless.
+        _, vol_kwargs = mock_vol_worker.call_args
+        assert vol_kwargs["on_readout_changed"] is None
+        assert callable(vol_kwargs["mute_targets_fn"])
 
     def test_fatal_exception_propagates(self):
         """A non-shutdown exception from control_server.start() propagates out."""
@@ -1378,7 +1392,7 @@ class TestBuildTouchSourceWiring:
     background thread) faked out."""
 
     @contextmanager
-    def _built(self, confirm_presence=None, is_muted_value=False):
+    def _built(self, confirm_presence=None, is_muted_value=False, step_percent=None):
         """Construct via dial_main._build_touch_source() with the mocks
         still active, yielding everything a test needs — the invoked
         callbacks reference module globals (enqueue_delta etc.) resolved at
@@ -1408,7 +1422,9 @@ class TestBuildTouchSourceWiring:
              patch("dial_main.enqueue_delta") as mock_delta, \
              patch("dial_main.enqueue_mute", return_value=True) as mock_mute, \
              patch("dial_main.is_muted", return_value=is_muted_value):
-            result = dm._build_touch_source(cfg, display, confirm_presence=confirm_presence)
+            result = dm._build_touch_source(
+                cfg, display, confirm_presence=confirm_presence, step_percent=step_percent,
+            )
             yield cfg, display, result, captured, mock_open, mock_delta, mock_mute
 
     def test_driver_opened_for_configured_controller(self):
@@ -1432,6 +1448,42 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_volume_down"]()
             mock_delta.assert_called_once_with(-3)
             display.notify_touch_activity.assert_called_once()
+
+    def test_volume_callbacks_enqueue_before_notifying(self):
+        """enqueue_delta() must run BEFORE notify_touch_activity() — the
+        reverse of the historical order — because notify_touch_activity()
+        sets the repaint signal, and the repaint must see the readout's
+        nudged pending value (see dial_volume.enqueue_delta())."""
+        call_order = []
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            mock_delta.side_effect = lambda *a, **kw: call_order.append("enqueue_delta")
+            display.notify_touch_activity.side_effect = lambda: call_order.append("notify_touch_activity")
+
+            captured["kwargs"]["on_volume_up"]()
+            assert call_order == ["enqueue_delta", "notify_touch_activity"]
+
+            call_order.clear()
+            captured["kwargs"]["on_volume_down"]()
+            assert call_order == ["enqueue_delta", "notify_touch_activity"]
+
+    def test_volume_up_uses_live_step_percent_callable_when_supplied(self):
+        """A live step change via /configure must be honoured by touch, not
+        just the encoder — see dial_http_server.DialHTTPServer.step_percent."""
+        live_step = {"value": 3}
+        with self._built(step_percent=lambda: live_step["value"]) as (
+            cfg, display, result, captured, _open, mock_delta, mock_mute,
+        ):
+            captured["kwargs"]["on_volume_up"]()
+            mock_delta.assert_called_once_with(3)
+
+            live_step["value"] = 7
+            captured["kwargs"]["on_volume_down"]()
+            mock_delta.assert_called_with(-7)
+
+    def test_volume_up_falls_back_to_cfg_step_percent_when_no_callable_supplied(self):
+        with self._built(step_percent=None) as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            captured["kwargs"]["on_volume_up"]()
+            mock_delta.assert_called_once_with(cfg.step_percent)
 
     def test_mute_toggle_enqueues_mute(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
@@ -1520,6 +1572,139 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_reveal_overlay"]()
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
+
+
+# ---------------------------------------------------------------------------
+# _build_volume_targets_fn(): zero-arg resolver for the volume worker — the
+# display's artwork source when it has one and it is still present in the
+# target list, else the oldest playing target (select_volume_target's
+# fallback). Must degrade gracefully for a NoOpDisplayStatusProvider (no
+# current_source_service_name at all) or a raising accessor — display
+# failure must never affect volume control.
+# ---------------------------------------------------------------------------
+
+class TestVolumeTargetsResolver:
+    def _targets(self):
+        from dial_mdns import PlayingTarget
+        older = PlayingTarget(ip="1.0.0.1", port=80, name="Older", service_name="older", playing_since=10.0)
+        newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer", playing_since=20.0)
+        return [older, newer]
+
+    def test_display_reports_a_present_service_name_even_if_not_oldest(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value="newer")
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[1]]
+
+    def test_display_reports_a_name_no_longer_present_falls_back_to_oldest(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value="vanished")
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[0]]
+
+    def test_display_reports_none_falls_back_to_oldest(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value=None)
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[0]]
+
+    def test_noop_display_status_provider_has_no_accessor_falls_back_to_oldest(self):
+        import dial_main as dm
+        from dial_http_server import NoOpDisplayStatusProvider
+
+        targets = self._targets()
+        display = NoOpDisplayStatusProvider()
+        assert not hasattr(display, "current_source_service_name")
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[0]]
+
+    def test_raising_accessor_falls_back_to_oldest(self):
+        import dial_main as dm
+
+        targets = self._targets()
+        display = MagicMock()
+
+        def boom():
+            raise RuntimeError("display broke")
+
+        display.current_source_service_name = boom
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: targets)
+
+        assert resolve() == [targets[0]]
+
+    def test_no_targets_returns_empty_list(self):
+        import dial_main as dm
+
+        display = MagicMock()
+        display.current_source_service_name = MagicMock(return_value="anything")
+        resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [])
+
+        assert resolve() == []
+
+
+# ---------------------------------------------------------------------------
+# _build_mute_targets_fn(): fleet-wide when mute_all_playing is on (read
+# live from http_server, not a captured cfg value), else the same single
+# target volume uses.
+# ---------------------------------------------------------------------------
+
+class TestMuteTargetsResolver:
+    def test_mute_all_playing_false_returns_volume_resolvers_list(self):
+        import dial_main as dm
+
+        http_server = MagicMock()
+        http_server.mute_all_playing = False
+        volume_targets_fn = MagicMock(return_value=["single-target"])
+        all_targets_fn = MagicMock(return_value=["a", "b", "c"])
+
+        resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=all_targets_fn)
+
+        assert resolve() == ["single-target"]
+        all_targets_fn.assert_not_called()
+
+    def test_mute_all_playing_true_returns_every_playing_target(self):
+        import dial_main as dm
+
+        http_server = MagicMock()
+        http_server.mute_all_playing = True
+        volume_targets_fn = MagicMock(return_value=["single-target"])
+        all_targets_fn = MagicMock(return_value=["a", "b", "c"])
+
+        resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=all_targets_fn)
+
+        assert resolve() == ["a", "b", "c"]
+        volume_targets_fn.assert_not_called()
+
+    def test_setting_is_read_live_not_captured_at_build_time(self):
+        """A /configure change to mute_all_playing must apply to the very
+        next mute press without rebuilding the resolver — the resolver
+        reads http_server.mute_all_playing on every call."""
+        import dial_main as dm
+
+        class _FakeServer:
+            mute_all_playing = False
+
+        server = _FakeServer()
+        volume_targets_fn = MagicMock(return_value=["single-target"])
+        all_targets_fn = MagicMock(return_value=["a", "b"])
+        resolve = dm._build_mute_targets_fn(server, volume_targets_fn, get_all_targets=all_targets_fn)
+
+        assert resolve() == ["single-target"]
+        server.mute_all_playing = True
+        assert resolve() == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -1806,7 +1991,7 @@ class TestPresenceConfirmationWiring:
 
         captured = {}
 
-        def build_mock(cfg_arg, display_arg, confirm_presence=None):
+        def build_mock(cfg_arg, display_arg, confirm_presence=None, step_percent=None):
             captured["confirm_presence"] = confirm_presence
             return MagicMock()
 

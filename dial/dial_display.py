@@ -35,7 +35,13 @@ from dial_display_profiles import (
     get_profile,
 )
 from dial_target_status import fetch_target_status
-from dial_volume import note_master_volume_positive
+from dial_volume import (
+    is_muted,
+    note_master_volume_positive,
+    observe_master_volume,
+    select_volume_target,
+    shown_volume,
+)
 
 # The artwork fetch is shared with the OwnTone metadata publisher, which also
 # turns provider URLs into images. It faces the open internet, so it lives in
@@ -122,6 +128,19 @@ class DisplayRuntimeStatus:
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
+
+
+@dataclass(frozen=True)
+class NowPlaying:
+    """Now-playing state for the overlay, as last observed by the poll
+    thread. Immutable — a changed poll result produces a new instance rather
+    than mutating this one, which is what makes the `!=` comparison in
+    _poll_once() a reliable "did anything worth repainting change" check.
+    """
+    service_name: str
+    artist: str
+    title: str          # kept for a future title line; unused by the overlay
+    master_volume: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +280,15 @@ class DialDisplay:
         # overlay changed, so a poll-driven frame is never required just to
         # show/update/hide the overlay.
         self._current_base_image = None
+
+        # Now-playing state for the overlay. Written only by the poll thread
+        # (_poll_once), read by the repaint/poll threads under self._lock at
+        # compose time and by the HTTP/touch threads lock-free — a plain
+        # object-reference read, same discipline as _overlay_snapshot above.
+        self._now_playing: NowPlaying | None = None
+        # mDNS service name of the display's chosen artwork source, or None.
+        # Read by the volume worker via current_source_service_name().
+        self._source_service_name: str | None = None
 
         # Non-composited-state notification (screen cleared or asleep) for
         # the touch side to observe — see _mark_noncomposited_locked().
@@ -459,6 +487,21 @@ class DialDisplay:
         """
         with self._overlay_snapshot_lock:
             self._overlay_snapshot = state
+        self._overlay_signal.set()
+
+    def current_source_service_name(self) -> str | None:
+        """mDNS service name of the display's chosen artwork source, or
+        None when nothing is identified/playing. Plain reference read, safe
+        from any thread; may lag the poll by up to one poll cycle. Used by
+        dial_main's volume-target resolver (see _build_volume_targets_fn) so
+        a touch/encoder press addresses whatever this dial is showing."""
+        return self._source_service_name
+
+    def request_repaint(self) -> None:
+        """Ask the repaint thread to recompose the current base against the
+        latest overlay/now-playing state. Lock-free; used by the volume
+        worker's on_readout_changed callback so a fresh readout appears on
+        screen without waiting for the next poll or touch event."""
         self._overlay_signal.set()
 
     def noncomposited_generation(self) -> int:
@@ -680,7 +723,7 @@ class DialDisplay:
             return
         self._current_base_image = image
         width, height = self._active_panel_dims()
-        overlay = self._overlay_snapshot
+        overlay = self._effective_overlay_locked(self._overlay_snapshot)
         try:
             composed = self._compositor.compose(
                 image, width, height,
@@ -696,6 +739,39 @@ class DialDisplay:
                 logging.WARNING, "display_write_failed",
                 "dial display: backend write failed: %s", e,
             )
+
+    def _effective_overlay_locked(self, snapshot: OverlayState) -> OverlayState:
+        """Merge now-playing state into the touch-published overlay snapshot
+        at compose time.
+
+        The touch side only ever publishes CONTROL state (visible, pressed,
+        muted-if-known) via set_overlay() — it has no idea what track is
+        playing or what the master volume is, and must not need to, per the
+        module docstring's "touch thread stays ignorant of polling" rule.
+        This fills in the fields only the poll thread knows about:
+          - artist: from the reporting-from target's last poll result.
+          - volume: the optimistic readout for that same target (see
+            dial_volume.shown_volume()), not the raw polled master_volume —
+            the readout already reconciles the polled value with any
+            pending delta.
+          - muted: the snapshot's own value when the touch side set one
+            explicitly, else the current mute belief (dial_volume.is_muted())
+            — a reveal that follows a mute from the physical button or an
+            earlier touch session must not show the tri-state default.
+
+        Returns *snapshot* unchanged when it is not visible: compose()
+        already treats an invisible overlay as a strict no-op regardless of
+        its other fields, so there is nothing worth merging in that case.
+        """
+        if not snapshot.visible:
+            return snapshot
+        now_playing = self._now_playing
+        artist = now_playing.artist if now_playing is not None else ""
+        volume = shown_volume(now_playing.service_name) if now_playing is not None else None
+        muted = snapshot.muted if snapshot.muted is not None else is_muted()
+        return dataclasses.replace(
+            snapshot, visible=True, artist=artist, volume=volume, muted=muted,
+        )
 
     def _redisplay_current_locked(self) -> None:
         """Re-display the current frame synchronously — used when rotate
@@ -792,6 +868,8 @@ class DialDisplay:
         with self._lock:
             fitted = self._config.fitted
         if not fitted:
+            self._source_service_name = None
+            self._now_playing = None
             return
 
         targets = self._get_display_targets()
@@ -807,6 +885,12 @@ class DialDisplay:
                 if self._display_sleeping:
                     self._wake_locked()
         else:
+            # Nothing playing anywhere: there is no reporting-from target any
+            # more, and a stale readout for a target that has since stopped
+            # must not survive to the next time something starts playing.
+            self._source_service_name = None
+            self._now_playing = None
+            observe_master_volume(None, None)
             with self._lock:
                 if self._idle_started_at is None:
                     self._idle_started_at = time.monotonic()
@@ -823,6 +907,10 @@ class DialDisplay:
             return
 
         selected_url = None
+        selected_service = None
+        selected_artist = ""
+        selected_title = ""
+        records: dict[str, dict] = {}
         for target in targets:
             if not target.display_authorized:
                 logging.debug("dial display: skip unauthorized row %s", target.service_name)
@@ -842,19 +930,50 @@ class DialDisplay:
                 )
                 continue
 
-            # Free reconciliation for the dial mute belief (dial_volume.py):
-            # a master_volume > 0 seen on ANY target here is definitive
-            # proof the fleet is audible. master_volume == 0 is NOT the
-            # mirror case — it proves nothing about the rest of the fleet —
-            # so it is deliberately not checked here at all.
-            master_volume = result.get("master_volume")
-            if isinstance(master_volume, int) and not isinstance(master_volume, bool) and master_volume > 0:
-                note_master_volume_positive()
-
+            records[target.service_name] = result
             track_id = result.get("track_id")
             if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
                 selected_url = track_id["artwork_url"]
+                selected_service = target.service_name
+                selected_artist = track_id.get("artist", "")
+                selected_title = track_id.get("title", "")
                 break
+
+        # Reporting-from target: the identified source, else the oldest
+        # playing target (select_volume_target's fallback). This is the
+        # SAME helper the volume worker's resolver calls, so the poll and
+        # the worker can never disagree about who volume/mute addresses —
+        # see C.1 in the design notes and dial_main._build_volume_targets_fn.
+        reporting = select_volume_target(targets, selected_service)
+        reporting_name = reporting.service_name if reporting is not None else None
+        record = records.get(reporting_name) if reporting_name else None
+        master_volume = record.get("master_volume") if record else None
+        # Free reconciliation for the dial mute belief (dial_volume.py),
+        # restricted to the REPORTING-FROM target only (not "any target
+        # seen this poll" as before single-targeting): a master_volume > 0
+        # on some OTHER target proves nothing about whether the one this
+        # dial actually controls is muted — see the dial_volume module
+        # docstring's reconciliation paragraph. master_volume == 0 is NOT
+        # the mirror case — it proves nothing about the rest of the fleet —
+        # so it is deliberately not checked here at all.
+        if isinstance(master_volume, int) and not isinstance(master_volume, bool):
+            if master_volume > 0:
+                note_master_volume_positive()
+            observe_master_volume(reporting_name, master_volume)
+        elif reporting_name is not None:
+            observe_master_volume(reporting_name, None)
+
+        # Assigned before _show_artwork() below so a volume press landing
+        # during the artwork fetch already goes to the right target.
+        self._source_service_name = selected_service
+        new_now_playing = (
+            NowPlaying(reporting_name, selected_artist, selected_title, master_volume)
+            if reporting_name is not None else None
+        )
+        changed = new_now_playing != self._now_playing
+        self._now_playing = new_now_playing
+        if changed:
+            self._overlay_signal.set()
 
         if selected_url:
             self._show_artwork(selected_url)
