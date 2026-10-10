@@ -2735,12 +2735,14 @@ class TestVolumeAndMuteNeverReadRoster:
             raise AssertionError("mute resolver must never call get_roster")
 
         with patch.object(dial_mdns, "get_roster", side_effect=_boom):
-            http_server = MagicMock()
-            http_server.mute_all_playing = True
-            resolve = dm._build_mute_targets_fn(
-                http_server, MagicMock(return_value=[]), get_all_targets=lambda: [],
-            )
-            resolve()  # must not raise
+            for scope, expected in (("current", ["single-target"]), ("all", [])):
+                http_server = MagicMock()
+                http_server.effective_mute_scope = scope
+                resolve = dm._build_mute_targets_fn(
+                    http_server, MagicMock(return_value=["single-target"]),
+                    get_all_targets=lambda: [],
+                )
+                assert resolve() == expected  # and get_roster was never called
 
 
 # ---------------------------------------------------------------------------
