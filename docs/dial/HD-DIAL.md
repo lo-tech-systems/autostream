@@ -76,12 +76,7 @@ in the boot configuration; the installer leaves that to you, as the right
 line depends on the panel.
 
 An update does not need the flag. It reads the screen type the dial already
-uses and keeps the kiosk set up. An HD dial installed before the kiosk moved to
-`cog` is moved over by its next update: the new kiosk unit and `cog` are
-installed, and just before the dial restarts the update removes the old
-browser's profile, the `chromium` and `cage` packages and a leftover
-`cog-trial.conf` drop-in for the kiosk unit if there is one. Packages that
-were pulled in only to support them stay until you run `sudo apt autoremove`. An existing SPI dial can be turned into an
+uses and keeps the kiosk set up. An existing SPI dial can be turned into an
 HD dial by choosing **HD touchscreen** under **Screen Type** on the appliance's
 Setup page, but the kiosk browser is only installed by a fresh `--hd` install,
 so that choice alone shows nothing.

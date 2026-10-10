@@ -345,17 +345,12 @@ if $UPDATE; then
     phase reboot 96 "Restarting..."
     # Let the running dial's next status poll paint "Restarting..." first.
     sleep "${UPDATE_PAINT_DELAY:-2}"
-    # An HD dial that ran the old browser sheds it only now, once the screen has
-    # painted and the update is staged, so the running kiosk is not cut off
-    # mid-update.
-    if $HD; then retire_chromium_kiosk; fi
     _install_success=true   # the hand-off is complete; the boot step owns the outcome
     echo "autostream dial update staged; rebooting to switch to ${AUTOSTREAM_RELEASE_TAG}."
     # Same verb and reason as the appliance's update; a clean shutdown, so PIN
     # recovery is not armed.
     schedule_update_reboot
 else
-    if $HD; then retire_chromium_kiosk; fi
     systemctl restart autostream_dial autostream_dial_wifi_watcher
     _install_success=true
     echo "autostream dial installation complete."

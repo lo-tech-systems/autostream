@@ -3,13 +3,9 @@
 ## Unreleased
 
 - change: the HD dial's kiosk now runs WPE WebKit through its `cog` launcher,
-  drawing straight to the display, instead of Chromium under the `cage`
-  compositor. It uses far less memory (about 140 MiB on a 512 MB Pi 3 Model A+),
-  so a 512 MB board is enough for an HD dial. The HD install adds `cog` and
-  `libgles2` instead of `chromium`, `cage` and `seatd`. An existing HD dial
-  moves over on its next update, which removes the Chromium profile, the
-  `chromium` and `cage` packages and any leftover `cog-trial.conf` drop-in for
-  the kiosk unit; an SPI dial is untouched.
+  drawing straight to the display. It uses far less memory (about 140 MiB on a
+  512 MB Pi 3 Model A+), so a 512 MB board is enough for an HD dial. The HD
+  install adds `cog` and `libgles2`.
 - new: an HD dial now dims and switches off an HDMI panel's backlight when the
   panel supports the monitor control channel (DDC/CI). Brightness follows the
   setting, the backlight goes off when the screen sleeps and comes back on a

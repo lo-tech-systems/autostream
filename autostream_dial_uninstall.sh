@@ -37,8 +37,6 @@ rm -f /etc/systemd/system/autostream_sdcardhealth.service
 rm -f /etc/systemd/system/autostream_sdcardhealth.timer
 rm -f /etc/systemd/system/autostream_sdcardhealth_boot.service
 rm -f /etc/systemd/system/autostream_dial_kiosk.service
-rm -f /etc/systemd/system/autostream_dial_kiosk.service.d/cog-trial.conf
-rmdir /etc/systemd/system/autostream_dial_kiosk.service.d 2>/dev/null || true
 
 # Take back the boot splash while its state file (under /var/lib/autostream,
 # removed below) still says what was added. This also removes the splash's
