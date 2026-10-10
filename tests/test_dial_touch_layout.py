@@ -21,8 +21,14 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 from dial_touch_layout import (  # noqa: E402
+    GEOMETRIES,
+    GEOMETRY_IDLE,
+    GEOMETRY_LIST,
+    GEOMETRY_MAIN,
+    GEOMETRY_REPEAT,
     TouchZone,
     _dead_zone_margin,
+    hit_test,
     idle_layout_for,
     idle_zone_at,
     layout_for,
@@ -31,6 +37,7 @@ from dial_touch_layout import (  # noqa: E402
     repeat_layout_for,
     repeat_zone_at,
     zone_at,
+    zone_rects_for,
     zones_for,
 )
 
@@ -449,6 +456,166 @@ class TestIdleSurface:
         assert idle_zone_at(160, 50, 160, 128) is None
         assert idle_zone_at(50, -1, 160, 128) is None
         assert idle_zone_at(50, 128, 160, 128) is None
+
+
+# ---------------------------------------------------------------------------
+# The shared zone-rect table: one ordered table per geometry, read by both
+# the hit-tests above and the compositor's pressed-zone wash.
+# ---------------------------------------------------------------------------
+
+class TestZoneRectsCompleteness:
+    """Every TouchZone member must belong to some geometry's table — a new
+    enum member that no geometry lists would otherwise silently never be
+    reachable by any hit-test."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_union_of_geometries_covers_every_zone(self, width, height):
+        covered = set()
+        for geometry in GEOMETRIES:
+            covered.update(entry.zone for entry in zone_rects_for(geometry, width, height))
+        assert covered == set(TouchZone)
+
+
+class TestZoneRectsOrder:
+    """The table's order is hit-test order — pinned once per geometry at
+    the reference size."""
+
+    def test_main_order(self):
+        entries = zone_rects_for(GEOMETRY_MAIN, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.DOTS, None),
+            (TouchZone.NAME, None),
+            (TouchZone.MUTE, None),
+            (TouchZone.DOWN, None),
+            (TouchZone.UP, None),
+        ]
+
+    def test_list_order(self):
+        entries = zone_rects_for(GEOMETRY_LIST, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.LIST_ROW, 0),
+            (TouchZone.LIST_ROW, 1),
+            (TouchZone.LIST_ROW, 2),
+            (TouchZone.LIST_BACK, None),
+            (TouchZone.LIST_DOWN, None),
+            (TouchZone.LIST_UP, None),
+        ]
+
+    def test_repeat_order(self):
+        entries = zone_rects_for(GEOMETRY_REPEAT, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.DOTS, None),
+            (TouchZone.NAME, None),
+            (TouchZone.MUTE, None),
+            (TouchZone.REPEAT_PLAY, None),
+            (TouchZone.REPEAT_START, None),
+            (TouchZone.REPEAT_STOP, None),
+        ]
+
+    def test_idle_order(self):
+        entries = zone_rects_for(GEOMETRY_IDLE, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [(TouchZone.IDLE_REPLAY, None)]
+
+
+class TestZoneRectsMatchLayoutFields:
+    """The table is a view, not a recomputation: every rect it carries must
+    be exactly the corresponding *Layout field."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_main_rects_are_layout_fields(self, width, height):
+        layout = layout_for(width, height)
+        entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_MAIN, width, height)}
+        assert entries[TouchZone.DOTS] == layout.dots
+        assert entries[TouchZone.NAME] == layout.name
+        assert entries[TouchZone.MUTE] == layout.volume_cluster
+        assert entries[TouchZone.DOWN] == layout.down
+        assert entries[TouchZone.UP] == layout.up
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_list_rects_are_layout_fields(self, width, height):
+        layout = list_layout_for(width, height)
+        entries = list(zone_rects_for(GEOMETRY_LIST, width, height))
+        row_entries = [e for e in entries if e.zone == TouchZone.LIST_ROW]
+        assert [e.rect for e in row_entries] == list(layout.rows)
+        assert [e.index for e in row_entries] == list(range(len(layout.rows)))
+        by_zone = {e.zone: e.rect for e in entries if e.zone != TouchZone.LIST_ROW}
+        assert by_zone[TouchZone.LIST_BACK] == layout.back
+        assert by_zone[TouchZone.LIST_DOWN] == layout.down
+        assert by_zone[TouchZone.LIST_UP] == layout.up
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_repeat_rects_are_layout_fields(self, width, height):
+        layout = repeat_layout_for(width, height)
+        entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_REPEAT, width, height)}
+        assert entries[TouchZone.DOTS] == layout.dots
+        assert entries[TouchZone.NAME] == layout.name
+        assert entries[TouchZone.MUTE] == layout.volume_cluster
+        assert entries[TouchZone.REPEAT_PLAY] == layout.row
+        assert entries[TouchZone.REPEAT_START] == layout.start
+        assert entries[TouchZone.REPEAT_STOP] == layout.stop
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_idle_rect_is_layout_field(self, width, height):
+        layout = idle_layout_for(width, height)
+        entries = zone_rects_for(GEOMETRY_IDLE, width, height)
+        assert entries[0].rect == layout.replay
+
+
+class TestListZoneAtExhaustive:
+    """Every pixel of every profile size against a hand-written reference
+    (row containment, then bar containment) — the per-centre tests above
+    already pin the happy path; this pins the whole plane, dead zones
+    included."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_every_pixel_matches_a_hand_written_reference(self, width, height):
+        layout = list_layout_for(width, height)
+
+        def reference(x, y):
+            for i, (x0, y0, x1, y1) in enumerate(layout.rows):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return (TouchZone.LIST_ROW, i)
+            for zone, (x0, y0, x1, y1) in (
+                (TouchZone.LIST_BACK, layout.back),
+                (TouchZone.LIST_DOWN, layout.down),
+                (TouchZone.LIST_UP, layout.up),
+            ):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return (zone, None)
+            return None
+
+        for y in range(height):
+            for x in range(width):
+                assert list_zone_at(x, y, width, height) == reference(x, y)
+
+
+class TestIdleZoneAtExhaustive:
+    """Every pixel of every profile size, plus a one-pixel ring outside the
+    panel: IDLE_REPLAY iff the point is on-panel and at or below the top
+    band, else None."""
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_matches_top_band_boundary_at_every_pixel_and_a_ring_outside(self, width, height):
+        band_h = height // 4
+        for y in range(-1, height + 1):
+            for x in range(-1, width + 1):
+                expected = None
+                if 0 <= x < width and 0 <= y < height and y >= band_h:
+                    expected = TouchZone.IDLE_REPLAY
+                assert idle_zone_at(x, y, width, height) == expected
+
+
+class TestHitTestUnknownGeometry:
+    def test_raises_key_error(self):
+        with pytest.raises(KeyError):
+            hit_test("bogus", 0, 0, 160, 128)
+
+
+class TestIdleLayoutReplayField:
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_replay_is_the_panel_below_the_top_band(self, width, height):
+        idle = idle_layout_for(width, height)
+        assert idle.replay == (0, height // 4, width, height)
 
 
 # ---------------------------------------------------------------------------

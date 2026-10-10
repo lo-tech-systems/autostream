@@ -52,13 +52,18 @@ from dial_display_compositor import (  # noqa: E402
     _reset_font_cache,
     _scaled_px,
     _truncate_to_width,
+    _zone_rect,
     format_mmss,
 )
 from dial_touch_layout import (  # noqa: E402
+    GEOMETRY_LIST,
+    GEOMETRY_MAIN,
+    GEOMETRY_REPEAT,
     TouchZone,
     layout_for,
     list_layout_for,
     repeat_layout_for,
+    zone_rects_for,
     zones_for,
 )
 
@@ -1255,6 +1260,59 @@ class TestComposeRepeatReplayingLayout:
              patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_repeat(160, 128, self._state(), rotate=False, bgr=False)
         assert result.size == (160, 128)
+
+
+class TestRepeatMuteWash:
+    """Reading the shared zone table gives the repeat screen's pressed-rect
+    lookup a MUTE entry it never had before: a tap there has always resolved
+    to MUTE and toggled it (repeat_zone_at() already did this), so drawing
+    its wash the same way every other tappable zone's wash is drawn is the
+    consistent behaviour, not a special case. No manager-produced state
+    reaches this today — the repeat screen's own pressed channel is only
+    ever populated for the repeat screen's own zones — so this documents the
+    input-space difference deliberately rather than leaving it accidental."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_pressed_mute_washes_the_volume_cluster_and_nothing_else(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
+        pressed = compositor.compose_repeat(
+            160, 128, _repeat_state(pressed=TouchZone.MUTE), rotate=False, bgr=False,
+        )
+        assert list(unpressed.crop(layout.volume_cluster).getdata()) != list(
+            pressed.crop(layout.volume_cluster).getdata()
+        )
+        for rect in (layout.dots, layout.name, layout.row, layout.start, layout.stop):
+            assert list(unpressed.crop(rect).getdata()) == list(pressed.crop(rect).getdata())
+
+
+# ---------------------------------------------------------------------------
+# _zone_rect — the pressed-rect lookups' shared helper over the zone table.
+# ---------------------------------------------------------------------------
+
+class TestZoneRectHelper:
+    @pytest.mark.parametrize("geometry", [GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT])
+    def test_returns_each_table_entrys_own_rect(self, geometry):
+        for entry in zone_rects_for(geometry, 160, 128):
+            assert _zone_rect(geometry, entry.zone, entry.index, 160, 128) == entry.rect
+
+    def test_stale_list_row_index_returns_none(self):
+        assert _zone_rect(GEOMETRY_LIST, TouchZone.LIST_ROW, 99, 160, 128) is None
+
+    def test_none_index_for_list_row_returns_none(self):
+        assert _zone_rect(GEOMETRY_LIST, TouchZone.LIST_ROW, None, 160, 128) is None
+
+    def test_zone_from_a_different_geometry_returns_none(self):
+        # REPEAT_PLAY only ever appears in the repeat geometry's table.
+        assert _zone_rect(GEOMETRY_MAIN, TouchZone.REPEAT_PLAY, None, 160, 128) is None
+
+    def test_none_zone_returns_none(self):
+        assert _zone_rect(GEOMETRY_MAIN, None, None, 160, 128) is None
 
 
 # ---------------------------------------------------------------------------

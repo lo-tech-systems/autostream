@@ -92,13 +92,16 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
 from dial_touch_layout import (
+    GEOMETRY_LIST,
+    GEOMETRY_MAIN,
+    GEOMETRY_REPEAT,
     OverlayLayout,
     Rect,
     TouchZone,
     layout_for,
     list_layout_for,
     repeat_layout_for,
-    zones_for,
+    zone_rects_for,
 )
 
 # Pillow renamed the resample enum in recent versions; fall back for older
@@ -1285,15 +1288,23 @@ def _compose_frame(base, width: int, height: int, frame: Frame, *, rotate: bool,
     return _finish(img, rotate, bgr)
 
 
+def _zone_rect(geometry: str, zone: "TouchZone | None", index: "int | None", width: int, height: int) -> "Rect | None":
+    """The rect the touch layer would report for (zone, index) on
+    *geometry*, or None when no such entry exists (a zone from another
+    geometry, or a stale LIST_ROW index): nothing is washed."""
+    if zone is None:
+        return None
+    for entry in zone_rects_for(geometry, width, height):
+        if entry.zone == zone and entry.index == index:
+            return entry.rect
+    return None
+
+
 def _main_pressed_rects(pressed: "TouchZone | None", width: int, height: int) -> tuple[Rect, ...]:
     """The now-playing screen's pressed-rect lookup: a stale or unrecognised
-    zone (e.g. one that belongs to a different surface) washes nothing."""
-    if pressed is None:
-        return ()
-    zones = zones_for(width, height)
-    if pressed in zones:
-        return (zones[pressed],)
-    return ()
+    zone (e.g. one that belongs to a different geometry) washes nothing."""
+    rect = _zone_rect(GEOMETRY_MAIN, pressed, None, width, height)
+    return (rect,) if rect is not None else ()
 
 
 def _now_playing_frame(overlay: OverlayState, width: int, height: int) -> Frame:
@@ -1315,19 +1326,12 @@ def _repeat_pressed_rects(state: RepeatViewState, width: int, height: int) -> tu
     """The repeat screen's pressed-rect lookup: a genuine touch first, then
     the fade-out-in-flight Stop wash layered on top of it when replaying —
     same order the two highlights are drawn in today."""
-    layout = repeat_layout_for(width, height)
-    zones = {
-        TouchZone.DOTS: layout.dots,
-        TouchZone.NAME: layout.name,
-        TouchZone.REPEAT_PLAY: layout.row,
-        TouchZone.REPEAT_START: layout.start,
-        TouchZone.REPEAT_STOP: layout.stop,
-    }
     rects = []
-    if state.pressed is not None and state.pressed in zones:
-        rects.append(zones[state.pressed])
+    rect = _zone_rect(GEOMETRY_REPEAT, state.pressed, None, width, height)
+    if rect is not None:
+        rects.append(rect)
     if state.layout == "replaying" and state.stop_pressed:
-        rects.append(layout.stop)
+        rects.append(_zone_rect(GEOMETRY_REPEAT, TouchZone.REPEAT_STOP, None, width, height))
     return tuple(rects)
 
 
@@ -1359,17 +1363,8 @@ def _list_pressed_rects(state: ListState, width: int, height: int) -> tuple[Rect
     raising."""
     if state.pressed is None:
         return ()
-    layout = list_layout_for(width, height)
     zone, index = state.pressed
-    if zone == TouchZone.LIST_ROW:
-        if index is not None and 0 <= index < len(layout.rows):
-            return (layout.rows[index],)
-        return ()
-    rect = {
-        TouchZone.LIST_BACK: layout.back,
-        TouchZone.LIST_DOWN: layout.down,
-        TouchZone.LIST_UP: layout.up,
-    }.get(zone)
+    rect = _zone_rect(GEOMETRY_LIST, zone, index, width, height)
     return (rect,) if rect is not None else ()
 
 

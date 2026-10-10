@@ -55,25 +55,34 @@ keeps the dead-zone band feeling the same physical size across profiles
 rather than shrinking to nothing on a big panel or ballooning on a small
 one.
 
-SURFACES: this module describes geometry for FOUR surfaces, never mixed.
-The MAIN surface (`zone_at`/`zones_for`/`layout_for`) is the now-playing
+SURFACES: this module describes geometry for FOUR hit-test geometries
+(GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE), never
+mixed. Each geometry's tappable rectangles live in one ordered table —
+`zone_rects_for(geometry, width, height)` — that both `hit_test()` below
+and the compositor's pressed-zone wash read, so the two can never disagree
+about where a boundary sits.
+
+The MAIN geometry (`zone_at`/`zones_for`/`layout_for`) is the now-playing
 screen: DOTS, NAME, MUTE, DOWN, UP, plus the non-actuating artist and
 title labels. DOTS is carved from the left of the NAME zone (whose x0
 therefore starts one band-height plus a 2*margin gap later than before);
-it opens the repeat screen. The SELECTOR/PICKER surface
+it opens the repeat screen. The LIST geometry
 (`list_zone_at`/`list_layout_for`) is the appliance list (also reused,
 unchanged, for the replay picker): LIST_ROW (one per visible row),
-LIST_BACK, LIST_DOWN and LIST_UP. The REPEAT surface
+LIST_BACK, LIST_DOWN and LIST_UP. The REPEAT geometry
 (`repeat_zone_at`/`repeat_layout_for`) is the repeat screen: DOTS (reused,
 pops back to main and reveals the main screen's volume overlay), NAME
-(reused, opens the appliance selector), REPEAT_PLAY (the enable layout's
-arm/disarm row), REPEAT_START, REPEAT_STOP. The IDLE surface
+(reused, opens the appliance selector), MUTE (the mute/volume readout,
+toggles mute like the main screen), REPEAT_PLAY (the enable layout's
+arm/disarm row), REPEAT_START, REPEAT_STOP. The IDLE geometry
 (`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_REPLAY,
-covering the whole panel below the top band. A caller never mixes surfaces
-— which one to hit-test against is decided elsewhere
-(dial_touch.TouchStateMachine.set_surface) — but all four are pure
-functions of (x, y, width, height) and are the ONLY hit-test functions any
-state machine calls.
+covering the whole panel below the top band, expressed as a single rect
+(`IdleLayout.replay`) like every other geometry's zones. A caller never
+mixes geometries — which one to hit-test against is decided elsewhere
+(dial_touch.TouchStateMachine.set_surface, which maps its own surface
+strings onto these four geometries many-to-one) — but `hit_test()` and
+every per-geometry wrapper are pure functions of (x, y, width, height) and
+are the ONLY hit-test functions any state machine calls.
 
 REMAINDER POLICY: an active width does not always divide evenly between the
 two zones sharing a split (DOWN and UP, after the dead-zone gap between
@@ -138,6 +147,98 @@ class TouchZone(str, Enum):
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 
 
+# Hit-test geometries. These name a geometry, not a screen: the touch layer
+# maps its own surfaces onto them many-to-one (two surfaces share MAIN, two
+# share LIST — see dial_touch.py's surface-to-geometry map).
+GEOMETRY_MAIN = "main"
+GEOMETRY_LIST = "list"
+GEOMETRY_REPEAT = "repeat"
+GEOMETRY_IDLE = "idle"
+GEOMETRIES = (GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE)
+
+
+@dataclass(frozen=True)
+class ZoneRect:
+    """One tappable rectangle on a geometry: the zone it resolves to, its
+    rect in compose-space, and, for LIST_ROW only, the row index. Index is
+    carried on the entry rather than encoded in the zone because only
+    LIST_ROW ever has one, and the touch layer already reports (zone,
+    index) as a pair."""
+
+    zone: TouchZone
+    rect: Rect
+    index: int | None = None
+
+
+def zone_rects_for(geometry: str, width: int, height: int) -> tuple[ZoneRect, ...]:
+    """The ordered, tappable rectangles of *geometry* at this panel size —
+    the single source both the hit-tests below and the compositor's
+    pressed-zone wash read, so the two can never disagree about where a
+    boundary sits. Order is hit-test order. Every rect here is a field of
+    one of the *Layout dataclasses below; this function adds no geometry
+    arithmetic of its own, only a view over them. Raises KeyError for an
+    unknown geometry (a programming error, never a runtime input)."""
+    return _GEOMETRY_BUILDERS[geometry](width, height)
+
+
+def _main_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
+    layout = layout_for(width, height)
+    return (
+        ZoneRect(TouchZone.DOTS, layout.dots),
+        ZoneRect(TouchZone.NAME, layout.name),
+        ZoneRect(TouchZone.MUTE, layout.volume_cluster),
+        ZoneRect(TouchZone.DOWN, layout.down),
+        ZoneRect(TouchZone.UP, layout.up),
+    )
+
+
+def _list_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
+    layout = list_layout_for(width, height)
+    return tuple(
+        ZoneRect(TouchZone.LIST_ROW, rect, i) for i, rect in enumerate(layout.rows)
+    ) + (
+        ZoneRect(TouchZone.LIST_BACK, layout.back),
+        ZoneRect(TouchZone.LIST_DOWN, layout.down),
+        ZoneRect(TouchZone.LIST_UP, layout.up),
+    )
+
+
+def _repeat_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
+    layout = repeat_layout_for(width, height)
+    return (
+        ZoneRect(TouchZone.DOTS, layout.dots),
+        ZoneRect(TouchZone.NAME, layout.name),
+        ZoneRect(TouchZone.MUTE, layout.volume_cluster),
+        ZoneRect(TouchZone.REPEAT_PLAY, layout.row),
+        ZoneRect(TouchZone.REPEAT_START, layout.start),
+        ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
+    )
+
+
+def _idle_zone_rects(width: int, height: int) -> tuple[ZoneRect, ...]:
+    layout = idle_layout_for(width, height)
+    return (ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),)
+
+
+_GEOMETRY_BUILDERS = {
+    GEOMETRY_MAIN: _main_zone_rects,
+    GEOMETRY_LIST: _list_zone_rects,
+    GEOMETRY_REPEAT: _repeat_zone_rects,
+    GEOMETRY_IDLE: _idle_zone_rects,
+}
+
+
+def hit_test(geometry: str, x: int, y: int, width: int, height: int) -> "ZoneRect | None":
+    """The first table entry of *geometry* containing compose-space point
+    (x, y), or None in a dead zone or outside the panel. The one hit-test
+    loop every per-geometry wrapper below is built from."""
+    for entry in zone_rects_for(geometry, width, height):
+        x0, y0, x1, y1 = entry.rect
+        if x0 <= x < x1 and y0 <= y < y1:
+            return entry
+    return None
+
+
 @dataclass(frozen=True)
 class OverlayLayout:
     """Full overlay geometry for one panel size — the single source of truth
@@ -190,10 +291,12 @@ class RepeatLayout:
 class IdleLayout:
     """Idle-screen geometry: a single non-actuating affordance line
     (reusing the same centre-low rect the main surface's artist line
-    occupies) — the tappable area itself is the whole panel below the top
-    band, returned by idle_zone_at(), not a rectangle on this dataclass."""
+    occupies — `affordance`), plus the actuating rect for the whole panel
+    below the top band (`replay`, == the IDLE_REPLAY zone, resolved by
+    idle_zone_at())."""
 
     affordance: Rect
+    replay: Rect
 
 
 @dataclass(frozen=True)
@@ -322,27 +425,19 @@ def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
 
     Rectangles are (x0, y0, x1, y1) with x1/y1 exclusive (Python slice /
     range convention), so a point p is inside iff x0 <= p.x < x1 and
-    y0 <= p.y < y1. A thin wrapper over layout_for() — see OverlayLayout for
-    the full geometry, including the non-actuating artist/band rectangles.
+    y0 <= p.y < y1. A view over the MAIN geometry's zone-rect table (see
+    zone_rects_for) — same five keys in the same insertion order as before
+    the table existed.
     """
-    layout = layout_for(width, height)
-    return {
-        TouchZone.DOTS: layout.dots,
-        TouchZone.NAME: layout.name,
-        TouchZone.MUTE: layout.volume_cluster,
-        TouchZone.DOWN: layout.down,
-        TouchZone.UP: layout.up,
-    }
+    return {entry.zone: entry.rect for entry in zone_rects_for(GEOMETRY_MAIN, width, height)}
 
 
 def zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     """Return the main-surface zone containing compose-space point (x, y),
     or None if the point falls in a dead zone or outside the panel
     entirely."""
-    for zone, (x0, y0, x1, y1) in zones_for(width, height).items():
-        if x0 <= x < x1 and y0 <= y < y1:
-            return zone
-    return None
+    hit = hit_test(GEOMETRY_MAIN, x, y, width, height)
+    return hit.zone if hit is not None else None
 
 
 def list_layout_for(width: int, height: int) -> ListLayout:
@@ -377,18 +472,8 @@ def list_zone_at(x: int, y: int, width: int, height: int) -> tuple[TouchZone, in
     point (x, y): (LIST_ROW, i) inside row i, (LIST_BACK/LIST_DOWN/LIST_UP,
     None) inside the bottom bar, or None in a dead zone or outside the
     panel. row_index is only ever set for LIST_ROW."""
-    layout = list_layout_for(width, height)
-    for i, (x0, y0, x1, y1) in enumerate(layout.rows):
-        if x0 <= x < x1 and y0 <= y < y1:
-            return (TouchZone.LIST_ROW, i)
-    for zone, (x0, y0, x1, y1) in (
-        (TouchZone.LIST_BACK, layout.back),
-        (TouchZone.LIST_DOWN, layout.down),
-        (TouchZone.LIST_UP, layout.up),
-    ):
-        if x0 <= x < x1 and y0 <= y < y1:
-            return (zone, None)
-    return None
+    hit = hit_test(GEOMETRY_LIST, x, y, width, height)
+    return (hit.zone, hit.index) if hit is not None else None
 
 
 def repeat_layout_for(width: int, height: int) -> RepeatLayout:
@@ -428,36 +513,21 @@ def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     decides whether a hit means anything in the CURRENT layout (REPEAT_PLAY
     is drawn only in the enable layout, START/STOP only in the replaying
     layout; see dial_display_compositor.compose_repeat)."""
-    layout = repeat_layout_for(width, height)
-    for zone, (x0, y0, x1, y1) in (
-        (TouchZone.DOTS, layout.dots),
-        (TouchZone.NAME, layout.name),
-        (TouchZone.MUTE, layout.volume_cluster),
-        (TouchZone.REPEAT_PLAY, layout.row),
-        (TouchZone.REPEAT_START, layout.start),
-        (TouchZone.REPEAT_STOP, layout.stop),
-    ):
-        if x0 <= x < x1 and y0 <= y < y1:
-            return zone
-    return None
+    hit = hit_test(GEOMETRY_REPEAT, x, y, width, height)
+    return hit.zone if hit is not None else None
 
 
 def idle_layout_for(width: int, height: int) -> IdleLayout:
     """Compute the idle-screen geometry: the affordance line is the same
     centre-low rectangle the main surface's (non-actuating) artist line
-    occupies."""
+    occupies; replay is the whole panel below the top band."""
     layout = layout_for(width, height)
-    return IdleLayout(affordance=layout.artist)
+    return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height))
 
 
 def idle_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     """Return IDLE_REPLAY for any point below the top band, else None. The
     top band is excluded so an accidental brush up there — where the name
     and volume cluster live on the main surface — does nothing on it."""
-    if not (0 <= x < width and 0 <= y < height):
-        return None
-    layout = layout_for(width, height)
-    _, top_y0, _, top_y1 = layout.top_band
-    if top_y0 <= y < top_y1:
-        return None
-    return TouchZone.IDLE_REPLAY
+    hit = hit_test(GEOMETRY_IDLE, x, y, width, height)
+    return hit.zone if hit is not None else None

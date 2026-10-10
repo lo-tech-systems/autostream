@@ -37,6 +37,8 @@ from dial_touch import (  # noqa: E402
     TouchAction,
     TouchEventSource,
     TouchStateMachine,
+    _SINGLE_SHOT_ZONES,
+    _ZONE_TAP_ZONES,
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
@@ -1536,3 +1538,28 @@ class TestRepeatCloseRevealWiring:
         source._poll_surface()
         source._poll_surface()  # must not raise with no getter supplied
         assert sm.surface == SURFACE_HIDDEN
+
+
+# ---------------------------------------------------------------------------
+# The complement rule: the single-shot and zone-tap sets are derived from
+# the zone enum minus the two/three fixed-action zones, not hand-listed —
+# stated here explicitly so a reader checking the derivation finds it
+# alongside the sets themselves.
+# ---------------------------------------------------------------------------
+
+class TestComplementRuleDerivation:
+    def test_single_shot_zones_is_every_zone_except_up_and_down(self):
+        assert _SINGLE_SHOT_ZONES == frozenset(TouchZone) - {TouchZone.UP, TouchZone.DOWN}
+
+    def test_zone_tap_zones_is_every_zone_except_up_down_and_mute(self):
+        assert _ZONE_TAP_ZONES == frozenset(TouchZone) - {
+            TouchZone.UP, TouchZone.DOWN, TouchZone.MUTE,
+        }
+
+
+class TestUnknownSurfaceFallsBackToMainGeometry:
+    def test_unknown_surface_string_arms_against_main(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface("not-a-real-surface", False, now=0.0)
+        actions = sm.on_filter_event(press_event(UP_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]

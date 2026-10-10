@@ -62,24 +62,28 @@ display's persistent_overlay_shown() (injected, never imported — see the
 class docstring) once per loop iteration so a transition is noticed within
 one tick either way.
 
-SURFACES: which screen is currently on the panel decides which geometry a
-press hit-tests against — see TouchStateMachine.set_surface(). "hidden" and
-"held" are both the MAIN surface (dial_touch_layout.zone_at/zones_for): the
-now-playing screen, reveal-on-touch or always-shown respectively, unchanged
-from HELD VISIBLE above. "selector" and "picker" are both the list chassis
-(dial_touch_layout.list_zone_at/list_layout_for): a press arms immediately
-regardless of held state (the list is either fully on screen or not shown
-at all — there is no reveal-only phase for it). "repeat" is the repeat
-screen (dial_touch_layout.repeat_zone_at/repeat_layout_for); "idle" is the
-idle screen (dial_touch_layout.idle_zone_at/idle_layout_for) — both held
-like the selector. Every zone any of these can arm (NAME/DOTS on the main
-surface; LIST_ROW/LIST_BACK/LIST_DOWN/LIST_UP on the selector/picker
-surface; DOTS/NAME/REPEAT_PLAY/REPEAT_START/REPEAT_STOP on the repeat
-surface; IDLE_REPLAY on the idle surface) is single-shot — it flashes once
-and never repeats, and its tap is reported as ACTION_ZONE_TAP for the
+SURFACES: which screen is currently on the panel decides which hit-test
+geometry a press is sampled against — see TouchStateMachine.set_surface()
+and _GEOMETRY_FOR_SURFACE. "hidden" and "held" both map to
+dial_touch_layout.GEOMETRY_MAIN: the now-playing screen, reveal-on-touch or
+always-shown respectively, unchanged from HELD VISIBLE above. "selector"
+and "picker" both map to GEOMETRY_LIST (the appliance-list chassis): a
+press arms immediately regardless of held state (the list is either fully
+on screen or not shown at all — there is no reveal-only phase for it).
+"repeat" maps to GEOMETRY_REPEAT; "idle" maps to GEOMETRY_IDLE — both held
+like the selector. The map is many-to-one on purpose: which surfaces share
+a geometry is a policy decision (reveal timing, what a row tap does), never
+a geometric one — dial_touch_layout.py itself only ever describes the four
+geometries, never a surface. Every zone any of these can arm (NAME/DOTS on
+the main geometry; LIST_ROW/LIST_BACK/LIST_DOWN/LIST_UP on the list
+geometry; DOTS/NAME/REPEAT_PLAY/REPEAT_START/REPEAT_STOP on the repeat
+geometry; IDLE_REPLAY on the idle geometry) is single-shot — it flashes
+once and never repeats, and its tap is reported as ACTION_ZONE_TAP for the
 caller to dispatch. DOTS and NAME are each gated by their own "is it
-currently tappable" flag (_dots_active/_name_active) — the main and
-repeat surfaces share both gates. A surface CHANGE while a finger is
+currently tappable" flag (_dots_active/_name_active), applied unconditionally
+in _arm() — the gate is only ever meaningful on the main and repeat
+geometries, since neither zone appears in the list or idle tables. A
+surface CHANGE while a finger is
 down drops the zone latch exactly as set_held_visible(False) does, because
 the geometry under the finger just changed. TouchEventSource polls the
 display's touch_surface() (injected; falls back to the legacy
@@ -100,11 +104,12 @@ from dataclasses import dataclass
 
 from dial_touch_filter import TouchEvent, TouchEventType
 from dial_touch_layout import (
+    GEOMETRY_IDLE,
+    GEOMETRY_LIST,
+    GEOMETRY_MAIN,
+    GEOMETRY_REPEAT,
     TouchZone,
-    idle_zone_at,
-    list_zone_at,
-    repeat_zone_at,
-    zone_at,
+    hit_test,
 )
 
 # Overlay auto-dismisses this long after the last contact sample / release /
@@ -131,38 +136,25 @@ ACTION_DISMISS_OVERLAY = "dismiss-overlay"
 ACTION_SET_PRESSED_ZONE = "set-pressed-zone"
 ACTION_ZONE_TAP = "zone-tap"
 
-# Zones that flash once and never repeat, regardless of how long the finger
-# stays down — re-actuating them on a timer would be meaningless (a mute
-# toggle, an open/close/page of the selector, picking a row, opening/
-# closing the repeat screen, or tapping the idle affordance).
-_SINGLE_SHOT_ZONES = frozenset((
-    TouchZone.MUTE,
-    TouchZone.NAME,
-    TouchZone.LIST_BACK,
-    TouchZone.LIST_DOWN,
-    TouchZone.LIST_UP,
-    TouchZone.LIST_ROW,
-    TouchZone.DOTS,
-    TouchZone.REPEAT_PLAY,
-    TouchZone.REPEAT_START,
-    TouchZone.REPEAT_STOP,
-    TouchZone.IDLE_REPLAY,
-))
+# The only zones that auto-repeat while held: the volume steppers. Every
+# other zone acts once per press and flashes rather than staying lit —
+# re-actuating them on a timer would be meaningless (a mute toggle, an
+# open/close/page of the selector, picking a row, opening/closing the
+# repeat screen, or tapping the idle affordance).
+_REPEATING_ZONES = frozenset((TouchZone.UP, TouchZone.DOWN))
 
-# Zones whose tap is reported as ACTION_ZONE_TAP for the caller to dispatch,
-# rather than one of the fixed volume/mute actions above.
-_ZONE_TAP_ZONES = frozenset((
-    TouchZone.NAME,
-    TouchZone.LIST_BACK,
-    TouchZone.LIST_DOWN,
-    TouchZone.LIST_UP,
-    TouchZone.LIST_ROW,
-    TouchZone.DOTS,
-    TouchZone.REPEAT_PLAY,
-    TouchZone.REPEAT_START,
-    TouchZone.REPEAT_STOP,
-    TouchZone.IDLE_REPLAY,
-))
+# Zones dispatched as their own fixed action kinds (volume up/down, mute
+# toggle). Every other zone is reported as ACTION_ZONE_TAP with the zone
+# (and row index, for LIST_ROW) for the caller to route.
+_FIXED_ACTION_ZONES = frozenset((TouchZone.UP, TouchZone.DOWN, TouchZone.MUTE))
+
+# Derived from the zone enum rather than hand-listed: a zone added to the
+# enum is single-shot and zone-tap by default (the only sensible default —
+# a new repeating or fixed-action zone is a deliberate decision made by
+# adding it to one of the two small sets above, which need a new action
+# kind wired up anyway).
+_SINGLE_SHOT_ZONES = frozenset(TouchZone) - _REPEATING_ZONES
+_ZONE_TAP_ZONES = frozenset(TouchZone) - _FIXED_ACTION_ZONES
 
 _PHASE_IDLE = "idle"
 _PHASE_REVEAL_PENDING = "reveal_pending"
@@ -179,6 +171,19 @@ SURFACE_SELECTOR = "selector"
 SURFACE_REPEAT = "repeat"
 SURFACE_IDLE = "idle"
 SURFACE_PICKER = "picker"
+
+# Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
+# and held differ only in reveal policy (not geometry); selector and picker
+# differ only in what a row tap does once armed. An unrecognised surface
+# string falls back to MAIN in _arm() below, matching the old default.
+_GEOMETRY_FOR_SURFACE = {
+    SURFACE_HIDDEN: GEOMETRY_MAIN,
+    SURFACE_HELD: GEOMETRY_MAIN,
+    SURFACE_SELECTOR: GEOMETRY_LIST,
+    SURFACE_PICKER: GEOMETRY_LIST,
+    SURFACE_REPEAT: GEOMETRY_REPEAT,
+    SURFACE_IDLE: GEOMETRY_IDLE,
+}
 
 
 @dataclass(frozen=True)
@@ -507,24 +512,17 @@ class TouchStateMachine:
         return self._on_release(now)
 
     def _arm(self, x: int, y: int, now: float) -> list[TouchAction]:
-        index: int | None = None
-        if self._surface in (SURFACE_SELECTOR, SURFACE_PICKER):
-            hit = list_zone_at(x, y, self._width, self._height)
-            zone, index = hit if hit is not None else (None, None)
-        elif self._surface == SURFACE_REPEAT:
-            zone = repeat_zone_at(x, y, self._width, self._height)
-            if zone == TouchZone.DOTS and not self._dots_active:
-                zone = None
-            if zone == TouchZone.NAME and not self._name_active:
-                zone = None
-        elif self._surface == SURFACE_IDLE:
-            zone = idle_zone_at(x, y, self._width, self._height)
-        else:
-            zone = zone_at(x, y, self._width, self._height)
-            if zone == TouchZone.NAME and not self._name_active:
-                zone = None
-            if zone == TouchZone.DOTS and not self._dots_active:
-                zone = None
+        geometry = _GEOMETRY_FOR_SURFACE.get(self._surface, GEOMETRY_MAIN)
+        hit = hit_test(geometry, x, y, self._width, self._height)
+        zone, index = (hit.zone, hit.index) if hit is not None else (None, None)
+        # DOTS/NAME are gated by their own "is it currently tappable" flag —
+        # meaningful on the main and repeat geometries only; applying the
+        # gate unconditionally is equivalent since neither zone appears in
+        # the list or idle tables, so the gate never sees them there.
+        if zone == TouchZone.DOTS and not self._dots_active:
+            zone = None
+        if zone == TouchZone.NAME and not self._name_active:
+            zone = None
         if zone is None:
             # Landed/arrived in a dead zone — nothing to actuate; still
             # counts as a contact sample toward dismiss.
