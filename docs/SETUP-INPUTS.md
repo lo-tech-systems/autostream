@@ -12,7 +12,7 @@ Open the Setup page and tap **Input 1** or **Input 2**. The panel is titled **Se
 
 ### Enable
 
-A toggle labelled **Enable** turns the input on or off. The rest of the card (device selection, Turntable, Gain, Equaliser) is hidden until Enable is switched on.
+A toggle labelled **Enable** turns the input on or off. The rest of the card (device selection, Input type, Sensitivity, Gain, Equaliser) is hidden until Enable is switched on.
 
 Input 2 starts disabled. When either input is off, its collapsed row on the Setup page shows **Not configured** (Input 1) or **Disabled** (Input 2) instead of the usual device summary.
 
@@ -27,19 +27,38 @@ A few behaviours worth knowing:
 * If a previously saved device is no longer detected (unplugged, or the Pi rebooted without it), it still shows in the list, marked **(not currently detected)**, so the setting isn't silently lost.
 * Choosing **Bluetooth** from this list opens the Bluetooth pairing window if nothing is paired yet. See [Bluetooth](#bluetooth) below.
 
-### Turntable
+### Input type
 
-The **Turntable** toggle tells autostream the source is a record player rather than a line-level device like a CD player or tape deck.
+The **Input type** dropdown offers **Turntable**, **CD** and **Line**. Pick the one that matches what is plugged in.
 
 Analogue turntables will need a preamp - see [Turntable connects but the signal is too quiet](TROUBLESHOOTING.md#turntable-connects-but-the-signal-is-too-quiet).
 
-Turning Turntable on or off changes the input's silence-detection threshold preset shown just below the toggle, for example:
+Turntable tells autostream the source is a record player. It enables the [service tracking functions](SERVICE.md) and, when a record interrupts a repeat replay, autostream waits a little longer (about 1.25 seconds of music rather than a quarter of a second) before switching over to it. CD and Line behave the same way as each other here.
 
-> Detection threshold preset: -45 dB
+The type also decides a few things you can see:
 
-Turntables pick up background noise, and this setting raises the detection level to avoid false starts. It also enables the [service tracking functions](SERVICE.md). This preset is set automatically by the toggle; it isn't something you tune by hand here. The **Silence detection** timeout itself (how long that quiet has to last before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
+* When autostream has no track title for what is playing, receivers and dials show the type name (**Turntable**, **CD** or **Line**) as the title. A Bluetooth source shows the type you chose, not "Bluetooth".
+* While a track is untitled, the round dial (on its larger layouts) and the HD dial show the input's name where they used to show "Playing".
+* The [Home page](HOME-PAGE.md) shows the matching icon and label, with a separate CD icon for a CD input.
+* A CD input starts a session on the very first sound. Turntable and Line inputs need about a tenth of a second of sound above the sensitivity level, within one second, before a session starts, so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
 
-If a Bluetooth source lands on this input (see below), turn Turntable on yourself if it's a record player. autostream doesn't detect this automatically for a Bluetooth-paired device.
+If a Bluetooth source lands on this input (see below), choose the input type yourself. autostream doesn't detect it for a Bluetooth-paired device.
+
+If you updated from an earlier release, an input that was set as a turntable shows as Turntable and every other input shows as Line. Nothing else changes until you change the type yourself. A CD player on an existing input is therefore treated as Line, with the click protection on, until you set it to CD.
+
+Changing the type takes effect straight away and never interrupts playback. If autostream cannot reach its audio service at that moment, the page shows **Saved (could not apply live)** and the change takes effect once the audio service reconnects.
+
+### Sensitivity
+
+The **Sensitivity** slider sets the level an input has to reach before autostream counts it as playing. It runs from -70 dB to -30 dB in 1 dB steps, and its current value is shown beside the label. Further left picks up quieter audio; further right ignores more background noise.
+
+Choosing Turntable moves the slider to -45 dB, and choosing CD or Line moves it to -60 dB, but only when the preset changes. Switching between Turntable and either of the others resets it; switching between CD and Line keeps a value you have set. Turntables pick up background noise, which is why their preset is higher.
+
+Below the slider, the **Level** readout shows the input's current peak level in dB, refreshed about once a second while the card is open. It reads **no level** when there is nothing to show, and adds **(above threshold)** when the level is at or above the slider's value, meaning it would count as sound. The level is measured before Gain and Equaliser, so those settings don't move it. Changes to the slider are applied at once and never interrupt playback.
+
+If a very quiet passage after a long silence doesn't restart playback on a Turntable or Line input, it may need to get a little louder first. Move the Sensitivity slider to the left.
+
+The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
 
 ### Gain and Equaliser
 
@@ -56,7 +75,9 @@ When an input is enabled, its Setup page row shows a short summary such as:
 
 > USB Audio CODEC · Turntable · +2 dB
 
-For a Bluetooth-assigned input, the device name and turntable/line-in flag are replaced by the Bluetooth connection state, for example:
+> USB Audio CODEC · CD · 0 dB
+
+For a Bluetooth-assigned input, the device name and input type are replaced by the Bluetooth connection state, for example:
 
 > Bluetooth · My Turntable · 0 dB
 
@@ -115,7 +136,7 @@ Once pairing succeeds, autostream assigns the Bluetooth source to an input for y
 
 The result panel names whichever input was used, and the Setup page's input controls update immediately, no reload needed.
 
-If your Bluetooth source is a record player, turn on the **Turntable** toggle on whichever input it landed on. autostream doesn't set this for you.
+If your Bluetooth source is a record player, set the **Input type** to Turntable on whichever input it landed on. autostream doesn't set this for you.
 
 Only one Bluetooth device can be paired at a time. Pairing a different one later forgets the previous device and replaces it.
 

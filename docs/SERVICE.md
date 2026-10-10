@@ -5,7 +5,7 @@ belt life, and main bearing oil life. It has no PIN and is reachable from the
 bottom navigation on any autostream page.
 
 The page is always available, but its items only do anything for inputs set
-to **Turntable** in [Setup](SETUP-INPUTS.md). For an input left as Line In (or
+to **Turntable** in [Setup](SETUP-INPUTS.md). For an input set to CD or Line (or
 a disabled Input 2), every card reads "Not a turntable" / "Disabled" and opens
 to a message telling you to set that input to Turntable in Setup first.
 

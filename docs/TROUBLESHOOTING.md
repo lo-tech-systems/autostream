@@ -190,6 +190,15 @@ USB and Bluetooth turntables usually include the pre-amp already, so they need n
 
 ---
 
+### Playback doesn't start, or starts on a click
+
+Each input has an **Input type** and a **Sensitivity** setting under [Setup: Inputs](SETUP-INPUTS.md#input-type). The **Level** readout on the input's card shows what autostream is hearing and adds "(above threshold)" when it is loud enough to count.
+
+* **Playback doesn't start.** Open the input's card, start the source and watch Level. If it reads "no level", autostream has no level to show for that input (check the Input device and that the source is on). If the level stays below the slider's value, move **Sensitivity** to the left. A very quiet passage after a long silence may not restart playback on a Turntable or Line input until it gets a little louder; moving the slider left fixes this.
+* **A click, pop or knocked cable starts playback.** On a Turntable or Line input a short noise should not start playback, because about a tenth of a second of sound above the level is needed first. If noise still starts it, move **Sensitivity** to the right. A CD input starts on the first sound, so if clicks start playback on an input set to CD, choose Line instead.
+
+---
+
 ### Reinstalling from the console
 
 If Factory Reset is not enough, or if an update has left the appliance in a bad state, recover from the console instead.
@@ -833,7 +842,7 @@ Track boundaries are detected from short silent gaps. Gapless albums and live re
 
 If the periodic refresh is identifying the wrong (previous) track, the most likely cause is that the refresh deadline happened to fall early in the new track. The refresh will self-correct at the next cycle.
 
-On a detected boundary, the receiver switches immediately to the input label (e.g. "Vinyl") and the autostream logo while re-identification runs, then updates to the new track's title and cover once identification completes - including a false boundary, where it shows the input label briefly before the same track's details reappear.
+On a detected boundary, the receiver switches immediately to the input label (e.g. "Turntable") and the autostream logo while re-identification runs, then updates to the new track's title and cover once identification completes - including a false boundary, where it shows the input label briefly before the same track's details reappear.
 
 #### False track changes on quiet passages
 

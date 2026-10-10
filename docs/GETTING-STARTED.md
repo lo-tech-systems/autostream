@@ -70,7 +70,7 @@ You can add and switch to other speakers later from the [Home page](HOME-PAGE.md
 On the second setup page:
 
 1. Choose your connected **input device** for **Input 1** from the list.
-2. Tick **Turntable** if that input is a record player.
+2. Choose the **Input type**: Turntable, CD or Line.
 3. Choose a **default volume level**.
 4. Confirm or change the appliance's **hostname**.
 

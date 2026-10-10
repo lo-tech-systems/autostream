@@ -31,11 +31,12 @@ Once playback starts, a **minimum playback hold** keeps the session running for 
 time (30 seconds by default) even through a brief quiet passage, so a stylus drop or a gap
 between tracks does not cut it short. The hold is a config-file setting rather than a control on
 this card, and it is what makes short silence-detection settings (5-10 seconds) safe, including
-for automatic turntables whose start button causes a transient before the music begins.
+for automatic turntables whose start button causes a transient before the music begins. On a Turntable or Line input a single click does not start playback at
+all; about a tenth of a second of sound is needed first.
 
-This is separate from each input's own silence *threshold* (the level below which audio counts
+This is separate from each input's own **Sensitivity** (the level below which audio counts
 as silence in the first place), which is set per input under
-[Setup-Inputs](SETUP-INPUTS.md).
+[Setup-Inputs](SETUP-INPUTS.md#sensitivity).
 
 ## Repeat playback
 

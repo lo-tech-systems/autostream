@@ -12,9 +12,10 @@ The card at the top of the page shows one of:
 - **Now Playing** - an input is above the silence threshold.
 - **Repeat Play** - autostream is replaying the last recorded disc or record. See [Repeat playback](SETUP-PLAYBACK.md#repeat-playback).
 
-Under the heading, an icon and label identify the source: **Turntable**, **Bluetooth**, or
-**Line Level**, alongside the input's own label (for example "Input 1"). If a Bluetooth
-turntable is connected it is still shown as a turntable.
+Under the heading, an icon and label identify the source by its input type: **Turntable**, **CD**
+or **Line**, alongside the input's own label (for example "Input 1 · CD"). A Bluetooth source keeps the
+Bluetooth icon, with its input type as the label. You choose the type in
+[Setup: Inputs](SETUP-INPUTS.md#input-type).
 
 If [track identification](SETUP-TRACK-ID.md) is turned on, the card instead shows the identified
 track's title, artist and artwork once a match is found. Track identification is a global
