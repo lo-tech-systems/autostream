@@ -1107,6 +1107,16 @@ class TestPictureSwap:
         open_page(page, hd)
         wait_settled(page)
         shown = page.locator("#art").get_attribute("src")
+        # A routed page does not use the browser's cache, so the ghost asks
+        # the server for the first picture again, and the server only has
+        # the one the dial is showing: 404 once the scenario has moved on.
+        # A request for that picture that is still out then answers the
+        # front's request too. The first picture is answered from here
+        # instead, as the cache of a real page would.
+        for suffix in ("", "/backdrop"):
+            kept = page.request.get(hd.url + shown + suffix)
+            page.route(re.compile(re.escape(shown + suffix) + "$"),
+                       lambda route, request, kept=kept: route.fulfill(response=kept))
         held = []
         page.route(LOGO_PICTURE_URLS, lambda route: held.append(route))
         hd.show(hs.SCENARIOS["nothing_playing"])

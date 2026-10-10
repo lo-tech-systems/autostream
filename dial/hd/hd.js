@@ -24,11 +24,17 @@ function pressContext() {
     return { focus: focus, offline: ui.offline, r: replay ? replay.r : null, t: t };
 }
 
+// A held button is looked at when the state or the connection changes,
+// and only then: a redraw for any other reason (the replay timer, a
+// control's own change) has nothing new to say about the request, and
+// must not let go of a button whose request the state has yet to show.
+function observePress() {
+    press.observe(pressContext());
+}
+
 let replayTick = 0;
 
 function render() {
-    // A held button ends with its reason, before the page is drawn.
-    press.observe(pressContext());
     const view = () => derive(ui.state || EMPTY_STATE, Object.assign({ now: Date.now(), press: press.current() }, ui));
     ui.vm = view();
     // The dial's state takes over from the shut-down request the page sent.
@@ -68,6 +74,7 @@ let checking = false;
 function setOffline(value) {
     if (ui.offline === value) { return; }
     ui.offline = value;
+    observePress();
     render();
 }
 
@@ -84,6 +91,7 @@ function accept(text) {
     }
     ui.stateAt = Date.now();
     ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt);
+    observePress();
     render();
 }
 

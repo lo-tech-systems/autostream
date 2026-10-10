@@ -146,9 +146,35 @@ def shown(page, hd, title, scenario):
     expect(page.locator("#title")).to_have_text(title)
 
 
+# Counts the replies the page has finished with. The reply and the state
+# reach the page by different routes, so a test that needs one handled
+# before the other is pushed waits for this, not for a pause. The count
+# rises on a later task than the one that read the reply, after all that
+# the page does with it.
+COUNT_REPLIES = """
+(() => {
+    window.__replies = 0;
+    const read = Response.prototype.json;
+    Response.prototype.json = function () {
+        return read.call(this).finally(() => setTimeout(() => { window.__replies += 1; }));
+    };
+})();
+"""
+
+
+def count_replies(page) -> None:
+    page.add_init_script(COUNT_REPLIES)
+
+
+def replied(page, count=1) -> None:
+    """Wait until the page has handled *count* replies."""
+    page.wait_for_function(f"window.__replies >= {count}")
+
+
 def start_held(page, hd, *, answer_with=None, status=200):
     """Open the page on a running replay (the Lounge) and press Back to the
     start, the appliance's answer to the press itself held back."""
+    count_replies(page)
     seen = answer(page, "replay_restart", answer_with, status)
     hd.show(replay_state("T0", transport=EARLIER))
     open_page(page, hd)
@@ -181,7 +207,7 @@ class TestStartButtonHeld:
     def test_it_follows_the_token_the_reply_carries(self, page, hd):
         seen = start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
         rewind = replay_button(page, REWIND)
-        page.wait_for_timeout(200)
+        replied(page)
         assert seen == [{"appliance_id": LOUNGE}]
         shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
         expect(rewind).to_have_attribute(BUSY, "true")
@@ -191,9 +217,21 @@ class TestStartButtonHeld:
             "T3", transport=seek("accepted", changed=NOW + 2), observed=NOW + 2.5, position=0.0))
         expect(rewind).to_have_attribute(BUSY, "false")
 
+    def test_a_redraw_that_shows_nothing_new_does_not_let_it_go(self, page, hd):
+        start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
+        replied(page)
+        # The reply has named the request but the state has not shown it, and
+        # the timer is redrawn as it steps on: the button stays down.
+        timer = replay_timer(page)
+        before = timer.inner_text()
+        expect(timer).not_to_have_text(before)
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
+        shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
+
     def test_a_newer_request_is_not_taken_for_the_one_the_reply_named(self, page, hd):
         start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
-        page.wait_for_timeout(200)
+        replied(page)
         # The first state the page sees shows another seek: not this press's.
         shown(page, hd, "T1", replay_state("T1", transport=seek("pending", requested=NOW + 5)))
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
@@ -285,16 +323,20 @@ class TestStartButtonHeld:
 
     def test_a_token_that_arrives_after_a_state_has_the_last_word(self, page, hd):
         held: list = []
+        count_replies(page)
         page.route("**/api/v1/actions/replay_restart", lambda route: held.append(route))
         hd.show(replay_state("T0", transport=EARLIER))
         open_page(page, hd)
         expect(page.locator("#title")).to_have_text("T0")
-        replay_button(page, REWIND).click()
+        with page.expect_request("**/api/v1/actions/replay_restart"):
+            replay_button(page, REWIND).click()
         # A state shows a request before the reply says which one is the press's.
         shown(page, hd, "T1", replay_state("T1", transport=seek("pending", requested=NOW + 5)))
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
         assert len(held) == 1
         held[0].fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "token": NOW + 1}))
+        # The state that follows must not get to the page ahead of the reply.
+        replied(page)
         shown(page, hd, "T2", replay_state("T2", transport=seek("pending")))
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
         shown(page, hd, "T3", replay_state(
