@@ -49,6 +49,11 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
     mock_hub.start.side_effect = lambda: order.append("hub.start")
     mock_hub.stop.side_effect = lambda: order.append("hub.stop")
     mock_hub_class = MagicMock(return_value=mock_hub)
+    mock_panel = MagicMock()
+    mock_panel.start.side_effect = lambda: order.append("panel.start")
+    mock_panel.stop.side_effect = lambda: order.append("panel.stop")
+    mock_panel_class = MagicMock(return_value=mock_panel)
+    mock_backlight = MagicMock()
     mock_http = MagicMock()
     mock_http._server = MagicMock()
     mock_http.get_runtime_status.return_value = {"name": "Kitchen Dial"}
@@ -56,7 +61,8 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
     mock_http.effective_volume_scope = "current"
     order = []
     captured = {"order": order, "http": mock_http, "hd": mock_hd, "hd_class": mock_hd_class,
-                "hub": mock_hub, "hub_class": mock_hub_class}
+                "hub": mock_hub, "hub_class": mock_hub_class, "panel": mock_panel,
+                "panel_class": mock_panel_class, "backlight": mock_backlight}
 
     class _QuickEvent(threading.Event):
         def wait(self, timeout=None):
@@ -96,7 +102,8 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
          patch("dial_main.load_config", return_value=cfg), \
          patch("dial_main._reconcile_update_timer"), \
          patch("dial_main._announce_self"), \
-         patch.multiple("dial_main", DialLED=DEFAULT, HdServer=mock_hd_class, ChangeHub=mock_hub_class), \
+         patch.multiple("dial_main", DialLED=DEFAULT, HdServer=mock_hd_class, ChangeHub=mock_hub_class,
+                       HdPanel=mock_panel_class, Backlight=mock_backlight), \
          patch("dial_main.DialHTTPServer", return_value=mock_http), \
          patch("dial_main.start_playing_browser"), \
          patch("dial_main.start_general_browser"), \
@@ -260,10 +267,44 @@ class TestHdServerWiring:
 
     def test_a_config_change_publishes_to_the_hub(self):
         captured = _run_core_wiring()
-        (callback,), _ = captured["http"].add_cfg_listener.call_args
         captured["hub"].publish.assert_not_called()
-        callback(object())
+        for (callback,), _ in captured["http"].add_cfg_listener.call_args_list:
+            callback(object())
         captured["hub"].publish.assert_called_once_with()
+
+    def test_a_config_change_reaches_the_panel_and_the_dev_access_setting(self):
+        captured = _run_core_wiring()
+        listeners = [args[0] for args, _ in captured["http"].add_cfg_listener.call_args_list]
+        assert any(callback is captured["hd"].on_config for callback in listeners)
+        captured["hd"].on_config.reset_mock()
+        captured["panel"].apply_settings.reset_mock()
+        new_cfg = object()
+        for callback in listeners:
+            callback(new_cfg)
+        captured["hd"].on_config.assert_called_once_with(new_cfg)
+        captured["panel"].apply_settings.assert_called_once_with()
+
+    def test_dev_access_is_applied_from_the_loaded_config_at_startup(self):
+        captured = _run_core_wiring()
+        captured["hd"].on_config.assert_any_call(captured["hd_class"].call_args.args[0])
+
+    def test_the_panel_is_built_on_the_hub_and_given_to_the_server(self):
+        captured = _run_core_wiring()
+        args, kwargs = captured["panel_class"].call_args
+        assert args[0] is captured["hub"]
+        assert captured["hd_class"].call_args.kwargs["panel"] is captured["panel"]
+        assert callable(captured["hd_class"].call_args.kwargs["info_fn"])
+
+    def test_the_panel_drives_a_backlight_only_on_a_kiosk_surface(self):
+        spi = _run_core_wiring(screen_type="st7735s_160x128")
+        assert spi["panel_class"].call_args.kwargs["backlight"] is None
+        kiosk = _run_core_wiring(screen_type="hd_kiosk")
+        assert kiosk["panel_class"].call_args.kwargs["backlight"] is kiosk["backlight"].detect.return_value
+
+    def test_the_panel_starts_after_the_server_and_stops_after_it(self):
+        order = _run_core_wiring()["order"]
+        assert order.index("hd.start") < order.index("panel.start") < order.index("core.start")
+        assert order.index("hd.stop") < order.index("panel.stop") < order.index("hub.stop")
 
     def test_the_hub_is_stopped_when_the_server_cannot_bind(self):
         captured = _run_core_wiring(hd_error=OSError(98, "Address already in use"))

@@ -85,6 +85,14 @@ class FakeDialServer:
     def screen_report(self, display=None) -> dict:
         return dhs.DialHTTPServer.screen_report(self, display)
 
+    def apply_screen_settings(self, screen) -> tuple[int, dict]:
+        return dhs.DialHTTPServer.apply_screen_settings(self, screen)
+
+    def _apply_screen_settings_locked(self, screen) -> tuple[int, dict]:
+        return dhs.DialHTTPServer._apply_screen_settings_locked(self, screen)
+
+    _apply_lock = threading.Lock()
+
     def _on_announce(self, add: bool) -> None:
         self._announce_calls.append(add)
 
@@ -3450,3 +3458,104 @@ class TestHdDevAccessConfigure:
         )
         assert r["status"] == 200
         assert r["save_calls"][0].hd_dev_access is True
+
+
+# ---------------------------------------------------------------------------
+# apply_screen_settings: the one path both servers share
+# ---------------------------------------------------------------------------
+
+class TestApplyScreenSettings:
+    def setup_method(self):
+        dhs._pin_attempts.clear()
+
+    def _apply(self, screen, cfg=None):
+        server = FakeDialServer(cfg or DialConfig(uuid="x"))
+        with patch("dial_config.save_config") as save:
+            status, body = server.apply_screen_settings(screen)
+        return server, status, body, save
+
+    def test_returns_status_and_body_and_saves(self):
+        server, status, body, save = self._apply({"fitted": True})
+        assert status == 200
+        assert body["ok"] is True
+        assert body["screen"] == server.screen_report()
+        assert save.call_count == 1
+        assert server._cfg.display.fitted is True
+
+    def test_omitted_keys_keep_the_configured_values(self):
+        cfg = DialConfig(uuid="x")
+        cfg.display.poll_interval_s = 3
+        cfg.display.sleep_after_s = 900
+        cfg.display.brightness = 33
+        server, status, body, _ = self._apply({"fitted": True}, cfg)
+        assert status == 200
+        assert (body["screen"]["poll_interval_s"], body["screen"]["sleep_after_s"],
+                body["screen"]["brightness"]) == (3, 900, 33)
+
+    def test_a_posted_report_with_surface_is_accepted(self):
+        server = FakeDialServer(DialConfig(uuid="x"))
+        screen = server.screen_report()
+        screen["brightness"] = 41
+        with patch("dial_config.save_config"):
+            status, body = server.apply_screen_settings(screen)
+        assert status == 200
+        assert body["screen"]["brightness"] == 41
+
+    @pytest.mark.parametrize("screen", [None, [], "x", {"fitted": "yes"}, {"surprise": 1}])
+    def test_invalid_settings_are_400_and_nothing_is_saved(self, screen):
+        server, status, body, save = self._apply(screen)
+        assert status == 400
+        assert body == {"ok": False, "error": "invalid_screen_settings"}
+        save.assert_not_called()
+
+    def test_a_save_failure_is_500(self):
+        server = FakeDialServer(DialConfig(uuid="x"))
+        with patch("dial_config.save_config", side_effect=OSError("disk full")):
+            status, body = server.apply_screen_settings({"fitted": True})
+        assert (status, body) == (500, {"ok": False, "error": "save_failed"})
+
+    def test_a_touch_type_change_reports_restarting_for_the_caller_to_fire(self):
+        server = FakeDialServer(DialConfig(uuid="x"))
+        server._touch_restart_allowed = lambda: True
+        other = next(k for k in dhs.list_controllers() if k["key"] != DEFAULT_TOUCH_KEY)["key"]
+        screen = server.screen_report()
+        screen["touch_type"] = other
+        with patch("dial_config.save_config"):
+            status, body = server.apply_screen_settings(screen)
+        assert status == 200
+        assert body["restart_required"] is True
+        assert body.get("restarting") is True
+
+    def test_applies_are_serialised(self):
+        server = FakeDialServer(DialConfig(uuid="x"))
+        inside, overlap = [], []
+        real = server._apply_screen_settings_locked
+
+        def tracked(screen):
+            inside.append(1)
+            overlap.append(len(inside) > 1)
+            try:
+                time.sleep(0.03)
+                return real(screen)
+            finally:
+                inside.pop()
+
+        server._apply_screen_settings_locked = tracked
+        with patch("dial_config.save_config"):
+            threads = [threading.Thread(target=server.apply_screen_settings, args=({"fitted": True},))
+                       for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(5)
+        assert not any(overlap)
+
+
+class TestCurrentPin:
+    def test_it_reads_the_live_pin(self):
+        server = dhs.DialHTTPServer.__new__(dhs.DialHTTPServer)
+        server._cfg_lock = threading.Lock()
+        server._cfg = DialConfig(uuid="x", pin="1234")
+        assert server.current_pin == "1234"
+        server._cfg = DialConfig(uuid="x")
+        assert server.current_pin == ""

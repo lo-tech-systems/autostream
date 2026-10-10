@@ -20,6 +20,7 @@ from dial_display_profiles import get_profile_or_default
 from dial_control import DialControlServer
 from dial_core import create_dial_core
 from dial_hd_events import ChangeHub
+from dial_hd_panel import Backlight, HdPanel
 from dial_hd_server import HdServer
 from dial_http_server import (
     ADMIN_CMD,
@@ -777,19 +778,46 @@ def main() -> None:
     # bound costs the page, never the dial.
     hd_server = None
     hd_hub = None
+    hd_panel = None
     try:
         hd_hub = ChangeHub(core)
-        hd_server = HdServer(cfg, core, http_server=http_server, hub=hd_hub, port=cfg.hd_port)
+        kiosk_surface = get_profile_or_default(cfg.display.screen_type).surface == "kiosk"
+
+        def panel_inputs() -> tuple[bool, bool]:
+            due = core.warnings.due()
+            return bool(core.snapshot().visible_playing), bool(due is not None and due.interrupting)
+
+        hd_panel = HdPanel(
+            hd_hub, settings=lambda: http_server.display_config,
+            backlight=Backlight.detect() if kiosk_surface else None, inputs=panel_inputs,
+        )
+        hd_server = HdServer(
+            cfg, core, http_server=http_server, panel=hd_panel, hub=hd_hub, port=cfg.hd_port,
+            info_fn=lambda: gather_dial_info(
+                http_server.get_runtime_status()["name"], VERSION,
+                network=network_latest(), sd_health=dial_sdhealth.info_value(),
+            ),
+        )
         hd_hub.start()
         hd_server.start()
-        # Screen settings are part of the state the page shows.
+        hd_panel.start()
+        # Screen settings are part of the state the page shows, and the
+        # panel follows a changed brightness.
+        http_server.add_cfg_listener(lambda new_cfg: hd_panel.apply_settings())
         http_server.add_cfg_listener(lambda new_cfg: hd_hub.publish())
+        # The development listener follows the config: switched on or off, and
+        # its sessions dropped when the PIN changes.
+        http_server.add_cfg_listener(hd_server.on_config)
+        hd_server.on_config(cfg)
     except OSError as e:
         logging.warning("HD server not started: %s", e)
+        if hd_panel is not None:
+            hd_panel.stop()
         if hd_hub is not None:
             hd_hub.stop()
         hd_server = None
         hd_hub = None
+        hd_panel = None
 
     # What the core publishes about this dial, and how far a mute reaches,
     # read live from the HTTP server so a /configure or /screen/settings
@@ -989,6 +1017,8 @@ def main() -> None:
         _remove_running_marker()
         if hd_server is not None:
             hd_server.stop()
+        if hd_panel is not None:
+            hd_panel.stop()
         if hd_hub is not None:
             hd_hub.stop()
         stop_playing_browser()

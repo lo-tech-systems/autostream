@@ -414,6 +414,7 @@ class DialHTTPServer:
     # Callables run with the new config after every update_cfg swap; replaced,
     # never mutated, so a server built without __init__ still has the default.
     _cfg_listeners: tuple = ()
+    _apply_lock = threading.Lock()   # serialises apply_screen_settings
 
     def __init__(self, cfg, display_status_provider=None, get_rostered_ips=None) -> None:
         self._cfg             = cfg
@@ -473,6 +474,13 @@ class DialHTTPServer:
         with self._cfg_lock:
             return self._cfg.display
 
+    @property
+    def current_pin(self) -> str:
+        """The management PIN now in force ('' when none is set). Read by the
+        HD development listener's login, never sent anywhere."""
+        with self._cfg_lock:
+            return self._cfg.pin
+
     def add_cfg_listener(self, callback) -> None:
         """Register *callback*(new_cfg), run after every update_cfg swap."""
         self._cfg_listeners = (*self._cfg_listeners, callback)
@@ -511,6 +519,155 @@ class DialHTTPServer:
             'brightness': display.brightness,
             'surface': _profile_for(display).surface,
         }
+
+    def apply_screen_settings(self, screen) -> tuple[int, dict]:
+        """Validate, apply, persist and report a `screen` settings object, as
+        the management route and the HD page's settings route both do. The
+        caller has already authorised the request. Returns (status, body);
+        a body with 'restarting' set means the caller must call
+        fire_touch_restart() once the reply has been sent. One apply at a
+        time, so two servers cannot interleave a read-modify-write."""
+        with self._apply_lock:
+            return self._apply_screen_settings_locked(screen)
+
+    def _apply_screen_settings_locked(self, screen) -> tuple[int, dict]:
+        with self._cfg_lock:
+            cfg = self._cfg
+        if isinstance(screen, dict):
+            # The appliance's screen form never sends these keys, so a
+            # save from it keeps the configured values rather than
+            # resetting them to the defaults.
+            for key in ('poll_interval_s', 'sleep_after_s', 'brightness'):
+                if key not in screen:
+                    screen = {**screen, key: getattr(cfg.display, key)}
+            # surface is reported from the profile, never set: drop it
+            # so a GET object posted back with one field changed is
+            # accepted.
+            screen = {k: v for k, v in screen.items() if k != 'surface'}
+        try:
+            new_display = validate_screen_settings(screen)
+        except InvalidScreenSettings:
+            return 400, {'ok': False, 'error': 'invalid_screen_settings'}
+
+        new_cfg = copy.copy(cfg)
+        new_cfg.display = new_display
+
+        # Apply-then-persist — reverses the usual save-first ordering
+        # used by /configure. Several screen_type profiles are
+        # untested on hardware; saving before confirming the backend
+        # actually opens would persist a broken choice and the dial
+        # would boot into a no-op display every restart. fitted/
+        # rotate/bgr can never fail to apply, so this reordering has
+        # no observable effect on them — only a bad screen_type can
+        # trip the failure path below.
+        touch_type_changed = (
+            new_display.touch_type != cfg.display.touch_type
+        )
+        runtime = self._display_status.update_config(new_cfg.display)
+        # Rotate is applied to the frame in software; the touch sheet
+        # has to turn with it or every press lands diagonally
+        # opposite the button being looked at. Best-effort: a touch
+        # remap must never fail a settings save.
+        if self._touch_source is not None:
+            try:
+                self._touch_source.display_config_changed(
+                    new_display.rotate, layout=layout_context_for(new_display),
+                )
+            except Exception as e:
+                logging.warning("dial touch: remap failed (%s)", e)
+        # A failed live apply while fitted is requested surfaces as
+        # last_error == "backend_open_failed" (set by DialDisplay's
+        # degrade-to-noop path — see dial_display.py _enable_locked);
+        # a successful enable always clears last_error, and disabling
+        # the display can never fail, so gating on fitted here avoids
+        # ever misreading a stale unrelated error as an apply failure.
+        #
+        # Only a screen_type change withholds persistence: that is the
+        # setting that can leave the dial opening a broken profile on
+        # every boot. fitted/rotate/bgr keep their previous
+        # save-regardless behaviour, so they stay changeable even on a
+        # dial whose panel is absent or faulty (where every open fails).
+        #
+        # The comparison is against the PERSISTED profile, not the
+        # active one. Comparing against active would mean that on a
+        # dial whose panel cannot open at all (none fitted, faulty
+        # wiring) nothing ever matches, so every setting would be
+        # rejected and the display would become unconfigurable.
+        #
+        # Known limitation: a screen_type accepted while fitted is
+        # false cannot be opened, so it is persisted unvalidated; if
+        # the later enable fails on it, that enable counts as "no
+        # change" here and is persisted. The web UI cannot reach this
+        # (its selector is disabled unless fitted is checked), and the
+        # drift is visible — runtime.screen_type reports no active
+        # profile while the configured one names it.
+        apply_failed = (
+            new_display.fitted
+            and new_display.screen_type != cfg.display.screen_type
+            and runtime.get('last_error') == 'backend_open_failed'
+        )
+        if apply_failed:
+            logging.warning(
+                "screen settings apply failed (screen_type=%s) — on-disk config left unchanged",
+                new_display.screen_type,
+            )
+            runtime['touch_type'] = self._touch_runtime
+            return 200, {
+                'ok':      False,
+                'error':   'screen_apply_failed',
+                'screen':  self.screen_report(cfg.display),
+                'layout_sizes': layout_size_options(_profile_for(cfg.display)),
+                'layout': _layout_report_for(cfg.display),
+                'scope': _scope_report_for(cfg.display),
+                'runtime': runtime,
+            }
+
+        from dial_config import save_config
+        try:
+            save_config(new_cfg)
+        except Exception as e:
+            logging.warning("save_config failed: %s", e)
+            return 500, {'ok': False, 'error': 'save_failed'}
+
+        self.update_cfg(new_cfg)
+
+        logging.info(
+            "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
+            "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s "
+            "poll_interval_s=%s sleep_after_s=%s brightness=%s",
+            new_display.fitted, new_display.rotate, new_display.screen_type,
+            new_display.bgr, new_display.touch_type, new_display.always_show_controls,
+            new_display.screen_size_inches, new_display.layout_size,
+            new_display.poll_interval_s, new_display.sleep_after_s,
+            new_display.brightness,
+        )
+        runtime['touch_type'] = self._touch_runtime
+        # fitted/rotate/bgr/screen_type all apply live. touch_type
+        # does not: the touch stack is constructed once at startup
+        # from the persisted controller, so a change to it only
+        # takes effect on the next service start. Say so rather
+        # than reporting a live apply that did not happen — and,
+        # if the change is real and the cooldown allows it, restart
+        # the service ourselves so it does not sit stale.
+        #
+        # The cooldown gate is decided here so the outcome can be
+        # reflected in the response, but the restart is only
+        # actually FIRED once the caller has sent the reply (the
+        # response carries 'restarting') — see
+        # DialHTTPServer.fire_touch_restart.
+        restarting = touch_type_changed and self._touch_restart_allowed()
+        response = {
+            'ok':               True,
+            'screen':           self.screen_report(new_cfg.display),
+            'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
+            'layout':           _layout_report_for(new_cfg.display),
+            'scope':            _scope_report_for(new_cfg.display),
+            'runtime':          runtime,
+            'restart_required': touch_type_changed,
+        }
+        if restarting:
+            response['restarting'] = True
+        return 200, response
 
     def begin_recovery_window(self) -> None:
         self._recovery_window.open()
@@ -1112,145 +1269,9 @@ class DialHTTPServer:
                         return
                     _pin_clear_attempts(ip)
 
-                screen = obj.get('screen')
-                if isinstance(screen, dict):
-                    # The appliance's screen form never sends these keys, so a
-                    # save from it keeps the configured values rather than
-                    # resetting them to the defaults.
-                    for key in ('poll_interval_s', 'sleep_after_s', 'brightness'):
-                        if key not in screen:
-                            screen = {**screen, key: getattr(cfg.display, key)}
-                    # surface is reported from the profile, never set: drop it
-                    # so a GET object posted back with one field changed is
-                    # accepted.
-                    screen = {k: v for k, v in screen.items() if k != 'surface'}
-                try:
-                    new_display = validate_screen_settings(screen)
-                except InvalidScreenSettings:
-                    self._send_json(400, {'ok': False, 'error': 'invalid_screen_settings'})
-                    return
-
-                new_cfg = copy.copy(cfg)
-                new_cfg.display = new_display
-
-                # Apply-then-persist — reverses the usual save-first ordering
-                # used by /configure. Several screen_type profiles are
-                # untested on hardware; saving before confirming the backend
-                # actually opens would persist a broken choice and the dial
-                # would boot into a no-op display every restart. fitted/
-                # rotate/bgr can never fail to apply, so this reordering has
-                # no observable effect on them — only a bad screen_type can
-                # trip the failure path below.
-                touch_type_changed = (
-                    new_display.touch_type != cfg.display.touch_type
-                )
-                runtime = dial_server._display_status.update_config(new_cfg.display)
-                # Rotate is applied to the frame in software; the touch sheet
-                # has to turn with it or every press lands diagonally
-                # opposite the button being looked at. Best-effort: a touch
-                # remap must never fail a settings save.
-                if dial_server._touch_source is not None:
-                    try:
-                        dial_server._touch_source.display_config_changed(
-                            new_display.rotate, layout=layout_context_for(new_display),
-                        )
-                    except Exception as e:
-                        logging.warning("dial touch: remap failed (%s)", e)
-                # A failed live apply while fitted is requested surfaces as
-                # last_error == "backend_open_failed" (set by DialDisplay's
-                # degrade-to-noop path — see dial_display.py _enable_locked);
-                # a successful enable always clears last_error, and disabling
-                # the display can never fail, so gating on fitted here avoids
-                # ever misreading a stale unrelated error as an apply failure.
-                #
-                # Only a screen_type change withholds persistence: that is the
-                # setting that can leave the dial opening a broken profile on
-                # every boot. fitted/rotate/bgr keep their previous
-                # save-regardless behaviour, so they stay changeable even on a
-                # dial whose panel is absent or faulty (where every open fails).
-                #
-                # The comparison is against the PERSISTED profile, not the
-                # active one. Comparing against active would mean that on a
-                # dial whose panel cannot open at all (none fitted, faulty
-                # wiring) nothing ever matches, so every setting would be
-                # rejected and the display would become unconfigurable.
-                #
-                # Known limitation: a screen_type accepted while fitted is
-                # false cannot be opened, so it is persisted unvalidated; if
-                # the later enable fails on it, that enable counts as "no
-                # change" here and is persisted. The web UI cannot reach this
-                # (its selector is disabled unless fitted is checked), and the
-                # drift is visible — runtime.screen_type reports no active
-                # profile while the configured one names it.
-                apply_failed = (
-                    new_display.fitted
-                    and new_display.screen_type != cfg.display.screen_type
-                    and runtime.get('last_error') == 'backend_open_failed'
-                )
-                if apply_failed:
-                    logging.warning(
-                        "screen settings apply failed (screen_type=%s) — on-disk config left unchanged",
-                        new_display.screen_type,
-                    )
-                    runtime['touch_type'] = dial_server._touch_runtime
-                    self._send_json(200, {
-                        'ok':      False,
-                        'error':   'screen_apply_failed',
-                        'screen':  dial_server.screen_report(cfg.display),
-                        'layout_sizes': layout_size_options(_profile_for(cfg.display)),
-                        'layout': _layout_report_for(cfg.display),
-                        'scope': _scope_report_for(cfg.display),
-                        'runtime': runtime,
-                    })
-                    return
-
-                from dial_config import save_config
-                try:
-                    save_config(new_cfg)
-                except Exception as e:
-                    logging.warning("save_config failed: %s", e)
-                    self._send_json(500, {'ok': False, 'error': 'save_failed'})
-                    return
-
-                dial_server.update_cfg(new_cfg)
-
-                logging.info(
-                    "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
-                    "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s "
-                    "poll_interval_s=%s sleep_after_s=%s brightness=%s",
-                    new_display.fitted, new_display.rotate, new_display.screen_type,
-                    new_display.bgr, new_display.touch_type, new_display.always_show_controls,
-                    new_display.screen_size_inches, new_display.layout_size,
-                    new_display.poll_interval_s, new_display.sleep_after_s,
-                    new_display.brightness,
-                )
-                runtime['touch_type'] = dial_server._touch_runtime
-                # fitted/rotate/bgr/screen_type all apply live. touch_type
-                # does not: the touch stack is constructed once at startup
-                # from the persisted controller, so a change to it only
-                # takes effect on the next service start. Say so rather
-                # than reporting a live apply that did not happen — and,
-                # if the change is real and the cooldown allows it, restart
-                # the service ourselves so it does not sit stale.
-                #
-                # The cooldown gate is decided here so the outcome can be
-                # reflected in the response, but the restart is only
-                # actually FIRED after _send_json returns below — see
-                # DialHTTPServer.fire_touch_restart.
-                restarting = touch_type_changed and dial_server._touch_restart_allowed()
-                response = {
-                    'ok':               True,
-                    'screen':           dial_server.screen_report(new_cfg.display),
-                    'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
-                    'layout':           _layout_report_for(new_cfg.display),
-                    'scope':            _scope_report_for(new_cfg.display),
-                    'runtime':          runtime,
-                    'restart_required': touch_type_changed,
-                }
-                if restarting:
-                    response['restarting'] = True
-                self._send_json(200, response)
-                if restarting:
+                status, response = dial_server.apply_screen_settings(obj.get('screen'))
+                self._send_json(status, response)
+                if response.get('restarting'):
                     dial_server.fire_touch_restart()
 
             def _handle_sdcard_health(self) -> None:
