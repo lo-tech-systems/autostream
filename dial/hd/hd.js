@@ -6,7 +6,6 @@ import {
     EMPTY_STATE,
     LOGO_URL,
     LOGO_BACKDROP_URL,
-    INFO_URL,
     REPLAY_BUTTONS,
     POWER_TAKEN_OVER,
     SLEEP_CHOICES,
@@ -14,16 +13,24 @@ import {
 } from "./hd-tables.js";
 import { make, setText, makeIcon, setLevel, syncList, els } from "./hd-dom.js";
 import { graph, scheduleGraph } from "./hd-eq.js";
-import { toast, get, post, lanes, sendDrag, trackDrag, followPointer } from "./hd-requests.js";
+import { toast, get, trackDrag } from "./hd-requests.js";
+import {
+    onAppliance,
+    onWarnBadge,
+    onOutputToggle,
+    onOutputLevel,
+    onPress,
+    onArm,
+    onSleepAfter,
+    onEqGain,
+    CARD_ACTIONS
+} from "./hd-actions.js";
 import { derive, replayOf, isLoopbackHost } from "./hd-derive.js";
 import {
     ui,
     PIN_IDLE,
-    pending,
     dragging,
     press,
-    setPending,
-    clockPosition,
     nextReplayClock,
     hooks
 } from "./hd-state.js";
@@ -485,182 +492,6 @@ function render() {
     replayTick = ui.vm.replay.ticking ? setTimeout(render, ui.vm.replay.nextMs) : 0;
 }
 
-// ---- Actions from the page ------------------------------------------
-
-const focusId = () => (ui.state ? ui.state.focus.appliance_id : null);
-const canAct = () => !!ui.state && !ui.offline;
-
-function onAppliance(id) {
-    if (!canAct()) { return; }
-    const a = ui.state.appliances.find((item) => item.id === id);
-    if (!a) { return; }
-    if (a.auth !== "authorized") {
-        ui.notice = id;
-        render();
-        return;
-    }
-    if (id === focusId() && !pending.focus) { return; }
-    setPending("focus", id);
-    render();
-    post("focus", { appliance_id: id }, ["focus"]);
-}
-
-function onWarnBadge(key) {
-    ui.viewing = key;
-    render();
-}
-
-function onOutputToggle(id, selected) {
-    const key = "out:" + id + ":selected";
-    setPending(key, selected);
-    render();
-    post("output", { appliance_id: focusId(), output_id: id, selected: selected }, [key]);
-}
-
-function onOutputLevel(id, level, final) {
-    const key = "out:" + id + ":volume";
-    setPending(key, level);
-    render();
-    sendDrag(key, "output", { appliance_id: focusId(), output_id: id, volume: level }, final, [key]);
-}
-
-function onMasterLevel(level, final) {
-    setPending("master", level);
-    render();
-    sendDrag("master", "volume_set", { appliance_id: focusId(), level: level }, final, ["master"]);
-}
-
-function onMute() {
-    if (!ui.vm || !ui.vm.volume.enabled) { return; }
-    setPending("mute", !ui.vm.volume.muted);
-    render();
-    post("mute_toggle", { appliance_id: focusId() }, ["mute"]);
-}
-
-function onArm(armed) {
-    setPending("arm", armed);
-    render();
-    post("repeat_arm", { appliance_id: focusId(), armed: armed }, ["arm"]);
-}
-
-// The transport buttons are held down from the press (see
-// PRESS_RELEASES) and let go at once if the request does not go through.
-function onPress(id) {
-    const appliance = ui.state && ui.state.appliances.find((item) => item.id === focusId());
-    if (!appliance || !appliance.repeat || !canAct()) { return; }
-    const clock = ui.replayClock && ui.replayClock.id === appliance.id ? ui.replayClock : null;
-    const position = clock ? clockPosition(clock, Date.now()) : appliance.repeat.position_s;
-    const serial = press.start(id, appliance, position, ui.state.transport ? ui.state.transport.requested_at : null);
-    if (!serial) { return; }
-    render();
-    post(REPLAY_BUTTONS[id].action, { appliance_id: appliance.id }).then((reply) => {
-        press.sent(serial, reply);
-        // A token alone is not news to draw: the state has yet to show
-        // the request it names.
-        if (!press.current()) { render(); }
-    });
-}
-
-function onEqGain(id, gain, final) {
-    const key = "eq:" + id;
-    setPending(key, gain);
-    render();
-    sendDrag(key, "eq", { appliance_id: focusId(), gains: { [id]: gain } }, final, [key]);
-}
-
-function onEqReset() {
-    if (!ui.vm) { return; }
-    const keys = ui.vm.eq.bands.map((b) => "eq:" + b.id);
-    keys.forEach((key) => {
-        setPending(key, 0);
-        delete lanes[key];
-    });
-    render();
-    post("eq_reset", { appliance_id: focusId() }, keys);
-}
-
-function setEqOpen(open) {
-    ui.eqOpen = open;
-    ui.eqFor = open ? focusId() : null;
-    render();
-}
-
-function onBrightness(value, final) {
-    setPending("brightness", value);
-    render();
-    sendDrag("brightness", "settings", { brightness: value }, final, ["brightness"]);
-}
-
-function onSleepAfter(seconds) {
-    setPending("sleep_after_s", seconds);
-    render();
-    post("settings", { sleep_after_s: seconds }, ["sleep_after_s"]);
-}
-
-function setSheet(open) {
-    ui.sheetOpen = open;
-    if (open) { loadInfo(); }
-    render();
-}
-
-function loadInfo() {
-    const fresh = ui.info && !ui.info.failed && Date.now() - ui.info.at < CONFIG.infoMaxAgeMs;
-    if (ui.infoBusy || fresh) { return; }
-    ui.infoBusy = true;
-    get(INFO_URL)
-        .then((text) => JSON.parse(text).rows)
-        .then((rows) => {
-            ui.info = { rows: rows.filter((r) => Array.isArray(r) && r.length === 2), at: Date.now(), failed: false };
-        })
-        .catch(() => {
-            ui.info = { rows: ui.info ? ui.info.rows : [], at: Date.now(), failed: true };
-        })
-        .finally(() => {
-            ui.infoBusy = false;
-            render();
-        });
-}
-
-// What each button on a modal card does.
-const CARD_ACTIONS = {
-    dismiss: (card) => {
-        ui.viewing = null;
-        post("warning_dismiss", { warning_id: card.key });
-        render();
-    },
-    restart: () => post("dial_restart", {}),
-    shutdown: () => {
-        ui.power = Object.assign({}, ui.power, { asked: false, sent: true });
-        setSheet(false);
-        post("dial_shutdown", {}).then((went) => {
-            if (!went) {
-                ui.power = Object.assign({}, ui.power, { sent: false });
-                render();
-            }
-        });
-    },
-    power_ack: () => {
-        ui.power = Object.assign({}, ui.power, { dismissedAt: ui.state.power.changed_at });
-        render();
-    },
-    presence: () => post("presence", {}),
-    close: () => {
-        ui.notice = null;
-        ui.viewing = null;
-        ui.power = Object.assign({}, ui.power, { asked: false });
-        render();
-    },
-    pin_cancel: (card) => {
-        const at = card.kind === "pin" ? card.pin.requestedAt : card.requestedAt;
-        ui.pin = Object.assign({}, ui.pin, PIN_IDLE, { dismissedAt: at });
-        render();
-    }
-};
-
-els.master.addEventListener("input", () => onMasterLevel(Number(els.master.value), false));
-els.master.addEventListener("change", () => onMasterLevel(Number(els.master.value), true));
-trackDrag(els.master, () => "master");
-els.mute.addEventListener("click", onMute);
 // A picture that fails falls back to the logo once; a failing fallback
 // counts as loaded, so a swap always ends.
 PICTURES.forEach((p, i) => {
@@ -674,117 +505,6 @@ PICTURES.forEach((p, i) => {
         pictureDone();
     });
 });
-
-els.eq.addEventListener("click", () => setEqOpen(true));
-els.eqClose.addEventListener("click", () => setEqOpen(false));
-els.eqReset.addEventListener("click", onEqReset);
-
-els.brightness.addEventListener("input", () => onBrightness(Number(els.brightness.value), false));
-els.brightness.addEventListener("change", () => onBrightness(Number(els.brightness.value), true));
-trackDrag(els.brightness, () => "brightness");
-els.power.addEventListener("click", () => {
-    ui.power = Object.assign({}, ui.power, { asked: true });
-    render();
-});
-els.sleepNow.addEventListener("click", () => {
-    setSheet(false);
-    post("panel_sleep", {});
-});
-els.scrim.addEventListener("click", () => setSheet(false));
-els.modal.addEventListener("click", (event) => {
-    if (event.target === els.modal && ui.vm && ui.vm.modal && ui.vm.modal.closable) { CARD_ACTIONS.close(); }
-});
-
-// The keypad edits the buffer; OK sends it once and empties it.
-const PIN_EDITS = {
-    del: (digits) => digits.slice(0, -1)
-};
-
-function onPinKey(key) {
-    const card = ui.vm && ui.vm.modal;
-    if (!card || card.kind !== "pin" || card.pin.busy || card.pin.waiting) { return; }
-    const p = card.pin;
-    let digits = p.digits;
-    if (key === "ok") {
-        if (!p.canSubmit) { return; }
-        post("output", { appliance_id: focusId(), output_id: p.outputId, selected: true, pin: digits });
-        digits = "";
-    } else if (PIN_EDITS[key]) {
-        digits = PIN_EDITS[key](digits);
-    } else if (/^[0-9]$/.test(key) && digits.length < CONFIG.pinMax) {
-        digits += key;
-    }
-    ui.pin = Object.assign({}, ui.pin, { forKey: p.key, digits: digits });
-    render();
-}
-
-els.cardPinPad.addEventListener("click", (event) => {
-    const key = event.target.closest("button[data-key]");
-    if (key && !key.disabled) { onPinKey(key.dataset.key); }
-});
-
-// The pull-down: a tap on the handle toggles it, a drag follows the finger
-// and settles open or shut. Dragging the open sheet's own background
-// (not a control) up closes it.
-function bindSheetDrag(target, startOpen) {
-    target.addEventListener("pointerdown", (event) => {
-        if (ui.sheetOpen !== startOpen) { return; }
-        if (startOpen && event.target.closest("input, button, label")) { return; }
-        const height = els.sheet.offsetHeight;
-        const y0 = event.clientY;
-        let dy = 0;
-        let moved = false;
-        els.sheet.classList.add("dragging");
-        const move = (e) => {
-            dy = e.clientY - y0;
-            if (Math.abs(dy) > CONFIG.tapMovePx) { moved = true; }
-            const offset = startOpen ? Math.min(0, dy) : Math.max(-height, Math.min(0, dy - height));
-            els.sheet.style.transform = "translateY(" + offset + "px)";
-        };
-        followPointer(event, move, () => {
-            els.sheet.classList.remove("dragging");
-            els.sheet.style.transform = "";
-            if (!moved) {
-                setSheet(!startOpen);
-            } else {
-                const keep = height / CONFIG.dragCloseFraction;
-                setSheet(startOpen ? dy > -keep : dy > keep);
-            }
-        });
-    });
-}
-bindSheetDrag(els.handle, false);
-bindSheetDrag(els.sheet, true);
-// A keyboard press on the handle is a click with no pointer.
-els.handle.addEventListener("click", (event) => {
-    if (event.detail === 0) { setSheet(!ui.sheetOpen); }
-});
-
-// A touch while the panel sleeps only wakes it. The panel can be awake
-// again before the finger lifts, and the click that ends the touch is
-// aimed at whatever is then under it, so the shield goes on taking
-// touches until that click has landed on it (or, for a touch that ends
-// without one, a moment after the finger lifts).
-const releaseShield = () => els.sleep.classList.remove("held");
-els.sleep.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    els.sleep.classList.add("held");
-    followPointer(event, null, () => setTimeout(releaseShield, CONFIG.wakeGuardMs));
-    post("panel_wake", {});
-});
-els.sleep.addEventListener("click", releaseShield);
-
-// Every other touch counts as activity for the panel's idle clock
-// (reported at most once in a while).
-document.addEventListener("pointerdown", () => {
-    if (ui.vm && ui.vm.asleep) { return; }
-    const now = Date.now();
-    if (now - ui.activityAt >= CONFIG.activityGapMs) {
-        ui.activityAt = now;
-        post("panel_activity", {}, [], true);
-    }
-}, true);
 
 // ---- The event stream -----------------------------------------------
 

@@ -75,6 +75,7 @@ STATIC_FILES = {
     "hd-eq.js": (_JS, STATIC_ROOT / "hd-eq.js"),
     "hd-derive.js": (_JS, STATIC_ROOT / "hd-derive.js"),
     "hd-requests.js": (_JS, STATIC_ROOT / "hd-requests.js"),
+    "hd-actions.js": (_JS, STATIC_ROOT / "hd-actions.js"),
     "login.js": (_JS, STATIC_ROOT / "login.js"),
     "theme.css": (_CSS, THEME_PATH),
     "logo.png": ("image/png", LOGO_PATH),
