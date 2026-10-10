@@ -2493,6 +2493,21 @@ class TestThreadingLifecycle:
         mock_poll.assert_called_once()
         assert wait_calls == [dd.DISPLAY_POLL_INTERVAL_SECONDS]
 
+    def test_loop_falls_back_to_the_default_interval_for_an_unusable_config(self):
+        display, fb, gt = _make_display(targets=[])
+        display._config = MagicMock()
+        wait_calls = []
+
+        def tracking_wait(timeout=None):
+            wait_calls.append(timeout)
+            display._stop_event.set()
+            return True
+
+        with patch.object(display, "_poll_once"),              patch.object(display._poll_wake, "wait", side_effect=tracking_wait):
+            display._run()
+
+        assert wait_calls == [dd.DISPLAY_POLL_INTERVAL_SECONDS]
+
     @pytest.mark.parametrize("seconds", [2, 4, 6])
     def test_loop_waits_the_configured_poll_interval(self, seconds):
         display, fb, gt = _make_display(targets=[])

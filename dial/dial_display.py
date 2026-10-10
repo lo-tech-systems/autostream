@@ -4970,7 +4970,11 @@ class DialDisplay:
             # Wait from the end of this loop so slow polls never accumulate
             # into a backlog. A push, a focus change or a wake sets
             # _poll_wake to run this loop again sooner.
-            self._poll_wake.wait(self._config.poll_interval_s)
+            interval = getattr(self._config, "poll_interval_s", DISPLAY_POLL_INTERVAL_SECONDS)
+            if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+                # A config without a usable interval must never stop the loop.
+                interval = DISPLAY_POLL_INTERVAL_SECONDS
+            self._poll_wake.wait(interval)
 
     def request_poll(self) -> None:
         """Ask the poll thread to run _poll_once now instead of waiting for
