@@ -831,7 +831,7 @@ def main() -> None:
     if recovery_armed:
         http_server.begin_recovery_window()
 
-    start_playing_browser(shutdown_event=shutdown_event)
+    start_playing_browser(shutdown_event=shutdown_event, on_add=core.request_poll)
     # The general-appliance browser feeds the roster/repeat-store machinery
     # display.start() (and, later, touch) reads — an unfitted dial has no
     # roster/repeat UI to feed, so it is not worth an extra avahi-browse

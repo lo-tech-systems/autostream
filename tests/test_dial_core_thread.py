@@ -119,6 +119,33 @@ class TestTickPublishes:
         assert seen[0] == ((), 3)
         assert seen[-1] == ((), 4)
 
+    def test_a_wake_for_a_refused_appliance_neither_announces_nor_paints(self):
+        aid = _fresh_id("t5w")
+        seen = []
+
+        def fetch(target, dial_id, timeout_seconds=None):
+            return _status_result(status_error="unauthorized", appliance_id=target.appliance_id)
+
+        core, gt = _make([_target(appliance_id=aid, auth="unknown")], fetch=fetch)
+        core.subscribe(lambda: seen.append(core.snapshot().visible_playing))
+        core.request_poll()
+        core.poll_once()
+        assert core.snapshot().visible_playing == ()
+        assert all(ids == () for ids in seen)
+
+    def test_a_replayed_record_set_publishes_nothing_new(self):
+        aid = _fresh_id("t5r")
+        core, gt = _make([_target(appliance_id=aid, auth="authorized")])
+        seen = []
+        core.subscribe(lambda: seen.append(core.snapshot().visible_playing))
+        core.poll_once()
+        core.request_poll()
+        core.poll_once()
+        # Every publish repeats the set; what must not happen is the set
+        # changing again once the replayed tick has settled.
+        changes = [ids for i, ids in enumerate(seen) if i == 0 or ids != seen[i - 1]]
+        assert [ids for ids in changes if ids] == [(aid,)]
+
     def test_a_refused_first_check_never_shows_the_appliance_as_visible(self):
         aid = _fresh_id("t5")
         seen = []
@@ -377,6 +404,36 @@ class TestCoreThread:
             assert self._wait_for(lambda: len(polls) == 1)
             core.request_poll()
             assert self._wait_for(lambda: len(polls) == 2, limit=1.0)
+            core.stop()
+
+    def test_a_burst_of_wakes_gives_one_extra_tick(self):
+        core, gt = _make()
+        core.set_poll_interval(60)
+        polls = []
+
+        def tick():
+            polls.append(1)
+            if len(polls) == 1:
+                for _ in range(5):
+                    core.request_poll()
+
+        with patch.object(core, "poll_once", side_effect=tick):
+            core.start()
+            assert self._wait_for(lambda: len(polls) == 2, limit=1.0)
+            time.sleep(0.3)
+            assert len(polls) == 2
+            core.stop()
+
+    def test_a_wake_before_start_is_consumed_by_the_first_tick(self):
+        core, gt = _make()
+        core.set_poll_interval(60)
+        polls = []
+        with patch.object(core, "poll_once", side_effect=lambda: polls.append(1)):
+            core.request_poll()
+            core.start()
+            assert self._wait_for(lambda: len(polls) == 1, limit=1.0)
+            time.sleep(0.3)
+            assert len(polls) == 1
             core.stop()
 
     def test_a_tick_that_raises_does_not_stop_the_loop(self):

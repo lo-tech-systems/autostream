@@ -39,6 +39,7 @@ import sys
 import os
 import threading
 import time
+from typing import Callable, Optional
 
 import dial_auth
 
@@ -184,11 +185,19 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
     return (svc_name, target)
 
 
+# A zero-argument callable run on the browser's reader thread when a playing
+# record appears. It may only signal (set an event); it never blocks.
+_playing_add_listener: Optional[Callable[[], None]] = None
+
+
 def _on_target_add(svc_name: str, target: PlayingTarget) -> None:
     global _had_targets
     if not _had_targets:
         _had_targets = True
         logging.info("playing target found: %s (%s)", svc_name, target.ip)
+    listener = _playing_add_listener
+    if listener is not None:
+        listener()
 
 
 def _on_target_change(svc_name: str, old: PlayingTarget, new: PlayingTarget) -> None:
@@ -346,13 +355,20 @@ def appliance_display_name(service_name: str) -> str:
 
 def start_playing_browser(
     shutdown_event: "threading.Event | None" = None,
+    on_add: Optional[Callable[[], None]] = None,
 ) -> None:
-    """Start the background mDNS browser for _autostream-playing._tcp.  Idempotent."""
+    """Start the background mDNS browser for _autostream-playing._tcp.  Idempotent.
+    *on_add* is called, with no arguments, each time a playing record appears;
+    it runs on the browser's reader thread and must only signal."""
+    global _playing_add_listener
+    _playing_add_listener = on_add
     _browser.start(shutdown_event=shutdown_event)
 
 
 def stop_playing_browser() -> None:
     """Stop the background mDNS browser for _autostream-playing._tcp.  Idempotent."""
+    global _playing_add_listener
+    _playing_add_listener = None
     _browser.stop()
 
 

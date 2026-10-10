@@ -392,6 +392,73 @@ class TestApplianceDisplayName:
 # Start/stop wrappers (plan section 6, tests 1-2)
 # ---------------------------------------------------------------------------
 
+class TestPlayingAddListener:
+    def setup_method(self):
+        _clear()
+        dm._playing_add_listener = None
+
+    def teardown_method(self):
+        dm._playing_add_listener = None
+
+    def _start(self, on_add):
+        from unittest.mock import patch
+        with patch.object(dm._browser, "start"):
+            dm.start_playing_browser(on_add=on_add)
+
+    def test_an_add_calls_the_listener_once(self):
+        calls = []
+        self._start(lambda: calls.append(1))
+        dm._browser._handle_line(_av_add())
+        assert calls == [1]
+
+    def test_a_re_resolve_of_the_same_record_does_not_call_it(self):
+        calls = []
+        self._start(lambda: calls.append(1))
+        dm._browser._handle_line(_av_add())
+        dm._browser._handle_line(_av_add())
+        assert calls == [1]
+
+    def test_a_second_interface_for_the_same_service_does_not_call_it(self):
+        calls = []
+        self._start(lambda: calls.append(1))
+        dm._browser._handle_line(_av_add(iface="eth0", ip="192.168.1.10"))
+        dm._browser._handle_line(_av_add(iface="wlan0", ip="192.168.1.10"))
+        assert calls == [1]
+
+    def test_a_listener_that_raises_does_not_stop_the_browser(self):
+        def boom():
+            raise RuntimeError("boom")
+
+        self._start(boom)
+        dm._browser._handle_line(_av_add(name="One", ip="192.168.1.10"))
+        dm._browser._handle_line(_av_add(name="Two", ip="192.168.1.11"))
+        assert len(dm.get_playing_targets()) == 2
+
+    def test_stop_clears_the_listener(self):
+        from unittest.mock import patch
+        calls = []
+        self._start(lambda: calls.append(1))
+        with patch.object(dm._browser, "stop"):
+            dm.stop_playing_browser()
+        dm._browser._handle_line(_av_add())
+        assert calls == []
+
+    def test_the_listener_takes_no_lock(self):
+        import threading
+        seen = []
+
+        def listener():
+            seen.append((
+                dm._state_lock.locked(),
+                dm._browser._lock.locked(),
+                threading.current_thread(),
+            ))
+
+        self._start(listener)
+        dm._browser._handle_line(_av_add())
+        assert seen == [(False, False, threading.current_thread())]
+
+
 class TestPlayingBrowserWrappers:
     def test_start_playing_browser_forwards_shutdown_event(self):
         """start_playing_browser() passes shutdown_event to the underlying browser."""

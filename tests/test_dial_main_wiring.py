@@ -105,7 +105,7 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
          patch.multiple("dial_main", DialLED=DEFAULT, HdServer=mock_hd_class, ChangeHub=mock_hub_class,
                        HdPanel=mock_panel_class, Backlight=mock_backlight), \
          patch("dial_main.DialHTTPServer", return_value=mock_http), \
-         patch("dial_main.start_playing_browser"), \
+         patch("dial_main.start_playing_browser") as playing_browser, \
          patch("dial_main.start_general_browser"), \
          patch("dial_main.stop_playing_browser"), \
          patch("dial_main.stop_general_browser"), \
@@ -125,6 +125,7 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
     captured.update(
         volume_worker=volume_worker, repeat_worker=repeat_worker, outputs_worker=outputs_worker,
         eq_worker=eq_worker, network_worker=network_worker, sdhealth_start=sdhealth_start,
+        playing_browser=playing_browser,
     )
     return captured
 
@@ -154,6 +155,11 @@ class TestCoreWiring:
         assert captured["volume_worker"].call_args.kwargs["on_readout_changed"] == core.readout_changed
         assert captured["network_worker"].call_args.kwargs["on_view"] == core.on_network_view
         assert captured["sdhealth_start"].call_args.kwargs["on_view"] == core.on_sd_health_view
+
+    def test_the_playing_browser_wakes_the_core_on_an_add(self):
+        captured = _run_core_wiring()
+        kwargs = captured["playing_browser"].call_args.kwargs
+        assert kwargs["on_add"] == captured["core"].request_poll
 
     def test_the_outputs_and_eq_results_go_straight_to_the_core(self):
         captured = _run_core_wiring()
