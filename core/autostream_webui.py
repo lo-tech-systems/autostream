@@ -101,6 +101,7 @@ from autostream_webui_api import (
     send_settings_get_json,
     send_settings_post_json,
     send_status_json,
+    send_input_levels_json,
     send_update_check_json,
     send_update_status_json,
     send_owntone_output_visibility_json,

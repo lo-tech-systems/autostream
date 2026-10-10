@@ -12,6 +12,7 @@ Contents:
   - send_owntone_outputs_json    -- GET /api/owntone/outputs
   - send_owntone_outputs_state_json -- GET /api/owntone/outputs_state
   - send_status_json             -- GET /api/status
+  - send_input_levels_json      -- GET /api/inputs/levels
   - send_service_config_json     -- POST /api/service/config
   - send_service_reset_json      -- POST /api/service/reset
   Display/card logic imported from autostream_webui_service_schema (shared with page renderer).
@@ -105,6 +106,7 @@ from autostream_core import (
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
+    get_monitor_runtime_info,
     get_owntone_selfheal_state,
     get_playback_snapshot,
     get_repeat_status,
@@ -477,6 +479,38 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     except Exception:
         pass
     send_json(handler, 200, response)
+
+
+def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
+    """GET /api/inputs/levels: the Setup page's live level readout.
+
+    Reads only the coordinator's cache of the last daemon poll, so it
+    never waits on OwnTone or the daemon. One entry per input, in index
+    order; dbfs is null for an input with no running monitor and for
+    every input while the daemon is disconnected.
+    """
+    enabled = {1: False, 2: False}
+    if state is not None:
+        try:
+            parsed = _config_snapshot(state)
+            enabled = {1: bool(parsed.audio1_enabled), 2: bool(parsed.audio2_enabled)}
+        except Exception:
+            logging.debug("input levels: config snapshot unavailable", exc_info=True)
+    connected = bool(get_monitor_runtime_info().connected)
+    try:
+        by_index = {lv.get("index"): lv for lv in get_monitor_levels_dbfs()}
+    except Exception:
+        by_index = {}
+    inputs = []
+    for index in (1, 2):
+        lv = by_index.get(index)
+        inputs.append({
+            "index": index,
+            "enabled": enabled[index],
+            "running": lv is not None,
+            "dbfs": float(lv["dbfs"]) if (lv is not None and connected) else None,
+        })
+    send_json(handler, 200, {"ok": True, "connected": connected, "inputs": inputs})
 
 
 def send_service_config_json(handler, state: WebUIState, body: str) -> None:

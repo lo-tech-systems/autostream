@@ -40,13 +40,43 @@ Top-level fields, briefly (this endpoint's full shape beyond
 | `playing` | bool. Whether a playback session is currently active. Derived from `session.active`, falling back to a raw capture check if the session tracker is unavailable. |
 | `status_text` | string. Home-page headline text for the overall playing/waiting state. Unrelated to `track_identification.status_text` below. |
 | `status_class` | string. `"playing"` or `"waiting"`, a CSS-style hook for the same state. |
-| `input_levels` | array. Per-input level/detection data. |
-| `playback` | object. Current playback snapshot (speaker, volume, etc). |
+| `input_levels` | array. Per-input level/detection data. Each item has `index` (the input number), `label`, `dbfs` (the largest raw peak over the last poll window, before gain and EQ), `detected_hz`, `is_above_threshold` (debounced over the silence timeout) and `vu_history`. |
+| `playback` | object. Current playback snapshot (speaker, volume, etc). Each entry in `inputs` carries `input_type` (`turntable`, `cd` or `line`) and `type_label` (the matching display name). |
 | `playback_banner_text`, `belt_banner_text`, `bearing_banner_text` | strings. Maintenance-tracking banner text (stylus, drive belt, main bearing), empty when nothing to show. |
 | `track_identification` | object. See below. |
 | `session` | object. Always present. `{"active": bool, "source": string or null}`; `source` names the actively-sourcing input (e.g. `"input1"`) or `"replay"` during a repeat replay. |
 | `repeat` | object. Present only when the monitor daemon reports repeat/replay status; omitted entirely on older daemon builds. |
 | `owntone_selfheal` | object. Coordinator-owned reconcile/watchdog counters; present whenever available. |
+
+---
+
+## `GET /api/inputs/levels`
+
+A small, cheap answer for the Setup page's live level readout. It is built
+from the coordinator's cache of the last monitor poll, so it never waits on
+OwnTone or the monitor. Needs a signed-in session, like the Setup page.
+
+```json
+{
+  "ok": true,
+  "connected": true,
+  "inputs": [
+    { "index": 1, "enabled": true,  "running": true,  "dbfs": -52.3 },
+    { "index": 2, "enabled": false, "running": false, "dbfs": null }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `connected` | bool. Whether the monitor is currently connected. |
+| `index` | integer. The input number, 1 or 2. Always both, in order. |
+| `enabled` | bool. Whether the input is enabled in the saved settings. |
+| `running` | bool. Whether the input has a running monitor. A disabled input, or one that failed to start, is not running. |
+| `dbfs` | number or null. The largest raw peak over the last poll window, before gain and EQ, which is the value compared with the silence threshold. |
+
+`dbfs` is `null` for an input that is not running, and for every input while
+the monitor is disconnected, so a stale number is never shown.
 
 ---
 

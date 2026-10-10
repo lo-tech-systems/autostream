@@ -180,6 +180,7 @@ _BROWSER_GET_EXPECTED = [
     ("/api/align/status",          AuthRequirement.FULL, "api", False, False),
     ("/api/network/status",        AuthRequirement.FULL, "api", False, True),
     ("/api/bluetooth/status",      AuthRequirement.FULL, "api", False, False),
+    ("/api/inputs/levels",         AuthRequirement.FULL, "api", False, True),
     ("/api/bluetooth/scan_results", AuthRequirement.FULL, "api", False, False),
     ("/api/bluetooth/pair_status", AuthRequirement.FULL, "api", False, False),
     ("/api/update/check",          AuthRequirement.FULL, "page", False, False),

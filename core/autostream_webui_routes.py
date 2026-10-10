@@ -804,6 +804,18 @@ register(
 
 register(
     Route(
+        path="/api/inputs/levels",
+        methods=("GET",),
+        handler="send_input_levels_json",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=False,
+        poll_log=True,
+    )
+)
+
+register(
+    Route(
         path="/api/bluetooth/scan_results",
         methods=("GET",),
         handler="_route_get_bluetooth_scan_results",
