@@ -47,7 +47,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from dial_auth import (
     AUTH_AUTHORIZED,
@@ -685,6 +685,10 @@ class DisplayBackend:
     # dial_display_profiles.py for why the panel is 160 wide x 128 tall).
     width = _DEFAULT_PANEL_WIDTH
     height = _DEFAULT_PANEL_HEIGHT
+    # True when display_window() can write a sub-rectangle of the panel
+    # in place. The manager only diffs frames against a backend that
+    # says so; every other backend gets a whole-frame display() per push.
+    supports_window_write = False
 
     def open(self) -> None: ...
 
@@ -693,6 +697,16 @@ class DisplayBackend:
     def clear(self) -> None: ...
 
     def display(self, image) -> None: ...
+
+    def display_window(self, region, x0: int, y0: int, x1: int, y1: int) -> bool:
+        """Write *region*, a panel-space image exactly (x1 - x0 + 1) by
+        (y1 - y0 + 1) pixels, to the panel's inclusive address window
+        x0..x1, y0..y1, leaving every other pixel as it is. Returns True
+        when the window was written and False when this backend cannot
+        write a window right now (the caller then falls back to a whole-
+        frame display()). May raise on a hardware failure, like display().
+        The default cannot: it is the whole-frame-only contract."""
+        return False
 
     def sleep(self) -> None: ...
 
@@ -1654,6 +1668,10 @@ class DialDisplay:
         # detection.
         self._last_error = ""
         self._last_error_at = None
+        # A newly opened panel holds nothing we know about, whatever was
+        # cached before: the first push after an open is always a whole
+        # frame, never a window diffed against a stale frame.
+        self._last_frame = None
         logging.info(
             "dial display: backend %s open (%dx%d)",
             self._backend_name, backend.width, backend.height,
@@ -1872,20 +1890,82 @@ class DialDisplay:
         *compose* is a zero-argument callable returning the finished frame;
         it runs inside the guard so a compositor failure is handled
         identically to a backend/resample failure. Caller holds self._lock
-        and has already checked the backend is open. Never raises."""
+        and has already checked the backend is open. Never raises.
+
+        The transmit itself is delegated to _transmit_locked(), which sends
+        only the part of the frame that differs from the one already on the
+        panel when the backend can write a window. A transmit failure drops
+        self._last_frame: the panel may then hold part of the new frame, so
+        the next push must write the whole of it rather than a diff against
+        a frame that is no longer what the panel shows. A compose failure
+        sends nothing and leaves self._last_frame as it was."""
         try:
             composed = compose()
             physical = (self._backend.width, self._backend.height)
             if composed.size != physical:
                 composed = composed.resize(physical, _resample_filter(composed.size, physical))
-            self._backend.display(composed)
-            self._last_frame = composed
         except Exception as e:
-            self._record_error_locked("display_write_failed")
+            self._record_write_failure_locked(e)
+            return
+        try:
+            self._transmit_locked(composed)
+        except Exception as e:
+            self._last_frame = None
+            self._record_write_failure_locked(e)
+            return
+        self._last_frame = composed
+
+    def _record_write_failure_locked(self, e: BaseException) -> None:
+        self._record_error_locked("display_write_failed")
+        self._log_limiter.log(
+            logging.WARNING, "display_write_failed",
+            "dial display: backend write failed: %s", e,
+        )
+
+    def _transmit_locked(self, composed) -> None:
+        """Send *composed*, already at the panel's size and orientation, to
+        the backend, writing only the rectangle that differs from the frame
+        the panel already shows when the backend can write a window.
+
+        The frame reaching here is final: rotate and colour order were
+        applied by the compositor and the resample to physical size by the
+        caller, and self._last_frame is kept in that same space. So the
+        bounding box of the pixel difference is in panel pixels and maps
+        straight onto the panel's address window, with no further
+        transform. An identical frame sends nothing at all. A whole-frame
+        write is used instead whenever the backend cannot window-write,
+        nothing is known to be on the panel, the two frames are not
+        comparable (size or mode differ), the window write reports it
+        could not run, or anything in the windowed path fails: a diff or
+        window problem must never cost the frame, only the saving. Raises
+        only what the whole-frame display() raises; the caller records
+        that."""
+        backend = self._backend
+        last = self._last_frame
+        if (
+            not getattr(backend, "supports_window_write", False)
+            or not isinstance(composed, Image.Image)
+            or not isinstance(last, Image.Image)
+            or last.size != composed.size
+            or last.mode != composed.mode
+        ):
+            backend.display(composed)
+            return
+        try:
+            bbox = ImageChops.difference(composed, last).getbbox()
+            if bbox is None:
+                return
+            left, upper, right, lower = bbox
+            # getbbox() is half-open on the right and bottom; the panel's
+            # address window is inclusive at both corners.
+            if backend.display_window(composed.crop(bbox), left, upper, right - 1, lower - 1):
+                return
+        except Exception as e:
             self._log_limiter.log(
-                logging.WARNING, "display_write_failed",
-                "dial display: backend write failed: %s", e,
+                logging.WARNING, "display_window_failed",
+                "dial display: window write failed, writing the whole frame: %s", e,
             )
+        backend.display(composed)
 
     def _display_locked(self, image) -> None:
         """Compose and write *image* to the backend — the single hand-off

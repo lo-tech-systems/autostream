@@ -179,6 +179,8 @@ def _pack_rgb565(image) -> bytes | None:
 
 
 class AdafruitDisplayBackend(DisplayBackend):
+    supports_window_write = True
+
     def __init__(self, profile: DisplayProfile) -> None:
         self._profile = profile
         self.name = backend_name_for(profile)
@@ -287,6 +289,43 @@ class AdafruitDisplayBackend(DisplayBackend):
             block(0, 0, self.width - 1, self.height - 1, packed)
         else:
             self._display.image(fitted)
+
+    def display_window(self, region, x0: int, y0: int, x1: int, y1: int) -> bool:
+        """Write one sub-rectangle of the panel in place.
+
+        Same fast path as _push_frame: pack RGB565 ourselves and hand the
+        bytes to the driver's _block() with the window's inclusive corner
+        coordinates. _block() adds the profile's GRAM offsets itself, so
+        (x0, y0) here is in the same frame-pixel space _push_frame's
+        (0, 0) is, and a region cropped from a panel-sized frame lands on
+        exactly the pixels it came from. There is no slow-path equivalent:
+        the driver's image() would re-run its own rotation on the region,
+        so without _block() or numpy this reports False and the caller
+        writes the whole frame instead, which is today's behaviour.
+
+        *region* must be exactly the window's size and the window must lie
+        inside the panel; either being wrong is a caller bug and raises
+        ValueError before anything touches the bus. Returns False before
+        open(), mirroring display()'s no-op.
+        """
+        if self._display is None:
+            return False
+        block = getattr(self._display, "_block", None)
+        if block is None:
+            return False
+        if not (0 <= x0 <= x1 < self.width and 0 <= y0 <= y1 < self.height):
+            raise ValueError(
+                f"window {x0},{y0}..{x1},{y1} is outside the {self.width}x{self.height} panel"
+            )
+        expected = (x1 - x0 + 1, y1 - y0 + 1)
+        size = getattr(region, "size", None)
+        if size != expected:
+            raise ValueError(f"window image is {size}, window is {expected}")
+        packed = _pack_rgb565(region)
+        if packed is None:
+            return False
+        block(x0, y0, x1, y1, packed)
+        return True
 
     def clear(self) -> None:
         if self._display is None:

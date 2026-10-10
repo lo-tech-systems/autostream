@@ -738,3 +738,126 @@ class TestPushFrameFastPath:
 
         fake_display.image.assert_called_once_with(frame)
         fake_display._block.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# AdafruitDisplayBackend.display_window writes one sub-rectangle of the
+# panel through the driver's _block() primitive, the same fast path as
+# _push_frame but for a caller-supplied window rather than the whole panel.
+# ---------------------------------------------------------------------------
+
+class TestDisplayWindow:
+    def test_capability_flags(self):
+        import dial_display
+
+        assert AdafruitDisplayBackend.supports_window_write is True
+        assert dial_display.DisplayBackend.supports_window_write is False
+        assert dial_display.NoOpBackend().display_window(
+            Image.new("RGB", (1, 1)), 0, 0, 0, 0
+        ) is False
+
+    def test_writes_packed_region_to_the_inclusive_window(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        packed_bytes = b"\x12\x34" * 12
+        region = Image.new("RGB", (4, 3), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565", return_value=packed_bytes) as pack_mock:
+                backend = AdafruitST7735SBackend()
+                backend.open()
+                ok = backend.display_window(region, 10, 20, 13, 22)
+
+        assert ok is True
+        fake_display._block.assert_called_once_with(10, 20, 13, 22, packed_bytes)
+        pack_mock.assert_called_once_with(region)
+        fake_display.image.assert_not_called()
+
+    def test_real_packing_of_a_sub_region(self):
+        pytest.importorskip("numpy", reason="numpy not installed")
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        region = Image.new("RGB", (2, 2))
+        region.putpixel((0, 0), (255, 0, 0))
+        region.putpixel((1, 0), (0, 255, 0))
+        region.putpixel((0, 1), (0, 0, 255))
+        region.putpixel((1, 1), (255, 255, 255))
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            ok = backend.display_window(region, 5, 6, 6, 7)
+
+        assert ok is True
+        fake_display._block.assert_called_once_with(
+            5, 6, 6, 7,
+            b"\xf8\x00\x07\xe0\x00\x1f\xff\xff",
+        )
+
+    def test_returns_false_and_writes_nothing_when_block_is_missing(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        no_block_display = MagicMock(name="ST7735S_instance", spec=["image"])
+        st7735_ctor.return_value = no_block_display
+        region = Image.new("RGB", (4, 3), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+            ok = backend.display_window(region, 0, 0, 3, 2)
+
+        assert ok is False
+        no_block_display.image.assert_not_called()
+
+    def test_returns_false_when_packing_unavailable(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        region = Image.new("RGB", (4, 3), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565", return_value=None):
+                backend = AdafruitST7735SBackend()
+                backend.open()
+                ok = backend.display_window(region, 0, 0, 3, 2)
+
+        assert ok is False
+        fake_display._block.assert_not_called()
+
+    def test_before_open_returns_false(self):
+        backend = AdafruitST7735SBackend()
+        region = Image.new("RGB", (4, 3), (1, 2, 3))
+        assert backend.display_window(region, 0, 0, 3, 2) is False
+
+    def test_window_outside_panel_raises_before_touching_the_bus(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        region = Image.new("RGB", (4, 3), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            with patch.object(dda, "_pack_rgb565") as pack_mock:
+                backend = AdafruitST7735SBackend()
+                backend.open()
+
+                with pytest.raises(ValueError):
+                    backend.display_window(region, 158, 0, 161, 2)
+                with pytest.raises(ValueError):
+                    backend.display_window(region, 0, 0, 3, 130)
+                with pytest.raises(ValueError):
+                    backend.display_window(region, 5, 0, 3, 2)  # x1 < x0
+
+        fake_display._block.assert_not_called()
+        pack_mock.assert_not_called()
+
+    def test_region_size_mismatch_raises(self):
+        modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
+            _install_fake_hardware_modules()
+        )
+        region = Image.new("RGB", (4, 3), (1, 2, 3))
+        with patch.dict(sys.modules, modules):
+            backend = AdafruitST7735SBackend()
+            backend.open()
+
+            with pytest.raises(ValueError):
+                backend.display_window(region, 0, 0, 3, 3)
+
+        fake_display._block.assert_not_called()

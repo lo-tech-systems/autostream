@@ -170,6 +170,29 @@ class FakeBackend:
         self.wake_calls += 1
 
 
+class FakeWindowBackend(FakeBackend):
+    """A FakeBackend that can also write a window, the way the real SPI
+    backend can. Records every window write as (x0, y0, x1, y1, region);
+    `window_result` is what display_window() returns (False simulates a
+    backend that cannot window-write right now) and `fail_window` makes it
+    raise, so the manager's fall-back paths can be driven one at a time."""
+    supports_window_write = True
+
+    def __init__(self, window_result=True, fail_window=False, **kwargs):
+        super().__init__(**kwargs)
+        self.window_result = window_result
+        self.fail_window = fail_window
+        self.windows: list = []
+
+    def display_window(self, region, x0, y0, x1, y1):
+        if self.fail_window:
+            raise RuntimeError("window write failed")
+        if not self.window_result:
+            return False
+        self.windows.append((x0, y0, x1, y1, region))
+        return True
+
+
 def _roster_from_targets(targets) -> list:
     """Default get_roster() stand-in for _make_display(): a RosterEntry per
     identity-carrying target, mirroring dial_mdns.get_roster()'s own "no id,
@@ -996,6 +1019,217 @@ class TestPushFrameLocked:
         with display._lock:
             display._push_frame_locked(bad_compose)
         assert display._last_frame is previous
+
+
+def _frame(fb, color):
+    return Image.new("RGB", (fb.width, fb.height), color)
+
+
+def _push(display, image):
+    with display._lock:
+        display._push_frame_locked(lambda: image)
+
+
+class TestPushFrameWindowed:
+    """_push_frame_locked's windowed-write path, gated on the backend's
+    supports_window_write flag, so every FakeBackend-based test above (no
+    such attribute) keeps taking the full-write path exactly as before."""
+
+    def test_first_frame_after_open_is_a_full_write(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        assert len(fb.displayed) == 1
+        assert fb.windows == []
+        assert display._last_frame is not None
+
+    def test_identical_frame_sends_nothing(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+        displayed_before = len(fb.displayed)
+        windows_before = len(fb.windows)
+
+        b = _frame(fb, (10, 20, 30))
+        _push(display, b)
+
+        assert len(fb.displayed) == displayed_before
+        assert len(fb.windows) == windows_before
+        assert display._last_frame is b
+        assert display.get_status()["last_error"] == ""
+
+    def test_small_change_writes_only_its_bounding_window(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        displayed_before = len(fb.displayed)
+        windows_before = len(fb.windows)
+
+        b = a.copy()
+        b.paste((255, 0, 0), (100, 100, 110, 104))
+        _push(display, b)
+
+        assert len(fb.displayed) == displayed_before
+        new_windows = fb.windows[windows_before:]
+        assert len(new_windows) == 1
+        x0, y0, x1, y1, region = new_windows[0]
+        assert (x0, y0, x1, y1) == (100, 100, 109, 103)
+        assert region.size == (10, 4)
+        assert region.getpixel((0, 0)) == (255, 0, 0)
+        assert display._last_frame is b
+
+    def test_full_change_writes_a_full_size_window(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (0, 0, 0))
+        _push(display, a)
+        windows_before = len(fb.windows)
+
+        c = _frame(fb, (255, 255, 255))
+        _push(display, c)
+
+        new_windows = fb.windows[windows_before:]
+        assert len(new_windows) == 1
+        x0, y0, x1, y1, region = new_windows[0]
+        assert (x0, y0, x1, y1) == (0, 0, fb.width - 1, fb.height - 1)
+        assert region.size == (fb.width, fb.height)
+
+    def test_size_mismatch_with_last_frame_falls_back_to_full_write(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        with display._lock:
+            display._last_frame = Image.new("RGB", (8, 8))
+        displayed_before = len(fb.displayed)
+        windows_before = len(fb.windows)
+
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+
+        assert len(fb.displayed) == displayed_before + 1
+        assert len(fb.windows) == windows_before
+
+    def test_mode_mismatch_with_last_frame_falls_back_to_full_write(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        with display._lock:
+            display._last_frame = Image.new("L", (fb.width, fb.height))
+        displayed_before = len(fb.displayed)
+        windows_before = len(fb.windows)
+
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+
+        assert len(fb.displayed) == displayed_before + 1
+        assert len(fb.windows) == windows_before
+
+    def test_backend_without_window_support_always_writes_the_full_frame(self):
+        display, fb, gt = _make_display(backend=FakeBackend())
+        display.enable()
+        displayed_before = len(fb.displayed)
+
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+        _push(display, a)
+
+        assert len(fb.displayed) == displayed_before + 2
+
+    def test_window_write_returning_false_falls_back_to_full_write(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend(window_result=False))
+        display.enable()
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+        displayed_before = len(fb.displayed)
+
+        b = _frame(fb, (40, 50, 60))
+        _push(display, b)
+
+        assert len(fb.displayed) == displayed_before + 1
+        assert fb.windows == []
+        assert display.get_status()["last_error"] == ""
+
+    def test_window_write_raising_falls_back_to_full_write_without_error(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend(fail_window=True))
+        display.enable()
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+        displayed_before = len(fb.displayed)
+
+        b = _frame(fb, (40, 50, 60))
+        _push(display, b)
+
+        assert len(fb.displayed) == displayed_before + 1
+        assert display.get_status()["last_error"] == ""
+        assert display._last_frame is b
+
+    def test_full_write_failure_drops_last_frame(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+
+        fb.fail_display = True
+        fb.fail_window = True
+        b = _frame(fb, (40, 50, 60))
+        _push(display, b)
+
+        assert display.get_status()["last_error"] == "display_write_failed"
+        assert display._last_frame is None
+
+    # test_compose_failure_keeps_last_frame is already covered by
+    # test_failed_push_keeps_the_previous_last_frame above.
+
+    def test_frame_after_a_dropped_last_frame_is_a_full_write(self):
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        a = _frame(fb, (10, 20, 30))
+        _push(display, a)
+        fb.fail_display = True
+        fb.fail_window = True
+        b = _frame(fb, (40, 50, 60))
+        _push(display, b)
+        assert display._last_frame is None
+
+        fb.fail_display = False
+        fb.fail_window = False
+        displayed_before = len(fb.displayed)
+        windows_before = len(fb.windows)
+        c = _frame(fb, (70, 80, 90))
+        _push(display, c)
+
+        assert len(fb.displayed) == displayed_before + 1
+        assert len(fb.windows) == windows_before
+
+    def test_swap_reopens_with_a_full_write(self):
+        t = _target()
+        fb_old = FakeWindowBackend()
+        fb_new = FakeWindowBackend()
+
+        def builder(screen_type):
+            return lambda: fb_new
+
+        display, _, gt = _make_display(
+            targets=[t], backend=fb_old, backend_factory_builder=builder,
+        )
+        display.enable()
+        with display._lock:
+            display._rebuild_backend_factory_locked("st7789_240x240")
+            display._swap_backend_locked()
+
+        assert len(fb_new.displayed) == 1
+        assert fb_new.windows == []
+
+    def test_repushing_the_same_logo_sends_nothing(self):
+        # The "free win": the logo re-render after enable() is byte-identical
+        # to the one already on the panel, so the diff finds nothing to send.
+        display, fb, gt = _make_display(backend=FakeWindowBackend())
+        display.enable()
+        displayed_before = len(fb.displayed)
+        windows_before = len(fb.windows)
+        with display._lock:
+            display._render_logo_locked()
+        assert len(fb.displayed) == displayed_before
+        assert len(fb.windows) == windows_before
 
 
 # ---------------------------------------------------------------------------
