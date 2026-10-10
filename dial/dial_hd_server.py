@@ -112,6 +112,7 @@ STATIC_FILES = {
     "hd.js": _JS,
     "hd-tables.js": _JS,
     "hd-dom.js": _JS,
+    "hd-state.js": _JS,
     "login.js": _JS,
     "theme.css": _CSS,
     "logo.png": _PNG,

@@ -71,6 +71,7 @@ STATIC_FILES = {
     "hd.js": (_JS, STATIC_ROOT / "hd.js"),
     "hd-tables.js": (_JS, STATIC_ROOT / "hd-tables.js"),
     "hd-dom.js": (_JS, STATIC_ROOT / "hd-dom.js"),
+    "hd-state.js": (_JS, STATIC_ROOT / "hd-state.js"),
     "login.js": (_JS, STATIC_ROOT / "login.js"),
     "theme.css": (_CSS, THEME_PATH),
     "logo.png": ("image/png", LOGO_PATH),
