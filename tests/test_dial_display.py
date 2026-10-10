@@ -78,11 +78,13 @@ from dial_warnings import WarningManager, WarningStore
 # repoint (the trace harness keeps the same pair of tuples).
 _PATCHES = (
     "dial_display.fetch_target_status",
+    "dial_core_poll.fetch_target_status",
     "dial_display.enrich_targets",
+    "dial_core_poll.enrich_targets",
     "dial_display._fetch_artwork",
     "dial_display.decode_artwork",
 )
-_MONOTONIC_TARGETS = ("dial_display.time.monotonic",)
+_MONOTONIC_TARGETS = ("dial_display.time.monotonic", "dial_core_poll.time.monotonic")
 
 
 @contextlib.contextmanager

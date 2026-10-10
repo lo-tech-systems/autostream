@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import hashlib
 import io
 import logging
 import math
@@ -53,12 +52,7 @@ from dataclasses import dataclass
 from PIL import Image, ImageChops
 
 from dial_auth import (
-    AUTH_AUTHORIZED,
     AUTH_UNAUTHORIZED,
-    AUTH_UNKNOWN,
-    OUTCOME_AUTHORIZED,
-    OUTCOME_TRANSIENT,
-    OUTCOME_UNAUTHORIZED,
     auth_map,
 )
 from dial_display_compositor import (
@@ -98,11 +92,17 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    NowPlaying, OutputRow, PickerRow, SelectorRow, Selection, availability, choose_pin,
+    NowPlaying, OutputRow, PickerRow, SelectorRow, availability, choose_pin,
     dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
     reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
-    walk_fallback, walk_order, walk_step, with_accepted_replay,
+    walk_order, with_accepted_replay,
 )
+from dial_core_poll import (
+    ARTWORK_FETCH_TIMEOUT_SECONDS,
+    DIAL_STATUS_TIMEOUT_SECONDS,
+    url_log_key as _url_log_key,
+)
+import dial_core_poll
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
@@ -118,7 +118,7 @@ from dial_network import request_reboot as _request_reboot
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_sdhealth import SdHealthView, is_low as _sd_is_low
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
-from dial_repeat_store import parse_repeat_object, repeat_store
+from dial_repeat_store import repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_update_watch import (
     PHASE_REBOOT,
@@ -186,8 +186,6 @@ _DEFAULT_PANEL_HEIGHT = get_profile(DEFAULT_PROFILE_KEY).height
 
 # Default poll interval; the live value is the screen setting poll_interval_s.
 DISPLAY_POLL_INTERVAL_SECONDS = 6
-DIAL_STATUS_TIMEOUT_SECONDS = 2.0
-ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
 DISPLAY_IDLE_SLEEP_SECONDS = 5 * 60
 RECONCILE_INTERVAL_SECONDS = 60
 # How long the appliance-selector screen stays open with no touch activity
@@ -656,11 +654,6 @@ class _RateLimitedLogger:
             should_log = self._count == 1 or self._count % 10 == 0
         if should_log:
             logging.log(level, msg, *args)
-
-
-def _url_log_key(url: str) -> str:
-    """Short, non-reversible identifier for a provider URL, safe at INFO/WARNING."""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -4978,124 +4971,27 @@ class DialDisplay:
             return ""
         targets = {t.appliance_id: t for t in self._get_display_targets() if t.appliance_id}
         roster = {r.appliance_id: r for r in self._last_roster if r.appliance_id}
+        promoted = dial_core_poll.drain_push_probes(ids, targets, roster, self._dial_id, self._probe_auth)
         woke = False
-        for appliance_id in ids:
-            # Playing set first, then the last-published roster — an
-            # authorization granted to an idle appliance is confirmed here
-            # rather than waiting for the next reconcile pass.
-            target = targets.get(appliance_id) or roster.get(appliance_id)
-            if target is None or not target.dial_status:
-                continue     # not rostered right now: learn on the next poll
-            before = auth_map.state(appliance_id)
-            self._probe_auth(target)
-            after = auth_map.state(appliance_id)
-            if after == AUTH_AUTHORIZED and before != AUTH_AUTHORIZED:
-                with self._lock:
-                    if self._display_sleeping:
-                        self._idle_started_at = None      # same as _apply_touch_activity_locked
-                        self._wake_locked()
-                        woke = True
+        if promoted:
+            with self._lock:
+                if self._display_sleeping:
+                    self._idle_started_at = None      # same as _apply_touch_activity_locked
+                    self._wake_locked()
+                    woke = True
         return "woke" if woke else "probed"
 
     def _apply_status_to_auth(self, target, result: dict) -> bool:
-        """Map a fetch_target_status/enrich_targets record onto the auth
-        map. Only the two explicit outcomes move state; everything else
-        (including a missing appliance_id) is transient."""
-        err = result.get("status_error")
-        if err is None:
-            outcome = OUTCOME_AUTHORIZED
-        elif err == "unauthorized":
-            outcome = OUTCOME_UNAUTHORIZED
-        else:
-            outcome = OUTCOME_TRANSIENT
-        body_id = result.get("appliance_id")
-        if result.get("untyped_refusal") and not body_id:
-            # An earlier-dialect refusal carries no id: correlate with the
-            # id this target was resolved to.
-            body_id = target.appliance_id
-        elif (
-            outcome == OUTCOME_AUTHORIZED and not body_id
-            and not getattr(target, "typed_refusals", True)
-        ):
-            # Nor does an earlier-dialect success reply. Without this, an
-            # appliance of that dialect that once refused the dial could
-            # never be seen to accept it again.
-            body_id = target.appliance_id
-        changed = auth_map.apply(
-            target.appliance_id, outcome, body_id, time.monotonic(),
-        )
-        if (
-            outcome == OUTCOME_UNAUTHORIZED
-            and auth_map.state(target.appliance_id) == AUTH_UNAUTHORIZED
-            and auth_map.record_refusal(target.appliance_id)
-        ):
-            logging.warning(
-                "dial display: appliance %s refused this dial; allow it in "
-                "that appliance's web UI",
-                appliance_display_name(target.service_name or target.name),
-            )
-        return changed
+        return dial_core_poll.apply_status_to_auth(target, result)
 
     def _probe_auth(self, target) -> dict:
-        """Fetch one target's status and apply it to the auth map. Shared
-        by the push-probe path and the reconcile pass."""
-        result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
-        self._apply_status_to_auth(target, result)
-        return result
+        return dial_core_poll.probe_auth(target, self._dial_id, fetch=fetch_target_status)
 
     def _apply_status_to_repeat(self, appliance_id: str, result: dict, now: float) -> None:
-        """Feed dial_repeat_store from a fetch_target_status/enrich_targets
-        record — mirrors _apply_status_to_auth's three-way split: a good
-        200 updates the store from the record's repeat object (parsed
-        strictly by dial_repeat_store.parse_repeat_object, so a malformed
-        object degrades to "unavailable" rather than raising); a confirmed
-        412 clears it (this dial's authorization for the appliance was
-        revoked, so any cached repeat state is no longer this dial's to
-        show); everything else (timeout, unreachable, bad_response, ...) is
-        transient and leaves the record untouched — the repeat screen and
-        the idle affordance must not blank mid-poll on a single bad
-        response. A no-op for an identity-less
-        target (dial_repeat_store.update/clear both already guard on this,
-        checked again here so the intent reads at the call site)."""
-        if not appliance_id:
-            return
-        err = result.get("status_error")
-        if err is None:
-            repeat_store.update(appliance_id, parse_repeat_object(result.get("repeat"), now))
-        elif err == "unauthorized":
-            repeat_store.clear(appliance_id)
+        dial_core_poll.apply_status_to_repeat(appliance_id, result, now)
 
     def _reconcile_pass(self, roster: list, visited: set[str]) -> None:
-        """Concurrent fan-out over rows the sequential poll walk did not
-        already fetch this tick, so an unauthorized row's re-probe backoff
-        and every row's occasional re-confirmation happen without adding
-        sequential latency to the artwork-selection walk.
-
-        Runs over the MERGED roster (dial_mdns.get_roster()), not just the
-        playing set: an idle appliance is reconciled here — feeding the
-        auth map and the repeat store — but never gets an artwork fetch and
-        never sets _now_playing (that stays exclusively the playing walk's
-        job in _poll_once). After every pending row is processed,
-        dial_repeat_store is pruned to the roster's current id set so a
-        departed appliance's record does not linger forever.
-        """
-        now = time.monotonic()
-        auth_map.prune(now)
-        pending = [
-            r for r in roster
-            if r.dial_status and r.appliance_id and r.service_name not in visited
-            and auth_map.due_for_probe(r.appliance_id, now)
-        ]
-        if pending:
-            for record in enrich_targets(pending, self._dial_id):
-                target = next(t for t in pending if t.service_name == record["name"])
-                self._apply_status_to_auth(target, record)
-                # Stamped at apply time, not with the `now` taken before the
-                # fan-out: the fetch blocks for up to its own deadline, and a
-                # replay position stamped earlier than it was sampled would
-                # interpolate ahead of the truth by that much.
-                self._apply_status_to_repeat(target.appliance_id, record, time.monotonic())
-        repeat_store.prune({r.appliance_id for r in roster})
+        dial_core_poll.reconcile(roster, visited, self._dial_id, enrich=enrich_targets)
 
     def on_repeat_result(self, kind: str, appliance_id: str, status: int | None, body) -> None:
         """Callback for the repeat-transport worker (dial_repeat.py). Runs
@@ -5391,19 +5287,10 @@ class DialDisplay:
         # again.
         first_checks: dict[str, tuple[float, dict]] = {}
         if self._manual_focus_id is None and self._bound_appliance_id is None:
-            for t in visible:
-                if (
-                    t.auth != AUTH_UNKNOWN or not t.dial_status
-                    or t.appliance_id in self._prev_playing_ids
-                ):
-                    break
-                sent_at = time.monotonic()
-                result = fetch_target_status(t, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
-                self._apply_status_to_auth(t, result)
-                self._apply_status_to_repeat(t.appliance_id, result, time.monotonic())
-                first_checks[t.service_name] = (sent_at, result)
-                if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED:
-                    break
+            first_checks = dial_core_poll.first_checks(
+                visible, self._prev_playing_ids, self._dial_id,
+                fetch=fetch_target_status, now_fn=time.monotonic,
+            )
         if first_checks:
             visible = [
                 t for t in visible if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED
@@ -5646,64 +5533,28 @@ class DialDisplay:
             # to another appliance's artwork. With neither, today's
             # playing_since-ordered walk is unchanged.
             ordered = walk_order(pin_target, visible)
-            fallback = None
-            selection = Selection()
-            for target in ordered:
-                is_focus = pin_target is not None and target is pin_target
-                if target.auth == AUTH_UNAUTHORIZED:
-                    logging.debug("dial display: skip unauthorized row %s", target.service_name)
-                    continue
-                if not target.dial_status:
-                    logging.debug("dial display: skip unsupported target %s", target.service_name)
-                    if is_focus:
-                        # No status to poll, but the screen still follows the
-                        # pinned target for its name/label; there is simply
-                        # no artwork.
-                        selection, fallback = walk_step(target, None, True, fallback)
-                        break
-                    continue
 
-                checked = first_checks.get(target.service_name)
-                if checked is not None:
-                    status_sent_at[target.service_name], result = checked
+            def on_revoke() -> None:
+                # Revoked mid-tick: release whichever pin this was — a
+                # manual focus clears it, an automatic binding just
+                # releases — and the walk carries on over the remaining
+                # targets in this same poll, so the screen shows the
+                # auto-pick target immediately.
+                nonlocal focus_target
+                if focus_target is not None:
+                    self._clear_focus("appliance now unauthorized")
+                    focus_target = None
                 else:
-                    status_sent_at[target.service_name] = time.monotonic()
-                    result = fetch_target_status(target, self._dial_id, timeout_seconds=DIAL_STATUS_TIMEOUT_SECONDS)
-                    self._apply_status_to_auth(target, result)
-                    self._apply_status_to_repeat(target.appliance_id, result, time.monotonic())
-                visited.add(target.service_name)
-                status_error = result.get("status_error")
+                    self._bound_appliance_id = None
 
-                if is_focus and status_error == "unauthorized":
-                    # Revoked mid-tick: release whichever pin this was — a
-                    # manual focus clears it, an automatic binding just
-                    # releases — and fall through to the normal walk over
-                    # the remaining targets in this same poll, so the
-                    # screen shows the auto-pick target immediately.
-                    if focus_target is not None:
-                        self._clear_focus("appliance now unauthorized")
-                        focus_target = None
-                    else:
-                        self._bound_appliance_id = None
-                    pin_target = None
-                    is_focus = False
-                    continue
-
-                if status_error and not is_focus:
-                    logging.debug(
-                        "dial display: target %s status_error=%s", target.service_name, status_error,
-                    )
-                record = None if status_error else result
-                if record is not None:
-                    records[target.service_name] = record
-                # A pinned target is shown regardless of whether it has
-                # identified artwork — never fall through to another
-                # appliance's artwork while a focus or a binding pins one.
-                selection, fallback = walk_step(target, record, is_focus, fallback)
-                if selection is not None:
-                    break
-            else:
-                selection = walk_fallback(fallback)
+            walked = dial_core_poll.walk(
+                ordered, first_checks, self._dial_id, pin_target,
+                fetch=fetch_target_status, now_fn=time.monotonic, on_revoke=on_revoke,
+            )
+            records.update(walked.records)
+            status_sent_at.update(walked.status_sent_at)
+            visited |= walked.visited
+            selection = walked.selection
             selected_url = selection.url
             selected_service = selection.service
             selected_artist = selection.artist
@@ -5733,36 +5584,11 @@ class DialDisplay:
         self._close_bound_screen_if_unfocused()
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
-        # Mute is recorded for EVERY target this poll actually walked, not
-        # only the reporting one — a screened dial set to broadcast scope
-        # "all" wants an up-to-date entry for every appliance it might fan a
-        # push out to. Each target has its own entry in the observation
-        # store (see dial_volume.observe_mute_state()), so this can never
-        # clobber another target's flag; the glyph itself is unaffected — it
-        # always reads back the reporting/bound service's own entry (see
-        # shown_muted() at compose time), never another target's.
-        # Whether a service's status carries the flag at all decides how a
-        # missing value is treated (see the store's comment block).
-        reports_mute = {
-            t.service_name: getattr(t, "status_reports_mute", True) for t in visible
-        }
-        for walked_name, walked_record in records.items():
-            if walked_name == reporting_name:
-                continue  # the explicit call just below covers this one
-            observe_mute_state(
-                walked_name, walked_record.get("muted"), requested_at=status_sent_at.get(walked_name, 0.0),
-                status_reports_mute=reports_mute.get(walked_name, True),
-            )
-        observe_mute_state(
-            reporting_name, record.get("muted") if record else None,
-            requested_at=status_sent_at.get(reporting_name, 0.0),
-            status_reports_mute=reports_mute.get(reporting_name, True),
+        dial_core_poll.observe_tick(
+            records, reporting_name, status_sent_at, visible, master_volume,
+            observe_mute=observe_mute_state, observe_volume=observe_master_volume,
+            forget=forget_mute_states_except,
         )
-        forget_mute_states_except({t.service_name for t in visible})
-        if isinstance(master_volume, int) and not isinstance(master_volume, bool):
-            observe_master_volume(reporting_name, master_volume)
-        elif reporting_name is not None:
-            observe_master_volume(reporting_name, None)
 
         # Assigned before _show_artwork() below so a volume press landing
         # during the artwork fetch already goes to the right target.
@@ -5833,17 +5659,15 @@ class DialDisplay:
         # underneath this work via update_config. The re-check below, taken
         # under the lock, is what makes that safe.
         url_key = _url_log_key(url)
-        data, err = _fetch_artwork(url, ARTWORK_FETCH_TIMEOUT_SECONDS)
-        if err:
-            self._record_error("artwork_fetch_failed")
-            self._log_limiter.log(
-                logging.WARNING, f"artwork_fetch:{url_key}",
-                "dial display: artwork fetch failed (%s): %s", url_key, err,
-            )
+        artwork = dial_core_poll.fetch_artwork_bytes(
+            url, self._log_limiter, fetch=_fetch_artwork,
+            timeout=ARTWORK_FETCH_TIMEOUT_SECONDS, on_error=self._record_error,
+        )
+        if artwork is None:
             self.show_logo()
             return
 
-        image = decode_artwork(data)
+        image = decode_artwork(artwork.data)
         if image is None:
             self._record_error("artwork_decode_failed")
             self._log_limiter.log(

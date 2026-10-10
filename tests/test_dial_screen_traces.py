@@ -483,7 +483,9 @@ _FAKE_ARTWORK_IMAGE = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
 # module, this tuple (and _MONOTONIC_TARGETS) is the one place to repoint.
 _PATCHES = (
     ("dial_display.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
+    ("dial_core_poll.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
     ("dial_display.enrich_targets", lambda ctx, img: {"side_effect": ctx.fake_enrich}),
+    ("dial_core_poll.enrich_targets", lambda ctx, img: {"side_effect": ctx.fake_enrich}),
     ("dial_display._fetch_artwork", lambda ctx, img: {"return_value": (b"jpegdata", "")}),
     ("dial_display.decode_artwork", lambda ctx, img: {"return_value": img}),
     ("dial_display_compositor.transform_artwork_for_panel", lambda ctx, img: {"return_value": img}),
@@ -491,7 +493,7 @@ _PATCHES = (
 )
 # Every place time.monotonic is read, all patched with the scenario's one
 # fake clock.
-_MONOTONIC_TARGETS = ("dial_display.time.monotonic",)
+_MONOTONIC_TARGETS = ("dial_display.time.monotonic", "dial_core_poll.time.monotonic")
 
 
 def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:

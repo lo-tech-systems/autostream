@@ -49,7 +49,9 @@ from dial_warnings import WarningManager, WarningStore
 # Module-level names that read the clock. dial_display and dial_volume both
 # reach the one time module, so patching either patches both, but each is
 # named so a module move only has to repoint this tuple.
-_MONOTONIC_TARGETS = ("dial_display.time.monotonic", "dial_volume.time.monotonic")
+_MONOTONIC_TARGETS = (
+    "dial_display.time.monotonic", "dial_core_poll.time.monotonic", "dial_volume.time.monotonic",
+)
 
 
 @contextlib.contextmanager
