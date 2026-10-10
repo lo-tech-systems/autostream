@@ -252,6 +252,97 @@ class TestDismiss:
 
 
 # ---------------------------------------------------------------------------
+# set_held_visible() — the "always show controls" external sync from the
+# display. held=True makes the overlay count as visible without a touch
+# reveal; held=False forces the session back to hidden and drops the latch,
+# mirroring force_reveal_only()'s latch handling exactly.
+# ---------------------------------------------------------------------------
+
+class TestHeldVisible:
+    def test_press_while_held_arms_immediately_no_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        assert sm.set_held_visible(True, now=0.0) == []
+        assert sm.held_visible is True
+        assert sm.overlay_visible is True
+
+        actions = sm.on_filter_event(press_event(UP_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
+        assert ACTION_REVEAL_OVERLAY not in kinds(actions)
+        assert kinds(actions).count(ACTION_VOLUME_UP) == 1
+
+    def test_tick_never_dismisses_while_held(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+        sm.on_filter_event(press_event(UP_XY), now=0.1)
+        sm.on_filter_event(release_event(UP_XY), now=0.2)
+
+        actions = sm.tick(now=0.2 + DISMISS_S + 1.0)
+        assert ACTION_DISMISS_OVERLAY not in kinds(actions)
+        assert sm.overlay_visible is True
+
+    def test_unheld_after_visible_dismisses_and_next_press_only_reveals(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+
+        actions = sm.set_held_visible(False, now=1.0)
+        assert kinds(actions) == [ACTION_DISMISS_OVERLAY]
+        assert sm.overlay_visible is False
+        assert sm.held_visible is False
+
+        actions = sm.on_filter_event(press_event(UP_XY), now=1.1)
+        assert kinds(actions) == [ACTION_REVEAL_OVERLAY]
+        assert ACTION_VOLUME_UP not in kinds(actions)
+
+    def test_unheld_mid_press_clears_pressed_zone_stops_repeat_and_release_is_silent(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+        sm.on_filter_event(press_event(UP_XY), now=0.1)
+        assert sm.pressed_zone == TouchZone.UP
+
+        actions = sm.set_held_visible(False, now=0.2)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_DISMISS_OVERLAY]
+        assert sm.pressed_zone is None
+
+        # No repeat fires even though FIRST_REPEAT_S has elapsed.
+        actions = sm.tick(now=0.2 + FIRST_REPEAT_S + 0.01)
+        assert ACTION_VOLUME_UP not in kinds(actions)
+
+        # The finger is still down (no RELEASE delivered yet) — a later
+        # RELEASE must emit nothing further (already unlit, already hidden).
+        actions = sm.on_filter_event(release_event(UP_XY), now=0.5)
+        assert actions == []
+
+    def test_held_true_does_not_actuate_a_reveal_only_contact_already_down(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        # A press against a hidden overlay is reveal-only.
+        sm.on_filter_event(press_event(UP_XY), now=0.0)
+        assert sm.pressed_zone is None
+
+        actions = sm.set_held_visible(True, now=0.1)
+        assert actions == []
+        assert sm.pressed_zone is None  # still not actuated
+
+        sm.on_filter_event(release_event(UP_XY), now=0.2)
+        actions = sm.on_filter_event(press_event(UP_XY), now=0.3)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
+
+    def test_mute_tap_while_held_flashes_and_clears_no_repeat(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+
+        actions = sm.on_filter_event(press_event(MUTE_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_MUTE_TOGGLE]
+        assert kinds(actions).count(ACTION_MUTE_TOGGLE) == 1
+
+        actions = sm.tick(now=0.1 + PRESSED_FLASH_S)
+        assert clears_pressed(actions)
+
+        # No repeat behaviour for MUTE, even well past FIRST_REPEAT_S.
+        actions = sm.tick(now=0.1 + FIRST_REPEAT_S + 0.1)
+        assert ACTION_MUTE_TOGGLE not in kinds(actions)
+
+
+# ---------------------------------------------------------------------------
 # TouchEventSource — fake IRQ, fake driver, fake clock
 # ---------------------------------------------------------------------------
 
@@ -580,6 +671,60 @@ class TestTouchEventSourceNoncompositedPolling:
         finally:
             irq.release()
             source.stop()
+
+
+class TestTouchEventSourceHeldPolling:
+    def test_getter_changes_drive_set_held_visible_on_change_only(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+
+        values = iter([False, False, True, True, False])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_persistent_overlay=lambda: next(values),
+        )
+
+        source._poll_held_visible()  # False -> baseline, not held
+        assert sm.held_visible is False
+
+        source._poll_held_visible()  # False -> False, no change
+        assert sm.held_visible is False
+
+        source._poll_held_visible()  # False -> True
+        assert sm.held_visible is True
+        assert sm.overlay_visible is True
+
+        source._poll_held_visible()  # True -> True, no change
+        assert sm.held_visible is True
+
+        source._poll_held_visible()  # True -> False
+        assert sm.held_visible is False
+        assert sm.overlay_visible is False
+
+    def test_raising_getter_is_treated_as_false(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_held_visible(True, now=0.0)
+        assert sm.held_visible is True
+
+        def boom():
+            raise RuntimeError("display gone")
+
+        source = TouchEventSource(
+            driver, touch_filter, sm, get_persistent_overlay=boom,
+        )
+        source._poll_held_visible()
+        assert sm.held_visible is False
+
+    def test_no_getter_injected_is_a_no_op(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(driver, touch_filter, sm)
+        source._poll_held_visible()  # must not raise, must not change anything
+        assert sm.held_visible is False
 
 
 # ---------------------------------------------------------------------------

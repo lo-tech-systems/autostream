@@ -405,6 +405,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         on_dismiss_overlay=on_dismiss_overlay,
         on_set_pressed_zone=on_set_pressed_zone,
         get_noncomposited_generation=display.noncomposited_generation,
+        get_persistent_overlay=getattr(display, "persistent_overlay_shown", None),
         axis_signs=(
             profile.touch_swap_xy, profile.touch_invert_x, profile.touch_invert_y
         ),

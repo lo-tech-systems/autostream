@@ -46,6 +46,22 @@ a repeating finger. The clock starts at RELEASE, or at a filter CAP (treated
 as an implicit release for this purpose — no further repeats, no further
 resets, straight to counting down to dismiss).
 
+HELD VISIBLE: an external "always show controls" screen setting can hold the
+overlay visible on its own, independent of any touch — see
+TouchStateMachine.set_held_visible() and TouchEventSource's
+get_persistent_overlay polling. While held, the overlay counts as visible
+from the state machine's point of view: the next press arms immediately (the
+same "already visible" path REVEAL-ONLY FIRST TOUCH describes above) and the
+dismiss clock in tick() is disabled entirely, since there is no touch-driven
+overlay session to time out. When the display stops holding it (screen went
+to the logo, went to sleep, or the setting was turned off), the session is
+forced back to hidden and a DISMISS is emitted so the touch-published
+overlay snapshot is cleared too — a finger must never be able to arm against
+controls that are no longer actually drawn. TouchEventSource polls the
+display's persistent_overlay_shown() (injected, never imported — see the
+class docstring) once per loop iteration so a transition is noticed within
+one tick either way.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
@@ -106,12 +122,19 @@ class TouchStateMachine:
         self._dismiss_deadline: float | None = None
         self._pressed_until: float | None = None
         self._pressed_lit = False
+        # True while the display is holding the overlay visible on its own
+        # (always_show_controls) — see set_held_visible() below.
+        self._held = False
 
     # -- read-only state, for a compositor/UI to consult -------------------
 
     @property
     def overlay_visible(self) -> bool:
         return self._overlay_visible
+
+    @property
+    def held_visible(self) -> bool:
+        return self._held
 
     @property
     def pressed_zone(self) -> TouchZone | None:
@@ -177,6 +200,47 @@ class TouchStateMachine:
             self._phase = _PHASE_IDLE
         return []
 
+    def set_held_visible(self, held: bool, now: float) -> list[TouchAction]:
+        """External sync from the display: the controls overlay is (or is
+        no longer) being drawn persistently.
+
+        held=True: the overlay counts as visible from now on, so the next
+        press arms at touch-down; the dismiss clock is disabled. A finger
+        already down from a reveal-only contact stays reveal-only until it
+        lifts (nothing changes about that contact).
+
+        held=False: the display has stopped drawing the overlay on its own.
+        Force the session back to hidden immediately and emit a DISMISS so
+        the touch snapshot is cleared too; otherwise the display would keep
+        drawing the touch snapshot over the logo, or the session would arm
+        a press against controls that are no longer on screen. Same latch
+        handling as force_reveal_only().
+        """
+        if held:
+            self._held = True
+            self._overlay_visible = True
+            self._dismiss_deadline = None
+            return []
+        self._held = False
+        # Same latch handling as force_reveal_only(): drop whatever zone was
+        # armed and stop repeating, without assuming anything about whether
+        # a finger is currently down.
+        was_lit = self._pressed_lit
+        self._armed_zone = None
+        self._next_repeat_time = None
+        self._pressed_lit = False
+        self._pressed_until = None
+        was_visible = self._overlay_visible
+        self._overlay_visible = False
+        self._dismiss_deadline = None
+        self._phase = _PHASE_REVEAL_PENDING if self._contact_down else _PHASE_IDLE
+        actions: list[TouchAction] = []
+        if was_lit:
+            actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
+        if was_visible:
+            actions.append(TouchAction(ACTION_DISMISS_OVERLAY))
+        return actions
+
     def tick(self, now: float) -> list[TouchAction]:
         """Periodic check for repeat-due and dismiss-due, independent of any
         new filter event arriving. Callers should invoke this regularly
@@ -203,6 +267,7 @@ class TouchStateMachine:
             self._dismiss_deadline is not None
             and now >= self._dismiss_deadline
             and self._overlay_visible
+            and not self._held
         ):
             actions.append(TouchAction(ACTION_DISMISS_OVERLAY))
             self._overlay_visible = False
@@ -330,6 +395,7 @@ class TouchEventSource:
         poll_interval_s: float = _POLL_INTERVAL_S,
         idle_tick_interval_s: float = _IDLE_TICK_INTERVAL_S,
         get_noncomposited_generation=None,
+        get_persistent_overlay=None,
         axis_signs=None,
     ) -> None:
         self._driver = driver
@@ -351,6 +417,14 @@ class TouchEventSource:
         # callbacks: this module must not import dial_display. None disables
         # the check entirely (e.g. in tests that don't care about it).
         self._get_noncomposited_generation = get_noncomposited_generation
+        # Injected read of dial_display.DialDisplay.persistent_overlay_shown
+        # — kept injected (not an import) for the same reason as the
+        # noncomposited getter above: this module must not import
+        # dial_display. None disables the "always show controls" sync
+        # entirely (e.g. in tests that don't care about it, or a dial with
+        # no display stack at all).
+        self._get_persistent_overlay = get_persistent_overlay
+        self._last_held: bool | None = None
         # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
         # kept so a live rotate toggle can re-derive the mapping. None when
         # the caller did not supply them (e.g. tests constructing directly).
@@ -443,6 +517,25 @@ class TouchEventSource:
             self._last_noncomposited_gen = gen
             self._dispatch(self._state_machine.force_reveal_only())
 
+    def _poll_held_visible(self) -> None:
+        """Check whether the display's "always show controls" state has
+        changed since we last looked, and sync the state machine to match —
+        see set_held_visible() and the module docstring's HELD VISIBLE
+        paragraph. A no-op when no getter was injected. A raising getter is
+        treated as False: display failure must never leave the touch side
+        believing controls are held visible when they might not be drawn.
+        Cheap (one bool read/compare) — safe to call every loop iteration.
+        """
+        if self._get_persistent_overlay is None:
+            return
+        try:
+            held = bool(self._get_persistent_overlay())
+        except Exception:
+            held = False
+        if held != self._last_held:
+            self._last_held = held
+            self._dispatch(self._state_machine.set_held_visible(held, self._clock()))
+
     # -- main loop -----------------------------------------------------
 
     def _make_default_irq(self):
@@ -476,6 +569,7 @@ class TouchEventSource:
     def _loop(self, irq) -> None:
         while not self._stop_event.is_set():
             self._poll_noncomposited()
+            self._poll_held_visible()
             irq.wait_for_active(timeout=self._idle_tick_interval_s)
             if irq.is_active:
                 self._sample_loop(irq)
@@ -497,6 +591,7 @@ class TouchEventSource:
 
     def _sample_loop(self, irq) -> None:
         while irq.is_active and not self._stop_event.is_set():
+            self._poll_held_visible()
             now = self._clock()
             raw = self._driver.read_sample()
             for event in self._filter.feed(raw, now):

@@ -1437,6 +1437,10 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, *_):
             assert captured["kwargs"]["get_noncomposited_generation"] is display.noncomposited_generation
 
+    def test_persistent_overlay_getter_wired_to_display(self):
+        with self._built() as (cfg, display, result, captured, *_):
+            assert captured["kwargs"]["get_persistent_overlay"] is display.persistent_overlay_shown
+
     def test_volume_up_enqueues_step_percent_and_notifies_activity(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_volume_up"]()

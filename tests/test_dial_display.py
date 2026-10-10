@@ -128,11 +128,15 @@ class FakeBackend:
 
 def _make_display(
     fitted=True, rotate=False, bgr=False, screen_type=DEFAULT_PROFILE_KEY,
+    always_show_controls=False,
     targets=None, backend=None,
     get_targets=None, mark_unauthorized=None,
     backend_factory_builder=None,
 ) -> tuple[DialDisplay, FakeBackend, MagicMock, MagicMock]:
-    cfg = DialDisplayConfig(fitted=fitted, rotate=rotate, bgr=bgr, screen_type=screen_type)
+    cfg = DialDisplayConfig(
+        fitted=fitted, rotate=rotate, bgr=bgr, screen_type=screen_type,
+        always_show_controls=always_show_controls,
+    )
     fb = backend or FakeBackend()
     gt = get_targets or MagicMock(return_value=targets or [])
     mu = mark_unauthorized or MagicMock()
@@ -166,7 +170,8 @@ class TestDisabledConfig:
         # is off — the configured key still reads back from GET /screen/settings.
         assert status == {
             "fitted": False, "rotate": False, "screen_type": "",
-            "bgr": False, "active": False, "backend": "noop",
+            "bgr": False, "always_show_controls": False,
+            "active": False, "backend": "noop",
             "backend_loaded": False, "showing": "noop",
             "last_error": "", "last_error_at": None,
             "display_sleeping": False, "display_idle_seconds": 0,
@@ -1720,3 +1725,259 @@ class TestNoncompositedNotification:
             display._mark_noncomposited_locked()
 
         assert display.noncomposited_generation() == 2
+
+
+# ---------------------------------------------------------------------------
+# "Always show controls" held-visible overlay (B/A.4 held-visible parts):
+# persistent_overlay_shown(), _current_base_is_artwork tracking via
+# _display_locked's is_artwork_base parameter, and the forced-visible merge
+# in _effective_overlay_locked().
+# ---------------------------------------------------------------------------
+
+def _poll_with_artwork(display, fb):
+    """Drive one poll iteration that lands on identified artwork, faking out
+    the network/decode/transform steps exactly like TestRotation does."""
+    fake_image = _marked_image(size=(fb.width, fb.height))
+    with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
+         patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
+         patch("dial_display.decode_artwork", return_value=fake_image), \
+         patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
+        display._poll_once()
+
+
+class TestIsArtworkBaseTracking:
+    def test_render_logo_locked_clears_artwork_flag(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._current_base_is_artwork = True
+            display._render_logo_locked()
+        assert display._current_base_is_artwork is False
+
+    def test_show_artwork_sets_artwork_flag(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        assert display._current_base_is_artwork is False
+        _poll_with_artwork(display, fb)
+        assert display._current_base_is_artwork is True
+
+    def test_show_artwork_cached_reuse_path_keeps_artwork_flag(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display._current_base_is_artwork is True
+        cached_url = display._source_artwork_url
+        with display._lock:
+            # Force past the "unchanged url + already showing artwork"
+            # early no-op return so the call below actually reaches the
+            # cached-reuse branch of _show_artwork (same url, cached image
+            # still set, but _showing no longer says "artwork").
+            display._showing = "logo"
+            display._current_base_is_artwork = False
+        display._show_artwork(cached_url)
+        assert display._current_base_is_artwork is True
+
+    def test_redisplay_current_locked_keeps_artwork_flag_true(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        with display._lock:
+            display._current_base_is_artwork = False
+            display._redisplay_current_locked()
+        assert display._current_base_is_artwork is True
+
+    def test_redisplay_current_locked_renders_logo_when_nothing_cached(self):
+        display, fb, gt, mu = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._current_base_is_artwork = True
+            display._redisplay_current_locked()
+        assert display._current_base_is_artwork is False
+
+    def test_repaint_current_locked_does_not_change_artwork_flag(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display._current_base_is_artwork is True
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._current_base_is_artwork is True
+
+    def test_clear_sleep_disable_swap_clear_artwork_flag(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display._current_base_is_artwork is True
+        with display._lock:
+            display._clear_locked()
+        assert display._current_base_is_artwork is False
+
+        display2, fb2, gt2, mu2 = _make_display(targets=[t])
+        display2.enable()
+        _poll_with_artwork(display2, fb2)
+        with display2._lock:
+            display2._sleep_locked()
+        assert display2._current_base_is_artwork is False
+
+        display3, fb3, gt3, mu3 = _make_display(targets=[t])
+        display3.enable()
+        _poll_with_artwork(display3, fb3)
+        with display3._lock:
+            display3._disable_locked()
+        assert display3._current_base_is_artwork is False
+
+    def test_swap_backend_locked_clears_artwork_flag(self):
+        t = _target()
+        fb_old = FakeBackend()
+        fb_new = FakeBackend()
+
+        def builder(screen_type):
+            return lambda: fb_new
+
+        display, _, gt, mu = _make_display(
+            targets=[t], backend=fb_old, backend_factory_builder=builder,
+        )
+        display.enable()
+        _poll_with_artwork(display, fb_old)
+        assert display._current_base_is_artwork is True
+        with display._lock:
+            display._rebuild_backend_factory_locked("st7789_240x240")
+            display._swap_backend_locked()
+        # The swap itself calls _enable_locked() -> _render_logo_locked(),
+        # which sets the flag back to False via is_artwork_base=False — the
+        # net observable result is the same "no artwork on screen" state
+        # _swap_backend_locked's own reset line guarantees even before that.
+        assert display._current_base_is_artwork is False
+
+
+class TestPersistentOverlayShown:
+    def test_false_when_always_show_controls_off(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is False
+
+    def test_true_when_on_and_artwork_shown(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is True
+
+    def test_false_over_the_logo(self):
+        display, fb, gt, mu = _make_display(targets=[], always_show_controls=True)
+        display.enable()
+        assert display.get_status()["showing"] == "logo"
+        assert display.persistent_overlay_shown() is False
+
+    def test_false_when_backend_not_open(self):
+        display, fb, gt, mu = _make_display(fitted=False, always_show_controls=True)
+        assert display.persistent_overlay_shown() is False
+
+    def test_false_when_sleeping(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is True
+        with display._lock:
+            display._sleep_locked()
+        assert display.persistent_overlay_shown() is False
+
+    def test_false_after_clear(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.persistent_overlay_shown() is True
+        with display._lock:
+            display._clear_locked()
+        assert display.persistent_overlay_shown() is False
+
+    def test_get_status_includes_always_show_controls(self):
+        display, fb, gt, mu = _make_display(always_show_controls=True)
+        display.enable()
+        assert display.get_status()["always_show_controls"] is True
+
+
+class TestHeldOverlay:
+    def test_held_visible_frame_differs_from_no_overlay_frame(self):
+        t = _target()
+        display_off, fb_off, _, _ = _make_display(targets=[t], always_show_controls=False)
+        display_off.enable()
+        _poll_with_artwork(display_off, fb_off)
+        no_overlay_frame = fb_off.displayed[-1]
+
+        display_on, fb_on, _, _ = _make_display(targets=[t], always_show_controls=True)
+        display_on.enable()
+        _poll_with_artwork(display_on, fb_on)
+        held_frame = fb_on.displayed[-1]
+
+        assert display_on.persistent_overlay_shown() is True
+        assert list(held_frame.getdata()) != list(no_overlay_frame.getdata())
+
+    def test_logo_never_gets_the_overlay_even_when_held(self):
+        display, fb, gt, mu = _make_display(targets=[], always_show_controls=True)
+        display.enable()
+        fb.displayed.clear()
+        with display._lock:
+            display._render_logo_locked()
+        logo_frame = fb.displayed[-1]
+
+        # Compose the same base without any overlay merge for comparison —
+        # the held path must not have drawn anything on top of the logo.
+        expected = display._compositor.compose(
+            logo_frame, logo_frame.width, logo_frame.height,
+            rotate=False, bgr=False, is_artwork=False, overlay=None,
+        )
+        assert list(logo_frame.getdata()) == list(expected.getdata())
+
+    def test_always_show_controls_false_and_snapshot_hidden_matches_no_overlay(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        frame = fb.displayed[-1]
+        expected = display._compositor.compose(
+            display._current_base_image, fb.width, fb.height,
+            rotate=False, bgr=False, is_artwork=False, overlay=OverlayState(visible=False),
+        )
+        assert list(frame.getdata()) == list(expected.getdata())
+
+    def test_update_config_toggle_redisplays_synchronously(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], fitted=True, always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.get_status()["showing"] == "artwork"
+        fb.displayed.clear()
+
+        with patch.object(display, "_poll_once") as mock_poll:
+            status = display.update_config(DialDisplayConfig(fitted=True, always_show_controls=True))
+        mock_poll.assert_not_called()
+
+        assert status["always_show_controls"] is True
+        assert len(fb.displayed) == 1
+
+    def test_effective_overlay_locked_forces_visible_when_held(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        result = display._effective_overlay_locked(OverlayState(visible=False))
+        assert result.visible is True
+
+    def test_effective_overlay_locked_not_held_returns_invisible_snapshot_unchanged(self):
+        t = _target()
+        display, fb, gt, mu = _make_display(targets=[t], always_show_controls=False)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        snapshot = OverlayState(visible=False)
+        result = display._effective_overlay_locked(snapshot)
+        assert result is snapshot

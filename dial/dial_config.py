@@ -70,12 +70,19 @@ class DialDisplayConfig:
     LCD share the same physical unit and the same webui "Screen" settings
     section), so it shares one save path and one validation path with the
     other screen fields. Do not "fix" this later by pulling it out.
+
+    `always_show_controls` is colocated for the same reason: it only makes
+    sense with a screen (there is nothing to hold visible without one), and
+    it shares the screen save path — see validate_screen_settings() and the
+    "Always show controls" design notes for the held-visible behaviour it
+    drives in dial_display.py/dial_touch.py.
     """
     fitted: bool = False
     rotate: bool = False
     screen_type: str = DEFAULT_PROFILE_KEY
     bgr: bool = False
     touch_type: str = DEFAULT_TOUCH_KEY
+    always_show_controls: bool = False
 
 
 @dataclass
@@ -114,11 +121,19 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     `touch_type` is optional (defaults to DEFAULT_TOUCH_KEY, i.e. "none") and
     follows the exact same rule: if present it must be a string naming a
     known controller in TOUCH_CONTROLLERS, otherwise InvalidScreenSettings.
+    `always_show_controls` is optional (defaults to False), same rule as
+    `rotate` and `bgr`: if present it must be a strict JSON boolean. This is
+    what keeps an old appliance's whole-object POST (which never sends the
+    field at all) from 400ing, and a new appliance never sends it to a dial
+    whose GET response did not advertise it in the first place — see the
+    cross-version compatibility notes in the design docs.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
-    unknown = set(obj.keys()) - {"fitted", "rotate", "screen_type", "bgr", "touch_type"}
+    unknown = set(obj.keys()) - {
+        "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
+    }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
     if "fitted" not in obj:
@@ -142,9 +157,12 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
         raise InvalidScreenSettings("screen.touch_type must be a string")
     if touch_type not in TOUCH_CONTROLLERS:
         raise InvalidScreenSettings(f"unknown screen.touch_type: {touch_type!r}")
+    always_show_controls = obj.get("always_show_controls", False)
+    if not isinstance(always_show_controls, bool):
+        raise InvalidScreenSettings("screen.always_show_controls must be a boolean")
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
-        touch_type=touch_type,
+        touch_type=touch_type, always_show_controls=always_show_controls,
     )
 
 
@@ -229,6 +247,7 @@ def load_config() -> DialConfig:
             screen_type=_resolve_persisted_screen_type(hw_display.get('screen_type')),
             bgr=bool(hw_display.get('bgr', False)),
             touch_type=_resolve_persisted_touch_type(hw_display.get('touch_type')),
+            always_show_controls=bool(hw_display.get('always_show_controls', False)),
         )
 
     if SETTINGS_PATH.exists():
@@ -250,6 +269,9 @@ def load_config() -> DialConfig:
                 bgr=bool(s_display.get('bgr', cfg.display.bgr)),
                 touch_type=_resolve_persisted_touch_type(
                     s_display.get('touch_type', cfg.display.touch_type)
+                ),
+                always_show_controls=bool(
+                    s_display.get('always_show_controls', cfg.display.always_show_controls)
                 ),
             )
 
@@ -287,6 +309,7 @@ def save_config(cfg: DialConfig) -> None:
             'screen_type': cfg.display.screen_type,
             'bgr':         cfg.display.bgr,
             'touch_type':  cfg.display.touch_type,
+            'always_show_controls': cfg.display.always_show_controls,
         },
     }
     with _save_lock:

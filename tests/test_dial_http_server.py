@@ -912,7 +912,8 @@ class TestReconcileUpdateTimer:
 # GET/POST /screen/settings
 # ---------------------------------------------------------------------------
 
-_RUNTIME_KEYS = {"fitted", "rotate", "screen_type", "bgr", "touch_type", "active", "backend",
+_RUNTIME_KEYS = {"fitted", "rotate", "screen_type", "bgr", "touch_type",
+                  "always_show_controls", "active", "backend",
                   "backend_loaded", "showing", "last_error", "last_error_at",
                   "display_sleeping", "display_idle_seconds"}
 
@@ -933,6 +934,7 @@ class TestScreenSettingsGet:
             "fitted": False, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
@@ -964,6 +966,7 @@ class TestScreenSettingsGet:
             "fitted": True, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -980,6 +983,7 @@ class TestScreenSettingsGet:
             "fitted": True, "rotate": True,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -997,6 +1001,7 @@ class TestScreenSettingsGet:
             "fitted": True, "rotate": False,
             "screen_type": "st7789_240x240", "bgr": True,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
 
     def test_get_reflects_touch_type(self):
@@ -1014,6 +1019,7 @@ class TestScreenSettingsGet:
             "fitted": True, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": "xpt2046",
+            "always_show_controls": False,
         }
 
     def test_runtime_touch_type_reports_running_controller(self):
@@ -1072,6 +1078,24 @@ class TestScreenSettingsGet:
         assert result["data"]["screen"]["touch_type"] == "xpt2046"
         assert result["data"]["runtime"]["touch_type"] == "ft6206"
 
+    def test_get_reflects_always_show_controls(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, always_show_controls=True,
+        ))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": True,
+        }
+
 
 class TestScreenSettingsPost:
     def setup_method(self):
@@ -1085,6 +1109,7 @@ class TestScreenSettingsPost:
             "fitted": True, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -1097,6 +1122,7 @@ class TestScreenSettingsPost:
             "fitted": True, "rotate": True,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -1110,6 +1136,7 @@ class TestScreenSettingsPost:
             "fitted": True, "rotate": False,
             "screen_type": "st7789_240x240", "bgr": True,
             "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": False,
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
@@ -1124,8 +1151,46 @@ class TestScreenSettingsPost:
             "fitted": True, "rotate": False,
             "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
             "touch_type": "ft6206",
+            "always_show_controls": False,
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
+
+    def test_post_always_show_controls_true_persists_and_appears_in_response(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "always_show_controls": True}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"] == {
+            "fitted": True, "rotate": False,
+            "screen_type": DEFAULT_PROFILE_KEY, "bgr": False,
+            "touch_type": DEFAULT_TOUCH_KEY,
+            "always_show_controls": True,
+        }
+        assert r["save_calls"][0].display.always_show_controls is True
+
+    def test_post_always_show_controls_omitted_defaults_false(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+            fitted=True, always_show_controls=True,
+        ))
+        # A whole-object POST that omits the field resets it, same as an old
+        # appliance omitting bgr/screen_type today (see B.6 in the design
+        # notes) — this is the accepted cost of whole-object semantics.
+        r = _call_handler(
+            "/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["always_show_controls"] is False
+        assert r["save_calls"][0].display.always_show_controls is False
+
+    def test_post_non_bool_always_show_controls_returns_invalid_screen_settings(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "always_show_controls": 1}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
 
     def test_post_unknown_touch_type_returns_invalid_screen_settings(self):
         r = _call_handler(
@@ -1247,6 +1312,7 @@ class _FailingDisplayStatusProvider:
             # open after a failed enable — mirroring DialDisplay, which clears
             # it on teardown and only sets it on a successful open.
             "screen_type": "", "bgr": config.bgr,
+            "always_show_controls": config.always_show_controls,
             "active": False, "backend": "noop", "backend_loaded": False,
             "showing": "noop", "last_error": "backend_open_failed",
             "last_error_at": 12345.0,
@@ -1543,6 +1609,11 @@ class TestNoOpDisplayStatusProvider:
         status = provider.get_status()
         assert status["screen_type"] == DEFAULT_PROFILE_KEY
         assert status["bgr"] is False
+
+    def test_get_status_includes_always_show_controls(self):
+        provider = NoOpDisplayStatusProvider()
+        status = provider.get_status()
+        assert status["always_show_controls"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -211,6 +211,7 @@ class NoOpDisplayStatusProvider:
             "screen_type":    DEFAULT_PROFILE_KEY,
             "bgr":            False,
             "touch_type":     "",
+            "always_show_controls": False,
             "active":         False,
             "backend":        "noop",
             "backend_loaded": False,
@@ -458,6 +459,7 @@ class DialHTTPServer:
                             'screen_type': cfg.display.screen_type,
                             'bgr':         cfg.display.bgr,
                             'touch_type':  cfg.display.touch_type,
+                            'always_show_controls': cfg.display.always_show_controls,
                         },
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
@@ -777,6 +779,7 @@ class DialHTTPServer:
                             'screen_type': cfg.display.screen_type,
                             'bgr':         cfg.display.bgr,
                             'touch_type':  cfg.display.touch_type,
+                            'always_show_controls': cfg.display.always_show_controls,
                         },
                         'runtime': runtime,
                     })
@@ -793,9 +796,10 @@ class DialHTTPServer:
                 dial_server.update_cfg(new_cfg)
 
                 logging.info(
-                    "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s touch_type=%s",
+                    "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
+                    "touch_type=%s always_show_controls=%s",
                     new_display.fitted, new_display.rotate, new_display.screen_type,
-                    new_display.bgr, new_display.touch_type,
+                    new_display.bgr, new_display.touch_type, new_display.always_show_controls,
                 )
                 runtime['touch_type'] = dial_server._touch_runtime
                 # fitted/rotate/bgr/screen_type all apply live. touch_type
@@ -819,6 +823,7 @@ class DialHTTPServer:
                         'screen_type': new_cfg.display.screen_type,
                         'bgr':         new_cfg.display.bgr,
                         'touch_type':  new_cfg.display.touch_type,
+                        'always_show_controls': new_cfg.display.always_show_controls,
                     },
                     'runtime':          runtime,
                     'restart_required': touch_type_changed,

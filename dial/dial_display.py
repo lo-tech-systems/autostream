@@ -117,6 +117,7 @@ class DisplayRuntimeStatus:
     rotate: bool
     screen_type: str
     bgr: bool
+    always_show_controls: bool
     active: bool
     backend: str
     backend_loaded: bool
@@ -289,6 +290,13 @@ class DialDisplay:
         # mDNS service name of the display's chosen artwork source, or None.
         # Read by the volume worker via current_source_service_name().
         self._source_service_name: str | None = None
+        # Whether _current_base_image is artwork (True) or the logo (False).
+        # Written only under self._lock (by _display_locked's is_artwork_base
+        # parameter, or directly by the backend-lifecycle methods that leave
+        # nothing on screen); read lock-free by persistent_overlay_shown()
+        # and _effective_overlay_locked(), same discipline as the other
+        # touch-overlay-plumbing fields above — a plain bool read is atomic.
+        self._current_base_is_artwork = False
 
         # Non-composited-state notification (screen cleared or asleep) for
         # the touch side to observe — see _mark_noncomposited_locked().
@@ -362,6 +370,7 @@ class DialDisplay:
                 # exists to expose. Empty while no backend is open.
                 screen_type=self._active_screen_type,
                 bgr=self._config.bgr,
+                always_show_controls=self._config.always_show_controls,
                 active=self._backend_open and self._backend_name != "noop",
                 backend=self._backend_name,
                 backend_loaded=self._backend_loaded,
@@ -400,14 +409,18 @@ class DialDisplay:
                 else:
                     self._enable_locked()
                     # _enable_locked() is a no-op when the backend is already
-                    # open, so a rotate/bgr-only toggle needs its own path
-                    # here — re-display the current frame under the new
-                    # settings immediately rather than waiting for the next
-                    # poll. Never runs alongside a screen_type change (see
-                    # the swap branch above).
+                    # open, so a rotate/bgr/always_show_controls-only toggle
+                    # needs its own path here — re-display the current frame
+                    # under the new settings immediately rather than waiting
+                    # for the next poll. Never runs alongside a screen_type
+                    # change (see the swap branch above).
                     redisplay_changed = (
                         old_config.fitted and not screen_type_changed
-                        and (old_config.rotate != config.rotate or old_config.bgr != config.bgr)
+                        and (
+                            old_config.rotate != config.rotate
+                            or old_config.bgr != config.bgr
+                            or old_config.always_show_controls != config.always_show_controls
+                        )
                     )
                     if redisplay_changed and self._backend_open:
                         self._redisplay_current_locked()
@@ -497,6 +510,22 @@ class DialDisplay:
         a touch/encoder press addresses whatever this dial is showing."""
         return self._source_service_name
 
+    def persistent_overlay_shown(self) -> bool:
+        """True while the display is holding the controls overlay visible
+        on its own (always_show_controls on, artwork on screen, backend
+        open, not asleep). Plain attribute reads; the touch thread polls
+        this once per loop iteration (see dial_touch.TouchEventSource.
+        _poll_held_visible) so a finger can never arm against controls that
+        are not actually drawn — when this turns False (screen went to the
+        logo, went to sleep, or the setting was turned off), the touch side
+        is forced back to reveal-on-touch within one loop tick."""
+        return (
+            self._config.always_show_controls
+            and self._current_base_is_artwork
+            and self._backend_open
+            and not self._display_sleeping
+        )
+
     def request_repaint(self) -> None:
         """Ask the repaint thread to recompose the current base against the
         latest overlay/now-playing state. Lock-free; used by the volume
@@ -583,6 +612,7 @@ class DialDisplay:
         self._showing = "noop"
         self._source_artwork_url = ""
         self._current_rendered_image = None
+        self._current_base_is_artwork = False
         self._enable_locked()
 
     def _disable_locked(self) -> None:
@@ -601,6 +631,7 @@ class DialDisplay:
         self._current_rendered_image = None
         self._idle_started_at = None
         self._display_sleeping = False
+        self._current_base_is_artwork = False
 
     def _clear_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -609,6 +640,7 @@ class DialDisplay:
             except Exception as e:
                 logging.debug("dial display: backend clear raised: %s", e)
         self._showing = "noop"
+        self._current_base_is_artwork = False
         self._mark_noncomposited_locked()
 
     def _sleep_locked(self) -> None:
@@ -622,6 +654,7 @@ class DialDisplay:
         self._showing = "sleeping"
         self._source_artwork_url = ""
         self._current_rendered_image = None
+        self._current_base_is_artwork = False
         logging.info("dial display: idle %ds — sleeping", DISPLAY_IDLE_SLEEP_SECONDS)
         self._mark_noncomposited_locked()
 
@@ -699,7 +732,7 @@ class DialDisplay:
             return backend.width, backend.height
         return _DEFAULT_PANEL_WIDTH, _DEFAULT_PANEL_HEIGHT
 
-    def _display_locked(self, image) -> None:
+    def _display_locked(self, image, is_artwork_base: bool | None = None) -> None:
         """Compose and write *image* to the backend — the single hand-off
         point every frame reaches on its way to hardware.
 
@@ -718,9 +751,20 @@ class DialDisplay:
         as self._current_base_image so the repaint thread can recompose it
         against a newer overlay snapshot later, without needing a new base
         frame from a poll.
+
+        is_artwork_base: when not None, records whether *image* is artwork
+        (True) or the logo (False) into self._current_base_is_artwork before
+        composing — this is what persistent_overlay_shown() and the
+        held-visible merge in _effective_overlay_locked() key off. None (the
+        default) leaves the current value alone, for callers that are only
+        re-composing the same base against a newer overlay/rotate/bgr
+        setting (e.g. _repaint_current_locked) rather than changing what is
+        actually on screen.
         """
         if not (self._backend_open and self._backend is not None):
             return
+        if is_artwork_base is not None:
+            self._current_base_is_artwork = is_artwork_base
         self._current_base_image = image
         width, height = self._active_panel_dims()
         overlay = self._effective_overlay_locked(self._overlay_snapshot)
@@ -759,11 +803,26 @@ class DialDisplay:
             — a reveal that follows a mute from the physical button or an
             earlier touch session must not show the tri-state default.
 
-        Returns *snapshot* unchanged when it is not visible: compose()
-        already treats an invisible overlay as a strict no-op regardless of
-        its other fields, so there is nothing worth merging in that case.
+        held-visible: when always_show_controls is on and artwork is on
+        screen (and the display is not asleep), the overlay is forced
+        visible here regardless of what the touch-published snapshot says —
+        this is what makes a stale visible=False snapshot, or a dismiss
+        landing while held, harmless (see dial_touch.py's HELD VISIBLE
+        paragraph and set_held_visible()). Deliberately does not also check
+        self._backend_open: the caller (_display_locked) already returned
+        early when the backend is closed, so there is nothing left to guard
+        against here.
+
+        Returns *snapshot* unchanged when it is neither visible nor held:
+        compose() already treats an invisible overlay as a strict no-op
+        regardless of its other fields, so there is nothing worth merging in
+        that case.
         """
-        if not snapshot.visible:
+        held = (
+            self._config.always_show_controls and self._current_base_is_artwork
+            and not self._display_sleeping
+        )
+        if not (snapshot.visible or held):
             return snapshot
         now_playing = self._now_playing
         artist = now_playing.artist if now_playing is not None else ""
@@ -781,7 +840,7 @@ class DialDisplay:
         if not (self._backend_open and self._backend is not None):
             return
         if self._current_rendered_image is not None:
-            self._display_locked(self._current_rendered_image)
+            self._display_locked(self._current_rendered_image, is_artwork_base=True)
         else:
             self._render_logo_locked()
 
@@ -799,7 +858,7 @@ class DialDisplay:
             self._clear_locked()
             return
         was_showing = self._showing
-        self._display_locked(image)
+        self._display_locked(image, is_artwork_base=False)
         self._source_artwork_url = ""
         self._current_rendered_image = None
         self._showing = "logo"
@@ -994,7 +1053,7 @@ class DialDisplay:
             )
             if cached_reusable:
                 was_showing = self._showing
-                self._display_locked(self._current_rendered_image)
+                self._display_locked(self._current_rendered_image, is_artwork_base=True)
                 self._showing = "artwork"
                 if was_showing == "logo":
                     logging.info("dial display: showing artwork")
@@ -1058,7 +1117,7 @@ class DialDisplay:
                 )
                 return
             was_showing = self._showing
-            self._display_locked(transformed)
+            self._display_locked(transformed, is_artwork_base=True)
             self._source_artwork_url = url
             self._current_rendered_image = transformed
             self._showing = "artwork"
