@@ -68,6 +68,14 @@ SCOPE_CURRENT = "current"
 SCOPE_ALL = "all"
 SCOPES = (SCOPE_CURRENT, SCOPE_ALL)
 
+# How often the dial's poll loop asks the appliances for their state, in
+# whole seconds. Faster means a quicker reaction to a new track or a
+# start/stop, at the cost of more traffic. The default matches
+# dial_display.DISPLAY_POLL_INTERVAL_SECONDS.
+POLL_INTERVAL_MIN_S = 2
+POLL_INTERVAL_MAX_S = 6
+POLL_INTERVAL_DEFAULT_S = 6
+
 
 @dataclass
 class DialDisplayConfig:
@@ -116,6 +124,8 @@ class DialDisplayConfig:
     volume_scope: str = SCOPE_CURRENT
     # Same choice, for a mute push.
     mute_scope: str = SCOPE_CURRENT
+    # Seconds between poll ticks, POLL_INTERVAL_MIN_S..POLL_INTERVAL_MAX_S.
+    poll_interval_s: int = POLL_INTERVAL_DEFAULT_S
 
     @property
     def effective_volume_scope(self) -> str:
@@ -195,6 +205,9 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     InvalidScreenSettings — the same "optional-with-default, strict when
     present" rule as `always_show_controls`, so an old appliance's whole-
     object POST (which never sends either field) still validates.
+    `poll_interval_s` is optional (defaults to POLL_INTERVAL_DEFAULT_S); if
+    present it must be a JSON integer (not a bool, float or string) from
+    POLL_INTERVAL_MIN_S to POLL_INTERVAL_MAX_S inclusive.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
@@ -202,6 +215,7 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     unknown = set(obj.keys()) - {
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
         "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
+        "poll_interval_s",
     }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
@@ -256,11 +270,22 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     mute_scope = obj.get("mute_scope", SCOPE_CURRENT)
     if not isinstance(mute_scope, str) or mute_scope not in SCOPES:
         raise InvalidScreenSettings(f"screen.mute_scope must be one of {list(SCOPES)}")
+    poll_interval_s = obj.get("poll_interval_s", POLL_INTERVAL_DEFAULT_S)
+    if (
+        isinstance(poll_interval_s, bool)
+        or not isinstance(poll_interval_s, int)
+        or not (POLL_INTERVAL_MIN_S <= poll_interval_s <= POLL_INTERVAL_MAX_S)
+    ):
+        raise InvalidScreenSettings(
+            f"screen.poll_interval_s must be a whole number of seconds from "
+            f"{POLL_INTERVAL_MIN_S} to {POLL_INTERVAL_MAX_S}"
+        )
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
         touch_type=touch_type, always_show_controls=always_show_controls,
         screen_size_inches=screen_size_inches, layout_size=layout_size,
         volume_scope=volume_scope, mute_scope=mute_scope,
+        poll_interval_s=poll_interval_s,
     )
 
 
@@ -373,6 +398,30 @@ def _resolve_persisted_scope(value: object) -> str:
     return SCOPE_CURRENT
 
 
+def _resolve_persisted_poll_interval(value: object) -> int:
+    """Resolve a persisted poll_interval_s value, falling back to
+    POLL_INTERVAL_DEFAULT_S with a warning log for anything unusable, rather
+    than raising.
+
+    Mirrors the other _resolve_persisted_* helpers above: a corrupt or stale
+    settings file must not brick the dial at startup — only the strict
+    API-facing validate_screen_settings() is allowed to reject an
+    out-of-range value outright. Missing (None) silently means the default.
+    """
+    if value is None:
+        return POLL_INTERVAL_DEFAULT_S
+    if (
+        not isinstance(value, bool) and isinstance(value, int)
+        and POLL_INTERVAL_MIN_S <= value <= POLL_INTERVAL_MAX_S
+    ):
+        return value
+    logging.warning(
+        "dial config: unusable persisted poll_interval_s %r — falling back to %d",
+        value, POLL_INTERVAL_DEFAULT_S,
+    )
+    return POLL_INTERVAL_DEFAULT_S
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE env file without executing it."""
     data: dict[str, str] = {}
@@ -422,6 +471,7 @@ def load_config() -> DialConfig:
             layout_size=_resolve_persisted_layout_size(hw_display.get('layout_size'), hw_screen_type),
             volume_scope=_resolve_persisted_scope(hw_display.get('volume_scope')),
             mute_scope=_resolve_persisted_scope(hw_display.get('mute_scope')),
+            poll_interval_s=_resolve_persisted_poll_interval(hw_display.get('poll_interval_s')),
         )
 
     if SETTINGS_PATH.exists():
@@ -469,6 +519,9 @@ def load_config() -> DialConfig:
                     s_display.get('volume_scope', cfg.display.volume_scope)
                 ),
                 mute_scope=s_mute_scope,
+                poll_interval_s=_resolve_persisted_poll_interval(
+                    s_display.get('poll_interval_s', cfg.display.poll_interval_s)
+                ),
             )
         elif legacy_mute_all_playing:
             # No display block at all in this settings file, but the legacy
@@ -515,6 +568,7 @@ def save_config(cfg: DialConfig) -> None:
             'layout_size': cfg.display.layout_size,
             'volume_scope': cfg.display.volume_scope,
             'mute_scope': cfg.display.mute_scope,
+            'poll_interval_s': cfg.display.poll_interval_s,
         },
     }
     with _save_lock:

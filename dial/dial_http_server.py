@@ -740,6 +740,7 @@ class DialHTTPServer:
                             'layout_size': cfg.display.layout_size,
                             'volume_scope': cfg.display.volume_scope,
                             'mute_scope': cfg.display.mute_scope,
+                            'poll_interval_s': cfg.display.poll_interval_s,
                         },
                         'supported':      list_profiles(),
                         'supported_touch': list_controllers(),
@@ -1055,8 +1056,14 @@ class DialHTTPServer:
                         return
                     _pin_clear_attempts(ip)
 
+                screen = obj.get('screen')
+                if isinstance(screen, dict) and 'poll_interval_s' not in screen:
+                    # The appliance's screen form never sends this key, so a
+                    # save from it keeps the configured interval rather than
+                    # resetting it to the default.
+                    screen = {**screen, 'poll_interval_s': cfg.display.poll_interval_s}
                 try:
-                    new_display = validate_screen_settings(obj.get('screen'))
+                    new_display = validate_screen_settings(screen)
                 except InvalidScreenSettings:
                     self._send_json(400, {'ok': False, 'error': 'invalid_screen_settings'})
                     return
@@ -1138,6 +1145,7 @@ class DialHTTPServer:
                             'layout_size': cfg.display.layout_size,
                             'volume_scope': cfg.display.volume_scope,
                             'mute_scope': cfg.display.mute_scope,
+                            'poll_interval_s': cfg.display.poll_interval_s,
                         },
                         'layout_sizes': layout_size_options(_profile_for(cfg.display)),
                         'layout': _layout_report_for(cfg.display),
@@ -1158,10 +1166,12 @@ class DialHTTPServer:
 
                 logging.info(
                     "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
-                    "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s",
+                    "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s "
+                    "poll_interval_s=%s",
                     new_display.fitted, new_display.rotate, new_display.screen_type,
                     new_display.bgr, new_display.touch_type, new_display.always_show_controls,
                     new_display.screen_size_inches, new_display.layout_size,
+                    new_display.poll_interval_s,
                 )
                 runtime['touch_type'] = dial_server._touch_runtime
                 # fitted/rotate/bgr/screen_type all apply live. touch_type
@@ -1190,6 +1200,7 @@ class DialHTTPServer:
                         'layout_size': new_cfg.display.layout_size,
                         'volume_scope': new_cfg.display.volume_scope,
                         'mute_scope': new_cfg.display.mute_scope,
+                        'poll_interval_s': new_cfg.display.poll_interval_s,
                     },
                     'layout_sizes':     layout_size_options(_profile_for(new_cfg.display)),
                     'layout':           _layout_report_for(new_cfg.display),

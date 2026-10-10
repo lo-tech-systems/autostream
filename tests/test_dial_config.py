@@ -620,6 +620,7 @@ class TestDisplaySettings:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -664,6 +665,7 @@ class TestDisplaySettings:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
 
 
@@ -898,6 +900,83 @@ class TestAlwaysShowControlsSetting:
         with _redirect(tmp_path, hw_path=hw, settings_path=s):
             cfg = load_config()
         assert cfg.display.always_show_controls is True
+
+
+class TestPollInterval:
+    def test_default_matches_the_display_constant(self):
+        import dial_display
+        assert dc.POLL_INTERVAL_DEFAULT_S == dial_display.DISPLAY_POLL_INTERVAL_SECONDS
+        assert DialDisplayConfig().poll_interval_s == dc.POLL_INTERVAL_DEFAULT_S
+
+    @pytest.mark.parametrize("value", [2, 3, 4, 5, 6])
+    def test_valid_values_accepted(self, value):
+        result = validate_screen_settings({"fitted": True, "poll_interval_s": value})
+        assert result == DialDisplayConfig(fitted=True, poll_interval_s=value)
+
+    def test_omitted_defaults_to_six(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result.poll_interval_s == 6
+
+    @pytest.mark.parametrize("value", [1, 7, 0, -3, "6", 6.0, 2.5, True, False, None, [6]])
+    def test_invalid_values_rejected(self, value):
+        with pytest.raises(InvalidScreenSettings, match="poll_interval_s"):
+            validate_screen_settings({"fitted": True, "poll_interval_s": value})
+
+    def test_missing_display_defaults_to_six(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.poll_interval_s == 6
+
+    def test_mutable_settings_override_hw(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "poll_interval_s": 4})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "poll_interval_s": 2})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.poll_interval_s == 2
+
+    def test_settings_without_the_key_keep_the_hw_value(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={"fitted": True, "poll_interval_s": 4})
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.poll_interval_s == 4
+
+    @pytest.mark.parametrize("value", [0, 9, "3", 3.0, True])
+    def test_unusable_persisted_value_falls_back_to_default(self, tmp_path, value):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "poll_interval_s": value})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.poll_interval_s == 6
+
+    def test_save_and_reload_round_trip(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            cfg = DialConfig(
+                uuid="hw-uuid-1234",
+                display=DialDisplayConfig(fitted=True, poll_interval_s=3),
+            )
+            save_config(cfg)
+            data = json.loads(s.read_text())
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+        assert data["display"]["poll_interval_s"] == 3
+        assert reloaded.display.poll_interval_s == 3
 
 
 # ---------------------------------------------------------------------------

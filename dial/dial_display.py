@@ -178,6 +178,7 @@ DEFAULT_DISPLAY_REPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-repla
 _DEFAULT_PANEL_WIDTH = get_profile(DEFAULT_PROFILE_KEY).width
 _DEFAULT_PANEL_HEIGHT = get_profile(DEFAULT_PROFILE_KEY).height
 
+# Default poll interval; the live value is the screen setting poll_interval_s.
 DISPLAY_POLL_INTERVAL_SECONDS = 6
 DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
@@ -1727,6 +1728,10 @@ class DialDisplay:
                             self._redisplay_current_locked()
             else:
                 self._disable_locked()
+        if old_config.poll_interval_s != config.poll_interval_s:
+            # The loop is parked in a wait of the old length: cut it short so
+            # the new interval applies from the next tick.
+            self._poll_wake.set()
         return self.get_status()
 
     def enable(self) -> None:
@@ -5010,7 +5015,7 @@ class DialDisplay:
             # Wait from the end of this loop so slow polls never accumulate
             # into a backlog. A push, a focus change or a wake sets
             # _poll_wake to run this loop again sooner.
-            self._poll_wake.wait(DISPLAY_POLL_INTERVAL_SECONDS)
+            self._poll_wake.wait(self._config.poll_interval_s)
 
     def request_poll(self) -> None:
         """Ask the poll thread to run _poll_once now instead of waiting for

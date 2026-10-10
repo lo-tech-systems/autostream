@@ -1027,7 +1027,8 @@ values from this endpoint.
     "screen_size_inches": null,
     "layout_size": null,
     "volume_scope": "current",
-    "mute_scope": "current"
+    "mute_scope": "current",
+    "poll_interval_s": 6
   },
   "supported": [
     {"key": "st7735s_160x128", "text": "ST7735S (128x160)", "default_inches": 1.8},
@@ -1091,6 +1092,7 @@ values from this endpoint.
 | `screen.layout_size` | string\|null | Persisted logical render size: the dial composes and hit-tests every screen at this size and resamples the finished frame to the panel. `null` means "use the panel's own resolution" - today's behaviour. When present, must be one of the keys in `layout_sizes` for the current `screen_type`. Optional, defaults to `null` |
 | `screen.volume_scope` | string | Which appliances a volume twist addresses while `screen.fitted` is true: `"current"` (the bound appliance) or `"all"` (every playing appliance). Optional, defaults to `"current"`. See **Scope capability gate** and **Broadcast scope** below |
 | `screen.mute_scope` | string | The same choice for a mute push. Optional, defaults to `"current"` |
+| `screen.poll_interval_s` | integer | How often the dial polls the appliances for their state, in whole seconds, from `2` to `6` inclusive. A lower value reacts sooner to a new track or a start/stop, at the cost of more traffic. Optional: omitted keeps the current value (`6` by default). Applies live. No capability gate |
 | `scope.volume`, `scope.mute` | string | The EFFECTIVE values: the stored `screen.volume_scope`/`screen.mute_scope` while `screen.fitted` is true, otherwise always `"all"` - a dial with no screen (or one too small to select an appliance) cannot choose which appliance to address. Informational only; a client never sends either back |
 | `supported` | array | Catalogue of display profiles this dial firmware supports, as `[{"key", "text", "default_inches"}, ...]` - see **Supported profiles** below |
 | `supported_touch` | array | Catalogue of touch controllers this dial firmware supports, as `[{"key", "text"}, ...]`. **This is a separate capability from `supported`** - see **Touch capability gate** below |
@@ -1248,7 +1250,8 @@ restart was actually fired for it:
     "screen_size_inches": null,
     "layout_size": null,
     "volume_scope": "current",
-    "mute_scope": "current"
+    "mute_scope": "current",
+    "poll_interval_s": 6
   },
   "layout_sizes": [],
   "layout": {
@@ -1385,6 +1388,11 @@ newly-saved `screen`, and the `screen_apply_failed` path reflects the still-pers
 - `volume_scope` is optional and defaults to `"current"` when omitted; when present it must
   be the string `"current"` or `"all"`. Anything else is rejected outright.
 - `mute_scope` follows the identical rule as `volume_scope` immediately above, independently.
+- `poll_interval_s` is optional; when omitted, the dial keeps its current interval (`6`
+  on a dial that has never been set). When present it must be a JSON integer (not a
+  boolean, float or string) from `2` to `6` inclusive. Anything else is rejected
+  outright. It has no capability gate, and an appliance screen save (which never sends
+  it) leaves a configured interval unchanged.
 - A missing or non-object `screen`, a missing `fitted` field, or any unknown field inside
   `screen` (including a `screen_type`/`bgr`/`touch_type` sent to firmware that doesn't
   support them - see the capability gates above) returns HTTP `400`:
@@ -1423,7 +1431,8 @@ written to disk, and is persisted only if the apply succeeded:
   "screen": {
     "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false,
     "touch_type": "none", "always_show_controls": false, "screen_size_inches": null,
-    "layout_size": null, "volume_scope": "current", "mute_scope": "current"
+    "layout_size": null, "volume_scope": "current", "mute_scope": "current",
+    "poll_interval_s": 6
   },
   "layout_sizes": [ "..." ],
   "layout": { "...": "..." },

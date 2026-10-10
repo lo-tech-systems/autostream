@@ -949,6 +949,7 @@ class TestScreenSettingsGet:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert result["data"]["runtime"]["fitted"] is False
@@ -985,6 +986,7 @@ class TestScreenSettingsGet:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert result["data"]["runtime"]["fitted"] is True
 
@@ -1006,6 +1008,7 @@ class TestScreenSettingsGet:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
 
     def test_get_reflects_screen_type_and_bgr(self):
@@ -1028,6 +1031,7 @@ class TestScreenSettingsGet:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
 
     def test_get_reflects_touch_type(self):
@@ -1050,6 +1054,7 @@ class TestScreenSettingsGet:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
 
     def test_runtime_touch_type_reports_running_controller(self):
@@ -1128,6 +1133,7 @@ class TestScreenSettingsGet:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
 
     def test_get_layout_sizes_matches_the_active_profiles_options(self):
@@ -1222,6 +1228,7 @@ class TestScreenSettingsPost:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
         assert r["data"]["restart_required"] is False
@@ -1239,6 +1246,7 @@ class TestScreenSettingsPost:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert r["save_calls"][0].display.rotate is True
 
@@ -1257,6 +1265,7 @@ class TestScreenSettingsPost:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
         assert r["save_calls"][0].display.bgr is True
@@ -1276,6 +1285,7 @@ class TestScreenSettingsPost:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
 
@@ -1294,6 +1304,7 @@ class TestScreenSettingsPost:
             "layout_size": None,
             "volume_scope": "current",
             "mute_scope": "current",
+            "poll_interval_s": 6,
         }
         assert r["save_calls"][0].display.always_show_controls is True
 
@@ -1887,6 +1898,64 @@ class TestScreenSizeInchesSetting:
         r = _call_handler(
             "/screen/settings",
             body={"screen": {"fitted": True, "screen_size_inches": 25}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
+
+
+class TestPollIntervalSetting:
+    def test_get_reflects_poll_interval(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, poll_interval_s=3))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"]["poll_interval_s"] == 3
+
+    def test_get_default_is_six(self):
+        result = {}
+        handler_cls, _ = _make_handler_cls()
+        h = object.__new__(handler_cls)
+        h.path           = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json     = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"]["poll_interval_s"] == 6
+
+    def test_post_persists_and_appears_in_response(self):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "poll_interval_s": 2}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["poll_interval_s"] == 2
+        assert r["save_calls"][0].display.poll_interval_s == 2
+
+    def test_post_omitted_keeps_the_configured_interval(self):
+        # The appliance's screen form never sends the key, so its saves must
+        # not reset an interval set through the API.
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, poll_interval_s=2))
+        r = _call_handler(
+            "/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg,
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["poll_interval_s"] == 2
+        assert r["save_calls"][0].display.poll_interval_s == 2
+
+    def test_post_omitted_on_a_default_dial_stays_default(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["status"] == 200
+        assert r["data"]["screen"]["poll_interval_s"] == 6
+
+    @pytest.mark.parametrize("value", [1, 7, "6", 6.0, True])
+    def test_post_invalid_returns_invalid_screen_settings(self, value):
+        r = _call_handler(
+            "/screen/settings",
+            body={"screen": {"fitted": True, "poll_interval_s": value}},
         )
         assert r["status"] == 400
         assert r["data"]["error"] == "invalid_screen_settings"

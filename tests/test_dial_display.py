@@ -1881,6 +1881,18 @@ class TestUpdateConfig:
         assert fb.closed is True
         assert status["showing"] == "noop"
 
+    def test_poll_interval_change_wakes_the_poll_loop(self):
+        display, fb, gt = _make_display(fitted=False)
+        display._poll_wake.clear()
+        display.update_config(DialDisplayConfig(fitted=False, poll_interval_s=3))
+        assert display._poll_wake.is_set()
+
+    def test_unchanged_poll_interval_does_not_wake_the_poll_loop(self):
+        display, fb, gt = _make_display(fitted=False)
+        display._poll_wake.clear()
+        display.update_config(DialDisplayConfig(fitted=False, rotate=True))
+        assert not display._poll_wake.is_set()
+
 
 # ---------------------------------------------------------------------------
 # Screen-size setting (physical diagonal) — mm_per_px derivation and its
@@ -2432,6 +2444,23 @@ class TestThreadingLifecycle:
 
         mock_poll.assert_called_once()
         assert wait_calls == [dd.DISPLAY_POLL_INTERVAL_SECONDS]
+
+    @pytest.mark.parametrize("seconds", [2, 4, 6])
+    def test_loop_waits_the_configured_poll_interval(self, seconds):
+        display, fb, gt = _make_display(targets=[])
+        display.update_config(DialDisplayConfig(fitted=False, poll_interval_s=seconds))
+        wait_calls = []
+
+        def tracking_wait(timeout=None):
+            wait_calls.append(timeout)
+            display._stop_event.set()
+            return True
+
+        with patch.object(display, "_poll_once"), \
+             patch.object(display._poll_wake, "wait", side_effect=tracking_wait):
+            display._run()
+
+        assert wait_calls == [seconds]
 
     def test_stop_is_idempotent(self):
         display, fb, gt = _make_display(targets=[])
