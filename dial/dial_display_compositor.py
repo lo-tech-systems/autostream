@@ -120,6 +120,7 @@ from dial_touch_layout import (
     TouchZone,
     compact_layout_for,
     compact_picker_layout_for,
+    idle_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -313,12 +314,24 @@ class ListState:
     pressed: the (TouchZone, index) currently being pressed, or None. index
         is only meaningful for LIST_ROW; the other zones ignore it. Mirrors
         OverlayState.pressed for the main surface.
+    title: compact only — the title band's own text. None (the default)
+        draws the picker's own "Replay" title, byte-identical to before this
+        field existed; a non-empty string (the info page's "Info") replaces
+        it. Ignored off the compact tier, where the title band does not
+        exist.
+    plain_background: compact only — draws a flat chassis background with
+        no dimmed base image behind it, instead of the picker's own dimmed
+        current base image. False (the default) is byte-identical to before
+        this field existed; the info page sets it True (nothing to dim: the
+        info page has no artwork/logo base of its own to show through).
     """
 
     rows: tuple = ()
     has_prev: bool = False
     has_next: bool = False
     pressed: tuple[TouchZone, int | None] | None = None
+    title: str | None = None
+    plain_background: bool = False
 
 
 class _PlayGlyphSentinel:
@@ -424,6 +437,7 @@ BODY_REPEAT_ROW = "repeat_row"     # "Repeat Play" label + arm dot
 BODY_TOGGLE_ROW = "toggle_row"     # a label + arm dot for any on/off row (repeat, per-output)
 BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
 BODY_LIST_ROWS = "list_rows"       # selector/picker rows
+BODY_IDLE_BADGE = "idle_badge"     # the idle screen's own "i" information badge
 # Compact-tier (2x2) bodies — see the module's compact frame builders below.
 BODY_COMPACT_CONTROLS = "compact_controls"  # the playing screen: dots/mute/minus/plus
 BODY_COMPACT_LIST = "compact_list"          # the replay picker's two rows + more/cancel
@@ -465,7 +479,7 @@ class Body:
     BODY_* constants and _BODY_RENDERERS."""
 
     kind: str = BODY_NONE
-    title: str = ""        # BODY_NOW_PLAYING
+    title: str = ""        # BODY_NOW_PLAYING; also BODY_COMPACT_LIST's own title-band text (empty -> "Replay")
     artist: str = ""       # BODY_NOW_PLAYING
     armed: bool = False    # BODY_REPEAT_ROW / BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE
     label: str = ""        # BODY_REPEAT_ROW / BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE — the row's own text
@@ -680,17 +694,22 @@ class DialDisplayCompositor:
         self, base, width: int, height: int, *, rotate: bool, bgr: bool,
         metrics: LayoutMetrics | None = None,
     ):
-        """Build one display-ready frame for the idle screen: just *base* —
-        the logo the manager chose (the plain disc, or the replay-available
+        """Build one display-ready frame for the idle screen: *base* — the
+        logo the manager chose (the plain disc, or the replay-available
         arrows-on-disc logo when a held recording can be replayed) — with no
         volume/mute controls overlay, since nothing is playing and there is
-        nothing on this screen to control. *base* is assumed already
+        nothing on this screen to control, plus the small "i" information
+        badge in the top-right corner (see BODY_IDLE_BADGE) on every idle
+        frame regardless of which logo is showing. *base* is assumed already
         panel-sized (the manager's own logo load). rotate/bgr are applied
         last, in the same order compose() uses. Never raises beyond a None
         passthrough. metrics: see compose()."""
         if base is None:
             return base
-        return _compose_frame(base, width, height, Frame(BG_BASE), rotate=rotate, bgr=bgr, metrics=metrics)
+        return _compose_frame(
+            base, width, height, Frame(BG_BASE, body=Body(BODY_IDLE_BADGE)),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
 
 
 def format_mmss(seconds: float) -> str:
@@ -1152,6 +1171,17 @@ GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel c
 GLYPH_MUTE = "mute"                    # params: () or (color,) — the main screen's footer mute cell
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
+GLYPH_INFO = "info"                    # params: () — the idle screen's information badge
+
+# Fraction of the idle info zone's own short side the "i" badge occupies —
+# about 3.2mm on every shipped panel, since the zone itself is 8mm by
+# construction wherever density is known (see dial_touch_layout.IdleLayout).
+_INFO_GLYPH_FRACTION = 0.4
+
+# The "i" cut from the information badge's white disc: plain black, for
+# tourist-sign contrast against the disc regardless of what the idle
+# screen's own base image looks like behind it.
+_INFO_GLYPH_CUT_RGB = (0, 0, 0)
 
 
 @functools.lru_cache(maxsize=48)
@@ -1368,6 +1398,31 @@ def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB
     draw.rectangle([cx - half, cy - half, cx + half, cy + half], fill=color)
 
 
+def _draw_info_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """The idle screen's information badge: a filled white disc (radius
+    0.42 of the short side) with a lowercase "i" (a dot above the centre,
+    a stem from just above the centre to just below it) cut out of it in
+    the dark chassis colour — tourist-sign contrast, drawn from shapes
+    rather than a font so it reads identically across every font fallback.
+    Rendered into a (w, h) canvas — see _draw_glyph."""
+    short = min(w, h)
+    cx, cy = w / 2, h / 2
+    r = short * 0.42
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_GLYPH_RGB)
+
+    dot_r = short * 0.07
+    stem_half_w = short * 0.06
+    stem_top = cy - short * 0.02
+    stem_bottom = cy + short * 0.2
+    dot_cy = cy - short * 0.16
+    draw.ellipse(
+        [cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=_INFO_GLYPH_CUT_RGB,
+    )
+    draw.rectangle(
+        [cx - stem_half_w, stem_top, cx + stem_half_w, stem_bottom], fill=_INFO_GLYPH_CUT_RGB,
+    )
+
+
 # Dispatch table for _glyph_tile()'s kinded paint step — built here, after
 # every painter above is defined, and looked up by name at call time so its
 # own position in the module relative to _glyph_tile()/_draw_glyph() (defined
@@ -1381,6 +1436,7 @@ _GLYPH_PAINTERS = {
     GLYPH_MUTE: _draw_mute_glyph,
     GLYPH_RESTART: _draw_restart_glyph,
     GLYPH_STOP: _draw_stop_glyph,
+    GLYPH_INFO: _draw_info_glyph,
 }
 
 
@@ -1480,6 +1536,16 @@ def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetric
 
 def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     pass
+
+
+def _body_idle_badge(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The idle screen's own "i" information badge, drawn in the top-right
+    corner regardless of which base image (the plain logo or the
+    replay-available one) is showing underneath — see compose_idle()."""
+    layout = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
+    x0, y0, x1, y1 = layout.info
+    side = round(min(x1 - x0, y1 - y0) * _INFO_GLYPH_FRACTION)
+    _draw_glyph(img, _centred_box(layout.info, side), GLYPH_INFO, supersample=metrics.supersample)
 
 
 def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -1706,16 +1772,18 @@ def _draw_compact_list_row(
 
 
 def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """The compact tier's replay picker: a tight title bar across the top,
-    horizontally centred, then a 35/65 split — cancel top-left and "more"
-    (lit when a second page exists — the compact tier wraps rather than
-    clamping, see the manager's own paging) bottom-left, both drawn at the
-    picker's own smaller glyph size; the two visible rows (current-row
-    highlighting is a Frame.highlights entry, drawn before this body runs)
-    fill the right column."""
+    """The compact tier's replay picker (or, for the info page, its own
+    read-only variant): a tight title bar across the top, horizontally
+    centred — the picker's own "Replay" when body.title is unset, else
+    body.title (the info page's "Info") — then a 35/65 split — cancel
+    top-left and "more" (lit when a second page exists — the compact tier
+    wraps rather than clamping, see the manager's own paging) bottom-left,
+    both drawn at the picker's own smaller glyph size; the two visible rows
+    (current-row highlighting is a Frame.highlights entry, drawn before this
+    body runs) fill the right column."""
     p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
     draw = ImageDraw.Draw(img)
-    _draw_label_centered(draw, p.title, _COMPACT_PICKER_TITLE, _load_font(metrics.font_body))
+    _draw_label_centered(draw, p.title, body.title or _COMPACT_PICKER_TITLE, _load_font(metrics.font_body))
     row_font = _load_font(metrics.font_body)
     pad = metrics.pad
     for cell, row in zip((p.row0, p.row1), body.rows):
@@ -1768,6 +1836,7 @@ _BODY_RENDERERS = {
     BODY_TOGGLE_ROW: _body_toggle_row,
     BODY_REPEAT_LINE: _body_repeat_line,
     BODY_LIST_ROWS: _body_list_rows,
+    BODY_IDLE_BADGE: _body_idle_badge,
     BODY_COMPACT_CONTROLS: _body_compact_controls,
     BODY_COMPACT_LIST: _body_compact_list,
     BODY_COMPACT_TOGGLE: _body_compact_toggle,
@@ -2106,18 +2175,24 @@ def _compact_list_highlight_rects(rows: tuple, cells: tuple[Rect, Rect]) -> tupl
 
 
 def _compact_list_frame(state: ListState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
-    """The compact tier's replay picker: dimmed base behind (the manager's
-    own current base image, passed through compose_list()'s *base*),
-    pressed and the current-row wash resolved against the picker's own
-    title-band-plus-grid layout."""
+    """The compact tier's replay picker (or, with state.plain_background,
+    the read-only info page reusing this same layout): dimmed base behind
+    (the manager's own current base image, passed through compose_list()'s
+    *base*) for the picker, or a flat undimmed chassis for the info page
+    (nothing to dim — it has no base image of its own); pressed and the
+    current-row wash resolved against the picker's own title-band-plus-grid
+    layout."""
     p = compact_picker_layout_for(width, height, metrics=metrics)
     return Frame(
-        background=BG_BASE,
-        dim_all=True,
+        background=BG_CHASSIS if state.plain_background else BG_BASE,
+        dim_all=not state.plain_background,
         pressed=_list_pressed_rects(state, width, height, metrics),
         highlights=_compact_list_highlight_rects(state.rows, (p.row0, p.row1)),
         header=None,
-        body=Body(BODY_COMPACT_LIST, rows=state.rows, has_more=state.has_prev or state.has_next),
+        body=Body(
+            BODY_COMPACT_LIST, rows=state.rows, has_more=state.has_prev or state.has_next,
+            title=state.title or "",
+        ),
         footer=Footer(FOOTER_NONE),
     )
 

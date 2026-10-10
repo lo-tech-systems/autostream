@@ -31,10 +31,12 @@ from dial_display_compositor import (  # noqa: E402
     _ARTIST_FONT_PX_AT_REFERENCE,
     _VOLUME_FONT_PX_AT_REFERENCE,
     BG_BASE,
+    BG_CHASSIS,
     BODY_COMPACT_CONTROLS,
     BODY_COMPACT_LIST,
     BODY_COMPACT_REPLAY,
     BODY_COMPACT_TOGGLE,
+    BODY_IDLE_BADGE,
     BODY_LIST_ROWS,
     BODY_NONE,
     BODY_NOW_PLAYING,
@@ -52,6 +54,7 @@ from dial_display_compositor import (  # noqa: E402
     Frame,
     GLYPH_CHEVRON,
     GLYPH_CROSS,
+    GLYPH_INFO,
     GLYPH_MUTE,
     GLYPH_PLAY,
     GLYPH_RESTART,
@@ -66,12 +69,15 @@ from dial_display_compositor import (  # noqa: E402
     _BODY_RENDERERS,
     _DIMMED_GLYPH_RGB,
     _FOOTER_RENDERERS,
+    _GLYPH_PAINTERS,
     _GLYPH_RGB,
     _GLYPH_SUPERSAMPLE,
+    _INFO_GLYPH_FRACTION,
     _INVERTED_GLYPH_RGB,
     OVERLAY_DIM_FACTOR,
     _COMPACT_PICKER_TITLE,
     _COMPACT_SMALL_GLYPH_FRACTION,
+    _centred_box,
     _compact_controls_frame,
     _compact_glyph_box,
     _compact_list_frame,
@@ -98,6 +104,7 @@ from dial_touch_layout import (  # noqa: E402
     CONTENT_LARGE,
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
+    GEOMETRY_INFO,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
@@ -108,6 +115,7 @@ from dial_touch_layout import (  # noqa: E402
     TouchZone,
     compact_layout_for,
     compact_picker_layout_for,
+    idle_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -351,6 +359,24 @@ class TestStatelessness:
     def test_compose_list_holds_no_attributes_that_change_between_calls(self, compositor):
         before = dict(vars(compositor))
         compositor.compose_list(160, 128, ListState(rows=(("A", False),)), rotate=False, bgr=False)
+        after = dict(vars(compositor))
+        assert before == after == {}
+
+    def test_compose_idle_holds_no_attributes_that_change_between_calls(self, compositor):
+        before = dict(vars(compositor))
+        base = Image.new("RGB", (160, 128), (32, 32, 32))
+        compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        after = dict(vars(compositor))
+        assert before == after == {}
+
+    def test_compose_list_info_variant_holds_no_attributes_that_change_between_calls(self, compositor):
+        # The read-only info variant (title + plain_background set) adds no
+        # instance state either.
+        before = dict(vars(compositor))
+        state = ListState(
+            rows=(("Dial name", False, "Kitchen"),), title="Info", plain_background=True,
+        )
+        compositor.compose_list(160, 128, state, rotate=False, bgr=False)
         after = dict(vars(compositor))
         assert before == after == {}
 
@@ -1036,6 +1062,33 @@ class TestComposeList:
         result_explicit = compositor.compose_list(160, 128, state_explicit, rotate=False, bgr=False)
         assert list(result.getdata()) == list(result_explicit.getdata())
 
+    def test_rich_five_label_value_rows_no_highlight_with_chevrons_lit(self, compositor):
+        # The read-only info page's own row shape on rich: no row is ever
+        # "current" (no highlight), label left + value right-aligned via
+        # the existing secondary-text path, rail chevrons lit per
+        # has_prev/has_next.
+        metrics = metrics_for(320, 240, 0.1778)
+        layout = list_layout_for(320, 240, metrics=metrics)
+        rows = (
+            ("Dial name", False, "Kitchen"),
+            ("Firmware", False, "1.2.3"),
+            ("IPv4", False, "192.168.1.20"),
+            ("WiFi", False, "HomeNet"),
+            ("Signal", False, "Strong"),
+        )
+        state = ListState(rows=rows, has_prev=False, has_next=True)
+        result = compositor.compose_list(320, 240, state, rotate=False, bgr=False, metrics=metrics)
+        blank = compositor.compose_list(
+            320, 240, ListState(rows=(("", False, ""),) * 5), rotate=False, bgr=False, metrics=metrics,
+        )
+        for rect in layout.rows:
+            assert list(result.crop(rect).getdata()) != list(blank.crop(rect).getdata())
+        no_next = compositor.compose_list(
+            320, 240, ListState(rows=rows, has_prev=False, has_next=False), rotate=False, bgr=False,
+            metrics=metrics,
+        )
+        assert list(result.crop(layout.rail_down).getdata()) != list(no_next.crop(layout.rail_down).getdata())
+
 
 # ---------------------------------------------------------------------------
 # The play marker — a filled white right-pointing triangle drawn in every
@@ -1653,13 +1706,34 @@ class TestComposeIdle:
     def _logo(self):
         return Image.new("RGB", (160, 128), (32, 32, 32))
 
-    def test_renders_the_base_plainly(self, compositor):
+    def test_renders_the_base_plus_the_info_badge_only(self, compositor):
+        # Every idle frame now carries the "i" badge (fork 1: the badge
+        # shows on the plain logo too, not only the replay-available one),
+        # so the only pixels that ever differ from the plain base are the
+        # ones inside its own box.
         base = self._logo()
         result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
-        assert list(result.getdata()) == list(base.convert("RGB").getdata())
+        info = idle_layout_for(160, 128).info
+        for y in range(128):
+            for x in range(160):
+                if info[0] <= x < info[2] and info[1] <= y < info[3]:
+                    continue
+                assert result.getpixel((x, y)) == base.getpixel((x, y))
+
+    def test_info_badge_drawn_inside_its_own_box(self, compositor):
+        base = self._logo()
+        result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        info = idle_layout_for(160, 128).info
+        assert list(result.crop(info).getdata()) != list(base.crop(info).getdata())
 
     def test_none_base_returns_none(self, compositor):
         assert compositor.compose_idle(None, 160, 128, rotate=False, bgr=False) is None
+
+    def test_never_raises_with_a_failing_painter(self, compositor):
+        base = self._logo()
+        with patch("dial_display_compositor._glyph_tile", side_effect=RuntimeError("boom")):
+            result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        assert result.size == (160, 128)
 
     def test_rotate_and_bgr_applied(self, compositor):
         base = self._logo()
@@ -1853,14 +1927,26 @@ class TestMetricsByteEquivalence:
         assert list(plain.getdata()) == list(with_metrics.getdata())
 
     @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
-    def test_compose_idle_unaffected(self, compositor, size, mm):
+    def test_compose_idle_unaffected_outside_the_info_badge(self, compositor, size, mm):
+        # The idle frame's one deliberate density-dependent pixel region is
+        # the "i" badge's own box (its side is 8mm by construction wherever
+        # density is known — see dial_touch_layout.IdleLayout.info); every
+        # other pixel stays exactly as before regardless of density.
         width, height = size
         base = _marked_image(size=(width, height))
+        metrics = metrics_for(width, height, mm)
         plain = compositor.compose_idle(base, width, height, rotate=False, bgr=False)
         with_metrics = compositor.compose_idle(
-            base, width, height, rotate=False, bgr=False, metrics=metrics_for(width, height, mm),
+            base, width, height, rotate=False, bgr=False, metrics=metrics,
         )
-        assert list(plain.getdata()) == list(with_metrics.getdata())
+        a = idle_layout_for(width, height).info
+        b = idle_layout_for(width, height, metrics=metrics).info
+        box = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+        for y in range(height):
+            for x in range(width):
+                if box[0] <= x < box[2] and box[1] <= y < box[3]:
+                    continue
+                assert plain.getpixel((x, y)) == with_metrics.getpixel((x, y))
 
     @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
     def test_album_ignored_on_the_base_tier(self, compositor, size, mm):
@@ -2166,7 +2252,7 @@ class TestPlayGlyphTile:
 
         assert set(_GLYPH_PAINTERS) == {
             GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
-            GLYPH_RESTART, GLYPH_STOP,
+            GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):
@@ -2177,6 +2263,64 @@ class TestPlayGlyphTile:
         assert pixels[10, 12][3] > 0  # left half, centre row — inside the triangle's base
         for corner in ((0, 0), (23, 0), (0, 23), (23, 23)):
             assert pixels[corner][3] == 0
+
+
+class TestInfoGlyph:
+    """GLYPH_INFO: a filled white disc with a dark "i" (dot + stem) cut
+    from it, symmetric about the vertical centre — the idle screen's own
+    information badge."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    def test_registered_painter(self):
+        assert GLYPH_INFO in _GLYPH_PAINTERS
+
+    def test_disc_is_opaque_white_with_transparent_corners(self):
+        w, h = 60, 60
+        tile = _glyph_tile(GLYPH_INFO, (), w, h, 4)
+        assert tile.size == (w, h)
+        assert tile.mode == "RGBA"
+        pixels = tile.load()
+        for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            assert pixels[corner][3] == 0
+        # A point on the disc, away from the "i", is opaque white.
+        edge_of_disc = pixels[w // 2, 2]
+        assert edge_of_disc[3] > 0
+        assert edge_of_disc[:3] == (255, 255, 255)
+
+    def test_dot_and_stem_are_dark_inside_the_white_disc(self):
+        w, h = 60, 60
+        tile = _glyph_tile(GLYPH_INFO, (), w, h, 4)
+        pixels = tile.load()
+        cx, cy = w // 2, h // 2
+        # The dot sits above the centre, the stem below it — both cut in a
+        # dark colour, distinct from the disc's own white.
+        dot_pixel = pixels[cx, cy - round(h * 0.16)]
+        stem_pixel = pixels[cx, cy + round(h * 0.15)]
+        assert dot_pixel[:3] != (255, 255, 255)
+        assert stem_pixel[:3] != (255, 255, 255)
+
+    def test_symmetric_about_the_vertical_centre(self):
+        w, h = 61, 61
+        tile = _glyph_tile(GLYPH_INFO, (), w, h, 4)
+        pixels = tile.load()
+        for y in range(0, h, 5):
+            for dx in range(0, w // 2, 5):
+                left = pixels[dx, y]
+                right = pixels[w - 1 - dx, y]
+                assert left == right
+
+    def test_one_tile_per_size_in_the_cache(self):
+        _glyph_tile.cache_clear()
+        _glyph_tile(GLYPH_INFO, (), 30, 30, 4)
+        _glyph_tile(GLYPH_INFO, (), 30, 30, 4)
+        info = _glyph_tile.cache_info()
+        assert info.hits == 1
+        assert info.misses == 1
 
 
 class TestRailFooterRendering:
@@ -3582,6 +3726,109 @@ class TestCompactPicker:
         from dial_display_compositor import _LIST_BG_RGB
         expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
         assert result.getpixel((2, 2)) == expected
+
+    def test_default_fields_are_byte_identical_to_before_they_existed(self, compositor):
+        # ListState.title/plain_background default to None/False, which
+        # must reproduce exactly the picker's own pre-existing rendering —
+        # the byte-identical regression guard for the two new fields.
+        metrics = _COMPACT_240
+        base = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        state = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", True, "4:56")), has_prev=True, has_next=True)
+        with_defaults = compositor.compose_list(
+            metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics, base=base,
+        )
+        explicit = ListState(
+            rows=state.rows, has_prev=True, has_next=True, title=None, plain_background=False,
+        )
+        with_explicit_defaults = compositor.compose_list(
+            metrics.width, metrics.height, explicit, rotate=False, bgr=False, metrics=metrics, base=base,
+        )
+        assert list(with_defaults.getdata()) == list(with_explicit_defaults.getdata())
+
+
+class TestInfoListVariant:
+    """The read-only info page reuses compose_list()'s compact picker
+    format under ListState.title/plain_background, and the rich/large
+    chassis unchanged (see TestComposeList's rich five-row test)."""
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_title_replaced_by_info(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        replay = compositor.compose_list(
+            metrics.width, metrics.height, ListState(rows=(("", False, ""),)),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        info = compositor.compose_list(
+            metrics.width, metrics.height,
+            ListState(rows=(("", False, ""),), title="Info", plain_background=True),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert _has_near_white_pixel(info.crop(p.title))
+        assert list(replay.crop(p.title).getdata()) != list(info.crop(p.title).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_plain_background_is_flat_chassis_even_with_a_base_given(self, compositor, metrics):
+        base = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
+        state = ListState(rows=(("Dial name", False, "Kitchen"),), title="Info", plain_background=True)
+        result = compositor.compose_list(
+            metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics, base=base,
+        )
+        from dial_display_compositor import _LIST_BG_RGB
+        # Flat chassis, undimmed — not the dimmed base colour a picker frame
+        # would show at the same corner (see test_base_is_dimmed_behind_when_given).
+        assert result.getpixel((2, 2)) == _LIST_BG_RGB
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_labels_upper_half_values_lower_half(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(
+            rows=(("Dial name", False, "Kitchen"), ("Firmware", False, "1.2.3")),
+            title="Info", plain_background=True,
+        )
+        blank = ListState(rows=(("", False, ""), ("", False, "")), title="Info", plain_background=True)
+        result = compositor.compose_list(metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics)
+        empty = compositor.compose_list(metrics.width, metrics.height, blank, rotate=False, bgr=False, metrics=metrics)
+        for cell in (p.row0, p.row1):
+            assert list(result.crop(cell).getdata()) != list(empty.crop(cell).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_no_row_is_ever_highlighted(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        # The info page never marks a row current — the manager always
+        # passes checked=False; even if it somehow did, only the frame
+        # actually rendered from real info state matters, which is
+        # confined to plain (label, False, value) rows.
+        state = ListState(
+            rows=(("Dial name", False, "Kitchen"), ("Firmware", False, "1.2.3")),
+            title="Info", plain_background=True,
+        )
+        result = compositor.compose_list(metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics)
+        chassis_bg = result.getpixel((1, metrics.height - 1))
+        from dial_display_compositor import _LIST_BG_RGB
+        assert chassis_bg == _LIST_BG_RGB
+
+    def test_x_in_cancel_and_chevron_lit_iff_more_pages(self, compositor):
+        metrics = _COMPACT_240
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        one_page = ListState(rows=(("Dial name", False, "Kitchen"),), title="Info", plain_background=True)
+        two_pages = ListState(
+            rows=(("Dial name", False, "Kitchen"),), has_next=True, title="Info", plain_background=True,
+        )
+        a = compositor.compose_list(metrics.width, metrics.height, one_page, rotate=False, bgr=False, metrics=metrics)
+        b = compositor.compose_list(metrics.width, metrics.height, two_pages, rotate=False, bgr=False, metrics=metrics)
+        assert _has_near_white_pixel(a.crop(p.cancel))
+        assert list(a.crop(p.more).getdata()) != list(b.crop(p.more).getdata())
+
+    def test_never_raises_with_no_font(self, compositor):
+        metrics = _COMPACT_240
+        state = ListState(
+            rows=(("Dial name", False, "Kitchen"),), title="Info", plain_background=True,
+        )
+        with patch("dial_display_compositor._load_font", return_value=None):
+            result = compositor.compose_list(
+                metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
+            )
+        assert result.size == (metrics.width, metrics.height)
 
 
 class TestCompactRepeatEnable:
