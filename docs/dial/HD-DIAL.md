@@ -9,7 +9,7 @@ board, and that browser fills the touchscreen. The browser is WPE WebKit,
 started by its `cog` launcher, which draws straight to the display with no
 desktop or compositor in between.
 
-**This is a preview.** The software is written and tested against a mock
+**This is a preview.** The software is written and tested against a simulated
 dial and a browser, but it has not yet been run on real HD dial hardware.
 Treat everything on this page about boards and panels as what we expect to
 work, not what we have confirmed. If you try one, please report what you see.
@@ -296,13 +296,41 @@ Security notes:
 - The touchscreen itself is served only on the dial's own loopback address
   (`127.0.0.1`, port 7843) and cannot be reached from the network.
 
-To look at the page without any dial at all, run the offline mock:
+### Previewing the page without a dial
+
+`tools/hd_page_preview.py` serves the page from the dial's real HD server, with
+a stand-in for the rest of the dial behind it, so you can see the page in any
+state without a dial or an appliance. It is the same set-up the browser tests
+use. It needs the dial's Python dependencies, as the tests do, and uses no
+display or hardware. Run it from the repository root:
 
 ```
-python3 tools/hd_mock_server.py --scenario replaying
+python3 tools/hd_page_preview.py --scenario replaying
 ```
 
-and open the address it prints. `--list` shows the available scenarios.
+and open the address it prints (the server listens on the loopback address
+only, as it does on the dial; `--port` changes the port, 8080 by default).
+`--list` prints the scenario names. They cover each state the page can draw:
+playing with and without artwork, nothing playing, the replay row in its
+states, the equaliser, the warning and notice cards, the PIN keypad, the
+power card, an unreachable appliance and a dial that has lost its network.
+The default is `playing_artwork`.
+
+To watch the page move between states, give it a script, a JSON list of
+`[delay_seconds, scenario]` steps, each played that long after the one before:
+
+```
+python3 tools/hd_page_preview.py --script tests/hd_scripts/journey.json
+```
+
+An unknown scenario name or a negative delay is refused when it starts.
+
+The page is live. Sleep and the pull-down settings work, and a setting you
+change stays changed until you stop the preview; nothing is written to disk.
+Pressing play, or back to the start, in the replay row moves to the `replaying`
+scenario, and stop moves back to `playing_artwork`. Every other action is
+accepted and printed, without any PIN, and changes nothing. Stop it with
+Ctrl-C.
 
 ## Troubleshooting
 

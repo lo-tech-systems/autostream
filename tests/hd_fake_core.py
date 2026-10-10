@@ -41,6 +41,7 @@ class FakeCore:
         self.reboot_result = reboot_result
         self.shutdown_result = shutdown_result
         self.watches: list = []               # (kind, appliance_id, watcher, on)
+        self.on_call = None                   # called with (method, args, kwargs) after each is recorded
         for method in ACTION_METHODS:
             setattr(self, method, self._action(method))
 
@@ -89,19 +90,24 @@ class FakeCore:
 
     # ---- the core's request methods --------------------------------------
 
+    def _record(self, method, args, kwargs) -> None:
+        self.calls.append((method, args, kwargs))
+        if self.on_call is not None:
+            self.on_call(method, args, kwargs)
+
     def _action(self, method):
         def call(*args, **kwargs):
-            self.calls.append((method, args, kwargs))
+            self._record(method, args, kwargs)
             return self.results.get(method, self.default_result)
         call.__name__ = method
         return call
 
     def request_dial_reboot(self) -> bool:
-        self.calls.append(("request_dial_reboot", (), {}))
+        self._record("request_dial_reboot", (), {})
         return self.reboot_result
 
     def request_dial_shutdown(self) -> bool:
-        self.calls.append(("request_dial_shutdown", (), {}))
+        self._record("request_dial_shutdown", (), {})
         return self.shutdown_result
 
     def watch_outputs(self, appliance_id, watcher, on, *, fetch=True) -> None:

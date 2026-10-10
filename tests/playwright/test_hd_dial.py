@@ -1,11 +1,8 @@
 """Playwright browser tests for the HD dial page.
 
-Two servers back the page, both on 127.0.0.1 with a free port:
-
-  hd_real  the production HdServer (routes, hub, serialiser, headers) with a
-           FakeCore fed from the HD scenario corpus; only the core is fake
-  hd_mock  tools/hd_mock_server.py, the offline mock the page is developed
-           against
+The production HdServer (routes, hub, serialiser, headers) backs the page on
+127.0.0.1 with a free port, over a FakeCore fed from the HD scenario corpus (only
+the core is fake; tests/hd_preview.py builds it).
 
 The page is opened at the HD panel's size (800x480) with touch on, in
 headless Chromium. `--browser webkit` also runs the pointer-driven classes
@@ -23,12 +20,11 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-for _p in (REPO_ROOT / "tests", REPO_ROOT / "tools", REPO_ROOT / "dial", REPO_ROOT / "core"):
+for _p in (REPO_ROOT / "tests", REPO_ROOT / "dial", REPO_ROOT / "core"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -52,114 +48,18 @@ VIEWPORT = {"width": 800, "height": 480}
 # Servers
 # ---------------------------------------------------------------------------
 
-class FakePanel:
-    """The panel service as the server sees it: a sleep flag the page can
-    flip, and every call it makes recorded."""
-
-    INFO_ROWS = (
-        ("Dial name", "Lounge dial"), ("Firmware", "0.8.0"), ("IPv4", "192.0.2.10"), ("WiFi", "HomeNet"),
-        ("Signal", "Strong"), ("Disk free", "5.2 GB"), ("SD health", "84%"),
-    )
-
-    def __init__(self, publish) -> None:
-        self._publish = publish
-        self.asleep = False
-        self.backlight = "sysfs"
-        self.kiosk = False
-        self.calls: list = []
-
-    def view(self) -> dict:
-        return {"asleep": self.asleep, "backlight": self.backlight, "kiosk": self.kiosk}
-
-    def set_view(self, asleep: bool, backlight: str, kiosk: "bool | None" = None) -> None:
-        self.asleep, self.backlight = asleep, backlight
-        if kiosk is not None:
-            self.kiosk = kiosk
-        self._publish()
-
-    def wake(self) -> None:
-        self.calls.append("wake")
-        self.set_view(False, self.backlight)
-
-    touch = lambda self: self.calls.append("activity")  # noqa: E731
-
-    def sleep_now(self) -> None:
-        self.calls.append("sleep")
-        self.set_view(True, self.backlight)
-
-
 @pytest.fixture(scope="session")
-def hd_real():
-    """The real HdServer over a FakeCore, started on a free port."""
-    from unittest.mock import patch
+def hd_server():
+    """The production HdServer over a FakeCore, started on a free port."""
+    from hd_preview import HdPreview
 
-    import dial_hd_server as hds
-    import hd_scenarios
-    from dial_hd_events import ChangeHub
-    from hd_fake_core import FakeCore
-    from hd_http_support import close_management_server, management_server
-
-    # A page closed without a clean goodbye is noticed within a second, but
-    # tests open pages faster than that now and then, so the client cap is
-    # lifted for the whole run.
-    saved_cap = hds.SSE_MAX_CLIENTS
-    hds.SSE_MAX_CLIENTS = 1000
-    muted = [False]
-    # The dial's clock reading for the next state; Driver.show sets it from the scenario.
-    dial_clock = [hd_scenarios.NOW]
-    core = FakeCore(hd_scenarios.SCENARIOS["playing_artwork"].snapshot)
-    management = management_server()
-    hub = ChangeHub(core)
-    panel = FakePanel(hub.publish)
-    management.add_cfg_listener(lambda cfg: hub.publish())
-    server = hds.HdServer(
-        SimpleNamespace(), core, http_server=management, hub=hub, port=0, panel=panel,
-        info_fn=lambda: FakePanel.INFO_ROWS, muted_fn=lambda service: muted[0],
-        # The scenarios carry fixed readings, so the server reads fixed clocks.
-        clock=lambda: dial_clock[0], wall_clock=lambda: hd_scenarios.WALL_NOW,
-    )
-    hub.start()
-    server.start()
-    # The settings route persists the config; keep it off the disk.
-    saver = patch("dial_config.save_config", lambda cfg: None)
-    saver.start()
-    yield SimpleNamespace(
-        core=core, server=server, hub=hub, muted=muted, panel=panel, management=management,
-        dial_clock=dial_clock,
-        url=f"http://127.0.0.1:{server.port}",
-    )
-    saver.stop()
-    server.stop()
-    hub.stop()
-    close_management_server(management)
-    hds.SSE_MAX_CLIENTS = saved_cap
+    with HdPreview() as preview:
+        yield preview
 
 
-@pytest.fixture(scope="session")
-def hd_mock():
-    """The offline mock server, started on a free port."""
-    from hd_mock_server import MockServer
-
-    mock = MockServer("playing_artwork", port=0)
-    mock.start()
-    yield mock
-    mock.stop()
-
-
-@pytest.fixture(scope="session")
-def hd_real_url(hd_real) -> str:
-    return hd_real.url
-
-
-@pytest.fixture(scope="session")
-def hd_mock_url(hd_mock) -> str:
-    return hd_mock.url
-
-
-@pytest.fixture(params=["hd_real_url", "hd_mock_url"])
-def hd_url(request) -> str:
-    """Each test that takes this runs once against each server."""
-    return request.getfixturevalue(request.param)
+@pytest.fixture
+def hd_url(hd_server) -> str:
+    return hd_server.url
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +91,7 @@ class Watcher:
 
 
 # ---------------------------------------------------------------------------
-# Smoke: the page loads cleanly and the policy holds, against both servers
+# Smoke: the page loads cleanly and the policy holds
 # ---------------------------------------------------------------------------
 
 class TestPageLoads:

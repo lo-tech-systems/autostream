@@ -2,10 +2,9 @@
 speakers, now playing, the master volume row, optimistic controls and the
 event stream client.
 
-Each test runs against the production HdServer over a FakeCore and against
-the offline mock server (the two share the scenario corpus and the
-serialiser). What the page sends is checked on the wire, so the assertions
-hold for both. Without Playwright or its pytest plugin the tests skip.
+Each test runs against the production HdServer over a FakeCore. What the page
+sends is checked on the wire. Without Playwright or its pytest plugin the
+tests skip.
 
 Set HD_SHOTS_DIR to a directory to have test_screenshots write the review
 screenshots there (it does nothing otherwise).
@@ -23,7 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_hd_dial import (  # noqa: E402,F401  (fixtures shared with the page smoke tests)
-    _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_mock, hd_real,
+    _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_server,
 )
 
 pytestmark = pytest.mark.skipif(not _PLAYWRIGHT_INSTALLED, reason="playwright not installed")
@@ -38,56 +37,12 @@ LOUNGE, KITCHEN = hs.LOUNGE, hs.KITCHEN
 SIZES = [(800, 480), (1024, 600), (1280, 800)]
 
 
-# ---------------------------------------------------------------------------
-# A server-neutral handle on the two backends
-# ---------------------------------------------------------------------------
-
-class Driver:
-    def __init__(self, kind, backend) -> None:
-        self.kind = kind
-        self.backend = backend
-        self.url = backend.url
-        self._count = 0
-        self._temp: list = []
-
-    def show(self, scenario) -> None:
-        """Make *scenario* the state the dial reports now."""
-        if self.kind == "real":
-            self.backend.muted[0] = scenario.muted
-            self.backend.dial_clock[0] = scenario.now
-            for descriptor in scenario.descriptors:
-                self.backend.core.warnings.register(descriptor)
-            window = self.backend.management._recovery_window
-            window.complete()
-            active, confirmed = scenario.recovery
-            if active:
-                window.open()
-                if confirmed:
-                    window.confirm_volume()
-            self.backend.panel.set_view(
-                bool(scenario.panel.get("asleep")), scenario.panel.get("backlight", "sysfs"),
-                bool(scenario.panel.get("kiosk")))
-            self.backend.core.publish(snapshot=scenario.snapshot)
-        else:
-            self._count += 1
-            name = f"_page_test_{self._count}"
-            hs.SCENARIOS[name] = scenario
-            self._temp.append(name)
-            self.backend.set_scenario(name)
-
-    def cleanup(self) -> None:
-        for name in self._temp:
-            hs.SCENARIOS.pop(name, None)
-        self._temp.clear()
-
-
-@pytest.fixture(params=["real", "mock"])
-def hd(request):
-    backend = request.getfixturevalue("hd_real" if request.param == "real" else "hd_mock")
-    driver = Driver(request.param, backend)
-    driver.show(hs.SCENARIOS["playing_artwork"])
-    yield driver
-    driver.cleanup()
+@pytest.fixture
+def hd(hd_server):
+    """The server, showing the playing_artwork scenario; hd.show(scenario)
+    puts the dial into another."""
+    hd_server.show(hs.SCENARIOS["playing_artwork"])
+    return hd_server
 
 
 def scenario(name, **snapshot_changes):
@@ -586,24 +541,42 @@ class TestStream:
         hd.show(hs.SCENARIOS["playing_artwork"])
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
 
-    def test_reconnects_with_last_event_id(self, page, hd_mock):
-        hd = Driver("mock", hd_mock)
-        hd.show(hs.SCENARIOS["playing_artwork"])
-        requests: list = []
-        page.on("request", lambda r: requests.append(r) if "/api/v1/events" in r.url else None)
+    def test_reconnects_with_last_event_id(self, page, hd, monkeypatch):
+        # The server ends a stream only by stopping, so the first stream is
+        # answered here with one state event and then ends; the browser's
+        # reconnect goes to the server, which reports the id it was sent (the
+        # browser adds that header below what the test's routing can see).
+        import dial_hd_server
+
+        answered: list = []
+        reconnects: list = []
+        serve = dial_hd_server.serve_events
+
+        def end_first_stream(route):
+            if answered:
+                route.continue_()
+                return
+            state = route.fetch(url=hd.url + "/api/v1/state").text()
+            answered.append(json.loads(state)["seq"])
+            route.fulfill(
+                status=200, content_type="text/event-stream", headers={"Cache-Control": "no-store"},
+                body=f"retry: 100\nid: {answered[0]}\nevent: state\ndata: {state}\n\n")
+
+        def serve_noting_the_id(handler, hub, clients):
+            reconnects.append(handler.headers.get("Last-Event-ID"))
+            serve(handler, hub, clients)
+
+        monkeypatch.setattr(dial_hd_server, "serve_events", serve_noting_the_id)
+        page.route("**/api/v1/events", end_first_stream)
         open_page(page, hd)
-        seq = page.evaluate("fetch('/api/v1/state').then(r => r.json()).then(s => s.seq)")
-        hd_mock.cut_streams()
         for _ in range(80):
-            if len(requests) >= 2:
+            if reconnects:
                 break
             page.wait_for_timeout(100)
-        assert len(requests) >= 2
-        assert requests[1].all_headers().get("last-event-id") == str(seq)
+        assert reconnects == [str(answered[0])]
         hd.show(hs.SCENARIOS["nothing_playing"])
         expect(page.locator("#title")).to_have_text("Nothing playing")
         expect(page.locator("#offline")).to_be_hidden()
-        hd.cleanup()
 
     def test_offline_indicator_and_recovery(self, page, hd):
         def refuse(route):
@@ -856,29 +829,24 @@ def assert_column_sound(boxes, size) -> None:
 class TestRightColumn:
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
     @pytest.mark.parametrize("name", hs.SCENARIO_NAMES)
-    def test_group_never_overlaps(self, page, hd_mock, name, size):
-        hd = Driver("mock", hd_mock)
+    def test_group_never_overlaps(self, page, hd, name, size):
         hd.show(hs.SCENARIOS[name])
         open_page(page, hd, size)
         page.wait_for_function("document.getElementById('art').complete")
         assert_column_sound(column_boxes(page), size)
-        hd.cleanup()
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    def test_frame_is_the_same_size_for_artwork_and_logo(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_frame_is_the_same_size_for_artwork_and_logo(self, page, hd, size):
         sizes = []
         for name in ("playing_artwork", "nothing_playing"):
             hd.show(hs.SCENARIOS[name])
             open_page(page, hd, size)
             page.wait_for_function("document.getElementById('art').complete")
             sizes.append(page.locator(".art-frame").bounding_box())
-        hd.cleanup()
         assert sizes[0] == sizes[1]
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    def test_a_filled_replay_row_shrinks_the_artwork_not_the_rows(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_a_filled_replay_row_shrinks_the_artwork_not_the_rows(self, page, hd, size):
         hd.show(hs.SCENARIOS["playing_artwork"])
         open_page(page, hd, size)
         empty = column_boxes(page)
@@ -898,17 +866,14 @@ class TestRightColumn:
             # The track and volume rows do not move when the replay row fills.
             assert dict(filled)[".track-row"]["height"] == dict(empty)[".track-row"]["height"]
             assert dict(filled)["#volume-row"]["height"] == dict(empty)["#volume-row"]["height"]
-        hd.cleanup()
 
 
 def real_cover(hd, name="cover") -> None:
-    """On the real server, hold a cover it can decode (the corpus's one is a
-    stand-in the imaging library rejects), under a key of its own."""
-    if hd.kind != "real":
-        return
+    """Hold a cover the server can decode (the corpus's one is a stand-in the
+    imaging library rejects), under a key of its own."""
     key = artwork_key(f"https://provider.example/art/{name}.jpg")
     held = Artwork("", key, _gradient_png(), "", hs.NOW - 5)
-    hd.backend.core.publish(artwork=held)
+    hd.core.publish(artwork=held)
 
 
 class TestBackdrop:
@@ -932,19 +897,16 @@ class TestBackdrop:
         assert page.evaluate("document.getElementById('backdrop').naturalWidth") > 0
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    def test_the_zone_holds_the_backdrop_at_every_size(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_the_zone_holds_the_backdrop_at_every_size(self, page, hd, size):
         hd.show(hs.SCENARIOS["playing_artwork"])
         open_page(page, hd, size)
         zone = page.locator(".art-zone").bounding_box()
         assert page.locator("#backdrop").bounding_box() == zone
         first_row = page.locator(".track-row").bounding_box()
         assert zone["y"] + zone["height"] <= first_row["y"]
-        hd.cleanup()
 
     @pytest.mark.parametrize("scenario_name,share", [("playing_artwork", 1.0), ("nothing_playing", 0.84)])
-    def test_the_picture_fills_the_frame(self, page, hd_mock, scenario_name, share):
-        hd = Driver("mock", hd_mock)
+    def test_the_picture_fills_the_frame(self, page, hd, scenario_name, share):
         hd.show(hs.SCENARIOS[scenario_name])
         open_page(page, hd)
         page.wait_for_function("document.getElementById('art').complete")
@@ -954,7 +916,6 @@ class TestBackdrop:
         assert abs(art["width"] - inner * share) <= 1 and abs(art["height"] - inner * share) <= 1
         assert abs((art["x"] + art["width"] / 2) - (frame["x"] + frame["width"] / 2)) <= 1
         assert abs((art["y"] + art["height"] / 2) - (frame["y"] + frame["height"] / 2)) <= 1
-        hd.cleanup()
 
 
 PICTURE_IDS = ("art", "art-prev", "backdrop", "backdrop-prev")
@@ -1173,8 +1134,7 @@ def _backdrop_bodies(art: bytes) -> tuple:
 @pytest.mark.skipif(not os.environ.get("HD_SHOTS_DIR"), reason="HD_SHOTS_DIR not set")
 @pytest.mark.parametrize("name", SHOT_SCENARIOS)
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-def test_screenshots(page, hd_mock, name, size):
-    hd = Driver("mock", hd_mock)
+def test_screenshots(page, hd, name, size):
     art = _gradient_png()
     cover_backdrop, logo_backdrop = _backdrop_bodies(art)
     seen = []
@@ -1194,4 +1154,3 @@ def test_screenshots(page, hd_mock, name, size):
     wait_settled(page)
     assert any(kind == "image/jpeg" for kind, _url in seen)
     page.screenshot(path=str(Path(os.environ["HD_SHOTS_DIR"]) / f"hd_{name}_{size[0]}x{size[1]}.png"))
-    hd.cleanup()

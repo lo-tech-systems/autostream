@@ -4,8 +4,8 @@ buttons held down until the appliance has answered, and the pull-down's
 Shut down button with its confirmation.
 
 Like the other page tests these run against the production HdServer over a
-FakeCore and against the offline mock, and check what the page sends on the
-wire. Without Playwright or its pytest plugin they skip.
+FakeCore, and check what the page sends on the wire. Without Playwright or its
+pytest plugin they skip.
 """
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_hd_dial import (  # noqa: E402,F401  (fixtures shared with the page smoke tests)
-    _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_mock, hd_real,
+    _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_server,
 )
 from test_hd_page_main import (  # noqa: E402,F401
-    Driver, SIZES, hd, open_page, scenario, watch_actions,
+    SIZES, hd, open_page, scenario, watch_actions,
 )
 from test_hd_page_extras import (  # noqa: E402,F401
     PLAY, REWIND, STOP, modal_card, open_sheet, replay_button, replay_timer, watch_posts,
@@ -387,8 +387,7 @@ SHUT_DOWN = "#card-buttons button"
 
 class TestPowerButton:
     @pytest.mark.parametrize("size", SIZES, ids=size_id)
-    def test_it_sits_at_the_top_right_of_the_pull_down_and_disturbs_nothing(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_it_sits_at_the_top_right_of_the_pull_down_and_disturbs_nothing(self, page, hd, size):
         open_page(page, hd, size)
         open_sheet(page)
         sheet = page.locator("#sheet").bounding_box()
@@ -414,7 +413,6 @@ class TestPowerButton:
         assert content and not [box for box in content if overlap(box, power)]
         assert page.evaluate(
             "[document.documentElement.scrollWidth, document.documentElement.scrollHeight]") == list(size)
-        hd.cleanup()
 
     def test_it_carries_the_standard_power_icon_and_a_label(self, page, hd):
         open_page(page, hd)
@@ -488,8 +486,7 @@ class TestPowerButton:
         expect(page.locator("#card-title")).to_have_text("Shutting down...")
         page.wait_for_timeout(300)
         assert sent == [("dial_shutdown", {})]
-        if hd.kind == "real":
-            assert ("request_dial_shutdown", (), {}) in hd.backend.core.calls
+        assert ("request_dial_shutdown", (), {}) in hd.core.calls
 
     @pytest.mark.parametrize("status,body,toast", [
         (403, {"ok": False, "error": "local_only"}, "That can only be done on the dial's own screen."),
@@ -581,20 +578,16 @@ class TestPowerButton:
         expect(modal_card(page)).to_be_hidden()
 
     @pytest.mark.parametrize("size", SIZES, ids=size_id)
-    def test_the_failed_card_fits_the_screen(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_the_failed_card_fits_the_screen(self, page, hd, size):
         hd.show(hs.SCENARIOS["power_failed"])
         open_page(page, hd, size)
         box = page.locator("#card").bounding_box()
         assert box["x"] >= 0 and box["y"] >= 0
         assert box["x"] + box["width"] <= size[0] and box["y"] + box["height"] <= size[1]
         assert page.locator(SHUT_DOWN).first.bounding_box()["height"] >= 44
-        hd.show(hs.SCENARIOS["playing_artwork"])    # the mock outlives this test
-        hd.cleanup()
 
     @pytest.mark.parametrize("size", SIZES, ids=size_id)
-    def test_the_card_fits_the_screen(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_the_card_fits_the_screen(self, page, hd, size):
         open_page(page, hd, size)
         open_sheet(page)
         page.locator("#power").click()
@@ -603,4 +596,3 @@ class TestPowerButton:
         assert box["x"] + box["width"] <= size[0] and box["y"] + box["height"] <= size[1]
         for button in page.locator(SHUT_DOWN).all():
             assert button.bounding_box()["height"] >= 44
-        hd.cleanup()

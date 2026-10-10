@@ -3,9 +3,8 @@ settings, warning and notice cards, sleep shield, panel activity reports and
 the hiding of idle controls.
 
 Like the main-layout tests these run against the production HdServer over a
-FakeCore and against the offline mock (they share the scenario corpus and the
-serialiser), and check what the page sends on the wire. Without Playwright
-or its pytest plugin they skip.
+FakeCore, and check what the page sends on the wire. Without Playwright or
+its pytest plugin they skip.
 """
 from __future__ import annotations
 
@@ -20,10 +19,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_hd_dial import (  # noqa: E402,F401  (fixtures shared with the page smoke tests)
-    _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_mock, hd_real,
+    _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_server,
 )
 from test_hd_page_main import (  # noqa: E402,F401
-    Driver, SIZES, card, cards, drag_input, hd, open_page, rows, scenario, watch_actions,
+    SIZES, card, cards, drag_input, hd, open_page, rows, scenario, watch_actions,
 )
 
 pytestmark = pytest.mark.skipif(not _PLAYWRIGHT_INSTALLED, reason="playwright not installed")
@@ -212,8 +211,7 @@ class TestReplayRow:
         hd.show(hs.SCENARIOS["replay_hold"])
         open_page(page, hd)
         replay_button(page, PLAY).click()
-        if hd.kind == "real":       # the mock moves to the replaying state by itself
-            hd.show(hs.SCENARIOS["replaying"])
+        hd.show(hs.SCENARIOS["replaying"])
         expect(replay_button(page, REWIND)).to_be_enabled()
         expect(replay_button(page, STOP)).to_be_enabled()
         assert replay_button(page, PLAY).count() == 0
@@ -276,8 +274,7 @@ class TestReplayRow:
         ))) == 2
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    def test_the_transport_buttons_are_finger_sized(self, page, hd_mock, size):
-        hd = Driver("mock", hd_mock)
+    def test_the_transport_buttons_are_finger_sized(self, page, hd, size):
         for scenario_ in (hs.SCENARIOS["replay_hold"], hs.SCENARIOS["replaying"], hs.replay_scenario("i", "idle")):
             hd.show(scenario_)
             open_page(page, hd, size)
@@ -288,12 +285,10 @@ class TestReplayRow:
                 assert item["width"] >= 56 and item["height"] >= 56
             box = replay_row(page).bounding_box()
             assert box["height"] <= buttons[0]["height"] + 0.5
-        hd.cleanup()
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
     @pytest.mark.parametrize("name", ["replay_hold", "replaying", "fading_out"])
-    def test_the_timer_is_set_as_the_artist_line_is(self, page, hd_mock, name, size):
-        hd = Driver("mock", hd_mock)
+    def test_the_timer_is_set_as_the_artist_line_is(self, page, hd, name, size):
         hd.show(hs.SCENARIOS[name])
         open_page(page, hd, size)
         expect(page.locator("#sub")).not_to_have_text("")
@@ -303,7 +298,6 @@ class TestReplayRow:
                 return [s.fontFamily, s.fontSize, s.fontWeight, s.fontStyle];
             })"""
         )
-        hd.cleanup()
         assert fonts[0] == fonts[1]
         assert fonts[0][2] == "400"
         title_size = page.evaluate("parseFloat(getComputedStyle(document.getElementById('title')).fontSize)")
@@ -1188,8 +1182,7 @@ class TestPullDown:
     def test_without_a_backlight_the_screen_is_dimmed_by_the_setting(self, page, hd):
         hd.show(dataclasses.replace(
             hs.SCENARIOS["playing_artwork"], panel={**hs.PANEL_AWAKE, "backlight": "none", "brightness": 30}))
-        if hd.kind == "real":
-            post_settings(hd.url, {"brightness": 30})
+        post_settings(hd.url, {"brightness": 30})
         open_page(page, hd)
         expect(page.locator("#app")).to_have_class(re.compile("dimmed"))
         filter_value = page.evaluate("getComputedStyle(document.getElementById('app')).filter")
@@ -1203,8 +1196,7 @@ class TestPullDown:
     def test_with_a_ddc_backlight_the_screen_is_not_dimmed(self, page, hd):
         hd.show(dataclasses.replace(
             hs.SCENARIOS["playing_artwork"], panel={**hs.PANEL_AWAKE, "backlight": "ddc", "brightness": 30}))
-        if hd.kind == "real":
-            post_settings(hd.url, {"brightness": 30})
+        post_settings(hd.url, {"brightness": 30})
         open_page(page, hd)
         assert page.evaluate("getComputedStyle(document.getElementById('app')).filter") == "none"
         expect(page.locator("#app")).not_to_have_class(re.compile("dimmed"))
@@ -1654,17 +1646,16 @@ class TestPanelActivity:
         page.wait_for_timeout(300)
         assert "show" not in (page.locator("#toast").get_attribute("class") or "")
 
-    def test_the_server_sees_the_report(self, page, hd_real):
-        hd = Driver("real", hd_real)
+    def test_the_server_sees_the_report(self, page, hd):
         hd.show(hs.SCENARIOS["playing_artwork"])
-        before = len(hd_real.panel.calls)
+        before = len(hd.panel.calls)
         open_page(page, hd)
         page.locator("#title").click()
         for _ in range(30):
-            if "activity" in hd_real.panel.calls[before:]:
+            if "activity" in hd.panel.calls[before:]:
                 break
             page.wait_for_timeout(50)
-        assert "activity" in hd_real.panel.calls[before:]
+        assert "activity" in hd.panel.calls[before:]
 
 
 # ---------------------------------------------------------------------------
@@ -1765,16 +1756,15 @@ class TestStreamLifetime:
         page.evaluate("window.dispatchEvent(new Event('pagehide'))")
         assert page.evaluate("window.__streams[0].readyState") == 2
 
-    def test_leaving_the_page_frees_the_servers_client_slot(self, page, hd_real):
-        hd = Driver("real", hd_real)
+    def test_leaving_the_page_frees_the_servers_client_slot(self, page, hd):
         hd.show(hs.SCENARIOS["playing_artwork"])
 
         def settled(count):
             for _ in range(60):
-                if hd_real.server.client_count() == count:
+                if hd.server.client_count() == count:
                     return True
                 page.wait_for_timeout(50)
-            return hd_real.server.client_count() == count
+            return hd.server.client_count() == count
 
         assert settled(0), "streams from earlier tests should have gone"
         open_page(page, hd)
